@@ -1,30 +1,30 @@
 ---
 rel_path: "reports/unshipped-plans-audit/latest.json"
-updated_at: 1787678798376
+updated_at: 1787680375496
 _body: "content"
 ---
 
 {
   "schemaVersion": "unshipped-plans-audit-manifest-v2",
-  "generatedAt": "2026-08-25T17:26:38.291Z",
+  "generatedAt": "2026-08-25T17:52:55.442Z",
   "workspace": "papercusp-workspace",
   "scope": {
-    "snapshotStartedAt": "2026-08-25T17:26:35.787Z",
-    "snapshotFinishedAt": "2026-08-25T17:26:38.291Z",
-    "liveOwnershipMeasuredAt": "2026-08-25T17:26:35.839Z",
-    "nonterminalListedAtSnapshot": 604,
-    "materialized": 602,
+    "snapshotStartedAt": "2026-08-25T17:52:53.681Z",
+    "snapshotFinishedAt": "2026-08-25T17:52:55.442Z",
+    "liveOwnershipMeasuredAt": "2026-08-25T17:52:53.707Z",
+    "nonterminalListedAtSnapshot": 599,
+    "materialized": 597,
     "catalogFailures": 2,
-    "classifiedRows": 604,
+    "classifiedRows": 599,
     "rule": "Point-in-time, read-only audit. Ongoing plans are protected; no lifecycle, item, blocker, claim, assignment, or ownership state is changed.",
-    "classifierRevision": 2,
-    "classifierCorrection": "Plan-level supersession requires an explicit plan-subject assertion in the Now state; mentions of superseded decisions or sub-approaches never retire the whole plan."
+    "classifierRevision": 3,
+    "classifierCorrection": "Plan-level supersession requires an explicit plan-subject assertion in the Now state; prose-only blockers require blocker-shaped Now syntax, so incidental slug/title/history vocabulary is never lifecycle authority."
   },
   "summaryByCategory": {
     "acceptance-residue": {
-      "count": 20,
+      "count": 18,
       "byStatus": {
-        "ready": 15,
+        "ready": 13,
         "draft": 2,
         "active": 3
       }
@@ -44,10 +44,10 @@ _body: "content"
       }
     },
     "closeout-stale-audit": {
-      "count": 5,
+      "count": 4,
       "byStatus": {
         "ready": 3,
-        "active": 2
+        "active": 1
       }
     },
     "closeout-status-residue": {
@@ -65,9 +65,9 @@ _body: "content"
       }
     },
     "ongoing-protected": {
-      "count": 7,
+      "count": 8,
       "byStatus": {
-        "ready": 5,
+        "ready": 6,
         "active": 2
       }
     },
@@ -86,17 +86,17 @@ _body: "content"
       }
     },
     "supersede-or-archive-fixture": {
-      "count": 78,
+      "count": 77,
       "byStatus": {
-        "ready": 29,
+        "ready": 28,
         "draft": 13,
         "active": 36
       }
     },
     "supersede-or-rescope-empty": {
-      "count": 110,
+      "count": 108,
       "byStatus": {
-        "active": 86,
+        "active": 84,
         "draft": 16,
         "ready": 8
       }
@@ -110,19 +110,19 @@ _body: "content"
       }
     },
     "text-only-external-blocker": {
-      "count": 6,
+      "count": 5,
       "byStatus": {
         "active": 2,
-        "ready": 2,
+        "ready": 1,
         "draft": 2
       }
     },
     "text-only-human-blocker": {
-      "count": 11,
+      "count": 9,
       "byStatus": {
-        "active": 7,
         "ready": 2,
-        "draft": 2
+        "draft": 3,
+        "active": 4
       }
     },
     "typed-blocker": {
@@ -150,11 +150,11 @@ _body: "content"
       }
     },
     "unblocked-partial-no-owner": {
-      "count": 42,
+      "count": 45,
       "byStatus": {
-        "active": 20,
-        "draft": 7,
-        "ready": 15
+        "active": 23,
+        "draft": 6,
+        "ready": 16
       }
     },
     "unstarted-no-blocker": {
@@ -167,29 +167,29 @@ _body: "content"
     }
   },
   "bands": {
-    "protected": 7,
-    "closeoutOrReconcile": 228,
-    "supersedeOrRetire": 239,
-    "blockerClaims": 86,
-    "unblockedPartial": 42,
+    "protected": 8,
+    "closeoutOrReconcile": 225,
+    "supersedeOrRetire": 236,
+    "blockerClaims": 83,
+    "unblockedPartial": 45,
     "catalogResidue": 2
   },
   "closeoutEvidence": {
-    "staleAuditAndRubric": 5,
+    "staleAuditAndRubric": 4,
     "missingAuditOrAcceptance": 185
   },
   "blockerEvidence": {
     "typedCurrent": 59,
     "typedWithStaleHint": 10,
-    "textOnly": 17
+    "textOnly": 14
   },
   "currentRegistryAtPublish": {
     "total": 1376,
-    "active": 274,
-    "ready": 233,
+    "active": 271,
+    "ready": 231,
     "draft": 97,
-    "shipped": 576,
-    "superseded": 196
+    "shipped": 578,
+    "superseded": 199
   },
   "rows": [
     {
@@ -626,94 +626,6 @@ _body: "content"
       },
       "nowState": "IMPLEMENTATION COMPLETE + LIVE; plan remains READY only for the mandatory acceptance-review sequence. Code-truth audit #1 passed 4/4 with 17 citations. Acceptance rubric acceptance-serialize-and-slow-kopia-backups-2026-08-20 is active/current/complete (4 criteria, methodRef, drift markers, relevant test bindings). Fresh critique consult conv-mt309uz6-0000-5ebe1d11e6a74156944778167faa3d0a is awaiting responder su-1d899d11. After critique: emit current-revision meta-acceptance vetting scorecard, invoke shipped gate to launch/discover a non-implementer grader, await its complete grade, record author acceptance, and mark shipped. All source locks released; runtime idle; next backup 10:00.",
       "nowNext": "Read consult conv-mt309uz6-0000-5ebe1d11e6a74156944778167faa3d0a; reconcile any critique, vet current rubric revision, drive independent grading + author acceptance, then set status shipped and end the continuation loop."
-    },
-    {
-      "slug": "sidestage-architecture-page-2026-08-15",
-      "title": "SideStage architecture page and complete system documentation",
-      "harness": "sidestage",
-      "status": "ready",
-      "category": "acceptance-residue",
-      "reason": "Implementation appears substantially complete, but acceptance/closeout work remains.",
-      "recommendation": "Finish the current audit/rubric/verdict evidence, then close or supersede.",
-      "created": "2026-08-15",
-      "updated": "2026-08-15 00:22:33.036588-04",
-      "itemTotal": 4,
-      "terminalPlanItems": 4,
-      "openPlanItems": 0,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 4
-      },
-      "audit": {
-        "auditSeq": 2,
-        "createdAt": "2026-08-25 04:59:29.547415-04",
-        "auditedSha": "597db4a84524d9d34086792b3592b050bde94cac",
-        "auditedItems": 4
-      },
-      "acceptanceRubric": {
-        "rubricId": "acceptance-sidestage-architecture-page-2026-08-15",
-        "status": "active"
-      },
-      "gateVerdict": {
-        "satisfied": false,
-        "code": "acceptance_ungraded",
-        "message": "plan 'sidestage-architecture-page-2026-08-15' cannot be marked shipped: its acceptance rubric 'acceptance-sidestage-architecture-page-2026-08-15' has no complete grading. A NON-implementer (someone other than 'su-b75762dd-6c36-44e6-8a04-668a24fbb8a8') grades it — scorecards:emit { rubricRef:'acceptance-sidestage-architecture-page-2026-08-15', ratings:{ <every criterion key> } } with concrete evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005)."
-      },
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Draft. Plan body to be filled in.",
-      "nowNext": "human reviews scope and lists Phase 1 items."
-    },
-    {
-      "slug": "sidestage-copilot-queue-inspector-implementation-2026-08-15",
-      "title": "Implement the selected Queue + inspector Copilot layout",
-      "harness": "sidestage",
-      "status": "ready",
-      "category": "acceptance-residue",
-      "reason": "Implementation appears substantially complete, but acceptance/closeout work remains.",
-      "recommendation": "Finish the current audit/rubric/verdict evidence, then close or supersede.",
-      "created": "2026-08-15",
-      "updated": "2026-08-15 00:34:41.124521-04",
-      "itemTotal": 2,
-      "terminalPlanItems": 2,
-      "openPlanItems": 0,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 2
-      },
-      "audit": {
-        "auditSeq": 2,
-        "createdAt": "2026-08-25 04:44:51.282222-04",
-        "auditedSha": "9d27b43ee7a5aae12afa8b003ea2342161a810f2",
-        "auditedItems": 2
-      },
-      "acceptanceRubric": {
-        "rubricId": "acceptance-sidestage-copilot-queue-inspector-2026-08-15",
-        "status": "active"
-      },
-      "gateVerdict": {
-        "satisfied": false,
-        "code": "acceptance_ungraded",
-        "message": "plan 'sidestage-copilot-queue-inspector-implementation-2026-08-15' cannot be marked shipped: its acceptance rubric 'acceptance-sidestage-copilot-queue-inspector-2026-08-15' has no complete grading. A NON-implementer (someone other than 'su-b75762dd-6c36-44e6-8a04-668a24fbb8a8') grades it — scorecards:emit { rubricRef:'acceptance-sidestage-copilot-queue-inspector-2026-08-15', ratings:{ <every criterion key> } } with concrete evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005)."
-      },
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Draft. Plan body to be filled in.",
-      "nowNext": "human reviews scope and lists Phase 1 items."
     },
     {
       "slug": "sidestage-seller-copilot-mission-2026-08-14",
@@ -7219,50 +7131,6 @@ _body: "content"
       "nowNext": "none — the plan is shipped. (Pre-shipped next, no longer actionable: Wait for the candidate cut AFTER commit 54bc2039d2 (which carries the budget fix) to go green — do NOT fire a manual release:checkpoint-run into an in-flight run; then on green + :3070 deploy, run WI-38042's P-006 re-measurement (D-010/D-011 baseline: orient_per_1k_calls 2.83, pct_oriented 48.9%; SUCCESS = rate FALLS while coverage RISES), and only THEN have a non-implementer grade the rubric.)"
     },
     {
-      "slug": "oddsmith-recovery-and-hardening-2026-08-16",
-      "title": "Oddsmith recovery + hardening after the 2026-08-15 wipe",
-      "harness": "oddsmith-hive",
-      "status": "active",
-      "category": "closeout-stale-audit",
-      "reason": "The plan has audit and acceptance artifacts, but the current ship gate says the evidence is stale.",
-      "recommendation": "Re-audit only the stale items/citations, re-grade current acceptance, then ship.",
-      "created": "2026-08-16",
-      "updated": "2026-08-17 09:36:59.099828-04",
-      "itemTotal": 4,
-      "terminalPlanItems": 4,
-      "openPlanItems": 0,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 4
-      },
-      "audit": {
-        "auditSeq": 1,
-        "createdAt": "2026-08-17 09:51:44.682555-04",
-        "auditedSha": "7c6e395",
-        "auditedItems": 4
-      },
-      "acceptanceRubric": {
-        "rubricId": "oddsmith-recovery-and-hardening-2026-08-16-acceptance",
-        "status": "active"
-      },
-      "gateVerdict": {
-        "satisfied": false,
-        "code": "audit_coverage_stale",
-        "message": "plan 'oddsmith-recovery-and-hardening-2026-08-16' cannot be marked shipped: 4 item audit(s) are missing or stale — P-001: item-text fingerprint is missing from audit #1; P-002: item-text fingerprint is missing from audit #1; apps/desktop/src/lib/loop-health.ts has no audit-time blob fingerprint (audit #1); apps/desktop/src/lib/loop-health.ts has no audit-time blob fingerprint (audit #1); P-003: item-text fingerprint is missing from audit #1; apps/desktop/src/_hono/app.ts has no audit-time blob fingerprint (audit #1); apps/desktop/src/lib/local-dbos-wiring.ts has no audit-time blob fingerprint (audit #1); P-004: item-text fingerprint is missing from audit #1. Re-run plans:audit for ONLY the listed items. Every unlisted item carries forward mechanically with its original auditedSha/auditedAt, so do not resubmit unchanged items. If no items are listed on a future check, no new audit pass is required. To ship anyway, pass force:{ reason }."
-      },
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "COMPLETE — all four Phase 1 items are done (P-001 backup+staleness alarm, P-002 dist rebuild + green crons, P-003 ingestion re-home + failing health, P-004 zero-order engine diagnosis). P-001 was re-verified against disk on 2026-08-17T13:35Z rather than trusted from its mirrored status: /mnt/data/Backup/db-dumps/pg/oddsmith holds a 37MB pg_dump dir written 13:05:26Z and STATUS.json reports oddsmithOk:true, failed:[], with a live oddsmithLastSuccessEpoch (30min old). RESIDUE, none of it in this plan's scope: (a) oddsmith deploys are still frozen, but the cause is now fully proven and is NOT a gate defect — the 13:19Z green-checkpoint run stamped `green=true promoted=false reason=push-failed`, i.e. the suite is green and the sole blocker is the dead git push credential (WI-39549, owner-gated: re-auth aviynw on this box or grant papercupai push). 461 commits unpushed since 2026-07-26. (b) WI-39671 (green-checkpoint stall) is resolved pending one confirming run. (c) Untouched oddsmith backlog outside this plan: WI-6175 (daily-loss gate measures cash deployed, not loss — has halted live kalshi 7d) and WI-5735 (LLM analyst dead).",
-      "nowNext": "Nothing in this plan — it is done. The one action that would move oddsmith forward is owner-gated and tracked as WI-39549: restore the git push credential so the already-green gate can promote and deploys unfreeze."
-    },
-    {
       "slug": "plan-completion-audit-and-acceptance-verdict-2026-08-13",
       "title": "Plan completion: code-truth audit + an acceptance verdict the gate actually reads",
       "harness": "papercusp",
@@ -7585,7 +7453,7 @@ _body: "content"
           "ownerId": "su-ac95a447-05ec-4633-bc7a-99188919b126",
           "ownerLabel": "su · su-ac95a",
           "fleet": null,
-          "intent": "[idle 21m] Reconcile release-green timeout for WI-41515/P-003 against live WI-40086 ownership and gate state; act only if the dependency is stranded.",
+          "intent": "[idle 47m] Reconcile release-green timeout for WI-41515/P-003 against live WI-40086 ownership and gate state; act only if the dependency is stranded.",
           "source": "work-item-hold"
         }
       ],
@@ -7602,6 +7470,67 @@ _body: "content"
       },
       "nowState": "",
       "nowNext": ""
+    },
+    {
+      "slug": "bulk-resolver-controls-and-run-lifecycle-2026-08-24",
+      "title": "Bulk resolver controls and run lifecycle",
+      "harness": "papercusp",
+      "status": "ready",
+      "category": "ongoing-protected",
+      "reason": "A live agent currently declares, claims, or holds nonterminal work linked to this plan.",
+      "recommendation": "No cleanup action: preserve the lane and re-audit after its live owner finishes.",
+      "created": "2026-08-24",
+      "updated": "2026-08-24 21:31:21.185076-04",
+      "itemTotal": 9,
+      "terminalPlanItems": 9,
+      "openPlanItems": 0,
+      "workItemTotal": 8,
+      "openWorkItems": 0,
+      "workItemStates": {
+        "done": 8
+      },
+      "itemCounts": {
+        "done": 9
+      },
+      "audit": {
+        "auditSeq": 2,
+        "createdAt": "2026-08-25 08:36:32.274994-04",
+        "auditedSha": "058f3b6f4756778378a5964d23fd03e8025b00f1",
+        "auditedItems": 9
+      },
+      "acceptanceRubric": {
+        "rubricId": "bulk-resolver-controls-and-run-lifecycle-2026-08-24-acceptance",
+        "status": "active"
+      },
+      "gateVerdict": {
+        "satisfied": false,
+        "code": "acceptance_rubric_unvetted",
+        "message": "plan 'bulk-resolver-controls-and-run-lifecycle-2026-08-24' cannot be marked shipped: its acceptance rubric 'bulk-resolver-controls-and-run-lifecycle-2026-08-24-acceptance' has not been VETTED against the meta-rubric (consult-min-max-and-rubric-vetting-2026-08-17). The rubric AUTHOR vets it BEFORE a non-implementer grades the work: (1) consult:get_feedback for external critique of the rubric (selection is automatic, min 1 / max 3 responders), (2) improve the rubric from the critique (rubrics:propose), (3) attest: scorecards:emit { rubricRef:'meta-acceptance-rubric', subject:{ kind:'rubric', ref:'bulk-resolver-controls-and-run-lifecycle-2026-08-24-acceptance' }, vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. Pass is your judgment per criterion — no mechanical score floor (D-001 §3)."
+      },
+      "owners": [
+        {
+          "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
+          "ownerLabel": "su · su-de924",
+          "fleet": null,
+          "intent": "Resume bulk resolver P-006 acceptance closure: reconcile latest egress and serialized WI-40086 gate state, then verify live scorecards emission, independent vetting, and close the plan lineage",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
+          "ownerLabel": "su · su-de924",
+          "fleet": null,
+          "intent": "Resume bulk resolver P-006 acceptance closure: reconcile latest egress and serialized WI-40086 gate state, then verify live scorecards emission, independent vetting, and close the plan lineage",
+          "source": "plan-item-claim"
+        }
+      ],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "ALL 9 ITEMS TERMINAL (every item done as of 2026-08-25T01:28Z; the verification sweep closed via WI-41354). The previously-flagged liveness-consumer gap is CLOSED: EI-21366043755792293 is resolved — resolver tools heartbeat the current owner via recordRunHeartbeat, the sync resolver decorates both run queries with classifyRunLiveness, and the UI renders stale-heartbeat + restart (D-004: restart pre-rotates resolver_owner; owner-bound writes under the run lock). Verification evidence: focused UI 108 + core 113 tests green; real-PG proofs 43/43 (migration 945 exercised); operator-core + web typechecks clean; scoped 36-path affected run 835484-75ab12f4 with zero plan-radius failures — run-level reds all externally attributed (transform culprit migrate.ts:264:12, a non-plan file that parses clean now; cargo disk-96% admission refusal; load1=140 timeout). Full residue disclosure on WI-41354#completion. Plan status 'ready': implementation is complete but the plan is NOT shipped — the completion flow (per-item code-truth audit, acceptance rubric, vetting, independent grading, verdict, ship) is still owed.",
+      "nowNext": "su-4b48f72e (AUTO): run plans:audit with code/test citations, author + vet the acceptance rubric (classRef plan-class-feature-ship), then route grading to a NON-implementer (implementers = the WI-41347 through WI-41354 owners) before setting plan status shipped."
     },
     {
       "slug": "bulk-resolver-external-contract-drift-2026-08-24",
@@ -7634,21 +7563,14 @@ _body: "content"
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "Resume WI-41476/P-006: diagnose and clear the stalled git-sync egress for emit commit 8723979c, then allow the serialized green checkpoint and finish acceptance closure.",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
-          "ownerLabel": "su · su-de924",
-          "fleet": null,
-          "intent": "Resume WI-41476/P-006: diagnose and clear the stalled git-sync egress for emit commit 8723979c, then allow the serialized green checkpoint and finish acceptance closure.",
+          "intent": "Resume bulk resolver P-006 acceptance closure: reconcile latest egress and serialized WI-40086 gate state, then verify live scorecards emission, independent vetting, and close the plan lineage",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-de924ac1-92c7-4b7e-9ab4-f139e5e9be07",
           "ownerLabel": "su · su-de924",
           "fleet": null,
-          "intent": "Resume WI-41476/P-006: diagnose and clear the stalled git-sync egress for emit commit 8723979c, then allow the serialized green checkpoint and finish acceptance closure.",
+          "intent": "Resume bulk resolver P-006 acceptance closure: reconcile latest egress and serialized WI-40086 gate state, then verify live scorecards emission, independent vetting, and close the plan lineage",
           "source": "plan-item-claim"
         }
       ],
@@ -7680,7 +7602,7 @@ _body: "content"
         "done": 65,
         "dropped": 16,
         "blocked": 37,
-        "wip": 1
+        "open": 1
       },
       "itemCounts": {
         "done": 62,
@@ -7693,73 +7615,45 @@ _body: "content"
       "gateVerdict": null,
       "owners": [
         {
-          "ownerId": "su-1c4531b5-bd52-4e92-afea-2b20c5ecc2b9",
-          "ownerLabel": "su · su-1c453",
-          "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 5h51m] Resume the bound BYOC plan only if predecessor fleet control and claim spec are active; preserve acceptance holds and do not cross into the successor fleet.",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-1dac6578-afd5-45a2-862e-8641c2db6f85",
-          "ownerLabel": "su · su-1dac6",
-          "fleet": null,
-          "intent": "Resume WI-40474 / P-046 on byoc-cloud plan: build the surface (route/agent tool) for the workspace-host initialization runner and wire the GCP operations adapter",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-1dac6578-afd5-45a2-862e-8641c2db6f85",
-          "ownerLabel": "su · su-1dac6",
-          "fleet": null,
-          "intent": "Resume WI-40474 / P-046 on byoc-cloud plan: build the surface (route/agent tool) for the workspace-host initialization runner and wire the GCP operations adapter",
-          "source": "work-item-hold"
-        },
-        {
-          "ownerId": "su-1dac6578-afd5-45a2-862e-8641c2db6f85",
-          "ownerLabel": "su · su-1dac6",
-          "fleet": null,
-          "intent": "Resume WI-40474 / P-046 on byoc-cloud plan: build the surface (route/agent tool) for the workspace-host initialization runner and wire the GCP operations adapter",
-          "source": "plan-item-claim"
-        },
-        {
-          "ownerId": "su-2e8b76e2-733a-4a27-82fd-ecb683a2e325",
-          "ownerLabel": "su · su-2e8b7",
+          "ownerId": "su-4f31ce63-8288-48b9-8f01-614b6ef18f88",
+          "ownerLabel": "su · su-4f31c",
           "fleet": "byoc-alpha-max-2026-08-23",
-          "intent": "[idle 5h47m] Resume the BYOC fleet-member lane after the owner lifted the pause; pull only current scheduler-admitted work and preserve all current plan decisions/gates.",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-39230817-e3e4-405b-93a9-5c7b4fcf5d9e",
-          "ownerLabel": "su · su-39230",
-          "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 5h50m] Resume the assigned BYOC fleet lane after the owner lifted the system-wide pause; refresh control state and pull only scheduler-admitted plan work.",
+          "intent": "LEADER of byoc-alpha-max-2026-08-23 (5 members) AND of loop-observability-2026-08-24 (5 members, 1/13 done, 5 progressing). BYOC: frontier is 1 — P-046/WI-40474 held live by su-c4f7b944 and typed-blocked on the generation-2 qualified-tip event, so executableWidth is 0 and no seats can open until the gate fires; gate lane belongs to su-08275825 under D-008 and I stay off it. Also holding WI-41183 (fleet-wide loop livelock: 44 of 65 parked loops have zero tool calls in 3h).",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-5453d2ea-ac6e-4b22-a79a-a28a632a30ef",
           "ownerLabel": "su · su-5453d",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "Reconcile sixth work-item:claimable timeout and pull only scheduler-admitted BYOC work",
+          "intent": "[idle 31m] Reconcile sixth work-item:claimable timeout and pull only scheduler-admitted BYOC work",
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-6986c61a-2cca-4023-ab97-4df89549cc8d",
-          "ownerLabel": "su · su-6986c",
-          "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 5h48m] Resume BYOC fleet member; pull only scheduler-admitted work for the canonical plan and honor current decisions/gates.",
+          "ownerId": "su-96686267-95f6-492f-8b47-a361d4113de2",
+          "ownerLabel": "su · su-96686",
+          "fleet": null,
+          "intent": "Carry BYOC plan to completion under D-098; coordinate live P-046 holder, verify increment 5, then advance P-018/P-024 and launch the D-097 fleet only at width >1",
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-6f8f648d-9490-47b7-af2b-c4570b9a9113",
-          "ownerLabel": "su · su-6f8f6",
-          "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 5h50m] Resume the assigned BYOC fleet-member lane after the owner lifted the system-wide pause; reconcile live fleet control and pull only scheduler-admitted work.",
+          "ownerId": "su-c218faeb-02d5-4079-8424-da913ce495e6",
+          "ownerLabel": "su · su-c218f",
+          "fleet": "byoc-alpha-max-2026-08-23",
+          "intent": "BYOC dual-timeout audit: verify WI-40474/P-046 and WI-40086 owner progress, current ordinary gate and E2E blockers; intervene only if stranded",
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-7d043f61-4310-4c2c-af31-09a5d3a0ac28",
-          "ownerLabel": "su · su-7d043",
+          "ownerId": "su-d2a428f0-104f-4d41-aeb0-d8f828a056cc",
+          "ownerLabel": "su · su-d2a42",
+          "fleet": "byoc-alpha-max-2026-08-23",
+          "intent": "WI-40474: Implement workspace initialization, import, and scoped credential delivery on a provisioned host: create an empty works…",
+          "source": "work-item-hold"
+        },
+        {
+          "ownerId": "su-fd77bfef-1e0b-4f4b-b730-87ca4d75c732",
+          "ownerLabel": "su · su-fd77b",
           "fleet": "byoc-cloud-workspaces-2026-08-22",
-          "intent": "[idle 5h50m] Reconcile system-wide resume against predecessor BYOC fleet control state",
+          "intent": "Reconcile delayed loop delivery; pull only newly claimable BYOC plan work",
           "source": "declared-plan"
         }
       ],
@@ -7835,7 +7729,7 @@ _body: "content"
           "ownerId": "su-9cc35159-3cdc-43c2-860b-8a30ef45214a",
           "ownerLabel": "su · su-9cc35",
           "fleet": null,
-          "intent": "[idle 3h29m] Monitor D-059 exact candidate 74027d to terminal, then execute only the authorized P-013 acceptance closure path",
+          "intent": "[idle 3h55m] Monitor D-059 exact candidate 74027d to terminal, then execute only the authorized P-013 acceptance closure path",
           "source": "declared-plan"
         }
       ],
@@ -7907,21 +7801,14 @@ _body: "content"
           "ownerId": "su-4f9c2f2b-67a4-4800-a19f-265c5f88f923",
           "ownerLabel": "su · su-4f9c2",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 4h32m] Resume monitor-only reconciliation for the non-p2p bug-drain fleet; inspect unanswered inbox, exact rev47 claimable breakdown, and fleet leader brief; preserve no-claim/no-wake/no-edit/no-checkpoint/no-deploy/no-audit walls.",
-          "source": "declared-plan"
-        },
-        {
-          "ownerId": "su-51eae3b1-4813-420a-9b7b-1b0604cc7a4e",
-          "ownerLabel": "su · su-51eae",
-          "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Reconcile the active non-p2p drain fleet state and preserve monitor-only walls.",
+          "intent": "[idle 4h58m] Resume monitor-only reconciliation for the non-p2p bug-drain fleet; inspect unanswered inbox, exact rev47 claimable breakdown, and fleet leader brief; preserve no-claim/no-wake/no-edit/no-checkpoint/no-deploy/no-audit walls.",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-6832ab37-a7df-40ea-83f8-86eb5975a06f",
           "ownerLabel": "su · su-6832a",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 4h28m] Implement and verify EI-21379983011497058: propagate validated MCP idempotencyKey through UnifiedToolContext and derive deterministic coord:send msgId per bulk index.",
+          "intent": "[idle 4h54m] Implement and verify EI-21379983011497058: propagate validated MCP idempotencyKey through UnifiedToolContext and derive deterministic coord:send msgId per bulk index.",
           "source": "declared-plan"
         },
         {
@@ -7932,24 +7819,17 @@ _body: "content"
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-9ddd57b4-2e78-4937-b7eb-f11e757d76f4",
-          "ownerLabel": "su · su-9ddd5",
-          "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "[idle 32m] Re-orient EI-21397949062433896 ownership and locks, then implement and verify the narrow dependency-generation reader-lock fix.",
-          "source": "declared-plan"
-        },
-        {
           "ownerId": "su-9fa46059-22f1-4623-856e-9ae23de92931",
           "ownerLabel": "su · su-9fa46",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "Cold wake #16: monitor-only reconciliation of non-p2p drain; preserve no-claim/no-wake/no-takeover/no-source-edit/no-checkpoint/no-deploy/no-audit walls.",
+          "intent": "[idle 23m] Cold wake #16 continuation: monitor-only reconciliation of non-p2p drain; preserve no-claim/no-wake/no-takeover/no-source-edit/no-work-item-checkpoint/no-deploy/no-audit walls.",
           "source": "declared-plan"
         },
         {
-          "ownerId": "su-bcf49659-2020-4743-8108-4fe1d05607e5",
-          "ownerLabel": "codex",
+          "ownerId": "su-da001445-7252-40c1-87b3-b2df8e3a5a02",
+          "ownerLabel": "su · su-da001",
           "fleet": "nonp2p-bug-drain-luna-max-20260820",
-          "intent": "",
+          "intent": "Continue monitor-only reconciliation for plan nonp2p-bug-drain-fleet-2026-08-16; preserve all carried no-claim/no-wake/no-takeover/no-source-edit/no-work-item-checkpoint/no-deploy/no-audit walls",
           "source": "declared-plan"
         },
         {
@@ -8011,14 +7891,21 @@ _body: "content"
           "ownerId": "su-3ae5e799-c39d-4c77-b059-21d76935fe0c",
           "ownerLabel": "su · su-3ae5e",
           "fleet": null,
-          "intent": "Drive WI-41606/P-020 through its sole closure task 0mt8x4r57hnqj1th6mp; EI-21437837415175286 is the directly linked infrastructure blocker, not a second mission",
+          "intent": "Close linked WI-41606 and EI-21437837415175286 through sole affected task 0mt8x4r57hnqj1th6mp; do not duplicate",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-3ae5e799-c39d-4c77-b059-21d76935fe0c",
+          "ownerLabel": "su · su-3ae5e",
+          "fleet": null,
+          "intent": "Close linked WI-41606 and EI-21437837415175286 through sole affected task 0mt8x4r57hnqj1th6mp; do not duplicate",
           "source": "work-item-hold"
         },
         {
           "ownerId": "su-3ae5e799-c39d-4c77-b059-21d76935fe0c",
           "ownerLabel": "su · su-3ae5e",
           "fleet": null,
-          "intent": "Drive WI-41606/P-020 through its sole closure task 0mt8x4r57hnqj1th6mp; EI-21437837415175286 is the directly linked infrastructure blocker, not a second mission",
+          "intent": "Close linked WI-41606 and EI-21437837415175286 through sole affected task 0mt8x4r57hnqj1th6mp; do not duplicate",
           "source": "plan-item-claim"
         }
       ],
@@ -8090,14 +7977,21 @@ _body: "content"
           "ownerId": "su-6a0b841e-fc52-46e3-9018-9b92668b9f93",
           "ownerLabel": "su · su-6a0b8",
           "fleet": null,
-          "intent": "[idle 3h37m] Complete WI-40899/P-005 from current green acceptance evidence while preserving D-060 terminal fail-closed release disposition",
+          "intent": "[idle 4h3m] Complete WI-40899/P-005 from current green acceptance evidence while preserving D-060 terminal fail-closed release disposition",
+          "source": "declared-plan"
+        },
+        {
+          "ownerId": "su-7f1b5470-52ac-46f3-bbd6-3b7f26799df0",
+          "ownerLabel": "su · su-7f1b5",
+          "fleet": null,
+          "intent": "Resume EI-20801201371094320 gate-recovery audit: reproduce current base forwarding and both strand guards; fix only a proven remaining gap under D-067",
           "source": "declared-plan"
         },
         {
           "ownerId": "su-d460ca69-7199-44ea-a37e-c895735faf04",
           "ownerLabel": "su · su-d460c",
           "fleet": null,
-          "intent": "WI-40086 primary: verify the ordinary 17:15 scheduled repair-queue finalizer and send its exact disposition; keep EI-21441863648012463 only as a separately checkpointed secondary incident.",
+          "intent": "WI-40086 only: monitor the D-067-authorized ordinary 18:15 scheduled run through the dedicated operator-home lane, exact repair queue, task/worktree, and release trace; never fire manual release controls.",
           "source": "declared-plan"
         }
       ],
@@ -9010,52 +8904,6 @@ _body: "content"
       },
       "nowState": "ACTIVE NON-P2P BUG DRAIN: final visible fleet bug-drain-nonp2p-luna-five-final-2026-07-13 is live with five gpt-5.6-luna:high members on account=default and warm carry. Fixed 15-ID revision-3 claim spec is installed; five immediately admissible bugs are claimed. Canary was verified with real MCP tool calls and retired.",
       "nowNext": "Monitor the five lanes through terminal outcomes, audit completion evidence, re-feed the two remaining admissible cohort items as members free up, and triage the eight needs-human/external-blocker residues."
-    },
-    {
-      "slug": "bulk-resolver-controls-and-run-lifecycle-2026-08-24",
-      "title": "Bulk resolver controls and run lifecycle",
-      "harness": "papercusp",
-      "status": "ready",
-      "category": "supersede-or-archive-fixture",
-      "reason": "The plan is a fixture, smoke, drill, demo, canary, or other retained test artifact.",
-      "recommendation": "Terminalize it as superseded/retained-fixture so it no longer reads as product backlog.",
-      "created": "2026-08-24",
-      "updated": "2026-08-24 21:31:21.185076-04",
-      "itemTotal": 9,
-      "terminalPlanItems": 9,
-      "openPlanItems": 0,
-      "workItemTotal": 8,
-      "openWorkItems": 0,
-      "workItemStates": {
-        "done": 8
-      },
-      "itemCounts": {
-        "done": 9
-      },
-      "audit": {
-        "auditSeq": 2,
-        "createdAt": "2026-08-25 08:36:32.274994-04",
-        "auditedSha": "058f3b6f4756778378a5964d23fd03e8025b00f1",
-        "auditedItems": 9
-      },
-      "acceptanceRubric": {
-        "rubricId": "bulk-resolver-controls-and-run-lifecycle-2026-08-24-acceptance",
-        "status": "active"
-      },
-      "gateVerdict": {
-        "satisfied": false,
-        "code": "acceptance_rubric_unvetted",
-        "message": "plan 'bulk-resolver-controls-and-run-lifecycle-2026-08-24' cannot be marked shipped: its acceptance rubric 'bulk-resolver-controls-and-run-lifecycle-2026-08-24-acceptance' has not been VETTED against the meta-rubric (consult-min-max-and-rubric-vetting-2026-08-17). The rubric AUTHOR vets it BEFORE a non-implementer grades the work: (1) consult:get_feedback for external critique of the rubric (selection is automatic, min 1 / max 3 responders), (2) improve the rubric from the critique (rubrics:propose), (3) attest: scorecards:emit { rubricRef:'meta-acceptance-rubric', subject:{ kind:'rubric', ref:'bulk-resolver-controls-and-run-lifecycle-2026-08-24-acceptance' }, vettingConsult:'<the consult conversation_id>', ratings:{ <every meta criterion, with evidence> } }. Pass is your judgment per criterion — no mechanical score floor (D-001 §3)."
-      },
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "ALL 9 ITEMS TERMINAL (every item done as of 2026-08-25T01:28Z; the verification sweep closed via WI-41354). The previously-flagged liveness-consumer gap is CLOSED: EI-21366043755792293 is resolved — resolver tools heartbeat the current owner via recordRunHeartbeat, the sync resolver decorates both run queries with classifyRunLiveness, and the UI renders stale-heartbeat + restart (D-004: restart pre-rotates resolver_owner; owner-bound writes under the run lock). Verification evidence: focused UI 108 + core 113 tests green; real-PG proofs 43/43 (migration 945 exercised); operator-core + web typechecks clean; scoped 36-path affected run 835484-75ab12f4 with zero plan-radius failures — run-level reds all externally attributed (transform culprit migrate.ts:264:12, a non-plan file that parses clean now; cargo disk-96% admission refusal; load1=140 timeout). Full residue disclosure on WI-41354#completion. Plan status 'ready': implementation is complete but the plan is NOT shipped — the completion flow (per-item code-truth audit, acceptance rubric, vetting, independent grading, verdict, ship) is still owed.",
-      "nowNext": "su-4b48f72e (AUTO): run plans:audit with code/test citations, author + vet the acceptance rubric (classRef plan-class-feature-ship), then route grading to a NON-implementer (implementers = the WI-41347 through WI-41354 owners) before setting plan status shipped."
     },
     {
       "slug": "cell-assessment-schema-and-falsifier-removal-2026-08-21",
@@ -11802,36 +11650,6 @@ _body: "content"
       "nowNext": "An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting\nthis plan to `active` (rubrics:ratify / plans:set-plan-status); the proposer cannot\nself-ratify. Revise the criteria via plans:set-template-data."
     },
     {
-      "slug": "acceptance-sidestage-architecture-page-2026-08-15",
-      "title": "Acceptance — current SideStage Architecture page",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "supersede-or-rescope-empty",
-      "reason": "The plan has no executable plan items or linked work.",
-      "recommendation": "Supersede unless a current owner writes executable items and explicitly re-approves the scope.",
-      "created": "2026-08-25",
-      "updated": "2026-08-25 05:07:17.467267-04",
-      "itemTotal": 0,
-      "terminalPlanItems": 0,
-      "openPlanItems": 0,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {},
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Rubric-template plan (template:rubric). Its structured fields (characteristic,\ncriteria, ratingScale, methodRef) live in `template_data`, queried via\nrubrics:list/get/search; this body is the narrative model/method context. Status\n`active` ⇒ a active rubric.",
-      "nowNext": "An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting\nthis plan to `active` (rubrics:ratify / plans:set-plan-status); the proposer cannot\nself-ratify. Revise the criteria via plans:set-template-data."
-    },
-    {
       "slug": "acceptance-sidestage-code-quality-2026-08-13",
       "title": "SideStage code-quality overhaul — acceptance",
       "harness": "sidestage",
@@ -11841,36 +11659,6 @@ _body: "content"
       "recommendation": "Supersede unless a current owner writes executable items and explicitly re-approves the scope.",
       "created": "2026-08-13",
       "updated": "2026-08-13 12:09:15.176794-04",
-      "itemTotal": 0,
-      "terminalPlanItems": 0,
-      "openPlanItems": 0,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {},
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Rubric-template plan (template:rubric). Its structured fields (characteristic,\ncriteria, ratingScale, methodRef) live in `template_data`, queried via\nrubrics:list/get/search; this body is the narrative model/method context. Status\n`active` ⇒ a active rubric.",
-      "nowNext": "An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting\nthis plan to `active` (rubrics:ratify / plans:set-plan-status); the proposer cannot\nself-ratify. Revise the criteria via plans:set-template-data."
-    },
-    {
-      "slug": "acceptance-sidestage-copilot-queue-inspector-2026-08-15",
-      "title": "Acceptance rubric for the selected Queue + inspector Copilot layout",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "supersede-or-rescope-empty",
-      "reason": "The plan has no executable plan items or linked work.",
-      "recommendation": "Supersede unless a current owner writes executable items and explicitly re-approves the scope.",
-      "created": "2026-08-25",
-      "updated": "2026-08-25 04:48:42.377894-04",
       "itemTotal": 0,
       "terminalPlanItems": 0,
       "openPlanItems": 0,
@@ -15922,6 +15710,42 @@ _body: "content"
       "nowNext": "Nothing in flight. When picked up, start at P-001 — the whole repair is one conditional in the existing cache-policy rewrite."
     },
     {
+      "slug": "analyst-restore-sonnet5-2026-07-25",
+      "title": "Restore the LLM analyst on claude-sonnet-5 (high) + kill the silent-degradation class",
+      "harness": "oddsmith-hive",
+      "status": "active",
+      "category": "text-only-external-blocker",
+      "reason": "Plan prose claims an external/gate/time/provider blocker, but no structured blocker records it.",
+      "recommendation": "Revalidate the external condition and encode it structurally if real; otherwise finish or supersede.",
+      "created": "2026-07-25",
+      "updated": "2026-07-25 17:40:50.156732-04",
+      "itemTotal": 15,
+      "terminalPlanItems": 14,
+      "openPlanItems": 1,
+      "workItemTotal": 15,
+      "openWorkItems": 1,
+      "workItemStates": {
+        "done": 14,
+        "open": 1
+      },
+      "itemCounts": {
+        "done": 14,
+        "todo": 1
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "Analyst restored, the silent-degradation guard rail is live, spend is measured+persisted+watched, and crypto-gbm now prices the right quantity. DONE + live-verified: P-001..P-012, P-014, P-015. Full suite 3641 passed / 347 files / 0 failed. The sidecar is rebuilt, restarted and confirmed running the new code. P-015 evidence: the expired polymarket $64,000 market (18,050 forecasts, model 1.000, all resolving NO — essentially the entire 0.586 Brier) no longer produces signals, and KXBTCMINY-27JAN01-60000 moved 0.441 -> 1.000 vs market 0.980, correct because BTC's 2026 low of $58,566 already settled it YES.",
+      "nowNext": "P-013 ONLY, and it is capacity-blocked, not code-blocked (D-002): the Claude pool is walled, so no analyst='llm' forecast has landed yet. It greens on its own when headroom appears; llm_usage should take its first real row at the same moment. Separately FILED but not fixed: EI-18654117535983096 — market_prob is derived from 50-cent-wide books, fabricating ~1.000 prices (this, not the model, is why the KXBTCMAXY lines still show edge ≈ -1.000)."
+    },
+    {
       "slug": "auto-coupling-delivery-and-correctness-2026-08-09",
       "title": "Auto-coupling: deliver the guidance agents never received, and remove the edge the owner cut",
       "harness": "papercusp",
@@ -16033,166 +15857,24 @@ _body: "content"
       "nowNext": "su-8c02da6d (non-implementer, authored the REJECT card) to close the two remaining conditions: (2) run the 20-item independent re-judge for reopened P-008 against harness_shared.triage_ledger, or DROP it with a stated reason recorded on the plan — a reasoned drop closes the condition as validly as a run; and (4) re-grade `retractions-are-recorded`, whose UNKNOWN D-056 attributes to surface reachability alone, recording explicitly WHICH surface was unreachable and whether it still is. CAUTION for (2): any past-tense liveness question must read the persisted routing record, never coord_presence — presence answers only NOW and is TTL-reaped, and is 84% false-positive on the provably-alive population (47 of 56 closed_answered), which is the artifact that forced a retraction on the sibling plan (D-007)."
     },
     {
-      "slug": "oddsmith-gpt-analyst-liveness-honest-cost-2026-07-02",
-      "title": "GPT-5.4 analyst swap, honest LLM-cost testing at ~100 forecasts/day, and low-latency live-data expansion",
-      "harness": "oddsmith-hive",
-      "status": "ready",
-      "category": "text-only-external-blocker",
-      "reason": "Plan prose claims an external/gate/time/provider blocker, but no structured blocker records it.",
-      "recommendation": "Revalidate the external condition and encode it structurally if real; otherwise finish or supersede.",
-      "created": "2026-07-02",
-      "updated": "2026-07-04 05:59:11.366782-04",
-      "itemTotal": 20,
-      "terminalPlanItems": 11,
-      "openPlanItems": 9,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 11,
-        "todo": 8,
-        "wip": 1
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "P-010 DONE (WI-2291): offline as-of backtest bin apps/desktop/bin/backtest-asof.ts (npm run backtest-asof). Frozen leak-free grid = resolved forward_forecasts, one decision/market/UTC-day (10,445 rows; --source market-data for strict recorded books — only 3 overlap markets today). Arms under withBacktest guard: market-prior control; baseline-v2 (diagnostic; cohort clock per-row via new nowIso on makeVenueScopedCohortAnchor); GPT opt-in --gpt ≤50, evidence as-of ingest_time≤T, drop-on-fallback (smoke: 3 attempts, 0 contamination, 0 quota). Persisted eval_runs runId=backtest-asof-p010: market Brier 0.182, ECE 0.059, corpus YES-ward entry→close drift +0.008 (t=7.0) = the CLV bias floor arms must be read against. FINDINGS: baseline v2 is a STRUCTURAL observer on this corpus (only 3 promotable cohorts, all [1mo,∞); corpus is [0,1h) crypto → the P-012 v2 arm will never accrue stances from the 5-min stream); GPT arm metadata-starved (5 titled rows of 10.4k; evidence store begins 2026-07-02) → EI-7271 (persist title+close_time on forward_forecasts at decision time). No sidecar restart — P-022 soak clock untouched; fee-truth floor + dedupe seam still pending the next weighed batched deploy.",
-      "nowNext": "P-015/P-016 WebSocket liveness (Polymarket CLOB WS + RTDS, Kalshi WS, free crypto streams) — also retires the P-012 REST-poll staleness caveat. (su-ac403, next loop stretch.)"
-    },
-    {
-      "slug": "papercup-to-papercusp-migration-2026-06-20",
-      "title": "papercup → papercusp: finish the migration (papercusp fully replaces papercup)",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "text-only-external-blocker",
-      "reason": "Plan prose claims an external/gate/time/provider blocker, but no structured blocker records it.",
-      "recommendation": "Revalidate the external condition and encode it structurally if real; otherwise finish or supersede.",
-      "created": "2026-06-20",
-      "updated": "2026-08-13 10:56:56.83002-04",
-      "itemTotal": 6,
-      "terminalPlanItems": 5,
-      "openPlanItems": 1,
-      "workItemTotal": 4,
-      "openWorkItems": 1,
-      "workItemStates": {
-        "deprecated": 1,
-        "blocked": 1,
-        "done": 1,
-        "passed": 1
-      },
-      "itemCounts": {
-        "done": 4,
-        "dropped": 1,
-        "todo": 1
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "LIVE SPINE 100% papercusp (P-002/P-003 done). Code rename ~complete: register-papercusp.ts, PAPERCUP_HARNESS_SLUG→PAPERCUSP_HARNESS_SLUG, LEGACY_DEFAULT_HOME_HARNESS='papercusp', PAPERCUP_ROOT all done (0 literal code refs) → P-004 effectively done; P-001 obsolete (seed-learning literals are intentional legacy-retirement). su-fd4faac9 (2026-06-24, autonomous): CLEARED the P-009 CONTRACT replication gate (0 pubs/slots/subs; pg-tunnel :5433 is a reverse tunnel, no active logical repl; papercup_shared=6 views → DROP is inert), FIXED the D-001-missed embedded-pg codemod file, and STAGED the full window runbook (see phase5 plan D-002 + HANDOFF-papercup-rename-window-runbook-2026-06-24.md). P-006 remainder (remove the RETIRED_HARNESS_SLUG_ALIASES legacy fallback, test-ref cleanup, grep-zero) is GATED — the compat shim must stay until the physical rename lands.",
-      "nowNext": "OWNER-run quiescent window (phase5 P-007 dir mv / P-008 services / P-009 CONTRACT migration 394) per the handoff; THEN P-006 post-window cleanup — remove the papercup fallback once nothing resolves to it, then the grep-zero gate. Nothing safe remains to do autonomously pre-window."
-    },
-    {
-      "slug": "restore-pot-lexicon-public-release-2026-07-04",
-      "title": "Restore the Pot (Papercup) lexicon for public release + gate the swarm switcher behind the Testing flag",
+      "slug": "presence-tool-hardening-2026-07-03",
+      "title": "coord:presence + coord:orient hardening",
       "harness": "papercusp",
       "status": "draft",
       "category": "text-only-external-blocker",
       "reason": "Plan prose claims an external/gate/time/provider blocker, but no structured blocker records it.",
       "recommendation": "Revalidate the external condition and encode it structurally if real; otherwise finish or supersede.",
-      "created": "2026-07-04",
-      "updated": "2026-08-03 20:17:26.420392-04",
-      "itemTotal": 18,
-      "terminalPlanItems": 14,
-      "openPlanItems": 4,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 13,
-        "todo": 4,
-        "dropped": 1
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "PHASES 1, 2 & 4 (icons) COMPLETE + verified green (route A, su-9d427; owner map D-006: hive→pot, queen→brain, bee→cup, sentinel→operator). PHASE 1/2 DONE: P-001 classic pot→Pot · P-002 THE_HIVE default OFF (parked) · P-003 keyless roles kept · P-004 switcher TESTING-gated · contributor→Cup. PHASE 4 ICONS DONE (this session): P-010 base Tauri app icon reskinned Swarm-mark→CUP (_source.svg + regenned png/ico/icns/@2x/_master via `npx tauri icon`; the-hive/ subdir left as swarm) · P-011 default cup favicon added to operator-vite (public/brand/papercup/favicon.svg + <link rel=icon>; SPA had none) + confirmed logo marks/HiveThemeBridge already flag-gated (default=cup, bee only when THE_HIVE on) · BONUS: terminal+GUI worker glyph 🐝→☕ (TUI agent_pane_kind/wake_board/fleet/app/layout incl '☕ colony' — pui 565 pass; GUI AgentsRunningPill/primitives→AdvAgentsPanel/SwarmTab/res — 41+50 pass). HiveVisualIdentity hand-drawn bees render ONLY behind flag+dev — no default bee leaks. Small deferrals (non-default): statusline-fleet 🐝 (decoupled CLI), tutorial-runner CHAPTER_EMOJI 3, docs .md 🐝 → fold into P-012. NOTE: dev workspace may still hold a runtime THE_HIVE=ON override; CODE default is OFF (correct for public); clear the live override in P-014.",
-      "nowNext": "Phase 3 hardcoded-callsite sweep next: P-005 left-sidebar nav tabs (HivesTab/QueenTab/SentinelTab/SwarmTab/OverwatchTab) → route labels through useLexicon FIRST, then P-006 adv panels, P-007 palette/toasts/empty-states, P-008 the 16 server term() callsites, P-009 desktop shell labels. Then Phase 6 = the LARGE breaking backend full-rename in slices (tool names → routes → blueprint/role ids → DB cols last), prompts+docs same cutover. Owner may still re-map brain→other (queen-name Q answered Brain; nothing shipped) — watch inbox.\n\n\n- **P-001** `done` Fix the `classic` pack to be the true POT lexicon. In libs/generic/lexicon/src/packs.ts revert CLASSIC_TERMS.pot Hive/Hives → Pot/Pots (the 2026-06-16 owner override that promoted pot→Hive into the baseline is what makes flag-off still say “Hive”). Review every other CLASSIC term to confirm it is the intended public Papercup label per D-001. Update the tests that assert classic.pot===‘Hive’ (apps/operator-vite/src/lib/useLexicon.test.tsx lines 49-50, AdminShell.lexicon.test.tsx, and any snapshot). THIS IS THE KEYSTONE — nothing else about ‘switch back to pot’ is real until this lands. importance: urgent"
-    },
-    {
-      "slug": "abolish-human-review-agent-review-only-2026-08-02",
-      "title": "Abolish human review — agents review, Blender-style",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "text-only-human-blocker",
-      "reason": "Plan prose claims an owner decision/approval/credential blocker, but no structured needs-human state records it.",
-      "recommendation": "Revalidate the human action and encode it structurally if real; otherwise finish or supersede.",
-      "created": "2026-08-02",
-      "updated": "2026-08-25 01:36:05.440653-04",
-      "itemTotal": 8,
-      "terminalPlanItems": 6,
-      "openPlanItems": 2,
-      "workItemTotal": 8,
-      "openWorkItems": 2,
-      "workItemStates": {
-        "done": 6,
-        "open": 2
-      },
-      "itemCounts": {
-        "done": 6,
-        "todo": 2
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "P-001 through P-005 DONE. The audit and implementation work landed through D-001 and the completed items; the plan now reflects the five completed plan items instead of stopping at P-001.",
-      "nowNext": "P-006 — migrate the live parked items per the P-002 classification: review-parked rows enter agent review and escalation rows use the renamed path. WI-40108 is the active implementation; state the expected row count and verify it before any bulk mutation. After P-006, continue with P-007 (recurrence guard) and P-008 (agent-facing prompt/doc sweep)."
-    },
-    {
-      "slug": "authoritative-account-routing-all-backends-2026-07-16",
-      "title": "Make account routing authoritative across Claude, OMP, Codex, and every spawn path",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "text-only-human-blocker",
-      "reason": "Plan prose claims an owner decision/approval/credential blocker, but no structured needs-human state records it.",
-      "recommendation": "Revalidate the human action and encode it structurally if real; otherwise finish or supersede.",
-      "created": "2026-07-16",
-      "updated": "2026-07-17 00:28:19.35722-04",
-      "itemTotal": 5,
-      "terminalPlanItems": 4,
+      "created": "2026-07-03",
+      "updated": "2026-07-02 23:59:02.97827-04",
+      "itemTotal": 10,
+      "terminalPlanItems": 9,
       "openPlanItems": 1,
       "workItemTotal": 0,
       "openWorkItems": 0,
       "workItemStates": {},
       "itemCounts": {
-        "done": 4,
+        "done": 6,
+        "dropped": 3,
         "todo": 1
       },
       "audit": null,
@@ -16205,8 +15887,8 @@ _body: "content"
         "refs": [],
         "staleHints": []
       },
-      "nowState": "P-001..P-004 confirmed DONE 2026-07-17 (WI-5153 diagnosis): the routing-contract fixes landed 2026-07-16 18:31-19:24 EDT via a concurrent effort (WI-5077's audit found 3.5/4 points already fixed); re-verified live against the tree today with psu-launcher.test.ts (506/506) + resolve-spawn-gateway-env.test.ts (29/29), both green. The 4 blocked items were stale blocks, not real work remaining. One narrow gap (macOS omitted-account→auto rewrite, audit point 4b) could not be located in the code by the WI-5077 verifier and is filed separately as EI-13253 — it does not block P-002/003/004.",
-      "nowNext": "P-005 (now unblocked): run the full fresh/resume/fork × Claude/OMP/Codex × default/auto/pin matrix, typecheck/diff checks, and live credential/provider probes to close out the plan."
+      "nowState": "IMPLEMENTED (su-9ac1b, AUTO mode, 2026-07-03). Code-complete + unit-tested (49 tests green across presence + host suites; my files typecheck-clean). Outcomes vs original scope: P-006 (coord:presence since:<etag> unchanged-read) SHIPPED — computeRosterEtag over deltaEligibleProjection (excludes liveness), ~100B {unchanged:true} on match. P-004 (placeholder intent -> null in toStableRosterRow, constant deduped) SHIPPED. P-007 (guidance) SHIPPED. P-008/P-009 filed (WI-1722 plans:attention ~97GB/day; WI-1723 statusline glance cadence). Reclassified after reading code: P-001 already-shipped (orient tier-shaper exists, context-trimming P-012; 37.9KB is full-tier by design), P-003 misdiagnosis (claim join correct), P-005 not-a-bug (agents:0 correctly self-scoped) — see D-006. Separately: WI-1711 (MCP keep-alive-race transport bug) root-caused + fixed (keepAliveTimeout default-on 61s) + 20 tests. All edits in canonical staging tree; git-sync committing; pipeline will carry to :3070.",
+      "nowNext": "P-010 LIVE-VERIFY after the pipeline deploys to :3070: (1) boot log shows keepAliveTimeout:61000; MCP POST resets stop. (2) coord:presence returns etag; since:<etag> returns ~100B unchanged; changed roster returns full. (3) placeholder-intent rows show intent:null. No further code work — verification is deploy-gated."
     },
     {
       "slug": "context-injection-retrieval-reach-and-visibility-2026-08-03",
@@ -16240,72 +15922,6 @@ _body: "content"
       },
       "nowState": "**ONLY P-019 REMAINS NON-TERMINAL — and it is OWNER-GATED, not unowned work.**\n\n**P-019 — predictor delivered, ruled (D-095), RE-TARGETED in code (D-098, 2026-08-12), and now fully VERIFIED.** `clarityWarrantsEscalation()` fires on `unretrievable` ALONE. D-095 §4 measured `unfocused` — the bucket that used to escalate — as the BEST-reaching of any (5.82/6 admitted, 92.4% full, **0.0% zero-hit**), while the bucket that actually fails is `unretrievable` (21.7% zero-hit, 0.93 admitted). The old predicate armed the expensive tier exactly where retrieval already works. Measured effect: escalation **29.4% → 9.6%** of traffic. Three tests block re-adding `unfocused`; the probe sums THROUGH the predicate instead of keeping its own copy of the rule.\n\n✅ **The prior ## Now's \"ONE OPEN VERIFICATION\" is CLOSED — do not re-run it.** `npm run lint:tsc -- --files=…/memory/corpus-query-clarity.ts,…/memory/bench/corpus-query-clarity-cli.ts` returned `exit=0 status=clean` at 2026-08-12T19:08Z. It had been starved at 0.10 cores under box load 220 (not wedged) — the root cause of that starvation is itself fixed now (EI-19480850505352533 + WI-38277: every typecheck entry point routes through the pc-heavy semaphore). Tests 21/21 green; bench CLI clean end-to-end printing 9.6%. No verification debt remains on this plan.\n\n**P-021 — CLOSED, recorded-not-adopted (WI-38251).** Learned sparse retrieval (SPLADE family) stays rejected for this stack under D-061: no paper in that sample deploys on Postgres/pgvector. Its revisit condition (\"only if P-017+P-018 underdeliver against the bench\") is unmet — P-018 terminal, P-017 shipped (D-097).\n\n`CORPUS_CLARITY_FOCUSED_BITS = 5` stays UNCALIBRATED **and now governs NO SPEND** — with `unfocused` no longer escalating it only re-labels two buckets that both retrieve well. D-095 §5: no knee in the decile curve; do NOT pick a percentile.",
       "nowNext": "P-019's only remaining work is the ESCALATION TIER, which is the PARENT plan's P-006 OWNER GATE (`context-injection-audit-2026-07-28`) — not claimable here, and not to be self-answered. Whoever builds it: start from D-095 §4 + D-098, target `unretrievable` (~9.6% of traffic), and decide EXPLICITLY about the high-SCS deciles 7–10 (zero-hit 12–14%) that D-098 deliberately leaves uncovered rather than inheriting silence about them. Do not wire an LLM leg."
-    },
-    {
-      "slug": "design-simplification-2026-07-09",
-      "title": "Design simplification + design-doc violation fixes (full-app audit follow-through)",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "text-only-human-blocker",
-      "reason": "Plan prose claims an owner decision/approval/credential blocker, but no structured needs-human state records it.",
-      "recommendation": "Revalidate the human action and encode it structurally if real; otherwise finish or supersede.",
-      "created": "2026-07-09",
-      "updated": "2026-07-10 16:06:49.897722-04",
-      "itemTotal": 16,
-      "terminalPlanItems": 14,
-      "openPlanItems": 2,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 14,
-        "todo": 2
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Phase 1 done (P-002..P-011). Phase 2: P-012 (letter-spacing baseline) + P-013 (lab routes → /dev, 3 orphans moved+gated, 8 excluded w/ cause) DONE + verified this session. P-015 (one <Button>) FULLY INVENTORIED + DESIGNED on WI-3739 checkpoint but NOT executed — it's a bigger, judgment-laden refactor than the one-liner: .pc-button (43 sites) is used on LINKS not just <button> (needs Button asChild or shared class), .pc-advpanel__btn (1 site) is part of the intentional .pc-advpanel__* panel family (maybe keep), .operator-mini-btn (5 sites) has 130 sprawling globals.css rules (needs a dead-CSS audit first), + 3 inconsistency bugs. Execution = a discrete coordinated pass (hot globals.css + Tauri visual verify across not-found/cupboard/installed/settings/support/adv). Remaining: P-014 (settings IA 24→6, OWNER-GATED), P-015 (execute per WI-3739), P-016 (central categorical palette + flip status-map lint enforce:true), P-017 (accent/info/border alias fold).",
-      "nowNext": "P-015 execution is teed up on WI-3739 (recommend owner weighs in on the Button asChild API question); a fully-agent-executable next item is P-016 (central categorical palette — inventory AdvConversationsTab KIND_COLOR + CupboardClient KIND_TONES + teal literals + AgentThinkingStream hexes first, then flip the status-map lint enforce:true)."
-    },
-    {
-      "slug": "desktop-release-hosting-r2-2026-07-12",
-      "title": "Desktop release hosting — Cloudflare R2 + custom domain, secret in path (unblocks auto-update)",
-      "harness": "papercusp",
-      "status": "active",
-      "category": "text-only-human-blocker",
-      "reason": "Plan prose claims an owner decision/approval/credential blocker, but no structured needs-human state records it.",
-      "recommendation": "Revalidate the human action and encode it structurally if real; otherwise finish or supersede.",
-      "created": "2026-07-12",
-      "updated": "2026-07-12 15:11:16.716129-04",
-      "itemTotal": 8,
-      "terminalPlanItems": 5,
-      "openPlanItems": 3,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "todo": 3,
-        "done": 5
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "P-001..P-005 + P-007 DONE. Rail is BUILT and 45/45 updates-route tests green (fresh run). Creds were ALREADY on the box — CF_API_TOKEN in ~/.papercusp/local-secrets/restart.env.production [owner:Avi 2026-07-12, verbatim: \"search our repo, the cloudflare credentials should be there\"]; I had wrongly escalated P-002 as owner-walled. R2 S3 creds DERIVED from that token (Access Key ID = token id; Secret = SHA-256 of token value) into ~/.papercusp/r2.env (600, outside git). Bucket papercusp-releases; all six 0.0.8 LINUX artifacts uploaded + size-verified. cargo check clean. Manifest re-pointed at the real host (no rebuild, sigs untouched). Runbook: agent-insights/desktop-release-upload-runbook. Credential lesson saved: agent-insights/credentials-are-already-provisioned-search-before-escalating + mem0.\n\nMAC ARTIFACTS DELIVERED + verified by me (sizes + minisign base64 in the .sig files; mac leg verified sig key id 449908a7d47d3a5d == the pubkey baked in tauri.conf.json — no rebuild needed).\n\nWALL (owner): dl.papercusp.com NOT bound to the bucket — our token is zone-scoped to buyrestart.com and R2's custom-domain API needs a zoneId for papercusp.com. Bytes uploaded + intact; NO installed app can fetch them until bound.\n\nWI-4404 (major, open): the \"Papercusp Server\" product has NO update path on the static rail (staticManifestResponse returns no_candidate for product!==gui, and the static host is now the SOLE discovery source) -> 204 -> \"up to date\" forever. Code half confirmed; whether the Server bundle actually polls is UNPROVEN — do not close on a code read.",
-      "nowNext": "MERGE + UPLOAD the darwin entries: /home/marsh-office/papercusp-release-staging/darwin/ now holds \"Papercusp GUI.app.tar.gz\" (462,630,955 B) + .sig (412 B, minisign base64 confirmed) and the Server tarball (1.33 GB, DO NOT put Server in latest.json — WI-3696). Add darwin-x86_64 AND darwin-aarch64 (both point at the SAME universal GUI tarball + SAME sig — one key alone silently strands half the mac fleet); upload the GUI tarball+sig to s3://papercusp-releases/<secret>/desktop-v0.0.8-alpha/ ; assert no placeholder, sig non-empty, \"GUI\" in every url, all 3 platforms present. Then re-run bin/upload-release.sh 0.0.8 alpha (skips already-uploaded artifacts). STILL WALLED on the owner: dl.papercusp.com is not bound to bucket papercusp-releases, so nothing is fetchable yet. Windows leg (su-b0fbf) has not dropped artifacts."
     },
     {
       "slug": "deterministic-blueprints-migration-2026-06-13",
@@ -16441,6 +16057,79 @@ _body: "content"
       },
       "nowState": "8 of 10 items SHIPPED and verified (P-001..P-007 except P-008, plus P-010). P-008 DROPPED (a peer fixed it in-flight). P-009 is BLOCKED, NOT done — see D-006. Owner directive [owner:Avi 2026-08-09, verbatim 'dont re-renable rayobyte'] permanently closes the restore route, and Route A (per-account localAddress egress diversity) is MEASURED infeasible here: one real external interface only (wlp183s0, itself NATed), all else docker/lxc/tailscale bridges. So P-009's PREVENTION half is unreachable by any agent and the single-shared-IP exposure REMAINS. Its DETECTABILITY half shipped: egressIdentity conflated 'genuinely unknown' with 'default-shared', so with the proxy entries pulled every account read UNKNOWN and deriveEdgeThrottleEvidence could never conclude sharedEgress — the one signal explaining a pool-wide collapse was unreachable in exactly the configuration that causes it. Fixed with egressIdentityOf() + DEFAULT_SHARED_EGRESS_IDENTITY. Verified: capacity-dispatch 64/64 incl. 5 new P-009 tests confirmed executing (5 ran/59 skipped under a name filter), lint:tsc clean on all 3 files, full operator-core workspace ran with only 2 failures, both attributed elsewhere (CellSpec.pointers census gap = WI-37455, owned+fixed by a peer; check-lint-guard-reachability UNDETERMINED — possibly a false red induced by my own concurrent sweep).",
       "nowNext": "NOTHING AGENT-ACTIONABLE on this plan. P-009 needs an OWNER decision: provide a non-Rayobyte egress path, or explicitly accept the single-shared-IP exposure (a Cloudflare per-IP throttle can still take all 4 accounts out at once — the plan's root incident is NOT fixed, only now correctly diagnosable). Do NOT read P-009 as waiting on P-008: that edge is stale, P-008 was dropped. Standing down on heavy suites until ~11:02Z (EI-18793581783459047). Deploy: none of the 8 shipped items is live — main is 26 commits behind staging and the gate is red (WI-6770 / WI-37450); do NOT fire release:checkpoint-run, a run is in flight and it self-rescues."
+    },
+    {
+      "slug": "papercup-to-papercusp-migration-2026-06-20",
+      "title": "papercup → papercusp: finish the migration (papercusp fully replaces papercup)",
+      "harness": "papercusp",
+      "status": "active",
+      "category": "text-only-human-blocker",
+      "reason": "Plan prose claims an owner decision/approval/credential blocker, but no structured needs-human state records it.",
+      "recommendation": "Revalidate the human action and encode it structurally if real; otherwise finish or supersede.",
+      "created": "2026-06-20",
+      "updated": "2026-08-13 10:56:56.83002-04",
+      "itemTotal": 6,
+      "terminalPlanItems": 5,
+      "openPlanItems": 1,
+      "workItemTotal": 4,
+      "openWorkItems": 1,
+      "workItemStates": {
+        "deprecated": 1,
+        "blocked": 1,
+        "done": 1,
+        "passed": 1
+      },
+      "itemCounts": {
+        "done": 4,
+        "dropped": 1,
+        "todo": 1
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "LIVE SPINE 100% papercusp (P-002/P-003 done). Code rename ~complete: register-papercusp.ts, PAPERCUP_HARNESS_SLUG→PAPERCUSP_HARNESS_SLUG, LEGACY_DEFAULT_HOME_HARNESS='papercusp', PAPERCUP_ROOT all done (0 literal code refs) → P-004 effectively done; P-001 obsolete (seed-learning literals are intentional legacy-retirement). su-fd4faac9 (2026-06-24, autonomous): CLEARED the P-009 CONTRACT replication gate (0 pubs/slots/subs; pg-tunnel :5433 is a reverse tunnel, no active logical repl; papercup_shared=6 views → DROP is inert), FIXED the D-001-missed embedded-pg codemod file, and STAGED the full window runbook (see phase5 plan D-002 + HANDOFF-papercup-rename-window-runbook-2026-06-24.md). P-006 remainder (remove the RETIRED_HARNESS_SLUG_ALIASES legacy fallback, test-ref cleanup, grep-zero) is GATED — the compat shim must stay until the physical rename lands.",
+      "nowNext": "OWNER-run quiescent window (phase5 P-007 dir mv / P-008 services / P-009 CONTRACT migration 394) per the handoff; THEN P-006 post-window cleanup — remove the papercup fallback once nothing resolves to it, then the grep-zero gate. Nothing safe remains to do autonomously pre-window."
+    },
+    {
+      "slug": "prediction-market-auto-bettor-2026-06-23",
+      "title": "Prediction-Market Auto-Bettor (Kalshi + Polymarket)",
+      "harness": "papercusp",
+      "status": "draft",
+      "category": "text-only-human-blocker",
+      "reason": "Plan prose claims an owner decision/approval/credential blocker, but no structured needs-human state records it.",
+      "recommendation": "Revalidate the human action and encode it structurally if real; otherwise finish or supersede.",
+      "created": "2026-06-23",
+      "updated": "2026-06-23 16:03:50.090198-04",
+      "itemTotal": 23,
+      "terminalPlanItems": 3,
+      "openPlanItems": 20,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "done": 2,
+        "dropped": 1,
+        "todo": 20
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "SUPERVISION ACTIVE: su-7ad99 on a 2-min engine loop driving all 12 oddsmith briefs to done+green. Live board: oddsmith repo docs/briefs/STATUS.md. Pass @20:00Z — ✅ B2 db, B3 contracts+config, B9 backtest DONE; 🔨 B1 skeleton, B4 kalshi-read, B5 kalshi-orders, B8 risk, B12 dashboard WIP; ⬜ B6 ingestion, B7 OMS, B10 MM, B11 arb NOT STARTED. B3 landing cleared the earlier npm-install blocker. Shared blocker EI-2946 (per-pkg vitest config) nudged to B1 owner. Hive healthy (agents parked/live, no orphaned/stalled claims). Note: B1 owner su-aec0c not in active roster while WI-615..627 still open → may need relaunch.",
+      "nowNext": "Owner action: dispatch B7 (OMS, fully unblocked) + B6 (ingestion) now; verify/relaunch B1 (foundational, owner may have ended); B10/B11 unblock as B4/B7/B8 land. Supervisor loop re-checks every ~2min: updates STATUS.md, unblocks, drives to all-12-done then loop:end."
     },
     {
       "slug": "remaining-papercusp-platform-handoff-2026-06-29",
@@ -17323,7 +17012,7 @@ _body: "content"
       "reason": "At least one unfinished item has a structured dependency or open issue blocker.",
       "recommendation": "Retain only while the blocker still exists and has a concrete owner, next action, and recheck condition.",
       "created": "2026-08-25",
-      "updated": "2026-08-25 13:23:31.750294-04",
+      "updated": "2026-08-25 13:51:50.735336-04",
       "itemTotal": 5,
       "terminalPlanItems": 1,
       "openPlanItems": 4,
@@ -19187,6 +18876,42 @@ _body: "content"
       "nowNext": "Record the required activation audit when the current `plans:audit` schema is deployed; meanwhile vet the replacement rubric, audit public-release code/evidence, and keep the live Gmail/Slack credential walls exact."
     },
     {
+      "slug": "abolish-human-review-agent-review-only-2026-08-02",
+      "title": "Abolish human review — agents review, Blender-style",
+      "harness": "papercusp",
+      "status": "active",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-08-02",
+      "updated": "2026-08-25 01:36:05.440653-04",
+      "itemTotal": 8,
+      "terminalPlanItems": 6,
+      "openPlanItems": 2,
+      "workItemTotal": 8,
+      "openWorkItems": 2,
+      "workItemStates": {
+        "done": 6,
+        "open": 2
+      },
+      "itemCounts": {
+        "done": 6,
+        "todo": 2
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "P-001 through P-005 DONE. The audit and implementation work landed through D-001 and the completed items; the plan now reflects the five completed plan items instead of stopping at P-001.",
+      "nowNext": "P-006 — migrate the live parked items per the P-002 classification: review-parked rows enter agent review and escalation rows use the renamed path. WI-40108 is the active implementation; state the expected row count and verify it before any bulk mutation. After P-006, continue with P-007 (recurrence guard) and P-008 (agent-facing prompt/doc sweep)."
+    },
+    {
       "slug": "agent-self-compaction-trigger-discipline-2026-07-10",
       "title": "Self-compaction trigger discipline — self-compact proactively; never stall on an unarmed wake",
       "harness": "papercusp",
@@ -19254,42 +18979,6 @@ _body: "content"
       "nowNext": ""
     },
     {
-      "slug": "analyst-restore-sonnet5-2026-07-25",
-      "title": "Restore the LLM analyst on claude-sonnet-5 (high) + kill the silent-degradation class",
-      "harness": "oddsmith-hive",
-      "status": "active",
-      "category": "unblocked-partial-no-owner",
-      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
-      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
-      "created": "2026-07-25",
-      "updated": "2026-07-25 17:40:50.156732-04",
-      "itemTotal": 15,
-      "terminalPlanItems": 14,
-      "openPlanItems": 1,
-      "workItemTotal": 15,
-      "openWorkItems": 1,
-      "workItemStates": {
-        "done": 14,
-        "open": 1
-      },
-      "itemCounts": {
-        "done": 14,
-        "todo": 1
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "Analyst restored, the silent-degradation guard rail is live, spend is measured+persisted+watched, and crypto-gbm now prices the right quantity. DONE + live-verified: P-001..P-012, P-014, P-015. Full suite 3641 passed / 347 files / 0 failed. The sidecar is rebuilt, restarted and confirmed running the new code. P-015 evidence: the expired polymarket $64,000 market (18,050 forecasts, model 1.000, all resolving NO — essentially the entire 0.586 Brier) no longer produces signals, and KXBTCMINY-27JAN01-60000 moved 0.441 -> 1.000 vs market 0.980, correct because BTC's 2026 low of $58,566 already settled it YES.",
-      "nowNext": "P-013 ONLY, and it is capacity-blocked, not code-blocked (D-002): the Claude pool is walled, so no analyst='llm' forecast has landed yet. It greens on its own when headroom appears; llm_usage should take its first real row at the same moment. Separately FILED but not fixed: EI-18654117535983096 — market_prob is derived from 50-cent-wide books, fabricating ~1.000 prices (this, not the model, is why the KXBTCMAXY lines still show edge ≈ -1.000)."
-    },
-    {
       "slug": "app-impersonation-e2e-round6-2026-06-23",
       "title": "App-impersonation E2E round 6 — exhaustive /adv user-journey + performance sweep (Tauri desktop)",
       "harness": "papercusp",
@@ -19354,6 +19043,39 @@ _body: "content"
       },
       "nowState": "ROUND 2 COMPLETE + FIX PASS SHIPPED (2026-07-05 ~06:3xZ). Round-1 (opus, desktop Snippets) + round-2 (sonnet:medium, WEBAPP Clippings — per owner directive the bar is a mid-tier agent) both built successfully from the PUBLIC mirror alone; round-2 finished in ~45min with the FULL checks union green incl. boot-e2e spawn-mode against the shipped standalone artifact — the P-029/P-030 disclosed residual (web-host boot-e2e vs a materialized consumer) is now PROVEN. All 13 template-gaps from both rounds are FIXED + resolved (WI-2860..2867, WI-2872..2881): supply chain (kit vendored in mirror + runnable harness + file:-link components), kit code fix (validateTemplateSet allowExternalComposesWith — chosen-subset compositions legal, WI-2881), GUIDE MUSTs (NEXT_MANUAL_SIG_HANDLE=1, native-binary post-build copy, globalThis singleton, two-discovery-files, postgres-js client, lexicon rescope + branding-lexicon prompt corrected both pinned sides). OWNER DIRECTIVE APPLIED: internal reference harnesses (quartermaster/oddsmith/Restart repo pointers) scrubbed from ALL user-facing template + kit content — reference READMEs rewritten around portable artifacts, worked config renamed worked-example.checks-config.json (genericized purchasing-ops domain), catalog/kit provenance anonymized; papercusp-webapp Cupboard listing description republished (stayed approved). Suites: kit 54/54, templates 12 pass/22 skip, tsc clean; mirror e802a48 pushed + bare-clone verified. OPEN QUESTION for owner: /internal/docs (agent-insights corpus served on installs) still names quartermaster widely — scrub is a separate larger sweep, not done.",
       "nowNext": "Decide with owner whether a round-3 builder is needed (round-2 sonnet:medium succeeded — remaining gaps were doc-polish; candidate: an agentic-desktop-app build to exercise ops-hives) or move to P-011 thin materializer / P-012 persona rule / P-027 mirror-sync automation; also verify the papercup routine auto-committed today's template/kit edits."
+    },
+    {
+      "slug": "authoritative-account-routing-all-backends-2026-07-16",
+      "title": "Make account routing authoritative across Claude, OMP, Codex, and every spawn path",
+      "harness": "papercusp",
+      "status": "active",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-07-16",
+      "updated": "2026-07-17 00:28:19.35722-04",
+      "itemTotal": 5,
+      "terminalPlanItems": 4,
+      "openPlanItems": 1,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "done": 4,
+        "todo": 1
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "P-001..P-004 confirmed DONE 2026-07-17 (WI-5153 diagnosis): the routing-contract fixes landed 2026-07-16 18:31-19:24 EDT via a concurrent effort (WI-5077's audit found 3.5/4 points already fixed); re-verified live against the tree today with psu-launcher.test.ts (506/506) + resolve-spawn-gateway-env.test.ts (29/29), both green. The 4 blocked items were stale blocks, not real work remaining. One narrow gap (macOS omitted-account→auto rewrite, audit point 4b) could not be located in the code by the WI-5077 verifier and is filed separately as EI-13253 — it does not block P-002/003/004.",
+      "nowNext": "P-005 (now unblocked): run the full fresh/resume/fork × Claude/OMP/Codex × default/auto/pin matrix, typecheck/diff checks, and live credential/provider probes to close out the plan."
     },
     {
       "slug": "autonomous-loop-full-flow-reliability-2026-06-29",
@@ -19527,6 +19249,72 @@ _body: "content"
       },
       "nowState": "P-001..P-006 + P-009/P-010 IMPLEMENTED solo (owner-directed) and unit-green, INCLUDING all peer-review folds: (1) P-009 noun-class fallback — the lint now catches its own root-incident line (\"expect the hash to ROLL\"), which is pinned as its first test; (2) checks delivery parity with walls at ALL THREE sites (carry-brief structured checks + 🧪 cold-extras block, loop-fire renderLoopChecksBlock in the un-truncatable priority stack, wake-executor live re-check) — P-001 was prematurely \"done\" before this; (3) P-005 date-constrained so an old-dated [owner:] tag is never upgraded by today's owner turn; plus hex≥8-with-letter tokens, verified-instant stamping, marker-less rows parse as PREDICTED, postNoteInbox filtered via isPendingInterrupt. 278 tests across 7 affected suites (one stale expectation updated to the fold-#1 behavior). tools-md-sync + prompt-weight green. Activation: rides normal git-sync→gate→deploy — NO forced deploy (soak live), no restarts needed. Observed live: the serving host already emits checks/checksLint fields on loop:checkpoint (the ~6-min staging restart cadence picked up the tree edits).",
       "nowNext": "Confirm the final 2-suite re-run green (task bckf570a6); after the next deploy, dogfood: write a checks:[] entry on a real checkpoint + verify checksLint and the cold-wake 🧪 block render. P-007 (cross-surface contradiction flag) and P-008 (fact supersede-notify) are the remaining follow-ups — fleet-placeable."
+    },
+    {
+      "slug": "design-simplification-2026-07-09",
+      "title": "Design simplification + design-doc violation fixes (full-app audit follow-through)",
+      "harness": "papercusp",
+      "status": "active",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-07-09",
+      "updated": "2026-07-10 16:06:49.897722-04",
+      "itemTotal": 16,
+      "terminalPlanItems": 14,
+      "openPlanItems": 2,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "done": 14,
+        "todo": 2
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "Phase 1 done (P-002..P-011). Phase 2: P-012 (letter-spacing baseline) + P-013 (lab routes → /dev, 3 orphans moved+gated, 8 excluded w/ cause) DONE + verified this session. P-015 (one <Button>) FULLY INVENTORIED + DESIGNED on WI-3739 checkpoint but NOT executed — it's a bigger, judgment-laden refactor than the one-liner: .pc-button (43 sites) is used on LINKS not just <button> (needs Button asChild or shared class), .pc-advpanel__btn (1 site) is part of the intentional .pc-advpanel__* panel family (maybe keep), .operator-mini-btn (5 sites) has 130 sprawling globals.css rules (needs a dead-CSS audit first), + 3 inconsistency bugs. Execution = a discrete coordinated pass (hot globals.css + Tauri visual verify across not-found/cupboard/installed/settings/support/adv). Remaining: P-014 (settings IA 24→6, OWNER-GATED), P-015 (execute per WI-3739), P-016 (central categorical palette + flip status-map lint enforce:true), P-017 (accent/info/border alias fold).",
+      "nowNext": "P-015 execution is teed up on WI-3739 (recommend owner weighs in on the Button asChild API question); a fully-agent-executable next item is P-016 (central categorical palette — inventory AdvConversationsTab KIND_COLOR + CupboardClient KIND_TONES + teal literals + AgentThinkingStream hexes first, then flip the status-map lint enforce:true)."
+    },
+    {
+      "slug": "desktop-release-hosting-r2-2026-07-12",
+      "title": "Desktop release hosting — Cloudflare R2 + custom domain, secret in path (unblocks auto-update)",
+      "harness": "papercusp",
+      "status": "active",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-07-12",
+      "updated": "2026-07-12 15:11:16.716129-04",
+      "itemTotal": 8,
+      "terminalPlanItems": 5,
+      "openPlanItems": 3,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "todo": 3,
+        "done": 5
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "P-001..P-005 + P-007 DONE. Rail is BUILT and 45/45 updates-route tests green (fresh run). Creds were ALREADY on the box — CF_API_TOKEN in ~/.papercusp/local-secrets/restart.env.production [owner:Avi 2026-07-12, verbatim: \"search our repo, the cloudflare credentials should be there\"]; I had wrongly escalated P-002 as owner-walled. R2 S3 creds DERIVED from that token (Access Key ID = token id; Secret = SHA-256 of token value) into ~/.papercusp/r2.env (600, outside git). Bucket papercusp-releases; all six 0.0.8 LINUX artifacts uploaded + size-verified. cargo check clean. Manifest re-pointed at the real host (no rebuild, sigs untouched). Runbook: agent-insights/desktop-release-upload-runbook. Credential lesson saved: agent-insights/credentials-are-already-provisioned-search-before-escalating + mem0.\n\nMAC ARTIFACTS DELIVERED + verified by me (sizes + minisign base64 in the .sig files; mac leg verified sig key id 449908a7d47d3a5d == the pubkey baked in tauri.conf.json — no rebuild needed).\n\nWALL (owner): dl.papercusp.com NOT bound to the bucket — our token is zone-scoped to buyrestart.com and R2's custom-domain API needs a zoneId for papercusp.com. Bytes uploaded + intact; NO installed app can fetch them until bound.\n\nWI-4404 (major, open): the \"Papercusp Server\" product has NO update path on the static rail (staticManifestResponse returns no_candidate for product!==gui, and the static host is now the SOLE discovery source) -> 204 -> \"up to date\" forever. Code half confirmed; whether the Server bundle actually polls is UNPROVEN — do not close on a code read.",
+      "nowNext": "MERGE + UPLOAD the darwin entries: /home/marsh-office/papercusp-release-staging/darwin/ now holds \"Papercusp GUI.app.tar.gz\" (462,630,955 B) + .sig (412 B, minisign base64 confirmed) and the Server tarball (1.33 GB, DO NOT put Server in latest.json — WI-3696). Add darwin-x86_64 AND darwin-aarch64 (both point at the SAME universal GUI tarball + SAME sig — one key alone silently strands half the mac fleet); upload the GUI tarball+sig to s3://papercusp-releases/<secret>/desktop-v0.0.8-alpha/ ; assert no placeholder, sig non-empty, \"GUI\" in every url, all 3 platforms present. Then re-run bin/upload-release.sh 0.0.8 alpha (skips already-uploaded artifacts). STILL WALLED on the owner: dl.papercusp.com is not bound to bucket papercusp-releases, so nothing is fetchable yet. Windows leg (su-b0fbf) has not dropped artifacts."
     },
     {
       "slug": "fleet-launch-agent-inheritance-2026-07-03",
@@ -19914,6 +19702,40 @@ _body: "content"
       "nowNext": "Verify the five idle members pull the final seven bugs; inspect any stalled-no-MCP owner before benching; audit completion evidence and blocker dispositions until claimable_now reaches zero, then wind down and issue the final residue report."
     },
     {
+      "slug": "oddsmith-gpt-analyst-liveness-honest-cost-2026-07-02",
+      "title": "GPT-5.4 analyst swap, honest LLM-cost testing at ~100 forecasts/day, and low-latency live-data expansion",
+      "harness": "oddsmith-hive",
+      "status": "ready",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-07-02",
+      "updated": "2026-07-04 05:59:11.366782-04",
+      "itemTotal": 20,
+      "terminalPlanItems": 11,
+      "openPlanItems": 9,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "done": 11,
+        "todo": 8,
+        "wip": 1
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "P-010 DONE (WI-2291): offline as-of backtest bin apps/desktop/bin/backtest-asof.ts (npm run backtest-asof). Frozen leak-free grid = resolved forward_forecasts, one decision/market/UTC-day (10,445 rows; --source market-data for strict recorded books — only 3 overlap markets today). Arms under withBacktest guard: market-prior control; baseline-v2 (diagnostic; cohort clock per-row via new nowIso on makeVenueScopedCohortAnchor); GPT opt-in --gpt ≤50, evidence as-of ingest_time≤T, drop-on-fallback (smoke: 3 attempts, 0 contamination, 0 quota). Persisted eval_runs runId=backtest-asof-p010: market Brier 0.182, ECE 0.059, corpus YES-ward entry→close drift +0.008 (t=7.0) = the CLV bias floor arms must be read against. FINDINGS: baseline v2 is a STRUCTURAL observer on this corpus (only 3 promotable cohorts, all [1mo,∞); corpus is [0,1h) crypto → the P-012 v2 arm will never accrue stances from the 5-min stream); GPT arm metadata-starved (5 titled rows of 10.4k; evidence store begins 2026-07-02) → EI-7271 (persist title+close_time on forward_forecasts at decision time). No sidecar restart — P-022 soak clock untouched; fee-truth floor + dedupe seam still pending the next weighed batched deploy.",
+      "nowNext": "P-015/P-016 WebSocket liveness (Polymarket CLOB WS + RTDS, Kalshi WS, free crypto streams) — also retires the P-012 REST-poll staleness caveat. (su-ac403, next loop stretch.)"
+    },
+    {
       "slug": "omp-context-injection-and-behavior-2026-08-12",
       "title": "OMP context injection + agent behavior — stop the delivery channel from destroying work, then make what we deliver worth its tokens",
       "harness": "papercusp",
@@ -20123,74 +19945,6 @@ _body: "content"
       "nowNext": "Lower-priority remainder: P-007 (tool-arg audit) — enumerate EVERY operator-scope work-item write path (improvements:capture is the known unwired one) and wire them to resolveWorkItemPot so the app layer homes them too (P-006 DB self-heal is the live backstop meanwhile); then P-008 (~22 ancillary co-key rows: harness_design_artifacts/feature_audit_consolidated/harness_feature_notes/harness_pending_issues)."
     },
     {
-      "slug": "prediction-market-auto-bettor-2026-06-23",
-      "title": "Prediction-Market Auto-Bettor (Kalshi + Polymarket)",
-      "harness": "papercusp",
-      "status": "draft",
-      "category": "unblocked-partial-no-owner",
-      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
-      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
-      "created": "2026-06-23",
-      "updated": "2026-06-23 16:03:50.090198-04",
-      "itemTotal": 23,
-      "terminalPlanItems": 3,
-      "openPlanItems": 20,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 2,
-        "dropped": 1,
-        "todo": 20
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "SUPERVISION ACTIVE: su-7ad99 on a 2-min engine loop driving all 12 oddsmith briefs to done+green. Live board: oddsmith repo docs/briefs/STATUS.md. Pass @20:00Z — ✅ B2 db, B3 contracts+config, B9 backtest DONE; 🔨 B1 skeleton, B4 kalshi-read, B5 kalshi-orders, B8 risk, B12 dashboard WIP; ⬜ B6 ingestion, B7 OMS, B10 MM, B11 arb NOT STARTED. B3 landing cleared the earlier npm-install blocker. Shared blocker EI-2946 (per-pkg vitest config) nudged to B1 owner. Hive healthy (agents parked/live, no orphaned/stalled claims). Note: B1 owner su-aec0c not in active roster while WI-615..627 still open → may need relaunch.",
-      "nowNext": "Owner action: dispatch B7 (OMS, fully unblocked) + B6 (ingestion) now; verify/relaunch B1 (foundational, owner may have ended); B10/B11 unblock as B4/B7/B8 land. Supervisor loop re-checks every ~2min: updates STATUS.md, unblocks, drives to all-12-done then loop:end."
-    },
-    {
-      "slug": "presence-tool-hardening-2026-07-03",
-      "title": "coord:presence + coord:orient hardening",
-      "harness": "papercusp",
-      "status": "draft",
-      "category": "unblocked-partial-no-owner",
-      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
-      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
-      "created": "2026-07-03",
-      "updated": "2026-07-02 23:59:02.97827-04",
-      "itemTotal": 10,
-      "terminalPlanItems": 9,
-      "openPlanItems": 1,
-      "workItemTotal": 0,
-      "openWorkItems": 0,
-      "workItemStates": {},
-      "itemCounts": {
-        "done": 6,
-        "dropped": 3,
-        "todo": 1
-      },
-      "audit": null,
-      "acceptanceRubric": null,
-      "gateVerdict": null,
-      "owners": [],
-      "blocker": {
-        "typedBlocked": false,
-        "typedHuman": false,
-        "refs": [],
-        "staleHints": []
-      },
-      "nowState": "IMPLEMENTED (su-9ac1b, AUTO mode, 2026-07-03). Code-complete + unit-tested (49 tests green across presence + host suites; my files typecheck-clean). Outcomes vs original scope: P-006 (coord:presence since:<etag> unchanged-read) SHIPPED — computeRosterEtag over deltaEligibleProjection (excludes liveness), ~100B {unchanged:true} on match. P-004 (placeholder intent -> null in toStableRosterRow, constant deduped) SHIPPED. P-007 (guidance) SHIPPED. P-008/P-009 filed (WI-1722 plans:attention ~97GB/day; WI-1723 statusline glance cadence). Reclassified after reading code: P-001 already-shipped (orient tier-shaper exists, context-trimming P-012; 37.9KB is full-tier by design), P-003 misdiagnosis (claim join correct), P-005 not-a-bug (agents:0 correctly self-scoped) — see D-006. Separately: WI-1711 (MCP keep-alive-race transport bug) root-caused + fixed (keepAliveTimeout default-on 61s) + 20 tests. All edits in canonical staging tree; git-sync committing; pipeline will carry to :3070.",
-      "nowNext": "P-010 LIVE-VERIFY after the pipeline deploys to :3070: (1) boot log shows keepAliveTimeout:61000; MCP POST resets stop. (2) coord:presence returns etag; since:<etag> returns ~100B unchanged; changed roster returns full. (3) placeholder-intent rows show intent:null. No further code work — verification is deploy-gated."
-    },
-    {
       "slug": "psu-seed-prompt-mandate-alignment-2026-08-09",
       "title": "Align the psu tool seed with the prompt mandates (and stop it drifting again)",
       "harness": "papercusp",
@@ -20257,6 +20011,40 @@ _body: "content"
       },
       "nowState": "Phase 1 implemented on 2026-06-25 and `pui` reinstalled to `/home/marsh-office/.cargo/bin/pui`. `pui brain-view` now renders Queen/Overwatch as structured ratatui-style read-only panes while preserving shared transcript resolution and latest-wake tailing.",
       "nowNext": "Restart/reopen any already-running dock windows to pick up the new binary. Existing `pui brain-view` processes launched before reinstall keep the old executable image in memory. Optional future work: typed tool/result transcript events and possible Overwatch layout tuning after live dock inspection."
+    },
+    {
+      "slug": "restore-pot-lexicon-public-release-2026-07-04",
+      "title": "Restore the Pot (Papercup) lexicon for public release + gate the swarm switcher behind the Testing flag",
+      "harness": "papercusp",
+      "status": "draft",
+      "category": "unblocked-partial-no-owner",
+      "reason": "Work remains, but no current owner or legitimate blocker is recorded.",
+      "recommendation": "Finish the surviving work or supersede the plan; do not leave it indefinitely nonterminal.",
+      "created": "2026-07-04",
+      "updated": "2026-08-03 20:17:26.420392-04",
+      "itemTotal": 18,
+      "terminalPlanItems": 14,
+      "openPlanItems": 4,
+      "workItemTotal": 0,
+      "openWorkItems": 0,
+      "workItemStates": {},
+      "itemCounts": {
+        "done": 13,
+        "todo": 4,
+        "dropped": 1
+      },
+      "audit": null,
+      "acceptanceRubric": null,
+      "gateVerdict": null,
+      "owners": [],
+      "blocker": {
+        "typedBlocked": false,
+        "typedHuman": false,
+        "refs": [],
+        "staleHints": []
+      },
+      "nowState": "PHASES 1, 2 & 4 (icons) COMPLETE + verified green (route A, su-9d427; owner map D-006: hive→pot, queen→brain, bee→cup, sentinel→operator). PHASE 1/2 DONE: P-001 classic pot→Pot · P-002 THE_HIVE default OFF (parked) · P-003 keyless roles kept · P-004 switcher TESTING-gated · contributor→Cup. PHASE 4 ICONS DONE (this session): P-010 base Tauri app icon reskinned Swarm-mark→CUP (_source.svg + regenned png/ico/icns/@2x/_master via `npx tauri icon`; the-hive/ subdir left as swarm) · P-011 default cup favicon added to operator-vite (public/brand/papercup/favicon.svg + <link rel=icon>; SPA had none) + confirmed logo marks/HiveThemeBridge already flag-gated (default=cup, bee only when THE_HIVE on) · BONUS: terminal+GUI worker glyph 🐝→☕ (TUI agent_pane_kind/wake_board/fleet/app/layout incl '☕ colony' — pui 565 pass; GUI AgentsRunningPill/primitives→AdvAgentsPanel/SwarmTab/res — 41+50 pass). HiveVisualIdentity hand-drawn bees render ONLY behind flag+dev — no default bee leaks. Small deferrals (non-default): statusline-fleet 🐝 (decoupled CLI), tutorial-runner CHAPTER_EMOJI 3, docs .md 🐝 → fold into P-012. NOTE: dev workspace may still hold a runtime THE_HIVE=ON override; CODE default is OFF (correct for public); clear the live override in P-014.",
+      "nowNext": "Phase 3 hardcoded-callsite sweep next: P-005 left-sidebar nav tabs (HivesTab/QueenTab/SentinelTab/SwarmTab/OverwatchTab) → route labels through useLexicon FIRST, then P-006 adv panels, P-007 palette/toasts/empty-states, P-008 the 16 server term() callsites, P-009 desktop shell labels. Then Phase 6 = the LARGE breaking backend full-rename in slices (tool names → routes → blueprint/role ids → DB cols last), prompts+docs same cutover. Owner may still re-map brain→other (queen-name Q answered Brain; nothing shipped) — watch inbox.\n\n\n- **P-001** `done` Fix the `classic` pack to be the true POT lexicon. In libs/generic/lexicon/src/packs.ts revert CLASSIC_TERMS.pot Hive/Hives → Pot/Pots (the 2026-06-16 owner override that promoted pot→Hive into the baseline is what makes flag-off still say “Hive”). Review every other CLASSIC term to confirm it is the intended public Papercup label per D-001. Update the tests that assert classic.pot===‘Hive’ (apps/operator-vite/src/lib/useLexicon.test.tsx lines 49-50, AdminShell.lexicon.test.tsx, and any snapshot). THIS IS THE KEYSTONE — nothing else about ‘switch back to pot’ is real until this lands. importance: urgent"
     },
     {
       "slug": "scorecard-blender-pipeline-fixes-2026-07-11",

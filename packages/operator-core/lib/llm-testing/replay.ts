@@ -25,6 +25,7 @@ import {
   resolveFixturePath,
   computeIdentityHash,
   judgeRun,
+  JUDGE_PROMPT_SCAFFOLD_VERSION,
   lookupBlend,
   resolvePersona,
   type JudgeResult,
@@ -262,6 +263,10 @@ function buildSummary(args: BuildSummaryArgs): RunSummary {
       rubricVersion: args.scenario.rubric.version,
       sutModel: 'replay',
       judgeModel: args.judgeModel,
+      // D-013: this file stores nothing itself, but the identity it computes is
+      // what DECLARES two runs comparable — so a scaffold-blind identity here
+      // makes a replay claim comparability it cannot support.
+      judgeScaffoldVersion: JUDGE_PROMPT_SCAFFOLD_VERSION,
     }),
     sutModel: 'replay',
     judgeModel: args.judgeModel,
