@@ -32,6 +32,14 @@ function execFileP(
 }
 
 export const GCP_CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+/**
+ * Resolve a short-lived token from the one active human gcloud account.
+ *
+ * This is deliberately explicit instead of silently falling back from ADC: a process may carry a
+ * forbidden service-account key in GOOGLE_APPLICATION_CREDENTIALS while the operator selected the
+ * human gcloud chain. The reference keeps that choice durable without persisting a bearer token.
+ */
+export const GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF = 'gcloud://active-user';
 export const GCP_WORKSPACE_HOST_REQUIRED_SERVICES = [
   'compute.googleapis.com',
   'iap.googleapis.com',
@@ -345,6 +353,90 @@ export async function acquireGcpAdcAuth(): Promise<GcpResolvedAuth> {
     accessToken: token,
     projectId: projectId || undefined,
     identity,
+  };
+}
+
+export interface GcpWorkspaceHostAuthResolverDeps extends Pick<
+  GcpPreflightDeps,
+  'exec' | 'readFile' | 'env' | 'homedir'
+> {
+  acquireAdcAuth?: () => Promise<GcpResolvedAuth>;
+}
+
+/**
+ * Mint one short-lived token from the selected human gcloud account.
+ *
+ * Account discovery happens first and the token call is pinned with --account, so a concurrent
+ * gcloud config change cannot switch identities between discovery and issuance. Service-account
+ * identities are refused: importing a key into gcloud must not become a bypass around the local
+ * workspace-host key ban.
+ */
+export async function acquireGcpGcloudActiveUserAuth(
+  deps: Pick<GcpWorkspaceHostAuthResolverDeps, 'exec'> = {},
+): Promise<GcpResolvedAuth> {
+  const exec = deps.exec ?? defaultExec;
+  let identity: string;
+  try {
+    const { stdout } = await exec('gcloud', ['auth', 'list', '--filter=status:ACTIVE', '--format=value(account)']);
+    const accounts = stdout
+      .split(/\r?\n/)
+      .map((account) => account.trim())
+      .filter(Boolean);
+    if (accounts.length !== 1) throw new Error('gcp_gcloud_active_user_count_invalid');
+    identity = accounts[0]!;
+  } catch (error) {
+    if (error instanceof Error && error.message === 'gcp_gcloud_active_user_count_invalid') throw error;
+    throw new Error('gcp_gcloud_active_user_unavailable');
+  }
+  if (SERVICE_ACCOUNT_EMAIL.test(identity)) {
+    throw new Error('gcp_gcloud_active_user_service_account_forbidden');
+  }
+
+  let tokenOutput: string;
+  let projectOutput: string;
+  try {
+    const [token, project] = await Promise.all([
+      exec('gcloud', ['auth', 'print-access-token', `--account=${identity}`, '--quiet']),
+      exec('gcloud', ['config', 'get-value', 'project', '--quiet']),
+    ]);
+    tokenOutput = token.stdout.trim();
+    projectOutput = project.stdout.trim();
+  } catch {
+    throw new Error('gcp_gcloud_active_user_token_unavailable');
+  }
+  if (!tokenOutput) throw new Error('gcp_gcloud_active_user_token_empty');
+  const projectId = projectOutput && projectOutput !== '(unset)' ? normalizeProjectId(projectOutput) : undefined;
+  return {
+    accessToken: tokenOutput,
+    identity,
+    ...(projectId ? { projectId } : {}),
+  };
+}
+
+/** Resolve the selected non-secret connection reference to a token supplier. */
+export function createGcpWorkspaceHostAcquireAuth(
+  credentialRef: string,
+  deps: GcpWorkspaceHostAuthResolverDeps = {},
+): () => Promise<GcpResolvedAuth> {
+  const ref = credentialRef.trim();
+  if (ref === GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF) {
+    return () => acquireGcpGcloudActiveUserAuth(deps);
+  }
+  if (!ref.startsWith('adc://')) throw new Error('gcp_workspace_host_cloud_credential_ref_unsupported');
+
+  // Inspect once per composed provider. Token acquisition can repeat as tokens expire, but the
+  // credential class is invariant for that provider and must be proven safe before the first call.
+  let safeAdc: Promise<void> | undefined;
+  const assertSafeAdc = () =>
+    (safeAdc ??= inspectAdc(deps).then((descriptor) => {
+      if (descriptor.credentialType === 'service_account') {
+        throw new Error('gcp_workspace_host_service_account_key_forbidden');
+      }
+    }));
+  const acquireAdcAuth = deps.acquireAdcAuth ?? acquireGcpAdcAuth;
+  return async () => {
+    await assertSafeAdc();
+    return acquireAdcAuth();
   };
 }
 

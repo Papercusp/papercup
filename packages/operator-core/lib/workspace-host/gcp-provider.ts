@@ -27,7 +27,7 @@ import type {
   WorkspaceHostTransportProfile,
 } from '@papercusp/deployment-driver';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
-import { GCP_CLOUD_PLATFORM_SCOPE } from '../cloud-workspaces/gcp-preflight';
+import { GCP_CLOUD_PLATFORM_SCOPE, createGcpWorkspaceHostAcquireAuth } from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
 import { assertGcpImmutableImageId } from './gcp-image-family';
 import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, gcpWorkspaceHostLabelValue } from './gcp-safety';
@@ -806,9 +806,11 @@ function stableName(prefix: string, hostId: string): string {
  * exported derivation makes that divergence impossible rather than merely unlikely, which is
  * why `readSettings` below now calls this instead of keeping its own copy.
  */
-export function resolveGcpWorkspaceHostInstanceIdentity(
-  desired: WorkspaceHostDesiredSpec,
-): { projectId: string; zone: string; instanceName: string } {
+export function resolveGcpWorkspaceHostInstanceIdentity(desired: WorkspaceHostDesiredSpec): {
+  projectId: string;
+  zone: string;
+  instanceName: string;
+} {
   if (desired.target !== GCP_WORKSPACE_HOST_TARGET)
     throw new Error(`GCP provider cannot plan target '${desired.target}'`);
   if (desired.scope.kind !== 'project') throw new Error("GCP workspace hosts require scope.kind 'project'");
@@ -2151,4 +2153,21 @@ export function createAdcGcpWorkspaceHostProvider(
   options: GcpWorkspaceHostApiClientOptions = {},
 ): GcpWorkspaceHostProvider {
   return new GcpWorkspaceHostProvider(createGcpWorkspaceHostApiClient(options), { now: options.now });
+}
+
+/** Production composition selected by the persisted, non-secret cloud credential reference. */
+export function createConfiguredGcpWorkspaceHostProvider(
+  connection: WorkspaceHostProviderConnection,
+  options: Omit<GcpWorkspaceHostApiClientOptions, 'acquireAuth'> = {},
+): GcpWorkspaceHostProvider {
+  if (connection.target !== GCP_WORKSPACE_HOST_TARGET) {
+    throw new Error(`GCP workspace-host provider cannot compose target '${connection.target}'`);
+  }
+  return new GcpWorkspaceHostProvider(
+    createGcpWorkspaceHostApiClient({
+      ...options,
+      acquireAuth: createGcpWorkspaceHostAcquireAuth(connection.cloudCredentialRef.ref),
+    }),
+    { now: options.now },
+  );
 }

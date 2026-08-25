@@ -117,6 +117,28 @@ describe('ADC-backed GCP workspace-host API client', () => {
     }
   });
 
+  it('admits the explicit gcloud active-user chain and rejects arbitrary credential schemes', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith(`/projects/${PROJECT}?fields=name`)) return json({ name: PROJECT });
+      throw new Error(`unexpected URL ${url}`);
+    }) as typeof fetch;
+    const client = makeClient(fetchImpl);
+
+    await expect(
+      client.validateConnection({
+        ...connection(),
+        cloudCredentialRef: { kind: 'cloud', ref: 'gcloud://active-user' },
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(
+      client.validateConnection({
+        ...connection(),
+        cloudCredentialRef: { kind: 'cloud', ref: 'env:GOOGLE_APPLICATION_CREDENTIALS' },
+      }),
+    ).resolves.toMatchObject({ ok: false });
+  });
+
   it('resolves a configured Papercusp family but exposes only its immutable member to consumers', async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);

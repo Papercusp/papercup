@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF,
   GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS,
+  acquireGcpGcloudActiveUserAuth,
+  createGcpWorkspaceHostAcquireAuth,
   inspectGcpLocalCredentialOnboarding,
   runGcpWorkspaceHostPreflight,
   type GcpPreflightDeps,
@@ -90,6 +93,65 @@ describe('GCP local credential onboarding', () => {
       '--impersonate-service-account=workspace-provisioner@example-project.iam.gserviceaccount.com',
     ]);
     expect(JSON.stringify(report)).not.toContain('service-accounts keys create');
+  });
+});
+
+describe('GCP workspace-host credential references', () => {
+  it('pins one active human gcloud account and returns only its short-lived token', async () => {
+    const exec = vi.fn(async (_file: string, args: readonly string[]) => {
+      if (args[0] === 'auth' && args[1] === 'list') return { stdout: 'developer@example.com\n' };
+      if (args[0] === 'auth' && args[1] === 'print-access-token') return { stdout: `${SECRET}\n` };
+      if (args[0] === 'config') return { stdout: `${PROJECT}\n` };
+      throw new Error(`unexpected gcloud argv ${args.join(' ')}`);
+    });
+
+    await expect(acquireGcpGcloudActiveUserAuth({ exec })).resolves.toEqual({
+      accessToken: SECRET,
+      identity: 'developer@example.com',
+      projectId: PROJECT,
+    });
+    expect(exec).toHaveBeenCalledWith('gcloud', [
+      'auth',
+      'print-access-token',
+      '--account=developer@example.com',
+      '--quiet',
+    ]);
+  });
+
+  it('refuses a service-account identity imported into gcloud before requesting a token', async () => {
+    const exec = vi.fn(async () => ({ stdout: 'canary@example.iam.gserviceaccount.com\n' }));
+
+    await expect(acquireGcpGcloudActiveUserAuth({ exec })).rejects.toThrow(
+      'gcp_gcloud_active_user_service_account_forbidden',
+    );
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed on a service-account ADC file before the ADC token supplier runs', async () => {
+    const acquireAdcAuth = vi.fn(async () => ({ accessToken: SECRET }));
+    const acquire = createGcpWorkspaceHostAcquireAuth('adc://authorized_user', {
+      env: { GOOGLE_APPLICATION_CREDENTIALS: '/secrets/key.json' },
+      readFile: vi.fn(async () => JSON.stringify({ type: 'service_account', private_key: SECRET })),
+      acquireAdcAuth,
+    });
+
+    await expect(acquire()).rejects.toThrow('gcp_workspace_host_service_account_key_forbidden');
+    expect(acquireAdcAuth).not.toHaveBeenCalled();
+  });
+
+  it('routes the explicit active-user reference and rejects unknown credential schemes', async () => {
+    const exec = vi.fn(async (_file: string, args: readonly string[]) => {
+      if (args[0] === 'auth' && args[1] === 'list') return { stdout: 'developer@example.com\n' };
+      if (args[0] === 'auth' && args[1] === 'print-access-token') return { stdout: `${SECRET}\n` };
+      if (args[0] === 'config') return { stdout: `${PROJECT}\n` };
+      throw new Error('unexpected command');
+    });
+    const acquire = createGcpWorkspaceHostAcquireAuth(GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF, { exec });
+
+    await expect(acquire()).resolves.toMatchObject({ identity: 'developer@example.com', projectId: PROJECT });
+    expect(() => createGcpWorkspaceHostAcquireAuth('env:GOOGLE_APPLICATION_CREDENTIALS')).toThrow(
+      'gcp_workspace_host_cloud_credential_ref_unsupported',
+    );
   });
 });
 

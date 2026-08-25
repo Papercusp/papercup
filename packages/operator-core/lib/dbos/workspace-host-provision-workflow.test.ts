@@ -6,6 +6,17 @@ const control = vi.hoisted(() => ({
   dedupConflict: false,
   startOptions: null as null | Record<string, unknown>,
   sleep: vi.fn(async (_ms: number) => {}),
+  provider: { target: 'gcp' },
+  createProvider: vi.fn(),
+  runProvisioning: vi.fn(),
+}));
+
+vi.mock('../workspace-host/gcp-provider', () => ({
+  createConfiguredGcpWorkspaceHostProvider: control.createProvider,
+}));
+
+vi.mock('../workspace-host/provisioning-runner', () => ({
+  runWorkspaceHostProvisioning: control.runProvisioning,
 }));
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
@@ -77,6 +88,9 @@ beforeEach(() => {
   control.dedupConflict = false;
   control.startOptions = null;
   control.sleep.mockClear();
+  control.createProvider.mockReset();
+  control.createProvider.mockReturnValue(control.provider);
+  control.runProvisioning.mockReset();
 });
 
 afterEach(() => {
@@ -108,6 +122,21 @@ describe('workspace-host provisioning DBOS admission', () => {
       queueName: 'workspace-host-provision',
       enqueueOptions: { deduplicationID: 'workspace-host:ws-1:host-1' },
     });
+  });
+
+  it('composes the production provider from the selected connection inside the DBOS workflow', async () => {
+    control.runProvisioning.mockResolvedValueOnce({
+      status: 'succeeded',
+      operationId: 'op-1',
+      hostId: 'host-1',
+      plan,
+      checkpoints: [],
+    });
+
+    await startWorkspaceHostProvisioningWorkflow(input);
+
+    expect(control.createProvider).toHaveBeenCalledWith(connection);
+    expect(control.runProvisioning).toHaveBeenCalledWith(expect.objectContaining({ provider: control.provider }));
   });
 
   it('keeps the workflow active across an in-progress runner receipt', async () => {

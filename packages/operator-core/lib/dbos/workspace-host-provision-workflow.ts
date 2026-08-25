@@ -12,7 +12,7 @@ import {
   type WorkspaceHostDesiredSpec,
   type WorkspaceHostProviderConnection,
 } from '@papercusp/deployment-driver';
-import { createAdcGcpWorkspaceHostProvider } from '../workspace-host/gcp-provider';
+import { createConfiguredGcpWorkspaceHostProvider } from '../workspace-host/gcp-provider';
 import {
   runWorkspaceHostProvisioning,
   type WorkspaceHostProvisioningResult,
@@ -63,7 +63,7 @@ async function execute(input: WorkspaceHostProvisioningWorkflowInput): Promise<W
   if (injected) return injected(input);
   return runWorkspaceHostProvisioning({
     ...input,
-    provider: createAdcGcpWorkspaceHostProvider(),
+    provider: createConfiguredGcpWorkspaceHostProvider(input.connection),
   });
 }
 

@@ -11,6 +11,7 @@ import type {
 } from '@papercusp/deployment-driver';
 import {
   GCP_DEFAULT_WORKSPACE_HOST_IMAGE,
+  GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF,
   acquireGcpAdcAuth,
   fetchGcpApiJson,
   type GcpResolvedAuth,
@@ -151,8 +152,9 @@ function numberValue(value: string | number | undefined): number | undefined {
 
 function projectFromConnection(connection: WorkspaceHostProviderConnection): string {
   if (connection.target !== 'gcp') throw new Error(`gcp_workspace_host_target_${connection.target}_invalid`);
-  if (!connection.cloudCredentialRef.ref.startsWith('adc://')) {
-    throw new Error('gcp_workspace_host_cloud_credential_ref_must_use_adc');
+  const credentialRef = connection.cloudCredentialRef.ref.trim();
+  if (!credentialRef.startsWith('adc://') && credentialRef !== GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF) {
+    throw new Error('gcp_workspace_host_cloud_credential_ref_must_use_safe_google_chain');
   }
   if (connection.scope && connection.scope.kind !== 'project') {
     throw new Error('gcp_workspace_host_scope_must_be_project');
