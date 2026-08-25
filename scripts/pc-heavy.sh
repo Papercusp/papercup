@@ -1304,23 +1304,43 @@ fi
 # turns a 15-minute mystery into a pid.
 #
 # DIAGNOSTIC ONLY — fail-open by construction, like the coalescing block below.
-# A missing `fuser`, an unreadable /proc, or a holder that exits between the
-# probe and the read must never change the barrier's outcome: every failure path
-# yields an empty description and the caller simply prints less. It must also
-# never be the thing that makes a gate run fail.
+# `fuser` is only a cheap candidate enumerator: it reports every process with the
+# path open, including writers queued in `flock`, so its output alone is NOT
+# ownership evidence. A candidate is named only when one of its matching fds has
+# a kernel FLOCK WRITE record in fdinfo. A missing `fuser`, an unreadable /proc,
+# or a holder that exits between the probes must never change the barrier's
+# outcome: every failure path yields a shorter/empty description and the caller
+# simply prints less. It must also never be the thing that makes a gate run fail.
 _exclusive_describe_holders() {
-  local _file="$1" _pids='' _pid='' _cmd='' _out=''
+  local _file="$1" _target='' _pids='' _pid='' _fd='' _fd_target=''
+  local _fd_number='' _owns=0 _cmd='' _out=''
   command -v fuser >/dev/null 2>&1 || return 0
   [ -e "$_file" ] || return 0
+  _target="$(stat -Lc '%d:%i' "$_file" 2>/dev/null || true)"
+  [ -n "$_target" ] || return 0
   _pids="$(fuser "$_file" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '^[0-9]+$' || true)"
   [ -n "$_pids" ] || return 0
   for _pid in $_pids; do
-    # Keep the path open inside a command whose stderr is redirected. A holder
-    # can exit after fuser reports it but before the shell opens /proc; putting
-    # the redirection on tr lets Bash print that ENOENT before 2>/dev/null can
-    # take effect, leaking a red-looking diagnostic from this best-effort path.
+    _owns=0
+    # A writer waiter opens the same inode before it blocks in `flock`, but its
+    # fdinfo has no owning lock record. Conversely, every live process sharing
+    # the owning open-file description exposes the kernel FLOCK record here —
+    # including the materialization child after pc-heavy execs it.
+    for _fd in "/proc/$_pid/fd"/*; do
+      [ -e "$_fd" ] || continue
+      _fd_target="$(stat -Lc '%d:%i' "$_fd" 2>/dev/null || true)"
+      [ "$_fd_target" = "$_target" ] || continue
+      _fd_number="${_fd##*/}"
+      if grep -Eq '^lock:[[:space:]]+[0-9]+: FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE' "/proc/$_pid/fdinfo/$_fd_number" 2>/dev/null; then
+        _owns=1
+        break
+      fi
+    done
+    [ "$_owns" = 1 ] || continue
+    # A proven holder can still exit between fdinfo and cmdline. Keep the
+    # ownership evidence while making the cmdline race explicit and quiet.
     _cmd="$(cat "/proc/$_pid/cmdline" 2>/dev/null | tr '\0' ' ' | cut -c1-100 || true)"
-    [ -n "$_cmd" ] || _cmd='(exited before its cmdline could be read)'
+    [ -n "$_cmd" ] || _cmd='(cmdline unavailable after kernel lock proof)'
     _out="$_out pid $_pid [$_cmd];"
   done
   printf '%s' "$_out"
