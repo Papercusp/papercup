@@ -55,11 +55,13 @@ vi.mock('@papercusp/scheduled-registry', () => ({
   managedSetInterval: () => ({ stop: vi.fn() }),
 }));
 const dbOrgHandle = { sql: dbSql };
-vi.mock('@papercusp/db-org', () => ({
+const dbOrgMock = {
   getOrgPg: vi.fn(() => dbOrgHandle),
   getLegacyClient: vi.fn(() => dbOrgHandle),
   generated: {},
-}));
+};
+vi.doMock('@papercusp/db-org', () => dbOrgMock);
+await import('@papercusp/db-org');
 vi.mock('../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => null),
   SESSION_THINKING_ACTIVE_MS: 30_000,
@@ -97,6 +99,7 @@ const {
   HARNESS_STREAM_LOG_BATCH_LINES,
   HARNESS_STREAM_FEATURE_TEXT_CAP,
   HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES,
+  backfillFromSessionTurns,
 } = await import('../routes/harness/streams');
 
 beforeEach(() => {
