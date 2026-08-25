@@ -122,6 +122,26 @@ describe('runLoopChatTurn', () => {
     expect(requests[0].model).toBe('m-test');
   });
 
+  it('replaces the model effort suffix and forwards the selected account', async () => {
+    const { port, requests } = scriptedPort([textStop('routed')]);
+    const { sink } = recordingSink();
+    await runLoopChatTurn({
+      chatId: 'c-selection',
+      workspaceId: 'ws',
+      system: 's',
+      transcript: [turn('user', 'hi')],
+      sink,
+      port,
+      model: 'sonnet:low',
+      effort: 'xhigh',
+      account: 'acct-7',
+    });
+    expect(requests[0]).toMatchObject({
+      model: 'sonnet:xhigh',
+      account: 'acct-7',
+    });
+  });
+
   it('can defer terminal events so the route persists before exposing done/error', async () => {
     const { port } = scriptedPort([
       textStop('durable first', { inputTokens: 2, outputTokens: 3 }),

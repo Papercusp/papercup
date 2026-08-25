@@ -87,8 +87,11 @@ describe('createRoutedModelPort', () => {
     const createLanguageModel = vi.fn(async () => model());
     const port = createRoutedModelPort({ catalog, anthropicPort: native, createLanguageModel });
 
-    expect(await collect(port, request('sonnet:xhigh'))).toEqual([{ type: 'stop', reason: 'end_turn' }]);
+    expect(await collect(port, { ...request('sonnet:xhigh'), account: 'acct-anthropic' })).toEqual([
+      { type: 'stop', reason: 'end_turn' },
+    ]);
     expect(seen[0].model).toBe('claude-sonnet-current');
+    expect(seen[0].account).toBe('acct-anthropic');
     expect(createLanguageModel).not.toHaveBeenCalled();
   });
 
@@ -104,14 +107,24 @@ describe('createRoutedModelPort', () => {
       },
     });
 
-    const events = await collect(port, { ...request('gpt-5.4:high'), maxTokens: 32 });
-    expect(events.at(-1)).toMatchObject({ type: 'stop', reason: 'end_turn' });
+    const events = await collect(port, {
+      ...request('gpt-5.4:high'),
+      account: 'acct-codex',
+      maxTokens: 32,
+    });
+    expect(events.at(-1), JSON.stringify(events)).toMatchObject({
+      type: 'stop',
+      reason: 'end_turn',
+    });
     expect(calls[0]).toMatchObject({
       selection: { provider: 'gateway-codex', modelId: 'gpt-5.4', effort: 'high' },
       gatewayBaseUrl: 'http://gateway.test/v1',
     });
     expect(callOptions[0]).toMatchObject({
-      headers: { 'x-papercusp-priority': 'operator' },
+      headers: {
+        'x-papercusp-priority': 'operator',
+        'x-papercusp-account': 'acct-codex',
+      },
       providerOptions: { openai: { reasoningEffort: 'high' } },
     });
     expect(callOptions[0]).not.toHaveProperty('maxOutputTokens');
