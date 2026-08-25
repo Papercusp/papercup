@@ -31,8 +31,10 @@ import { defaultForeignSignature } from '../../task-manager/scan';
 import { gcTerminalTasks, listLiveTasks, listTasks, markStranded } from '../../task-manager/store';
 import {
   decideReaps,
+  evaluateReaperFloor,
   executeReaps,
   REAP_PRESENCE_FRESH_MS,
+  residualAfterPass,
   type ReapDecision,
   type ReapEffects,
 } from '../../task-manager/reaper';
@@ -138,6 +140,12 @@ let lastA11ySweepAtMs: number | null = null;
  *  long before it can matter. */
 const REAPER_INTERVAL_MS = 5 * 60_000;
 let lastReaperAtMs: number | null = null;
+
+/** Re-notify throttle for the enforcement alarm (P-006). Shorter than the
+ *  dead-window census's 6h: that one reports a POPULATION worth watching, this
+ *  one reports that enforcement has STOPPED WORKING, which is actionable now. */
+const REAPER_FLOOR_RENOTIFY_MS = 60 * 60_000;
+let lastReaperFloorNotifyAtMs = 0;
 
 registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   // WI-6499: the routine stays REGISTERED but no-ops while the task manager is
@@ -489,11 +497,75 @@ async function reapAgentSessionResidue(ctx: SystemActionCtx): Promise<void> {
       now: Date.now(),
     });
 
-    if (verdict.reap.length === 0) return;
-
-    const outcomes = await executeReaps(verdict.reap, nodeReapEffects());
+    // A pass ALWAYS records a sample — the zero-candidate case included. Two
+    // reasons, both learned from this subsystem's own failures:
+    //   1. Zero is the HEALTHY reading, and a floor is meaningless without it. An
+    //      indicator that only samples non-zero ticks cannot distinguish "clear"
+    //      from "switched off", which is how report-only eras stay quiet.
+    //   2. Until now this function returned here with no trace whatsoever, so
+    //      "no candidates" and "not wired at all" produced byte-identical
+    //      evidence — nothing. Telling those apart cost a full diagnostic
+    //      round-trip on 2026-08-25 against a subsystem whose entire purpose is
+    //      to be verifiable.
+    const reaperTarget = { installSlug: ctx.installSlug, workspaceId: ctx.workspaceId };
+    const passAtMs = Date.now();
+    const outcomes =
+      verdict.reap.length > 0 ? await executeReaps(verdict.reap, nodeReapEffects()) : [];
     const okCount = outcomes.filter((o) => o.ok).length;
     const failed = outcomes.filter((o) => !o.ok);
+    const residual = residualAfterPass(verdict, outcomes);
+
+    const floorRing = appendResidueSample(await readResidueSamples(reaperTarget, 'reaper_floor'), {
+      atMs: passAtMs,
+      scopesDead: residual,
+    });
+    const floor = evaluateReaperFloor(floorRing, { nowMs: passAtMs });
+    await writeResidueSamples(
+      reaperTarget,
+      floorRing,
+      {
+        lastPassAtMs: passAtMs,
+        candidates: verdict.reap.length,
+        reaped: okCount,
+        failed: failed.length,
+        deferred: verdict.deferred,
+        spared: verdict.spared.length,
+        quietClassDisabled: verdict.quietClassDisabled,
+        residual,
+        floorKind: floor.kind,
+        floorSummary: floor.summary,
+      },
+      'reaper_floor',
+    );
+
+    // The per-tick heartbeat. Cheap, and it is the difference between a reaper
+    // that is provably running and one that is merely not complaining.
+    console.info(
+      `[task-reaper] pass: ${verdict.reap.length} candidate(s), ${okCount} reaped, ` +
+        `${failed.length} failed, ${verdict.deferred} deferred, ${verdict.spared.length} spared, ` +
+        `residual=${residual}${verdict.quietClassDisabled ? ', quiet class DISABLED' : ''}`,
+    );
+
+    if (floor.alarm && passAtMs - lastReaperFloorNotifyAtMs >= REAPER_FLOOR_RENOTIFY_MS) {
+      lastReaperFloorNotifyAtMs = passAtMs;
+      // ESCALATION, not a message: the report-only era proved that a `message`
+      // about accumulating residue is read as weather and actioned by no one.
+      await sendMessage(TASK_MANAGER_IDENTITY, {
+        to: ['*'],
+        summary:
+          `[task-reaper] ⚠ ENFORCEMENT ALARM (${floor.kind}): ${floor.summary}. ` +
+          `This pass: ${verdict.reap.length} candidate(s), ${okCount} reaped, ${failed.length} failed, ` +
+          `${verdict.deferred} deferred (residual ${residual}). ` +
+          `The reaper is no longer clearing what it selects — inspect ` +
+          `harness_shared.routines.metadata->'reaper_floor' and the [task-reaper] pass lines.`,
+        category: 'task-manager',
+        kind: 'escalation',
+        harnessSlug: ctx.installSlug,
+      });
+    }
+
+    if (outcomes.length === 0) return;
+
     await sendMessage(TASK_MANAGER_IDENTITY, {
       to: ['*'],
       summary:

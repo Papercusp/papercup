@@ -35,6 +35,22 @@ import type { ResidueSample } from './terminal-residue-census';
 const TARGET_ROLE = 'system:task-reconcile';
 const METADATA_KEY = 'residue_census';
 
+/**
+ * Which sample ring a call addresses. Two INDEPENDENT populations share this
+ * row, and they must never be mixed:
+ *
+ *   `residue_census` — dead-WINDOW terminal scopes (the original P-013 indicator).
+ *   `reaper_floor`   — agent-session residue that SURVIVED a reaper pass
+ *                      (WI-41607). Its healthy value is 0: a working pass leaves
+ *                      nothing behind, so a floor that stays above zero means
+ *                      enforcement is failing, not that the host is busy.
+ *
+ * A string UNION rather than a free `string`: these values are interpolated into
+ * the jsonb path of the statements below, so a literal union is what keeps that
+ * interpolation injection-proof by construction instead of by review.
+ */
+export type ResidueRing = typeof METADATA_KEY | 'reaper_floor';
+
 export interface ResidueStoreTarget {
   installSlug: string;
   workspaceId: string;
@@ -54,12 +70,15 @@ export function parseResidueSamples(raw: unknown): ResidueSample[] {
   return out.sort((a, b) => a.atMs - b.atMs);
 }
 
-export async function readResidueSamples(target: ResidueStoreTarget): Promise<ResidueSample[]> {
+export async function readResidueSamples(
+  target: ResidueStoreTarget,
+  ring: ResidueRing = METADATA_KEY,
+): Promise<ResidueSample[]> {
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
     const rows = await sql.unsafe(
-      `SELECT metadata->'${METADATA_KEY}'->'samples' AS samples
+      `SELECT metadata->'${ring}'->'samples' AS samples
          FROM harness_shared.routines
         WHERE install_slug = $1 AND workspace_id = $2 AND target_role = '${TARGET_ROLE}'
         LIMIT 1`,
@@ -105,6 +124,7 @@ export async function writeResidueSamples(
   target: ResidueStoreTarget,
   samples: readonly ResidueSample[],
   extra: Record<string, unknown> = {},
+  ring: ResidueRing = METADATA_KEY,
 ): Promise<void> {
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
@@ -114,8 +134,8 @@ export async function writeResidueSamples(
       `UPDATE harness_shared.routines
           SET metadata = jsonb_set(
                 COALESCE(metadata, '{}'::jsonb),
-                '{${METADATA_KEY}}',
-                COALESCE(metadata->'${METADATA_KEY}', '{}'::jsonb) || $3::jsonb,
+                '{${ring}}',
+                COALESCE(metadata->'${ring}', '{}'::jsonb) || $3::jsonb,
                 true
               ),
               updated_at = now()

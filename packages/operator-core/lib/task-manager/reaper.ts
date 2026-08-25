@@ -233,6 +233,167 @@ export interface ReapOutcome {
   note?: string;
 }
 
+// ── the recurrence guard (P-006) ────────────────────────────────────────────
+//
+// Enforcement that silently stops working is the failure this whole work-item
+// exists to end: every prior fix improved a census, nothing watched the fix, and
+// the residue regrew. So the reaper measures ITSELF.
+//
+// The measured quantity is the residue that SURVIVED a pass. Its healthy value
+// is ZERO — a working pass leaves nothing behind — which is what makes it a
+// usable floor. A busy host does not raise it; only a reaper that cannot clear
+// what it selected does.
+//
+// THE ALARM CONDITION IS "SUSTAINED NON-ZERO", NOT "GROWING" — and that choice
+// is load-bearing, so here is the reasoning rather than the conclusion.
+//
+// The obvious detector to reach for is the dead-window census's
+// `evaluateResidueTrend`: compare a recent floor against an earlier floor and
+// alarm when it climbs. Checked against the REAL incident, it fails. On
+// 2026-08-25 the first deployed pass failed 0/12 every five minutes for an hour:
+// the survivor count sat at a FLAT 12, so recent floor 12, earlier floor 12,
+// growth delta ZERO. A growth detector would have watched that entire hour in
+// silence and reported steady.
+//
+// A growth term is also formally REDUNDANT here, which is why none is offered.
+// `recentFloor > olderFloor >= 0` implies every recent sample is >= 1, which
+// implies the last N samples are all non-zero — so `stuck` has already fired.
+// Growth is only meaningful for a metric whose healthy value is non-zero (the
+// dead-window census, where scopes legitimately exist and churn). THIS metric's
+// healthy value is ZERO, so "still non-zero N passes later" already IS the
+// accumulation signal. Adding a growth branch would be unreachable code carrying
+// a test that could never fail — the exact shape of a detector that reassures
+// without detecting.
+//
+// The alarm is an ESCALATION, not a message: the report-only era proved that a
+// `message` about accumulating residue reads as weather and is actioned by no one.
+
+/** Consecutive residue-leaving passes before the alarm fires. Three, per P-006. */
+export const REAPER_FLOOR_MIN_CONSECUTIVE = 3;
+
+export interface ReaperFloorSample {
+  atMs: number;
+  /** Residue that survived that pass. Named to match the persisted ring's shape. */
+  scopesDead: number;
+}
+
+export interface ReaperFloorVerdict {
+  alarm: boolean;
+  kind: 'stuck' | 'growing' | null;
+  consecutiveNonZero: number;
+  recentFloor: number | null;
+  olderFloor: number | null;
+  summary: string;
+}
+
+/**
+ * PURE: how much residue survived one pass.
+ *
+ * Deferred candidates (beyond the per-tick cap) plus attempted-but-failed stops.
+ * A spared row is deliberately NOT counted: sparing is the rails working as
+ * designed (exempt session, live successor in scope, degraded census), and
+ * counting it would make correct caution indistinguishable from failure.
+ */
+export function residualAfterPass(
+  verdict: Pick<ReaperVerdict, 'deferred'>,
+  outcomes: readonly ReapOutcome[],
+): number {
+  const failed = outcomes.filter((o) => !o.ok).length;
+  return verdict.deferred + failed;
+}
+
+/**
+ * PURE: is the reaper failing to clear what it selects?
+ *
+ * Thin history answers `alarm:false` WITH a summary that says so — never a
+ * reassuring "healthy". Same rule the dead-window trend follows: a detector that
+ * cannot tell must say it cannot tell, or a storage failure launders as green.
+ */
+export function evaluateReaperFloor(
+  samples: readonly ReaperFloorSample[],
+  opts: {
+    nowMs: number;
+    minConsecutive?: number;
+    recentWindowMs?: number;
+    lookbackMs?: number;
+  },
+): ReaperFloorVerdict {
+  const minConsecutive = opts.minConsecutive ?? REAPER_FLOOR_MIN_CONSECUTIVE;
+  const recentWindowMs = opts.recentWindowMs ?? REAPER_FLOOR_RECENT_WINDOW_MS;
+  const lookbackMs = opts.lookbackMs ?? REAPER_FLOOR_LOOKBACK_MS;
+
+  const ordered = [...samples].sort((a, b) => a.atMs - b.atMs);
+
+  // `stuck`: every one of the last N passes left something behind. Counted over
+  // the tail regardless of wall-clock window — N consecutive failures matter
+  // whatever the cadence.
+  const tail = ordered.slice(-minConsecutive);
+  let consecutiveNonZero = 0;
+  for (let i = ordered.length - 1; i >= 0 && ordered[i]!.scopesDead > 0; i--) consecutiveNonZero++;
+  const stuck = tail.length >= minConsecutive && tail.every((s) => s.scopesDead > 0);
+
+  const recentFrom = opts.nowMs - recentWindowMs;
+  const olderFrom = opts.nowMs - lookbackMs;
+  const recent: number[] = [];
+  const older: number[] = [];
+  for (const s of ordered) {
+    if (s.atMs >= recentFrom) recent.push(s.scopesDead);
+    else if (s.atMs >= olderFrom) older.push(s.scopesDead);
+  }
+  const recentFloor = recent.length ? Math.min(...recent) : null;
+  const olderFloor = older.length ? Math.min(...older) : null;
+  const growing =
+    recent.length >= minConsecutive &&
+    older.length >= minConsecutive &&
+    recentFloor !== null &&
+    olderFloor !== null &&
+    recentFloor > olderFloor;
+
+  if (stuck) {
+    return {
+      alarm: true,
+      kind: 'stuck',
+      consecutiveNonZero,
+      recentFloor,
+      olderFloor,
+      summary:
+        `agent-session reaper has left residue behind on ${consecutiveNonZero} consecutive ` +
+        `pass(es) (last ${tail.length} all non-zero: ${tail.map((s) => s.scopesDead).join(',')}) — ` +
+        `enforcement is selecting scopes it cannot clear`,
+    };
+  }
+  if (growing) {
+    return {
+      alarm: true,
+      kind: 'growing',
+      consecutiveNonZero,
+      recentFloor,
+      olderFloor,
+      summary:
+        `agent-session residue floor is CLIMBING (recent ${recentFloor} vs earlier ${olderFloor}) — ` +
+        `scopes are arriving faster than the reaper clears them`,
+    };
+  }
+  if (ordered.length < minConsecutive) {
+    return {
+      alarm: false,
+      kind: null,
+      consecutiveNonZero,
+      recentFloor,
+      olderFloor,
+      summary: `only ${ordered.length} sample(s) — no verdict yet, which is not the same as healthy`,
+    };
+  }
+  return {
+    alarm: false,
+    kind: null,
+    consecutiveNonZero,
+    recentFloor,
+    olderFloor,
+    summary: `reaper floor clear (last ${tail.length} pass(es) left ${tail.map((s) => s.scopesDead).join(',')})`,
+  };
+}
+
 export async function executeReaps(
   decisions: readonly ReapDecision[],
   effects: ReapEffects,
