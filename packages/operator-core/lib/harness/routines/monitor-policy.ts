@@ -10,12 +10,8 @@ import type { Sql } from 'postgres';
 import { z } from 'zod';
 import { getFleet, type AgentFleetRecord } from '../../agent-fleets-store';
 import { getPresence, type PresenceRecord } from '../../agent-tools/coordination/presence';
-import {
-  OWNER_CANDIDATE_TURN_VERDICTS,
-  parseTurnRefs,
-  verifyTurnRefs,
-  type TurnRefVerdict,
-} from '../../turn-provenance/turn-ref';
+import { OWNER_CANDIDATE_TURN_VERDICTS, quoteMatchesTurn } from '../../turn-provenance/turn-ref';
+import { parseTurnRef } from '../../agent-tools/sessions/_shared';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { getWorkItem, type WorkItem } from '../../work-items';
 import { STALE_CLAIM_GRACE_MS } from '../../work-items-stale-claims';
@@ -52,8 +48,10 @@ export const monitorAuthoritySchema = z.discriminatedUnion('kind', [
       turnRef: z
         .string()
         .min(10)
-        .max(200)
-        .describe('Canonical [turn:<session-prefix>@<timestamp>] reference from this owner session.'),
+        .max(300)
+        .describe(
+          'Canonical session_turn:<source-kind>:<full-session-id>:<turn-index> reference from this owner session.',
+        ),
       quote: z
         .string()
         .min(3)
@@ -129,7 +127,7 @@ export interface MonitorAdmissionEvidence {
   workItemHolderPresence?: PresenceRecord | null;
   fleet?: AgentFleetRecord | null;
   ownerPresence?: PresenceRecord | null;
-  ownerTurn?: TurnRefVerdict | null;
+  ownerTurn?: MonitorOwnerTurnEvidence | null;
   duplicateLiveOwnerId?: string | null;
 }
 
@@ -137,13 +135,29 @@ export interface MonitorAdmissionDependencies {
   loadWorkItem(id: string, harness?: string): Promise<WorkItem | null>;
   loadPresence(ownerId: string): Promise<PresenceRecord | null>;
   loadFleet(workspaceId: string, fleetSlug: string): Promise<AgentFleetRecord | null>;
-  verifyOwnerTurn(ownerId: string, turnRef: string, quote: string): Promise<TurnRefVerdict | null>;
+  verifyOwnerTurn(
+    ownerId: string,
+    workspaceId: string,
+    turnRef: string,
+    quote: string,
+  ): Promise<MonitorOwnerTurnEvidence | null>;
   listActiveMonitorOwners(input: {
     workspaceId: string;
     predicateKey: string;
     excludeOwnerId: string;
   }): Promise<string[]>;
   nowMs(): number;
+}
+
+export interface MonitorOwnerTurnEvidence {
+  ref: string;
+  found: boolean;
+  checked: boolean;
+  ownerId: string | null;
+  speaker: string | null;
+  verdict: string | null;
+  origin: string | null;
+  quoteMatch: boolean | null;
 }
 
 function normalizeHumanText(value: string): string {
@@ -299,6 +313,21 @@ export function decideMonitorAdmission(input: {
         allowed: false,
         code: 'monitor_owner_turn_unverified',
         message: `Owner-turn authority ${authority.turnRef} could not be resolved inside ${ownerId}'s session chain.`,
+      };
+    }
+    if (verdict.ownerId !== ownerId) {
+      return {
+        allowed: false,
+        code: 'monitor_owner_turn_not_owner',
+        message: `Referenced turn ${authority.turnRef} belongs to ${verdict.ownerId ?? 'no resolved owner'}, not loop owner ${ownerId}.`,
+        details: { recordedOwner: verdict.ownerId, loopOwner: ownerId },
+      };
+    }
+    if (verdict.speaker !== 'user') {
+      return {
+        allowed: false,
+        code: 'monitor_owner_turn_not_owner',
+        message: `Referenced turn ${authority.turnRef} is a ${verdict.speaker ?? 'missing'} turn, not owner user speech.`,
       };
     }
     if (!verdict.verdict || !OWNER_CANDIDATE_TURN_VERDICTS.includes(verdict.verdict)) {
