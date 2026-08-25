@@ -7,9 +7,12 @@ import {
   deriveCouplings,
   deriveCouplingsFromCoordExchange,
   deriveCouplingsFromHeldFiles,
+  deriveCouplingsFromObligations,
   deriveCouplingsFromPlanBlocking,
   deriveCouplingsFromRoster,
+  obligationPhrase,
   type DerivationRow,
+  type ObligationEdge,
 } from './coupling-derivation';
 import { resolveCoupledPeers } from './couplings';
 import {
@@ -680,5 +683,231 @@ describe('deriveCouplings (orchestrator)', () => {
       },
     );
     expect(called).toBe(false);
+  });
+});
+
+/**
+ * ── P-003: THE OBLIGATION FAMILY (`owes-me` / `i-owe`) ───────────────────────────
+ *
+ * The graded requirement is that `because` renders DIRECTION + AGE + HANDLE and is
+ * "never a bare string". That property is expressed ONCE, in `obligationContractViolations`
+ * below, and then run against three renderers: the real one (which must be clean) and two
+ * deliberately-wrong ones kept here PERMANENTLY as controls.
+ *
+ * Why the controls are not optional here. Vitest does not typecheck, hand-built fixtures
+ * always satisfy the code that reads them, and this file's own history is the argument:
+ * six tests actively protected a fleet-coupling behaviour the owner had already vetoed,
+ * and `holds-a-lock-on` shipped green and silent for 12 days. A green assertion proves a
+ * renderer produced SOMETHING; only a control proves the assertion could have caught a
+ * renderer that produced the WRONG something. The pairing is mutual: if the property
+ * checker itself regressed to "always clean", the real-renderer case would still pass and
+ * the two control cases would FAIL — which is the calibration that stops this whole block
+ * from passing vacuously.
+ */
+const OBLIGATION: ObligationEdge = {
+  ownerId: 'su-peer',
+  direction: 'owes-me',
+  what: 'a consult reply',
+  since: '2026-08-25T05:00:00.000Z',
+  handle: 'mt85cgso-0000-ce7a',
+};
+/** 14 minutes after the obligation was entered — an exact age, no frozen clock needed. */
+const NOW = Date.parse('2026-08-25T05:14:00.000Z');
+
+type ObligationRenderer = (edge: ObligationEdge, nowMs: number) => string | null;
+
+/** THE P-003 PROPERTY, as data. Returns the violations found, so a control's failure is
+ *  named rather than being a bare `false`. */
+function obligationContractViolations(render: ObligationRenderer): string[] {
+  const problems: string[] = [];
+
+  const full = render(OBLIGATION, NOW);
+  if (!full) {
+    problems.push('renders nothing for a complete obligation');
+  } else {
+    if (!full.includes('14m')) problems.push('drops the age');
+    if (!full.includes(OBLIGATION.handle)) problems.push('drops the handle');
+    if (!full.includes(OBLIGATION.what)) problems.push('drops what is owed');
+  }
+
+  // DIRECTION must change the reading. An obligation that renders the same both ways tells
+  // the reader to chase a debt that is actually theirs to discharge.
+  const owed = render({ ...OBLIGATION, direction: 'owes-me' }, NOW);
+  const owing = render({ ...OBLIGATION, direction: 'i-owe' }, NOW);
+  if (owed && owing && owed === owing) problems.push('renders both directions identically');
+
+  // THE CONJUNCTION. A missing part must yield null — not a thinner sentence, which reads
+  // as informative while being unactionable.
+  const partials: ReadonlyArray<readonly [string, ObligationEdge]> = [
+    ['handle', { ...OBLIGATION, handle: '   ' }],
+    ['what', { ...OBLIGATION, what: '' }],
+    ['age', { ...OBLIGATION, since: 'not-a-timestamp' }],
+  ];
+  for (const [part, edge] of partials) {
+    if (render(edge, NOW) !== null) problems.push(`emits a phrase with no ${part}`);
+  }
+  return problems;
+}
+
+/** CONTROL A — the best-effort concatenation this design exists to forbid: every part is
+ *  optional, so a missing age or handle silently degrades into a confident sentence. */
+const bestEffortRenderer: ObligationRenderer = (edge, nowMs) => {
+  const parsed = Date.parse(String(edge.since));
+  const age = Number.isFinite(parsed) ? `${Math.floor((nowMs - parsed) / 60_000)}m` : '';
+  const lead =
+    edge.direction === 'owes-me' ? `they owe you ${edge.what}` : `you owe them ${edge.what}`;
+  return [lead, age && `open ${age}`, edge.handle.trim() && `(${edge.handle})`]
+    .filter(Boolean)
+    .join(', ');
+};
+
+/** CONTROL B — direction-blind: renders a real, complete-looking phrase that is wrong for
+ *  exactly half of all obligations. */
+const directionBlindRenderer: ObligationRenderer = (edge, nowMs) => {
+  const real = obligationPhrase(edge, nowMs);
+  return real === null ? null : real.replace('you owe them', 'they owe you');
+};
+
+describe('P-003 — the obligation `because` renders direction + age + handle', () => {
+  it('renders all three parts, and the age as a duration a reader thinks in', () => {
+    expect(obligationPhrase(OBLIGATION, NOW)).toBe(
+      'they owe you a consult reply, open 14m (mt85cgso-0000-ce7a)',
+    );
+  });
+
+  it('flips the reading with the direction, keeping age and handle intact', () => {
+    expect(obligationPhrase({ ...OBLIGATION, direction: 'i-owe' }, NOW)).toBe(
+      'you owe them a consult reply, open 14m (mt85cgso-0000-ce7a)',
+    );
+  });
+
+  // THE CALIBRATION for the two control cases below: if this fails, the controls prove
+  // nothing, because a checker that never reports a violation would also pass them.
+  it('satisfies the contract in full (calibration for the controls below)', () => {
+    expect(obligationContractViolations(obligationPhrase)).toEqual([]);
+  });
+
+  it('CONTROL: a best-effort concatenation is CAUGHT emitting partial obligations', () => {
+    const found = obligationContractViolations(bestEffortRenderer);
+    expect(found).toContain('emits a phrase with no handle');
+    expect(found).toContain('emits a phrase with no age');
+  });
+
+  it('CONTROL: a direction-blind renderer is CAUGHT collapsing the two readings', () => {
+    expect(obligationContractViolations(directionBlindRenderer)).toContain(
+      'renders both directions identically',
+    );
+  });
+});
+
+describe('deriveCouplingsFromObligations', () => {
+  it('emits the direction AS the relation, so the two can never disagree (D-087)', () => {
+    const derived = deriveCouplingsFromObligations(
+      'su-me',
+      [OBLIGATION, { ...OBLIGATION, ownerId: 'su-other', direction: 'i-owe' }],
+      NOW,
+    );
+    expect(derived.map((d) => [d.ownerId, d.relation])).toEqual([
+      ['su-peer', 'owes-me'],
+      ['su-other', 'i-owe'],
+    ]);
+    expect(derived[1].because.startsWith('you owe them')).toBe(true);
+  });
+
+  it('SKIPS an obligation it cannot render in full rather than emitting a bare string', () => {
+    const derived = deriveCouplingsFromObligations(
+      'su-me',
+      [
+        { ...OBLIGATION, ownerId: 'su-nohandle', handle: '' },
+        { ...OBLIGATION, ownerId: 'su-noage', since: 'whenever' },
+        OBLIGATION,
+      ],
+      NOW,
+    );
+    // Only the complete one survives — an unrenderable obligation reaches nobody.
+    expect(derived.map((d) => d.ownerId)).toEqual(['su-peer']);
+  });
+
+  it('does NOT collapse two debts with the same peer into one edge', () => {
+    // Two open consults with one agent are two real obligations; deduping by peer would
+    // under-report exactly the agent who owes you most.
+    const derived = deriveCouplingsFromObligations(
+      'su-me',
+      [OBLIGATION, { ...OBLIGATION, what: 'a grade', handle: 'rubric-x' }],
+      NOW,
+    );
+    expect(derived).toHaveLength(2);
+    expect(derived[1].because).toContain('a grade');
+    expect(derived[1].because).toContain('rubric-x');
+  });
+
+  it('refuses a self-obligation (an agent coupled to itself is not a relation)', () => {
+    expect(
+      deriveCouplingsFromObligations('su-me', [{ ...OBLIGATION, ownerId: 'su-me' }], NOW),
+    ).toEqual([]);
+  });
+
+  it('preserves SOURCE ORDER, which carries the age priority a sort would destroy', () => {
+    const oldest = { ...OBLIGATION, ownerId: 'su-zzz', since: '2026-08-24T05:00:00.000Z' };
+    const derived = deriveCouplingsFromObligations('su-me', [oldest, OBLIGATION], NOW);
+    // `su-zzz` sorts LAST by ownerId but is the older debt, so it must stay first.
+    expect(derived.map((d) => d.ownerId)).toEqual(['su-zzz', 'su-peer']);
+  });
+});
+
+describe('the obligation leg inside deriveCouplings', () => {
+  const obligationRoster = [row({ ownerId: 'su-me' }), row({ ownerId: 'su-peer' })];
+
+  it('delivers an obligation edge through the union', async () => {
+    const derived = await deriveCouplings('su-me', obligationRoster, {
+      obligations: async () => [OBLIGATION],
+    });
+    expect(derived).toEqual([
+      {
+        ownerId: 'su-peer',
+        relation: 'owes-me',
+        because: expect.stringContaining('they owe you a consult reply'),
+      },
+    ]);
+  });
+
+  it('DROPS an obligation whose counterpart is outside the roster (never widens)', async () => {
+    // The access boundary applies to obligations like every other edge. This is the case
+    // P-011 must widen the ROSTER for (a dead responder), never this leg — asserted as a
+    // negative because nothing else fails if someone "fixes" it by bypassing the filter.
+    const derived = await deriveCouplings('su-me', obligationRoster, {
+      obligations: async () => [{ ...OBLIGATION, ownerId: 'su-not-in-roster' }],
+    });
+    expect(derived).toEqual([]);
+  });
+
+  it('censuses the leg as UNARMED until a producer is wired, and ARMED once it is', async () => {
+    // The distinction the census exists for (D-088): "no producer yet" must not read as
+    // honest scarcity. Both directions report it, because both read the one leg.
+    let unarmed: Record<string, unknown> | undefined;
+    await deriveCouplings('su-me', obligationRoster, {
+      observe: (c) => void (unarmed = c.relations),
+    });
+    expect(unarmed?.['owes-me']).toEqual({ armed: false, inputs: 0, edges: 0 });
+    expect(unarmed?.['i-owe']).toEqual({ armed: false, inputs: 0, edges: 0 });
+
+    let armed: Record<string, unknown> | undefined;
+    await deriveCouplings('su-me', obligationRoster, {
+      obligations: async () => [OBLIGATION],
+      observe: (c) => void (armed = c.relations),
+    });
+    expect(armed?.['owes-me']).toEqual({ armed: true, inputs: 1, edges: 1 });
+    // The sibling direction shares the leg, so it is armed-but-silent, not starved.
+    expect(armed?.['i-owe']).toEqual({ armed: true, inputs: 1, edges: 0 });
+  });
+
+  it('survives a throwing obligation source without losing the other legs', async () => {
+    const derived = await deriveCouplings('su-me', obligationRoster, {
+      obligations: async () => {
+        throw new Error('consult table unreachable');
+      },
+      recentPartners: async () => ['su-peer'],
+    });
+    expect(derived.map((d) => d.relation)).toEqual(['coord-exchange']);
   });
 });
