@@ -117,3 +117,16 @@ describe('facts:assert supersedes contract', () => {
     expect(json).toContain('receipt reports the keys actually retired');
   });
 });
+
+describe('facts:assert cap-admission contract', () => {
+  it('documents refusal of destructive cross-author verified eviction and exempt slots', () => {
+    const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
+    const dryRun = options
+      .map((option) => option.shape.dryRun as { description?: string } | undefined)
+      .find(Boolean)?.description;
+
+    expect(dryRun).toMatch(/refused before write/i);
+    expect(dryRun).toMatch(/another author.*verified fact/i);
+    expect(dryRun).toMatch(/conventions and typed safety slots take no cap seat/i);
+  });
+});

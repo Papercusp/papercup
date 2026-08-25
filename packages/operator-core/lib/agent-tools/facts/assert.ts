@@ -375,14 +375,14 @@ export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
   description:
-    'Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; kind:convention with no ttlSec is permanent) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.',
+    'Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; kind:convention with no ttlSec is permanent) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL. An ordinary at-cap write that would evict another author\'s verified fact is refused before write; use dryRun:true to inspect the cost. Typed safety slots and conventions are exempt from the cap.',
   guidance: {
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
     notWhen:
-      `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under ${FACT_BODY_MAX_CHARS} chars; the per-scope cap ${FACTS_PER_SCOPE_CAP} evicts the lowest-ranked live fact. A fact is not a live measurement: do not pin changing counts/statuses — store the invariant conclusion plus a pointer to the live source a reader can remeasure. For a necessary moving sample, pass measuredAt (prefer subjectVolatile:true for clarity); the store infers subjectVolatile:true when measuredAt is supplied and makes it a ≤15-minute SNAPSHOT. Label intentional history as historical.`,
+      `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under ${FACT_BODY_MAX_CHARS} chars; the per-scope cap ${FACTS_PER_SCOPE_CAP} evicts the lowest-ranked live fact, but an ordinary write is refused before write when its victim would be another author\'s verified fact. Use dryRun:true to inspect the forecast; typed safety slots and conventions take no cap seat. A fact is not a live measurement: do not pin changing counts/statuses — store the invariant conclusion plus a pointer to the live source a reader can remeasure. For a necessary moving sample, pass measuredAt (prefer subjectVolatile:true for clarity); the store infers subjectVolatile:true when measuredAt is supplied and makes it a ≤15-minute SNAPSHOT. Label intentional history as historical.`,
     chaining:
-      'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
+      'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); use dryRun:true before a saturated ordinary write; facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
   },
   requirePrincipal: false,
@@ -518,7 +518,9 @@ export default defineTool({
           '(key, owner, confidence, remaining TTL), where your row would land in the victim ranking, and ' +
           'whether the key you are replacing already exists. Use it before asserting into a scope you know ' +
           'is busy, and before RESTORING an evicted fact — a restore is itself a write and can displace a ' +
-          'third party. FORECAST, NOT A RESERVATION: a peer asserting first changes the victim.',
+          'third party. Ordinary at-cap writes are refused before write when the predicted victim is another author\'s ' +
+          'verified fact; conventions and typed safety slots take no cap seat. FORECAST, NOT A RESERVATION: a peer ' +
+          'asserting first changes the victim.',
       ),
     acceptTruncation: z
       .boolean()

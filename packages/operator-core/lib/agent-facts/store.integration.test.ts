@@ -464,6 +464,105 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(live.find((f) => f.key === 'ver')?.body).toBe(`rev ${FACTS_PER_SCOPE_CAP + 4}`);
   });
 
+  it('EI-21442182972969040: an ordinary at-cap write refuses cross-author verified eviction atomically, while exempt slots remain writable', async () => {
+    const scopeRef = 'su-protect-verified-cap';
+    const peer = 'su-peer-verified';
+    const writer = 'su-new-writer';
+    const base = { scope: 'owner' as const, scopeRef, workspaceId: WS };
+
+    // Saturate the ordinary partition entirely with another author's verified
+    // facts. The guard must see a real victim, not a scope that merely happens
+    // to be near the cap.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        {
+          ...base,
+          key: `peer-${i}`,
+          body: `verified peer finding ${i}`,
+          createdBy: peer,
+          confidence: 'verified',
+          ttlSec: 30 * 86400,
+        },
+        db.sql,
+      );
+    }
+
+    const incoming = {
+      ...base,
+      key: 'incoming-cross-author',
+      body: 'a new verified finding',
+      createdBy: writer,
+      confidence: 'verified' as const,
+      ttlSec: 30 * 86400,
+    };
+    const preview = await previewFactCapImpact(incoming, db.sql);
+
+    // The dry-run forecast must establish that refusal is protecting a real
+    // peer fact rather than silently treating this as a no-op.
+    expect(preview.atCap).toBe(true);
+    expect(preview.populationSize).toBe(FACTS_PER_SCOPE_CAP);
+    expect(preview.wouldEvict).toHaveLength(1);
+    expect(preview.wouldEvict[0]).toMatchObject({ confidence: 'verified', createdBy: peer });
+
+    await expect(assertFact(incoming, db.sql)).rejects.toThrow(
+      /REFUSED before write:.*another author's verified fact/i,
+    );
+
+    // Refusal is pre-write: the incoming row is absent, all peer rows remain
+    // live, and the attempted admission stamped no machine eviction.
+    const [afterRefusal] = await db.sql<{
+      peerLive: number;
+      incomingRows: number;
+      evictedRows: number;
+    }[]>`
+      SELECT count(*) FILTER (
+               WHERE key LIKE 'peer-%' AND superseded_at IS NULL
+                 AND retracted_at IS NULL AND expires_at > now()
+             )::int AS "peerLive",
+             count(*) FILTER (WHERE key = 'incoming-cross-author')::int AS "incomingRows",
+             count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
+    expect(afterRefusal.peerLive).toBe(FACTS_PER_SCOPE_CAP);
+    expect(afterRefusal.incomingRows).toBe(0);
+    expect(afterRefusal.evictedRows).toBe(0);
+
+    // Typed safety slots and conventions do not consume ordinary cap seats,
+    // so they bypass the guard even when the ranked partition is saturated.
+    const exemptWrites = [
+      { key: 'wall:peer-cap-wall', body: 'owner wall' },
+      { key: 'dead-end:peer-cap-dead-end', body: 'do not retry' },
+      { key: 'guard-rail:peer-cap-guard', body: 'do not repeat' },
+      { key: 'convention-peer-cap', body: 'scope convention', kind: 'convention' as const },
+    ];
+    for (const exempt of exemptWrites) {
+      const result = await assertFact({ ...base, ...exempt, createdBy: writer }, db.sql);
+      expect(result.key).toBe(exempt.key);
+      expect(result.evicted ?? []).toEqual([]);
+    }
+
+    const [afterExempt] = await db.sql<{ peerLive: number; exemptLive: number; evictedRows: number }[]>`
+      SELECT count(*) FILTER (
+               WHERE key LIKE 'peer-%' AND superseded_at IS NULL
+                 AND retracted_at IS NULL AND expires_at > now()
+             )::int AS "peerLive",
+             count(*) FILTER (
+               WHERE key IN (
+                 'wall:peer-cap-wall',
+                 'dead-end:peer-cap-dead-end',
+                 'guard-rail:peer-cap-guard',
+                 'convention-peer-cap'
+               )
+                 AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
+             )::int AS "exemptLive",
+             count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
+    expect(afterExempt.peerLive).toBe(FACTS_PER_SCOPE_CAP);
+    expect(afterExempt.exemptLive).toBe(exemptWrites.length);
+    expect(afterExempt.evictedRows).toBe(0);
+  });
+
   it('WI-6935: a wall/dead-end fact survives a 51st assert — the typed safety slots are exempt from eviction', async () => {
     const scopeRef = 'su-slot-cap';
     const slotted = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
