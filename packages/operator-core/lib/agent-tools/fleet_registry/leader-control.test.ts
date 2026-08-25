@@ -288,6 +288,13 @@ describe('ensureFleetLeaderControl', () => {
 
   it('preserves an inactive loop control payload and pending watches during recovery', async () => {
     const priorGoal = 'lead the fleet at the widened fallback cadence';
+    const priorMonitor = {
+      predicateKey: 'fleet:alpha',
+      stopCondition: 'fleet alpha is drained or leadership ends',
+      noDeltaBudget: 100,
+      remainingNoDeltaBudget: 73,
+      authority: { kind: 'fleet-leader' as const, fleet: 'alpha' },
+    };
     const priorKickoff =
       '⏸ BACKOFF PREMISE — re-check blockedOn.event `release:green` before proceeding.\n\ncustom monitor kickoff';
     getLoopStatus.mockResolvedValue({
@@ -310,6 +317,7 @@ describe('ensureFleetLeaderControl', () => {
       carry: 'cold',
       continuation: 'gated',
       mode: 'monitor',
+      monitor: priorMonitor,
       armedAt: '2026-08-22T23:00:00.000Z',
     });
     // This await belongs to the loop's blocker, not fleet-leadership control. Recovery
@@ -347,6 +355,7 @@ describe('ensureFleetLeaderControl', () => {
       carry: 'cold',
       continuation: 'gated',
       mode: 'monitor',
+      monitor: priorMonitor,
       onlyIfInactive: true,
       customWakePrompt: true,
     });
