@@ -168,9 +168,7 @@ export default function ReviewReportShell({
 
     restoreApplyFocusAfterBusy.current = false;
     const target =
-      liveSelected.size > 0
-        ? applyButtonRef.current
-        : dismissButtonRef.current;
+      liveSelected.size > 0 ? applyButtonRef.current : dismissButtonRef.current;
     target?.focus({ preventScroll: true });
   }, [busy, liveSelected.size]);
 
