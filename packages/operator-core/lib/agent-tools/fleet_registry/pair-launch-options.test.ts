@@ -10,11 +10,29 @@
 import { describe, expect, it } from 'vitest';
 import {
   describeLaunchRoles,
+  expandPairedMembers,
+  PAIR_ROLE_DIRECTOR,
+  PAIR_ROLE_IMPLEMENTER,
+  pairIndexOfSeat,
+  pairSeatRole,
   PER_ROLE_KNOBS,
   resolveLaunchOptions,
+  wholePairSeats,
   type ResolvedPairedLaunch,
   type ResolvedSingleLaunch,
 } from './pair-launch-options';
+
+/** A resolved paired launch with deliberately DIFFERENT knobs per role. */
+function pairedFixture(): ResolvedPairedLaunch {
+  const resolved = resolveLaunchOptions({
+    type: 'paired',
+    count: 2,
+    directors: { model: 'opus', effort: 'high', headless: false },
+    implementers: { model: 'sonnet', account: 'auto', headless: true, carry: 'cold' },
+  });
+  if (!resolved.ok || resolved.type !== 'paired') throw new Error('fixture is not a paired launch');
+  return resolved;
+}
 
 describe('resolveLaunchOptions — the single arm stays exactly as it was', () => {
   it('treats an omitted type as single, so no existing caller learns the field exists', () => {
@@ -232,5 +250,113 @@ describe('describeLaunchRoles — the spawn announcement covers BOTH roles', () 
     expect(directorLine).toContain('default (system)');
     expect(directorLine).toContain('carry warm');
     expect(directorLine).toContain('visible');
+  });
+});
+
+describe('seat ordering is interleaved so a CLAMPED wave degrades to whole pairs (D-014)', () => {
+  it('puts the director on even seats and its implementer on the next one', () => {
+    expect(pairSeatRole(0)).toBe('director');
+    expect(pairSeatRole(1)).toBe('implementer');
+    expect(pairSeatRole(2)).toBe('director');
+    expect(pairSeatRole(3)).toBe('implementer');
+  });
+
+  it('derives pair identity from the seat index alone, with no side table', () => {
+    expect(pairIndexOfSeat(0)).toBe(0);
+    expect(pairIndexOfSeat(1)).toBe(0);
+    expect(pairIndexOfSeat(2)).toBe(1);
+    expect(pairIndexOfSeat(3)).toBe(1);
+  });
+
+  it('THE POINT: truncating a wave leaves whole pairs, never orphaned directors', () => {
+    // This is the case blocked ordering gets wrong. Take the first 2 of 6 seats
+    // — what a capacity clamp actually does — and count each role.
+    const members = expandPairedMembers(pairedFixture(), 6).slice(0, 2);
+    const roles = members.map((m) => m.role);
+    expect(roles.filter((r) => r === PAIR_ROLE_DIRECTOR)).toHaveLength(1);
+    expect(roles.filter((r) => r === PAIR_ROLE_IMPLEMENTER)).toHaveLength(1);
+  });
+});
+
+describe('wholePairSeats refuses to open a half pair', () => {
+  it('rounds an odd allowance DOWN rather than opening a lone director', () => {
+    expect(wholePairSeats(5)).toBe(4);
+    expect(wholePairSeats(3)).toBe(2);
+  });
+
+  it('opens nothing at all when there is not room for one whole pair', () => {
+    expect(wholePairSeats(1)).toBe(0);
+    expect(wholePairSeats(0)).toBe(0);
+  });
+
+  it('passes an even allowance through untouched', () => {
+    expect(wholePairSeats(2)).toBe(2);
+    expect(wholePairSeats(6)).toBe(6);
+  });
+
+  it('treats a non-finite allowance as zero rather than producing NaN seats', () => {
+    expect(wholePairSeats(Number.NaN)).toBe(0);
+    expect(wholePairSeats(Number.POSITIVE_INFINITY)).toBe(0);
+    expect(wholePairSeats(-4)).toBe(0);
+  });
+});
+
+describe('expandPairedMembers routes each role through the EXISTING per-member override path', () => {
+  it('emits one member spec per seat, in seat order', () => {
+    const members = expandPairedMembers(pairedFixture(), 4);
+    expect(members).toHaveLength(4);
+    expect(members.map((m) => m.role)).toEqual([
+      PAIR_ROLE_DIRECTOR,
+      PAIR_ROLE_IMPLEMENTER,
+      PAIR_ROLE_DIRECTOR,
+      PAIR_ROLE_IMPLEMENTER,
+    ]);
+  });
+
+  it('gives each role ITS OWN knobs — the whole reason the type branches', () => {
+    const [director, implementer] = expandPairedMembers(pairedFixture(), 2);
+    expect(director.model).toBe('opus');
+    expect(director.effort).toBe('high');
+    expect(director.headless).toBe(false);
+    expect(implementer.model).toBe('sonnet');
+    expect(implementer.account).toBe('auto');
+    expect(implementer.headless).toBe(true);
+    expect(implementer.carry).toBe('cold');
+  });
+
+  it('never leaks a knob across roles', () => {
+    const [director, implementer] = expandPairedMembers(pairedFixture(), 2);
+    expect(director.account).toBeUndefined();
+    expect(director.carry).toBeUndefined();
+    expect(implementer.effort).toBeUndefined();
+  });
+
+  it('emits NO undefined keys, so an unset role knob falls through to the fleet default', () => {
+    // The fold treats `undefined` as fallthrough, but only because the key is
+    // absent. An explicit `{ model: undefined }` would still be a present key on
+    // some future spread-based fold, so assert absence rather than undefined-ness.
+    const [director] = expandPairedMembers(pairedFixture(), 2);
+    expect(Object.keys(director).sort()).toEqual(['effort', 'headless', 'model', 'role']);
+  });
+
+  it('repeats the same role config across every pair', () => {
+    const members = expandPairedMembers(pairedFixture(), 4);
+    expect(members[0]).toEqual(members[2]);
+    expect(members[1]).toEqual(members[3]);
+  });
+
+  it('clamps an odd seat allowance to whole pairs', () => {
+    expect(expandPairedMembers(pairedFixture(), 5)).toHaveLength(4);
+    expect(expandPairedMembers(pairedFixture(), 1)).toHaveLength(0);
+  });
+
+  it('produces specs whose every knob is a real MemberSpec field', () => {
+    // Guards the reuse claim: these objects are fed to foldMemberSpec, whose zod
+    // schema is .strict(). A knob this module invents that MemberSpec lacks would
+    // be a loud runtime refusal at launch, far from here.
+    const memberSpecFields = new Set([...PER_ROLE_KNOBS, 'role']);
+    for (const m of expandPairedMembers(pairedFixture(), 4)) {
+      for (const key of Object.keys(m)) expect(memberSpecFields.has(key as never)).toBe(true);
+    }
   });
 });
