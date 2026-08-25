@@ -179,10 +179,19 @@ export async function cleanupAcceptanceGraderTasks(
     (task) =>
       task.detail.headless === true && typeof task.detail.label === 'string' && task.detail.label.startsWith(prefix),
   );
+  // EI-21390074563933948: these are THIS rubric's own throwaway headless graders
+  // (matched by label prefix), not peer work — so a bare SIGTERM that the grader
+  // tree shrugs off must ESCALATE on a bounded grace instead of returning
+  // incomplete and leaving 20+ live processes behind. Same janitorial shape as
+  // gc-desktop-sessions; killTask still verifies emptiness itself and never
+  // reports success on a scope that would not die.
   const results = await Promise.all(
     matched.map(async (task) => ({
       taskId: task.taskId,
-      outcome: await (deps.kill ?? killTask)(task.taskId, { includeSubtree: true }),
+      outcome: await (deps.kill ?? killTask)(task.taskId, {
+        includeSubtree: true,
+        escalateAfterMs: 5_000,
+      }),
     })),
   );
   return { prefix, matched: matched.length, results };
