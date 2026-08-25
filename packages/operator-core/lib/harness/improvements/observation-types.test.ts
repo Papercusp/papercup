@@ -197,6 +197,26 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(out?.refs).toEqual(['tool:pot:survey', 'WI-1']);
   });
 
+  it('preserves an explicit empty ratings object for a zero-criterion rubric', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'zero-criterion-investigation',
+      subject: { kind: 'plan', ref: 'plan-with-no-criteria' },
+      ratings: {},
+    });
+
+    expect(out?.rubricRef).toBe('zero-criterion-investigation');
+    expect(out?.ratings).toEqual({});
+  });
+
+  it('does not turn a non-empty malformed ratings object into a valid empty card', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'malformed-rubric',
+      ratings: { criterion: { rating: 'healthy' } },
+    });
+
+    expect(out?.ratings).toBeUndefined();
+  });
+
   it('ignores unknown keys so B10 learnings/observationKind can ride alongside', () => {
     const out = asStructuredObservation({ rubricRef: 'r', learnings: ['x'], observationKind: 'deprecation' });
     expect(out?.rubricRef).toBe('r');
