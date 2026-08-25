@@ -1643,8 +1643,9 @@ impl App {
     pub fn new() -> Self {
         Self {
             should_quit: false,
-            status: "pui · Agent Chat · s session · m model · e effort · a account · [/] pot · ? help"
-                .to_string(),
+            status:
+                "pui · Agent Chat · s session · m model · e effort · a account · [/] pot · ? help"
+                    .to_string(),
             // D-031 / P-019: Agent Chat is the product front door. `title()`
             // remains Operator only as the stable persistence identity.
             tab: Tab::Operator,
@@ -2673,12 +2674,19 @@ impl App {
             .map(|role| PickerOption {
                 id: format!("new:{role}"),
                 label: format!("New {role} session"),
-                hint: Some(format!("Open a fresh {role} chat in pot {} on first send.", self.harness)),
+                hint: Some(format!(
+                    "Open a fresh {role} chat in pot {} on first send.",
+                    self.harness
+                )),
                 disabled: false,
             })
             .collect();
         options.extend(self.agent_chat_summaries.iter().map(|chat| {
-            let title = chat.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("untitled");
+            let title = chat
+                .title
+                .as_deref()
+                .filter(|t| !t.is_empty())
+                .unwrap_or("untitled");
             let active = self.agent_chat_id.as_deref() == Some(chat.id.as_str());
             PickerOption {
                 id: format!("session:{}", chat.id),
@@ -2814,7 +2822,11 @@ impl App {
             .as_deref()
             .map(|id| {
                 let short: String = id.chars().take(12).collect();
-                if id.chars().count() > 12 { format!("{short}…") } else { short }
+                if id.chars().count() > 12 {
+                    format!("{short}…")
+                } else {
+                    short
+                }
             })
             .unwrap_or_else(|| "new".to_string());
         let model = self.chat_model.as_deref().unwrap_or("server default");
@@ -5394,9 +5406,7 @@ impl App {
                     self.session_picker = None;
                     Action::Render
                 }
-                KeyCode::Enter => {
-                    self.commit_session_picker()
-                }
+                KeyCode::Enter => self.commit_session_picker(),
                 KeyCode::Char('j') | KeyCode::Down => {
                     if let Some(p) = self.session_picker.as_mut() {
                         p.move_sel(1);

@@ -137,8 +137,7 @@ pub fn effort_options() -> Vec<PickerOption> {
         id: EFFORT_INHERIT.to_string(),
         label: "Model/default effort".to_string(),
         hint: Some(
-            "Keep the selected model tier's effort suffix, or let the provider choose."
-                .to_string(),
+            "Keep the selected model tier's effort suffix, or let the provider choose.".to_string(),
         ),
         disabled: false,
     })
@@ -146,8 +145,7 @@ pub fn effort_options() -> Vec<PickerOption> {
         id: effort.to_string(),
         label: effort.to_string(),
         hint: Some(
-            "The provider validates whether this model supports the requested effort."
-                .to_string(),
+            "The provider validates whether this model supports the requested effort.".to_string(),
         ),
         disabled: false,
     }))
@@ -318,8 +316,7 @@ pub fn chat_account_options(pool: &[AccountRow]) -> Vec<PickerOption> {
     let mut out = account_options(pool, None);
     if let Some(auto) = out.first_mut() {
         auto.hint = Some(
-            "No request pin; the inference gateway auto-routes and can fail over."
-                .to_string(),
+            "No request pin; the inference gateway auto-routes and can fail over.".to_string(),
         );
     }
     out
