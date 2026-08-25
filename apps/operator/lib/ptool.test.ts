@@ -67,6 +67,7 @@ describe('ptool parseArgs', () => {
       workspace: null,
       harness: null,
       projection: null,
+      idempotencyKey: null,
       raw: false,
       url: null,
       tokenFile: null,
@@ -96,7 +97,7 @@ describe('ptool parseArgs', () => {
   });
 
   it('parses convenience + control flags', () => {
-    const a = parseArgs(['x:y', '--workspace=ws1', '--harness=papercup', '--raw', '--url=http://h:9', '--token-file=/tmp/candidate-token']);
+    const a = parseArgs(['x:y', '--workspace=ws1', '--harness=papercup', '--raw', '--url=http://h:9', '--token-file=/tmp/candidate-token', '--idempotency-key=receipt-1']);
     expect(a).toMatchObject({
       tool: 'x:y',
       workspace: 'ws1',
@@ -104,6 +105,7 @@ describe('ptool parseArgs', () => {
       raw: true,
       url: 'http://h:9',
       tokenFile: '/tmp/candidate-token',
+      idempotencyKey: 'receipt-1',
     });
   });
 
@@ -697,6 +699,7 @@ describe('ptool timeoutForTool — continuity/control-plane calls outlive the fl
     'loop:checkpoint',
     'loop:status',
     'improvements:capture',
+    'coord:send',
   ];
 
   it.each(CONTINUITY_TOOLS)('%s gets a long-call deadline beyond the MCP transport cap', (name) => {
