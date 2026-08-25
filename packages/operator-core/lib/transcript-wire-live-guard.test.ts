@@ -22,10 +22,21 @@
  * and any machine that has actually run agents.
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import {
   CLAUDE_WIRE_FIXTURES,
@@ -43,8 +54,12 @@ const PAPERCUSP = join(homedir(), '.papercusp');
 const MAX_FILES_PER_BACKEND = 3;
 const MAX_BYTES_PER_FILE = 12 * 1024 * 1024;
 
-/** Every `*.jsonl` under `root`, depth-bounded, newest first. */
-function newestTranscripts(root: string, depth: number): string[] {
+/** Matching JSONL transcripts under `root`, depth-bounded, newest first. */
+function newestTranscripts(
+  root: string,
+  depth: number,
+  acceptsName: (name: string) => boolean = (name) => name.endsWith('.jsonl'),
+): string[] {
   if (!existsSync(root)) return [];
   const found: Array<{ path: string; mtimeMs: number }> = [];
   const walk = (dir: string, left: number) => {
@@ -58,7 +73,7 @@ function newestTranscripts(root: string, depth: number): string[] {
       const p = join(dir, e.name);
       if (e.isDirectory()) {
         if (left > 0) walk(p, left - 1);
-      } else if (e.isFile() && e.name.endsWith('.jsonl')) {
+      } else if (e.isFile() && acceptsName(e.name)) {
         try {
           const st = statSync(p);
           if (st.size > 0) found.push({ path: p, mtimeMs: st.mtimeMs });
@@ -82,7 +97,14 @@ const BACKENDS: Array<{
     backend: 'codex',
     fixtures: CODEX_WIRE_FIXTURES,
     // ~/.papercusp/su-codex-homes/session-<advId>/sessions/YYYY/MM/DD/rollout-*.jsonl
-    roots: () => newestTranscripts(join(PAPERCUSP, 'su-codex-homes'), 6),
+    // A Codex home also writes `history.jsonl`, whose `{session_id, ts, text}`
+    // prompt-history rows are not rollout wire records. Sampling it as a
+    // transcript collapses those rows into the guard's ambiguous `?` census.
+    roots: () => newestTranscripts(
+      join(PAPERCUSP, 'su-codex-homes'),
+      6,
+      (name) => name.startsWith('rollout-') && name.endsWith('.jsonl'),
+    ),
   },
   {
     backend: 'omp',
@@ -97,6 +119,28 @@ const BACKENDS: Array<{
     roots: () => newestTranscripts(join(PAPERCUSP, 'session-claude'), 4),
   },
 ];
+
+describe('transcript wire discovery', () => {
+  const root = mkdtempSync(join(tmpdir(), 'transcript-wire-discovery-'));
+  afterAll(() => rmSync(root, { recursive: true, force: true }));
+
+  it('samples Codex rollout wire without admitting newer history.jsonl prompt rows', () => {
+    const day = join(root, 'session-1', 'sessions', '2026', '08', '25');
+    mkdirSync(day, { recursive: true });
+    const rollout = join(day, 'rollout-2026-08-25T00-00-00-session.jsonl');
+    const history = join(root, 'session-1', 'history.jsonl');
+    writeFileSync(rollout, '{"type":"response_item"}\n');
+    writeFileSync(history, '{"session_id":"session","ts":1,"text":"prompt"}\n');
+    utimesSync(rollout, new Date(1_000_000), new Date(1_000_000));
+    utimesSync(history, new Date(2_000_000), new Date(2_000_000));
+
+    expect(newestTranscripts(
+      root,
+      6,
+      (name) => name.startsWith('rollout-') && name.endsWith('.jsonl'),
+    )).toEqual([rollout]);
+  });
+});
 
 /** Parsed records from the newest transcripts for one backend. */
 function readRecords(paths: string[]): unknown[] {
