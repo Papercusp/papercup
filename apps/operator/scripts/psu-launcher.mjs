@@ -1078,7 +1078,7 @@ export function ompModelCompatibilityNotice(model) {
   return null;
 }
 
-const OMP_REASONING_MANDATORY_TITLE_BUG_RE =
+const OMP_OX_ALPHA_MODEL_RE =
   /^(?:openrouter\/)?stealth\/ox-alpha(?::(?:low|medium|high|xhigh|max))?$/i;
 
 /**
@@ -1092,9 +1092,36 @@ const OMP_REASONING_MANDATORY_TITLE_BUG_RE =
  */
 export function ompTitleMitigationArgs(model) {
   if (typeof model !== "string") return [];
-  return OMP_REASONING_MANDATORY_TITLE_BUG_RE.test(model.trim())
+  return OMP_OX_ALPHA_MODEL_RE.test(model.trim())
     ? ["--no-title"]
     : [];
+}
+
+const OMP_OPENROUTER_RESPONSES_ENV = "PI_OPENROUTER_RESPONSES";
+
+/**
+ * TEMPORARY compatibility guard for EI-21439300345381616.
+ *
+ * OMP 18.0.3's OpenRouter Responses route persists a failed ox-alpha request as
+ * an empty assistant turn (429 / zero usage). `PI_OPENROUTER_RESPONSES=0` keeps
+ * this exact model on the stable OpenRouter route until OMP fixes that behavior.
+ * An explicit environment override wins; unrelated models and backends remain
+ * byte-identical. Pure + exported for fresh role, fresh SU, and resume tests.
+ */
+export function ompResponsesCompatibilityEnv(
+  agent,
+  model,
+  env = process.env,
+) {
+  if (
+    agent !== "omp" ||
+    typeof model !== "string" ||
+    !OMP_OX_ALPHA_MODEL_RE.test(model.trim()) ||
+    env?.[OMP_OPENROUTER_RESPONSES_ENV] != null
+  ) {
+    return {};
+  }
+  return { [OMP_OPENROUTER_RESPONSES_ENV]: "0" };
 }
 
 export function modelArgsFor(agent, model) {
@@ -8273,6 +8300,217 @@ export function classifyLiveHostActivity(
   };
 }
 
+/**
+ * WI-41663 — the SECOND liveness oracle, and the only one that sees a HEADLESS
+ * codex session.
+ *
+ * WHY THIS EXISTS. `classifyLiveHostActivity` above reads the psu PTY-HOST
+ * registry (`findLiveHostFor` → `~/.papercusp/psu-pty/<sid>.json`), which is
+ * written only by a psu pty host. A headless session — the common shape here,
+ * driven by the operator's wake executor as a cold-loop `codex exec … resume` —
+ * registers no such file, so the WI-3455 double-host guard sees nothing, lets
+ * the resume through, and the owner gets codex's own opaque refusal instead:
+ *
+ *   Error: thread/resume: thread/resume failed: thread <id> already has an
+ *          active writer (code -32600)
+ *
+ * …which names no route, so the reasonable read is "my session is broken". It is
+ * not. It is working. That is precisely why it cannot be resumed.
+ *
+ * Codex enforces ONE WRITER PER THREAD with an flock on
+ * `<CODEX_HOME>/thread-writer-locks/<uuid>.lock`. That lock is the authority
+ * codex itself consults, so reading it is not a second opinion — it is the same
+ * verdict, obtained early enough for psu to explain it and name a real route.
+ * `/proc/locks` yields the holder PID with no subprocess and without an flock
+ * attempt of our own (which would itself contend).
+ *
+ * FAIL-OPEN, EVERY PATH. An unreadable `/proc/locks`, a non-Linux host, a missing
+ * lock file all report "not held" — the exact pre-WI-41663 behavior. This guard
+ * may only ever turn an error that WAS going to happen into a better message; it
+ * must never block a resume that would have worked.
+ */
+
+/** Decode a Linux `dev_t` into major/minor, the glibc way. `/proc/locks` prints
+ *  them as `%02x:%02x`, so callers compare numerically rather than by string —
+ *  zero-padding is not something to depend on. Pure — exported for tests. */
+export function devMajorMinor(dev) {
+  const d = BigInt(dev);
+  return {
+    major: Number(((d >> 8n) & 0xfffn) | ((d >> 32n) & ~0xfffn)),
+    minor: Number((d & 0xffn) | ((d >> 12n) & ~0xffn)),
+  };
+}
+
+/**
+ * The PID holding a WRITE flock on the given device+inode per `/proc/locks` text,
+ * else null. Pure — exported for tests.
+ *
+ * A row whose second token is `->` is a BLOCKED WAITER, not a holder. Counting
+ * one would report a live writer for a thread whose real writer had already
+ * exited — i.e. refuse a resume that is now perfectly legal.
+ * Rows read: `<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> <start> <end>`.
+ */
+export function findFlockWriteHolderPid(procLocksText, { major, minor, inode }) {
+  for (const raw of String(procLocksText || "").split("\n")) {
+    const parts = raw.trim().split(/\s+/);
+    if (parts.length < 6) continue;
+    if (parts[1] === "->") continue; // blocked waiter — never the holder
+    if (parts[1] !== "FLOCK" || parts[3] !== "WRITE") continue;
+    const m = /^([0-9a-f]+):([0-9a-f]+):(\d+)$/i.exec(parts[5]);
+    if (!m) continue;
+    // Inode numbers are unique only per filesystem — matching one without its
+    // device would let a lock on an unrelated mount refuse a resumable session.
+    if (parseInt(m[1], 16) !== major) continue;
+    if (parseInt(m[2], 16) !== minor) continue;
+    if (Number(m[3]) !== Number(inode)) continue;
+    const pid = Number(parts[4]);
+    if (Number.isFinite(pid) && pid > 0) return pid;
+  }
+  return null;
+}
+
+/** `<CODEX_HOME>/thread-writer-locks/<uuid>.lock`. Pure — exported for tests. */
+export function codexThreadWriterLockPath(codexHome, sessionId) {
+  if (!codexHome || !sessionId) return null;
+  return join(codexHome, "thread-writer-locks", `${sessionId}.lock`);
+}
+
+const readProcLocksText = () => readFileSync("/proc/locks", "utf8");
+
+/**
+ * Is a codex thread currently open by a live writer?
+ * `{ held, pid, lockPath, sessionId, reason }` — fail-open on every error path.
+ *
+ * `sessionId` null ⇒ scan the whole home. psu resumes a tracked row with no
+ * recorded native id as `resume --last`, which lands on the home's most recent
+ * thread — usually the live one — so "any held writer in this home" is the honest
+ * question there. It is also the right question for the picker, where a row's
+ * recorded `sessionId` can have DRIFTED from the thread actually running: a codex
+ * carry-respawn mints a new uuid, and adv row #18052 still recorded 01a036a4-…
+ * while 01a038ff-… was the live thread.
+ * Pure apart from the injected readers — exported for tests.
+ */
+export function codexThreadWriterHolder(
+  codexHome,
+  sessionId,
+  {
+    readProcLocks = readProcLocksText,
+    statFile = statSync,
+    listDir = safeReaddir,
+  } = {},
+) {
+  const miss = (reason, lockPath = null) => ({
+    held: false,
+    pid: null,
+    lockPath,
+    sessionId: null,
+    reason,
+  });
+  if (!codexHome) return miss("no-home");
+  let procLocks;
+  try {
+    procLocks = readProcLocks();
+  } catch {
+    return miss("no-proc-locks");
+  }
+  const candidates = [];
+  if (sessionId) {
+    candidates.push({
+      sessionId,
+      lockPath: codexThreadWriterLockPath(codexHome, sessionId),
+    });
+  } else {
+    const lockDir = join(codexHome, "thread-writer-locks");
+    for (const ent of listDir(lockDir)) {
+      if (!ent.isFile?.() || !ent.name.endsWith(".lock")) continue;
+      const id = ent.name.slice(0, -".lock".length);
+      // `.coordination.lock` is always present and is not a thread; matching it
+      // would report every home live.
+      if (!UUID_RE.test(id)) continue;
+      candidates.push({ sessionId: id, lockPath: join(lockDir, ent.name) });
+    }
+  }
+  // `free` (a lock file exists, nobody holds it) and `no-lock-file` (the thread
+  // was never opened, or its lock was cleaned up) are both fail-open, so they do
+  // not change what psu DOES — but they are the diagnostic a later reader trusts,
+  // so they must not be conflated. Only a candidate we could actually stat proves
+  // a lock file exists.
+  let sawLockFile = false;
+  for (const c of candidates) {
+    let st;
+    try {
+      st = statFile(c.lockPath);
+    } catch {
+      continue; // never opened, or already cleaned up
+    }
+    sawLockFile = true;
+    const { major, minor } = devMajorMinor(st.dev);
+    const pid = findFlockWriteHolderPid(procLocks, {
+      major,
+      minor,
+      inode: st.ino,
+    });
+    if (pid)
+      return {
+        held: true,
+        pid,
+        lockPath: c.lockPath,
+        sessionId: c.sessionId,
+        reason: "held",
+      };
+  }
+  return miss(
+    sawLockFile ? "free" : "no-lock-file",
+    candidates[0]?.lockPath ?? null,
+  );
+}
+
+/**
+ * The CODEX_HOME a resume of `session` will run in — an explicit `codexHome`
+ * (WI-3884: the home a rollout was actually FOUND in by disk scan) wins over the
+ * row-id derivation. Extracted so the writer-lock guard, the picker and the spawn
+ * all ask about the SAME home; a second copy of this derivation is how a guard
+ * ends up reporting confidently on a directory nothing runs in. Pure — exported
+ * for tests.
+ */
+export function codexResumeHome(session, home = homedir()) {
+  if (session?.agent !== "codex") return null;
+  if (session.codexHome && existsSync(session.codexHome))
+    return session.codexHome;
+  if (session.id != null)
+    return join(home, ".papercusp", "su-codex-homes", `session-${session.id}`);
+  return null;
+}
+
+/**
+ * The refusal text for a resume codex is going to reject anyway. Pure — exported
+ * for tests.
+ *
+ * Deliberately NOT overridable by `PSU_FORCE_RESUME=1`: that variable overrides
+ * psu's OWN double-host guard, and anyone reaching for it here would simply
+ * receive codex's `-32600` one step later. Saying so is the difference between a
+ * message that ends the confusion and one that relocates it.
+ */
+export function codexActiveWriterMessage(session, holder) {
+  const idPart =
+    holder.sessionId || session.sessionId || "its most recent thread";
+  const forkHint = session.sessionId
+    ? `psu --resume=${session.sessionId} --fork`
+    : "psu --resume=<session-id> --fork";
+  return (
+    `psu: codex thread ${idPart} is ALREADY OPEN by a live writer (pid ${holder.pid}) — that session is ` +
+    `running RIGHT NOW, most likely a headless loop-driven agent rather than a window you can see.\n` +
+    `psu: codex allows one writer per thread, so resuming here would fail with "thread/resume failed: … ` +
+    `already has an active writer (code -32600)". PSU_FORCE_RESUME=1 does NOT bypass it — the lock is ` +
+    `codex's, not psu's.\n` +
+    `psu: what does work —\n` +
+    `psu:   • run ALONGSIDE it on a branched copy of the conversation:  ${forkHint}\n` +
+    `psu:   • talk to the live agent instead:  coord:send { to:['${session.coordOwnerId || "<owner-id>"}'], wake:'required' }\n` +
+    `psu:   • or stop the holder first (processes:kill by taskId — never pkill -f), then resume in place.\n` +
+    `psu: lock: ${holder.lockPath}`
+  );
+}
+
 function fmtAge(iso) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return "";
@@ -8357,6 +8595,25 @@ async function launchResume(
             `psu: use that window, run alongside it with --fork, or set PSU_FORCE_RESUME=1 to take over anyway.`,
         );
       }
+      process.exit(2);
+    }
+  }
+  // WI-41663: the guard above only sees sessions with a psu PTY HOST. A headless
+  // codex session (cold-loop `codex exec … resume`, the common shape here)
+  // registers none, so it sailed through and the owner got codex's raw
+  // "already has an active writer (code -32600)" with no route out of it.
+  // Ask codex's OWN single-writer flock instead — same verdict, early enough to
+  // explain. Fail-open throughout (codexThreadWriterHolder), and NOT overridable
+  // by PSU_FORCE_RESUME: that overrides psu's guard, not codex's lock.
+  // A FORK is exempt — verified: `codex fork <uuid>` succeeds while the original's
+  // writer lock is held, which is exactly why it is the route we recommend.
+  if (!fork && session.agent === "codex") {
+    const holder = codexThreadWriterHolder(
+      codexResumeHome(session),
+      session.sessionId || null,
+    );
+    if (holder.held) {
+      console.error(codexActiveWriterMessage(session, holder));
       process.exit(2);
     }
   }
@@ -8475,33 +8732,30 @@ async function launchResume(
     // bearer, so no PAPERCUSP_SU_TOKEN is needed. An explicit `codexHome`
     // (WI-3884: a tracked home recovered by disk scan, not row id) wins — it is
     // the home the rollout was actually FOUND in.
-    if (
-      session.agent === "codex" &&
-      session.codexHome &&
-      existsSync(session.codexHome)
-    ) {
-      env.CODEX_HOME = session.codexHome;
-    } else if (session.agent === "codex" && session.id != null) {
-      env.CODEX_HOME = join(
-        homedir(),
-        ".papercusp",
-        "su-codex-homes",
-        `session-${session.id}`,
-      );
-    }
+    // WI-41663: one derivation (codexResumeHome), shared with the writer-lock
+    // guard above and the picker's live label — so a guard can never report on a
+    // different directory than the one the spawn actually uses.
+    const resumeCodexHome = codexResumeHome(session);
+    if (resumeCodexHome) env.CODEX_HOME = resumeCodexHome;
     let resumeModel = model;
     if (session.agent === "omp") {
+      const selectedResumeModel =
+        resumeModel || lastActiveModelFor(session) || ompDefaultModel();
       resumeModel = applyOmpResumeAccountRoute({
         session,
         env,
         accountRoute: accountEnv,
-        model,
+        model: selectedResumeModel,
       });
       const requestedResumeModel = resumeModel;
       resumeModel = normalizeOmpModelSpec(requestedResumeModel);
       const resumeModelNotice =
         ompModelCompatibilityNotice(requestedResumeModel);
       if (resumeModelNotice) console.error(resumeModelNotice);
+      Object.assign(
+        env,
+        ompResponsesCompatibilityEnv(session.agent, resumeModel, env),
+      );
     }
     if (session.agent === "codex" && env.CODEX_HOME) {
       // WI-38706 — REBUILD BEFORE PATCHING. The claude branch above re-ensures its
@@ -10184,6 +10438,16 @@ async function resumeFlow(args = {}) {
     process.exit(1);
   }
   const { search } = await import("@inquirer/prompts");
+  // WI-41663: read /proc/locks ONCE for the whole list rather than per row — the
+  // picker labels every codex session whose thread is currently open by a live
+  // writer, so "this one will refuse to resume" is visible BEFORE the pick rather
+  // than as an error after it. Fail-open: unreadable ⇒ no labels, list unchanged.
+  let procLocksSnapshot = null;
+  try {
+    procLocksSnapshot = readFileSync("/proc/locks", "utf8");
+  } catch {
+    /* not Linux, or unreadable — rows simply carry no live-writer label */
+  }
   const rows = resumable.map((s) => {
     // Surface each session's last-active model in its row (WI-3758) — a cheap
     // tail read per row; unknown (omp / unreadable) rows just omit the segment.
@@ -10194,6 +10458,21 @@ async function resumeFlow(args = {}) {
       /* row stays model-less */
     }
     const lineage = resumeSessionLineageLabel(s);
+    // WI-41663: pass sessionId:null so the whole home is scanned — a row's
+    // recorded id drifts from the running thread after a carry-respawn, and the
+    // question the picker is asking is "is this session live", not "is that exact
+    // uuid live".
+    let liveWriter = null;
+    if (s.agent === "codex" && procLocksSnapshot !== null) {
+      try {
+        const holder = codexThreadWriterHolder(codexResumeHome(s), null, {
+          readProcLocks: () => procLocksSnapshot,
+        });
+        if (holder.held) liveWriter = holder.pid;
+      } catch {
+        /* label is a convenience, never a reason to fail the picker */
+      }
+    }
     // The age shown is LAST-ACTIVE, not started (WI-38226). `startedAt` is bumped to now() by
     // every reactivation, so it reads as "3m ago" for a session that resumed and then sat idle,
     // while a session that has been working for hours reads as the oldest thing in the list —
@@ -10202,7 +10481,8 @@ async function resumeFlow(args = {}) {
     return {
       name:
         `${s.id != null ? `#${s.id}  ·  ` : ""}${s.agent}${lastModel ? ` (${lastModel})` : ""}  ·  ${s.planSlug ? `plan ${s.planSlug}` : "no plan"}  ·  ${s.cwd}  ·  ${fmtAge(s.lastActiveAt || s.startedAt)}` +
-        `${lineage ? `  · ${lineage}` : ""}${s.endedAt ? "" : "  · active"}`,
+        `${lineage ? `  · ${lineage}` : ""}${s.endedAt ? "" : "  · active"}` +
+        `${liveWriter ? `  · ⚠ LIVE WRITER (pid ${liveWriter}) — resume needs --fork` : ""}`,
       value: s,
     };
   });
@@ -10427,6 +10707,10 @@ async function roleFlow(args, role, rolesMeta) {
     // live model object like Claude's statusline stdin). Omitted when no --model (default).
     envelopeEnv: {
       ...res.envelopeEnv,
+      ...ompResponsesCompatibilityEnv(res.agent, roleModel, {
+        ...process.env,
+        ...res.envelopeEnv,
+      }),
       ...(roleOmpConfigDir
         ? {
             PI_CONFIG_DIR: roleOmpConfigDir,
@@ -11194,6 +11478,11 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       ...(res.agent === "claude" && !res.envelopeEnv?.ANTHROPIC_BASE_URL
         ? defaultAccountEnv()
         : {}),
+      ...ompResponsesCompatibilityEnv(
+        res.agent,
+        launchModel || (res.agent === "omp" ? ompDefaultModel() : null),
+        { ...process.env, ...res.envelopeEnv },
+      ),
       PAPERCUSP_AGENT_SESSION: "1",
       // PAPERCUSP_MODEL: the launch model spec, exported so the codex/omp title hook can
       // render the model in the terminal title (WI-1963 title-parity — those CLIs have no
