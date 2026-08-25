@@ -5759,3 +5759,35 @@ describe('schema skew between the hook and the deployed tool (WI-40602)', () => 
     expect(sent[1].command).toContain('cat packages/operator-core/lib/foo.ts');
   });
 });
+
+describe('tauri-agent-tools screenshot window-resolution advisory (EI-21383660965482252)', () => {
+  const bashWithInput = (command: string, sid: string) => ({
+    tool_name: 'Bash',
+    tool_input: { command },
+    session_id: sid,
+  });
+
+  it('advises even when --pid is explicit — the pid aims the bridge, not the pixel grab', () => {
+    const out = runGate(
+      bashWithInput(
+        'tauri-agent-tools screenshot --pid 3593460 --selector body --out /tmp/shot.png',
+        's-tat-screenshot-1',
+      ),
+    );
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('screenshot advisory (EI-21383660965482252)');
+    expect(hso.additionalContext).toContain('capability:computer screenshot');
+    expect(hso.additionalContext).toContain('EI-11084');
+  });
+
+  it('stays quiet for non-screenshot tat subcommands', () => {
+    const out = runGate(
+      bashWithInput("tauri-agent-tools eval --pid 3593460 'document.title'", 's-tat-screenshot-2'),
+    );
+    expect(out.status).toBe(0);
+    const ctx = JSON.parse(out.stdout).hookSpecificOutput?.additionalContext ?? '';
+    expect(ctx).not.toContain('screenshot advisory (EI-21383660965482252)');
+  });
+});
