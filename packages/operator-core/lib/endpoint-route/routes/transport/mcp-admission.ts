@@ -351,6 +351,26 @@ export async function acquireAdmission(
 }
 
 /**
+ * Hold an admitted request's capacity lease for the complete handler turn.
+ * The transport must not release the lease after the admission decision but
+ * before mcp-handler has finished its CPU-bound handshake/dispatch work.
+ */
+export async function withMcpAdmission(
+  req: Request,
+  pressure: LoopPressure,
+  enabled: boolean,
+  run: () => Promise<Response>,
+): Promise<Response> {
+  const decision = await acquireAdmission(req, pressure, enabled);
+  if (decision.response) return decision.response;
+  try {
+    return await run();
+  } finally {
+    decision.lease?.release();
+  }
+}
+
+/**
  * Admission gate (testable core): returns a 429 Response to shed, or null to admit.
  * Peeks the body via `req.clone()` so the ORIGINAL `req` stays intact for the handler.
  * `pressure`/`enabled` are injected so this is unit-testable without booting a monitor.
