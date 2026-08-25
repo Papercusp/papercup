@@ -44,6 +44,10 @@
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { normalizeMcpName } from '@papercusp/tooldef';
+import {
+  MCP_REQUEST_TRACE_HEADER,
+  MAX_MCP_REQUEST_TRACE_ID_CHARS,
+} from '@papercusp/tooldef-mcp';
 import { isCheapRepeatingBeat } from '@papercusp/operator-core/lib/system-health/mcp-proxy-beats';
 export { CHEAP_REPEATING_BEAT_PATHS, isCheapRepeatingBeat } from '@papercusp/operator-core/lib/system-health/mcp-proxy-beats';
 // The one path this proxy answers itself. Shared with watchdog.mjs so the liveness probe and
@@ -94,8 +98,8 @@ const UPSTREAM_AGENT = new http.Agent({
  * overwrites this header before forwarding, so an untrusted client cannot inject an unbounded
  * value into upstream logs or make two unrelated requests appear correlated.
  */
-export const MCP_PROXY_TRACE_HEADER = 'x-papercusp-mcp-trace-id';
-export const MAX_MCP_PROXY_TRACE_ID_CHARS = 36; // randomUUID()'s fixed serialized width
+export const MCP_PROXY_TRACE_HEADER = MCP_REQUEST_TRACE_HEADER;
+export const MAX_MCP_PROXY_TRACE_ID_CHARS = MAX_MCP_REQUEST_TRACE_ID_CHARS;
 
 const configuredInitializeSlowMs = Number(process.env.PAPERCUSP_MCP_PROXY_INITIALIZE_SLOW_MS);
 /** Successful initialize requests are silent unless their end-to-end proxy time crosses this. */
