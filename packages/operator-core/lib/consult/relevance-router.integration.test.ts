@@ -266,12 +266,12 @@ describe('routeConsult — D-003 honesty invariants', () => {
   it('no embedder → bounded lexical fallback keeps measurable ranking but no semantic qualification', async () => {
     await rootSql`
       INSERT INTO harness_shared.session_turns
-        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text, turn_origin_verdict)
       VALUES
         ('default', 'claude', 'sess-lexical-best', 1, ${NOW.toISOString()}::timestamptz,
-         'agent-lexical-best', 'assistant', 'consult router fallback evidence for manual review'),
+         'agent-lexical-best', 'assistant', 'consult router fallback evidence for manual review', NULL),
         ('default', 'claude', 'sess-lexical-second', 1, ${new Date(NOW.getTime() - DAY).toISOString()}::timestamptz,
-         'agent-lexical-second', 'assistant', 'consult router fallback notes'),
+         'agent-lexical-second', 'assistant', 'consult router fallback notes', NULL),
         ('default', 'claude', 'sess-lexical-loop', 1, ${NOW.toISOString()}::timestamptz,
          'agent-lexical-loop', 'assistant', 'consult router fallback evidence for manual review', 'agent-injected')
     `;
