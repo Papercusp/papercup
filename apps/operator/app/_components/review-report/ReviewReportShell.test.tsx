@@ -88,6 +88,12 @@ const groupCheck = (id: string) =>
 const rowCheck = (id: string) =>
   screen.getByTestId(`review-row-check-${id}`) as HTMLButtonElement;
 
+function focusBody(): void {
+  document.body.tabIndex = -1;
+  document.body.focus();
+  document.body.removeAttribute("tabindex");
+}
+
 describe("rendering", () => {
   it("renders title, subtitle, groups, rows, evidence and confidence flags", () => {
     renderShell();
@@ -267,7 +273,7 @@ describe("selection + apply", () => {
     fireEvent.click(apply);
 
     rerender(<ReviewReportShell {...props} busy />);
-    apply.blur();
+    focusBody();
     expect(document.activeElement).toBe(document.body);
     rerender(<ReviewReportShell {...props} busy={false} />);
 
@@ -298,7 +304,7 @@ describe("selection + apply", () => {
     fireEvent.click(apply);
 
     rerender(report(pending, true));
-    apply.blur();
+    focusBody();
     expect(document.activeElement).toBe(document.body);
     rerender(report(applied));
 
