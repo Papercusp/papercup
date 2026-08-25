@@ -2,8 +2,32 @@
  * Agent-review lifecycle over the existing work-item queue + Blender ledger.
  *
  * `scout_routed_ideas` remains the sole grade authority. The work-item payload stores
- * routing state only; comments preserve round history. Every write is retryable: a
- * retry re-reads the standing ledger grade and converges the payload before returning.
+ * routing state only; comments preserve round history.
+ *
+ * WHAT IS AND IS NOT RETRYABLE (WI-41691). `reconcileAgentReviewGrade` below is itself
+ * convergent: it re-reads the standing ledger grade, recomputes the target status, and
+ * dedupes its own side effects (`changed`, `ensureComment`), so re-invoking it after an
+ * applied transition is a no-op and after a PARTIAL one completes the residue. That
+ * property is NOT reachable through the supported surface. `blender:grade-idea` runs
+ * `preflightAgentReviewGrade` first and returns `applied:false` with
+ * `reason:'agent-review-not-pending'` — before the ledger write and before reconcile —
+ * as soon as the payload has left 'pending', which a partial write is exactly what makes
+ * it do. So a retry THROUGH THE TOOL cannot converge a partially-applied transition;
+ * only a direct call to `reconcileAgentReviewGrade` can. That refusal is deliberate
+ * (grade-idea.ts D-003/P-004: a non-pending regrade must not re-decide a settled round),
+ * not an oversight — the claim that stood here until WI-41691 described the function and
+ * silently promised the same of the tool.
+ *
+ * The gap is narrower than it was: WI-41687 removed the dominant partial-write path (the
+ * revision transfer no longer throws when the submitter's session has been reaped).
+ * `ensureComment` or `deliverRevision` throwing after `mergeWorkItemPayload` has
+ * committed still reaches it. Whether a settled row may be re-driven at all is the
+ * product question parked on WI-41689; until that is answered this comment states the
+ * guarantee rather than assuming one.
+ *
+ * Pinned by lib/doc-claims/agent-review-retry-convergence.test.ts — if the pending guard
+ * is ever relaxed to admit a converging regrade, that test fails and forces this
+ * paragraph to be corrected in the same change.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import {
