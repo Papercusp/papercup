@@ -5,6 +5,7 @@ import type { WorkspaceHostDesiredSpec, WorkspaceHostProviderConnection } from '
 const control = vi.hoisted(() => ({
   dedupConflict: false,
   startOptions: null as null | Record<string, unknown>,
+  stepOptions: null as null | Record<string, unknown>,
   sleep: vi.fn(async (_ms: number) => {}),
   provider: { target: 'gcp' },
   createProvider: vi.fn(),
@@ -15,9 +16,10 @@ vi.mock('../workspace-host/gcp-provider', () => ({
   createConfiguredGcpWorkspaceHostProvider: control.createProvider,
 }));
 
-vi.mock('../workspace-host/provisioning-runner', () => ({
-  runWorkspaceHostProvisioning: control.runProvisioning,
-}));
+vi.mock('../workspace-host/provisioning-runner', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../workspace-host/provisioning-runner')>();
+  return { ...actual, runWorkspaceHostProvisioning: control.runProvisioning };
+});
 
 vi.mock('@dbos-inc/dbos-sdk', () => {
   class WorkflowQueue {
@@ -29,7 +31,10 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
   return {
     WorkflowQueue,
     DBOS: {
-      runStep: (run: () => unknown) => run(),
+      runStep: (run: () => unknown, options: Record<string, unknown>) => {
+        control.stepOptions = options;
+        return run();
+      },
       sleep: control.sleep,
       registerWorkflow: (implementation: unknown) => implementation,
       startWorkflow:
@@ -49,6 +54,10 @@ import {
   startWorkspaceHostProvisioningWorkflow,
   WorkspaceHostProvisioningConflictError,
 } from './workspace-host-provision-workflow';
+import {
+  WorkspaceHostProvisioningConnectionError,
+  WorkspaceHostProvisioningRequestError,
+} from '../workspace-host/provisioning-runner';
 
 const desired: WorkspaceHostDesiredSpec = {
   hostId: 'host-1',
@@ -87,6 +96,7 @@ const plan = {
 beforeEach(() => {
   control.dedupConflict = false;
   control.startOptions = null;
+  control.stepOptions = null;
   control.sleep.mockClear();
   control.createProvider.mockReset();
   control.createProvider.mockReturnValue(control.provider);
@@ -162,6 +172,21 @@ describe('workspace-host provisioning DBOS admission', () => {
     await expect(startWorkspaceHostProvisioningWorkflow(input)).resolves.toMatchObject({ status: 'succeeded' });
     expect(execute).toHaveBeenCalledTimes(2);
     expect(control.sleep).toHaveBeenCalledWith(7_500);
+  });
+
+  it('marks typed request and connection refusals non-retryable while retaining transient retries', async () => {
+    const terminal = new WorkspaceHostProvisioningRequestError(['desired.zone must belong to desired.region']);
+    setWorkspaceHostProvisioningExecutor(async () => {
+      throw terminal;
+    });
+
+    await expect(startWorkspaceHostProvisioningWorkflow(input)).rejects.toBe(terminal);
+
+    const shouldRetry = control.stepOptions?.shouldRetry as ((error: unknown) => boolean) | undefined;
+    expect(shouldRetry).toBeTypeOf('function');
+    expect(shouldRetry?.(terminal)).toBe(false);
+    expect(shouldRetry?.(new WorkspaceHostProvisioningConnectionError(['connection unavailable']))).toBe(false);
+    expect(shouldRetry?.(new Error('transient provider timeout'))).toBe(true);
   });
 
   it('maps a concurrent host-scoped dedup refusal to a typed conflict', async () => {

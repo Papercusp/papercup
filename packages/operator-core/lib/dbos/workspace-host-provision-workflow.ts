@@ -15,6 +15,8 @@ import {
 import { createConfiguredGcpWorkspaceHostProvider } from '../workspace-host/gcp-provider';
 import {
   runWorkspaceHostProvisioning,
+  WorkspaceHostProvisioningConnectionError,
+  WorkspaceHostProvisioningRequestError,
   type WorkspaceHostProvisioningResult,
 } from '../workspace-host/provisioning-runner';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
@@ -76,6 +78,9 @@ async function workspaceHostProvisioningWorkflowImpl(
       retriesAllowed: true,
       maxAttempts: 3,
       intervalSeconds: 2,
+      shouldRetry: (error) =>
+        !(error instanceof WorkspaceHostProvisioningRequestError) &&
+        !(error instanceof WorkspaceHostProvisioningConnectionError),
     });
     if (result.status !== 'in-progress') return result;
     const retryAfterMs = Math.max(250, Math.min(30_000, result.retryAfterMs ?? DEFAULT_RETRY_AFTER_MS));
