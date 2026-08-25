@@ -993,6 +993,42 @@ fooled that way, and needs no unique string at all.
 Treating `INCONCLUSIVE` as "my change is missing" would re-create the `marker` bug
 with the sign flipped, and send you to re-fire a gate that already carries your work.
 
+## Ratified designs: implementation owes current passing visual evidence
+
+## Ratified designs owe current passing visual evidence
+
+Unratified mockups constrain nothing — explore freely. Once a reviewer ratifies a
+reference (`design-phase.ratify_reference`), implementation of that surface owes
+CURRENT PASSING evidence for every required case before it can be completed.
+Produce it with `design-phase.compare_render`; read what a surface owes and has
+with `design-phase.get_design_evidence`.
+
+- **One reference = one image = one environment (D-019).** A required case must be
+  contracted at the reference's own viewport/theme/state — `compare_render` refuses
+  a cross-environment capture, since comparing a 1280x800 reference against a
+  390x844 render measures the viewport, not fidelity. Cover a second breakpoint or
+  state by ratifying a **second reference**, never by adding a case to the first.
+- **Only deterministic engine evidence counts (D-004).** `advisoryNotes` explains a
+  failure; no prose turns a `fail` into a `pass`.
+- **Four ways evidence fails, each fixed differently:** *missing* (never compared) ·
+  *stale* (bound to a superseded revision — the stored record still reads
+  `verdict: 'pass'`, which is why this one gets misread as green) · *invalid* (no
+  meaningful verdict, or an unreadable schema version) · *failing* (diff exceeds
+  policy). The refusal names every unmet case and its remedy at once — fix as a batch.
+- **Visual evidence supplements, never replaces.** A green design gate says the pixels
+  match at the ratified environments; you still owe responsive, interaction,
+  functional and accessibility validation.
+- **Retraction is the legitimate exit.** If the design no longer applies, retract the
+  reference — the surface becomes unconstrained again, as a recorded transition.
+
+Today the gate REPORTS rather than blocks on `work_items:complete`
+(`DESIGN_EVIDENCE_GATE` on, `DESIGN_EVIDENCE_GATE_ENFORCING` off, per D-006): the
+`designEvidence` line on your completion result is the refusal you will get once
+enforcement lands. Treat it as one.
+
+
+## Commit discipline: git-sync owns commit + push — you do neither
+
 ⚠⚠ **Blob identity answers "does this candidate carry my fix" and NOTHING ELSE. It does
 NOT predict whether a test will appear in the next failing set.** `test:affected` selects
 suites from each candidate's OWN changed paths, so two candidates with different
@@ -1123,55 +1159,6 @@ This single unstated mechanism cost 5–6 agents ~2h and at least four public re
 `checkpointRunInFlight.candidate` advancing under an **identical `startedAtMs`** is not corruption —
 it is the auto-refire's signature, and it was retracted as impossible. `ps` showing ONE process
 since 07:15Z was simultaneously true and never contradicted it.
-
-## Ratified designs: implementation owes current passing visual evidence
-
-## Ratified designs: implementation owes current passing visual evidence
-
-**Exploration is unrestricted.** A mockup nobody has ratified constrains nothing —
-iterate freely, and none of the below applies.
-
-**Ratification is the switch.** Once a reference is ratified for a surface
-(`design-phase.ratify_reference`), implementation work on that surface owes
-CURRENT PASSING evidence for every required case before it may be completed:
-
-```
-design-phase.ratify_reference    a reviewer pins the approved image + its required cases
-design-phase.compare_render      produce evidence for one case, deterministically
-design-phase.get_design_evidence read what a surface currently owes and has
-```
-
-- **One reference = one image = one environment (D-019).** A required case must be
-  contracted at the reference's own viewport/theme/state, because `compare_render`
-  refuses a cross-environment capture — comparing a 1280x800 reference against a
-  390x844 render measures the viewport, not fidelity. **Cover a second breakpoint or
-  interaction state by ratifying a SECOND reference**, not by adding a case to the
-  first. The completion gate aggregates every reference on the feature.
-- **Only deterministic engine evidence counts (D-004).** `advisoryNotes` explains a
-  failure to a human; it never establishes one. No prose — yours or a reviewer's —
-  turns a `fail` into a `pass`.
-- **Four ways evidence fails to count**, each with a different fix: *missing* (never
-  compared) · *stale* (bound to a superseded revision — note the stored record still
-  reads `verdict: 'pass'`, which is why this one gets misread as green) · *invalid*
-  (the engine could not produce a meaningful verdict, or the record's schema version
-  is unreadable) · *failing* (diff exceeds the recorded policy). The refusal names
-  every unmet case and its remedy in one message, so fix them as a batch.
-- **Visual evidence SUPPLEMENTS; it never replaces.** A green design gate says the
-  pixels match at the ratified environments. It says nothing about responsive
-  behavior beyond those viewports, interaction, functional correctness, or
-  accessibility — all of which you still owe.
-- **The legitimate way out is retraction, not evasion.** If the design no longer
-  applies, retract the reference: the surface becomes unratified and unconstrained
-  again, recorded as an explicit transition by a named principal.
-
-**Rollout status:** the gate runs on `work_items:complete` and REPORTS today —
-`DESIGN_EVIDENCE_GATE` is on, `DESIGN_EVIDENCE_GATE_ENFORCING` is off. Per D-006 it
-starts blocking only after calibration and independent verification. A
-`designEvidence` line on your completion result is that report; read it as the
-refusal you will get once enforcement lands.
-
-
-## Commit discipline: git-sync owns commit + push — you do neither
 
 **The authoritative read of a LIVE run** is the marker the refire writes for exactly this purpose:
 

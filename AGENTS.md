@@ -440,6 +440,42 @@ suite.
 ⚠⚠ **STEP 0 FIRST — establish WHICH sha is actually being judged. Skipping this is the
 expensive mistake, and no amount of care in the steps below can recover from it.**
 
+## Ratified designs: implementation owes current passing visual evidence
+
+## Ratified designs owe current passing visual evidence
+
+Unratified mockups constrain nothing — explore freely. Once a reviewer ratifies a
+reference (`design-phase.ratify_reference`), implementation of that surface owes
+CURRENT PASSING evidence for every required case before it can be completed.
+Produce it with `design-phase.compare_render`; read what a surface owes and has
+with `design-phase.get_design_evidence`.
+
+- **One reference = one image = one environment (D-019).** A required case must be
+  contracted at the reference's own viewport/theme/state — `compare_render` refuses
+  a cross-environment capture, since comparing a 1280x800 reference against a
+  390x844 render measures the viewport, not fidelity. Cover a second breakpoint or
+  state by ratifying a **second reference**, never by adding a case to the first.
+- **Only deterministic engine evidence counts (D-004).** `advisoryNotes` explains a
+  failure; no prose turns a `fail` into a `pass`.
+- **Four ways evidence fails, each fixed differently:** *missing* (never compared) ·
+  *stale* (bound to a superseded revision — the stored record still reads
+  `verdict: 'pass'`, which is why this one gets misread as green) · *invalid* (no
+  meaningful verdict, or an unreadable schema version) · *failing* (diff exceeds
+  policy). The refusal names every unmet case and its remedy at once — fix as a batch.
+- **Visual evidence supplements, never replaces.** A green design gate says the pixels
+  match at the ratified environments; you still owe responsive, interaction,
+  functional and accessibility validation.
+- **Retraction is the legitimate exit.** If the design no longer applies, retract the
+  reference — the surface becomes unconstrained again, as a recorded transition.
+
+Today the gate REPORTS rather than blocks on `work_items:complete`
+(`DESIGN_EVIDENCE_GATE` on, `DESIGN_EVIDENCE_GATE_ENFORCING` off, per D-006): the
+`designEvidence` line on your completion result is the refusal you will get once
+enforcement lands. Treat it as one.
+
+
+## Commit discipline: git-sync owns commit + push — you do neither
+
 🚨 **Never fire a manual `release:checkpoint-run` while a run is in its re-triage window.** That
 window is where a STALE red gets voided and the gate re-fires itself onto a newer tip;
 `green-checkpoint.ts:2566` states plainly that killing it "discards the rescue and costs a full
@@ -669,36 +705,6 @@ matches, and a peer's prose or JSON payload is still ignored.
 
 ## Feature flags + PostHog
 
-Single source of truth for keys/defaults: `libs/flags/src/types.ts`; flip flags
-via `/admin/features`, not JSON or PostHog directly. Gate cuttable features from
-day one (`requireFlag` / `useFlag` / `gateApiRoute` / Hono middleware / MCP
-registration) — **a feature toggle is a `FLAGS` entry, never an ad-hoc
-`process.env.PAPERCUSP_*` boolean** (an env gate ships dark, dodges the default-on
-guard + the dark-flag expiry, and can't be flipped at runtime; `lint:env-feature-gates`
-enforces this in CI — env stays for launch-time/test/dev config only). **New flags
-DEFAULT TO ENABLED — finished work never ships dark.** A flag left OFF means the code does
-NOTHING in production, so a feature you built, tested, and left gated OFF is DEAD CODE and the
-task is NOT done — however green the tests. **Flipping it ON is the FINAL STEP OF THE SAME TASK,
-never a "someday" and never a hand-off** (and a flag flipped on only via a runtime override while
-its DEFAULT in `types.ts` stays `false` is the same half-finish — change the default). ⛔ The #1
-way good work silently dies is "ship it dark, verify/flip later" — PgBouncer AND claim-auto-convert
-BOTH sat built+tested+OFF for weeks. KILL the two excuses that cause it: (i) **"the owner flips it
-after verifying."** NO — if YOU built it and it's tested, YOU verify it: flip it ON, watch it work
-live, flip it OFF only if it breaks. Verify-then-flip is ONE atomic step YOU own in THIS task, not
-a punt to the owner or to "later"; the owner asked for a working feature, not dead code awaiting a
-ceremony. (ii) **"it's reversible / safe to ship dark."** Reversibility is the reason to flip it ON
-*confidently*, not a license to leave it OFF. Default-OFF is allowed ONLY for: genuinely
-INCOMPLETE/unsafe code (it doesn't fully work yet), an OWNER-AUTHORITY/security surface the owner
-must personally ratify (privilege-escalation, destructive reapers, public signup, full-autonomy),
-or a reversible CUTOVER kill-switch needing an attended live verify the OWNER runs — and "finished
-but I'd like it verified first" is NONE of these (that verify is YOUR job, in-task). When one of
-those three genuinely applies — and then (a) add it to
-`KNOWN_DARK_FLAGS` in `libs/flags/src/production-defaults.test.ts` with a
-justification (CI fails otherwise), and (b) surface the pending flip loudly in the
-plan's `## Now` + your completion report. The dark allowlist carries a
-`DARK_FLAGS_REVIEW_BY` expiry, so a dark flag can't linger silently. Reference:
-`/internal/docs/posthog` + `/internal/docs/posthog/feature-flags`.
-
 ⛔ **The dark allowlist is SHRINK-ONLY — never reconstruct or grow it, and never build a parallel one.** `KNOWN_DARK_FLAGS` exists ONLY to express the small set of genuinely-not-ready exceptions above (incomplete code / would-break-the-running-fleet / owner-authority / staged-cutover) — it is **NOT a parking lot for finished work**. `DarkCase` splits the set into two populations governed differently: the `DARK_FLAGS_HIGH_WATERMARK` size ceiling in `libs/flags/src/types.ts` (imported by `production-defaults.test.ts`) governs ONLY the **`parked`/`incomplete`** subset (`DARK_FLAGS_PARKING_COUNT`) — the actual parking-lot abuse; it **fails the build if THAT subset grows**, not the aggregate `DARK_FLAGS.size`. `owner-authority` / `cutover` entries (permanent or staged safety kill-switches) are **not rationed** by the watermark at all — they are governed only by the `DARK_FLAGS_REVIEW_BY` re-review date, so a legitimate new safety flag never has to fight a parking-lot budget. So: flipping a `parked`/`incomplete` flag ON *removes* its allowlist entry (the parking subset shrinks ✓); shipping a NEW genuinely-incomplete flag dark requires first **graduating an existing parked/incomplete dark flag** to make room (net-zero) or **explicit owner sign-off** to raise the watermark — never a quiet append. **Do NOT route around this guard** by re-introducing a second dark allowlist, a per-flag `process.env.PAPERCUSP_*` gate, a `darkReason` side-table, or any other parking-lot for finished-but-scary work: the temptation to park it dark "to verify later" is *exactly* the abuse this exists to stop — flipping it on and watching it work IS the task.
 
 ## Tests after editing
@@ -904,7 +910,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **17 part(s) (13,588 chars) did not fit this client's
+> ⚠ **17 part(s) (13,390 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -922,11 +928,11 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 - `commit-discipline-git-sync-o-one-call-answers-st` — *Commit discipline: git-sync owns commit + push — you do neither* — ✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
 - `commit-discipline-git-sync-o` — *Commit discipline: git-sync owns commit + push — you do neither* — ```
 - `commit-discipline-git-sync-o-it-returns-the-judg` — *Commit discipline: git-sync owns commit + push — you do neither* — It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its…
-- `ratified-designs-implementation-owes-visual-evidence` — *Ratified designs: implementation owes current passing visual evidence* — ## Ratified designs: implementation owes current passing visual evidence
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
 - `long-jobs-background-them-at-pgrep-q-does-not-ex` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this
 - `long-jobs-background-them-at-is-this-process-act` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 - `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
+- `long-jobs-background-them-at-measure-the-whole-p` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
 - …and 5 more. The list is capped so the pointer cannot itself consume the budget; the COMPLETE cut set is every projected part whose `part_key` does not appear above in this file, which the query above returns.

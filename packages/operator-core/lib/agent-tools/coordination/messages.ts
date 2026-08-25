@@ -459,11 +459,16 @@ export async function appendAck(
   identity: AgentIdentity,
   targetMsgId: string,
   targetFrom: string,
+  targetHarnessSlug?: string | null,
 ): Promise<CoordEnvelope> {
   return sendMessage(identity, {
     to: [targetFrom],
     kind: 'ack',
     related_msg_id: targetMsgId,
+    // Inherit the target's federation scope. `null` is an explicit local
+    // override; `undefined` preserves the historical AUTO resolution for
+    // callers that only have the sender id.
+    harnessSlug: targetHarnessSlug,
   });
 }
 
@@ -1234,15 +1239,24 @@ export async function getMessageById(msgId: string): Promise<CoordEnvelope | nul
   if (coordHasPgFastPath()) {
     try {
       const sql = coordSql();
-      const rows = await sql<{ body: unknown }[]>`
-        SELECT body
+      const rows = await sql<{ body: unknown; harness_slug: string | null }[]>`
+        SELECT body, harness_slug
           FROM harness_shared.coord_event_log
          WHERE workspace_id = ${coordWorkspaceId()}
            AND surface = 'messages'
            AND msg_id = ${msgId}
          LIMIT 1
       `;
-      if (rows.length) return (typeof rows[0].body === 'string' ? JSON.parse(rows[0].body) : rows[0].body) as CoordEnvelope;
+      if (rows.length) {
+        const row = rows[0];
+        const envelope = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope;
+        // The normalized column is the federation source of truth. In
+        // particular, a NULL column must erase a stale body.harness_slug so
+        // a local message cannot be accidentally federated by an old blob.
+        if (row.harness_slug == null) delete envelope.harness_slug;
+        else envelope.harness_slug = row.harness_slug;
+        return envelope;
+      }
       return null;
     } catch {
       // Fall through to the authoritative full-surface read below.
