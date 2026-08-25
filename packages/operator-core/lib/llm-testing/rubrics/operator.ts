@@ -95,13 +95,22 @@ export const OPERATOR_RUBRIC: JudgeRubric = {
  * Variant with multi-pass judging — used by `criticality: 'high'` scenarios
  * that need bias-mitigation via two independent passes.
  *
- * Deliberately shares OPERATOR_RUBRIC's version: the judged INSTRUCTIONS are
- * identical and only the number of passes differs, so runs stay on one trend
- * line. Whether a single-pass and a two-pass run of the same rubric are truly
- * comparable is a separate, unsettled question — filed as EI-21457442861164429
- * rather than silently re-decided here.
+ * Criticality changes the judging execution contract, so this variant gets its
+ * own derived version and therefore its own identity/trend line. A single-pass
+ * run and a two-pass run must not silently merge just because their prose axes
+ * are the same.
  */
-export const OPERATOR_RUBRIC_HIGH_CRITICALITY: JudgeRubric = {
-  ...OPERATOR_RUBRIC,
+const OPERATOR_RUBRIC_HIGH_CRITICALITY_CONTENT: Omit<JudgeRubric, 'version'> = {
+  ...OPERATOR_RUBRIC_CONTENT,
   criticality: 'high',
+};
+
+export const OPERATOR_RUBRIC_HIGH_CRITICALITY_VERSION = deriveRubricVersion(
+  'operator-high',
+  OPERATOR_RUBRIC_HIGH_CRITICALITY_CONTENT,
+);
+
+export const OPERATOR_RUBRIC_HIGH_CRITICALITY: JudgeRubric = {
+  version: OPERATOR_RUBRIC_HIGH_CRITICALITY_VERSION,
+  ...OPERATOR_RUBRIC_HIGH_CRITICALITY_CONTENT,
 };
