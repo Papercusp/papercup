@@ -21,6 +21,9 @@ import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import {
   captureImprovement,
   DedupCoverageUnavailableError,
+  recordCaptureReviewFailure,
+  setCaptureReviewState,
+  type AgentReviewFailure,
 } from '../../harness/improvements/capture-core';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
@@ -847,6 +850,12 @@ export default defineTool({
         : undefined;
     const requireCompleteDedupCoverage = Boolean(drainMode);
     const resolvedAssignee = resolveSelfLiteral(args.assign_to, id.ownerId);
+    const reviewRequired =
+      !args.checkDuplicatesOnly &&
+      effectiveLane !== 'observation' &&
+      (effectiveKind === 'change' || effectiveKind === 'feature');
+    const reviewHarness =
+      ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
     const toolFailureProbation = normalizedToolFailure
       ? {
           state: normalizedToolFailure.direct ? ('promoted' as const) : ('probation' as const),
@@ -892,6 +901,11 @@ export default defineTool({
               }
             : undefined,
         createdBy: id.ownerId,
+        // Fresh agent change/feature captures are born outside the claimable pool. The
+        // core parks them blocked before this wrapper performs the post-create review
+        // enrollment, closing the durable-create → review race.
+        reviewRequired,
+        reviewHarness,
         // WI-5950: resolve the 'self' literal here (same seam work_items:create uses) so the
         // core always receives a concrete ownerId and never has to know about caller identity.
         ...(resolvedAssignee
@@ -1016,20 +1030,70 @@ export default defineTool({
       // letting this fail silently would leave the created item visible to ordinary
       // implementation selectors before any peer approved it.
       let agentReview: Awaited<ReturnType<typeof enterAgentReview>> | undefined;
-      if (
-        (effectiveKind === 'change' || effectiveKind === 'feature') &&
-        effectiveLane !== 'observation' &&
-        captured.created &&
-        captured.issue?.id
-      ) {
-        const reviewHarness =
-          ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
-        agentReview = await enterAgentReview({
-          id: captured.issue.id,
-          submittedBy: id.ownerId,
-          harnessSlug: reviewHarness,
-          workspaceId: resolveConcreteWorkspaceId(id.workspaceId, ctxWorkspace),
-        });
+      let agentReviewFailure: AgentReviewFailure | undefined;
+      const reviewResult = result as {
+        reviewRequired?: boolean;
+        reviewState?: 'blocked';
+        agentReviewFailure?: AgentReviewFailure;
+      };
+      const canEnrollReview = Boolean(
+        reviewResult.reviewRequired &&
+          reviewResult.reviewState === 'blocked' &&
+          !reviewResult.agentReviewFailure &&
+          captured.created &&
+          captured.issue?.id,
+      );
+      if (canEnrollReview && captured.issue?.id) {
+        let enrollmentSucceeded = false;
+        const recordReviewFailure = async (phase: AgentReviewFailure['phase'], error: unknown) => {
+          const failure: AgentReviewFailure = {
+            phase,
+            message: error instanceof Error ? error.message : String(error),
+            at: new Date().toISOString(),
+          };
+          // The core already parks the row before enrollment. Re-assert the park on
+          // every post-create failure because enterAgentReview may have partially
+          // mutated the payload before throwing, and a failed reopen leaves state
+          // uncertain. Both cleanup legs are best-effort: the committed capture and
+          // the failure metadata must still be returned to the caller.
+          await setCaptureReviewState(captured.issue!.id, 'blocked', {
+            harness: reviewHarness,
+            by: id.ownerId,
+            reason: `agent-review-${phase}-failed`,
+          }).catch(() => undefined);
+          await recordCaptureReviewFailure(
+            captured.issue!.id,
+            failure,
+            { submittedBy: id.ownerId, harness: reviewHarness },
+          ).catch(() => undefined);
+          agentReviewFailure = failure;
+        };
+
+        try {
+          const enrolled = await enterAgentReview({
+            id: captured.issue.id,
+            submittedBy: id.ownerId,
+            harnessSlug: reviewHarness,
+            workspaceId: resolveConcreteWorkspaceId(id.workspaceId, ctxWorkspace),
+          });
+          if (!enrolled.entered) {
+            throw new Error(`agent-review enrollment was not entered${enrolled.reason ? `: ${enrolled.reason}` : ''}`);
+          }
+          enrollmentSucceeded = true;
+          const reopened = await setCaptureReviewState(captured.issue.id, 'open', {
+            harness: reviewHarness,
+            by: id.ownerId,
+            reason: 'agent-review enrollment succeeded',
+          });
+          const appliedState = reopened?.appliedState ?? reopened?.workItem?.state;
+          if (appliedState !== 'open') {
+            throw new Error(`review reopen did not apply open state (appliedState=${appliedState ?? 'null'})`);
+          }
+          agentReview = enrolled;
+        } catch (error) {
+          const phase: AgentReviewFailure['phase'] = enrollmentSucceeded ? 'reopen' : 'enrollment';
+          await recordReviewFailure(phase, error);
+        }
       }
       // WI-3594 (scorecard→improvement flow): link a freshly-filed GRADE filing to
       // its named follow-up work-items AT FILE TIME, so a scorecard's motivating
@@ -1113,6 +1177,7 @@ export default defineTool({
               ...(lensAttribution ? { lensAttribution } : {}),
               ...(groundingGap ? { groundingGap } : {}),
               ...(agentReview ? { agentReview } : {}),
+              ...(agentReviewFailure ? { agentReviewFailure } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
               // The filer sees the skew warning too, not just the later triager —

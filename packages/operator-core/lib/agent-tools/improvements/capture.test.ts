@@ -2,7 +2,11 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
 import captureTool, { defaultScorecardConditionKey } from './capture';
 import { coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
-import { captureImprovement } from '../../harness/improvements/capture-core';
+import {
+  captureImprovement,
+  recordCaptureReviewFailure,
+  setCaptureReviewState,
+} from '../../harness/improvements/capture-core';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -46,6 +50,8 @@ vi.mock('../../scout/generation-watermark', () => ({
 }));
 
 const mockCapture = vi.mocked(captureImprovement);
+const mockRecordCaptureReviewFailure = vi.mocked(recordCaptureReviewFailure);
+const mockSetCaptureReviewState = vi.mocked(setCaptureReviewState);
 const mockEnterAgentReview = vi.mocked(enterAgentReview);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
 const mockPriorArt = vi.mocked(noveltyPriorArt);
@@ -74,6 +80,12 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
       entered: true,
       state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-42', round: 1 },
     });
+    mockSetCaptureReviewState.mockImplementation(async (_id, state) => ({
+      workItem: { id: 'EI-42', state },
+      requestedState: state,
+      appliedState: state,
+    }));
+    mockRecordCaptureReviewFailure.mockResolvedValue({ released: true, recorded: true });
   });
 
   it('enrolls a freshly-created change and reports the routing state in the tool result', async () => {
@@ -81,6 +93,8 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
       ok: true,
       created: true,
       issue: { id: 'EI-42', title: 'Replace human review' },
+      reviewRequired: true,
+      reviewState: 'blocked',
     } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
 
     const result = await callTool({ title: 'Replace human review', kind: 'change', harness: 'papercusp' }, {
@@ -95,6 +109,11 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
       harnessSlug: 'papercusp',
       workspaceId: 'ws-1',
     });
+    expect(mockSetCaptureReviewState).toHaveBeenCalledWith(
+      'EI-42',
+      'open',
+      expect.objectContaining({ harness: 'papercusp', by: 'su-filer' }),
+    );
     expect(body.agentReview).toEqual({
       entered: true,
       state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-42', round: 1 },
@@ -106,6 +125,8 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
       ok: true,
       created: true,
       issue: { id: 'F-42', title: 'A grounded feature' },
+      reviewRequired: true,
+      reviewState: 'blocked',
     } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
 
     await callTool({
@@ -146,15 +167,96 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
     expect(mockEnterAgentReview).not.toHaveBeenCalled();
   });
 
-  it('fails loudly when required enrollment fails after creation', async () => {
+  it('returns the committed capture and failure metadata when enrollment fails', async () => {
     mockCapture.mockResolvedValue({
       ok: true,
       created: true,
       issue: { id: 'EI-42', title: 'Review me' },
+      reviewRequired: true,
+      reviewState: 'blocked',
     } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
     mockEnterAgentReview.mockRejectedValueOnce(new Error('enrollment failed'));
 
-    await expect(callTool({ title: 'Review me', kind: 'change' })).rejects.toThrow('enrollment failed');
+    const result = await callTool({ title: 'Review me', kind: 'change' });
+    const body = JSON.parse(result.content[0].text) as Record<string, any>;
+
+    expect(body).toMatchObject({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-42' },
+      agentReviewFailure: { phase: 'enrollment', message: 'enrollment failed' },
+    });
+    expect(mockSetCaptureReviewState).toHaveBeenCalledWith(
+      'EI-42',
+      'blocked',
+      expect.objectContaining({ reason: 'agent-review-enrollment-failed' }),
+    );
+    expect(mockRecordCaptureReviewFailure).toHaveBeenCalledWith(
+      'EI-42',
+      expect.objectContaining({ phase: 'enrollment', message: 'enrollment failed' }),
+      { submittedBy: 'su-filer', harness: 'papercusp' },
+    );
+  });
+
+  it('returns the committed capture and failure metadata when reopening fails', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-43', title: 'Reopen me' },
+      reviewRequired: true,
+      reviewState: 'blocked',
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+    mockSetCaptureReviewState.mockImplementation(async (_id, state) => {
+      if (state === 'open') throw new Error('reopen failed');
+      return { workItem: { id: 'EI-43', state }, requestedState: state, appliedState: state };
+    });
+
+    const result = await callTool({ title: 'Reopen me', kind: 'change' });
+    const body = JSON.parse(result.content[0].text) as Record<string, any>;
+
+    expect(body).toMatchObject({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-43' },
+      agentReviewFailure: { phase: 'reopen', message: 'reopen failed' },
+    });
+    expect(mockSetCaptureReviewState).toHaveBeenNthCalledWith(
+      1,
+      'EI-43',
+      'open',
+      expect.objectContaining({ reason: 'agent-review enrollment succeeded' }),
+    );
+    expect(mockSetCaptureReviewState).toHaveBeenNthCalledWith(
+      2,
+      'EI-43',
+      'blocked',
+      expect.objectContaining({ reason: 'agent-review-reopen-failed' }),
+    );
+    expect(mockRecordCaptureReviewFailure).toHaveBeenCalledWith(
+      'EI-43',
+      expect.objectContaining({ phase: 'reopen', message: 'reopen failed' }),
+      { submittedBy: 'su-filer', harness: 'papercusp' },
+    );
+  });
+
+  it('does not enroll when the core could not park the committed row', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-44', title: 'Park me' },
+      reviewRequired: true,
+      agentReviewFailure: { phase: 'block', message: 'blocked write failed', at: '2026-08-25T00:00:00.000Z' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    const result = await callTool({ title: 'Park me', kind: 'change' });
+
+    expect(JSON.parse(result.content[0].text)).toMatchObject({
+      ok: true,
+      created: true,
+      agentReviewFailure: { phase: 'block', message: 'blocked write failed' },
+    });
+    expect(mockEnterAgentReview).not.toHaveBeenCalled();
+    expect(mockSetCaptureReviewState).not.toHaveBeenCalled();
   });
 });
 
@@ -314,6 +416,8 @@ describe('improvements:capture tool envelope', () => {
       origin: 'drill',
       createdBy: 'su-owner',
       source: 'su',
+      reviewRequired: true,
+      reviewHarness: 'foo',
     });
   });
 

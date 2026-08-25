@@ -102,6 +102,92 @@ describe('captureImprovement — initialState seam (observation-lane-scorecard-c
   });
 });
 
+describe('captureImprovement — review-required pre-enrollment park', () => {
+  const reviewInput = {
+    title: 'proposal requiring agent review',
+    kind: 'change' as const,
+    scope: 'harness:papercusp',
+    createdBy: 'su-filer',
+    reviewRequired: true,
+    reviewHarness: 'papercusp',
+  };
+
+  it('creates with pending admission, then durably parks the row as blocked', async () => {
+    const d = deps();
+    const transitions: { id: string; state: string; opts?: Record<string, unknown> }[] = [];
+    d.setWorkItemStateWithAliasInfo = async (id, state, opts) => {
+      transitions.push({ id, state, opts });
+      return { workItem: { id, state }, requestedState: state, appliedState: state };
+    };
+
+    const result = await captureImprovement(reviewInput, d);
+
+    expect(d.created[0]).toMatchObject({ admission: 'pending' });
+    expect(transitions).toEqual([
+      {
+        id: 'EI-100',
+        state: 'blocked',
+        opts: { harness: 'papercusp', by: 'su-filer', reason: 'agent-review enrollment pending' },
+      },
+    ]);
+    expect(result).toMatchObject({
+      ok: true,
+      created: true,
+      reviewRequired: true,
+      reviewState: 'blocked',
+    });
+  });
+
+  it('returns the committed capture and records block failure metadata when the park fails', async () => {
+    const released: { id: string; opts?: Record<string, unknown> }[] = [];
+    const merged: Record<string, unknown>[] = [];
+    const d = {
+      ...deps(),
+      setWorkItemStateWithAliasInfo: async () => {
+        throw new Error('blocked write failed');
+      },
+      releaseIssue: async (id: string, opts?: { expectedAssignee?: string }) => {
+        released.push({ id, opts });
+        return existing({ id, title: reviewInput.title });
+      },
+      mergeIssuePayload: async (_id: string, patch: Record<string, unknown>) => {
+        merged.push(patch);
+        return existing({ id: 'EI-100', title: reviewInput.title });
+      },
+    } satisfies CaptureDeps;
+
+    const result = await captureImprovement(reviewInput, d);
+
+    expect(result).toMatchObject({
+      ok: true,
+      created: true,
+      reviewRequired: true,
+      agentReviewFailure: { phase: 'block', message: 'blocked write failed' },
+    });
+    expect(released).toEqual([{ id: 'EI-100', opts: { expectedAssignee: 'su-filer' } }]);
+    expect(merged[0]).toMatchObject({
+      blockedReason: 'agent-review-block-failed',
+      blockedAt: expect.any(String),
+      agentReviewFailure: { phase: 'block', message: 'blocked write failed' },
+    });
+  });
+
+  it('does not apply the review park to bugs or observation-lane captures', async () => {
+    const d = deps();
+    const writer = vi.fn(async (id: string, state: 'blocked' | 'open') => ({
+      workItem: { id, state },
+      requestedState: state,
+      appliedState: state,
+    }));
+    d.setWorkItemStateWithAliasInfo = writer;
+
+    await captureImprovement({ ...reviewInput, kind: 'bug' }, d);
+    await captureImprovement({ ...reviewInput, lane: 'observation' }, d);
+
+    expect(writer).not.toHaveBeenCalled();
+  });
+});
+
 describe('captureImprovement — filer-role attribution (close-observation-attribution-gap 2026-06-21)', () => {
   it('stamps payload.filedByRole on an observation when given (fixes the ~100% unknown bucket)', async () => {
     const d = deps();
