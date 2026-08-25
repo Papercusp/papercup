@@ -64,37 +64,42 @@ test('verifyNpmCache returns a failure status without hiding npm cache errors', 
   );
 });
 
-test('publishDependencyGeneration invokes the shared atomic publisher after install verification', () => {
+test('publishDependencyGeneration invokes the shared atomic publisher after install verification', async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'install-safe-generation-publish-'));
   const calls = [];
   const env = { PATH: '/bin' };
-  const status = publishDependencyGeneration({
-    repoRoot: '/tmp/papercusp-test-repo',
-    env,
-    runPublisher: (...args) => {
-      calls.push(args);
-      return { status: 0 };
-    },
-  });
+  try {
+    const status = await publishDependencyGeneration({
+      repoRoot,
+      env,
+      runPublisher: (...args) => {
+        calls.push(args);
+        return { status: 0 };
+      },
+    });
 
-  assert.equal(status, 0);
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], 'bash');
-  assert.match(calls[0][1][0], /dependency-generation\.sh$/);
-  assert.deepEqual(calls[0][1].slice(1), [
-    '--integration',
-    '/tmp/papercusp-test-repo',
-  ]);
-  assert.deepEqual(calls[0][2], {
-    cwd: '/tmp/papercusp-test-repo',
-    stdio: 'inherit',
-    env,
-  });
+    assert.equal(status, 0);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'bash');
+    assert.match(calls[0][1][0], /dependency-generation\.sh$/);
+    assert.deepEqual(calls[0][1].slice(1), [
+      '--integration',
+      repoRoot,
+    ]);
+    assert.deepEqual(calls[0][2], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      env,
+    });
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
-test('publishDependencyGeneration preserves an explicit emergency skip', () => {
+test('publishDependencyGeneration preserves an explicit emergency skip', async () => {
   let called = false;
   assert.equal(
-    publishDependencyGeneration({
+    await publishDependencyGeneration({
       env: { PAPERCUSP_SKIP_DEP_GENERATION: '1' },
       runPublisher: () => {
         called = true;
@@ -104,6 +109,68 @@ test('publishDependencyGeneration preserves an explicit emergency skip', () => {
     0,
   );
   assert.equal(called, false);
+});
+
+test('publishDependencyGeneration holds a reader lock until the publisher finishes', async () => {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'install-safe-generation-reader-'));
+  const previousLockRoot = process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+  process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = join(repoRoot, 'locks');
+
+  let publisherStarted;
+  const publisherReady = new Promise((resolve) => {
+    publisherStarted = resolve;
+  });
+  let releasePublisher;
+  const publisherMayFinish = new Promise((resolve) => {
+    releasePublisher = resolve;
+  });
+  let publishing;
+
+  try {
+    publishing = publishDependencyGeneration({
+      repoRoot,
+      env: { PATH: process.env.PATH ?? '' },
+      runPublisher: async () => {
+        publisherStarted();
+        await publisherMayFinish;
+        return { status: 0 };
+      },
+    });
+    await publisherReady;
+
+    let writerEntered = false;
+    let writerWaiting = false;
+    const writer = withFsMutex(
+      repoLockName(repoRoot),
+      async () => {
+        writerEntered = true;
+        return 0;
+      },
+      {
+        timeoutMs: 2_000,
+        retryMs: 1,
+        onWaiting: () => {
+          writerWaiting = true;
+        },
+      },
+    );
+    for (let attempt = 0; attempt < 100 && !writerWaiting; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.equal(writerWaiting, true);
+    assert.equal(writerEntered, false);
+
+    releasePublisher();
+    assert.equal(await publishing, 0);
+    assert.equal(await writer, 0);
+    assert.equal(writerEntered, true);
+  } finally {
+    releasePublisher?.();
+    if (publishing) await publishing.catch(() => {});
+    if (previousLockRoot === undefined) delete process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR;
+    else process.env.PAPERCUSP_FS_MUTEX_LOCK_DIR = previousLockRoot;
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
 });
 
 test('nested exec-under-lock readers do not reacquire the writer mutex', async () => {

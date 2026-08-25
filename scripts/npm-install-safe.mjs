@@ -387,22 +387,35 @@ export function normalizeNpmArgs(argv) {
 }
 
 /**
- * Publish the verified install as an immutable dependency generation after the
- * shared install mutex has been released. The generation builder carries its
- * own before/after fingerprint guard and a short atomic-publish lock, so this
- * potentially long copy never turns the install mutex into a fleet-wide reader
- * stall. A concurrent writer produces rc75 and no generation, never a torn one.
+ * Publish the verified install as an immutable dependency generation under a
+ * shared reader marker for the repo-keyed install mutex. The generation builder
+ * carries its own before/after fingerprint guard and a short atomic-publish
+ * lock; this reader boundary keeps a concurrent safe install from reifying
+ * node_modules during the potentially long copy while still allowing other
+ * dependency readers to proceed together.
  */
-export function publishDependencyGeneration({
+export async function publishDependencyGeneration({
   repoRoot = DEFAULT_REPO_ROOT,
   runPublisher = spawnSync,
   env = process.env,
 } = {}) {
   if (env.PAPERCUSP_SKIP_DEP_GENERATION === '1') return 0;
-  const result = runPublisher(
-    'bash',
-    [DEPENDENCY_GENERATION_SCRIPT, '--integration', repoRoot],
-    { cwd: repoRoot, stdio: 'inherit', env },
+  const lockName = repoLockName(repoRoot);
+  const result = await withFsMutexRead(
+    lockName,
+    () =>
+      runPublisher(
+        'bash',
+        [DEPENDENCY_GENERATION_SCRIPT, '--integration', repoRoot],
+        { cwd: repoRoot, stdio: 'inherit', env },
+      ),
+    {
+      onWaiting: ({ owner, elapsedMs }) => {
+        console.error(
+          `NPM_INSTALL_SAFE dependency generation waiting on an install (${Math.round(elapsedMs / 1000)}s so far) — holder: ${owner.trim()}`,
+        );
+      },
+    },
   );
   if (result.error) throw result.error;
   const status = result.status ?? 1;
