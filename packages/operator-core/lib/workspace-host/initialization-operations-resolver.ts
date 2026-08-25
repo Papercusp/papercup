@@ -28,6 +28,7 @@ import {
   type GcpIapWorkspaceHostInitializationProfile,
 } from './gcp-iap-initialization-operations';
 import { GCP_WORKSPACE_HOST_TARGET, resolveGcpWorkspaceHostInstanceIdentity } from './gcp-provider';
+import { readWorkspaceHostDesiredSpec } from './observability-store';
 
 /**
  * Controller-owned, host-independent settings. These are NOT per-host database columns: the
@@ -90,4 +91,141 @@ export function resolveWorkspaceHostInitializationOperations(
   };
 
   return new GcpIapWorkspaceHostInitializationOperations(profile);
+}
+
+/** Raised when the controller's own initialization settings are missing or unusable. */
+export class WorkspaceHostInitializationControllerProfileError extends Error {
+  readonly problems: readonly string[];
+
+  constructor(problems: readonly string[]) {
+    super(`Workspace-host initialization controller profile is not configured: ${problems.join('; ')}`);
+    this.name = 'WorkspaceHostInitializationControllerProfileError';
+    this.problems = problems;
+  }
+}
+
+const CONTROLLER_ENV = {
+  sshUser: 'PAPERCUSP_WORKSPACE_HOST_SSH_USER',
+  knownHostsFile: 'PAPERCUSP_WORKSPACE_HOST_KNOWN_HOSTS',
+  remoteEntrypoint: 'PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT',
+  identityFile: 'PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE',
+  sshExecutable: 'PAPERCUSP_WORKSPACE_HOST_SSH_EXECUTABLE',
+  gcloudExecutable: 'PAPERCUSP_WORKSPACE_HOST_GCLOUD_EXECUTABLE',
+} as const;
+
+/**
+ * Build the controller's own initialization profile from deployment configuration.
+ *
+ * These are controller-owned and host-INDEPENDENT on purpose: the known-hosts file is the
+ * controller's trust store and the remote entrypoint is a fixed binary in the signed
+ * workspace-host release. Sourcing them from deployment config rather than a per-host row is
+ * what stops a host record from being able to point the controller at an arbitrary binary or a
+ * trust store that would accept an arbitrary key.
+ *
+ * Both paths must be ABSOLUTE. A relative path would resolve against whatever working directory
+ * the controller happened to start in, which turns the trust store and the entrypoint into
+ * values that depend on how the process was launched — the exact property a trust store must not
+ * have. Every problem is collected and reported together: a half-configured controller should
+ * name all of its gaps once, not surface them one restart at a time.
+ */
+export function resolveWorkspaceHostInitializationControllerProfile(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): WorkspaceHostInitializationControllerProfile {
+  const problems: string[] = [];
+
+  const required = (key: keyof typeof CONTROLLER_ENV, requireAbsolute: boolean): string => {
+    const name = CONTROLLER_ENV[key];
+    const value = (env[name] ?? '').trim();
+    if (!value) {
+      problems.push(`${name} is unset`);
+      return '';
+    }
+    if (requireAbsolute && !value.startsWith('/')) {
+      problems.push(`${name} must be an absolute path (got '${value}')`);
+      return '';
+    }
+    return value;
+  };
+
+  const sshUser = required('sshUser', false);
+  const knownHostsFile = required('knownHostsFile', true);
+  const remoteEntrypoint = required('remoteEntrypoint', true);
+
+  const optional = (key: keyof typeof CONTROLLER_ENV, requireAbsolute: boolean): string | undefined => {
+    const name = CONTROLLER_ENV[key];
+    const value = (env[name] ?? '').trim();
+    if (!value) return undefined;
+    if (requireAbsolute && !value.startsWith('/')) {
+      problems.push(`${name} must be an absolute path (got '${value}')`);
+      return undefined;
+    }
+    return value;
+  };
+
+  const identityFile = optional('identityFile', true);
+  const sshExecutable = optional('sshExecutable', false);
+  const gcloudExecutable = optional('gcloudExecutable', false);
+
+  if (problems.length > 0) throw new WorkspaceHostInitializationControllerProfileError(problems);
+
+  return {
+    sshUser,
+    knownHostsFile,
+    remoteEntrypoint,
+    ...(identityFile ? { identityFile } : {}),
+    ...(sshExecutable ? { sshExecutable } : {}),
+    ...(gcloudExecutable ? { gcloudExecutable } : {}),
+  };
+}
+
+/** Raised when a host cannot be initialized because its provisioning intent is unavailable. */
+export class WorkspaceHostDesiredSpecUnavailableError extends Error {
+  readonly hostId: string;
+  readonly reason: 'host-not-found' | 'no-recorded-spec';
+
+  constructor(hostId: string, reason: 'host-not-found' | 'no-recorded-spec') {
+    super(
+      reason === 'host-not-found'
+        ? `No workspace host '${hostId}' in this workspace`
+        : `Workspace host '${hostId}' has no recorded provisioning intent, so the cloud instance ` +
+          `to initialize cannot be identified. It was provisioned before the intent was persisted ` +
+          `(migration 956), or by a provisioner that did not record it.`,
+    );
+    this.name = 'WorkspaceHostDesiredSpecUnavailableError';
+    this.hostId = hostId;
+    this.reason = reason;
+  }
+}
+
+export interface ResolveOperationsForHostInput {
+  workspaceId: string;
+  hostId: string;
+  controller: WorkspaceHostInitializationControllerProfile;
+  /** Test seam; defaults to the durable host record. */
+  readDesiredSpec?: typeof readWorkspaceHostDesiredSpec;
+}
+
+/**
+ * Resolve the concrete host adapter for an ALREADY-PROVISIONED host, by id.
+ *
+ * This is the production entry point: initialization is handed a hostId, and the instance it must
+ * reach is recovered from the intent the provisioner recorded — never re-derived from the host's
+ * observed columns, which do not carry the zone, the project, or an explicit instance name.
+ * A host whose intent was never recorded REFUSES here rather than proceeding against a guessed
+ * instance name, because the failure mode of guessing is a tunnel to an instance that does not
+ * exist, visible only against real cloud.
+ */
+export async function resolveWorkspaceHostInitializationOperationsForHost(
+  input: ResolveOperationsForHostInput,
+): Promise<{ desired: WorkspaceHostDesiredSpec; operations: WorkspaceHostInitializationHostOperations }> {
+  const read = input.readDesiredSpec ?? readWorkspaceHostDesiredSpec;
+  const lookup = await read(input.workspaceId, input.hostId);
+  if (!lookup.desired) {
+    throw new WorkspaceHostDesiredSpecUnavailableError(input.hostId, lookup.miss ?? 'no-recorded-spec');
+  }
+
+  return {
+    desired: lookup.desired,
+    operations: resolveWorkspaceHostInitializationOperations(lookup.desired, input.controller),
+  };
 }
