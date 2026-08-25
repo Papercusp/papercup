@@ -6584,6 +6584,7 @@ export function checkpointCandidateProvenance(
 export function checkpointCandidateSourceFromCli(
   candidateArg: string | undefined,
   sourceArg: string | undefined,
+  hasGateVerdictTarget = false,
 ): CheckpointCandidateSource {
   if (sourceArg === "pinned" || sourceArg === "tip") return sourceArg;
   if (sourceArg !== undefined) {
@@ -6591,7 +6592,12 @@ export function checkpointCandidateSourceFromCli(
       `invalid --candidate-source '${sourceArg}' (expected pinned|tip)`,
     );
   }
-  return candidateArg ? "pinned" : "tip";
+  // EI-21402283154473718: a deployed launcher can legitimately predate the explicit
+  // `--candidate-source tip` transport while still carrying WI-4494's complete verdict-target
+  // stamp. That stamp is the older authenticated seam proving this is a live-gate run, not a
+  // raw diagnostic CLI invocation. Keep an unscoped raw `--candidate` pinned, and let an
+  // explicit source win in either direction, so this fallback closes only the version-skew gap.
+  return candidateArg && !hasGateVerdictTarget ? "pinned" : "tip";
 }
 
 /**
@@ -13812,6 +13818,7 @@ if (require.main === module) {
   const candidateSource = checkpointCandidateSourceFromCli(
     candidateArg,
     arg("--candidate-source"),
+    gateVerdictTargetFromEnv() !== null,
   );
   const { diagnostic } = checkpointCandidateProvenance({ candidateSource });
   // WI-4957: ONE runId for this whole process, shared by the normal verdict path

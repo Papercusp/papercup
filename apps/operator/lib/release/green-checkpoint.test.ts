@@ -2157,11 +2157,17 @@ describe("EI-213458 candidate-source normalization", () => {
     });
   });
 
-  it("keeps raw --candidate diagnostic-only, while an authoritative launcher can say tip", () => {
+  it("keeps an unscoped raw --candidate diagnostic-only while accepting legacy authenticated launchers", () => {
     expect(checkpointCandidateSourceFromCli("a".repeat(40), undefined)).toBe(
       "pinned",
     );
+    expect(
+      checkpointCandidateSourceFromCli("a".repeat(40), undefined, true),
+    ).toBe("tip");
     expect(checkpointCandidateSourceFromCli("a".repeat(40), "tip")).toBe("tip");
+    expect(checkpointCandidateSourceFromCli("a".repeat(40), "pinned", true)).toBe(
+      "pinned",
+    );
     expect(checkpointCandidateSourceFromCli(undefined, undefined)).toBe("tip");
     expect(() =>
       checkpointCandidateSourceFromCli("a".repeat(40), "unknown"),
