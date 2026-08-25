@@ -58,6 +58,11 @@ export const RECORDED_INCONCLUSIVE_STATUSES = [
   'cancelled',
   'repair-in-progress',
   'repair-staging-mismatch',
+  // EI-21462211894072863: a run that exited without publishing a parseable result marker and was
+  // NOT killed by its own deadline or an external SIGTERM. It rendered no verdict, so it belongs
+  // in the set a reader can be advised about — it was previously counted as a RED instead, which
+  // is the defect that item exists to fix (see `classifyGateStallStatus`'s 'no-verdict' class).
+  'error',
 ] as const;
 
 export type RecordedInconclusiveStatus = (typeof RECORDED_INCONCLUSIVE_STATUSES)[number];
@@ -79,7 +84,19 @@ export function isRecordedInconclusiveStatus(status: string): status is Recorded
  */
 export type GateAbortKind = 'standing-condition' | 'transient' | 'peer-owned' | 'unknown';
 
-const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 'unknown'>> = {
+/**
+ * ⚠ The value type deliberately ADMITS `'unknown'`, where it once excluded it.
+ *
+ * That exclusion encoded a true invariant for the original six: each names a condition the gate
+ * OBSERVED, so each can be classified. `'error'` (EI-21462211894072863) is the first member for
+ * which that is false BY CONSTRUCTION — it is the bucket for a run that died without saying why,
+ * so whether a re-fire hits the same wall is exactly what nobody knows. Forcing it into
+ * `'transient'` or `'standing-condition'` would manufacture the confident advice this module was
+ * written to stop (see the header's two-directions warning); `'unknown'` already has correct,
+ * conservative wording in both `gateAbortRefireClause` and `gateAbortLever`, so it is routed there
+ * rather than given a fabricated kind.
+ */
+const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, GateAbortKind> = {
   // The dev PG is behind the candidate: a real, standing precondition.
   'migrations-pending': 'standing-condition',
   // The repair queue's staging expectation does not match the tree: standing until reconciled.
@@ -92,6 +109,11 @@ const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 
   cancelled: 'transient',
   // A repair phase owns progress outside the full-suite verdict path.
   'repair-in-progress': 'peer-owned',
+  // EI-21462211894072863: exited without a parseable marker, and NOT via its own deadline or an
+  // external SIGTERM (those are 'deadline-exceeded' / 'cancelled'). The cause is unrecorded by
+  // definition — a transient host fault and a deterministic crash in the gate script are the same
+  // shape here — so the honest classification is 'unknown'. See the KIND_BY_STATUS note above.
+  error: 'unknown',
 };
 
 export function classifyGateAbort(status: string): GateAbortKind {
