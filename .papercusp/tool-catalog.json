@@ -24764,7 +24764,7 @@
           "POST"
         ]
       },
-      "description": "Read or set the green-checkpoint / release thresholds: stallReds + stallAgeMs (held-gate STALLED alert), chronicFlakeCount + flakeNotifyCooldownMs (chronic-flake quarantine nudge), deployBackoffMs (re-deploy backoff after a failed/rolled-back deploy of the same target). op:hold / op:unhold place or lift the qualification hold that stops the SCHEDULED gate launching a run while a serializer hold is active. set/hold/unhold are audited + one-call-revertible.",
+      "description": "Read or set the green-checkpoint / release thresholds: stallReds + stallAgeMs (held-gate STALLED alert), chronicFlakeCount + flakeNotifyCooldownMs (chronic-flake quarantine nudge), deployBackoffMs (re-deploy backoff after a failed/rolled-back deploy of the same target). op:hold / op:unhold place or lift a hold: scope:\"qualification\" (default) stops the SCHEDULED gate admitting a candidate, scope:\"manual-run\" stops a MANUAL release:checkpoint-run while leaving scheduled fires armed. set/hold/unhold are audited + one-call-revertible.",
       "capabilities": [
         "operator:write"
       ],
