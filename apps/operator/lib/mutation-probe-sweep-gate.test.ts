@@ -20,10 +20,27 @@
  *
  *   scripts/mutation-probe.sh \
  *     --file scripts/mutation-probe.sh \
+ *     --fake-destructive \
  *     --mutate 's/^if \[ "\$IN_TREE" -eq 1 \] && \[ -z "\$SWEEP_ACK" \]; then/if false; then/' \
  *     --test 'MUTATION_PROBE_SCRIPT={} npm run test:file -- apps/operator/lib/mutation-probe-sweep-gate.test.ts'
  *
  * That run mutates a copy in a scratch dir; the tracked script is never dirty.
+ *
+ * `--fake-destructive` is REQUIRED here and is easy to omit: probing the probe
+ * makes the probe its own SUBJECT, and the script's source contains the very
+ * destructive primitives it scans for (rm, rmdir, shred, mkfs, `dd of=`,
+ * `find -delete` — its own detection list and cleanup). The tier-0 gate
+ * therefore refuses the run outright, with a message about executing deletion
+ * code that reads as alarming rather than as "you are probing this script".
+ * The flag only PATH-shims those executables for the guard runs; this suite
+ * deletes via node's fs, so nothing here depends on them.
+ *
+ * READ WHICH TESTS FAIL, not just the verdict line. A genuine catch here fails
+ * a PROPER SUBSET — mutating the sweep gate fails only the sweep cases,
+ * mutating the parse gate fails only the two REFUSES cases. A mutant that
+ * fails EVERY case usually means the mutation broke the script rather than the
+ * behaviour under test, which is the exact false verdict the parse gate below
+ * exists to prevent (EI-21430792829614962).
  */
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
