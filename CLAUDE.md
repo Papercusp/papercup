@@ -243,6 +243,33 @@ peer who received a wrong paraphrase has no way back to the source. A decision i
 
 This is not a paperwork nicety — it changes outcomes. 
 
+## Every plan ships with a graded acceptance rubric
+
+## Every plan ships with a graded acceptance rubric
+
+⛔ **"ALL ITEMS TERMINAL" IS NOT A FINISHED PLAN, AND `plans:items` CANNOT TELL YOU IT ISN'T.** This is the most common way a plan is reported complete while it is not. Every item reading `done`/`dropped` means IMPLEMENTATION landed; it says nothing about whether the plan was VALIDATED, and the item list is the instrument agents reach for precisely because it is the one that cannot see the gap. A plan is finished only when it is `status: shipped`, which requires the audit and the graded rubric below. Check the PLAN's status, not its items — a plan sitting in `draft` with sixteen `done` items is a draft.
+
+⛔ **CARRYING A PLAN "START TO FINISH" INCLUDES THESE VALIDATION STEPS — they are the finish, not paperwork after it.** An owner who says "carry out the plan", "take it from start to finish", or "finish it yourself" is asking for a SHIPPED plan. Stopping at the last implementation item and reporting done — or naming the remaining validation and handing it back — is the same silent halt in two different costumes. Neither is completion.
+
+⚠ **You may not grade your own implementation — but that is a ROUTING obligation, never an exit.** The independent-grader rule means you must GET a non-implementer to grade it: launch one, or hand the plan off with `coord:handoff`. It does not mean you stop and tell the owner someone else should do it. Everything you CAN do — finishing or dropping stragglers, writing a missing spec triad, running the per-item code-truth audit on items you did not implement, assembling the evidence the grader needs — is still yours, and doing it first is what makes the grading cheap.
+
+**Every plan completes through TWO independent evidence families: a per-item CODE-TRUTH audit, then a GRADED acceptance rubric** (plans `plan-completion-audit-and-acceptance-verdict-2026-08-13` + `acceptance-rubrics-on-every-plan-2026-08-11`). `plans:set-plan-status → 'shipped'` (and its `done` alias) enforces both. After implementation is verified:
+
+1. **Finish or intentionally drop every item.** `todo`/`blocked`/`needs-human` refuse shipping. A deliberate departure is `plans:set-status { slug, item, status:'dropped', note:'<why>' }`; silence is what the gate forbids.
+2. **Audit the actual code, per item.** `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations count as verification; paths must resolve, optional lines/symbols must exist, and their blob SHAs are stored. `doc`/`none` explicitly mean non-verification and require the tool's reason/note fields. Never treat a work-item, doc, or memory of writing code as code truth. Submit ONLY new/reopened/text-changed/evidence-changed items: earlier entries carry forward automatically with their ORIGINAL per-item sha/time. If `audit_coverage_stale` names items at ship time, re-audit only that list; empty list means no new pass.
+3. **Author the post-implementation rubric.** `rubrics:propose { rubricRef:'<acceptance-rubric-slug>', kind:'acceptance', subjectPlan:'<plan-slug>', classRef:'plan-class-feature-ship'|'plan-class-bugfix'|'plan-class-migration'|'plan-class-investigation', characteristic:'<measured-outcome>', title:'<rubric-title>', criteria:[3–7 OUTCOME criteria tracing to goal + Decisions] }`. It activates immediately. A pure investigation may use `criteria:[]` with its class. Add structured checks for objectively executable outcomes.
+4. **Vet the rubric's current revision.** Run `consult:get_feedback` (min 1 / max 3), improve the rubric, then attest with `scorecards:emit { rubricRef:'meta-acceptance-rubric', subject:{ kind:'rubric', ref:'<acceptance-rubric>' }, vettingConsult:'<conversation-id>', ratings }`. Any later rubric edit invalidates the attestation.
+5. **Have a NON-implementer grade it.** `scorecards:emit { rubricRef, ratings }`, concrete evidence for every criterion; grader ≠ rubric author. The four class rubrics require the grader to spot-check the implementer's audit citations.
+6. **The implementer records the plan-specific acceptance call.** After reading the independent card, the rubric author re-emits the complete ratings with `acceptance:{ verdict:'accept'|'reject', reasoning:'<why>' }`. The implementer owns the passing bar; there is no universal numeric threshold. A latest `reject` blocks ship until addressed and superseded.
+7. **Ship.** `plans:set-plan-status { slug, status:'shipped' }`; the rubric auto-retires.
+
+Code-truth refusal codes are `plan_items_unfinished`, `acceptance_unaudited`, `audit_coverage_stale`, and `audit_citations_unresolved` (flags `PLAN_ITEM_COMPLETION_GATE` + `PLAN_CODE_AUDIT_GATE`, default ON). Rubric-family refusals are `acceptance_rubric_missing`, `acceptance_rubric_unvetted`, `acceptance_ungraded`, `self_graded_only`, `acceptance_not_recorded`, and `acceptance_rejected`.
+
+`force:{ reason }` on the ship write waives ONLY the four code-truth checks and appends a permanent, actor-attributed `forcedPast` marker naming every waived check. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
+
+Do NOT author the acceptance rubric at plan creation or maintain it mid-implementation; it is deliberately authored against as-built reality. Full payloads, citation-root rules, and repair recipes: [Plan completion — code-truth audit, acceptance grading, and ship verdict](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook). Vetting detail: [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
+
+
 ## Verify mixed-family work-item citations against the base table
 
 When checking whether a work-item citation is real, do not treat a zero-row
@@ -639,67 +666,6 @@ gate descendants whose argv only names the `papercusp-checkpoint` tree; the repo
 labels those rows as identity matches. Other patterns remain operational-argv
 matches, and a peer's prose or JSON payload is still ignored. 
 
-⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this
-one fails via the EXIT CODE rather than a spurious match, so bracketing does not
-help. `pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage
-error — a well-formed answer to the question you asked, while the process is
-very much alive (measured: it printed `gone` while `pgrep -cf` returned **13**).
-
-
-⚠ **With `pipefail`, do not use an early-exiting pipeline consumer as a
-predicate.** `grep -q`, `grep -m1`, and `head -1` can exit as soon as they
-find a match, sending `SIGPIPE` to the producer. The producer may then return
-141, so `producer | grep -q PAT && echo yes || echo no` reports `no` even
-though `grep` matched. This is a race: the same command can appear to work
-until the producer is fast enough to hit the closed pipe. Capture the producer
-output and match it afterward instead:
-
-```bash
-out=$(producer)
-case "$out" in *PAT*) echo yes ;; *) echo no ;; esac
-```
-
-If a pipeline is necessary, consume to EOF (for example with `grep -c`) rather
-than using an early-exit predicate. A false absence from this pattern is not
-evidence that the guarded string, process, or flag is missing.
-
-⚠ **A search of a path that DOES NOT EXIST looks exactly like one that found
-nothing** — empty output, and the exit code that separates them (grep: 1 = ran
-and found nothing, 2 = could not read the path) is thrown away by a pipe,
-`2>/dev/null`, `|| true`, or simply not being read. A plan sat BLOCKED THREE
-WEEKS on such a premise, and the agent verifying it hit the same trap the same
-day (`work-items/` typed for the real `work_items/`). The PreToolUse gate now
-REFUSES a `grep`/`rg`/piped-`ls` whose path operand it can measure as missing —
-but it judges only a LITERAL path (never a variable, glob, subshell, or a
-relative path when the host states no cwd), and the same shape recurs wherever a
-query can miss its target: a `git log` for a submodule path run from the
-superproject, a roster lookup by a name that is not the label. So the general
-rule is yours: **AN ABSENCE CLAIM NEEDS A POSITIVE CONTROL.** Before writing "X
-does not exist", run the same query for something you KNOW is there — if the
-control also comes back empty, the instrument is broken, not the subject — and
-state the scope you actually searched. For "where is this symbol defined" use
-`gitnexus.context { name }` (no path argument to get wrong); for "does this TOOL
-exist", `tools:find`.
-
-⚠ **Do not use human-relative timestamps with `find -newermt` on this box.**
-`find` resolves to **bfs 4.1.1** here, and values such as `12 minutes ago`,
-`-10 minutes`, or `America/New_York` are rejected. If stderr is hidden, the
-empty output can look like a valid "nothing changed" result. For "files
-modified since T", use `git status --porcelain` or `TZ=UTC stat -c '%y %n'
-<paths>`; if you must use `find`, pass an ISO-8601-like timestamp with `Z` or
-a numeric offset and keep stderr visible. The PreToolUse Bash gate refuses
-literal non-ISO `-newer?t` operands and names this remediation.
-
-⚠ **Line-oriented matching cannot see a phrase split by hard wrapping.** Generated
-or rendered prose may insert a newline inside a multi-word phrase, so
-`grep -c 'IN THIS SAME TURN' rendered.md` → 0 does **not** prove the clause is
-absent. Inspect the surrounding lines; flatten newlines before matching, for
-example with a newline-flattening `tr` transform, or use a
-short single-token discriminator that cannot wrap. For deploy/render checks,
-measure both the OLD and NEW text after flattening so a zero is corroborated by
-the expected transition rather than treated as a bare absence.
-
-
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
 
@@ -940,7 +906,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **16 part(s) (11,126 chars) did not fit this client's
+> ⚠ **16 part(s) (10,845 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -955,13 +921,13 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 - `running-testing-this-app-it-the-30553070-layer-i` — *▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp* — The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
 - `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
-- `every-plan-ships-with-a-grad-acceptance-rubric` — *Every plan ships with a graded acceptance rubric* — ## Every plan ships with a graded acceptance rubric
 - `commit-discipline-git-sync-o-one-call-answers-st` — *Commit discipline: git-sync owns commit + push — you do neither* — ✅ **ONE CALL ANSWERS STEP 0 AND STEP 1 TOGETHER — do this before you write any SQL:**
 - `commit-discipline-git-sync-o` — *Commit discipline: git-sync owns commit + push — you do neither* — ```
 - `commit-discipline-git-sync-o-it-returns-the-judg` — *Commit discipline: git-sync owns commit + push — you do neither* — It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its…
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
+- `long-jobs-background-them-at-pgrep-q-does-not-ex` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this
 - `long-jobs-background-them-at-is-this-process-act` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 - `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
 - `long-jobs-background-them-at-measure-the-whole-p` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
