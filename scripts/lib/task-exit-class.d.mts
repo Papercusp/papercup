@@ -3,6 +3,40 @@
 // scripts/lib/task-exit-class.mjs and regenerate.
 export function hasForkStarvationEvidence(output: any): boolean;
 /**
+ * Render the stable, machine-readable half of a pre-launch budget refusal.
+ *
+ * @param {object} refusal
+ * @param {'pids' | 'memory'} refusal.kind which envelope could not admit a task
+ * @param {'tasks' | 'mb'} refusal.unit unit the three numbers are counted in
+ * @param {number} refusal.limit the cgroup allowance actually granted
+ * @param {number} refusal.reserve the scheduler/shell reserve held back from it
+ * @param {number} refusal.requiredPerTask what one admitted task needs
+ * @returns {string}
+ */
+export function formatTaskBudgetRefusal({ kind, unit, limit, reserve, requiredPerTask, }: {
+    kind: "pids" | "memory";
+    unit: "tasks" | "mb";
+    limit: number;
+    reserve: number;
+    requiredPerTask: number;
+}): string;
+/**
+ * Recover a pre-launch budget refusal from captured output.
+ *
+ * Returns null for anything that is not an unambiguous marker match, so a log that merely
+ * discusses budgets can never be promoted into an infrastructure verdict.
+ *
+ * @param {string | null | undefined} output combined captured stdout/stderr
+ * @returns {{ kind: 'pids' | 'memory', unit: 'tasks' | 'mb', limit: number, reserve: number, requiredPerTask: number } | null}
+ */
+export function parseTaskBudgetRefusal(output: string | null | undefined): {
+    kind: "pids" | "memory";
+    unit: "tasks" | "mb";
+    limit: number;
+    reserve: number;
+    requiredPerTask: number;
+} | null;
+/**
  * Classify a finished task's exit status.
  *
  * Precedence is deliberate and mirrors the reporting order it replaced: "I could not look"
@@ -48,4 +82,5 @@ export function classifyTaskExit({ status, notCheckedExitCode, notCheckedIsNonGa
  * @returns {boolean}
  */
 export function isGatingFailure(cls: TaskExitClass): boolean;
+export const TASK_BUDGET_REFUSAL_MARKER: "TASK_BUDGET_REFUSAL";
 export type TaskExitClass = "pass" | "not-checked" | "undetermined" | "quarantined" | "failed";
