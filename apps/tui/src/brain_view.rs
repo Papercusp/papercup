@@ -698,7 +698,11 @@ mod tests {
         assert_eq!(state.status, AttachState::Waiting);
         assert_eq!(state.path, None);
         assert_eq!(state.offset, 0);
-        assert_eq!(state.messages.len(), 1, "last wake's turns must be retained");
+        assert_eq!(
+            state.messages.len(),
+            1,
+            "last wake's turns must be retained"
+        );
         assert_eq!(state.messages[0].content, "kettle wake N");
         // Still-empty resolves are idle — no churn, no re-clear.
         state.set_resolved(None);
