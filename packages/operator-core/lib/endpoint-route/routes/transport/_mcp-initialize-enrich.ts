@@ -24,7 +24,52 @@
  * prelude (or worse, the negotiation).
  */
 
+import { MAX_MCP_REQUEST_TRACE_ID_CHARS } from '@papercusp/tooldef-mcp';
+
 export type InitializeHandler = (req: unknown, extra: unknown) => Promise<unknown>;
+
+export interface InitializeHandlerTiming {
+  startedAtMs: number;
+  sdkMs: number;
+}
+
+export type InitializeStageOutcome = 'timeout' | 'enriched' | 'base' | 'error';
+
+export interface InitializeStageTelemetry {
+  traceId: string;
+  pid: number;
+  outcome: 'timeout' | 'slow_enriched' | 'slow_base' | 'slow_error';
+  stages: {
+    sdkMs: number;
+    spawnContextMs: number | null;
+    userLookupMs: number | null;
+    preludeMs: number | null;
+    enrichmentMs: number;
+    totalMs: number;
+  };
+}
+
+/**
+ * Privacy-bounded initialize telemetry gate. Fast requests are silent; a deadline is always
+ * recorded. The result intentionally has no request, URL, header, client, args, tool, or payload
+ * field, so callers can safely pass it to a structured log sink unchanged.
+ */
+export function buildInitializeStageTelemetry(input: {
+  traceId: string;
+  pid: number;
+  outcome: InitializeStageOutcome;
+  slowMs: number;
+  stages: InitializeStageTelemetry['stages'];
+}): InitializeStageTelemetry | null {
+  if (!input.traceId || input.traceId.length > MAX_MCP_REQUEST_TRACE_ID_CHARS) return null;
+  if (input.outcome !== 'timeout' && input.stages.totalMs < input.slowMs) return null;
+  return {
+    traceId: input.traceId,
+    pid: input.pid,
+    outcome: input.outcome === 'timeout' ? 'timeout' : `slow_${input.outcome}`,
+    stages: { ...input.stages },
+  };
+}
 
 /**
  * Fetch the SDK's stored `initialize` handler from the protocol's private
@@ -53,14 +98,19 @@ export function takeStoredInitializeHandler(server: unknown): InitializeHandler 
  */
 export function wrapInitializeWithInstructions(
   original: InitializeHandler,
-  enrich: (base: string | undefined, extra: unknown) => Promise<string | null | undefined>,
+  enrich: (
+    base: string | undefined,
+    extra: unknown,
+    timing: InitializeHandlerTiming,
+  ) => Promise<string | null | undefined>,
 ): InitializeHandler {
   return async (req, extra) => {
+    const startedAtMs = Date.now();
     const base = (await original(req, extra)) as Record<string, unknown>;
+    const sdkMs = Date.now() - startedAtMs;
     try {
-      const baseInstructions =
-        typeof base.instructions === 'string' ? base.instructions : undefined;
-      const enriched = await enrich(baseInstructions, extra);
+      const baseInstructions = typeof base.instructions === 'string' ? base.instructions : undefined;
+      const enriched = await enrich(baseInstructions, extra, { startedAtMs, sdkMs });
       if (typeof enriched === 'string' && enriched.length > 0 && enriched !== baseInstructions) {
         return { ...base, instructions: enriched };
       }

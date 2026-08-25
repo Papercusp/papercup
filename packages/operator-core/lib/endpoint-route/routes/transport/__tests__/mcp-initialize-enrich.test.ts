@@ -23,6 +23,7 @@ import {
 import {
   takeStoredInitializeHandler,
   wrapInitializeWithInstructions,
+  buildInitializeStageTelemetry,
 } from '../_mcp-initialize-enrich';
 
 const STATIC_INSTRUCTIONS = 'STATIC BASE INSTRUCTIONS';
@@ -160,5 +161,52 @@ describe('wrapInitializeWithInstructions — never-throws / keep-base contract',
     const marker = { requestInfo: { headers: {} } };
     await wrapped(initializeRequest(LATEST_PROTOCOL_VERSION), marker);
     expect(seenExtra).toBe(marker);
+  });
+
+  it('passes SDK-stage timing without exposing the request to telemetry helpers', async () => {
+    const server = makeServer();
+    const original = takeStoredInitializeHandler(server)!;
+    let timing: { startedAtMs: number; sdkMs: number } | undefined;
+    const wrapped = wrapInitializeWithInstructions(original, async (_base, _extra, seen) => {
+      timing = seen;
+      return null;
+    });
+    await wrapped(initializeRequest(LATEST_PROTOCOL_VERSION), {});
+    expect(timing?.startedAtMs).toEqual(expect.any(Number));
+    expect(timing?.sdkMs).toEqual(expect.any(Number));
+  });
+});
+
+describe('buildInitializeStageTelemetry — slow/timeout-only privacy boundary', () => {
+  const traceId = '1cb45906-a016-4b0d-8ae8-7f0dfcbe8eb4';
+  const stages = {
+    sdkMs: 2,
+    spawnContextMs: 3,
+    userLookupMs: 5,
+    preludeMs: 7,
+    enrichmentMs: 15,
+    totalMs: 17,
+  };
+
+  it('keeps a fast initialize silent', () => {
+    expect(buildInitializeStageTelemetry({ traceId, pid: 7, outcome: 'enriched', slowMs: 100, stages })).toBeNull();
+  });
+
+  it('records timeouts regardless of duration and slow completions only', () => {
+    expect(buildInitializeStageTelemetry({ traceId, pid: 7, outcome: 'timeout', slowMs: 100, stages })).toEqual({
+      traceId,
+      pid: 7,
+      outcome: 'timeout',
+      stages,
+    });
+    expect(buildInitializeStageTelemetry({ traceId, pid: 7, outcome: 'base', slowMs: 10, stages })?.outcome).toBe(
+      'slow_base',
+    );
+  });
+
+  it('emits only correlation, pid, outcome, and stage durations', () => {
+    const record = buildInitializeStageTelemetry({ traceId, pid: 7, outcome: 'enriched', slowMs: 10, stages })!;
+    expect(Object.keys(record).sort()).toEqual(['outcome', 'pid', 'stages', 'traceId']);
+    expect(JSON.stringify(record)).not.toMatch(/client|request|header|method|tool|args|payload/i);
   });
 });

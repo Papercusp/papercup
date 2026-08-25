@@ -66,7 +66,13 @@ import {
 import type { AgentRole } from '@papercusp/plugin-sdk';
 // Generic MCP↔dispatcher bridge primitives (plan P-031). The auth/spawn-context
 // assembly below stays host-side; only the reusable, host-agnostic glue moved.
-import { bearerFromExtra, urlFromExtra, headersFromExtra, dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
+import {
+  bearerFromExtra,
+  urlFromExtra,
+  headersFromExtra,
+  mcpTraceIdFromExtra,
+  dispatchProjectedToolToMcp,
+} from '@papercusp/tooldef-mcp';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
@@ -128,7 +134,12 @@ import {
   activateSessionTools,
 } from './tool-allowlist';
 import { validIdempotencyKey, lookupStoredMcpResult, storeMcpResult, type StoredMcpResult } from './_mcp-result-replay';
-import { takeStoredInitializeHandler, wrapInitializeWithInstructions } from './_mcp-initialize-enrich';
+import {
+  takeStoredInitializeHandler,
+  wrapInitializeWithInstructions,
+  buildInitializeStageTelemetry,
+  type InitializeStageOutcome,
+} from './_mcp-initialize-enrich';
 import { buildMcpPrelude } from '../../../memory/mcp-prelude';
 import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
 import { getSessionUserOrDefault } from '../../../auth';
@@ -1861,6 +1872,12 @@ const INITIALIZE_ENRICH_DEADLINE_MS = (() => {
   return Number.isFinite(raw) && raw >= 0 ? raw : 2_500;
 })();
 
+/** Fast initialize calls stay silent; this is the upstream stage-telemetry threshold. */
+const INITIALIZE_STAGE_SLOW_MS = (() => {
+  const raw = Number(process.env.PAPERCUSP_MCP_INIT_STAGE_SLOW_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2_500;
+})();
+
 function mcpInstructionsForServer(): string | undefined {
   // dynamic-tool-surface D-011: append the compact CAPABILITY MAP so a trimmed session (the
   // default now) knows WHAT exists to search for — discoverability at ~1-2k instead of the
@@ -3356,36 +3373,79 @@ const handler = createMcpHandler(
       type StoredInitializeHandler = Parameters<typeof server.server.setRequestHandler>[1];
       server.server.setRequestHandler(
         sdk.InitializeRequestSchema,
-        wrapInitializeWithInstructions(sdkInitialize, async (base, extra) =>
-          raceDeadline(
-            INITIALIZE_ENRICH_DEADLINE_MS,
-            async () => {
-              const spawnRes = await tryBuildSpawnContext(extra);
-              if (spawnRes.kind !== 'ok') return null;
-              const user = await getSessionUserOrDefault();
-              const ctxWorkspace = spawnRes.ctx.workspaceId;
-              const ctxHarness = spawnRes.ctx.harnessSlug;
-              const prelude = await buildMcpPrelude({
-                userId: user.id,
-                workspaceId: ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId(),
-                url: urlFromExtra(extra),
-                // WI-4393: ctx.harnessSlug already resolved header (OMP)-vs-URL-param
-                // (claude/codex) precedence in tryBuildSpawnContext — pass it explicitly
-                // rather than making buildMcpPrelude re-parse `?harness=` alone, which
-                // OMP's static per-launch URL never carries.
-                harnessSlug: ctxHarness && ctxHarness !== '*' ? ctxHarness : null,
-                insightsDir: INSIGHTS_DIR,
-                // P-002 epoch dedup identity: the per-launch SID (uiClientId),
-                // so initialize stamps the same ledger the turn-start/claim
-                // ports will dedup against.
-                ...(spawnRes.ctx.uiClientId ? { sessionId: spawnRes.ctx.uiClientId } : {}),
-              });
-              if (!prelude?.text) return null;
-              return base ? `${base}\n\n${prelude.text}` : prelude.text;
-            },
-            () => null,
-          ),
-        ) as StoredInitializeHandler,
+        wrapInitializeWithInstructions(sdkInitialize, async (base, extra, timing) => {
+          const traceId = mcpTraceIdFromExtra(extra) ?? globalThis.crypto.randomUUID();
+          const stages = {
+            sdkMs: timing.sdkMs,
+            spawnContextMs: null as number | null,
+            userLookupMs: null as number | null,
+            preludeMs: null as number | null,
+            enrichmentMs: 0,
+            totalMs: 0,
+          };
+          const enrichmentStartedAt = Date.now();
+          let outcome: InitializeStageOutcome = 'base';
+          let timedOut = false;
+          try {
+            const enriched = await raceDeadline(
+              INITIALIZE_ENRICH_DEADLINE_MS,
+              async () => {
+                const spawnStartedAt = Date.now();
+                const spawnRes = await tryBuildSpawnContext(extra).finally(() => {
+                  stages.spawnContextMs = Date.now() - spawnStartedAt;
+                });
+                if (spawnRes.kind !== 'ok') return null;
+
+                const userStartedAt = Date.now();
+                const user = await getSessionUserOrDefault().finally(() => {
+                  stages.userLookupMs = Date.now() - userStartedAt;
+                });
+                const ctxWorkspace = spawnRes.ctx.workspaceId;
+                const ctxHarness = spawnRes.ctx.harnessSlug;
+                const preludeStartedAt = Date.now();
+                const prelude = await buildMcpPrelude({
+                  userId: user.id,
+                  workspaceId: ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId(),
+                  url: urlFromExtra(extra),
+                  // WI-4393: ctx.harnessSlug already resolved header (OMP)-vs-URL-param
+                  // (claude/codex) precedence in tryBuildSpawnContext — pass it explicitly
+                  // rather than making buildMcpPrelude re-parse `?harness=` alone, which
+                  // OMP's static per-launch URL never carries.
+                  harnessSlug: ctxHarness && ctxHarness !== '*' ? ctxHarness : null,
+                  insightsDir: INSIGHTS_DIR,
+                  // P-002 epoch dedup identity: the per-launch SID (uiClientId),
+                  // so initialize stamps the same ledger the turn-start/claim
+                  // ports will dedup against.
+                  ...(spawnRes.ctx.uiClientId ? { sessionId: spawnRes.ctx.uiClientId } : {}),
+                }).finally(() => {
+                  stages.preludeMs = Date.now() - preludeStartedAt;
+                });
+                if (!prelude?.text) return null;
+                return base ? `${base}\n\n${prelude.text}` : prelude.text;
+              },
+              () => {
+                timedOut = true;
+                return null;
+              },
+            );
+            outcome = timedOut ? 'timeout' : enriched ? 'enriched' : 'base';
+            return enriched;
+          } catch (error) {
+            outcome = 'error';
+            throw error;
+          } finally {
+            stages.enrichmentMs = Date.now() - enrichmentStartedAt;
+            stages.totalMs = Date.now() - timing.startedAtMs;
+            const telemetry = buildInitializeStageTelemetry({
+              traceId,
+              pid: process.pid,
+              outcome,
+              slowMs: INITIALIZE_STAGE_SLOW_MS,
+              stages,
+            });
+            if (telemetry) console.warn('[mcp-initialize-stage]', telemetry);
+          }
+        }) as StoredInitializeHandler,
       );
     }
 
