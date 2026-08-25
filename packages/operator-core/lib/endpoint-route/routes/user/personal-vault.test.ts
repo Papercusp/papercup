@@ -111,6 +111,7 @@ beforeEach(() => {
       workspaceId: 'ws-test',
       kind: 'gmail',
       ownerUserId: 'user-1',
+      providerAccountId: 'owner@example.com',
       credentialRef: 'google-workspace:owner-user-1',
       status: 'connected',
       config: { privateSetting: 'never-serialize-source-config' },
@@ -129,6 +130,7 @@ beforeEach(() => {
     workspaceId: 'ws-test',
     kind: 'contacts',
     ownerUserId: 'user-1',
+    providerAccountId: 'owner@example.com',
     credentialRef: 'google-workspace:owner-user-1',
     status: 'disabled',
     config: { capabilityEnabled: false },
@@ -179,6 +181,13 @@ describe('Personal Vault owner routes', () => {
           configured: true,
           connected: true,
           status: 'connected',
+          accounts: [
+            expect.objectContaining({
+              providerAccountId: 'owner@example.com',
+              displayName: 'owner@example.com',
+              connected: true,
+            }),
+          ],
           sources: [
             {
               kind: 'gmail',
@@ -230,6 +239,7 @@ describe('Personal Vault owner routes', () => {
         workspaceId: 'ws-test',
         kind: 'gmail',
         ownerUserId: 'user-1',
+        providerAccountId: 'owner@example.com',
         credentialRef: 'google-workspace:owner-user-1',
         status: 'connected',
         config: {},
@@ -243,6 +253,7 @@ describe('Personal Vault owner routes', () => {
         workspaceId: 'ws-test',
         kind: 'youtube',
         ownerUserId: 'user-1',
+        providerAccountId: 'owner@example.com',
         credentialRef: 'google-workspace:owner-user-1',
         status: 'disabled',
         config: { capabilityEnabled: false },
@@ -281,7 +292,13 @@ describe('Personal Vault owner routes', () => {
       provider: 'google',
       disconnectedSources: 3,
     });
-    expect(mocks.disconnectSources).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', ['gmail', 'gcal', 'contacts']);
+    expect(mocks.disconnectSources).toHaveBeenCalledWith(
+      mocks.sql,
+      'ws-test',
+      'user-1',
+      ['gmail', 'gcal', 'contacts'],
+      'owner@example.com',
+    );
     expect(mocks.tokenUpdate).toHaveBeenCalledWith('google-workspace', 'papercusp', {
       'owner-user-1': null,
       'owner-user-1_refresh': null,
@@ -311,6 +328,7 @@ describe('Personal Vault owner routes', () => {
     expect(mocks.setCapability).toHaveBeenCalledWith(mocks.sql, {
       workspaceId: 'ws-test',
       ownerUserId: 'user-1',
+      providerAccountId: 'owner@example.com',
       kind: 'contacts',
       credentialRef: 'google-workspace:owner-user-1',
       enabled: false,
@@ -322,6 +340,7 @@ describe('Personal Vault owner routes', () => {
 
   it('surfaces Calendar write consent as a capability-scoped upgrade', async () => {
     mocks.tokenRead.mockResolvedValueOnce({
+      'owner-user-1': 'never-serialize-google-access-token',
       'owner-user-1_scopes': [
         'https://www.googleapis.com/auth/gmail.readonly',
         'https://www.googleapis.com/auth/gmail.compose',

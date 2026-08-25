@@ -50,6 +50,7 @@ interface IntegrationStatus {
   status: "needs-app-config" | "available" | "connected" | "degraded" | "error";
   sources: IntegrationSourceStatus[];
   capabilities?: GoogleCapabilityStatus[];
+  accounts?: GoogleAccountStatus[];
 }
 
 type GoogleCapabilityId = "gmail" | "calendar" | "contacts" | "youtube";
@@ -68,6 +69,16 @@ interface GoogleCapabilityStatus {
     | "degraded"
     | "error";
   missingScopes: string[];
+}
+
+interface GoogleAccountStatus {
+  providerAccountId: string;
+  displayName: string;
+  connected: boolean;
+  status: IntegrationStatus["status"];
+  sources: IntegrationSourceStatus[];
+  grantedScopes: string[];
+  capabilities: GoogleCapabilityStatus[];
 }
 
 interface GrantPreview {
@@ -120,6 +131,7 @@ const GOOGLE_CAPABILITY_META: Record<
 
 export function googleWorkspaceConnectHref(
   includeCalendarWrite = true,
+  providerAccountId?: string,
 ): string {
   const params = new URLSearchParams({
     provider: "google",
@@ -127,6 +139,7 @@ export function googleWorkspaceConnectHref(
     harness: "papercusp",
     field: "owner",
   });
+  if (providerAccountId) params.set("account", providerAccountId);
   if (includeCalendarWrite) params.set("scopes", GOOGLE_CALENDAR_EVENTS_SCOPE);
   return "/api/oauth/start?" + params.toString();
 }
@@ -239,32 +252,41 @@ export default function PersonalVaultSettingsPage() {
     [busy, status],
   );
 
-  const disconnectGoogle = useCallback(async () => {
-    if (!status || busy) return;
-    setBusy("disconnect-google");
-    try {
-      await responseJson<{ ok: true; disconnectedSources: number }>(
-        await fetch("/api/user/personal-vault/integrations/google", {
-          method: "DELETE",
-        }),
-      );
-      toast.success(
-        "Google Workspace disconnected. Existing Personal Vault documents were kept.",
-      );
-      await load();
-    } catch (err) {
-      toast.error(
-        "Google Workspace disconnect failed: " + (err as Error).message,
-      );
-    } finally {
-      setBusy(null);
-    }
-  }, [busy, load, status]);
+  const disconnectGoogle = useCallback(
+    async (providerAccountId: string) => {
+      if (!status || busy) return;
+      setBusy(`disconnect-google:${providerAccountId}`);
+      try {
+        await responseJson<{ ok: true; disconnectedSources: number }>(
+          await fetch(
+            "/api/user/personal-vault/integrations/google?" +
+              new URLSearchParams({ account: providerAccountId }).toString(),
+            { method: "DELETE" },
+          ),
+        );
+        toast.success(
+          `${providerAccountId} disconnected. Existing Personal Vault documents were kept.`,
+        );
+        await load();
+      } catch (err) {
+        toast.error(
+          "Google Workspace disconnect failed: " + (err as Error).message,
+        );
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, load, status],
+  );
 
   const setGoogleCapability = useCallback(
-    async (capability: GoogleCapabilityId, enabled: boolean) => {
+    async (
+      providerAccountId: string,
+      capability: GoogleCapabilityId,
+      enabled: boolean,
+    ) => {
       if (!status || busy) return;
-      setBusy(`google-capability-${capability}`);
+      setBusy(`google-capability:${providerAccountId}:${capability}`);
       try {
         await responseJson<{
           ok: true;
@@ -276,7 +298,11 @@ export default function PersonalVaultSettingsPage() {
             {
               method: "PATCH",
               headers: { "content-type": "application/json" },
-              body: JSON.stringify({ capability, enabled }),
+              body: JSON.stringify({
+                providerAccountId,
+                capability,
+                enabled,
+              }),
             },
           ),
         );
@@ -661,20 +687,7 @@ export default function PersonalVaultSettingsPage() {
             status: "needs-app-config" as const,
             sources: [],
           };
-          const capabilities: GoogleCapabilityStatus[] = google.capabilities
-            ?.length
-            ? google.capabilities
-            : (["gmail", "calendar", "contacts"] as const).map((id) => ({
-                id,
-                sourceKind: id === "calendar" ? "gcal" : id,
-                enabled: true,
-                connected: google.connected,
-                status: google.status,
-                missingScopes: [],
-              }));
-          const calendar = capabilities.find(
-            (capability) => capability.id === "calendar",
-          );
+          const accounts = google.accounts ?? [];
           return (
             <article
               aria-labelledby="vault-google-heading"
@@ -698,9 +711,9 @@ export default function PersonalVaultSettingsPage() {
                     Google Workspace
                   </h3>
                   <p className="pc-settings-note">
-                    One consent connects Gmail, Calendar, and Contacts. Gmail
-                    uses provider push notifications plus replay-safe
-                    incremental history sync.
+                    Each Google account keeps its own OAuth credential, sync
+                    cursors, and capability controls. Gmail uses provider push
+                    notifications plus replay-safe incremental history sync.
                   </p>
                 </div>
                 <strong
@@ -709,107 +722,200 @@ export default function PersonalVaultSettingsPage() {
                   {integrationStatusLabel(google.status)}
                 </strong>
               </div>
-              <fieldset style={{ border: 0, padding: 0, margin: "16px 0 0" }}>
-                <legend style={{ fontWeight: 600, marginBottom: 8 }}>
-                  Workspace capabilities
-                </legend>
-                <div style={{ display: "grid", gap: 10 }}>
-                  {capabilities.map((capability) => {
-                    const meta = GOOGLE_CAPABILITY_META[capability.id];
+              {accounts.length ? (
+                <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+                  {accounts.map((account, accountIndex) => {
+                    const accountHeadingId = `vault-google-account-${accountIndex}`;
+                    const calendar = account.capabilities.find(
+                      (capability) => capability.id === "calendar",
+                    );
                     return (
-                      <label
-                        key={capability.id}
+                      <section
+                        key={account.providerAccountId}
+                        aria-labelledby={accountHeadingId}
                         style={{
-                          display: "flex",
-                          alignItems: "flex-start",
-                          gap: 10,
+                          padding: 14,
+                          border: "1px solid var(--border)",
+                          borderRadius: 8,
                         }}
                       >
-                        <Checkbox
-                          checked={capability.enabled}
-                          disabled={!google.connected || busy !== null}
-                          onChange={(enabled) =>
-                            void setGoogleCapability(capability.id, enabled)
-                          }
-                          ariaLabel={`Enable ${meta.label} live sync`}
-                        />
-                        <span style={{ flex: 1 }}>
-                          <span
+                        <div
+                          style={{
+                            display: "flex",
+                            gap: 12,
+                            alignItems: "start",
+                            justifyContent: "space-between",
+                          }}
+                        >
+                          <div>
+                            <h4 id={accountHeadingId} style={{ margin: 0 }}>
+                              {account.displayName}
+                            </h4>
+                            {account.displayName !==
+                            account.providerAccountId ? (
+                              <p
+                                className="pc-settings-note"
+                                style={{ margin: "4px 0 0" }}
+                              >
+                                {account.providerAccountId}
+                              </p>
+                            ) : null}
+                          </div>
+                          <strong
+                            aria-label={`${account.displayName} status: ${account.status}`}
+                          >
+                            {integrationStatusLabel(account.status)}
+                          </strong>
+                        </div>
+                        <fieldset
+                          style={{ border: 0, padding: 0, margin: "14px 0 0" }}
+                        >
+                          <legend style={{ fontWeight: 600, marginBottom: 8 }}>
+                            Account capabilities
+                          </legend>
+                          <div style={{ display: "grid", gap: 10 }}>
+                            {account.capabilities.map((capability) => {
+                              const meta =
+                                GOOGLE_CAPABILITY_META[capability.id];
+                              return (
+                                <label
+                                  key={capability.id}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "flex-start",
+                                    gap: 10,
+                                  }}
+                                >
+                                  <Checkbox
+                                    checked={capability.enabled}
+                                    disabled={
+                                      !account.connected || busy !== null
+                                    }
+                                    onChange={(enabled) =>
+                                      void setGoogleCapability(
+                                        account.providerAccountId,
+                                        capability.id,
+                                        enabled,
+                                      )
+                                    }
+                                    ariaLabel={`Enable ${meta.label} live sync for ${account.displayName}`}
+                                  />
+                                  <span style={{ flex: 1 }}>
+                                    <span
+                                      style={{
+                                        display: "flex",
+                                        gap: 8,
+                                        justifyContent: "space-between",
+                                      }}
+                                    >
+                                      <strong>{meta.label}</strong>
+                                      <span
+                                        aria-label={`${meta.label} capability status for ${account.displayName}: ${capability.status}`}
+                                      >
+                                        {capabilityStatusLabel(
+                                          capability.status,
+                                        )}
+                                      </span>
+                                    </span>
+                                    <span
+                                      className="pc-settings-note"
+                                      style={{ display: "block" }}
+                                    >
+                                      {meta.detail}
+                                    </span>
+                                  </span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                          <p
+                            className="pc-settings-note"
+                            style={{ marginBottom: 0 }}
+                          >
+                            Turning off one capability affects only this account
+                            and surface. Its other live syncs and settled Vault
+                            documents remain available.
+                          </p>
+                        </fieldset>
+                        {calendar?.status === "needs-consent" ? (
+                          <div
+                            className="pc-settings-note"
+                            role="status"
+                            aria-label={`Calendar consent upgrade required for ${account.displayName}`}
                             style={{
-                              display: "flex",
-                              gap: 8,
-                              justifyContent: "space-between",
+                              marginTop: 12,
+                              padding: 12,
+                              border: "1px solid var(--warn, #fbbf24)",
+                              borderRadius: 8,
                             }}
                           >
-                            <strong>{meta.label}</strong>
-                            <span
-                              aria-label={`${meta.label} capability status: ${capability.status}`}
-                            >
-                              {capabilityStatusLabel(capability.status)}
-                            </span>
-                          </span>
-                          <span
-                            className="pc-settings-note"
-                            style={{ display: "block" }}
+                            Calendar read sync remains available, but create,
+                            update, and delete require renewed consent for this
+                            account. The reconnect is account-targeted and never
+                            creates a second source for the same identity.
+                          </div>
+                        ) : null}
+                        {account.sources.length ? (
+                          <dl className="pc-settings-status">
+                            {account.sources.map((source) => (
+                              <div key={source.kind}>
+                                <dt>
+                                  {source.kind === "gcal"
+                                    ? "Calendar"
+                                    : source.kind}
+                                </dt>
+                                <dd>
+                                  {source.status}
+                                  {source.lastSyncAt
+                                    ? " · synced " +
+                                      formatDate(source.lastSyncAt)
+                                    : ""}
+                                </dd>
+                              </div>
+                            ))}
+                          </dl>
+                        ) : null}
+                        <div
+                          className="pc-settings-actions"
+                          style={{ marginTop: 12 }}
+                        >
+                          <Button
+                            variant="primary"
+                            disabled={!google.configured || busy !== null}
+                            onClick={() =>
+                              window.location.assign(
+                                googleWorkspaceConnectHref(
+                                  calendar?.enabled !== false,
+                                  account.providerAccountId,
+                                ),
+                              )
+                            }
                           >
-                            {meta.detail}
-                          </span>
-                        </span>
-                      </label>
+                            Reconnect {account.displayName}
+                          </Button>
+                          {account.connected ? (
+                            <Button
+                              variant="destructive"
+                              disabled={busy !== null}
+                              onClick={() =>
+                                void disconnectGoogle(account.providerAccountId)
+                              }
+                            >
+                              {busy ===
+                              `disconnect-google:${account.providerAccountId}`
+                                ? "Disconnecting…"
+                                : `Disconnect ${account.displayName}`}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </section>
                     );
                   })}
                 </div>
-                <p className="pc-settings-note" style={{ marginBottom: 0 }}>
-                  Turning off one capability stops that surface only. The shared
-                  Workspace token and settled Personal Vault documents remain
-                  until you disconnect or purge them.
+              ) : google.configured ? (
+                <p className="pc-settings-note" role="status">
+                  No Google accounts are connected yet.
                 </p>
-              </fieldset>
-              {calendar?.status === "needs-consent" ? (
-                <div
-                  className="pc-settings-note"
-                  role="status"
-                  aria-label="Calendar consent upgrade required"
-                  style={{
-                    marginTop: 12,
-                    padding: 12,
-                    border: "1px solid var(--warn, #fbbf24)",
-                    borderRadius: 8,
-                  }}
-                >
-                  Calendar read sync remains available, but create, update, and
-                  delete require one renewed Workspace consent. This upgrades
-                  the existing connection; it does not create a second OAuth
-                  source.
-                  <div className="pc-settings-actions" style={{ marginTop: 8 }}>
-                    <Button
-                      variant="primary"
-                      disabled={busy !== null}
-                      onClick={() =>
-                        window.location.assign(googleWorkspaceConnectHref(true))
-                      }
-                    >
-                      Upgrade Calendar consent
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
-              {google.sources.length ? (
-                <dl className="pc-settings-status">
-                  {google.sources.map((source) => (
-                    <div key={source.kind}>
-                      <dt>
-                        {source.kind === "gcal" ? "Calendar" : source.kind}
-                      </dt>
-                      <dd>
-                        {source.status}
-                        {source.lastSyncAt
-                          ? " · synced " + formatDate(source.lastSyncAt)
-                          : ""}
-                      </dd>
-                    </div>
-                  ))}
-                </dl>
               ) : null}
               {!google.configured ? (
                 <p className="pc-settings-note" role="status">
@@ -823,30 +929,16 @@ export default function PersonalVaultSettingsPage() {
                   variant="primary"
                   disabled={!google.configured || busy !== null}
                   onClick={() =>
-                    window.location.assign(
-                      googleWorkspaceConnectHref(calendar?.enabled !== false),
-                    )
+                    window.location.assign(googleWorkspaceConnectHref(true))
                   }
                 >
-                  {google.connected
-                    ? "Reconnect Google Workspace"
-                    : "Connect Google Workspace"}
+                  Add Google account
                 </Button>
-                {google.connected ? (
-                  <Button
-                    variant="destructive"
-                    disabled={busy !== null}
-                    onClick={() => void disconnectGoogle()}
-                  >
-                    {busy === "disconnect-google"
-                      ? "Disconnecting…"
-                      : "Disconnect"}
-                  </Button>
-                ) : null}
               </div>
               <p className="pc-settings-note" style={{ marginBottom: 0 }}>
-                Disconnect stops live sync but keeps imported documents. Use
-                Purge below only when you want verified deletion.
+                Add Account always starts a new consent flow. Reconnect and
+                Disconnect are scoped to the selected account and keep settled
+                documents; use Purge only for verified deletion.
               </p>
             </article>
           );

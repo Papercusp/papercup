@@ -18,6 +18,33 @@ vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
 }));
 
+const googleCapabilities = [
+  {
+    id: "gmail",
+    sourceKind: "gmail",
+    enabled: true,
+    connected: true,
+    status: "connected",
+    missingScopes: [],
+  },
+  {
+    id: "calendar",
+    sourceKind: "gcal",
+    enabled: true,
+    connected: true,
+    status: "connected",
+    missingScopes: [],
+  },
+  {
+    id: "contacts",
+    sourceKind: "contacts",
+    enabled: true,
+    connected: true,
+    status: "connected",
+    missingScopes: [],
+  },
+];
+
 const status = {
   ok: true,
   enabled: true,
@@ -53,30 +80,23 @@ const status = {
           lastSyncAt: "2026-08-23T00:00:00.000Z",
         },
       ],
-      capabilities: [
+      capabilities: googleCapabilities,
+      accounts: [
         {
-          id: "gmail",
-          sourceKind: "gmail",
-          enabled: true,
+          providerAccountId: "owner@example.com",
+          displayName: "owner@example.com",
           connected: true,
           status: "connected",
-          missingScopes: [],
-        },
-        {
-          id: "calendar",
-          sourceKind: "gcal",
-          enabled: true,
-          connected: true,
-          status: "connected",
-          missingScopes: [],
-        },
-        {
-          id: "contacts",
-          sourceKind: "contacts",
-          enabled: true,
-          connected: true,
-          status: "connected",
-          missingScopes: [],
+          grantedScopes: [],
+          sources: [
+            {
+              kind: "gmail",
+              status: "connected",
+              lastConnectedAt: "2026-08-23T00:00:00.000Z",
+              lastSyncAt: "2026-08-23T00:00:00.000Z",
+            },
+          ],
+          capabilities: googleCapabilities,
         },
       ],
     },
@@ -195,7 +215,7 @@ describe("PersonalVaultSettingsPage", () => {
       await screen.findByRole("heading", { name: "Live integrations" }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Reconnect Google Workspace" }),
+      screen.getByRole("button", { name: "Add Google account" }),
     ).toBeTruthy();
     expect(googleWorkspaceConnectHref()).toBe(
       "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events",
@@ -203,27 +223,34 @@ describe("PersonalVaultSettingsPage", () => {
     expect(googleWorkspaceConnectHref(false)).toBe(
       "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner",
     );
+    expect(googleWorkspaceConnectHref(true, "owner@example.com")).toBe(
+      "/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&account=owner%40example.com&scopes=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcalendar.events",
+    );
     const googleCard = screen
       .getByRole("heading", { name: "Google Workspace" })
       .closest("article");
     expect(googleCard).toBeTruthy();
+    const accountCard = within(googleCard!)
+      .getByRole("heading", { name: "owner@example.com" })
+      .closest("section");
+    expect(accountCard).toBeTruthy();
     expect(
-      within(googleCard!).getByRole("checkbox", {
-        name: "Enable Gmail live sync",
+      within(accountCard!).getByRole("checkbox", {
+        name: "Enable Gmail live sync for owner@example.com",
       }),
     ).toBeTruthy();
     expect(
-      within(googleCard!).getByRole("checkbox", {
-        name: "Enable Calendar live sync",
+      within(accountCard!).getByRole("checkbox", {
+        name: "Enable Calendar live sync for owner@example.com",
       }),
     ).toBeTruthy();
     expect(
-      within(googleCard!).getByText(
-        /Turning off one capability stops that surface only/i,
+      within(accountCard!).getByText(
+        /Turning off one capability affects only this account/i,
       ),
     ).toBeTruthy();
-    const contactsToggle = within(googleCard!).getByRole("checkbox", {
-      name: "Enable Contacts live sync",
+    const contactsToggle = within(accountCard!).getByRole("checkbox", {
+      name: "Enable Contacts live sync for owner@example.com",
     });
     fireEvent.click(contactsToggle);
     await waitFor(() => {
@@ -231,16 +258,22 @@ describe("PersonalVaultSettingsPage", () => {
         "/api/user/personal-vault/integrations/google/capabilities",
         expect.objectContaining({
           method: "PATCH",
-          body: JSON.stringify({ capability: "contacts", enabled: false }),
+          body: JSON.stringify({
+            providerAccountId: "owner@example.com",
+            capability: "contacts",
+            enabled: false,
+          }),
         }),
       );
     });
     fireEvent.click(
-      within(googleCard!).getByRole("button", { name: "Disconnect" }),
+      within(accountCard!).getByRole("button", {
+        name: "Disconnect owner@example.com",
+      }),
     );
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/user/personal-vault/integrations/google",
+        "/api/user/personal-vault/integrations/google?account=owner%40example.com",
         { method: "DELETE" },
       );
     });
@@ -258,8 +291,9 @@ describe("PersonalVaultSettingsPage", () => {
           ...status.integrations,
           google: {
             ...status.integrations.google,
-            capabilities: status.integrations.google.capabilities.map(
-              (capability) =>
+            accounts: status.integrations.google.accounts.map((account) => ({
+              ...account,
+              capabilities: account.capabilities.map((capability) =>
                 capability.id === "calendar"
                   ? {
                       ...capability,
@@ -270,7 +304,8 @@ describe("PersonalVaultSettingsPage", () => {
                       ],
                     }
                   : capability,
-            ),
+              ),
+            })),
           },
         },
       }),
@@ -281,16 +316,19 @@ describe("PersonalVaultSettingsPage", () => {
     ).closest("article");
     expect(card).toBeTruthy();
     expect(
-      within(card!).getByLabelText("Calendar capability status: needs-consent")
-        .textContent,
+      within(card!).getByLabelText(
+        "Calendar capability status for owner@example.com: needs-consent",
+      ).textContent,
     ).toBe("Consent update required");
     expect(
       within(card!).getByRole("status", {
-        name: "Calendar consent upgrade required",
+        name: "Calendar consent upgrade required for owner@example.com",
       }).textContent,
-    ).toContain("does not create a second OAuth source");
+    ).toContain("never creates a second source");
     expect(
-      within(card!).getByRole("button", { name: "Upgrade Calendar consent" }),
+      within(card!).getByRole("button", {
+        name: "Reconnect owner@example.com",
+      }),
     ).toBeTruthy();
   });
 

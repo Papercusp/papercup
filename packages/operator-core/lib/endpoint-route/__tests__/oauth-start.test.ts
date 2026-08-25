@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const stateMocks = vi.hoisted(() => ({
-  signState: vi.fn(async () => 'test-state-token'),
+  signState: vi.fn(async (_claims: { field: string }) => 'test-state-token'),
 }));
 const authMocks = vi.hoisted(() => ({
   getSessionUserOrDefault: vi.fn(async () => ({
@@ -18,6 +18,10 @@ const authMocks = vi.hoisted(() => ({
     display_name: 'Owner',
     has_password: false,
   })),
+}));
+const sourceMocks = vi.hoisted(() => ({
+  listOwned: vi.fn(async (): Promise<unknown[]> => []),
+  sql: { test: true },
 }));
 
 vi.mock('../../oauth/providers', async (importOriginal) => {
@@ -35,6 +39,14 @@ vi.mock('../../auth', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => 'workspace-1',
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sourceMocks.sql }),
+}));
+vi.mock('../../external-triggers/source-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../external-triggers/source-store')>()),
+  listOwnedExternalTriggerSources: sourceMocks.listOwned,
 }));
 
 import startRoute from '../routes/oauth/start';
@@ -69,6 +81,8 @@ beforeEach(() => {
   __resetRegistryForTest();
   stateMocks.signState.mockClear();
   authMocks.getSessionUserOrDefault.mockClear();
+  sourceMocks.listOwned.mockReset();
+  sourceMocks.listOwned.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -148,7 +162,7 @@ describe('GET /api/oauth/start', () => {
         provider: 'google',
         plugin: 'google-workspace',
         harness: 'papercusp',
-        field: 'owner-22222222-2222-4222-8222-222222222222',
+        field: expect.stringMatching(/^owner-22222222-2222-4222-8222-222222222222-[a-f0-9]{16}$/),
       }),
       {
         privateContext: {
@@ -170,6 +184,86 @@ describe('GET /api/oauth/start', () => {
         requestedScopes: JSON.stringify(['scope:mail', 'scope:calendar', 'scope:calendar-write']),
       }),
     );
+  });
+
+  it('uses a unique private token field for each Google Workspace Add Account flow', async () => {
+    registerProvider({
+      ...stubProvider,
+      id: 'google',
+      defaultScopes: ['scope:mail'],
+      allowedScopes: ['scope:mail'],
+      buildAuthorizeUrl: () => 'https://accounts.google.com/o/oauth2/v2/auth',
+    });
+
+    const url = 'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner';
+    expect((await GET(new Request(url))).status).toBe(302);
+    expect((await GET(new Request(url))).status).toBe(302);
+
+    const fields = stateMocks.signState.mock.calls.slice(-2).map(([claims]) => claims.field);
+    expect(fields[0]).toMatch(/^owner-22222222-2222-4222-8222-222222222222-[a-f0-9]{16}$/);
+    expect(fields[1]).toMatch(/^owner-22222222-2222-4222-8222-222222222222-[a-f0-9]{16}$/);
+    expect(fields[0]).not.toBe(fields[1]);
+  });
+
+  it('reuses only the selected owned account field for a targeted Google Workspace reconnect', async () => {
+    sourceMocks.listOwned.mockResolvedValue([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        workspaceId: 'workspace-1',
+        kind: 'gmail',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        providerAccountId: 'owner@example.com',
+        credentialRef: 'google-workspace:existing-private-field',
+        status: 'disabled',
+        config: {},
+        cursor: {},
+      },
+    ]);
+    registerProvider({
+      ...stubProvider,
+      id: 'google',
+      defaultScopes: ['scope:mail'],
+      allowedScopes: ['scope:mail'],
+      buildAuthorizeUrl: () => 'https://accounts.google.com/o/oauth2/v2/auth',
+    });
+
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&account=owner%40example.com',
+      ),
+    );
+    expect(response.status).toBe(302);
+    expect(sourceMocks.listOwned).toHaveBeenCalledWith(
+      sourceMocks.sql,
+      'workspace-1',
+      '22222222-2222-4222-8222-222222222222',
+    );
+    expect(stateMocks.signState).toHaveBeenCalledWith(expect.objectContaining({ field: 'existing-private-field' }), {
+      privateContext: expect.objectContaining({
+        reconnectProviderAccountId: 'owner@example.com',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        workspaceId: 'workspace-1',
+      }),
+    });
+  });
+
+  it('rejects a Google Workspace reconnect for an account not owned by the local user', async () => {
+    registerProvider({
+      ...stubProvider,
+      id: 'google',
+      defaultScopes: ['scope:mail'],
+      allowedScopes: ['scope:mail'],
+      buildAuthorizeUrl: () => 'https://accounts.google.com/o/oauth2/v2/auth',
+    });
+
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=google&plugin=google-workspace&harness=papercusp&field=owner&account=other%40example.com',
+      ),
+    );
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ ok: false, error: 'google_workspace_account_not_found' });
+    expect(stateMocks.signState).not.toHaveBeenCalled();
   });
 
   it('rejects a non-Google provider under the reserved Workspace plugin id', async () => {
