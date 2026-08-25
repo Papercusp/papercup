@@ -8,6 +8,13 @@ export default meta;
 
 type Story = StoryObj<typeof HostCheckBanner>;
 
+const passwordlessAuth = {
+  '/api/auth/me': {
+    user: { has_password: false },
+    autoLogin: true,
+  },
+};
+
 function withMocks(mocks: Record<string, unknown>) {
   return (Story: any) => {
     (window as any).__fetchMocks = mocks;
@@ -17,6 +24,7 @@ function withMocks(mocks: Record<string, unknown>) {
 
 export const Allowed_NoBanner: Story = {
   decorators: [withMocks({
+    ...passwordlessAuth,
     '/api/provision/host-check': {
       ok: true, decision: 'allow',
       signals: { activeUsers: ['marsh'], configuredUsers: ['marsh'], isShared: false },
@@ -26,6 +34,7 @@ export const Allowed_NoBanner: Story = {
 
 export const GatedShared: Story = {
   decorators: [withMocks({
+    ...passwordlessAuth,
     '/api/provision/host-check': {
       ok: true, decision: 'gate',
       signals: { activeUsers: ['marsh', 'alex'], configuredUsers: ['marsh'], isShared: true },
@@ -35,6 +44,7 @@ export const GatedShared: Story = {
 
 export const AlreadyAcked: Story = {
   decorators: [withMocks({
+    ...passwordlessAuth,
     '/api/provision/host-check': {
       ok: true, decision: 'allow-acked',
       signals: { activeUsers: ['marsh', 'alex'], configuredUsers: ['marsh'], isShared: true },
