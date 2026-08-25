@@ -483,6 +483,18 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       expect(b.absenceLint).toBeUndefined();
     });
 
+    it('stays quiet for a live non-stall observation', async () => {
+      const b = body(
+        await call({
+          did: 'The current leg is visibly progressing, so there is no stall to remediate.',
+          insight: 'AFFECTED_TASK_PROGRESS bytes are advancing and stalledForSec=0.',
+          next: 'poll the same affected task',
+        }),
+      );
+      expect(b.ok).toBe(true);
+      expect(b.absenceLint).toBeUndefined();
+    });
+
     it('stays quiet when the author already parked the falsifier as a check', async () => {
       const b = body(
         await call({

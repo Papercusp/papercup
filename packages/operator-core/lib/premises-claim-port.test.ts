@@ -94,6 +94,13 @@ describe('detectAbsencePremises', () => {
     expect(derive('The ledger exists, but there is no reader for it.')).toHaveLength(1);
   });
 
+  it('stays quiet for live-state negation while retaining a missing runtime-observer surface', () => {
+    expect(derive('The current leg is visibly progressing, so there is no stall to remediate.')).toEqual([]);
+    expect(derive('The task is advancing and there is no live blocker to clear.')).toEqual([]);
+
+    expect(derive('There is no stall detector for affected tasks.')).toHaveLength(1);
+  });
+
   it('dedups repeated claims and bounds the row count', () => {
     const many = Array.from({ length: 9 }, (_, i) => `There is no helper number ${i} anywhere.`).join('\n');
     expect(derive(many).length).toBeLessThanOrEqual(4);

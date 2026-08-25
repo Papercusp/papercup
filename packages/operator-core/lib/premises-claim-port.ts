@@ -314,8 +314,19 @@ const ABSENCE_PATTERNS: ReadonlyArray<{ re: RegExp; subject: (m: RegExpMatchArra
  */
 const RHETORICAL_ABSENCE_SUBJECT = /^(?:(?:[a-z-]+\s+)?(?:excuse|reason)\s+(?:for|to)\b|(?:any\s+)?need\s+(?:for|to)\b|(?:any\s+)?point\s+in\b|(?:any\s+)?sense\s+in\b|(?:a\s+)?coincidence\s+required\b|(?:a\s+)?justification\s+for\b)/i;
 
-function isRhetoricalAbsenceSubject(subject: string): boolean {
-  return RHETORICAL_ABSENCE_SUBJECT.test(subject.trim());
+/**
+ * A bounded verdict about LIVE execution state is also not a missing durable
+ * surface. "There is no stall to remediate" describes the current process leg;
+ * telling its author to grep the repository for `stall to remediate` is a category
+ * error. Keep this exact-subject shaped so real surface claims such as "there is no
+ * stall detector for affected tasks" still reach the absence guard.
+ */
+const LIVE_STATE_ABSENCE_SUBJECT =
+  /^(?:(?:current|live|active|remaining|new|runtime|process|observed|visible)\s+)*(?:stall|blocker|failure|error|regression|issue|problem|incident)(?:\s+(?:left\s+)?to\s+(?:remediate|fix|clear|resolve|investigate|handle))?$/i;
+
+function isNonSurfaceAbsenceSubject(subject: string): boolean {
+  const normalized = subject.trim();
+  return RHETORICAL_ABSENCE_SUBJECT.test(normalized) || LIVE_STATE_ABSENCE_SUBJECT.test(normalized);
 }
 
 /**
@@ -515,11 +526,12 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
       // A subject that was ENTIRELY code redacts to blanks — still skipped, deliberately:
       // P-014 restores code to the QUOTE, it does not make code detectable as a claim.
       if (!subj) continue;
-      // EI-19406990448803963: a rhetorical `no <noun phrase>` construction is
-      // about effort or justification, not a missing code referent. Do this
-      // after code redaction but before building the claim so the false-positive
-      // cannot leak into either the rendered claim or its recheck.
-      if (isRhetoricalAbsenceSubject(subj)) continue;
+      // EI-19406990448803963 / EI-21433992362008863: a rhetorical `no <noun
+      // phrase>` construction or a bounded live-state verdict is not a missing
+      // code referent. Do this after code redaction but before building the claim
+      // so the false-positive cannot leak into either the rendered claim or its
+      // recheck.
+      if (isNonSurfaceAbsenceSubject(subj)) continue;
       // EI-19399570274386816 (1): "…I claimed did not exist" captures the verb, not a
       // subject — a report OF a claim, not a claim.
       if (REPORTED_SPEECH.has(subj.toLowerCase())) continue;
