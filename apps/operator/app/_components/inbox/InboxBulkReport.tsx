@@ -242,6 +242,7 @@ export function InboxBulkRecommendationDrillIn(
         data-testid={`inbox-bulk-drill-${props.runItem.itemId}`}
         aria-expanded={props.open}
         aria-controls={`inbox-bulk-decision-desk-${props.runItem.itemId}`}
+        disabled={props.busy}
         onClick={props.onToggle}
       >
         {props.open ? "Close decision desk" : "Open decision desk"}
@@ -254,7 +255,7 @@ export function InboxBulkRecommendationDrillIn(
           role="region"
           aria-label={`Decision desk for ${props.listItem.title}`}
           onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
+            if (props.busy || event.key !== "Escape") return;
             event.preventDefault();
             event.stopPropagation();
             // Focus the surviving disclosure trigger before unmounting the

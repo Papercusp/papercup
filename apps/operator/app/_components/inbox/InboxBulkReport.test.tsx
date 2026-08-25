@@ -306,6 +306,38 @@ describe("<InboxBulkReport>", () => {
     expect(document.activeElement).toBe(toggle);
   });
 
+  it("locks the active decision desk, including Escape, while an inline accept is in flight", async () => {
+    let settleAccept!: (result: { ok: boolean; phase: "review" }) => void;
+    H.accept.mockReturnValue(
+      new Promise((resolve) => {
+        settleAccept = resolve;
+      }),
+    );
+    render(
+      <InboxBulkReport
+        run={run}
+        runItems={[runItem()]}
+        attentionItems={[attention("a")]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const toggle = screen.getByTestId(
+      "inbox-bulk-drill-a",
+    ) as HTMLButtonElement;
+    fireEvent.click(toggle);
+    const recommendation = screen.getByTestId("recommendation-a");
+    fireEvent.click(recommendation);
+
+    await waitFor(() => expect(toggle.disabled).toBe(true));
+    fireEvent.keyDown(recommendation, { key: "Escape" });
+    expect(screen.getByTestId("inbox-bulk-decision-desk-a")).toBeTruthy();
+
+    settleAccept({ ok: false, phase: "review" });
+    await waitFor(() => expect(toggle.disabled).toBe(false));
+    expect(screen.getByTestId("inbox-bulk-decision-desk-a")).toBeTruthy();
+  });
+
   it("keeps focus in the report when live props remove the active desk and then its row", () => {
     const onClose = vi.fn();
     const report = (
