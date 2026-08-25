@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { clearStaleReaperLastError, reapDeadExecutorWorkflows, startExecutorReaper, REAPER_LAST_ERROR_SOURCE } from './dbos-executor-reaper';
+import {
+  clearStaleReaperLastError,
+  reapDeadExecutorWorkflows,
+  startExecutorReaper,
+  REAPER_LAST_ERROR_SOURCE,
+} from './dbos-executor-reaper';
 
 // Capture the tick fn `startExecutorReaper` registers with managedSetInterval, so a
 // reap-tick failure can be invoked directly instead of waiting on a real interval —
@@ -17,11 +22,18 @@ type Call = { text: string; values: unknown[] };
 
 function fakeSql(handler: (text: string, values: unknown[]) => unknown) {
   const calls: Call[] = [];
-  const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const sqlFn = async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = Array.from(strings).join('?');
     calls.push({ text, values });
     return handler(text, values);
-  }) as unknown as Sql;
+  };
+  // Production postgres.js supplies `begin`; keep the mock transaction-transparent
+  // so unit tests continue to inspect the same statement stream. Real rollback
+  // semantics are covered by dbos-executor-reaper-queue-liveness.integration.test.ts.
+  Object.assign(sqlFn, {
+    begin: async (run: (tx: typeof sqlFn) => unknown) => run(sqlFn),
+  });
+  const sql = sqlFn as unknown as Sql;
   return { sql, calls };
 }
 
@@ -154,7 +166,7 @@ describe('reapDeadExecutorWorkflows', () => {
     expect(createdAtChecks).toBeGreaterThanOrEqual(4);
   });
 
-  it("WI-1416: the fast-orphan path is ENQUEUED-only — a PENDING fire with no queue row is EXECUTING, not orphaned (queue rows vanish at dequeue)", async () => {
+  it('WI-1416: the fast-orphan path is ENQUEUED-only — a PENDING fire with no queue row is EXECUTING, not orphaned (queue rows vanish at dequeue)', async () => {
     const { sql, calls } = fakeSql((text) => {
       if (text.includes('SELECT executor_id')) return [];
       if (text.includes('SELECT workflow_uuid')) return [];
@@ -276,7 +288,8 @@ describe('reapDeadExecutorWorkflows', () => {
           return [{ workflow_uuid: 'sched-.routineFire-restart-orphan', requeue_routine_id: 'rt_papercusp_git_sync' }];
         }
         if (text.includes('UPDATE dbos.workflow_status') && text.includes('workflow_uuid = ANY')) return { count: 1 };
-        if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY')) return { count: 0 };
+        if (text.includes('DELETE FROM dbos.workflow_queue') && text.includes('workflow_uuid = ANY'))
+          return { count: 0 };
         if (text.includes('UPDATE harness_shared.routines')) return { count: 1 };
         throw new Error(`unexpected query: ${text}`);
       });
@@ -304,7 +317,13 @@ describe('reapDeadExecutorWorkflows', () => {
 
       const res = await reapDeadExecutorWorkflows(sql);
 
-      expect(res).toEqual({ cancelled: 0, queuePurged: 0, requeuedRoutineIds: [], deadExecutorIds: [], staleWorkflowIds: [] });
+      expect(res).toEqual({
+        cancelled: 0,
+        queuePurged: 0,
+        requeuedRoutineIds: [],
+        deadExecutorIds: [],
+        staleWorkflowIds: [],
+      });
       const staleSelect = calls.find((c) => c.text.includes('SELECT workflow_uuid'))!;
       expect(staleSelect.text).toContain("executor_id = 'local'"); // the clause is present…
       expect(staleSelect.values).toContain(false); // …but gated off (hasProcessStartedAtMs=false)
