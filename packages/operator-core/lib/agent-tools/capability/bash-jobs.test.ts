@@ -973,6 +973,15 @@ describe('background job deadlines (WI-6677)', () => {
     }
   });
 
+  it('keeps the finite test task budget above the measured legitimate subtree peak', () => {
+    // A real background Vitest run reached 1,517 cgroup tasks. Pin the safety
+    // relationship independently of beginSyncEnrolment's argument assertion:
+    // merely asserting that the writer receives its exported constant would
+    // still pass if the constant regressed below a workload we already measured.
+    expect(BASH_TEST_TASKS_MAX).toBeGreaterThan(1_517);
+    expect(BASH_TEST_TASKS_MAX).toBeLessThanOrEqual(4_096);
+  });
+
   it('classifies only test runners at a shell-segment boundary for the hard test budget', () => {
     expect(isBackgroundTestCommand('npx vitest run')).toBe(true);
     expect(isBackgroundTestCommand('cd packages/operator-core && npm run test:file -- x.test.ts')).toBe(true);

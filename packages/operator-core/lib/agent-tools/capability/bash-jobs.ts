@@ -102,7 +102,13 @@ export const MAX_BACKGROUND_TIMEOUT_MS = 12 * 60 * 60 * 1_000; // 12h
  * tests must not silently inherit that reserved-machine budget.
  */
 export const BASH_TEST_MEMORY_MAX_BYTES = 16 * 1024 ** 3;
-export const BASH_TEST_TASKS_MAX = 512;
+// Keep this above the measured 1,517-task Vitest subtree documented above. A
+// 512-task scope looked conservative but made the cgroup itself reject forks:
+// the affected runner then surfaced `fork: Resource temporarily unavailable`
+// and bash lost the failed child's `wait_for` record. 2,048 preserves a finite,
+// task-local blast-radius ceiling while leaving ~35% headroom over that observed
+// legitimate peak.
+export const BASH_TEST_TASKS_MAX = 2_048;
 
 const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*`;
 const DIRECT_TEST_RUNNER_RE = new RegExp(
