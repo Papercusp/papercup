@@ -108,12 +108,11 @@ const ACTIVE_GOAL = {
 };
 
 const run = (args: Record<string, unknown> = {}) =>
-  (endTool as unknown as {
-    handler: (
-      a: unknown,
-      ctx: unknown,
-    ) => Promise<{ content: [{ type: 'text'; text: string }]; isError?: boolean }>;
-  })
+  (
+    endTool as unknown as {
+      handler: (a: unknown, ctx: unknown) => Promise<{ content: [{ type: 'text'; text: string }]; isError?: boolean }>;
+    }
+  )
     .handler(args, {})
     .then((r) => ({ ...JSON.parse(r.content[0].text), isError: r.isError === true }));
 
@@ -206,9 +205,7 @@ describe('the P-012 wake-less autonomy guard', () => {
     // listActiveAwaits is the broad receipt read and can see this platform
     // interest. The guard deliberately uses listParkedAwaitsForSubscribers,
     // whose store predicate excludes bound_to.kind=work-item-claim.
-    listActiveAwaitsMock.mockResolvedValue([
-      { id: 87786, eventKey: 'claim:released:WI-41467', expiresTs: null },
-    ]);
+    listActiveAwaitsMock.mockResolvedValue([{ id: 87786, eventKey: 'claim:released:WI-41467', expiresTs: null }]);
 
     const got = await run({});
 
@@ -234,6 +231,23 @@ describe('the P-012 wake-less autonomy guard', () => {
 
     expect(got.isError).toBe(false);
     expect(got.ended).toBe(true);
+  });
+
+  it('leaves an already-inactive autonomous loop as the ordinary no-op instead of demanding an acknowledgement', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      ownerId: 'su-caller-own-id',
+      active: false,
+    });
+    deactivateLoopMock.mockResolvedValue(false);
+    getModesMock.mockResolvedValue([mode('auto')]);
+
+    const got = await run({});
+
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(false);
+    expect(String(got.note)).toMatch(/No active loop found/);
+    expect(getModesMock).not.toHaveBeenCalled();
   });
 
   it('fails open when the classification read is unavailable, preserving the always-stoppable contract', async () => {
@@ -382,10 +396,8 @@ describe('the P-002 disposition gate (acceptance)', () => {
 
 describe('argument schema', () => {
   it('accepts the three dispositions and rejects anything else', () => {
-    const schema = (endTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } })
-      .args;
-    for (const d of GOAL_DISPOSITIONS)
-      expect(schema.safeParse({ disposition: d }).success).toBe(true);
+    const schema = (endTool as unknown as { args: { safeParse: (v: unknown) => { success: boolean } } }).args;
+    for (const d of GOAL_DISPOSITIONS) expect(schema.safeParse({ disposition: d }).success).toBe(true);
     expect(schema.safeParse({ disposition: 'paused' }).success).toBe(false);
     expect(schema.safeParse({ disposition: 'handoff', handoffTo: 'su-next' }).success).toBe(true);
     expect(schema.safeParse({ acknowledgeWakeLessAutonomy: true }).success).toBe(true);

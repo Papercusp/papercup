@@ -31,11 +31,7 @@ import {
 } from '../../goals/wind-down-disposition';
 import { evaluateGoalWindDownOutputs } from '../../goals/goal-io-validation';
 import { getLoopCarryNote } from '../../carry-note';
-import {
-  listActiveAwaits,
-  listParkedAwaitsForSubscribers,
-  INBOX_WAKE_KEY_PREFIX,
-} from '../../events/await/store';
+import { listActiveAwaits, listParkedAwaitsForSubscribers, INBOX_WAKE_KEY_PREFIX } from '../../events/await/store';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
 
@@ -55,9 +51,7 @@ const SURVIVING_AWAITS_LISTED_CAP = 10;
  * `coord:inbox-wake:` self-wake is liveness plumbing every live agent holds —
  * excluded, not a deliberate bench.
  */
-export function survivingAwaitsNote(
-  surviving: { await_id: number; event_key: string }[] | null,
-): string {
+export function survivingAwaitsNote(surviving: { await_id: number; event_key: string }[] | null): string {
   if (surviving === null) {
     // The read failed — still never restate the disproven blanket claim.
     return 'Loop ended — no further LOOP wakes will fire. Independent event awaits (if any) are a separate lifecycle and survive this stop — events:status to inspect, events:cancel { await_ids } to stop one deliberately.';
@@ -69,7 +63,8 @@ export function survivingAwaitsNote(
     .slice(0, SURVIVING_AWAITS_LISTED_CAP)
     .map((a) => `#${a.await_id} ${a.event_key}`)
     .join(', ');
-  const more = surviving.length > SURVIVING_AWAITS_LISTED_CAP ? `, +${surviving.length - SURVIVING_AWAITS_LISTED_CAP} more` : '';
+  const more =
+    surviving.length > SURVIVING_AWAITS_LISTED_CAP ? `, +${surviving.length - SURVIVING_AWAITS_LISTED_CAP} more` : '';
   return (
     `Loop ended — no further LOOP wakes will fire, but ${surviving.length} independent event await(s) remain active and CAN still wake this session: ${listed}${more}. ` +
     'They are a separate lifecycle (loop:end never cancels them). Inspect via events:status; cancel deliberately with events:cancel { await_ids } — leave interest watches you did not create.'
@@ -80,12 +75,13 @@ export default defineTool({
   name: 'loop:end',
   profile: 'engineer',
   description:
-    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. This tool intentionally has no `harness` argument; loops are keyed by owner. Re-arm anytime with loop:arm.",
+    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. If an autonomy-implying mode remains active with no deliberate event await, the stop refuses unless `acknowledgeWakeLessAutonomy:true` consciously overrides the safety guard. A GOAL-mode owner with a still-active goal must also pass `disposition` (achieved | killed | handoff) — the wind-down report to the owner is generated from the loop carry-note + reason. This tool intentionally has no `harness` argument; loops are keyed by owner. Re-arm anytime with loop:arm.",
   guidance: {
     when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. In GOAL mode with the goal still active, also pass `disposition` (achieved | killed | handoff — handoff takes `handoffTo`). This owner-scoped tool intentionally does not take `harness`. Better to loop:end than burn empty wakes spinning.',
     notWhen:
       'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.',
-    chaining: 'loop:arm to start; loop:status to check; loop:end to stop.',
+    chaining:
+      'loop:arm to start; loop:status to check; events:await to preserve an independent wake before ending an autonomous loop; loop:end to stop.',
     seeAlso: [
       'loop:arm (start a loop)',
       'loop:status (check it)',
@@ -96,11 +92,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    ownerId: z
-      .string()
-      .max(120)
-      .optional()
-      .describe('End the loop for this owner id (default: yourself).'),
+    ownerId: z.string().max(120).optional().describe('End the loop for this owner id (default: yourself).'),
     reason: z
       .string()
       .min(1)
@@ -160,58 +152,6 @@ export default defineTool({
       }
     }
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    // P-012 (loop-wake-reliability-2026-08-24 D-004): an autonomy posture is
-    // authorization to keep moving, while the loop is its recurring wake source.
-    // Ending the latter while the former remains registered — with no deliberate
-    // event park to take over — silently strands a fully-authorized session.
-    //
-    // Both classifications come from their existing authorities:
-    //   - modeImpliesAutonomy covers autonomy-axis modes AND overlays whose
-    //     registry declaration implies one (goal/drain today, future modes free);
-    //   - listParkedAwaitsForSubscribers is the deliberate-park read. It excludes
-    //     inbox liveness plumbing, platform-armed claim/fleet interests,
-    //     announcements, and expired rows, none of which means the agent chose an
-    //     event as its next wake source.
-    //
-    // Positive-finding-only: if either registry read fails, preserve loop:end's
-    // always-stoppable contract. A confirmed unsafe state refuses BEFORE
-    // deactivateLoop; the explicit acknowledgement is the escape hatch.
-    const wakeLessAutonomy = workspaceId
-      ? await Promise.all([
-          getModes(workspaceId, ownerId),
-          listParkedAwaitsForSubscribers([ownerId]),
-        ])
-          .then(([modes, parkedAwaits]) => {
-            const autonomyModes = modes
-              .map((row) => row.mode)
-              .filter((mode) => modeImpliesAutonomy(mode));
-            return autonomyModes.length > 0 && parkedAwaits.length === 0
-              ? { autonomyModes }
-              : null;
-          })
-          .catch(() => null)
-      : null;
-    if (wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              error: 'wake_less_autonomy_refused',
-              message:
-                `REFUSED — loop:end would leave ${ownerId} in autonomy-implying mode(s) ` +
-                `[${wakeLessAutonomy.autonomyModes.join(', ')}] with no deliberate independent event await. ` +
-                'Keep the loop armed, register an events:await wake, exit the autonomy-implying modes, or retry with acknowledgeWakeLessAutonomy:true to consciously create a wake-less autonomy state.',
-              ownerId,
-              autonomyModes: wakeLessAutonomy.autonomyModes,
-              requiredAcknowledgement: 'acknowledgeWakeLessAutonomy',
-            }),
-          },
-        ],
-        isError: true,
-      };
-    }
     // P-002 gate: a goal-mode owner with a still-active goal winds down WITH a
     // disposition or not at all. Positive-finding-only: every resolution miss
     // (not goal mode, goal not active, flag infra down) passes the gate.
@@ -292,10 +232,60 @@ export default defineTool({
       }
       windDownOutputs = ov.outputs;
     }
-    // The routine row names the harness the carry-note is scoped by — read it
-    // BEFORE deactivation so the report leg can still find the note.
-    const statusBefore =
-      activeGoal && args.disposition ? await getLoopStatus(ownerId).catch(() => null) : null;
+    // Read first so a no-op end on an already-inactive loop stays a no-op: it
+    // cannot CREATE the unsafe state this guard exists to prevent. This also
+    // remains the carry-note/report lookup for goal disposition below.
+    const statusBefore = await getLoopStatus(ownerId).catch(() => null);
+    // P-012 (loop-wake-reliability-2026-08-24 D-004): an autonomy posture is
+    // authorization to keep moving, while the loop is its recurring wake source.
+    // Ending the latter while the former remains registered — with no deliberate
+    // event park to take over — silently strands a fully-authorized session.
+    //
+    // Both classifications come from their existing authorities:
+    //   - modeImpliesAutonomy covers autonomy-axis modes AND overlays whose
+    //     registry declaration implies one (goal/drain today, future modes free);
+    //   - listParkedAwaitsForSubscribers is the deliberate-park read. It excludes
+    //     inbox liveness plumbing, platform-armed claim/fleet interests,
+    //     announcements, and expired rows, none of which means the agent chose an
+    //     event as its next wake source.
+    //
+    // Positive-finding-only: if either registry read fails, preserve loop:end's
+    // always-stoppable contract. A confirmed unsafe state refuses BEFORE
+    // deactivateLoop; the explicit acknowledgement is the escape hatch. Keep
+    // this after the existing goal/output gates so their error precedence and
+    // ordinary no-op paths remain unchanged.
+    const wakeLessAutonomy =
+      workspaceId && statusBefore?.active === true
+        ? await Promise.all([getModes(workspaceId, ownerId), listParkedAwaitsForSubscribers([ownerId])])
+            .then(([modes, parkedAwaits]) => {
+              const autonomyModes = modes.map((row) => row.mode).filter((mode) => modeImpliesAutonomy(mode));
+              return autonomyModes.length > 0 && parkedAwaits.length === 0 ? { autonomyModes } : null;
+            })
+            .catch(() => null)
+        : null;
+    if (wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'wake_less_autonomy_refused',
+              message:
+                `REFUSED — loop:end would leave ${ownerId} in autonomy-implying mode(s) ` +
+                `[${wakeLessAutonomy.autonomyModes.join(', ')}] with no deliberate independent event await. ` +
+                'Keep the loop armed, register an events:await wake, exit the autonomy-implying modes, or retry with acknowledgeWakeLessAutonomy:true to consciously create a wake-less autonomy state.',
+              ownerId,
+              autonomyModes: wakeLessAutonomy.autonomyModes,
+              requiredAcknowledgement: 'acknowledgeWakeLessAutonomy',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    // The routine row names the harness the carry-note is scoped by — statusBefore
+    // was read BEFORE deactivation so the report leg can still find the note.
     const ended = await deactivateLoop(ownerId, { reason: args.reason });
     // Disposition apply + owner report, FAIL-SOFT: the loop is already ended and
     // stays ended — a report failure downgrades to a warning, never un-stops.
