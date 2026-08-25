@@ -19,6 +19,7 @@ const source: ExternalTriggerSourceRow = {
   kind: 'slack',
   ownerUserId: '22222222-2222-4222-8222-222222222222',
   credentialRef: 'slack-socket:owner',
+  providerAccountId: 'T1',
   status: 'connecting',
   config: { installSlug: 'papercusp' },
   cursor: {},

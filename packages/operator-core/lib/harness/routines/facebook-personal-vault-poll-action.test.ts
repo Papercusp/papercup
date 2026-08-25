@@ -10,6 +10,7 @@ function source(id: string): ExternalTriggerSourceRow {
     kind: 'facebook',
     ownerUserId: '22222222-2222-4222-8222-222222222222',
     credentialRef: 'facebook-personal-vault:owner',
+    providerAccountId: 'facebook-user-1',
     status: 'connected',
     config: {},
     cursor: {},

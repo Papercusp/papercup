@@ -11,6 +11,7 @@ function source(id: string, emailAddress: string): ExternalTriggerSourceRow {
     kind: 'gmail',
     ownerUserId: '22222222-2222-4222-8222-222222222222',
     credentialRef: `google-workspace:${id}`,
+    providerAccountId: emailAddress,
     status: 'connected',
     config: {},
     cursor: { emailAddress, historyId: `history-${id}`, watchExpiration: '2026-08-28T00:00:00.000Z' },

@@ -18,6 +18,7 @@ function source(cursor: Record<string, unknown> = {}): ExternalTriggerSourceRow 
     kind: 'gcal',
     ownerUserId: '22222222-2222-4222-8222-222222222222',
     credentialRef: 'google-workspace:owner',
+    providerAccountId: 'owner@example.com',
     status: 'connected',
     config: {},
     cursor,

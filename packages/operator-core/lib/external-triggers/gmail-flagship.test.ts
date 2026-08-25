@@ -16,6 +16,7 @@ const source: ExternalTriggerSourceRow = {
   kind: 'gmail',
   ownerUserId: '22222222-2222-4222-8222-222222222222',
   credentialRef: 'google-workspace:owner',
+  providerAccountId: 'owner@example.com',
   status: 'connected',
   config: { installSlug: 'papercusp' },
   cursor: {},

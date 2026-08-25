@@ -19,6 +19,7 @@ function source(overrides: Partial<ExternalTriggerSourceRow> = {}): ExternalTrig
     kind: 'slack',
     ownerUserId: '22222222-2222-4222-8222-222222222222',
     credentialRef: 'slack-socket:owner',
+    providerAccountId: 'T1',
     status: 'connected',
     config: { installSlug: 'papercusp', botUserId: 'UPAPER', channels: ['C1', 'D1'] },
     cursor: {},

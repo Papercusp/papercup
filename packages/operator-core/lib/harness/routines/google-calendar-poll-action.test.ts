@@ -13,6 +13,7 @@ function source(id: string, credentialRef = 'google-workspace:owner'): ExternalT
     kind: 'gcal',
     ownerUserId: '22222222-2222-4222-8222-222222222222',
     credentialRef,
+    providerAccountId: 'owner@example.com',
     status: 'connected',
     config: {},
     cursor: {},
