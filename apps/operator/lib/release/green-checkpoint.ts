@@ -8001,6 +8001,28 @@ async function runGreenCheckpointInner(
       deps.log(line);
     }
   }
+  const candidateSuiteStartedAtMs = Date.now();
+  const candidateSuiteResult =
+    earlyPreflightFailure ??
+    (await deps.runGreen(cfg.checkpointRoot, lastReady, {
+      candidate,
+      headAtStart: candidate,
+      ...(setupIdentity ? { setup: setupIdentity } : {}),
+      ...(repairVerification && repairQueue?.affectedTestProofGroup
+        ? { affectedTestProofGroup: repairQueue.affectedTestProofGroup }
+        : {}),
+    }));
+  // EI-21434759422783893: the best first-confirm predictor is the candidate suite we
+  // just measured, not the whole process lifetime. `runStartedAtMs` also includes checkout
+  // setup, dependency generation, preflights, and slot waits; using it reduced the admission
+  // test to 2T < deadline and disabled salvage precisely as a frozen main widened the run.
+  // The confirm still uses the same full affected-suite runner and the recovery walk replaces
+  // this seed with its own measured mean after the first confirm, so the deadline remains
+  // fail-safe without charging one-time setup twice.
+  const candidateSuiteDurationMs = Math.max(
+    1,
+    Date.now() - candidateSuiteStartedAtMs,
+  );
   const {
     green,
     summary,
@@ -8014,15 +8036,7 @@ async function runGreenCheckpointInner(
     postSuiteMeasured,
     postSuiteLegs,
     infraFault,
-  } = earlyPreflightFailure ??
-  (await deps.runGreen(cfg.checkpointRoot, lastReady, {
-    candidate,
-    headAtStart: candidate,
-    ...(setupIdentity ? { setup: setupIdentity } : {}),
-    ...(repairVerification && repairQueue?.affectedTestProofGroup
-      ? { affectedTestProofGroup: repairQueue.affectedTestProofGroup }
-      : {}),
-  }));
+  } = candidateSuiteResult;
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
   // disposition site, so the log records not just the verdict but whether it counted. See
@@ -8919,11 +8933,29 @@ async function runGreenCheckpointInner(
     //
     // Skipping is the SAFE direction: the salvage only ever ADDS a partial advance of `main`
     // to a green prefix. Declining it costs one deferred partial advance; attempting it
-    // without headroom costs the whole verdict. Deliberately NOT fixed by recording the
-    // verdict early instead — trackGateStall increments `consecutiveReds` unconditionally per
-    // call (release-actions.ts, `(gh.consecutiveReds ?? 0) + 1`, no per-candidate dedup), so
-    // an early record plus the terminal recordOwnVerdict would count ONE red twice and
-    // inflate the very streak this work is meant to clear.
+    // without headroom costs the whole verdict.
+    //
+    // ⚠ CORRECTED 2026-08-25 (WI-40086, plan D-064). This comment used to say the
+    // record-the-verdict-early fix was "deliberately NOT" taken because trackGateStall
+    // "increments `consecutiveReds` unconditionally per call ... no per-candidate dedup",
+    // so an early record plus the terminal recordOwnVerdict would double-count one red.
+    // THAT IS NO LONGER TRUE, and the stale claim actively mis-ranks the fix: it reads as
+    // a hard blocker when the machinery it says is missing already exists. release-actions.ts
+    // now derives `carryStreak = recordOnly || alreadyCountedPending` and only increments on
+    // the FALSE branch (`carryStreak ? (gh.consecutiveReds ?? 0) : (gh.consecutiveReds ?? 0) + 1`).
+    // `alreadyCountedPending` is per-RUN dedup (`gh.pendingRunId === options.runId`), and
+    // `recordOnly` (gateClass === 'record-only') exists for exactly this case — its own log
+    // line reads "suite verdict recorded before promotion decision; carrying the prior red
+    // streak until final disposition". So an early record does NOT inflate the streak.
+    //
+    // The skip below therefore remains only a BUDGET heuristic, not a consequence of a
+    // counter defect. Note the cost it is trading against: because the estimate is whole-run
+    // elapsed (see below), this gate reduces to 2T < deadline — a run must reach its verdict
+    // in under HALF its budget or the salvage never starts at all. That is hardest to satisfy
+    // on exactly the long runs a wide lastGreen..HEAD radius produces, i.e. the salvage
+    // self-disables in the situation it exists to recover from. Tracked as
+    // EI-21434759422783893; the preferred fix is to persist the red verdict BEFORE the
+    // salvage (now unblocked, per the correction above) and then relax this gate.
     // Sizing note: ISOLATION_PHASE_RESERVE_MS (15m) is NOT sufficient on its own here. It is
     // sized for the isolation phase's worst case — ONE bounded child (ISOLATION_RUN_TIMEOUT_MS
     // 5m / CONCURRENT_CONFIRM_TIMEOUT_MS 10m). The salvage's confirm is a different animal: it
@@ -8932,16 +8964,14 @@ async function runGreenCheckpointInner(
     // into its 120m budget — comfortably INSIDE a bare 105m deadline, so a reserve-only check
     // would have waved it through and lost the verdict anyway.
     //
-    // So ESTIMATE the confirm's cost rather than guess a constant: the best predictor available
-    // is what THIS run has already spent (runStartedAtMs is threaded across refires, so it
-    // measures the whole run). That over-estimates slightly — elapsed covers setup + suite +
-    // isolation + re-triage, while the confirm is one suite over a NARROWER range — which is the
-    // correct direction to be wrong in: it fails toward skipping. Self-calibrating by design:
-    // when the suite gets faster (more forks, less fleet load) the salvage re-enables on its
-    // own, with no constant to retune.
+    // Estimate the confirm from the candidate suite we just measured. It is the same full
+    // affected-suite runner over a wider range, so it remains a conservative seed without
+    // charging checkout/dependency/preflight time that the confirm does not repeat. Once a
+    // salvage confirm completes, tryLongestGreenPrefix replaces this seed with its own measured
+    // mean before admitting another confirm.
     const salvageDeadlineMs =
       opts.salvageDeadlineMs ?? isolationPhaseDeadlineMs();
-    const salvageCostEstimateMs = Date.now() - runStartedAtMs;
+    const salvageCostEstimateMs = candidateSuiteDurationMs;
     const salvageOutOfTime =
       Date.now() + salvageCostEstimateMs > salvageDeadlineMs;
     if (salvageOutOfTime && lastReady && !staleRed && partialGreenEnabled) {
