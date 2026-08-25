@@ -19,6 +19,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
+import { normalizeDocStatus } from '@papercusp/docs-engine';
 import { REPO_ROOT, emitOrCheck, generatedBanner, frontmatter, cell } from './lib/doc-projection';
 
 const INSIGHTS_DIR = join(REPO_ROOT, 'apps', 'operator-docs', 'src', 'content', 'docs', 'agent-insights');
@@ -58,7 +59,7 @@ function loadInsights(): Insight[] {
       title: typeof fm.title === 'string' ? fm.title : slug,
       description: typeof fm.description === 'string' ? fm.description : '',
       tags,
-      status: typeof fm.status === 'string' ? fm.status : '',
+      status: typeof fm.status === 'string' ? normalizeDocStatus(fm.status) ?? '' : '',
       discovered: typeof fm.discovered === 'string' ? fm.discovered : String(fm.discovered ?? ''),
     });
   }

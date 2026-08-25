@@ -25,7 +25,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { parseFrontmatterBlock } from '@papercusp/docs-engine';
+import { normalizeDocStatus, parseFrontmatterBlock } from '@papercusp/docs-engine';
 import { stringify as stringifyYaml } from 'yaml';
 import { resolveHarnessDocPaths } from '../../harness/docs/harness-repo';
 import { safeJoinUnderRoot } from '../../harness/docs/doc-fs';
@@ -253,7 +253,7 @@ export function buildFrontmatter(fm: FrontmatterInput): string {
   emittedKeys.add('discovered');
   if (fm.tags.length) lines.push(`tags: [${fm.tags.map(yamlStr).join(', ')}]`);
   emittedKeys.add('tags');
-  lines.push(`status: ${fm.status}`);
+  lines.push(`status: ${normalizeDocStatus(fm.status) ?? 'active'}`);
   emittedKeys.add('status');
   if (fm.documents.length) {
     lines.push('documents:');
@@ -362,7 +362,10 @@ const argsSchema = z.object({
     .string()
     .optional()
     .describe('Docs-root-relative section dir. Default "agent-insights" (the runbook/insight section).'),
-  status: z.enum(['active', 'superseded', 'draft']).optional().describe('Frontmatter `status`. Default "active".'),
+  status: z
+    .enum(['active', 'superseded', 'draft', 'current', 'retired'])
+    .optional()
+    .describe('Frontmatter `status`. Canonical values are active/draft/superseded; current and retired are legacy aliases normalized before persistence. Default "active".'),
   type: z.string().optional().describe('OKF `type:` — the genre. "Insight" (default) for a discovery/failure-mode; "Convention" for a rule the repo follows.'),
   sidebarOrder: z.number().int().optional().describe('Optional Starlight sidebar order.'),
   verify: z
@@ -479,7 +482,7 @@ export default defineTool({
       title: args.title.trim(),
       description,
       discovered: discoveredForWrite(existingContent),
-      status: args.status ?? inheritedString('status') ?? 'active',
+      status: normalizeDocStatus(args.status ?? inheritedString('status') ?? 'active') ?? 'active',
       type: (args.type ?? inheritedString('type') ?? '').trim() || DEFAULT_DOC_TYPE,
       tags: args.tags === undefined ? normalizeList(existingFrontmatter.tags) : normalizeList(args.tags),
       documents,

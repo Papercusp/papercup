@@ -9,6 +9,7 @@ import {
   renderInsightsPrelude,
   type InsightEntry,
 } from './insights-index';
+import { isCanonicalDocStatus } from '@papercusp/docs-engine';
 
 let tmpRoot: string;
 
@@ -82,6 +83,13 @@ describe('readInsight', () => {
     const fp = write('a.mdx', '---\ntitle: T\ndescription: D\n---\nbody\n');
     const r = await readInsight(fp);
     expect(r?.status).toBe('active');
+  });
+
+  it('normalizes legacy status aliases while reading', async () => {
+    const current = write('current.mdx', '---\ntitle: Current\ndescription: D\nstatus: current\n---\nbody\n');
+    const retired = write('retired.mdx', '---\ntitle: Retired\ndescription: D\nstatus: retired\n---\nbody\n');
+    expect((await readInsight(current))?.status).toBe('active');
+    expect((await readInsight(retired))?.status).toBe('superseded');
   });
 });
 
@@ -166,10 +174,9 @@ describe('integration — read real insights dir', () => {
     expect(entries.length).toBeGreaterThan(0);
     // Sanity: every entry has the expected shape + a recognised VISIBLE status.
     // readInsightsDir drops retired/superseded (isVisible), so what's left must be
-    // one of the live-vocabulary values — 'current' is a valid live synonym of
-    // 'active' (some insights use it), so it belongs in the allowed set. Keeping an
-    // explicit allowlist (vs `isVisible(e.status)`) still catches a typo'd status.
-    const LIVE_STATUSES = ['active', 'current', 'draft', 'review', 'wip'];
+    // one of the canonical values from the shared docs-engine vocabulary. The
+    // reader normalizes legacy aliases before returning entries, while this check
+    // still catches a typo'd status in the corpus.
     for (const e of entries) {
       expect(typeof e.slug).toBe('string');
       expect(typeof e.title).toBe('string');
@@ -178,8 +185,8 @@ describe('integration — read real insights dir', () => {
       // had a typo'd status (found: `partially-fixed` on one doc, not in the
       // recognized vocabulary). Fix the doc's frontmatter, not this allowlist.
       expect(
-        LIVE_STATUSES.includes(e.status),
-        `insight "${e.slug}" has status "${e.status}", not one of [${LIVE_STATUSES.join(', ')}] — fix its frontmatter (or, if the vocabulary should grow, add it to LIVE_STATUSES here deliberately)`,
+        isCanonicalDocStatus(e.status),
+        `insight "${e.slug}" has status "${e.status}", not one of the canonical docs statuses — fix its frontmatter deliberately`,
       ).toBe(true);
     }
 

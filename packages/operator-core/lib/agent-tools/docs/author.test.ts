@@ -236,6 +236,11 @@ describe('buildFrontmatter', () => {
     expect(fm).toContain('status: active');
   });
 
+  it('normalizes historical status aliases before persistence', () => {
+    expect(buildFrontmatter({ ...base, status: 'current' })).toContain('status: active');
+    expect(buildFrontmatter({ ...base, status: 'retired' })).toContain('status: superseded');
+  });
+
   it('omits empty tags/documents/plans/sidebar', () => {
     const fm = buildFrontmatter(base);
     expect(fm).not.toContain('tags:');
@@ -311,7 +316,7 @@ generated:
     expect(parsed.normative).toBe(true);
     expect(parsed.governs).toEqual(['an existing convention']);
     expect(parsed.generated).toEqual({ by: 'agent', at: '2026-07-01' });
-    expect(parsed.status).toBe('current');
+    expect(parsed.status).toBe('active');
     expect(parsed.sidebar).toEqual({ order: 7 });
   });
 
