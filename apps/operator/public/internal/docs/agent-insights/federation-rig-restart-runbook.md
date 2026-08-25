@@ -1,7 +1,7 @@
 # Federation rig — restart / recovery runbook (wedged smokes, stale ports, leaked VMs)
 URL: /internal/docs/agent-insights/federation-rig-restart-runbook
 
-How to recover the two-instance federation rig when a run wedges or leaves debris: reap ONLY dead runs (reap-orphans.sh) or one run (cleanup-run.sh) — never a broad pkill/rm (EI-1739); clear stale Xvfb / testnet-DHT / orphaned sidecars; free or self-discover wedged ports (the WI-754 self-heal); reset/relaunch the linux-test-vm VMs (vmctl); restart the scheduled live-federation-gate; and — when a peer is up but silently local-only (announces nothing, discovers nothing) — restore its MISSING gh auth, the most common dead-link cause after a VM reset (WI-757).
+How to recover the two-instance federation rig safely: use run-scoped reapers, preserve sibling runs, launch fed-* VMs through vm-federation.sh so the federation NIC, distinct slirp subnet, identity, and DHT mode are present, diagnose stale ports and split-brain state, and restore missing GitHub auth.
 
 import { Aside } from "@astrojs/starlight/components";
 
@@ -99,21 +99,60 @@ ss -tlnpH | sort -u        # all listeners + owning pid (own-user pids shown)
 ## 4. VMs (the `vmctl` linux-test-vm + the build VMs)
 
 The `--vms` federation runs (`bin/vm-federation.sh`) drive disposable Ubuntu VMs
-via `scripts/linux-test-vm/vmctl`. A wedged VM:
+via `scripts/linux-test-vm/vmctl`. `vmctl` remains the safe direct door for
+inspection and non-boot lifecycle operations:
 
 ```sh
 cd papercusp-desktop/scripts/linux-test-vm
 ./vmctl status fed-a            # VM up? app up? operator port? disk?
-./vmctl reset  fed-a            # recreate a pristine overlay from golden
-./vmctl down   fed-a           # graceful power-off (teardown)
-./vmctl up     fed-a           # boot a fresh overlay
+./vmctl down   fed-a            # graceful power-off
+./vmctl reset  fed-a            # recreate the overlay; does not boot it
 ```
 
-`vm-federation.sh` resets + reinstalls per VM by default (the clean-boot
-acceptance run); pass `--no-reset` to reuse overlays while iterating, and
-`--keep-up` to leave the VMs running for debugging. For a wedged **Mac** VM
-parked at the OpenCore picker / holding SPICE ports, recover via **QMP, never
-pkill** — see
+Do **not** finish a federation recovery with a plain `./vmctl up fed-a` or
+`./vmctl launch fed-a`. Those generic doors cannot synthesize the rig's second
+NIC, distinct slirp subnet, GitHub identity, and DHT choice. A VM can otherwise
+look fully healthy while it has no route to its peer or has silently joined the
+public DHT.
+
+Boot and launch federation VMs through the canonical orchestrator:
+
+```sh
+cd papercusp-desktop
+# Reuse an existing overlay/install and leave the repaired rig up for diagnosis.
+bin/vm-federation.sh --vms=2 --dht=testnet --net=bridge \
+  --no-reset --skip-install --keep-up
+```
+
+Omit `--no-reset --skip-install` for the pristine clean-boot acceptance run.
+Use `--dht=public` only when public-DHT behavior is the explicit test subject.
+The orchestrator creates the bridge/taps, passes `FED_NIC` plus a distinct
+`SLIRP_NET` into each boot, configures the guest NIC, and writes `~/fed.env`
+with the GitHub identity plus either `PAPERCUSP_DHT_BOOTSTRAP` or an explicit
+public-mode marker.
+
+`vmctl` now fails closed around this boundary:
+
+* `vmctl up fed-*` refuses unless both `FED_NIC` and `SLIRP_NET` are present.
+* `vmctl launch fed-*` refuses unless `~/fed.env` contains a non-empty
+  `GH_TOKEN` and either an isolated bootstrap or the explicit public-DHT marker.
+* ordinary clean-room/updater VMs are unchanged.
+
+To diagnose an older or incompletely launched federation VM without exposing its
+token:
+
+```sh
+cd papercusp-desktop/scripts/linux-test-vm
+./vmctl ssh fed-a 'ip -brief addr'
+./vmctl ssh fed-a 'grep -E "^(PAPERCUSP_DHT_BOOTSTRAP|PAPERCUSP_FED_DHT_MODE)=" ~/fed.env 2>/dev/null || true'
+```
+
+A testnet rig should show a second guest NIC and
+`PAPERCUSP_DHT_BOOTSTRAP=<bridge-host>:<port>`. Absence is a rig-precondition
+failure, not a product federation verdict.
+
+For a wedged **Mac** VM parked at the OpenCore picker / holding SPICE ports,
+recover via **QMP, never pkill** — see
 [mac-vm-qmp-recovery](/internal/docs/agent-insights/mac-vm-qmp-recovery). General
 VM inventory + disk discipline: [build-system/vms](/internal/docs/build-system/vms).
 

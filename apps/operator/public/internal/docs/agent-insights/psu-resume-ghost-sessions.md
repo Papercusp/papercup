@@ -1,7 +1,7 @@
 # psu --resume \"No conversation found\": ghost adv rows, not broken resume plumbing
 URL: /internal/docs/agent-insights/psu-resume-ghost-sessions
 
-An adv_sessions row is recorded at LAUNCH, but an agent only persists its transcript on the FIRST MESSAGE — so launches that die or get closed at the prompt leave permanent unresumable ghost rows (~50% of recent rows by 2026-06-12). Fixed: the picker filters by sessionHasTranscript and psu stamps ended_at via bootstrap-su/session-ended. Diagnosis recipe inside.
+How psu resume distinguishes transcript ghosts, dead/live row skew, and stale single-winner resume claims; includes diagnosis and recovery paths.
 
 ## The trap
 
@@ -67,19 +67,27 @@ then [derives from the session log](/internal/docs/agent-insights/presence-deriv
 and correctly trusts "ended means ended"). Measured 2026-06-22: 24 running
 `claude --resume` agents, **all 24** with `ended_at` set → zero visible.
 
-The fix has three parts:
+The current fix has four parts:
 
-* **`reactivateAdvSession(id)`** (`adv-sessions.ts`) — the inverse of
-  `markAdvSessionEnded`: clears `ended_at`/`exit_code`, bumps `started_at` so the
-  resumed incarnation reads as freshly-live. Idempotent (only touches an ended row).
-* **`POST /api/agent-mcp/console/bootstrap-su/session-resumed`** + `reportSessionResumed`
-  in the launcher — `launchResume` calls it (skipping forks, which take a fresh
-  identity + no adv-row link), so a resume re-activates its record the instant it
-  starts, before it touches coord. Self-healing: future resumes can't recur this.
+* **`claimAdvSessionResume(id)`** (`adv-sessions.ts`) is the sole numeric-id
+  launch-acquisition path. It atomically clears `ended_at`/`exit_code` and bumps
+  `started_at`, admitting either a cleanly ended row or a stale active row older
+  than the five-minute claim window. A second claimant inside the window loses.
+* **`POST /api/agent-mcp/console/bootstrap-su/session-resumed`** +
+  `reportSessionResumed` in the launcher claim the row before config repair or
+  spawn. The response retains the historical `reactivated` field, but `false`
+  now means the claim was not acquired and the launcher must not spawn.
+* **`reactivateAdvSessionByOwner(ownerId)`** remains intentionally separate for
+  genuine-activity repair (`coord:presence` / dispatch heartbeat). It is a
+  best-effort idempotent visibility repair, not permission to launch a process.
 * **Supersede a STALE heartbeat** (`reconcileRosterSources` in
   `recorded-sessions.ts`) — a leftover stale `coord_presence` row from the original
-  launch was *shadowing* the reactivated record (a fresh heartbeat still wins; a
-  stale one must not hide a running/resumed session).
+  launch must not shadow the resumed session.
+
+The older ended-only numeric helper, `reactivateAdvSession(id)`, was retired on
+2026-08-24 after a live failure showed its gap: a claimant could flip the row
+active and die before spawn, leaving every immediate manual retry permanently
+rejected because the endpoint had no stale-active recovery.
 
 Note the contrast with the ghost-row trap above: a ghost has **no transcript** and
 is genuinely unresumable; this case is a **resumable, running** session merely
@@ -95,6 +103,11 @@ directions.
    `CLAUDE_CONFIG_DIR` (the EI-155 edge: `launchResume` derives it from
    `coordOwnerId`; without it claude looks in the shared `~/.claude` and finds
    nothing).
+3. Transcript exists, no live host remains, and psu reports “ended-session resume
+   claim was not acquired” → inspect the adv row’s `started_at`. A recent timestamp
+   means another claimant won; an older active row should be reclaimable after the
+   five-minute claim window. If it is not, verify the deployed `session-resumed`
+   route calls `claimAdvSessionResume`, not the retired ended-only helper.
 
 ## Consequences to know
 
