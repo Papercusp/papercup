@@ -219,7 +219,13 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
     const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
     const res = (await messages.handler(
-      postReq({ content: 'hello loop', engine: 'loop', model: 'm-override' }),
+      postReq({
+        content: 'hello loop',
+        engine: 'loop',
+        model: 'm-override',
+        effort: 'high',
+        account: 'acct-7',
+      }),
       ctxFor(CHAT),
     )) as Response;
     expect(res.status).toBe(200);
@@ -233,6 +239,8 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       system: string;
       transcript: Array<{ role: string; content: string }>;
       model?: string;
+      effort?: string;
+      account?: string;
       chatId: string;
       priority?: string;
     };
@@ -242,6 +250,8 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     // The transcript handed to the engine ends with the just-appended user turn.
     expect(opts.transcript.at(-1)).toMatchObject({ role: 'user', content: 'hello loop' });
     expect(opts.model).toBe('m-override');
+    expect(opts.effort).toBe('high');
+    expect(opts.account).toBe('acct-7');
     expect(opts.chatId).toBe(CHAT);
     expect(opts.priority).toBe('interactive');
     expect((mocks.runLoopChatTurn.mock.calls[0][0] as { deferTerminalEvent?: boolean }).deferTerminalEvent).toBe(true);
