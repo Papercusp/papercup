@@ -4,6 +4,7 @@
  * URL/code and registers the isolated auth.json. Tokens never return to the caller.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { delimiter, dirname } from 'node:path';
 
 const h = vi.hoisted(() => {
   const state = {
@@ -92,6 +93,7 @@ afterEach(() => {
   h.state.written = [];
   h.state.outcome = 'token';
   h.state.mode = 'claude';
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
 
@@ -121,6 +123,21 @@ describe('account-link-cli — CLI-driven OAuth link', () => {
     );
     expect(r.authorizeUrl).toBe('https://auth.openai.com/codex/device');
     expect(r.userCode).toBe('ABCD-12345');
+  });
+
+  it('adds the running Node prefix when a service PATH cannot resolve the CLI shebang', async () => {
+    h.state.mode = 'codex';
+    vi.stubEnv('PATH', '/does-not-exist-xyz');
+    const r = await startCliLink({ accountId: 'codex-path', provider: 'codex' });
+    expect(r.ok).toBe(true);
+    const [command, , options] = h.spawn.mock.calls[0] as unknown as [string, string[], { env: NodeJS.ProcessEnv }];
+    const pathEntries = options.env.PATH?.split(delimiter) ?? [];
+    expect(pathEntries).toContain(dirname(process.execPath));
+    // An absolute resolved shim gets its own directory too; this keeps wrapper scripts that
+    // chain through another executable working under the same restricted service PATH.
+    if (command.includes('/') || command.includes('\\')) {
+      expect(pathEntries).toContain(dirname(command));
+    }
   });
 
   it('completeCliLink feeds the code, captures the token, registers it, and NEVER returns the token', async () => {
