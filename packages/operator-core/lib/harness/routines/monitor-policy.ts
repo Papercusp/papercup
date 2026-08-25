@@ -382,18 +382,66 @@ export async function listActiveMonitorOwnersForPredicate(
   return rows.map((row) => row.owner_id);
 }
 
-async function verifyOwnerTurn(ownerId: string, turnRef: string, quote: string): Promise<TurnRefVerdict | null> {
-  const refs = parseTurnRefs(turnRef);
-  if (refs.length !== 1 || refs[0]!.raw !== turnRef) return null;
-  const [verdict] = await verifyTurnRefs(ownerId, [{ ...refs[0]!, quote }], { scope: 'owner-chain' });
-  return verdict ?? null;
+export async function readMonitorOwnerTurnEvidence(
+  _ownerId: string,
+  workspaceId: string,
+  turnRef: string,
+  quote: string,
+  opts: { sql?: Sql } = {},
+): Promise<MonitorOwnerTurnEvidence | null> {
+  const parsed = parseTurnRef(turnRef);
+  if (!parsed || !turnRef.startsWith('session_turn:')) return null;
+  const rows = await boundedPgReadTxn<
+    Array<{
+      owner: string | null;
+      speaker: string;
+      text: string;
+      turn_origin: string | null;
+      turn_origin_verdict: string | null;
+    }>
+  >(
+    (tx) => tx`
+      SELECT owner, speaker, text, turn_origin, turn_origin_verdict
+        FROM harness_shared.session_turns
+       WHERE workspace_id IN (${workspaceId}, 'default')
+         AND source_kind = ${parsed.sourceKind}
+         AND session_id = ${parsed.sessionId}
+         AND turn_idx = ${parsed.turnIdx}
+       ORDER BY (workspace_id = ${workspaceId}) DESC
+       LIMIT 1
+    `,
+    { client: opts.sql },
+  );
+  const row = rows[0];
+  if (!row) {
+    return {
+      ref: turnRef,
+      found: false,
+      checked: true,
+      ownerId: null,
+      speaker: null,
+      verdict: null,
+      origin: null,
+      quoteMatch: null,
+    };
+  }
+  return {
+    ref: turnRef,
+    found: true,
+    checked: true,
+    ownerId: row.owner,
+    speaker: row.speaker,
+    verdict: row.turn_origin_verdict,
+    origin: row.turn_origin,
+    quoteMatch: quoteMatchesTurn(quote, row.text),
+  };
 }
 
 const defaultMonitorAdmissionDependencies: MonitorAdmissionDependencies = {
   loadWorkItem: (id, harness) => getWorkItem(id, harness),
   loadPresence: (ownerId) => getPresence(ownerId),
   loadFleet: (workspaceId, fleetSlug) => getFleet(workspaceId, fleetSlug),
-  verifyOwnerTurn,
+  verifyOwnerTurn: readMonitorOwnerTurnEvidence,
   listActiveMonitorOwners: (input) => listActiveMonitorOwnersForPredicate(input),
   nowMs: () => Date.now(),
 };
@@ -424,15 +472,21 @@ export async function admitMonitorArm(
       evidence.fleet = await deps.loadFleet(input.workspaceId, config.authority.fleet);
       evidence.ownerPresence = await deps.loadPresence(input.ownerId);
     } else {
-      const refs = parseTurnRefs(config.authority.turnRef);
-      if (refs.length !== 1 || refs[0]!.raw !== config.authority.turnRef) {
+      const parsed = parseTurnRef(config.authority.turnRef);
+      if (!parsed || !config.authority.turnRef.startsWith('session_turn:')) {
         return {
           allowed: false,
           code: 'monitor_owner_turn_invalid',
-          message: 'owner-turn authority requires exactly one canonical [turn:<session-prefix>@<timestamp>] ref.',
+          message:
+            'owner-turn authority requires one canonical session_turn:<source-kind>:<full-session-id>:<turn-index> ref.',
         };
       }
-      evidence.ownerTurn = await deps.verifyOwnerTurn(input.ownerId, config.authority.turnRef, config.authority.quote);
+      evidence.ownerTurn = await deps.verifyOwnerTurn(
+        input.ownerId,
+        input.workspaceId,
+        config.authority.turnRef,
+        config.authority.quote,
+      );
     }
 
     const possibleDuplicates = await deps.listActiveMonitorOwners({
