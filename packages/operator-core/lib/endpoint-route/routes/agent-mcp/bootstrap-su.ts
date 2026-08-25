@@ -348,10 +348,12 @@ export async function resolveAccountPin(
   //   • `none` / `system` — ALWAYS the machine's own login, gateway skipped. The escape hatch
   //     (D-002): once a default account exists this is the only way back to ~/.claude, and the
   //     only recovery path if that account's credential goes bad. Never overridden.
-  //   • '' (unspecified) / `default` — "whatever the owner nominated". That is the local login
-  //     ONLY while no default account is set; otherwise it is that account.
-  const literalSystem = lower === 'none' || lower === 'system';
-  const impliedDefault = !raw || lower === 'default';
+  //   • `default` — an explicit request for the machine's own login, matching the psu
+  //     account-routing disclosure. It must never be reinterpreted as the nominated account.
+  //   • '' (unspecified) — "whatever the owner nominated". That is the local login ONLY while
+  //     no default account is set; otherwise it is that account.
+  const literalSystem = lower === 'default' || lower === 'none' || lower === 'system';
+  const impliedDefault = !raw;
   // OMP default means the selected OMP provider, not a Papercusp account. Do not
   // let a configured Claude default account silently replace an OMP catalog model.
   // Codex also never reads the Claude default-account preference.
