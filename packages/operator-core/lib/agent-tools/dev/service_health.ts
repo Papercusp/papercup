@@ -545,7 +545,7 @@ export default defineTool({
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
     returns:
-      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }\n\nWEDGED vs DOWN (EI-19465075959589134). A failing service carries `wedged` + `acceptQueue:{pending,backlog}`, and `effective.wedged` counts them. `wedged:true` = something IS listening on the port but has connections queued unaccepted — a live process with a BLOCKED EVENT LOOP. That state defeats every other liveness signal at once: `systemctl is-active` says active, the pid is alive, `dev:listening_ports` shows the port bound, and even a TCP connect succeeds (the kernel completes the handshake without the process). So never conclude 'the service is fine' from any of those while a probe is failing — the accept queue is the only signal that separates the two. `wedged` ABSENT means undetermined (unreadable listen table, or a non-local URL), never 'not wedged'. Act differently on each: down ⇒ start it; wedged ⇒ a restart recovers but destroys the evidence, so capture logs first (:3170 wedged twice in four hours because each incident was closed by restarting it).",
+      "{ configured, effective, evidence, rootCause, nextVerb, services, telemetry, supervision }. On a failed service, `wedged:true` plus `acceptQueue` means a listener exists but its event loop is blocked; `down` means no listener. PID/port/TCP liveness cannot overrule a failed probe. Missing `wedged` is unknown. Capture logs before restarting a wedged service, because restart destroys the evidence.",
     seeAlso: [
       "dev:restart (restart a down service)",
       "dev:pg_health (Postgres health specifically)",
