@@ -6,7 +6,7 @@
  * packages. The loop above this module sees only ModelPort.
  */
 import type { LanguageModelV3 } from '@ai-sdk/provider';
-import { priorityTierHeaders } from '../agent-chat-stream';
+import { priorityTierHeaders, routeAccountHeaders } from '../agent-chat-stream';
 import { readCredentials, type Credentials } from '../credentials';
 import { createAiSdkPort } from './ai-sdk-port';
 import { createAnthropicPort } from './anthropic-port';
@@ -194,7 +194,7 @@ export function createRoutedModelPort(opts: RoutedModelPortOptions = {}): ModelP
           modelId: selection.modelId,
           effort: selection.effort,
           ...(aiProvider === 'gateway-codex'
-            ? { headers: priorityTierHeaders(req.priority) }
+            ? { headers: { ...priorityTierHeaders(req.priority), ...routeAccountHeaders(req.account) } }
             : {}),
         }),
       });

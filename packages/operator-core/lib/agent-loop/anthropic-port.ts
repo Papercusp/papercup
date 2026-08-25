@@ -281,9 +281,10 @@ export interface AnthropicPortOpts {
 async function defaultRawStream(
   params: Record<string, unknown>,
   priority: string | undefined,
+  account: string | undefined,
   signal?: AbortSignal,
 ): Promise<AsyncIterable<unknown>> {
-  const transport = resolveStatelessTransport();
+  const transport = resolveStatelessTransport(account);
   const sdkMod = await import('@anthropic-ai/sdk');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const Anthropic: any = (sdkMod as { default?: unknown }).default ?? sdkMod;
@@ -325,7 +326,7 @@ export function createAnthropicPort(opts: AnthropicPortOpts = {}): ModelPort {
       try {
         raw = opts.rawStream
           ? await opts.rawStream(params, req.signal)
-          : await defaultRawStream(params, req.priority, req.signal);
+          : await defaultRawStream(params, req.priority, req.account, req.signal);
       } catch (e) {
         yield { type: 'error', message: e instanceof Error ? e.message : String(e) };
         return;

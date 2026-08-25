@@ -100,6 +100,9 @@ export interface ModelRequest {
    *  gateway-priority-tiers-2026-06-22. Untiered calls are starved under
    *  fleet load, so interactive callers should always set one. */
   priority?: string;
+  /** Optional per-request inference-gateway account route. Undefined means
+   * gateway auto-routing; direct API-key providers ignore this axis. */
+  account?: string;
 }
 
 /** The one seam. Implementations: the gateway-native anthropic-messages

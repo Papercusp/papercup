@@ -45,6 +45,7 @@ import {
 import { runLoopChatTurn } from '../../../agent-loop/chat-engine';
 import { pgLoopSessionStore } from '../../../agent-loop/session-store';
 import type { LoopTool } from '../../../agent-loop/loop';
+import { MODEL_EFFORT_LEVELS } from '../../../agent-config-constants';
 import {
   listPendingLoopApprovals,
   resolveLoopApproval,
@@ -260,7 +261,15 @@ const messagesRoute = defineTool({
   async handler(req, ctx) {
     const slug = ctx.params.slug;
     const chatId = ctx.params.chatId;
-    let body: { content?: string; mode?: string; engine?: string; model?: string; context?: unknown };
+    let body: {
+      content?: string;
+      mode?: string;
+      engine?: string;
+      model?: string;
+      effort?: string;
+      account?: string;
+      context?: unknown;
+    };
     try { body = await req.json(); } catch { return Response.json({ error: 'invalid JSON body' }, { status: 400 }); }
     const userContent = (body.content ?? '').trim();
     if (!userContent) return Response.json({ error: 'content is required' }, { status: 400 });
@@ -270,6 +279,16 @@ const messagesRoute = defineTool({
     const uiContext = typeof body.context === 'string' ? body.context.trim() : '';
     if (uiContext.length > 4_000) {
       return Response.json({ error: 'context exceeds 4000 characters' }, { status: 400 });
+    }
+    const effort = body.effort?.trim().toLowerCase();
+    if (effort && !(MODEL_EFFORT_LEVELS as readonly string[]).includes(effort)) {
+      return Response.json({
+        error: `effort must be one of ${MODEL_EFFORT_LEVELS.join('|')}`,
+      }, { status: 400 });
+    }
+    const account = body.account?.trim();
+    if (account && !/^[A-Za-z0-9._-]{1,128}$/.test(account)) {
+      return Response.json({ error: 'account contains unsupported characters' }, { status: 400 });
     }
     // P-008: `engine:'loop'` selects the OWNED in-process loop (native session
     // protocol lane); anything else keeps the legacy CLI-spawn engine.
@@ -581,7 +600,7 @@ const messagesRoute = defineTool({
       const dispatchCtx = {
         workspaceId,
         harnessSlug: itemHarness.harness,
-        role: 'operator' as const,
+        role: chat.role,
         runId: assembled.runId,
         spawnId: `agent-loop-${chatId}`,
         log: () => { /* */ },
@@ -633,6 +652,8 @@ const messagesRoute = defineTool({
               transcript: baseTranscript,
               sink,
               ...(body.model ? { model: body.model } : {}),
+              ...(effort ? { effort } : {}),
+              ...(account ? { account } : {}),
               signal: req.signal,
               // This route is the interactive PUI chat surface. Untiered
               // inference is starved behind fleet work, so keep the admission

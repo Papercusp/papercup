@@ -180,6 +180,8 @@ export interface RunAgentLoopOptions {
   signal?: AbortSignal;
   /** Gateway admission-tier label, forwarded to every model call. */
   priority?: string;
+  /** Optional inference-gateway account route, forwarded to every model call. */
+  account?: string;
 }
 
 function addUsage(total: ModelUsage, u: ModelUsage | null | undefined): ModelUsage {
@@ -305,6 +307,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
         ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+        ...(opts.account !== undefined ? { account: opts.account } : {}),
       });
     } catch (e) {
       yield { type: 'error', message: e instanceof Error ? e.message : String(e) };

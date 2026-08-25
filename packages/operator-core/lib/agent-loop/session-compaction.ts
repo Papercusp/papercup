@@ -44,6 +44,7 @@ export interface CompactSessionArgs {
   keepRecent?: number;
   signal?: AbortSignal;
   priority?: string;
+  account?: string;
 }
 
 export interface CompactSessionResult {
@@ -137,6 +138,7 @@ async function summarize(args: {
   prefix: ModelMessage[];
   signal?: AbortSignal;
   priority?: string;
+  account?: string;
 }): Promise<{ text: string; usage?: ModelUsage }> {
   const sections: string[] = [];
   if (args.priorSummary) {
@@ -155,6 +157,7 @@ async function summarize(args: {
     maxTokens: SUMMARY_MAX_TOKENS,
     ...(args.signal !== undefined ? { signal: args.signal } : {}),
     ...(args.priority !== undefined ? { priority: args.priority } : {}),
+    ...(args.account !== undefined ? { account: args.account } : {}),
   });
   for await (const ev of stream) {
     if (ev.type === 'text_delta') text += ev.text;
@@ -198,6 +201,7 @@ export async function maybeCompactSession(args: CompactSessionArgs): Promise<Com
       prefix,
       ...(args.signal !== undefined ? { signal: args.signal } : {}),
       ...(args.priority !== undefined ? { priority: args.priority } : {}),
+      ...(args.account !== undefined ? { account: args.account } : {}),
     });
     return {
       messages: kept,

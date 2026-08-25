@@ -24,6 +24,7 @@
  * `POST .../agent-chats/:chatId/approvals/:callId`.
  */
 import type { TranscriptTurn } from '../agent-chats-data';
+import { splitModelSpec } from '../agent-config-constants';
 import type { ModelMessage, ModelPort, ModelUsage } from './model-port';
 import {
   runAgentLoop,
@@ -65,6 +66,10 @@ export interface LoopChatTurnOpts {
   transcript: TranscriptTurn[];
   sink: LoopChatSink;
   model?: string;
+  /** Explicit effort selection. When present it replaces any suffix on model. */
+  effort?: string;
+  /** Explicit gateway account selection. Undefined means auto routing. */
+  account?: string;
   maxSteps?: number;
   maxTokens?: number;
   signal?: AbortSignal;
@@ -170,7 +175,10 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
       workspaceId: opts.workspaceId,
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });
-  const model = opts.model ?? DEFAULT_LOOP_CHAT_MODEL;
+  const baseModel = opts.model ?? DEFAULT_LOOP_CHAT_MODEL;
+  const model = opts.effort
+    ? `${splitModelSpec(baseModel).model ?? baseModel}:${opts.effort}`
+    : baseModel;
 
   // ── P-009 resume: prefer the stored ModelMessage working set ────────────
   let stored: LoopSessionRow | null = null;
@@ -230,6 +238,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
     ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+    ...(opts.account !== undefined ? { account: opts.account } : {}),
   });
 
   try {
@@ -317,6 +326,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
         model,
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+        ...(opts.account !== undefined ? { account: opts.account } : {}),
       });
       let turnUsage: ModelUsage = doneUsage;
       if (compact.summarizeUsage) {

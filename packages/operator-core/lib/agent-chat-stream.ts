@@ -93,6 +93,7 @@ export { resolveBackend };
 export {
   resolveStatelessTransport,
   priorityTierHeaders,
+  routeAccountHeaders,
   buildSystemParam,
   type StatelessTransport,
 } from '@papercusp/papercusp-shared/agent';
