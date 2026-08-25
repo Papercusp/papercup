@@ -26,7 +26,7 @@ import { spawn, type IPty } from '@lydell/node-pty';
 import { cp, readFile, writeFile, mkdir, chmod, rm } from 'node:fs/promises';
 import { accessSync, constants } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname } from 'node:path';
+import { delimiter, dirname, isAbsolute } from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import { registerAccount, normalizeAccountProvider, type AccountProvider } from './account-pool';
 import { updateAccountPool, accountStatus, type AccountStatusRow } from './account-pool-store';
@@ -54,6 +54,22 @@ const LINK_TTL_MS = 10 * 60 * 1000; // how long a started link waits for the own
 // submitted (the "Linking…" stall). The Enter must be its OWN write, sent AFTER the
 // paste settles. Proven against claude CLI v2.1.181.
 const SUBMIT_ENTER_DELAY_MS = 300;
+
+/**
+ * Keep a resolved CLI runnable when the operator itself was launched with a stripped PATH.
+ *
+ * The managed Codex/Claude shims are Node scripts with a `#!/usr/bin/env node` shebang. An
+ * absolute path fixes the first lookup, but the kernel still asks `env` to resolve `node` from
+ * PATH; without the running Node prefix the pty exits 127 before the CLI can print anything.
+ * Put the current Node prefix first, plus the resolved CLI's directory when it is absolute, and
+ * retain the service's entries after those required launch locations.
+ */
+function cliSpawnPath(bin: string): string {
+  const inherited = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
+  const required = [dirname(process.execPath)];
+  if (isAbsolute(bin)) required.push(dirname(bin));
+  return [...new Set([...required, ...inherited])].join(delimiter);
+}
 
 /**
  * Resolve the provider CLI to a runnable path. A pty spawn of a missing binary does NOT throw a
@@ -276,6 +292,11 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
   );
   await mkdir(configDir, { recursive: true });
   const bin = resolveCliBin(provider);
+  const spawnEnv = {
+    ...process.env,
+    PATH: cliSpawnPath(bin),
+    ...(provider === 'codex' ? { CODEX_HOME: configDir } : { CLAUDE_CONFIG_DIR: configDir }),
+  };
   let pty: IPty;
   try {
     pty = provider === 'codex'
@@ -284,14 +305,14 @@ export async function startCliLink(input: StartCliLinkInput, deps: StartCliLinkD
         cols: 4000,
         rows: 50,
         cwd: configDir,
-        env: { ...process.env, CODEX_HOME: configDir },
+        env: spawnEnv,
       })
       : spawn(bin, ['setup-token'], {
       name: 'xterm-256color',
       cols: 4000, // ultra-wide → the long URL + token never wrap (a wrapped line breaks the regex)
       rows: 50,
       cwd: configDir,
-      env: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+      env: spawnEnv,
     });
   } catch (e) {
     await rm(configDir, { recursive: true, force: true }).catch(() => {});
