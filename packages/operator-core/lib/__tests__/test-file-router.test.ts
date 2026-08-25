@@ -370,7 +370,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
       child.kill = vi.fn();
-      const spawnImpl = vi.fn(() => child);
+      const spawnImpl = vi.fn((..._args: unknown[]) => child);
       const killProcessImpl = vi.fn(() => 'group');
       const onProgress = vi.fn();
 
@@ -397,7 +397,8 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
         ['--wait', 'npx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'],
         expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
       );
-      expect(spawnImpl.mock.calls[0]?.[2]).not.toHaveProperty('detached');
+      const spawnOptions = spawnImpl.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
+      expect(spawnOptions).not.toHaveProperty('detached');
 
       child.stdout.write('✓ a.test.ts (1 test) 2ms\n');
       await vi.advanceTimersByTimeAsync(10);
