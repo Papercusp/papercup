@@ -655,7 +655,18 @@ export function looksLikeSilentCollectionFailure(output) {
  */
 export function looksLikeMidInstallCorruption(output) {
   if (/\bvitest:\s*not found\b/i.test(output)) return true;
-  if (/ERR_MODULE_NOT_FOUND/.test(output) && /node_modules/.test(output))
+  // Require the three pieces on the SAME diagnostic line. Test reporters can echo arbitrary
+  // source in an assertion diff; this detector's own implementation contains both tokens, so
+  // searching the whole output independently made an ordinary source-string mismatch diagnose
+  // itself as a concurrent install (EI-21417347162023894).
+  if (
+    output.split(/\r?\n/).some(
+      (line) =>
+        /(?:Error\s+)?\[ERR_MODULE_NOT_FOUND\]:/.test(line) &&
+        /Cannot find (?:module|package)/.test(line) &&
+        /node_modules[\\/]/.test(line),
+    )
+  )
     return true;
   return false;
 }

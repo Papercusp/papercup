@@ -643,6 +643,19 @@ Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/node_modules/vitest/node
 `;
     expect(looksLikeMidInstallCorruption(withAssertionDetail)).toBe(false);
   });
+
+  it('does NOT flag an assertion diff that merely prints detector source containing both tokens', () => {
+    const sourceDiff = `
+AssertionError: expected source to contain a historical literal
+- expected
++ received
++ if (/ERR_MODULE_NOT_FOUND/.test(output) && /node_modules/.test(output)) return true;
+
+ Test Files  1 failed (1)
+      Tests  1 failed (1)
+`;
+    expect(looksLikeMidInstallCorruption(sourceDiff)).toBe(false);
+  });
 });
 
 // EI-19304880034803985: the mid-install hint above only ever fires on the
