@@ -40,7 +40,7 @@
  * without a database, and so P-006 can expose them through the design-phase
  * plugin without importing Postgres. `reference-store-pg.ts` binds the port.
  */
-import type { CaptureEnvironment, ReferenceClass } from './contract';
+import type { CaptureEnvironment, CompareResult, ReferenceClass } from './contract';
 import {
   type RatificationError,
   type RatifiedReference,
@@ -123,6 +123,69 @@ export interface StoredEvidenceRef {
   readonly referenceId: string;
   readonly referenceRevision: number;
   readonly capturedAt: string;
+}
+
+/** One durable comparison-evidence record: a whole normalized `CompareResult`. */
+export interface StoredEvidence {
+  readonly result: CompareResult;
+  /** The accepted spec / feature this evidence belongs to — the existing linkage. */
+  readonly featureId: string;
+  readonly harnessSlug: string;
+}
+
+/** A stored evidence record as it comes back from the port, with its row identity. */
+export interface StoredEvidenceRow extends StoredEvidence {
+  readonly artifactId: string;
+  readonly createdTs: number;
+}
+
+/**
+ * A stable key for the environment a comparison was contracted at.
+ *
+ * Every field of `CaptureEnvironment` participates, in a fixed order, because
+ * `environmentsMatch` treats every field as identity — a key that dropped one
+ * would collapse two genuinely different renders onto the same evidence row.
+ * `fixture`/`state` are optional on the type, so they are spelled as a literal
+ * `-` when absent rather than left out: omitting them would let `{fixture:'a'}`
+ * and `{state:'a'}` produce the same key.
+ */
+export function environmentCaseKey(env: CaptureEnvironment): string {
+  return [
+    `${env.viewport.width}x${env.viewport.height}`,
+    `@${env.deviceScaleFactor}`,
+    env.browser,
+    env.theme,
+    env.fontSet,
+    env.fixture ?? '-',
+    env.state ?? '-',
+  ].join('|');
+}
+
+/**
+ * The artifact id for one piece of evidence.
+ *
+ * Derived, not random, and that is a semantic choice rather than a storage one.
+ * A comparison result is a FUNCTION of exactly these inputs: which reference
+ * revision, which implementation revision, which target, at which contracted
+ * environment. Two rows carrying the same inputs but different verdicts would
+ * be a contradiction the gate cannot resolve — and whichever one it read would
+ * be a coin flip that a caller could re-roll by re-running until it liked the
+ * answer. Making the id deterministic means a re-run REPLACES its predecessor
+ * (see `insertEvidence`) instead of accumulating a set to choose from.
+ *
+ * The cost is deliberate and bounded: re-run history is not kept here. Measuring
+ * repeatability is P-008's job, with its own runs and its own records; it is not
+ * something a gate should have to infer from duplicate evidence rows.
+ */
+export function evidenceArtifactId(result: CompareResult): string {
+  return [
+    'cmpres',
+    result.reference.referenceId,
+    String(result.reference.revision),
+    result.target.targetId,
+    result.target.implementationRevision,
+    environmentCaseKey(result.environment),
+  ].join(':');
 }
 
 /** The derived, queryable projection written to the artifact row's `metadata`. */
