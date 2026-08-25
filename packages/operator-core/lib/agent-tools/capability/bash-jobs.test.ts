@@ -706,7 +706,10 @@ describe('preflight attribution snapshot (EI-21257218038249358)', () => {
     const output = readJobOutput(final);
     const logContent = readFileSync(final.logPath, 'utf8');
     const snapshotAt = logContent.indexOf(PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX);
-    const endAt = logContent.indexOf(JOB_LOG_END_MARKER_PREFIX);
+    // The transient-service runner may already have written a raw marker. The
+    // operator's later normalized marker is authoritative and must follow its
+    // attribution snapshot.
+    const endAt = logContent.lastIndexOf(JOB_LOG_END_MARKER_PREFIX);
 
     expect(output).toContain('WI40905_PREFLIGHT_FAIL load1=93.20 exceeds 77');
     expect(snapshotAt).toBeGreaterThanOrEqual(0);
