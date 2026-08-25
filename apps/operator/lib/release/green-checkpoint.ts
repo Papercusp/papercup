@@ -8019,10 +8019,19 @@ async function runGreenCheckpointInner(
   // The confirm still uses the same full affected-suite runner and the recovery walk replaces
   // this seed with its own measured mean after the first confirm, so the deadline remains
   // fail-safe without charging one-time setup twice.
-  const candidateSuiteDurationMs = Math.max(
-    1,
-    Date.now() - candidateSuiteStartedAtMs,
-  );
+  // WI-41655: the measurement above is only meaningful when the suite actually RAN. When
+  // `earlyPreflightFailure` short-circuits the `??`, deps.runGreen never executes and this
+  // interval spans only the `??` evaluation — ~0ms, clamped to 1ms. A 1ms estimate makes
+  // `salvageOutOfTime` false in every practical case, so the salvage is admitted with no real
+  // budget check AND that same 1ms is threaded in as `initialConfirmEstimateMs`, seeding the
+  // salvage's own per-confirm re-check with it too. The first confirm is a full affected suite
+  // with no timeoutMs, so it would start unbudgeted — reintroducing exactly the
+  // SIGTERM-mid-confirm verdict loss WI-39450 added this gate to prevent. With no measured
+  // suite there is nothing to seed from, so fall back to the prior conservative whole-run
+  // figure (setup-inclusive, and an over-estimate — which is the fail-safe direction here).
+  const candidateSuiteDurationMs = earlyPreflightFailure
+    ? Math.max(1, Date.now() - runStartedAtMs)
+    : Math.max(1, Date.now() - candidateSuiteStartedAtMs);
   const {
     green,
     summary,
