@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assessTerminalRepairQueueReconciliation,
   beginQualificationTransaction,
   classifyQualificationVerdict,
   parseCheckpointQualificationTransaction,
@@ -8,6 +9,10 @@ import {
   settleQualificationTransaction,
   waitQualificationTransaction,
 } from './checkpoint-qualification-transaction';
+import {
+  createFrozenCandidateQueue,
+  markFrozenCandidateVerificationRed,
+} from './frozen-candidate-repair-queue';
 
 const begin = () => beginQualificationTransaction(null, {
   attemptId: 'attempt-1',
@@ -99,5 +104,57 @@ describe('logical checkpoint qualification transaction', () => {
       ...current,
       outcome: { kind: 'pre-suite-no-verdict', reason: 'invented-retry' },
     })).toBeNull();
+  });
+
+  it('retires only the predecessor-linked safe unstarted queue for a distinct successor', () => {
+    const terminal = settleQualificationTransaction(begin(), {
+      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 400,
+    }).transaction;
+    const safeQueue = createFrozenCandidateQueue({
+      candidate: 'candidate-1',
+      qualificationAttemptId: 'attempt-1',
+      base: null,
+      worktreePath: '/repo/.papercusp/worktrees/candidate-1',
+      nowMs: 200,
+    });
+    const successor = {
+      attemptId: 'attempt-2',
+      requiredAncestorSha: 'successor-repair',
+      declaredPaths: ['fixed.ts'],
+      candidate: 'candidate-2',
+      nowMs: 500,
+    };
+
+    expect(
+      assessTerminalRepairQueueReconciliation(terminal, successor, safeQueue),
+    ).toMatchObject({
+      status: 'retired',
+      reason: 'exact-safe-unstarted',
+      predecessorAttemptId: 'attempt-1',
+      successorAttemptId: 'attempt-2',
+      candidate: 'candidate-1',
+    });
+    expect(
+      assessTerminalRepairQueueReconciliation(terminal, successor, {
+        ...safeQueue,
+        qualificationAttemptId: 'another-attempt',
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
+    expect(
+      assessTerminalRepairQueueReconciliation(
+        terminal,
+        successor,
+        markFrozenCandidateVerificationRed(safeQueue, {
+          failingTests: ['broken.test.ts'],
+          nowMs: 300,
+        }),
+      ),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-not-safe-unstarted' });
+    expect(
+      assessTerminalRepairQueueReconciliation(terminal, successor, {
+        ...safeQueue,
+        qualificationAttemptId: undefined,
+      }),
+    ).toMatchObject({ status: 'blocked', reason: 'queue-origin-mismatch' });
   });
 });
