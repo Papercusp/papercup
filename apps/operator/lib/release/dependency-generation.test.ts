@@ -555,6 +555,120 @@ describe('immutable dependency generation', () => {
     expect(publishedPath(reused.stdout)).toBe(generation);
   });
 
+  it('bounds published growth to the newest set and finishes crash-left prune quarantines', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    let newestPath = '';
+
+    for (let i = 0; i < 5; i += 1) {
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), `root-v${i}\n`);
+      const result = publish(integration, {
+        DEPENDENCY_GENERATION_RETAIN_COUNT: '2',
+      });
+      expect(result.status, result.stderr).toBe(0);
+      newestPath = publishedPath(result.stdout);
+    }
+
+    expect(
+      readdirSync(generationRoot).filter((entry) => entry.startsWith('v1-')),
+    ).toHaveLength(2);
+    expect(existsSync(newestPath)).toBe(true);
+
+    const orphan = join(generationRoot, `.prune-v1-${'f'.repeat(64)}-stale`);
+    mkdirSync(join(orphan, 'tree/pkg'), { recursive: true });
+    writeFileSync(join(orphan, 'tree/pkg/index.js'), 'stale\n');
+    chmodSync(join(orphan, 'tree/pkg/index.js'), 0o444);
+    const reused = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '2',
+    });
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(existsSync(orphan)).toBe(false);
+  });
+
+  it('imports direct sibling checkout pins and prunes them after their marker goes stale', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '2',
+    });
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    const firstPath = publishedPath(first.stdout);
+    const checkout = `${integration}-checkpoint`;
+    roots.push(checkout);
+    mkdirSync(join(checkout, 'node_modules'), { recursive: true });
+    writeFileSync(
+      join(checkout, 'node_modules/.papercusp-dependency-generation'),
+      `identity=${firstIdentity}\nsource=${firstIdentity.slice(3)}\n`,
+    );
+
+    for (let i = 1; i <= 3; i += 1) {
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), `new-${i}\n`);
+      const result = publish(integration, {
+        DEPENDENCY_GENERATION_RETAIN_COUNT: '2',
+      });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    expect(existsSync(firstPath)).toBe(true);
+    expect(
+      readdirSync(join(generationRoot, '.pins')).some((entry) =>
+        readFileSync(join(generationRoot, '.pins', entry), 'utf8').includes(
+          `identity=${firstIdentity}\n`,
+        ),
+      ),
+    ).toBe(true);
+
+    rmSync(join(checkout, 'node_modules/.papercusp-dependency-generation'));
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'after-stale-pin\n');
+    const after = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+    });
+    expect(after.status, after.stderr).toBe(0);
+    expect(existsSync(firstPath)).toBe(false);
+    expect(
+      readdirSync(join(generationRoot, '.pins')).some((entry) =>
+        readFileSync(join(generationRoot, '.pins', entry), 'utf8').includes(
+          `identity=${firstIdentity}\n`,
+        ),
+      ),
+    ).toBe(false);
+  });
+
+  it('protects a live exact-identity selector lease and reclaims it after the reader is gone', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+    });
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    const firstPath = publishedPath(first.stdout);
+    const lease = join(generationRoot, '.leases/live-test');
+    mkdirSync(dirname(lease), { recursive: true });
+    writeFileSync(
+      lease,
+      `host=${execFileSync('hostname', { encoding: 'utf8' }).trim()}\n` +
+        `pid=${process.pid}\nstarted=1\nidentity=${firstIdentity}\n`,
+    );
+
+    for (let i = 1; i <= 2; i += 1) {
+      writeFileSync(join(integration, 'node_modules/pkg/index.js'), `leased-${i}\n`);
+      const result = publish(integration, {
+        DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+      });
+      expect(result.status, result.stderr).toBe(0);
+    }
+    expect(existsSync(firstPath)).toBe(true);
+
+    rmSync(lease);
+    writeFileSync(join(integration, 'node_modules/pkg/index.js'), 'reader-gone\n');
+    const after = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '1',
+    });
+    expect(after.status, after.stderr).toBe(0);
+    expect(existsSync(firstPath)).toBe(false);
+  });
+
   // The manifest walk fingerprints each node_modules tree independently and
   // sorts globally, so it runs in parallel. Parallelism must remain an
   // invisible scheduling detail: if a walker ever emitted a partial or

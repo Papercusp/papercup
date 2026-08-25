@@ -230,6 +230,28 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
   });
 });
 
+describe('setup-release-checkout.sh dependency-generation retention wiring', () => {
+  it('leases exact identity before selection and promotes the checkout pin before release', () => {
+    const source = readFileSync(SCRIPT_PATH, 'utf8');
+    const exactLease = source.indexOf(
+      'dependency_generation_acquire_selector_lease "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"',
+    );
+    const exactSelect = source.indexOf(
+      'dependency_generation_select "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"',
+    );
+    expect(exactLease).toBeGreaterThan(-1);
+    expect(exactLease).toBeLessThan(exactSelect);
+
+    const register = source.indexOf('dependency_generation_register_pin \\');
+    const release = source.indexOf(
+      'dependency_generation_release_selector_lease',
+      register,
+    );
+    expect(register).toBeGreaterThan(-1);
+    expect(release).toBeGreaterThan(register);
+  });
+});
+
 describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross-device guard', () => {
   function assertCompatible(releaseRoot: string, copyMode = 'hardlink'): { status: number | null; stdout: string; stderr: string } {
     const wrapper = [
