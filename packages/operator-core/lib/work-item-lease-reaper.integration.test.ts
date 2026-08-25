@@ -59,6 +59,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.engineer_issues WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.work_item_claims WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.coord_presence`;
+  await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS}`;
 });
 
 async function seedFeature(id: string, takenBy: string | null, takenAgoMs: number): Promise<void> {
@@ -97,6 +98,17 @@ async function seedPresence(owner: string, ageMs: number, liveness: { host?: str
     INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at, host, pid)
     VALUES (${owner}, now() - make_interval(secs => ${Math.round(ageMs / 1000)}), ${liveness.host ?? hostname()}, ${liveness.pid ?? null})
     ON CONFLICT (owner_id) DO UPDATE SET heartbeat_at = EXCLUDED.heartbeat_at, host = EXCLUDED.host, pid = EXCLUDED.pid`;
+}
+
+async function seedLoop(owner: string, active = true): Promise<void> {
+  const id = `loop-${owner}`;
+  await sql`
+    INSERT INTO harness_shared.routines
+      (id, install_slug, name, trigger_kind, trigger_config, target_role,
+       active, reschedule_interval_sec, target_owner_id, workspace_id)
+    VALUES
+      (${id}, ${HARNESS}, ${id}, 'api', '{}'::jsonb, 'system:loop-fire',
+       ${active}, 60, ${owner}, ${WS})`;
 }
 
 const GRACE_MS = 600_000; // IDLE_SESSION_GRACE_MS (STALE_MS)
@@ -194,6 +206,24 @@ describe('gatherProtectedSessionOwners includeClaimHolders toggle (the circulari
     await seedPresence('su-really-live', 1_000);
     const protectedOwners = await gatherProtectedSessionOwners(sql, { includeClaimHolders: false });
     expect(protectedOwners.has('su-really-live')).toBe(true);
+  });
+
+  it('an armed loop protects its same-owner driving claim between warm wakes, independently of claim-holder protection', async () => {
+    const owner = 'su-warm-loop-owner';
+    await seedFeature('F-WARM-LOOP-PROTECT', owner, 5 * GRACE_MS);
+    await seedLoop(owner);
+
+    const protectedOwners = await gatherProtectedSessionOwners(sql, { includeClaimHolders: false });
+    expect(protectedOwners.has(owner)).toBe(true);
+
+    const kept = await runWorkItemLeaseReap({});
+    expect(kept.reapedIds).not.toContain('F-WARM-LOOP-PROTECT');
+    expect(await featureTakenBy('F-WARM-LOOP-PROTECT')).toBe(owner);
+
+    await sql`UPDATE harness_shared.routines SET active = false WHERE target_owner_id = ${owner}`;
+    const released = await runWorkItemLeaseReap({});
+    expect(released.reapedIds).toContain('F-WARM-LOOP-PROTECT');
+    expect(await featureTakenBy('F-WARM-LOOP-PROTECT')).toBeNull();
   });
 
   // WI-6638 side-finding (EI-19357343...): harness_features_consolidated is the

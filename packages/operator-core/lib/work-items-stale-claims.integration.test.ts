@@ -57,6 +57,16 @@ const TOOL_INVOCATIONS_DDL = `
     coord_owner_id text,
     invoked_at timestamptz NOT NULL DEFAULT now()
   )`;
+// EI-21431501901242395: the durable continuation leg read by
+// liveHolderFragment. Only these four columns participate in that liveness
+// decision; this intentionally stays a minimal projection of the real table.
+const ROUTINES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    id text PRIMARY KEY,
+    target_owner_id text,
+    reschedule_interval_sec integer,
+    active boolean NOT NULL DEFAULT true
+  )`;
 
 let db: FreshPgDb;
 let sql: postgres.Sql;
@@ -74,6 +84,7 @@ beforeAll(async () => {
   await sql.unsafe(ENGINEER_ISSUES_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
   await sql.unsafe(TOOL_INVOCATIONS_DDL);
+  await sql.unsafe(ROUTINES_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -81,7 +92,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.tool_invocations`;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.tool_invocations, harness_shared.routines`;
 });
 
 async function seedIssue(
@@ -183,6 +194,12 @@ async function seedActivity(
   await sql`
     INSERT INTO harness_shared.agent_activity (owner_id, kind, summary, created_at)
     VALUES (${ownerId}, ${kind}, ${summary}, now() - make_interval(mins => ${agoMin}))`;
+}
+
+async function seedLoop(ownerId: string, active = true): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.routines (id, target_owner_id, reschedule_interval_sec, active)
+    VALUES (${`loop-${ownerId}`}, ${ownerId}, 60, ${active})`;
 }
 
 async function statusOf(featureId: string): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {
@@ -879,6 +896,29 @@ describe('EI-18674157526367861: activeTurnHolderFragment (native-tool liveTurn l
     await seedActivity('su-stale-activity', 45, 'tool', 'Edit'); // 45 min ago — outside the 10-min window
     const r = await reclaimStaleWorkItemClaims(sql);
     expect(r.released.map((c) => c.feature_id)).toEqual(['F-AT4']);
+  });
+});
+
+describe('EI-21431501901242395: armed-loop owner liveness between warm wakes', () => {
+  it('keeps feature + issue claims while the loop is active, then restores terminal reclaim when it is inactive', async () => {
+    const owner = 'su-warm-loop-between-wakes';
+    await seedItem('F-WARM-LOOP', owner, 45);
+    await seedIssue('EI-WARM-LOOP', 'bug', owner, 45);
+    await markKnown(owner);
+    // A trailing end marker intentionally defeats activeTurnHolderFragment, so
+    // the armed routine is the ONLY live-holder leg protecting these claims.
+    await seedActivity(owner, 1, 'lifecycle', SESSION_END_MARKER);
+    await seedLoop(owner);
+
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).not.toContain('F-WARM-LOOP');
+    expect((await reclaimStaleIssueClaims(sql)).released.map((r) => r.issue_id)).not.toContain('EI-WARM-LOOP');
+    expect((await statusOf('F-WARM-LOOP')).taken_by).toBe(owner);
+    expect(await assigneeOf('EI-WARM-LOOP')).toBe(owner);
+
+    await sql`UPDATE harness_shared.routines SET active = false WHERE target_owner_id = ${owner}`;
+
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).toContain('F-WARM-LOOP');
+    expect((await reclaimStaleIssueClaims(sql)).released.map((r) => r.issue_id)).toContain('EI-WARM-LOOP');
   });
 });
 

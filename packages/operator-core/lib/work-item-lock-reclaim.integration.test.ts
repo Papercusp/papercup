@@ -55,6 +55,11 @@ const TOOL_INVOCATIONS_DDL = `
     coord_owner_id text,
     invoked_at timestamptz NOT NULL DEFAULT now()
   )`;
+const ROUTINES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    id text PRIMARY KEY, target_owner_id text,
+    reschedule_interval_sec integer, active boolean NOT NULL DEFAULT true
+  )`;
 
 const WORKSPACE_ID = 'default';
 const HARNESS = 'papercup';
@@ -83,6 +88,7 @@ beforeAll(async () => {
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
   await sql.unsafe(TOOL_INVOCATIONS_DDL);
+  await sql.unsafe(ROUTINES_DDL);
 
   sideDbLive = await checkSideDb();
 }, 120_000);

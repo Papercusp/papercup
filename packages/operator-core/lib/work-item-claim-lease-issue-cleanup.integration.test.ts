@@ -85,6 +85,12 @@ const AGENT_ACTIVITY_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
     id BIGSERIAL PRIMARY KEY, owner_id text NOT NULL, kind text NOT NULL, summary text,
     created_at timestamptz NOT NULL DEFAULT now())`;
+// EI-21431501901242395: liveHolderFragment now also reads the armed-loop
+// continuation authority. Minimal projection for this isolated fixture.
+const ROUTINES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    id text PRIMARY KEY, target_owner_id text,
+    reschedule_interval_sec integer, active boolean NOT NULL DEFAULT true)`;
 
 const CLAIM_NEXT_INTENT = 'work-stealing claim (claim_next)';
 
@@ -101,6 +107,7 @@ beforeAll(async () => {
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
+  await sql.unsafe(ROUTINES_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -109,7 +116,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.engineer_issues, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity`;
+  await sql`TRUNCATE harness_shared.work_item_claims, harness_shared.engineer_issues, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.routines`;
   await setLeaseFlag(true);
 });
 afterEach(async () => {

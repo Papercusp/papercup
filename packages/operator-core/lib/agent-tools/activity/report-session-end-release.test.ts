@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   release: vi.fn(),
   releaseLocks: vi.fn(),
   resetWake: vi.fn(),
+  loopOwners: vi.fn(),
   /** In-memory stand-in for the marker's PG table (see the mock below). */
   marks: new Map<string, number>(),
 }));
@@ -36,6 +37,7 @@ vi.mock('../locks/release-all-owned', () => ({ releaseAllOwnedLocks: h.releaseLo
 // the read never settles, so it hangs PAST the handler's try/catch (which only catches
 // throws) until the suite timeout. Stub it in every test in this file.
 vi.mock('../../session-reset-continuation', () => ({ recentContextResetWake: h.resetWake }));
+vi.mock('../../adv-roster', () => ({ activeLoopOwners: h.loopOwners }));
 // The carry-respawn marker is PG-backed too (migration 716 — the operator is clustered,
 // so an in-memory Map was invisible to the sibling worker that handles the SessionEnd).
 // Same reasoning as the stub above: keep this file a pure handler unit test by standing
@@ -78,6 +80,8 @@ beforeEach(() => {
   });
   // Default: no context-reset wake in the window ⇒ an ordinary death, release runs.
   h.resetWake.mockReset().mockResolvedValue(null);
+  // Default: the owner has no armed loop ⇒ an ordinary terminal SessionEnd.
+  h.loopOwners.mockReset().mockResolvedValue(new Set<string>());
   void __resetRespawnExpectedMarkers();
 });
 
@@ -223,5 +227,36 @@ describe('activity:report SessionEnd → a recent context-reset wake suppresses 
     await run({ owner: 'su-abc', kind: 'lifecycle', summary: '▶ session started' });
     expect(h.resetWake).not.toHaveBeenCalled();
     expect(h.release).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * EI-21431501901242395: a warm engine loop is durable continuation authority
+ * for the coordination owner even when the current native CLI incarnation
+ * emits SessionEnd between wakes. Releasing here strips the loop's driving
+ * work-item claim before its already-armed successor turn arrives.
+ */
+describe('activity:report SessionEnd → an armed engine loop preserves the same-owner claim', () => {
+  it('an armed warm-loop owner is a continuation: work-item and lock releases are SKIPPED', async () => {
+    h.loopOwners.mockResolvedValueOnce(new Set(['su-warm-loop']));
+
+    const res = await run({ owner: 'su-warm-loop', kind: 'lifecycle', summary: '■ session ended' });
+
+    expect(h.resetWake).toHaveBeenCalledWith('su-warm-loop');
+    expect(h.loopOwners).toHaveBeenCalledTimes(1);
+    expect(h.release).not.toHaveBeenCalled();
+    expect(h.releaseLocks).not.toHaveBeenCalled();
+    expect(h.cancel).toHaveBeenCalledTimes(1);
+    expect(responseBody(res)).toMatchObject({ ok: true, session_end_disposition: 'continuation' });
+  });
+
+  it('CONTROL: an inactive/missing loop does not weaken genuine SessionEnd cleanup', async () => {
+    h.loopOwners.mockResolvedValueOnce(new Set());
+
+    const res = await run({ owner: 'su-terminal', kind: 'lifecycle', summary: '■ session ended' });
+
+    expect(h.release).toHaveBeenCalledWith('su-terminal');
+    expect(h.releaseLocks).toHaveBeenCalledTimes(1);
+    expect(responseBody(res)).toMatchObject({ ok: true, session_end_disposition: 'terminal' });
   });
 });
