@@ -315,6 +315,28 @@ describe("selection + apply", () => {
       "0 of 0 selectable recommendations selected.",
     );
   });
+
+  it("restores focus to Dismiss when its busy action settles without unmounting", () => {
+    const props = {
+      title: "Dismiss failure report",
+      groups: groupsFixture(),
+      onApply: vi.fn(),
+      onDismiss: vi.fn(),
+    };
+    const { rerender } = render(<ReviewReportShell {...props} />);
+    const dismiss = screen.getByTestId("review-report-dismiss");
+    dismiss.focus();
+    fireEvent.click(dismiss);
+    expect(props.onDismiss).toHaveBeenCalledTimes(1);
+
+    rerender(<ReviewReportShell {...props} busy />);
+    focusBody();
+    expect(document.activeElement).toBe(document.body);
+    rerender(<ReviewReportShell {...props} busy={false} />);
+
+    expect(document.activeElement).toBe(dismiss);
+    expect((dismiss as HTMLButtonElement).disabled).toBe(false);
+  });
 });
 
 describe("tri-state group checkbox", () => {
