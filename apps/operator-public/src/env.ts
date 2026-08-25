@@ -9,6 +9,8 @@ export interface Env {
   // Bindings
   DB: D1Database;
   COUNTERS: KVNamespace;
+  /** Existing shared bucket, namespaced under artifacts/workspace-host/. */
+  ARTIFACTS: R2Bucket;
 
   // Secrets
   GITHUB_CLIENT_ID: string;

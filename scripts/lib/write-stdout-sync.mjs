@@ -30,25 +30,30 @@
  * `| head` closing the pipe is normal, not an error worth crashing over.
  */
 
-import fs from 'node:fs';
+import fs from "node:fs";
 
-function writeFdSync(fd, s) {
-  const text = typeof s === 'string' ? s : String(s);
-  const buf = Buffer.from(text.endsWith('\n') ? text : `${text}\n`);
+function writeFdSync(fd, s, appendNewline) {
+  const text = typeof s === "string" ? s : String(s);
+  const buf = Buffer.from(
+    appendNewline && !text.endsWith("\n") ? `${text}\n` : text,
+  );
   let off = 0;
   while (off < buf.length) {
     try {
       off += fs.writeSync(fd, buf, off, buf.length - off);
     } catch (err) {
-      if (err && err.code === 'EAGAIN') continue; // non-blocking pipe: retry
-      if (err && err.code === 'EPIPE') return; // reader went away (e.g. `| head`)
+      if (err && err.code === "EAGAIN") continue; // non-blocking pipe: retry
+      if (err && err.code === "EPIPE") return; // reader went away (e.g. `| head`)
       throw err;
     }
   }
 }
 
 /** Write to stdout synchronously (adds a trailing newline if absent). */
-export const writeStdoutSync = (s) => writeFdSync(1, s);
+export const writeStdoutSync = (s) => writeFdSync(1, s, true);
+
+/** Write to stdout synchronously without changing the payload bytes. */
+export const writeStdoutExactSync = (s) => writeFdSync(1, s, false);
 
 /** Write to stderr synchronously (adds a trailing newline if absent). */
-export const writeStderrSync = (s) => writeFdSync(2, s);
+export const writeStderrSync = (s) => writeFdSync(2, s, true);

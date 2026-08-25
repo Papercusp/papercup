@@ -16,9 +16,16 @@ import {
   type WorkspaceHostBootstrapAttestation,
   type WorkspaceHostBootstrapInput,
 } from './workspace-host-bootstrap';
+import { deriveWorkspaceHostCanonicalArtifactUrls } from './workspace-host-build-manifest';
 
 const DIGEST = 'a'.repeat(64);
 const KEY_DIGEST = 'b'.repeat(64);
+const OTHER_DIGEST = 'c'.repeat(64);
+
+// D-106: fixtures derive their URLs from the digest instead of hand-authoring one. The previous
+// literals pointed at releases.papercusp.com, which D-105 established has no production source or
+// DNS — so every fixture in this file was teaching an address that cannot exist.
+const ARTIFACTS = deriveWorkspaceHostCanonicalArtifactUrls(DIGEST);
 
 function input(
   overrides: Partial<WorkspaceHostBootstrapInput> = {},
@@ -29,10 +36,9 @@ function input(
     hostId: 'host-1',
     release: {
       version: '2026.8.22-1',
-      bundleUrl: 'https://releases.papercusp.com/server/2026.8.22-1.tgz',
+      bundleUrl: ARTIFACTS.bundleUrl,
       bundleSha256: DIGEST,
-      signatureUrl:
-        'https://releases.papercusp.com/server/2026.8.22-1.tgz.minisig',
+      signatureUrl: ARTIFACTS.signatureUrl,
       signingPublicKey:
         'untrusted comment: Papercusp release key\nRWQpublickey',
       signingKeySha256: KEY_DIGEST,
@@ -57,7 +63,7 @@ function attestation(
     status: 'healthy',
     release: {
       version: '2026.8.22-1',
-      source: 'https://releases.papercusp.com/server/2026.8.22-1.tgz',
+      source: ARTIFACTS.bundleUrl,
       bundleSha256: DIGEST,
       signingKeySha256: KEY_DIGEST,
       signatureVerified: true,
@@ -233,6 +239,81 @@ describe('buildWorkspaceHostBootstrap', () => {
       ),
     ).toThrow(/Secret-shaped field/);
   });
+
+  // D-106 / WI-41712. requirePublicHttpsUrl proves only that the URL is well-formed,
+  // credential-free HTTPS — it never relates the URL to the digest the release pins. Each case
+  // below is well-formed HTTPS and passes every OTHER bootstrap check, so each one FAILS if the
+  // shared addressing rule is not wired in. That is the point: these are the falsifiers for the
+  // guard, not decoration around it.
+  describe('release addressing (D-106)', () => {
+    it('accepts the canonical digest-derived artifact URLs', () => {
+      expect(() => buildWorkspaceHostBootstrap(input())).not.toThrow();
+    });
+
+    it('rejects a mutable release channel even with a well-formed digest', () => {
+      // The exact shape that motivated the rule: a valid bundleSha256 sitting next to a URL that
+      // can be re-pointed at different bytes tomorrow, interpolated into a script running as root.
+      expect(() =>
+        buildWorkspaceHostBootstrap(
+          input({
+            release: {
+              ...input().release,
+              bundleUrl: 'https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/latest/server.tgz',
+              signatureUrl:
+                'https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/latest/server.tgz.minisig',
+            },
+          }),
+        ),
+      ).toThrow(/mutable release channel/);
+    });
+
+    it('rejects a content-addressed URL that addresses a different digest', () => {
+      // Well-shaped and immutable, but it pins someone else's bundle. This must NOT fall through
+      // to the version-embedding rule and be accepted as "immutable enough".
+      const wrong = deriveWorkspaceHostCanonicalArtifactUrls(OTHER_DIGEST);
+      expect(() =>
+        buildWorkspaceHostBootstrap(
+          input({
+            release: {
+              ...input().release,
+              bundleUrl: wrong.bundleUrl,
+              signatureUrl: wrong.signatureUrl,
+            },
+          }),
+        ),
+      ).toThrow(/is content-addressed at/);
+    });
+
+    it('rejects a signature that is not the detached companion of the bundle', () => {
+      // A valid signature over a DIFFERENT artifact would otherwise satisfy verification.
+      expect(() =>
+        buildWorkspaceHostBootstrap(
+          input({
+            release: {
+              ...input().release,
+              signatureUrl: deriveWorkspaceHostCanonicalArtifactUrls(OTHER_DIGEST)
+                .signatureUrl,
+            },
+          }),
+        ),
+      ).toThrow(/suffixed with \.minisig/);
+    });
+
+    it('rejects a digest that merely appears in the query string', () => {
+      // A query parameter does not determine which bytes the origin serves.
+      expect(() =>
+        buildWorkspaceHostBootstrap(
+          input({
+            release: {
+              ...input().release,
+              bundleUrl: `https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/server.tgz?digest=${DIGEST}`,
+              signatureUrl: `https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/server.tgz?digest=${DIGEST}.minisig`,
+            },
+          }),
+        ),
+      ).toThrow();
+    });
+  });
 });
 
 describe('workspace-host bootstrap attestation', () => {
@@ -255,7 +336,8 @@ describe('workspace-host bootstrap attestation', () => {
     const drifted = attestation({
       release: {
         ...attestation().release,
-        source: 'https://releases.papercusp.com/server/other.tgz',
+        source: deriveWorkspaceHostCanonicalArtifactUrls(OTHER_DIGEST)
+          .bundleUrl,
       },
       migration: { id: 'schema-old', applied: true },
       runtime: { ...attestation().runtime, nodeMajor: 20 },

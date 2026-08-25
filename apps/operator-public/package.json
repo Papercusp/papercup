@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@papercusp/artifact-registry": "*",
+    "@papercusp/deployment-driver": "*",
     "hono": "^4.12.21"
   },
   "devDependencies": {

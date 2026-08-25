@@ -2086,7 +2086,19 @@ export function lintTscScopeFromArgv(argv) {
  * files unchecked. A run with full coverage still reports exactly `status=clean`, so this is
  * additive for every caller that was already honest.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, filesUnchecked?: number, routed?: boolean }} input
+ * ## EI-21467670625776948 — a PREFLIGHT abort is the fourth exit-1 shape, and it read `regressed`
+ *
+ * The `gen:declarations` preflight compiles the WHOLE declarations project, so ANY agent's
+ * in-flight file anywhere in the repo can abort it — for a caller whose own files are clean and
+ * were never measured. The exit hook then printed `status=regressed`: a verdict about the
+ * caller's work, emitted when the truthful statement is "nothing of yours was judged". Same
+ * repair as `nothingTypechecked`/`partial`: refine the machine token (`preflight-failed`),
+ * keep the exit code. Scoped to exit 1 exactly like `nothingTypechecked` — an abnormal code
+ * stays `error(N)` — and `preflightFailed` wins over `nothingTypechecked` because it is the
+ * more specific claim about WHY nothing was typechecked (in practice they are mutually
+ * exclusive: the coverage branch exits before the preflight runs).
+ *
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, filesUnchecked?: number, routed?: boolean }} input
  * @returns {string}
  */
 export function formatLintTscResultMarker({
@@ -2094,6 +2106,7 @@ export function formatLintTscResultMarker({
   scope,
   code,
   nothingTypechecked = false,
+  preflightFailed = false,
   filesUnchecked = 0,
   routed = false,
 }) {
@@ -2114,9 +2127,11 @@ export function formatLintTscResultMarker({
         ? 'partial'
         : 'clean'
       : code === 1
-        ? nothingTypechecked
-          ? 'out-of-scope'
-          : 'regressed'
+        ? preflightFailed
+          ? 'preflight-failed'
+          : nothingTypechecked
+            ? 'out-of-scope'
+            : 'regressed'
         : `error(${code})`;
   const marker = `LINT_TSC_RESULT label=${label} scope=${scope} exit=${code} status=${status}`;
   // Reported on a REGRESSION too: "3 files regressed" and "2 more were never looked at" are
@@ -2163,6 +2178,10 @@ export async function runTscBaselineGate({
   // `process.exit(1)`, so the flag and the exit it describes are the same decision. It refines
   // WHICH failure this is; it can never turn a failure into a pass (see the formatter's note).
   let nothingTypechecked = false;
+  // EI-21467670625776948 — set ONLY by the preflight catch below, on the line before its
+  // `process.exit(1)`. A preflight abort measured ZERO of the caller's files, and the marker
+  // must say that instead of `regressed` (a verdict about work this run never judged).
+  let preflightFailed = false;
   // A fatal out-of-project run may delegate its complete file set to verified owning gates. The
   // parent marker must say that explicitly; `status=clean` would falsely claim this gate itself
   // compiled the named files, while `status=out-of-scope` would hide that the delegated checks ran.
@@ -2180,6 +2199,7 @@ export async function runTscBaselineGate({
         scope: lintTscScopeFromArgv(argv),
         code,
         nothingTypechecked,
+        preflightFailed,
         filesUnchecked,
         routed: autoRouted,
       }),
@@ -2280,6 +2300,18 @@ export async function runTscBaselineGate({
       });
     } catch {
       console.error(`❌ ${label} typecheck preflight failed: ${preTscCommand}`);
+      // EI-21467670625776948: the preflight compiles generated-declaration INPUTS across the
+      // whole repo, so the failure above is routinely a PEER's in-flight file, not the
+      // caller's. Zero of the caller's files were typechecked — say so explicitly, because
+      // the absence of the per-file section otherwise reads as "clean" to a grep.
+      console.error(
+        `   ${label}: zero of your files were typechecked — this is NOT a verdict about your ` +
+          `changes. The failing file belongs to the preflight's own compile (see the tsc ` +
+          `error above); re-run once it settles, or check that file's owner.`,
+      );
+      // Paired with the exit on the next line so the marker reports `preflight-failed`,
+      // never `regressed` (mirrors the nothingTypechecked pairing at the coverage branch).
+      preflightFailed = true;
       process.exit(1);
     }
   }

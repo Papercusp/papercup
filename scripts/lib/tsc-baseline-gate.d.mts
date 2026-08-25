@@ -959,14 +959,27 @@ export function lintTscScopeFromArgv(argv: string[]): "update" | "update:files" 
  * files unchecked. A run with full coverage still reports exactly `status=clean`, so this is
  * additive for every caller that was already honest.
  *
- * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, filesUnchecked?: number, routed?: boolean }} input
+ * ## EI-21467670625776948 — a PREFLIGHT abort is the fourth exit-1 shape, and it read `regressed`
+ *
+ * The `gen:declarations` preflight compiles the WHOLE declarations project, so ANY agent's
+ * in-flight file anywhere in the repo can abort it — for a caller whose own files are clean and
+ * were never measured. The exit hook then printed `status=regressed`: a verdict about the
+ * caller's work, emitted when the truthful statement is "nothing of yours was judged". Same
+ * repair as `nothingTypechecked`/`partial`: refine the machine token (`preflight-failed`),
+ * keep the exit code. Scoped to exit 1 exactly like `nothingTypechecked` — an abnormal code
+ * stays `error(N)` — and `preflightFailed` wins over `nothingTypechecked` because it is the
+ * more specific claim about WHY nothing was typechecked (in practice they are mutually
+ * exclusive: the coverage branch exits before the preflight runs).
+ *
+ * @param {{ label: string, scope: string, code: number, nothingTypechecked?: boolean, preflightFailed?: boolean, filesUnchecked?: number, routed?: boolean }} input
  * @returns {string}
  */
-export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, filesUnchecked, routed, }: {
+export function formatLintTscResultMarker({ label, scope, code, nothingTypechecked, preflightFailed, filesUnchecked, routed, }: {
     label: string;
     scope: string;
     code: number;
     nothingTypechecked?: boolean;
+    preflightFailed?: boolean;
     filesUnchecked?: number;
     routed?: boolean;
 }): string;

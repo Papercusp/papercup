@@ -51,7 +51,7 @@ interface UnlistBody {
  * with (401 unauthenticated / 403 not-an-operator). On success returns the
  * operator's GitHub identity.
  */
-async function requireOperator(
+export async function requireOperator(
   c: Context<{ Bindings: Env }>,
 ): Promise<{ id: number; login: string } | Response> {
   let user: { id: number; login: string };

@@ -30,6 +30,7 @@ import {
   setFleetHeadcountTarget,
   setFleetControlState,
   setFleetLaunchTransaction,
+  updateFleetMeta,
 } from './agent-fleets-store';
 
 const WS = 'ws-flguard';
@@ -55,7 +56,10 @@ beforeAll(async () => {
   rootSql = db.sql;
   // max > 1 (the helper's max=4) keeps the concurrency test genuine.
   // The agent_fleets shape: 417 baseline + the 484 launch-guard columns + the
-  // 575 control-state columns (P-009 / H4).
+  // 575 control-state columns (P-009 / H4) + the 964 fleet_type column (D-008 /
+  // P-010). This fixture hand-rolls the table, so it does NOT inherit new
+  // migrations — a column added to the real table has to be added here too or
+  // every store call that names it fails with a bare "column does not exist".
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.agent_fleets (
       workspace_id      text NOT NULL,
@@ -65,6 +69,7 @@ beforeAll(async () => {
       owner             text,
       leader_owner_id   text,
       color_scheme      text,
+      fleet_type        text DEFAULT 'single' NOT NULL,
       control_state     text DEFAULT 'active' NOT NULL,
       control_reason    text,
       control_by        text,
@@ -88,6 +93,67 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await db?.cleanup();
+});
+
+/**
+ * fleet_type round-trip (directed-pair-work-items-2026-08-25 D-008 / P-010,
+ * migration 964) — the half asFleetType's unit tests cannot reach: that the
+ * value actually SURVIVES a write and comes back typed, and that the default
+ * holds for every caller who never heard of the column.
+ */
+describe('fleet type (D-008 / P-010)', () => {
+  it('defaults to single for a caller that does not pass a type', async () => {
+    const { record, created } = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'type-default' },
+      rootSql,
+    );
+    expect(created).toBe(true);
+    expect(record.fleetType).toBe('single');
+    // …and it is durable, not just a default applied in the mapper.
+    expect((await getFleet(WS, 'type-default', rootSql))?.fleetType).toBe('single');
+  });
+
+  it('persists paired and reads it back through getFleet', async () => {
+    const { record } = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'type-paired', fleetType: 'paired' },
+      rootSql,
+    );
+    expect(record.fleetType).toBe('paired');
+    expect((await getFleet(WS, 'type-paired', rootSql))?.fleetType).toBe('paired');
+  });
+
+  it('reads a legacy row (column defaulted, never written) as single', async () => {
+    // insertFleet names no fleet_type — the pre-964 caller shape.
+    await insertFleet('type-legacy');
+    expect((await getFleet(WS, 'type-legacy', rootSql))?.fleetType).toBe('single');
+  });
+
+  it('does NOT re-type an existing fleet (createFleetIfAbsent is idempotent)', async () => {
+    await createFleetIfAbsent({ workspaceId: WS, fleetSlug: 'type-sticky' }, rootSql);
+    const second = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'type-sticky', fleetType: 'paired' },
+      rootSql,
+    );
+    expect(second.created).toBe(false);
+    // The caller asked for paired and did not get it — which is exactly why
+    // fleet:create reports typeRequestIgnored rather than staying silent.
+    expect(second.record.fleetType).toBe('single');
+  });
+
+  it('updateFleetMeta re-types an existing fleet, and leaves the type alone when omitted', async () => {
+    await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'type-update', title: 'before' },
+      rootSql,
+    );
+    const retyped = await updateFleetMeta(WS, 'type-update', { fleetType: 'paired' }, rootSql);
+    expect(retyped?.fleetType).toBe('paired');
+
+    // A metadata-only edit must not silently reset the type to the default —
+    // the COALESCE guard. Without it this edit would read back 'single'.
+    const renamed = await updateFleetMeta(WS, 'type-update', { title: 'after' }, rootSql);
+    expect(renamed?.title).toBe('after');
+    expect(renamed?.fleetType).toBe('paired');
+  });
 });
 
 describe('claimFleetLaunchSlot (P-005 cross-worker idempotency)', () => {
