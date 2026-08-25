@@ -44,11 +44,24 @@
  */
 import { CALIBRATION } from './policy';
 
-export type NotEnforceableReason =
+export const NOT_ENFORCEABLE_REASONS = [
   /** The reference was never captured on a known host — an upload, or pre-cutover. */
-  | 'reference-host-unknown'
+  'reference-host-unknown',
   /** The threshold was measured somewhere else, so it does not speak for this host. */
-  | 'uncalibrated-host';
+  'uncalibrated-host',
+] as const;
+
+/**
+ * A runtime array rather than a bare type union, so the documentation guard can
+ * DERIVE this vocabulary instead of restating it — the same reason
+ * `DESIGN_GATE_FAILURE_REASONS` is one.
+ *
+ * This is a vocabulary an operator meets while being told their work was NOT
+ * refused, which is the moment they are least likely to go looking for an
+ * explanation and most likely to conclude the gate is broken. A reason the page
+ * does not carry is one they meet for the first time in that message.
+ */
+export type NotEnforceableReason = (typeof NOT_ENFORCEABLE_REASONS)[number];
 
 export type EnforceabilityOutcome =
   | { readonly enforceable: true; readonly renderHost: string }
