@@ -38,7 +38,9 @@ const entry = (over: Record<string, unknown> = {}) => ({
 describe('provenance banner', () => {
   it('stamps HEAD and reports a clean path as clean', () => {
     const banner = formatProvenanceBanner({ head: 'a452179fbf', entries: [entry()] }, 'pre-run');
-    expect(banner).toContain('TEST_FILE_PROVENANCE head=a452179fbf testedPaths=1 uncommitted=0 unknown=0 phase=pre-run');
+    expect(banner).toContain(
+      'TEST_FILE_PROVENANCE head=a452179fbf testedPaths=1 uncommitted=0 unknown=0 phase=pre-run',
+    );
     expect(banner).toContain('a.test.ts  [clean]');
     // The scope disclaimer is load-bearing: without it the stamp silently implies whole-import-graph
     // coverage, which would be a more confident version of the very overclaim this item is about.
@@ -124,18 +126,23 @@ describe('mid-run drift', () => {
   });
 
   /**
-   * git-sync sweeps this shared tree on a schedule, so HEAD moving during a run is ROUTINE. Dressing
-   * that up as drift would make the loudest new warning in the runner fire constantly on correct
-   * runs — the fastest way for a real signal to be trained into noise.
+   * EI-21378916947744802: the named test path is not the whole measurement radius. In the reported
+   * run git-sync committed an imported production module while the named test file stayed byte-for-
+   * byte identical. A moved HEAD therefore must not bless the result merely because this deliberately
+   * shallow snapshot cannot see what changed.
    */
-  it('reports a moved HEAD plainly when no tested path changed, rather than as drift', () => {
+  it('reports a moved HEAD as unknown when only the named test paths were measured', () => {
     const diff = diffProvenanceSnapshots(before, { head: 'bbb', entries: [entry({ fingerprint: 'v1' })] });
     expect(diff.drifted).toBe(false);
     expect(diff.headMoved).toEqual({ from: 'aaa', to: 'bbb' });
     const marker = formatProvenanceDrift(diff);
     expect(marker).toContain('TEST_FILE_PROVENANCE_HEAD_MOVED from=aaa to=bbb');
-    expect(marker).toContain('still describes the files it measured');
+    expect(marker).toContain('imported source/change radius was not measured');
+    expect(marker).toContain('provenance is UNKNOWN');
+    expect(marker).toContain('re-run at settled HEAD');
+    expect(marker).not.toContain('still describes the files it measured');
     expect(marker).not.toContain('TEST_FILE_PROVENANCE_DRIFT');
+    expect(provenanceResultFields(before, diff)).toContain('provenance=unknown');
   });
 });
 
@@ -146,6 +153,13 @@ describe('provenance fields on the terminal marker line', () => {
       'head=aaa uncommittedPaths=0/1 provenance=stamped',
     );
     expect(provenanceResultFields(clean, { drifted: true, uncomparable: [] })).toContain('provenance=drifted');
+    expect(
+      provenanceResultFields(clean, {
+        drifted: false,
+        uncomparable: [],
+        headMoved: { from: 'aaa', to: 'bbb' },
+      }),
+    ).toContain('provenance=unknown');
     expect(provenanceResultFields({ head: null, entries: [entry({ state: 'unknown' })] }, null)).toContain(
       'provenance=unknown',
     );

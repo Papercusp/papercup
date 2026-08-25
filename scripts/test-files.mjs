@@ -1277,7 +1277,8 @@ export function diffProvenanceSnapshots(before, after) {
  * on 2026-08-12 six consecutive gate reds were all stale tree churn and zero were standing defects.
  * So the drift rides on the RESULT line instead (`provenance=drifted`), which makes it impossible
  * to paste the verdict WITHOUT its caveat — the item's actual goal — while leaving the pass/fail
- * bit meaning exactly what it always meant.
+ * bit meaning exactly what it always meant. A HEAD-only move is likewise non-fatal, but its
+ * provenance is UNKNOWN: this runner measures only the named test files, not their import graph.
  */
 export function formatProvenanceDrift(diff) {
   if (!diff || (diff.changed.length === 0 && diff.uncomparable.length === 0 && !diff.headMoved)) return null;
@@ -1292,12 +1293,14 @@ export function formatProvenanceDrift(diff) {
     for (const c of diff.changed) lines.push(`  ~ ${c.path} — content changed mid-run`);
     for (const u of diff.uncomparable) lines.push(`  ? ${u.path} — ${u.reason}; drift UNKNOWN`);
   } else {
-    // HEAD moved but no tested path changed: git-sync sweeps this tree on a schedule, so this is
-    // routine and must NOT be dressed up as drift — say plainly that the measurement still stands.
+    // HEAD moved but no NAMED test path changed. That is not direct evidence of drift, but neither
+    // is it evidence that the measurement still stands: an imported production module may be the
+    // content git-sync committed. Until this runner measures the import graph/change radius, the
+    // only honest verdict is UNKNOWN and a settled-HEAD rerun.
     lines.push(
       `TEST_FILE_PROVENANCE_HEAD_MOVED from=${diff.headMoved.from} to=${diff.headMoved.to}; ` +
-        'no tested path changed content, so this result still describes the files it measured ' +
-        '(git-sync commits this shared tree on a schedule — a moving HEAD alone is routine).',
+        'the named test paths did not change, but their imported source/change radius was not measured. ' +
+        'Result provenance is UNKNOWN; re-run at settled HEAD before citing it as evidence.',
     );
   }
   return lines.join('\n');
@@ -1313,8 +1316,8 @@ export function formatProvenanceDrift(diff) {
  * of exactly the excerpt that gets quoted as evidence.
  *
  * `provenance` is three-state on purpose, mirroring this file's other three-state guards: `stamped`
- * (measured, nothing moved), `drifted` (a tested path changed mid-run), `unknown` (git unreadable —
- * NOT a clean bill).
+ * (measured, nothing moved), `drifted` (a tested path changed mid-run), `unknown` (git unreadable or
+ * HEAD moved beyond the named-path measurement radius — NOT a clean bill).
  */
 export function provenanceResultFields(snapshot, diff) {
   const entries = snapshot?.entries ?? [];
@@ -1323,7 +1326,7 @@ export function provenanceResultFields(snapshot, diff) {
   const verdict =
     diff?.drifted || (diff?.uncomparable?.length ?? 0) > 0
       ? 'drifted'
-      : snapshot?.head == null || unknown > 0
+      : diff?.headMoved || snapshot?.head == null || unknown > 0
         ? PROVENANCE_UNKNOWN
         : 'stamped';
   return (
