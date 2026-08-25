@@ -606,16 +606,16 @@ export default defineTool({
     if (onlyWorkspaceScope && isConcreteHarness(prior?.harnessSlug)) {
       harness = resolvePotHomeSlug(prior!.harnessSlug!, undefined);
     }
-    // EI-21302411209364135 / EI-21358731971685285: a pinned or COLD goal-detected
-    // work-item is also a durable scope hint. A workspace-scoped SU session has no
-    // concrete ctx.harnessSlug, so resolving its loop through the workspace home can
-    // point the optional auto-claim at the wrong harness. Numeric WI ids are
-    // harness-scoped on the feature-family path; resolve the item without a harness
-    // before falling back to the home pot, then use its canonical harness for both
-    // fleet admission and the compare-and-claim. An active loop's existing install
-    // scope remains authoritative above, so a re-arm cannot silently migrate an
-    // already-installed routine.
-    if (onlyWorkspaceScope && !harness && scopeWorkItem) {
+    // EI-21302411209364135 / EI-21358731971685285 / EI-21448192328031315: a pinned or
+    // COLD goal-detected work-item is also a durable scope hint. A caller that omits
+    // `args.harness` may still carry a concrete but stale `ctx.harnessSlug` from an
+    // unrelated prior session (for example, a Codex member relaunched into a different
+    // harness). Numeric WI/EI ids are globally unique, so resolve the item without a
+    // harness before falling back to that context; then use its canonical harness for
+    // both fleet admission and the compare-and-claim. An explicit harness remains the
+    // caller's choice, and an active loop's existing install scope remains authoritative
+    // above, so ordinary re-arms do not silently migrate an already-installed routine.
+    if (!isConcreteHarness(args.harness) && !harness && scopeWorkItem) {
       try {
         const item = await getWorkItem(scopeWorkItem.toUpperCase());
         if (isConcreteHarness(item?.harness)) {

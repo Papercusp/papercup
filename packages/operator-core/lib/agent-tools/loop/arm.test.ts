@@ -355,6 +355,27 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
     expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp', workItem: 'WI-41214' } });
   });
 
+  it("EI-21448192328031315: explicit workItem scope beats a stale concrete ctx harness when args.harness is omitted", async () => {
+    const id = 'WI-41252';
+    // This mirrors the reported call: the session context still names an unrelated
+    // harness, while the canonical work-item belongs to Papercusp.
+    potHomeM.mockImplementation((value) => value ?? null);
+    getWiM.mockResolvedValue({ id, state: 'open', harness: 'papercusp', assignee: null } as never);
+    claimM.mockResolvedValue(claimedRow as never);
+
+    const b = body(
+      (await tool.handler(
+        { intervalSec: 120, goal: 'continue WI-41252', workItem: id } as never,
+        { harnessSlug: 'sb-devboard-hive', workspaceId: 'ws-1' } as never,
+      )) as Out,
+    );
+
+    expect(getWiM).toHaveBeenCalledWith(id);
+    expect(claimM).toHaveBeenCalledWith(id, 'su-caller-own-id', { harness: 'papercusp' });
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp', workItem: id } });
+    expect(b.loop.harness).not.toBe('sb-devboard-hive');
+  });
+
   it("EI-21358731971685285: infers an auto-detected cold goal item's harness before workspace-home fallback", async () => {
     const id = 'EI-21358731971685285';
     homePotM.mockResolvedValue('sb-devboard-hive');
