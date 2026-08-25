@@ -301,6 +301,14 @@ export interface AgentReviewReconcileOutcome {
   round: number;
   changed: boolean;
   woken?: number;
+  /**
+   * WI-41687: whether the row ended up held by its original submitter. False means the
+   * transfer could not be made (typically a reaped submitter session) and the reviewer's
+   * claim was dropped instead, leaving the row unassigned in 'revision-requested'. The
+   * revision itself is still fully recorded — grade, payload and round comment — so this
+   * reports a weaker DISPOSITION, never a failed review.
+   */
+  returnedToSubmitter?: boolean;
 }
 
 export async function reconcileAgentReviewGrade(
@@ -343,12 +351,39 @@ export async function reconcileAgentReviewGrade(
       }
       return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed };
     }
+    let returnedToSubmitter = true;
     if (changed) {
       const transferred = await deps.claimWorkItem(workItem.id, current.submittedBy, {
         ...(workItem.harness ? { harness: workItem.harness } : {}),
         ...(workItem.assignee ? { fromHolder: gradedBy } : {}),
       });
-      if (!transferred) throw new Error(`agent review could not return '${workItem.id}' to ${current.submittedBy}`);
+      if (!transferred) {
+        // WI-41687: the submitter frequently no longer EXISTS by review time — a session
+        // that filed a report hours earlier is routinely reaped, and a reaped owner cannot
+        // take a claim. This is the common case, not an edge case.
+        //
+        // Throwing here stranded the row twice over. By this point the ledger grade, the
+        // payload flip to 'revision-requested' and the round comment have ALL committed,
+        // so the caller saw a hard error for a transition that was three-quarters applied;
+        // the row kept the REVIEWER's claim (an agent who is not implementing it); and the
+        // regrade path then refused to re-drive the transfer at all, because the payload had
+        // already left 'pending' ('agent-review-not-pending'). Nothing could recover it
+        // through the supported surface.
+        //
+        // Fall back to the disposition the LEGACY_AGENT_REVIEW_SUBMITTER branch above already
+        // uses for "no real submitter to hand this to", and that the approval path below uses
+        // unconditionally: drop the reviewer's claim and leave the row unassigned in
+        // 'revision-requested'. Release is best-effort — if it also fails the row is no worse
+        // off than before, and `returnedToSubmitter:false` reports the weaker disposition
+        // rather than hiding it behind a thrown error.
+        returnedToSubmitter = false;
+        if (workItem.assignee) {
+          await deps.releaseWorkItem(workItem.id, {
+            ...(workItem.harness ? { harness: workItem.harness } : {}),
+            expectedAssignee: gradedBy,
+          });
+        }
+      }
     }
     let woken: number | undefined;
     if (changed || commentAdded) {
@@ -361,7 +396,7 @@ export async function reconcileAgentReviewGrade(
         gradedBy,
       })).woken;
     }
-    return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed, ...(woken === undefined ? {} : { woken }) };
+    return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed, returnedToSubmitter, ...(woken === undefined ? {} : { woken }) };
   }
 
   const next: AgentReviewState = { ...current, status: 'approved' };

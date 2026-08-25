@@ -226,6 +226,7 @@ describe('agent-review grading lifecycle', () => {
       status: 'revision-requested',
       round: 1,
       changed: true,
+      returnedToSubmitter: true,
       woken: 1,
     });
     expect(h.state.issue.state).toBe('open');
@@ -250,6 +251,50 @@ describe('agent-review grading lifecycle', () => {
     });
     expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
     expect(h.deliverRevision).toHaveBeenCalledTimes(1);
+  });
+
+  it('WI-41687: a submitter that can no longer take the claim drops the reviewer claim instead of throwing and stranding the row', async () => {
+    const h = harness(pending);
+    h.state.ledger = {
+      ideaId: 'WI-7',
+      workItemId: 'WI-7',
+      grade: 2,
+      feedback: 'Add deterministic retry coverage.',
+      gradedBy: 'su-reviewer',
+    };
+    // The submitter's session has been REAPED — the common case for any report reviewed
+    // more than one session-lifetime after it was filed. claimWorkItem returns null for a
+    // non-existent owner exactly as it does here.
+    h.claimWorkItem.mockImplementation(async () => null);
+
+    // Before WI-41687 this REJECTED, after the grade/payload/comment had already committed.
+    const outcome = await reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps);
+
+    expect(outcome).toMatchObject({
+      workItemId: 'WI-7',
+      status: 'revision-requested',
+      round: 1,
+      changed: true,
+      returnedToSubmitter: false,
+    });
+
+    // The review itself is still fully recorded — this is a weaker disposition, not a failure.
+    expect(h.state.issue.payload).toEqual({
+      agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
+    });
+    expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
+
+    // The transfer was attempted, and its failure left the row unassigned rather than
+    // stranded under the reviewer.
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-filer', {
+      harness: 'papercusp',
+      fromHolder: 'su-reviewer',
+    });
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-reviewer',
+    });
+    expect(h.state.issue.assignee).toBeNull();
   });
 
   it('releases legacy-sentinel revision work to normal implementation without assigning or waking the sentinel', async () => {
