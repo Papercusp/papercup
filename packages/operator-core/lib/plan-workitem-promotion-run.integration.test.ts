@@ -131,6 +131,7 @@ vi.mock('./plan-items/convert', async () => {
 const run = await import('./plan-workitem-promotion-run');
 const convert = await import('./plan-items/convert');
 const { planItemRef, PLAN_ITEM_KIND } = await import('./issue-blocks-merge');
+const topicFeed = await import('./topics-feed');
 // P-010: the REAL claim door, so the proof ends at "is it served?" rather than "was a row written?".
 const wi = await import('./work-items');
 
@@ -276,6 +277,35 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(refs.has(planItemRef(PLAN, 'P-001'))).toBe(true);
     expect(refs.has(planItemRef(PLAN, 'P-002'))).toBe(true);
     expect(refs.has(planItemRef(PLAN, 'P-003'))).toBe(false);
+  });
+
+  it('EI-18802263047567602: inherits explicit plan topics onto every newly promoted work-item', async () => {
+    await topicFeed.tagObject('plan', PLAN, 'coord-dx', 'su-test');
+    await topicFeed.tagObject('plan', PLAN, 'release-gates', 'su-test');
+    h.plans.set(PLAN, {
+      items: [
+        { id: 'P-001', status: 'todo', text: 'Build the topic-routed worker' },
+        { id: 'P-002', status: 'todo', text: 'Verify the topic-routed worker' },
+      ],
+    });
+
+    expect((await run.promotePlanItems(base)).promoted).toBe(2);
+    const rows = await db.sql<{ feature_id: string; tags: string[] | null }[]>`
+      SELECT feature_id, tags
+        FROM harness_shared.harness_features_consolidated
+       WHERE source_plan_slug = ${PLAN}
+       ORDER BY feature_id`;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.tags?.sort())).toEqual([
+      ['coord-dx', 'release-gates'],
+      ['coord-dx', 'release-gates'],
+    ]);
+    for (const row of rows) {
+      expect((await topicFeed.listObjectTags('feature', `${HARNESS}#${row.feature_id}`)).sort()).toEqual([
+        'coord-dx',
+        'release-gates',
+      ]);
+    }
   });
 
   it('derives the rig floor from Phase 3 and clears it for a non-rig phase', async () => {

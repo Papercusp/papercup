@@ -48,6 +48,7 @@ import { syncLinkedWorkItemsToPlanLane, type PlanLaneSyncStatus } from './plan-i
 import { planItemTextHash } from './plan-items/text-drift';
 import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
 import { phaseRequiresTwoMachineRig } from './plan-phase-rig';
+import { listObjectTags } from './topics-feed';
 import {
   evaluatePlanSpecQualityGate,
   type PlanSpecQualityGateVerdict,
@@ -367,6 +368,19 @@ export async function promotePlanItems(opts: {
     existingPromotedItemIds: alreadyIds,
   });
 
+  // EI-18802263047567602: a promoted work-item belongs to the same explicit
+  // relevance areas as its source plan. Before this inheritance, plans tagged
+  // through topics:tag were routable to topic subscribers while every WI-* row
+  // minted from them was born untagged, so topics:feed and coupled-topic views
+  // went blind exactly when planning turned into execution. Read the canonical
+  // coord topic edges once per promotion run and pass them through the existing
+  // createWorkItem `topics` seam; that seam writes BOTH the routing edge and the
+  // claim-spec-visible tag column. Do not infer topics from prose here — explicit
+  // plan tags are the reusable source of truth and avoid a second classifier.
+  // Topic routing enriches promotion; it must not become a new availability gate
+  // on the primary plan→work path if the coordination store is temporarily down.
+  const planTopics = await listObjectTags('plan', opts.planSlug).catch(() => []);
+
   const textById = new Map(openItems.map((i) => [i.id, i.text]));
   let promoted = 0;
   /**
@@ -417,6 +431,7 @@ export async function promotePlanItems(opts: {
         harness: spec.harness,
         workspaceId: opts.workspaceId,
         sourcePlanSlug: spec.sourcePlanSlug,
+        topics: planTopics,
         payload: {
           plan_item: stamp,
           needs_2_machine_rig: phaseRequiresTwoMachineRig(rawByPlanItem.get(itemId)?.phase),
