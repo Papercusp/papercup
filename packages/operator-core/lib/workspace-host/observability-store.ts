@@ -8,6 +8,7 @@ import type {
   WorkspaceHostLifecycleAction,
   WorkspaceHostObservation,
   WorkspaceHostResourceCheckpoint,
+  WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
 import { notifySyncInvalidate } from '../sync-sse';
 
@@ -276,6 +277,127 @@ export async function readWorkspaceHostDesiredSpec(
       return { desired: null, miss: 'no-recorded-spec' as const };
     }
     return { desired: spec as WorkspaceHostDesiredSpec };
+  });
+}
+
+export interface StoredWorkspaceHostDestroyTarget {
+  id: string;
+  name: string;
+  connectionId: string;
+  target: string;
+  desired: WorkspaceHostDesiredSpec;
+  resources: readonly {
+    resource: WorkspaceHostResourceRef;
+    registeredAt: string;
+  }[];
+}
+
+/**
+ * Recover the exact provider graph a later destroy must plan from.
+ *
+ * Provision and destroy use different operation ids, so operation-scoped replay rows alone are
+ * insufficient here. This read deliberately selects the last applied/unchanged identity for every
+ * provider resource and deduplicates lifecycle observations of the same resource. A destroy caller
+ * must never reconstruct provider ids from the desired spec or from naming conventions.
+ */
+export async function readWorkspaceHostDestroyTarget(
+  workspaceId: string,
+  hostId: string,
+): Promise<StoredWorkspaceHostDestroyTarget | null> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const hosts = (await tx`
+      SELECT id, name, connection_id, target, desired_spec
+      FROM harness_shared.workspace_hosts
+      WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+      LIMIT 1
+    `) as Array<{
+      id: string;
+      name: string;
+      connection_id: string;
+      target: string;
+      desired_spec: unknown;
+    }>;
+    const host = hosts[0];
+    if (!host) return null;
+    if (!host.desired_spec || typeof host.desired_spec !== 'object' || Array.isArray(host.desired_spec)) {
+      throw new Error(`Workspace host '${hostId}' has no recorded desired spec`);
+    }
+
+    const rows = (await tx`
+      SELECT target, kind, provider_id, parent_provider_id, region, zone, updated_at
+      FROM harness_shared.workspace_host_resources
+      WHERE workspace_id = ${workspaceId}
+        AND host_id = ${hostId}
+        AND state IN ('applied', 'unchanged')
+        AND target IS NOT NULL
+        AND kind IS NOT NULL
+        AND provider_id IS NOT NULL
+      ORDER BY updated_at DESC, logical_key
+    `) as Array<{
+      target: string;
+      kind: string;
+      provider_id: string;
+      parent_provider_id: string | null;
+      region: string | null;
+      zone: string | null;
+      updated_at: Date | string;
+    }>;
+    const seen = new Set<string>();
+    const resources: Array<{ resource: WorkspaceHostResourceRef; registeredAt: string }> = [];
+    for (const row of rows) {
+      const key = `${row.target}:${row.kind}:${row.provider_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      resources.push({
+        resource: {
+          target: row.target,
+          kind: row.kind,
+          providerId: row.provider_id,
+          ...(row.parent_provider_id ? { parentProviderId: row.parent_provider_id } : {}),
+          ...(row.region ? { region: row.region } : {}),
+          ...(row.zone ? { zone: row.zone } : {}),
+        },
+        registeredAt: iso(row.updated_at) ?? new Date(0).toISOString(),
+      });
+    }
+    return {
+      id: host.id,
+      name: host.name,
+      connectionId: host.connection_id,
+      target: host.target,
+      desired: host.desired_spec as WorkspaceHostDesiredSpec,
+      resources,
+    };
+  });
+}
+
+/** Persist the user-visible lifecycle boundary without erasing the stored provisioning intent. */
+export async function updateWorkspaceHostLifecycleState(input: {
+  workspaceId: string;
+  hostId: string;
+  state: 'destroying' | 'absent';
+  observedAt?: string;
+  discard?: boolean;
+}): Promise<void> {
+  await withWorkspace(input.workspaceId, async (tx) => {
+    await tx`
+      UPDATE harness_shared.workspace_hosts
+      SET desired_state = ${input.state},
+          observed_state = ${input.state},
+          observed_at = ${input.observedAt ?? new Date().toISOString()},
+          endpoint = CASE WHEN ${input.state} = 'absent' THEN NULL ELSE endpoint END,
+          recoverability_kind = CASE WHEN ${input.discard === true} THEN 'none' ELSE recoverability_kind END,
+          recoverability_label = CASE
+            WHEN ${input.discard === true} THEN 'Discarded without a recovery point'
+            ELSE recoverability_label
+          END,
+          recoverability_updated_at = CASE
+            WHEN ${input.discard === true} THEN ${input.observedAt ?? new Date().toISOString()}
+            ELSE recoverability_updated_at
+          END,
+          updated_at = now()
+      WHERE workspace_id = ${input.workspaceId} AND id = ${input.hostId}
+    `;
   });
 }
 
@@ -649,6 +771,7 @@ interface ResourceDbRow {
   region: string | null;
   zone: string | null;
   provider_request_id: string | null;
+  deletion_confirmation: unknown;
   error: unknown;
   updated_at: Date | string;
 }
@@ -713,7 +836,7 @@ export async function readWorkspaceHostControl(workspaceId: string): Promise<unk
     const resources = await tx<ResourceDbRow[]>`
       SELECT host_id, logical_key, operation_id, state, attempts, retry_class,
              target, kind, provider_id, parent_provider_id, region, zone,
-             provider_request_id, error, updated_at
+             provider_request_id, deletion_confirmation, error, updated_at
       FROM harness_shared.workspace_host_resources
       ORDER BY host_id, logical_key
     `;
@@ -813,6 +936,7 @@ export async function readWorkspaceHostControl(workspaceId: string): Promise<unk
           state: resource.state,
           providerId: resource.provider_id,
           providerRequestId: resource.provider_request_id,
+          deletionConfirmation: resource.deletion_confirmation,
           attempts: resource.attempts,
           retryClass: resource.retry_class,
           updatedAt: iso(resource.updated_at),
