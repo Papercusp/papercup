@@ -59,11 +59,7 @@ import {
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
-import {
-  fallbackCodexLaunchSpecFromAdvSession,
-  getAdvSession,
-  claimAdvSessionResume,
-} from '../../adv-sessions';
+import { fallbackCodexLaunchSpecFromAdvSession, getAdvSession, claimAdvSessionResume } from '../../adv-sessions';
 import { resolveAgentBinarySync } from '../../agent-bin-detect';
 import {
   sanitizeInheritedWakeEnv,
@@ -85,10 +81,7 @@ import {
 } from './wake-executor-fresh-context';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage } from '../../agent-tools/coordination/messages';
-import {
-  getSessionBriefLifecycle,
-  type SessionBriefLifecycle,
-} from '../../session-brief';
+import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
 // EI-20489286325396940: `payloadIsTimeout` + `wakeSummaryHeadline` live in
 // timeout-fallback.ts (PG-free, beside the other timeout wording) so engine.ts can
 // import the summary renderer WITHOUT going through this module — engine.test.ts
@@ -111,6 +104,7 @@ import {
   type ColdLoopMarker,
   type ColdWakeDecision,
 } from '../../su-cold-loop';
+import { recordColdNoHostParkAndMaybeEscalate } from './cold-nohost-park-guard';
 import {
   getLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
@@ -124,11 +118,7 @@ import {
   renderLoopWallsBlock,
 } from '../../harness/routines/loop-fire';
 import { getLoopStatus, countAgentToolCallsInWindow } from '../../harness/routines/loop';
-import {
-  formatEnvelope,
-  mintNonce,
-  tagTurnForInjection,
-} from '../../turn-provenance/turn-provenance';
+import { formatEnvelope, mintNonce, tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import {
   readOwnerChatTurnText,
@@ -148,8 +138,7 @@ const RESUME_OUTPUT_TAIL_BYTES = Number(process.env.PAPERCUSP_RESUME_OUTPUT_TAIL
  * briefly for the current process to exit before falling back to the safe park.
  * The loop marker is the safety boundary: ordinary interactive sessions are
  * never force-interrupted by the wake pump. */
-export const FORCE_RESUME_EXIT_TIMEOUT_MS =
-  Number(process.env.PAPERCUSP_WAKE_FORCE_RESUME_TIMEOUT_MS) || 2_000;
+export const FORCE_RESUME_EXIT_TIMEOUT_MS = Number(process.env.PAPERCUSP_WAKE_FORCE_RESUME_TIMEOUT_MS) || 2_000;
 const FORCE_RESUME_POLL_MS = 50;
 
 export function waitForProcessExit(
@@ -189,10 +178,7 @@ export function waitForProcessExit(
   });
 }
 
-async function defaultForceResume(
-  pid: number,
-  alive: (pid: number | null) => boolean,
-): Promise<boolean> {
+async function defaultForceResume(pid: number, alive: (pid: number | null) => boolean): Promise<boolean> {
   try {
     // SIGINT ends the current CLI turn while preserving the native session for
     // the normal headless resume leg below. It is intentionally not SIGTERM.
@@ -472,9 +458,7 @@ async function defaultEnsureCodexHomeForWake(
   } catch (err) {
     // A repair failure must not turn a recoverable rollout into a dropped wake;
     // the exact UUID check below remains the authoritative resume safety gate.
-    console.warn(
-      `[wake-executor] codex home repair failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    console.warn(`[wake-executor] codex home repair failed: ${err instanceof Error ? err.message : String(err)}`);
     return { ok: false, repaired: false, reason: 'repair-failed' };
   }
 }
@@ -523,7 +507,6 @@ export function withWakeTimeout<T>(p: Promise<T>, label: string, ms: number): Pr
     );
   });
 }
-
 
 /** The per-agent inbox-wake key prefix (`coord:inbox-wake:<owner>`). Kept in
  *  lockstep with the canonical export in agent-tools/coordination/inbox-wake.ts —
@@ -577,10 +560,12 @@ function readLoopDeliveryMarkers(payload: unknown): LoopDeliveryMarker[] {
       const latest = record.latest as { payload?: unknown; createdAt?: unknown };
       const marker = readColdLoopMarker(latest.payload);
       if (marker) {
-        return [{
-          marker,
-          ...(typeof latest.createdAt === 'string' ? { createdAt: latest.createdAt } : {}),
-        }];
+        return [
+          {
+            marker,
+            ...(typeof latest.createdAt === 'string' ? { createdAt: latest.createdAt } : {}),
+          },
+        ];
       }
     }
     return [];
@@ -656,8 +641,7 @@ export function wakeTurnText(d: DeliveryWork): string {
 
   const note = d.note ? ` (your note: ${d.note})` : '';
   const summary = d.summary ? ` — ${d.summary}` : '';
-  const payload =
-    d.payload != null ? ` payload: ${JSON.stringify(d.payload).slice(0, 400)}` : '';
+  const payload = d.payload != null ? ` payload: ${JSON.stringify(d.payload).slice(0, 400)}` : '';
   const timeout = payloadIsTimeout(d.payload)
     ? ' [TIMEOUT (fired_reason: timeout) — the event did NOT fire before your deadline;' +
       ' the awaited source did NOT complete]'
@@ -678,7 +662,7 @@ export function wakeTurnText(d: DeliveryWork): string {
   // VIEW (D-013); only the delivery hook owns an internal floor. Every
   // non-inbox-wake key is byte-identical.
   const inboxWakeReconcile = d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)
-    ? ' NOTE (inbox-wake): the quoted message may ALREADY have been surfaced + handled by your own coord:inbox read before this wake was consumed — reconcile against coord:inbox\'s cursor-free VIEW and do NOT re-do handled mail or trust the quoted body as necessarily new.'
+    ? " NOTE (inbox-wake): the quoted message may ALREADY have been surfaced + handled by your own coord:inbox read before this wake was consumed — reconcile against coord:inbox's cursor-free VIEW and do NOT re-do handled mail or trust the quoted body as necessarily new."
     : '';
   // P-006 (fleet-member-dx, EI-9018): `d.id` is the DELIVERY-LOG row id, not a
   // wake count — unlabeled "wake #12672" next to a loop's own "wake #5" read as
@@ -797,31 +781,154 @@ function classifyLoopDeliverySupersession(
 async function readLoopDeliverySupersession(
   d: DeliveryWork,
   getStatus: typeof getLoopStatus,
-): Promise<LoopDeliverySupersession | null> {
+): Promise<{
+  delivery: DeliveryWork;
+  supersession: LoopDeliverySupersession | null;
+  strippedLoopComponents: number;
+}> {
   const candidates = readLoopDeliveryMarkers(d.payload);
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    return { delivery: d, supersession: null, strippedLoopComponents: 0 };
+  }
   try {
     const status = await getStatus(d.subscriberId);
-    // A coalesced wake is one delivery attempt. If any folded loop fire is
-    // ended, re-armed, or from another lineage, the LOOP half of the attempt
-    // is stale — but the attempt may only be suppressed wholesale when it is
-    // purely loop. A non-loop component (an await-event fire whose contract
-    // is "firing re-invokes the waiter") owns the wake regardless of loop
-    // lifecycle; dropping it strands the waiter (EI-21393930883750326). The
-    // stale loop imperative is stripped/annotated at text-rehydration time
-    // instead of by suppressing the delivery.
-    for (const candidate of candidates) {
-      const supersession = classifyLoopDeliverySupersession(d, status, candidate);
-      if (supersession) {
-        if (deliveryHasNonLoopComponent(d.payload)) return null;
-        return supersession;
-      }
+    const firstSupersession = candidates
+      .map((candidate) => classifyLoopDeliverySupersession(d, status, candidate))
+      .find((candidate): candidate is LoopDeliverySupersession => candidate != null);
+    if (!firstSupersession) {
+      return { delivery: d, supersession: null, strippedLoopComponents: 0 };
     }
-    return null;
+
+    // A coalesced wake is one delivery attempt. If every folded component is a
+    // loop fire, an ended/re-armed/lineage-mismatched loop suppresses the whole
+    // attempt. A non-loop sibling owns an independent wake and must survive.
+    if (!deliveryHasNonLoopComponent(d.payload)) {
+      return { delivery: d, supersession: firstSupersession, strippedLoopComponents: 0 };
+    }
+
+    // EI-21429789011259186: preserving the mixed attempt is not enough. The old
+    // path left the superseded loop event inside payload.events (and sometimes as
+    // the top-level headline), so wakeTurnText re-injected its frozen checkpoint,
+    // tagWakeText mislabeled the surviving event turn as loop-fire, and the channel
+    // chooser could still take the cold-loop branch. Remove stale LOOP components
+    // before ANY of those consumers run, then rebuild the union from the surviving
+    // events. This keeps the one-shot event wake without replaying ended-loop state.
+    const record = d.payload as {
+      coalesced?: unknown;
+      events?: unknown;
+      latest?: unknown;
+    };
+    if (record.coalesced !== true) {
+      // Defensive: deliveryHasNonLoopComponent can only reach this branch for a
+      // malformed/legacy mixed shape. Preserve the wake rather than guessing which
+      // bytes belong to the non-loop component.
+      return { delivery: d, supersession: null, strippedLoopComponents: 0 };
+    }
+
+    type FoldedEvent = {
+      event?: unknown;
+      summary?: unknown;
+      payload?: unknown;
+      delivery_id?: unknown;
+      createdAt?: unknown;
+    };
+    const rawEvents = Array.isArray(record.events)
+      ? record.events.filter((event): event is FoldedEvent => event != null && typeof event === 'object')
+      : [];
+    const sourceEvents: FoldedEvent[] =
+      rawEvents.length > 0
+        ? rawEvents
+        : record.latest && typeof record.latest === 'object'
+          ? [record.latest as FoldedEvent]
+          : [];
+    const survivors: FoldedEvent[] = [];
+    let strippedLoopComponents = 0;
+    for (const event of sourceEvents) {
+      const marker = readColdLoopMarker(event.payload);
+      if (marker) {
+        const supersession = classifyLoopDeliverySupersession(d, status, {
+          marker,
+          ...(typeof event.createdAt === 'string' ? { createdAt: event.createdAt } : {}),
+        });
+        if (supersession) {
+          strippedLoopComponents += 1;
+          continue;
+        }
+      }
+      survivors.push(event);
+    }
+
+    if (strippedLoopComponents === 0 || survivors.length === 0) {
+      // The empty-survivor case should be unreachable after the positive mixed
+      // composition test above, but fail safely: a confirmed stale loop must not
+      // be replayed merely because a malformed envelope hid its sibling.
+      return survivors.length === 0
+        ? { delivery: d, supersession: firstSupersession, strippedLoopComponents: 0 }
+        : { delivery: d, supersession: null, strippedLoopComponents: 0 };
+    }
+
+    const latest = survivors[survivors.length - 1];
+    const eventKey = typeof latest.event === 'string' && latest.event.length > 0 ? latest.event : d.eventKey;
+    const latestSummary = typeof latest.summary === 'string' ? latest.summary : null;
+    const suppressionSummary =
+      `${strippedLoopComponents} superseded loop ${strippedLoopComponents === 1 ? 'component was' : 'components were'} ` +
+      'removed at delivery after loop lifecycle re-check';
+    let payload: unknown = latest.payload ?? null;
+    let summary = latestSummary ? `${suppressionSummary} — ${latestSummary}` : suppressionSummary;
+
+    if (survivors.length > 1) {
+      const timeoutEvents = survivors.filter((event) => payloadIsTimeout(event.payload));
+      const eventEvents = survivors.filter((event) => !payloadIsTimeout(event.payload));
+      const summaryParts: string[] = [];
+      if (eventEvents.length > 0) {
+        summaryParts.push(
+          `${eventEvents.length} ${eventEvents.length === 1 ? 'event' : 'events'} fired while you slept: ` +
+            eventEvents.map((event) => String(event.event ?? 'unknown')).join(', '),
+        );
+      }
+      if (timeoutEvents.length > 0) {
+        summaryParts.push(
+          `${timeoutEvents.length} ${timeoutEvents.length === 1 ? 'await deadline' : 'await deadlines'} expired while you slept: ` +
+            timeoutEvents.map((event) => String(event.event ?? 'unknown')).join(', '),
+        );
+      }
+      summary =
+        `${suppressionSummary}; ${summaryParts.join('; ')}` + (latestSummary ? ` — latest: ${latestSummary}` : '');
+      payload = {
+        coalesced: true,
+        count: survivors.length,
+        eventCount: eventEvents.length,
+        timeoutCount: timeoutEvents.length,
+        events: survivors,
+        latest: {
+          event: latest.event,
+          payload: latest.payload,
+          createdAt: latest.createdAt,
+          delivery_id: latest.delivery_id,
+        },
+      };
+    }
+
+    return {
+      delivery: {
+        ...d,
+        eventKey,
+        payload,
+        summary,
+        // The coalescer does not persist sibling notes in its union. Keeping the
+        // old headline note when that headline was the removed loop would replay
+        // stale imperative text, so the safe rebuilt representation has no note.
+        note: null,
+        coalescedCount: survivors.length,
+        ...(typeof latest.createdAt === 'string' ? { createdAt: latest.createdAt } : {}),
+      },
+      supersession: null,
+      strippedLoopComponents,
+    };
   } catch {
     // Status lookup is a safety signal, not a new delivery dependency. If it is
     // unavailable, preserve the existing wake rather than dropping on inference.
-    return null;
+    return { delivery: d, supersession: null, strippedLoopComponents: 0 };
   }
 }
 
@@ -854,8 +961,7 @@ export async function rehydrateLoopWakeText(
     // subscriber's active loop. The stale fire text remains available below for
     // diagnosis, but the live block must not manufacture authority from the old
     // same-owner row.
-    const lineageMismatch =
-      deliverySupersession?.kind === 'lineage-mismatch' ? deliverySupersession : null;
+    const lineageMismatch = deliverySupersession?.kind === 'lineage-mismatch' ? deliverySupersession : null;
     const meta = lineageMismatch
       ? { note: null, updatedAtMs: null }
       : await getNoteMeta({
@@ -896,17 +1002,16 @@ export async function rehydrateLoopWakeText(
         `${lineageMismatch.currentHarness}. The marker-scoped carry-note was NOT read; the wake text below ` +
         `may be a stale prior-lineage snapshot. Reconcile loop:status / coord:orient before acting.`
       : checkpointProvenCurrent
-      ? `Current verified loop:checkpoint (resolved at delivery for owner ${d.subscriberId}, harness ${marker.harness}; ` +
-        `contentHash=${checkpointHash}; writtenAt=${new Date(meta.updatedAtMs!).toISOString()}):\n${liveNote}`
-      : liveNote
-        ? `⚠ UNPROVEN delivery-time loop:checkpoint for owner ${d.subscriberId}, harness ${marker.harness}. ` +
-          `The latest committed checkpoint could not be established (contentHash or write timestamp is unavailable); ` +
-          `treat this note as a stale snapshot and do not trust or re-execute it. Reconcile the carry-note store ` +
-          `identity and write loop:checkpoint before ending this turn:\n${liveNote}`
-        :
-          `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness}. ` +
-          `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it. ` +
-          `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`;
+        ? `Current verified loop:checkpoint (resolved at delivery for owner ${d.subscriberId}, harness ${marker.harness}; ` +
+          `contentHash=${checkpointHash}; writtenAt=${new Date(meta.updatedAtMs!).toISOString()}):\n${liveNote}`
+        : liveNote
+          ? `⚠ UNPROVEN delivery-time loop:checkpoint for owner ${d.subscriberId}, harness ${marker.harness}. ` +
+            `The latest committed checkpoint could not be established (contentHash or write timestamp is unavailable); ` +
+            `treat this note as a stale snapshot and do not trust or re-execute it. Reconcile the carry-note store ` +
+            `identity and write loop:checkpoint before ending this turn:\n${liveNote}`
+          : `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness}. ` +
+            `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it. ` +
+            `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`;
 
     // EI-18825117783927950: best-effort, SEPARATELY caught so a status-read hiccup
     // degrades only this banner, never the walls/checks rehydration above it.
@@ -984,7 +1089,12 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
     const doorTokens = injectionDoorTokens(d.subscriberId);
     const { kept, overflow } = capInjectionText(text, doorTokens);
     if (overflow == null) return text;
-    const dir = join(homedir(), '.papercusp', 'wake-spills', String(d.subscriberId ?? 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_'));
+    const dir = join(
+      homedir(),
+      '.papercusp',
+      'wake-spills',
+      String(d.subscriberId ?? 'unknown').replace(/[^A-Za-z0-9_.-]/g, '_'),
+    );
     mkdirSync(dir, { recursive: true });
     const file = join(dir, `delivery-${d.id}.md`);
     writeFileSync(
@@ -1107,14 +1217,18 @@ export async function degradeToInboxOrDrop(
 
 /** Per-client resume invocation (mirrors psu-launcher resumeArgsFor, headless-
  *  capable). Returns null when the session is not safely resumable. */
-export function resumeCommandFor(handle: {
-  agent: string | null;
-  sessionId: string | null;
-  ompThreadId: string | null;
-  /** adv_sessions.coord_owner_id — for tracked hive launches this is the spawn
-   *  id that keys the persistent signed MCP config dir (D-010 resume leg). */
-  coordOwnerId?: string | null;
-}, wakeText: string, accountRoute?: WakeAccountRoute | null): { bin: string; args: string[]; promptViaPty: boolean } | null {
+export function resumeCommandFor(
+  handle: {
+    agent: string | null;
+    sessionId: string | null;
+    ompThreadId: string | null;
+    /** adv_sessions.coord_owner_id — for tracked hive launches this is the spawn
+     *  id that keys the persistent signed MCP config dir (D-010 resume leg). */
+    coordOwnerId?: string | null;
+  },
+  wakeText: string,
+  accountRoute?: WakeAccountRoute | null,
+): { bin: string; args: string[]; promptViaPty: boolean } | null {
   if (handle.agent === 'claude') {
     // Exact-session resume only (see header). Prompt rides as the positional
     // arg — claude submits it as the first user message of the resumed turn.
@@ -1132,7 +1246,8 @@ export function resumeCommandFor(handle: {
       bin: 'claude',
       args: [
         ...(accountRoute?.claudeArgs ?? []),
-        '--resume', handle.sessionId,
+        '--resume',
+        handle.sessionId,
         // Headless one-turn (`-p`): a wake IS one turn — run the resumed turn to
         // completion and exit, leaving the session file updated for the NEXT
         // wake. WITHOUT `-p`, claude boots its interactive TUI which, spawned
@@ -1141,7 +1256,8 @@ export function resumeCommandFor(handle: {
         // 2026-06-07; the manual `-p` resume is what actually worked).
         '-p',
         '--dangerously-skip-permissions',
-        '--permission-mode', 'bypassPermissions',
+        '--permission-mode',
+        'bypassPermissions',
         // Native-scheduler lockout (native-scheduler-lockout-2026-06-09): CLI
         // flags don't persist into resumes, so every autonomous wake re-arms
         // the deny. MUST stay the single `=` token — the space form is
@@ -1485,9 +1601,7 @@ export interface ExecuteWakeDeps {
   /** WI-212651: repair an existing Codex home before resolving its rollout UUID.
    *  Injected so the archive/repair ordering is testable without PG or a live
    *  launch-spec store; the default reuses the /adv route's repair inputs. */
-  ensureCodexHomeForWake?: (
-    input: EnsureCodexHomeForWakeInput,
-  ) => Promise<EnsureCodexHomeForWakeResult>;
+  ensureCodexHomeForWake?: (input: EnsureCodexHomeForWakeInput) => Promise<EnsureCodexHomeForWakeResult>;
   /** WI-3940: upper bound (ms) on each rematerialize-on-miss PG call in the
    *  resume leg. The seams above are fail-soft on REJECTION, but a WEDGED PG
    *  connection HANGS past every try/catch and stalls the whole wake pipeline
@@ -1502,6 +1616,11 @@ export interface ExecuteWakeDeps {
    *  gate. Read ONLY when a wake carries a `carry:'cold'` loop marker (never on the
    *  warm hot path). */
   coldAutoEnabled?: () => Promise<boolean>;
+  /** EI-21431587306904888: streak-track a cold no-host park and pause+escalate the loop
+   *  at the threshold (the ended-but-resumable limbo guard). Injected for tests;
+   *  defaults to the real recordColdNoHostParkAndMaybeEscalate (fail-soft: null ⇒
+   *  the caller parks exactly as before). */
+  recordColdNoHostPark?: typeof recordColdNoHostParkAndMaybeEscalate;
   /** deterministic-context-carry P-021: the verdict-gated cold-by-default resolver —
    *  given the wake target's live host view, decide whether its session CLASS is
    *  drill-proven cold (COLD_BY_DEFAULT_PROVEN_CLASSES flag + gradeColdBootDrills
@@ -1510,18 +1629,11 @@ export interface ExecuteWakeDeps {
    *  behavior) — engine.ts wires the real classDefaultColdForWake, mirroring
    *  coldAutoEnabled so this module stays flag-system-free. Read ONLY on a loop-
    *  marked wake with no explicit carry, AFTER the master gate passed. */
-  classDefaultCold?: (host: {
-    bridgeTty?: boolean | null;
-    lastInputAt?: number | null;
-  }) => Promise<boolean>;
+  classDefaultCold?: (host: { bridgeTty?: boolean | null; lastInputAt?: number | null }) => Promise<boolean>;
   /** Read an su AUTO loop's carry-note — the P-006 cold-start anchor a RESET-CONTEXT /
    *  RECYCLE reconstructs from. Injected for tests; defaults to the real
    *  getLoopCarryNote (carry-note.ts). */
-  getLoopCarryNoteFn?: (ref: {
-    harness: string;
-    ownerId: string;
-    workspaceId?: string;
-  }) => Promise<string | null>;
+  getLoopCarryNoteFn?: (ref: { harness: string; ownerId: string; workspaceId?: string }) => Promise<string | null>;
   /** EI-10935: read an su AUTO loop's carry-note WITH its write-instant, used at
    *  ACTUAL delivery time (not just fire time) by {@link rehydrateLoopWakeText}
    *  to re-check whether a queued/staged delivery's pre-rendered checkpoint/
@@ -1630,7 +1742,7 @@ async function injectPsuHostWake(
     // turn started. Keep the durable wake parked until a later retry observes a
     // completed/duplicate outcome. Boolean test stubs retain today's behavior.
     const confirming = useConfirmation
-      ? deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation)
+      ? (deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation))
       : null;
     if (confirming) {
       const result = await confirming(sock, injectMsg);
@@ -1666,9 +1778,7 @@ async function injectPsuHostWake(
       // DEFAULT ()=>false keeps the fork dormant until engine.ts wires the real
       // resolver — mirroring coldAutoEnabled.
       const classDefaultCold =
-        coldEnabled && marker.carry === undefined
-          ? await (deps.classDefaultCold ?? (async () => false))(host)
-          : false;
+        coldEnabled && marker.carry === undefined ? await (deps.classDefaultCold ?? (async () => false))(host) : false;
       if (marker.carry === 'cold' || classDefaultCold) {
         // Only pay the carry-note read when the master gate is actually on (P-006's
         // anchor is moot if cold-auto is disabled). A test-injected getLoopCarryNoteFn
@@ -1757,12 +1867,9 @@ async function injectPsuHostWake(
     // fleet pointer) after the note — best-effort, note-only on any failure.
     let extras = '';
     try {
-      const buildBrief =
-        deps.buildCarryBriefFn ?? (await import('../../carry-brief')).buildCarryBrief;
+      const buildBrief = deps.buildCarryBriefFn ?? (await import('../../carry-brief')).buildCarryBrief;
       const { renderCarryBriefColdExtras } = await import('../../carry-brief');
-      extras = renderCarryBriefColdExtras(
-        await buildBrief(d.subscriberId, { workspaceId: d.workspaceId }),
-      );
+      extras = renderCarryBriefColdExtras(await buildBrief(d.subscriberId, { workspaceId: d.workspaceId }));
     } catch (e) {
       // Note-only injection — but NEVER silently (EI-8593, then EI-11484: twice a
       // CarryBrief contract drift crashed the renderer here and this swallow hid a
@@ -1857,7 +1964,8 @@ async function injectPsuHostWake(
     // its own `injectPsuHost` stub we fall through to today's exact behavior rather than
     // inventing a confirmation we do not have — additive by construction, like the WI-6852
     // part-(a) watermark.
-    const confirming = deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation);
+    const confirming =
+      deps.injectPsuHostWithConfirmation ?? (deps.injectPsuHost ? null : injectIntoHostWithConfirmation);
     // EI-19311270129974785: same delivery-id dedup rationale as injectWarm above —
     // the cold reset/recycle path goes through the identical gated pipeline and
     // is exposed to the identical ack-loss-then-retry duplicate.
@@ -1985,8 +2093,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const getSessionLifecycle = deps.getSessionLifecycle ?? getSessionBriefLifecycle;
   const alive = deps.alive ?? pidAlive;
   const isLoopArmed =
-    deps.isLoopArmed ??
-    (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
+    deps.isLoopArmed ?? (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
   const forceResume = deps.forceResume ?? ((pid: number) => defaultForceResume(pid, alive));
   const claimResume = deps.claimResume ?? claimAdvSessionResume;
   const findPsuHost = deps.findPsuHost ?? findLiveHost;
@@ -1999,12 +2106,8 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   // a second independent read can observe an older replica/pinned row and replace
   // the newer checkpoint in the cold reset payload. Share one promise for the
   // delivery-scoped reference so every path consumes the same snapshot.
-  const readCarryNoteWithMeta =
-    deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
-  const deliveryCarryNoteReads = new Map<
-    string,
-    ReturnType<typeof defaultGetLoopCarryNoteWithMeta>
-  >();
+  const readCarryNoteWithMeta = deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
+  const deliveryCarryNoteReads = new Map<string, ReturnType<typeof defaultGetLoopCarryNoteWithMeta>>();
   const getDeliveryCarryNoteWithMeta: typeof defaultGetLoopCarryNoteWithMeta = (ref) => {
     const key = JSON.stringify([ref.workspaceId ?? null, ref.harness, ref.ownerId]);
     const cached = deliveryCarryNoteReads.get(key);
@@ -2050,10 +2153,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // non-loop component (a one-shot await-event / timeout fire) is DELIVERED,
     // with the stale loop imperative neutralized by the rehydration banner,
     // because suppressing it wholesale silently strands the parked waiter.
-    const loopSupersession = await readLoopDeliverySupersession(
-      d,
-      deps.getLoopStatusFn ?? getLoopStatus,
-    );
+    const loopLifecycle = await readLoopDeliverySupersession(d, deps.getLoopStatusFn ?? getLoopStatus);
+    d = loopLifecycle.delivery;
+    const loopSupersession = loopLifecycle.supersession;
     if (loopSupersession) {
       const lifecycleReason =
         loopSupersession.kind === 'ended'
@@ -2080,8 +2182,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     if ((ambientFlag === '1' || ambientFlag === 'true') && deps.prepareAmbientPushBlock !== null) {
       try {
         const prepare =
-          deps.prepareAmbientPushBlock ??
-          (await import('../../ambient-push-delivery')).prepareAmbientPushBlock;
+          deps.prepareAmbientPushBlock ?? (await import('../../ambient-push-delivery')).prepareAmbientPushBlock;
         const block = await prepare({ ownerId: d.subscriberId });
         if (block) d.ambientPushBlock = block;
       } catch {
@@ -2114,11 +2215,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // because the socket inject below sat under this early-return).
       const outcome = await injectPsuHostWakeWithReverify(
         d,
-        tagWakeText(
-          d,
-          applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deliveryDeps)),
-          tagTurn,
-        ),
+        tagWakeText(d, applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deliveryDeps)), tagTurn),
         findPsuHost,
         injectPsuHost,
         deliveryDeps,
@@ -2136,8 +2233,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // Woken via the plans:resume path — fire the continuation turn with the
       // wake reason as the prompt. Lazy import keeps the engine free of a
       // static plans-tool dependency.
-      const resumePlanRun =
-        deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
+      const resumePlanRun = deps.resumePlanRun ?? (await import('./plan-run-wake')).resumePlanRunForWake;
       const planRunText = tagWakeText(
         d,
         applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deliveryDeps)),
@@ -2156,9 +2252,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // adv-session workspace or a loop wake can silently relaunch the agent in
     // `default` even while its session row and coord identity remain correctly
     // scoped to another workspace.
-    const sessionDelivery = fresh?.workspaceId
-      ? { ...d, workspaceId: fresh.workspaceId }
-      : d;
+    const sessionDelivery = fresh?.workspaceId ? { ...d, workspaceId: fresh.workspaceId } : d;
     const pid = fresh?.pid ?? handle.pid;
     const ended = fresh?.endedAt != null;
     const pidKnown = pid != null && pid > 0;
@@ -2236,15 +2330,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // the active loop marker, forcing a live terminal would be unsafe.
       const resumable = Boolean(
         (handle.agent === 'claude' && (fresh?.sessionId ?? handle.sessionId)) ||
-          (handle.agent === 'omp' && (fresh?.ompThreadId ?? handle.ompThreadId)) ||
-          (handle.agent === 'codex' && (fresh?.sessionId ?? handle.sessionId)),
+        (handle.agent === 'omp' && (fresh?.ompThreadId ?? handle.ompThreadId)) ||
+        (handle.agent === 'codex' && (fresh?.sessionId ?? handle.sessionId)),
       );
       const loopArmed = resumable
-        ? await withWakeTimeout(
-            isLoopArmed(d.subscriberId),
-            `loop status/${d.subscriberId}`,
-            1_000,
-          )
+        ? await withWakeTimeout(isLoopArmed(d.subscriberId), `loop status/${d.subscriberId}`, 1_000)
         : false;
       if (loopArmed === true) {
         const exited = await forceResume(pid).catch(() => false);
@@ -2264,13 +2354,19 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         // Channel 3: alive in a terminal we don't own, OR the live managed pty at
         // this pid belongs to a different agent (recycled pid, EI-151) — either
         // way not an injectable pty for THIS subscriber → park (+ inbox nudge).
-        return { kind: 'park', reason: `session pid ${pid} alive but not an injectable managed pty for this subscriber` };
+        return {
+          kind: 'park',
+          reason: `session pid ${pid} alive but not an injectable managed pty for this subscriber`,
+        };
       }
     }
     if (isAlive) {
       // No pid recorded but presence is fresh — the session is (very likely)
       // still open somewhere we can't see. Never concurrent-resume it; park.
-      return { kind: 'park', reason: 'no recorded pid but presence is fresh — parking to avoid a concurrent resume of a live session' };
+      return {
+        kind: 'park',
+        reason: 'no recorded pid but presence is fresh — parking to avoid a concurrent resume of a live session',
+      };
     }
 
     // A cold wake cannot safely use Channel 2: `resume-headless` restores the
@@ -2280,9 +2376,40 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // active for an eligible explicit-cold wake; warm/disabled/unanchored wakes
     // preserve the normal resume fallback below.
     if (await coldWakeRequiresPsuHost(sessionDelivery, deliveryDeps)) {
+      // EI-21431587306904888: for an ENDED session no injectable host ever
+      // reappears on its own, so an unbounded park here is a black hole — the
+      // loop burns fires forever and the owner's lane strands silently (the
+      // ended-but-resumable limbo window). Track the streak of DISTINCT
+      // consecutive undeliverable cold fires and, at the threshold, pause the
+      // loop + escalate loudly (owner policy: pause+escalate, NOT auto-respawn).
+      // Fail-soft: any tracking failure parks exactly as before.
+      const trackColdPark = deps.recordColdNoHostPark ?? recordColdNoHostParkAndMaybeEscalate;
+      const parkMarker = readLoopDeliveryMarker(d.payload);
+      const verdict = await trackColdPark({
+        routineId: parkMarker?.routineId ?? null,
+        wakeCount: parkMarker?.wakeCount ?? null,
+        subscriberId: d.subscriberId,
+      }).catch(() => null);
+      if (verdict?.action === 'escalated') {
+        return {
+          kind: 'park',
+          reason:
+            `eligible cold loop wake has no injectable psu host — ${verdict.streak} distinct consecutive ` +
+            'undeliverable cold fires: loop AUTO-PAUSED + escalated instead of parking indefinitely ' +
+            '(cold no-host limbo guard, EI-21431587306904888)',
+        };
+      }
+      if (verdict?.action === 'already-paused') {
+        return {
+          kind: 'park',
+          reason:
+            'eligible cold loop wake has no injectable psu host — loop already auto-paused (cold no-host limbo guard); parked',
+        };
+      }
       return {
         kind: 'park',
-        reason: 'eligible cold loop wake has no injectable psu host — parked without resume to preserve the fresh-context boundary',
+        reason:
+          'eligible cold loop wake has no injectable psu host — parked without resume to preserve the fresh-context boundary',
       };
     }
 
@@ -2298,7 +2425,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     if (hiveInstallSlug) {
       const fired = await fireHiveWake({ installSlug: hiveInstallSlug, kickoff: text }).catch(() => false);
       if (fired) return { kind: 'delivered', channel: 'hive-fresh-wake' };
-      return { kind: 'park', reason: 'hive operator: fresh-wake fire failed; next time/watchdog wake will re-survey (never resumed)' };
+      return {
+        kind: 'park',
+        reason: 'hive operator: fresh-wake fire failed; next time/watchdog wake will re-survey (never resumed)',
+      };
     }
 
     // bee-context-efficiency P-005 (D-018/D-021): fresh-context warm-inject. We only
@@ -2348,8 +2478,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // flags across `--resume`. Rebuild it from the persisted argv for Claude
     // wakes; the helper also emits the high-precedence settings overlay and
     // strips operator-only gateway state before the detached child starts.
-    const accountRoute =
-      resumeAgent === 'claude' ? wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId) : null;
+    const accountRoute = resumeAgent === 'claude' ? wakeAccountRouteFromArgv(fresh?.launchArgv, d.subscriberId) : null;
     // codex resumes from its per-session CODEX_HOME (keyed by the adv-session
     // id, exactly as bootstrap-su/psu minted it) and needs the conversation
     // UUID recovered from that home's rollout — codex carries no native id on
@@ -2447,7 +2576,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     if (!resume || !cwd) {
       const p = await presence(d.subscriberId).catch(() => null);
       if (p && !p.stale && !p.revoked) {
-        return { kind: 'park', reason: 'session ended but not safely resumable (no native session id / unsupported client) — inbox only' };
+        return {
+          kind: 'park',
+          reason: 'session ended but not safely resumable (no native session id / unsupported client) — inbox only',
+        };
       }
       return degradeToInboxOrDrop(d, 'session ended, not resumable, presence gone — dead waiter', sendCoordMessage);
     }
@@ -2589,10 +2721,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // observation is asynchronous + additive, never on the delivery's hot path.
       const onExit = deps.onResumeTurnExit
         ? (exit: ResumeTurnExitRaw) =>
-            deps.onResumeTurnExit!(
-              d,
-              resumeAgent === 'codex' ? { ...exit, outputProtocol: 'codex-jsonl' } : exit,
-            )
+            deps.onResumeTurnExit!(d, resumeAgent === 'codex' ? { ...exit, outputProtocol: 'codex-jsonl' } : exit)
         : undefined;
       const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env }, onExit);
       if (pid2) return { kind: 'delivered', channel: 'resume-headless' };
@@ -2624,7 +2753,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           } catch {
             /* best-effort cleanup of a non-ready resume pty */
           }
-          const tail = injected.transcriptTail ? ` transcript tail: ${JSON.stringify(injected.transcriptTail.slice(-1000))}` : '';
+          const tail = injected.transcriptTail
+            ? ` transcript tail: ${JSON.stringify(injected.transcriptTail.slice(-1000))}`
+            : '';
           return { kind: 'error', error: `${injected.error}.${tail}` };
         }
       }
