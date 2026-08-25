@@ -68,6 +68,105 @@ describe('processes:list structured output', () => {
     expect(vi.mocked(listTasks)).toHaveBeenCalledWith(expect.objectContaining({ states: ['running'] }));
   });
 
+  it('overlays dry-run terminal reconciliation verdicts without mutating ledger rows', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    const row = (taskId: string): TaskRow => ({
+      taskId,
+      workspaceId: 'default',
+      rootTaskId: taskId,
+      class: 'agent-session',
+      title: taskId,
+      argv: [],
+      launchedBy: 'su-test',
+      workItemId: null,
+      planSlug: null,
+      parentTaskId: null,
+      confined: true,
+      state: 'running',
+      startedAt: '2026-08-25T01:00:00.000Z',
+      lastSeenAt: '2026-08-25T01:00:00.000Z',
+      lastMemoryBytes: 34 * 1024 * 1024,
+      peakMemoryBytes: 34 * 1024 * 1024,
+      cpuUsec: 0,
+      pidsCurrent: 0,
+      scopeUnit: `pc-${taskId}.scope`,
+      memoryMaxBytes: null,
+      deadlineAt: null,
+      exitCode: null,
+      exitReason: null,
+      logPath: null,
+      detail: {},
+    });
+    const strandedRow = row('bootstrap-corpse');
+    const endedRow = row('ended-without-exit');
+    vi.mocked(listTasks).mockResolvedValueOnce([strandedRow, endedRow]);
+    vi.mocked(reconcileTick).mockResolvedValueOnce({
+      summary: { alive: 0, stranded: 1, endedUnobserved: 1 },
+      result: {
+        alive: [],
+        stranded: [{ taskId: strandedRow.taskId, reason: 'scope disappeared from the kernel' }],
+        endedUnobserved: [{ taskId: endedRow.taskId, reason: 'systemd confirmed the scope was released' }],
+        unaccounted: [],
+        abandonedWindow: [],
+        consoleWindow: [],
+        verifierScope: [],
+        foreign: [],
+        overdue: [],
+        tooYoung: [],
+      },
+      scan: { processes: 0, foreignTruncated: false },
+      degraded: false,
+      touched: 0,
+      strandedCount: 0,
+      endedUnobservedCount: 0,
+      unaccountedPersisted: 0,
+      residueCleared: 0,
+    } as never);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { live: true },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-reconcile-overlay-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const structured = dispatched.result?.structuredContent as {
+      counts: { byState: Record<string, number> };
+      tasks: Array<{ taskId: string; state: string; exitReason: string | null }>;
+    };
+    expect(structured.counts.byState).toMatchObject({ stranded: 1, ended_unobserved: 1 });
+    expect(structured.tasks).toEqual([
+      expect.objectContaining({
+        taskId: strandedRow.taskId,
+        state: 'stranded',
+        exitReason: 'scope disappeared from the kernel',
+      }),
+      expect.objectContaining({
+        taskId: endedRow.taskId,
+        state: 'ended_unobserved',
+        exitReason: 'systemd confirmed the scope was released',
+      }),
+    ]);
+    expect(strandedRow.state).toBe('running');
+    expect(endedRow.state).toBe('running');
+  });
+
   it('advertises an object result and preserves a large task inventory', async () => {
     const { listTasks } = await import('../../../task-manager/store');
     mockResolvedTyped(

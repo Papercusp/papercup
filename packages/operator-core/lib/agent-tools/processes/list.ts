@@ -15,11 +15,12 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { listTasks } from '../../task-manager/store';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
-import { reconcileTick } from '../../task-manager/reconcile-tick';
+import { reconcileTick, type ReconcileTickResult } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
 import { cpuBusyPercent } from '../../task-manager/inventory-shared';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { TASK_STATES } from '../../task-manager/types';
+import type { TaskRow } from '../../task-manager/types';
 import { redactSensitiveText } from '../../sensitive-text';
 import { readSuperuserToken } from '../../superuser-token';
 
@@ -49,6 +50,30 @@ type CpuSample = {
 
 const CPU_SAMPLE_RETENTION_MS = 15 * 60 * 1000;
 const cpuSamples = new Map<string, CpuSample>();
+
+type ReconcileTerminalState = 'stranded' | 'ended_unobserved';
+
+/**
+ * A dry-run reconciliation is authoritative for a live read, but deliberately
+ * does not update the ledger. Overlay its terminal verdicts on the rows shown
+ * by `processes:list` so a just-exited task is not reported as still running
+ * until the next persistence tick. The returned rows are copies: `live:true`
+ * remains a writes-nothing read.
+ */
+function overlayReconcileTerminalVerdicts(rows: readonly TaskRow[], tick: ReconcileTickResult): TaskRow[] {
+  const terminalByTaskId = new Map<string, { state: ReconcileTerminalState; reason: string }>();
+  for (const verdict of tick.result.stranded ?? []) {
+    terminalByTaskId.set(verdict.taskId, { state: 'stranded', reason: verdict.reason });
+  }
+  for (const verdict of tick.result.endedUnobserved ?? []) {
+    terminalByTaskId.set(verdict.taskId, { state: 'ended_unobserved', reason: verdict.reason });
+  }
+
+  return rows.map((row) => {
+    const verdict = terminalByTaskId.get(row.taskId);
+    return verdict ? { ...row, state: verdict.state, exitReason: verdict.reason } : row;
+  });
+}
 
 function pruneCpuSamples(nowMs: number): void {
   for (const [taskId, sample] of cpuSamples) {
@@ -204,11 +229,13 @@ export default defineTool({
       args.rootTaskId !== undefined;
 
     let live: unknown;
+    let liveTick: ReconcileTickResult | undefined;
     if (args.live) {
       const tick = await reconcileTick({
         dryRun: true,
         scanOptions: { foreignSignature: defaultForeignSignature(REPO_ROOT) },
       });
+      liveTick = tick;
       const liveSummary = {
         ...tick.summary,
         degraded: tick.degraded,
@@ -256,10 +283,14 @@ export default defineTool({
       includeEnded: args.includeEnded,
       limit: args.limit,
     });
+    // EI-21386942224757425: a dry-run reconciliation can prove that a ledger
+    // row disappeared from the kernel while the persistence tick has not yet
+    // written its terminal state. Show that proof in this authoritative read.
+    const displayRows = args.live && liveTick ? overlayReconcileTerminalVerdicts(rows, liveTick) : rows;
 
     const byState: Record<string, number> = {};
     const byClass: Record<string, number> = {};
-    for (const r of rows) {
+    for (const r of displayRows) {
       byState[r.state] = (byState[r.state] ?? 0) + 1;
       byClass[r.class] = (byClass[r.class] ?? 0) + 1;
     }
@@ -273,9 +304,9 @@ export default defineTool({
           text: JSON.stringify(
             {
               ok: true,
-              counts: { total: rows.length, byState, byClass },
+              counts: { total: displayRows.length, byState, byClass },
               ...(live ? { live } : {}),
-              tasks: rows.map((r) => ({
+              tasks: displayRows.map((r) => ({
                 taskId: r.taskId,
                 class: r.class,
                 title: safeDiagnosticText(r.title, undefined, diagnosticSecrets),
