@@ -123,7 +123,9 @@ beforeEach(() => {
   // unstubbed mock if the flag mapping above is ever widened.
   mockSpecCoverage.mockResolvedValue(coverageVerdict());
   // Default: the subject plan row exists and is a plain work plan (no exemption).
-  mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null }]));
+  mockPg.mockReturnValue(
+    sqlReturning([{ plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null, content: null }]),
+  );
 });
 
 describe('evaluatePlanAcceptanceGate', () => {
@@ -144,6 +146,59 @@ describe('evaluatePlanAcceptanceGate', () => {
     mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'run-2026-08-11', template: null, template_slug: 'daily-ops' }]));
     const v = await evaluatePlanAcceptanceGate('run-2026-08-11');
     expect(v).toMatchObject({ satisfied: true, skipped: 'template-instance' });
+  });
+
+  it('refuses an ephemeral deliverable reference without a durable companion', async () => {
+    mockPg.mockReturnValue(
+      sqlReturning([
+        {
+          plan_slug: 'some-plan-2026-08-11',
+          template: null,
+          template_slug: null,
+          content: '## Now\n\nReport: https://claude.ai/code/artifact/abc123',
+        },
+      ]),
+    );
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'ephemeral_deliverable_unbacked' });
+    expect(v.message).toContain('claude.ai/code/artifact/abc123');
+    expect(v.message).toContain('durable companion/source reference');
+    expect(v.message).toContain('not waived by');
+  });
+
+  it('allows an ephemeral URL when the plan records its durable source path', async () => {
+    mockPg.mockReturnValue(
+      sqlReturning([
+        {
+          plan_slug: 'some-plan-2026-08-11',
+          template: null,
+          template_slug: null,
+          content:
+            'Report: https://claude.ai/code/artifact/abc123\nDurable source: `packages/reports/retraction-log.md`',
+        },
+      ]),
+    );
+    mockRubric.mockResolvedValue(null);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
+  });
+
+  it('does not let the code-truth force escape hatch bypass deliverable durability', async () => {
+    mockPg.mockReturnValue(
+      sqlReturning([
+        {
+          plan_slug: 'some-plan-2026-08-11',
+          template: null,
+          template_slug: null,
+          content: 'Report: https://claude.ai/artifacts/abc123',
+        },
+      ]),
+    );
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11', { force: { reason: 'owner waiver' } });
+    expect(v).toMatchObject({ satisfied: false, code: 'ephemeral_deliverable_unbacked' });
   });
 
   it('no acceptance rubric → acceptance_rubric_missing with the propose recipe', async () => {
