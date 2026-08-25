@@ -22,6 +22,7 @@ import {
   ALL_WIRE_FIXTURES,
   CLAUDE_WIRE_FIXTURES,
   CODEX_WIRE_FIXTURES,
+  matchesDiscriminator,
   OMP_WIRE_FIXTURES,
   resolveWirePath,
   wireLine,
@@ -51,8 +52,25 @@ describe('wire fixtures are self-consistent', () => {
   });
 
   it.each(ALL_WIRE_FIXTURES)('$backend: $fixture.name — its discriminator matches itself', ({ fixture }) => {
-    for (const { path, value } of fixture.discriminator) {
-      expect(resolveWirePath(fixture.record, path)).toContain(value);
+    expect(matchesDiscriminator(fixture.record, fixture.discriminator)).toBe(true);
+  });
+
+  it('the payload-bearing fixtures test fields their discriminator does not already imply', () => {
+    // A fixture selected BY the field it asserts would make the live guard
+    // vacuous for that field — it could only ever pick real records that
+    // already satisfy it, so a wire change would read as "type not observed"
+    // rather than a failure. That is fine for the skip-this-record fixtures
+    // (they assert nothing but selection); it is not fine for the ones whose
+    // content the popup renders, which is where WI-41498 actually lived.
+    const payloadBearing = ALL_WIRE_FIXTURES.filter(({ fixture }) =>
+      /input|output|arguments|text|thinking/.test(fixture.readFields.join(' ')));
+    expect(payloadBearing.length).toBeGreaterThan(0);
+
+    for (const { fixture } of payloadBearing) {
+      const discriminated = new Set(fixture.discriminator.map((d) => d.path));
+      const independent = fixture.readFields.filter((p) => !discriminated.has(p));
+      expect(independent, `${fixture.name} asserts nothing its selection did not already guarantee`)
+        .not.toHaveLength(0);
     }
   });
 });
@@ -91,6 +109,16 @@ describe('createCodexTimelineParser — real rollout records', () => {
     // session: the raw block array stringified into the pane.
     expect(entry!.text).not.toContain('input_text');
     expect(entry!.text).not.toMatch(/^\[\{/);
+  });
+
+  it('custom_tool_call_output also arrives as a bare STRING for a still-running cell', () => {
+    // 6 of the 170 outputs in the sampled rollout. The same record type carries
+    // two shapes, so a reader that assumed either one alone would blank ~4% or
+    // ~96% of tool results depending on which it picked.
+    const f = byName(CODEX_WIRE_FIXTURES, 'still-running variant');
+    const [entry] = parseCodex(f);
+    expect(entry).toMatchObject({ kind: 'tool_result', toolId: 'call_9Kt2ZzQe1mLp0oR4sTuVwXyZ' });
+    expect(entry!.text).toBe('Script running with cell ID 19\nWall time 31.1 seconds\nOutput:\n');
   });
 
   it('function_call parses its JSON-string `arguments` into structured input', () => {

@@ -166,6 +166,7 @@ export const CODEX_WIRE_FIXTURES: readonly WireFixture[] = [
     discriminator: [
       { path: 'type', value: 'response_item' },
       { path: 'payload.type', value: 'custom_tool_call_output' },
+      { path: 'payload.output', type: 'array' },
     ],
     readFields: ['payload.type', 'payload.call_id', 'payload.output[].text'],
     record: {
@@ -180,6 +181,31 @@ export const CODEX_WIRE_FIXTURES: readonly WireFixture[] = [
           { type: 'input_text', text: 'Script completed\nWall time 0.2 seconds\nOutput:' },
           { type: 'input_text', text: 'Total output lines: 1' },
         ],
+      },
+    },
+  },
+  {
+    // The OTHER real shape of the same record type, found by auditing all 170
+    // outputs in the sampled rollout: 164 arrays and 6 bare strings. A
+    // backgrounded cell that is still running reports its partial output as
+    // plain text. Both must flatten to the same readable string, which is why
+    // `blockPayloadText` takes `unknown` rather than a block array.
+    name: 'custom_tool_call_output (still-running variant) — `output` is a bare STRING',
+    discriminator: [
+      { path: 'type', value: 'response_item' },
+      { path: 'payload.type', value: 'custom_tool_call_output' },
+      { path: 'payload.output', type: 'string' },
+    ],
+    readFields: ['payload.type', 'payload.call_id', 'payload.output'],
+    record: {
+      timestamp: '2026-08-25T01:33:02.512Z',
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call_output',
+        id: 'rs_0d94e1',
+        internal_chat_message_metadata_passthrough: null,
+        call_id: 'call_9Kt2ZzQe1mLp0oR4sTuVwXyZ',
+        output: 'Script running with cell ID 19\nWall time 31.1 seconds\nOutput:\n',
       },
     },
   },
