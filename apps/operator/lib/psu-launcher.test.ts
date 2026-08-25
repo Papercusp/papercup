@@ -8311,6 +8311,20 @@ describe("startSupervisorBeat (WI-3898 P1: the beat self-reports its own pid/hos
   });
 });
 
+/**
+ * Narrow a ResumeClaimOutcome to its REFUSED branch. `reportSessionResumed`
+ * returns a discriminated union, so `.reason`/`.detail` do not exist on the
+ * claimed branch; an `expect(...).toBe(false)` does not narrow for the compiler.
+ * Throwing here also makes an unexpectedly-SUCCESSFUL claim fail loudly instead
+ * of silently reading `undefined` off the wrong branch.
+ */
+function refusalOf(outcome: Awaited<ReturnType<typeof reportSessionResumed>>) {
+  if (outcome.claimed) {
+    throw new Error("expected the resume claim to be REFUSED, but it was granted");
+  }
+  return outcome;
+}
+
 describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", () => {
   it("POSTs the row id to bootstrap-su/session-resumed with the bearer", async () => {
     const calls = [];
@@ -8413,12 +8427,13 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
       status: 503,
       json: async () => ({ ok: true, reactivated: true }),
     });
-    const outcome = await reportSessionResumed(42, {
-      fetchImpl: httpFailure,
-      operatorUrl: "http://op:1",
-      token: "t",
-    });
-    expect(outcome.claimed).toBe(false);
+    const outcome = refusalOf(
+      await reportSessionResumed(42, {
+        fetchImpl: httpFailure,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
+    );
     expect(outcome.reason).toBe("http");
     expect(outcome.detail).toContain("503");
   });
@@ -8430,12 +8445,13 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         throw new Error("Unexpected token < in JSON");
       },
     });
-    const outcome = await reportSessionResumed(42, {
-      fetchImpl: badBody,
-      operatorUrl: "http://op:1",
-      token: "t",
-    });
-    expect(outcome.claimed).toBe(false);
+    const outcome = refusalOf(
+      await reportSessionResumed(42, {
+        fetchImpl: badBody,
+        operatorUrl: "http://op:1",
+        token: "t",
+      }),
+    );
     expect(outcome.reason).toBe("http");
   });
 
@@ -8443,14 +8459,15 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
     const fetchImpl = async () => {
       throw new Error("ECONNREFUSED");
     };
-    const outcome = await reportSessionResumed(42, {
-      fetchImpl,
-      operatorUrl: "http://op:1",
-      token: "t",
-      connectBudgetMs: 0,
-      timeoutRetries: 0,
-    });
-    expect(outcome.claimed).toBe(false);
+    const outcome = refusalOf(
+      await reportSessionResumed(42, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+        connectBudgetMs: 0,
+        timeoutRetries: 0,
+      }),
+    );
     expect(outcome.reason).toBe("transport");
     // The swallowed catch was the whole defect: the cause existed and was
     // discarded. What it discarded is better than the raw errno —
@@ -8484,7 +8501,7 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
     expect(refusals.map((r) => r.claimed)).toEqual([false, false, false, false]);
     // ...and each names a DISTINCT cause. This is the regression guard: the bug
     // was four causes wearing one message (EI-21414979137146784).
-    expect(refusals.map((r) => r.reason)).toEqual([
+    expect(refusals.map((r) => refusalOf(r).reason)).toEqual([
       "no-session",
       "http",
       "contended",
