@@ -21,11 +21,16 @@ const setWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
 const getWorkItemCheckpoint = vi.fn();
 const getWorkItem = vi.fn();
+const readSuccessfulActionInvocations = vi.hoisted(() => vi.fn());
 vi.mock('../../work-item-checkpoint', () => ({
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
   setWorkItemCheckpointWithPrior: (...a: unknown[]) => setWorkItemCheckpointWithPrior(...a),
   getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
 }));
+vi.mock('../../carry-surface-action-proof', async () => {
+  const actual = await vi.importActual<typeof import('../../carry-surface-action-proof')>('../../carry-surface-action-proof');
+  return { ...actual, readSuccessfulActionInvocations };
+});
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   // checkpoint.ts fire-and-forgets markFeatureProgress + markIssueProgress (last_progress_at
@@ -85,6 +90,8 @@ beforeEach(() => {
   setWorkItemCheckpointWithPrior.mockReset();
   getWorkItemCheckpoint.mockReset();
   getWorkItem.mockReset();
+  readSuccessfulActionInvocations.mockReset();
+  readSuccessfulActionInvocations.mockResolvedValue([]);
   // EI-9325: checkpoint.ts routes every PLAIN replace-on-write (non-append,
   // non-clear) through setWorkItemCheckpointWithPrior instead of setWorkItemCheckpoint
   // now, to get the prior length for free. Default it to delegate straight through to
@@ -2316,5 +2323,45 @@ describe('work_items:checkpoint — current-vs-retained provenance (EI-211652356
     expect(result.ok).toBe(true);
     expect(result.provenanceLint).toBeUndefined();
     expect(result.retainedProvenance).toBeUndefined();
+  });
+});
+
+describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268)', () => {
+  it('queries the caller spawn and clears only a successful matching coord action', async () => {
+    const stored = 'Messaged fleet leader su-bce40c51 directly';
+    getWorkItem.mockResolvedValue({ id: 'WI-ACTION-PROOF', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+    readSuccessfulActionInvocations.mockResolvedValue([
+      { toolName: 'coord:send', args: { to: ['su-bce40c51'], summary: 'handoff' } },
+    ]);
+
+    const result = await one(
+      { id: 'WI-ACTION-PROOF', checkpoint: stored },
+      { ...baseCtx, spawnId: 'spawn-action-proof' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint).toBeUndefined();
+    expect(readSuccessfulActionInvocations).toHaveBeenCalledWith({
+      workspaceId: 'default',
+      spawnId: 'spawn-action-proof',
+    });
+  });
+
+  it('preserves the warning when the same-turn ledger cannot be read', async () => {
+    const stored = 'Messaged fleet leader su-bce40c51 directly';
+    getWorkItem.mockResolvedValue({ id: 'WI-ACTION-PROOF-FAIL', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: 0 });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+    readSuccessfulActionInvocations.mockResolvedValue(null);
+
+    const result = await one(
+      { id: 'WI-ACTION-PROOF-FAIL', checkpoint: stored },
+      { ...baseCtx, spawnId: 'spawn-action-proof-fail' },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint?.matches[0]?.kind).toBe('unverified-action-claim');
   });
 });
