@@ -6,7 +6,12 @@
  * it, a partial card can look complete and manufacture a false pass.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { dispatchProjectedTool, lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
+import {
+  dispatchProjectedTool,
+  lookupByMcpName,
+  readJsonResult,
+  type UnifiedToolContext,
+} from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 import type { ScorecardRow } from '../../scorecards';
 
@@ -20,7 +25,7 @@ import { listScorecards } from '../../scorecards';
 const listScorecardsM = vi.mocked(listScorecards);
 const listTool = (await import('./list')).default;
 
-const makeDispatchContext = () => ({
+const makeDispatchContext = (): UnifiedToolContext => ({
   log: vi.fn(),
   signal: new AbortController().signal,
   progress: vi.fn(),

@@ -143,7 +143,7 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
   });
 
   afterAll(async () => {
-    await db?.close?.();
+    await db?.cleanup();
   });
 
   it("records the run as an 'initialize' host operation and drives it to succeeded", async () => {
@@ -200,16 +200,16 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
 
     const result = await runWorkspaceHostInitialization(runInput(ws, hostId, recordingAdapter()));
 
-    const events = await db.adminSql`
+    const events = (await db.adminSql`
       SELECT phase, status FROM harness_shared.workspace_host_events
        WHERE workspace_id = ${ws} AND operation_id = ${result.operationId}
        ORDER BY occurred_at, phase
-    `;
-    const phases = events.map((row: { phase: string }) => row.phase);
+    `) as unknown as Array<{ phase: string; status: string }>;
+    const phases = events.map((row) => row.phase);
     expect(phases).toContain('initialize:create-workspace');
     expect(phases).toContain('initialize:bind-credential');
     expect(phases).toContain('initialize:complete');
-    expect(events.some((row: { phase: string; status: string }) =>
+    expect(events.some((row) =>
       row.phase === 'initialize:complete' && row.status === 'succeeded')).toBe(true);
   });
 
