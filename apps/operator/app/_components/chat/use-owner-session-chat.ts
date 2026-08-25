@@ -38,6 +38,19 @@ export interface SessionListRow {
   last_ts: string | null;
   /** The exact query key `/api/adv/session/thinking` expects for this row. */
   stream_key?: SessionStreamKey;
+  /**
+   * WI-41496 — an omp row's adv-session id, which is what names the session's
+   * transcript HOME.
+   *
+   * `ompThreadId` alone identifies the FILE but not the directory tree it lives
+   * in: a psu-launched omp agent writes to
+   * `~/.papercusp/su-omp-homes/session-<advId>/agent/sessions/…`, never to the
+   * shared `~/.omp` home the route falls back to. Without this the stream
+   * resolved nothing and every omp conversation popup rendered empty while the
+   * transcript was being written. Optional — the server sweeps the per-session
+   * homes when it is absent, which is slower but keeps a deep-link working.
+   */
+  omp_session_key?: string | number | null;
 }
 
 /** The runtime handles already present on an advRoster.list row. */
@@ -139,6 +152,7 @@ export function sessionTargetFromRoster(hint: SessionRosterHint): SessionListRow
       stream_key: 'ompThreadId',
       active: true,
       last_ts: null,
+      omp_session_key: hint.advSessionId ?? null,
     };
   }
 
@@ -169,6 +183,7 @@ export function sessionTargetFromRoster(hint: SessionRosterHint): SessionListRow
       stream_key: 'ompThreadId',
       active: true,
       last_ts: null,
+      omp_session_key: hint.advSessionId ?? null,
     };
   }
   return null;
