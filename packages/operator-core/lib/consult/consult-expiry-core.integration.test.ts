@@ -38,9 +38,10 @@ const MIGRATION_844 = existsSync(MIGRATION_844_ARMED) ? MIGRATION_844_ARMED : `$
 const MIGRATION_856 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/856-backfill-answered-expired-consult-outcomes.sql', import.meta.url),
 );
-const MIGRATION_962 = fileURLToPath(
-  new URL('../../../../libs/papercusp/libs/db/sql/962-backfill-blank-owner-answered-consult-outcomes.sql', import.meta.url),
+const MIGRATION_963_ARMED = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/963-backfill-blank-owner-answered-consult-outcomes.sql', import.meta.url),
 );
+const MIGRATION_963 = existsSync(MIGRATION_963_ARMED) ? MIGRATION_963_ARMED : `${MIGRATION_963_ARMED}.DRAFT`;
 
 let rootSql: Sql;
 
@@ -241,7 +242,7 @@ describe('sweepExpiredConsults', () => {
   });
 });
 
-describe('migrations 856 + 962 historical answered-expired outcome repair', () => {
+describe('migrations 856 + 963 historical answered-expired outcome repair', () => {
   it('repairs null-outcome expired rows with answers, including blank responder ids, and is idempotent', async () => {
     const legacyAnswered = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
     const blankOwnerAnswered = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
@@ -302,9 +303,9 @@ describe('migrations 856 + 962 historical answered-expired outcome repair', () =
 
     // Migration 856 intentionally filtered blank responder ids, but that also
     // dropped the whole conversation when every substantive answer was
-    // anonymous. Migration 962 retains the answer count and records that no
+    // anonymous. Migration 963 retains the answer count and records that no
     // responder identity was available.
-    const blankOwnerMigrationSql = readFileSync(MIGRATION_962, 'utf8');
+    const blankOwnerMigrationSql = readFileSync(MIGRATION_963, 'utf8');
     const blankOwnerUpdated = await rootSql.unsafe(blankOwnerMigrationSql);
     expect(blankOwnerUpdated.count).toBe(1);
 
