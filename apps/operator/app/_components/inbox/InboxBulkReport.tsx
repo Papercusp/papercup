@@ -9,7 +9,14 @@
  * existing InboxBulkRecommendation remains the per-row drill-in; its expensive
  * detail-tier attention read mounts only when that drill-in is opened.
  */
-import { useCallback, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { Sparkles } from "lucide-react";
 import type { AttentionItem } from "@/app/admin/plans/plans-api";
 import { useHydratedAttentionItem } from "@/app/admin/plans/plans-api";
@@ -213,6 +220,9 @@ function HydratedRecommendation({
 export interface InboxBulkRecommendationDrillInProps extends HydratedRecommendationProps {
   open: boolean;
   onToggle: () => void;
+  /** Gives the report a stable focus target after a successful inline accept
+   * removes the currently focused decision desk. */
+  onToggleNode?: (node: HTMLButtonElement | null) => void;
 }
 
 /** One-at-a-time detail hydration keeps a 200-row report from opening 200
@@ -220,11 +230,17 @@ export interface InboxBulkRecommendationDrillInProps extends HydratedRecommendat
 export function InboxBulkRecommendationDrillIn(
   props: InboxBulkRecommendationDrillInProps,
 ) {
+  const toggleRef = useRef<HTMLButtonElement | null>(null);
+
   return (
     <span
       className={`inbox-bulk-report__drill${props.open ? " inbox-bulk-report__drill--open" : ""}`}
     >
       <button
+        ref={(node) => {
+          toggleRef.current = node;
+          props.onToggleNode?.(node);
+        }}
         type="button"
         className="inbox-bulk-report__drill-toggle"
         data-testid={`inbox-bulk-drill-${props.runItem.itemId}`}
@@ -241,6 +257,15 @@ export function InboxBulkRecommendationDrillIn(
           data-testid={`inbox-bulk-decision-desk-${props.runItem.itemId}`}
           role="region"
           aria-label={`Decision desk for ${props.listItem.title}`}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            event.preventDefault();
+            event.stopPropagation();
+            // Focus the surviving disclosure trigger before unmounting the
+            // region so keyboard users never fall back to <body>.
+            toggleRef.current?.focus({ preventScroll: true });
+            props.onToggle();
+          }}
         >
           <span className="inbox-bulk-report__decision-desk-head">
             <span className="inbox-bulk-report__decision-desk-kicker">
@@ -280,6 +305,8 @@ export default function InboxBulkReport({
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [activeDrillId, setActiveDrillId] = useState<string | null>(null);
+  const drillToggleNodes = useRef(new Map<string, HTMLButtonElement>());
+  const pendingFocusRestoreId = useRef<string | null>(null);
   const [locallyApplied, setLocallyApplied] = useState<Set<string>>(
     () => new Set(),
   );
@@ -294,6 +321,14 @@ export default function InboxBulkReport({
     () => new Map(runItems.map((item) => [item.itemId, item])),
     [runItems],
   );
+
+  useEffect(() => {
+    if (activeDrillId !== null) return;
+    const itemId = pendingFocusRestoreId.current;
+    if (!itemId) return;
+    pendingFocusRestoreId.current = null;
+    drillToggleNodes.current.get(itemId)?.focus({ preventScroll: true });
+  }, [activeDrillId]);
 
   const applyRecommendation = useCallback(
     async (
@@ -342,7 +377,10 @@ export default function InboxBulkReport({
       setNotice(null);
       try {
         const result = await applyRecommendation(item, runItem, draftOverride);
-        if (result.ok) setActiveDrillId(null);
+        if (result.ok) {
+          pendingFocusRestoreId.current = runItem.itemId;
+          setActiveDrillId(null);
+        }
         if (result.phase === "complete") onClose();
         return result;
       } finally {
@@ -366,6 +404,10 @@ export default function InboxBulkReport({
             runItem={runItem}
             busy={busy}
             open={activeDrillId === runItem.itemId}
+            onToggleNode={(node) => {
+              if (node) drillToggleNodes.current.set(runItem.itemId, node);
+              else drillToggleNodes.current.delete(runItem.itemId);
+            }}
             onToggle={() =>
               setActiveDrillId((current) =>
                 current === runItem.itemId ? null : runItem.itemId,

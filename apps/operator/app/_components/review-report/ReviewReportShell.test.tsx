@@ -8,6 +8,7 @@
 // freezes the whole surface.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import ReviewReportShell, { type ReviewReportGroup } from "./ReviewReportShell";
 
 afterEach(cleanup);
@@ -325,5 +326,27 @@ describe("collapse", () => {
     expect(document.activeElement).toBe(
       screen.getByTestId("review-group-toggle-flip-to-done"),
     );
+  });
+
+  it("keeps selection and group navigation operable from the keyboard", async () => {
+    const user = userEvent.setup();
+    renderShell();
+
+    const row = rowCheck("f2");
+    row.focus();
+    await user.keyboard(" ");
+    expect(row.getAttribute("aria-checked")).toBe("false");
+    expect(applyBtn().textContent).toContain("(2)");
+
+    const toggle = screen.getByTestId("review-group-toggle-flip-to-done");
+    toggle.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.queryByTestId("review-row-f1")).toBeNull();
+
+    const nav = screen.getByTestId("review-group-nav-flip-to-done");
+    nav.focus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByTestId("review-row-f1")).toBeTruthy();
+    expect(document.activeElement).toBe(toggle);
   });
 });

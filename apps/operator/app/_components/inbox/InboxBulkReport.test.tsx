@@ -44,8 +44,20 @@ vi.mock("@/app/admin/plans/PlanOtherList", () => ({
 }));
 
 vi.mock("./InboxBulkRecommendation", () => ({
-  default: ({ rec }: { rec: BulkRunItem }) => (
-    <span data-testid={`recommendation-${rec.itemId}`}>recommendation</span>
+  default: ({
+    rec,
+    onAccept,
+  }: {
+    rec: BulkRunItem;
+    onAccept: (draftOverride: string | null) => Promise<{ ok: boolean }>;
+  }) => (
+    <button
+      type="button"
+      data-testid={`recommendation-${rec.itemId}`}
+      onClick={() => void onAccept(null)}
+    >
+      recommendation
+    </button>
   ),
 }));
 
@@ -208,5 +220,48 @@ describe("<InboxBulkReport>", () => {
       screen.getByTestId("inbox-bulk-drill-a").getAttribute("aria-expanded"),
     ).toBe("false");
     expect(H.hydrate).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes a decision desk on Escape and returns focus to its toggle", () => {
+    render(
+      <InboxBulkReport
+        run={run}
+        runItems={[runItem()]}
+        attentionItems={[attention("a")]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const toggle = screen.getByTestId("inbox-bulk-drill-a");
+    fireEvent.click(toggle);
+    const recommendation = screen.getByTestId("recommendation-a");
+    recommendation.focus();
+    fireEvent.keyDown(recommendation, { key: "Escape" });
+
+    expect(screen.queryByTestId("inbox-bulk-decision-desk-a")).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+  });
+
+  it("restores focus to the surviving toggle after an inline accept closes the desk", async () => {
+    H.accept.mockResolvedValue({ ok: true, phase: "review" });
+    render(
+      <InboxBulkReport
+        run={run}
+        runItems={[runItem()]}
+        attentionItems={[attention("a")]}
+        onClose={vi.fn()}
+      />,
+    );
+
+    const toggle = screen.getByTestId("inbox-bulk-drill-a");
+    fireEvent.click(toggle);
+    const accept = screen.getByTestId("recommendation-a");
+    accept.focus();
+    fireEvent.click(accept);
+
+    await waitFor(() =>
+      expect(screen.queryByTestId("inbox-bulk-decision-desk-a")).toBeNull(),
+    );
+    expect(document.activeElement).toBe(toggle);
   });
 });
