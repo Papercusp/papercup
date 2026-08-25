@@ -33,6 +33,7 @@ import {
   readInsightsDir,
   renderInsightsPrelude,
 } from './insights-index';
+import { withOptionalMemoryAdmission } from './mid-turn-admission';
 
 /** Default ON (P-050); PAPERCUSP_SU_MEMORY_INJECTION=off is the kill switch. */
 function injectionEnabled(): boolean {
@@ -144,26 +145,34 @@ export async function buildMcpPrelude(
   }
 
   // Layer 1: mem0 fan-out. buildMemoryContextBlock handles the timeout
-  // + degraded-mode-flag posture from injection.ts; we just call it.
+  // + degraded-mode-flag posture from injection.ts. WI-41042: initialize used
+  // to bypass the host-wide optional-memory semaphore, letting every
+  // SO_REUSEPORT worker run this same expensive enhancement concurrently. Use
+  // the existing no-wait admission shared with mid-turn recall; a full or
+  // unavailable gate omits memory only, while the cheap insights layer below
+  // still gets a chance to enrich initialize.instructions.
   let memoryBlock: string | null = null;
   let userMemoryIncluded = false;
   let harnessMemoryIncluded = false;
   try {
-    memoryBlock = await buildMemoryContextBlock({
-      userId: input.userId,
-      workspaceId: input.workspaceId,
-      harnessSlugs: harnessSlug ? [harnessSlug] : [],
-      // D-005 (memory-delivery-unification-2026-07-12): the launch profile
-      // decides the query. Harness-bound → harness-identity query (primes
-      // hive packs + project conventions before the first turn); bare
-      // session → '' → buildMemoryContextBlock returns null and recall
-      // defers to the first turn-start delta. Callers may override via
-      // input.queryContext (the P-007 resolver does).
-      queryContext: input.queryContext ?? initializeQueryForHarness(harnessSlug),
-      ...(input.sessionId
-        ? { session: { sessionId: input.sessionId, port: 'initialize' } }
-        : {}),
-    });
+    const admitted = await withOptionalMemoryAdmission(() =>
+      buildMemoryContextBlock({
+        userId: input.userId,
+        workspaceId: input.workspaceId,
+        harnessSlugs: harnessSlug ? [harnessSlug] : [],
+        // D-005 (memory-delivery-unification-2026-07-12): the launch profile
+        // decides the query. Harness-bound → harness-identity query (primes
+        // hive packs + project conventions before the first turn); bare
+        // session → '' → buildMemoryContextBlock returns null and recall
+        // defers to the first turn-start delta. Callers may override via
+        // input.queryContext (the P-007 resolver does).
+        queryContext: input.queryContext ?? initializeQueryForHarness(harnessSlug),
+        ...(input.sessionId
+          ? { session: { sessionId: input.sessionId, port: 'initialize' } }
+          : {}),
+      }),
+    );
+    if (admitted.admitted) memoryBlock = admitted.value;
     // We can't introspect buildMemoryContextBlock's result to tell which
     // scope contributed without reshaping it; treat presence as
     // "both included when both requested".

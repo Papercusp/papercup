@@ -1,11 +1,18 @@
 /**
- * Host-wide admission for the optional mid-turn memory-injection beat.
+ * Host-wide admission for optional MCP memory injection.
  *
- * `mid-turn-context` is served by several SO_REUSEPORT workers. Its original
- * rolling limiter and degraded latch were both process-local, so ten workers
- * could each spend their own allowance and probe recovery independently. A
- * fleet burst therefore multiplied an optional recall path until ordinary MCP
- * responses could not return headers promptly (EI-21270032782365521).
+ * This seam originated on `mid-turn-context`, which is served by several
+ * SO_REUSEPORT workers. Its original rolling limiter and degraded latch were
+ * both process-local, so ten workers could each spend their own allowance and
+ * probe recovery independently. A fleet burst therefore multiplied an
+ * optional recall path until ordinary MCP responses could not return headers
+ * promptly (EI-21270032782365521).
+ *
+ * WI-41042 extends the SAME admission to initialize-time recall. Initialize is
+ * also optional, runs inside every request worker, and previously bypassed the
+ * host cap while sharing the same memory/embedding/PG dependencies. Keep one
+ * resource for both ports: separate per-port semaphores would recreate the
+ * cross-port amplification this guard exists to prevent.
  *
  * Reuse the existing named-resource counting semaphore rather than introduce a
  * second limiter store. There are two deliberately separate gates:
@@ -33,6 +40,8 @@ import {
 } from '../agent-tools/locks/su-lock-store';
 import { runWithTrackedMemoryTimeouts, type TrackedMemoryWork } from './op-deadline';
 
+// The resource id predates initialize coverage. Keep it stable so an upgrade
+// cannot temporarily create two independent host budgets under old/new names.
 export const MID_TURN_MEMORY_RESOURCE = 'memory-injection:mid-turn';
 export const MID_TURN_MEMORY_MAX_HOLDERS = 2;
 // Longer than the ~55–60s MCP transport window: several best-effort hygiene
@@ -222,9 +231,9 @@ async function ensureProductionResource(): Promise<boolean> {
   productionState.registrationPromise = inWorkspaceTxn(domain, registrationOwner, (tx) =>
     registerResource(tx, {
       resource: MID_TURN_MEMORY_RESOURCE,
-      description: 'Host-wide concurrency budget for optional per-tool-batch memory injection across operator workers.',
+      description: 'Host-wide concurrency budget for optional MCP memory injection across operator workers.',
       rule_text:
-        'The mid-turn context endpoint acquires a shared, no-wait hold before optional recall. It releases only after caller-visible and timed-out underlying work settle, heartbeating the crash-safe lease while needed. Full or unavailable capacity sheds the recall; callers must never wait for this resource.',
+        'Each optional MCP memory-recall port acquires a shared, no-wait hold. It releases only after caller-visible and timed-out underlying work settle, heartbeating the crash-safe lease while needed. Full or unavailable capacity sheds recall; callers must never wait for this resource.',
       enforcement: 'enforced',
       max_holders: MID_TURN_MEMORY_MAX_HOLDERS,
     }),
@@ -264,7 +273,7 @@ const productionStore: MidTurnAdmissionStore = {
         mode: 'shared',
         owner: ownerId,
         ownerLabel: `operator-worker:${process.pid}`,
-        reason: 'optional mid-turn memory recall',
+        reason: 'optional MCP memory recall',
         ttlSec: MID_TURN_MEMORY_LOCK_TTL_SEC,
       }),
     );
@@ -293,8 +302,8 @@ const productionStore: MidTurnAdmissionStore = {
   },
 };
 
-/** Production entry point used by the mid-turn endpoint. */
-export function withMidTurnMemoryAdmission<T>(run: () => Promise<T>): Promise<MidTurnAdmissionOutcome<T>> {
+/** Production entry point shared by every optional MCP memory-recall port. */
+export function withOptionalMemoryAdmission<T>(run: () => Promise<T>): Promise<MidTurnAdmissionOutcome<T>> {
   return guardMidTurnMemoryAdmission(
     {
       ownerId: productionOwnerId,
@@ -306,4 +315,9 @@ export function withMidTurnMemoryAdmission<T>(run: () => Promise<T>): Promise<Mi
     },
     run,
   );
+}
+
+/** Compatibility name for the original mid-turn caller. */
+export function withMidTurnMemoryAdmission<T>(run: () => Promise<T>): Promise<MidTurnAdmissionOutcome<T>> {
+  return withOptionalMemoryAdmission(run);
 }

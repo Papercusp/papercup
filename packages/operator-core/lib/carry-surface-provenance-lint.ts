@@ -197,6 +197,61 @@ function isOwnerTagPossibleMention(line: string): boolean {
  *  ordinary prose and train agents to ignore the warning. */
 const OWNER_ATTRIBUTION_RE =
   /\b(?:the )?owner\s+(?:said|says|wants|needs|requires|required|approved|approves|told me|instructed|directed|asked|demands|set an? (?:explicit )?gate|gave permission)\b/i;
+
+/**
+ * EI-21459558956325262 / WI-41690: OWNER_ATTRIBUTION_RE requires the literal token
+ * `owner` IMMEDIATELY FOLLOWED BY a verb, so it only ever sees ACTIVE voice with the
+ * generic noun — "the owner approved this". Two forms that assert exactly the same
+ * authority slip past it, and both occur in the live corpus:
+ *
+ *   PASSIVE VOICE — "Approved by the owner", "DEFERRED by owner (D-004)". Here `owner`
+ *   is followed by end-of-clause, never a verb. Passive is the natural register for a
+ *   status line, which is precisely what a plan's `## Now` **State:** field is.
+ *
+ *   A PERSONAL NAME — "Approved by Avi". Humans refer to a human by name, so the token
+ *   `owner` never appears at all.
+ *
+ * Measured before writing this (running the linter over seven phrasings): the existing
+ * regex caught 1 of 5 attribution forms. The motivating incident —
+ * `llm-agent-evaluation-measurement-integrity-2026-08-25` opening its Now block with
+ * "Approved by Avi for direct AUTO implementation by this session", an agent-authored
+ * line that no owner turn supports and that a later session quoted back as authority —
+ * used a missed form. Wiring a new carry surface to the linter without this would have
+ * shipped a guard blind to its own motivating case.
+ *
+ * PRECISION, which the block above rightly insists on. Calibrated against the real
+ * corpus rather than guessed: this pattern flags 6 of 1,380 plan Now blocks (0.4%),
+ * and those 6 are the true positives an independent census already identified. Two
+ * rules keep it there — the attributed target must be either the literal `owner` or a
+ * CAPITALISED token (a personal name), which alone excludes ordinary lowercase prose
+ * like "approved by the release script"; and a denylist removes the capitalised
+ * NON-HUMAN actors that legitimately approve things around here.
+ */
+const OWNER_ATTRIBUTION_PASSIVE_RE =
+  /\b(?:approved|approves|deferred|defers|directed|directs|ratified|ratifies|authorized|authorizes|authorised|authorises|mandated|mandates|instructed|instructs|signed[-\s]off)\s+by\s+(?:the\s+)?([A-Za-z][\w'’-]*)/i;
+
+/** Capitalised things that are NOT the owner but do approve/defer work here. */
+const NON_HUMAN_ATTRIBUTION_TARGETS = new Set([
+  'ci', 'cd', 'github', 'gitlab', 'postgres', 'papercusp', 'claude', 'codex', 'vitest',
+  'jest', 'dbos', 'tauri', 'scheduler', 'gate', 'runner', 'operator', 'host', 'watchdog',
+  'reaper', 'router', 'linter', 'release', 'checkpoint', 'pipeline', 'script', 'bot',
+  'agent', 'fleet', 'leader', 'peer', 'reviewer', 'grader', 'consult', 'system', 'policy',
+  'default', 'design', 'contract', 'mug', 'kettle', 'scout', 'blender', 'overwatch',
+]);
+
+/**
+ * A passive-voice or name-based owner attribution — the forms OWNER_ATTRIBUTION_RE
+ * structurally cannot see. Returns false for non-human approvers and for lowercase
+ * common nouns, which is what holds the false-positive rate at the measured 0.4%.
+ */
+function isPassiveOwnerAttribution(line: string): boolean {
+  const m = OWNER_ATTRIBUTION_PASSIVE_RE.exec(line);
+  const target = m?.[1];
+  if (!target) return false;
+  if (NON_HUMAN_ATTRIBUTION_TARGETS.has(target.toLowerCase())) return false;
+  // Either the generic owner noun, or something that looks like a personal name.
+  return target.toLowerCase() === 'owner' || /^[A-Z]/.test(target);
+}
 /**
  * EI-19393929983792049: a bare NOUN-PHRASE attribution — "owner directive 1: …",
  * "Directive 2 (…): …" re-emitted from a loop goal, "owner mandate: …" — asserts the

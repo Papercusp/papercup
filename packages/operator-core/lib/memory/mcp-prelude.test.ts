@@ -10,16 +10,28 @@ vi.mock('./insights-index', async () => {
     readInsightsDir: vi.fn(),
   };
 });
+vi.mock('./mid-turn-admission', () => ({
+  withOptionalMemoryAdmission: vi.fn(async (run: () => Promise<unknown>) => ({
+    admitted: true,
+    value: await run(),
+  })),
+}));
 
 import { buildMcpPrelude, initializeQueryForHarness, _testing } from './mcp-prelude';
 import { buildMemoryContextBlock } from './injection';
 import { readInsightsDir } from './insights-index';
+import { withOptionalMemoryAdmission } from './mid-turn-admission';
 
 const origEnv = { ...process.env };
 
 beforeEach(() => {
   vi.mocked(buildMemoryContextBlock).mockReset();
   vi.mocked(readInsightsDir).mockReset();
+  vi.mocked(withOptionalMemoryAdmission).mockReset();
+  vi.mocked(withOptionalMemoryAdmission).mockImplementation(async (run) => ({
+    admitted: true,
+    value: await run(),
+  }));
   process.env = { ...origEnv, PAPERCUSP_SU_MEMORY_INJECTION: 'on' };
 });
 
@@ -132,6 +144,33 @@ describe('buildMcpPrelude — harness slug resolution + launch-profile query (D-
 });
 
 describe('buildMcpPrelude — composition', () => {
+  it('runs initialize recall through the host-wide optional-memory admission', async () => {
+    vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- admitted');
+    const r = await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1', harnessSlug: 'papercusp' });
+
+    expect(withOptionalMemoryAdmission).toHaveBeenCalledOnce();
+    expect(buildMemoryContextBlock).toHaveBeenCalledOnce();
+    expect(r?.text).toContain('admitted');
+  });
+
+  it('keeps the cheap insights prelude when host admission sheds memory', async () => {
+    vi.mocked(withOptionalMemoryAdmission).mockResolvedValueOnce({ admitted: false, reason: 'at_capacity' });
+    vi.mocked(readInsightsDir).mockResolvedValue([
+      { slug: 'foo', title: 'Foo', description: 'Bar.', status: 'active', tags: [] },
+    ]);
+
+    const r = await buildMcpPrelude({
+      userId: 'u1',
+      workspaceId: 'w1',
+      harnessSlug: 'papercusp',
+      insightsDir: '/fake/dir',
+    });
+
+    expect(buildMemoryContextBlock).not.toHaveBeenCalled();
+    expect(r?.text).toContain('## Agent insights');
+    expect(r?.sources.userMemoryIncluded).toBe(false);
+  });
+
   it('returns memory block alone when insights not provided', async () => {
     vi.mocked(buildMemoryContextBlock).mockResolvedValue('## Memory\n- u prefers terse');
     const r = await buildMcpPrelude({ userId: 'u1', workspaceId: 'w1' });
