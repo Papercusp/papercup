@@ -232,7 +232,33 @@ describe('outboxRowToLocalWriteOp — features', () => {
       // (mig 698) federates — mig 708's BEFORE trigger requires it. NULL here for
       // the same predates-the-column reason.
       closed_ts: null,
+      // WI-41745: the born-pending admission trio (mig 944), exposed on
+      // harness_features_consolidated by mig 966 and federated from there on. NULL
+      // here for the same predates-the-column reason as the rows above; the
+      // real-value carry is covered by federated-column-completeness.
+      admission: null,
+      admitted_at: null,
+      admitted_by: null,
     });
+  });
+
+  // WI-41745 — the value that actually matters: `admission` is the born-pending claim
+  // gate (`admittedWhereSql` = `admission IS DISTINCT FROM 'pending'`), so a dropped
+  // column arrives NULL on the peer and reads as ADMITTED. Assert the real value
+  // survives the mapper, not merely that the key exists.
+  it('carries a born-pending admission through the feature mapper (WI-41745)', () => {
+    const op = outboxRowToLocalWriteOp({
+      ...featureOutboxRow,
+      row: {
+        ...featureOutboxRow.row,
+        admission: 'pending',
+        admitted_at: null,
+        admitted_by: null,
+      },
+    })!;
+    const value = op.value as HarnessFeatureRow;
+    expect(isHarnessFeatureRow(value)).toBe(true);
+    expect(value.admission).toBe('pending');
   });
 
   it('carries terminal_reason when present (P-009/D-001): the terminal nuance survives the mapper', () => {
