@@ -63,6 +63,7 @@ import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './stat
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
 // Aliased to the local names so every usage/describe below is unchanged.
 import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC } from '../../events/await/types';
+import type { AwaitRow } from '../../events/await/types';
 
 type GenerationPinDetails = {
   eventKey: string;
@@ -985,20 +986,69 @@ export default defineTool({
     const effectiveTimeoutSec =
       args.timeout_sec ??
       (args.producer_health ? args.producer_health.expected_cadence_sec : DEFAULT_TIMEOUT_SEC);
-    const row = await registerAwait({
-      subscriberId: identity.ownerId,
-      eventKey,
-      policy: 'wake',
-      note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
-      wakeHandle: handle,
-      timeoutBehavior: args.on_timeout ?? 'wake',
-      timeoutSec: effectiveTimeoutSec,
-      payloadFilter: effectivePayloadFilter,
-      producerHealthCertificate,
-      supersedePending: {
-        excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
-      },
-    });
+    let row: AwaitRow;
+    try {
+      row = await registerAwait({
+        subscriberId: identity.ownerId,
+        eventKey,
+        policy: 'wake',
+        note: clampText(args.note, LIMITS.ANNOTATION) ?? null,
+        wakeHandle: handle,
+        timeoutBehavior: args.on_timeout ?? 'wake',
+        timeoutSec: effectiveTimeoutSec,
+        payloadFilter: effectivePayloadFilter,
+        producerHealthCertificate,
+        expectedGeneration: args.after_generation,
+        supersedePending: {
+          excludeNotePrefix: FLEET_BENCH_NOTE_PREFIX,
+        },
+      });
+    } catch (error) {
+      if (!isAwaitGenerationMismatchError(error)) throw error;
+
+      // The pre-registration status read and the atomic store registration can
+      // race with the gate emitter. If the exact generation we authenticated
+      // fired during that handoff, the gate is satisfied; only a different
+      // generation/state requires a full status re-sync.
+      if (
+        args.after_generation != null &&
+        error.currentGeneration === args.after_generation &&
+        error.currentState === 'fired'
+      ) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                already_fired: true,
+                event: eventKey,
+                generation: error.currentGeneration,
+                ...(error.firedAt ? { fired_at: error.firedAt } : {}),
+                advice: `The announced gate "${eventKey}" fired during await registration at ${error.firedAt ?? 'an earlier time'} — do not wait. Proceed with the work this gate was blocking now.`,
+              }),
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              generationMismatchResponse({
+                eventKey: error.eventKey,
+                expectedGeneration: error.expectedGeneration,
+                currentGeneration: error.currentGeneration,
+                currentState: error.currentState,
+                firedAt: error.firedAt,
+              }),
+            ),
+          },
+        ],
+      };
+    }
 
     // ── EI-21124063749265204: close the registration-window race for the dynamic
     // git-sync egress latch. The emitter records the exact-key fire BEFORE claiming

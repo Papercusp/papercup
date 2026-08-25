@@ -814,6 +814,82 @@ describe('EI-18701276960172209 — a self-declared gate with no known emitter is
     expect(out.ok).toBe(true);
     warn.mockRestore();
   });
+
+  it('passes the authenticated announcement generation into registerAwait', async () => {
+    const eventKey = 'release:green:my-pipeline';
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({ eventKey, causalGeneration: 2 }),
+    ] as never);
+
+    const out = await call({ event: eventKey, after_generation: 2 });
+
+    expect(out).toMatchObject({ ok: true, await_id: 99 });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      eventKey,
+      expectedGeneration: 2,
+    });
+  });
+
+  it('returns already_fired when the authenticated generation fires during registration', async () => {
+    const eventKey = 'release:green:my-pipeline';
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({ eventKey, causalGeneration: 2 }),
+    ] as never);
+    vi.mocked(registerAwait).mockRejectedValueOnce(
+      Object.assign(new Error('generation fired during registration'), {
+        code: 'await_generation_mismatch',
+        eventKey,
+        expectedGeneration: 2,
+        currentGeneration: 2,
+        currentState: 'fired',
+        firedAt: '2026-08-25T20:30:00.000Z',
+      }),
+    );
+
+    const out = await call({ event: eventKey, after_generation: 2 });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_fired: true,
+      event: eventKey,
+      generation: 2,
+      fired_at: '2026-08-25T20:30:00.000Z',
+    });
+    expect(out.error).toBeUndefined();
+  });
+
+  it('returns a structured resync when registration observes a different generation', async () => {
+    const eventKey = 'release:green:my-pipeline';
+    vi.mocked(findAnnouncementsForKey).mockResolvedValueOnce([
+      declaredRow({ eventKey, causalGeneration: 2 }),
+    ] as never);
+    vi.mocked(registerAwait).mockRejectedValueOnce(
+      Object.assign(new Error('generation replaced during registration'), {
+        code: 'await_generation_mismatch',
+        eventKey,
+        expectedGeneration: 2,
+        currentGeneration: 3,
+        currentState: 'declared',
+      }),
+    );
+
+    const out = await call({ event: eventKey, after_generation: 2 });
+
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'await_generation_mismatch',
+      event: eventKey,
+      expected_generation: 2,
+      current_generation: 3,
+      current_state: 'declared',
+      resync: {
+        required: true,
+        reason: 'consumer_behind',
+        authoritative_generation: 3,
+      },
+    });
+    expect(out.already_fired).toBeUndefined();
+  });
 });
 
 describe('EI-13089 — the FAMILY-PREFIX-MISSING-REQUIRED-PARAM guard', () => {

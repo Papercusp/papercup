@@ -40,6 +40,7 @@ const {
   cancelAwaitsForSubscribersOnKeys,
   cancelAwaitsByIds,
   findAnnouncementsForKey,
+  AwaitGenerationMismatchError,
   listActiveAnnouncements,
   insertDeliveries,
   retireLifecycleBoundWatches,
@@ -295,6 +296,41 @@ describe('await-event store (PG)', () => {
     expect(row.expiresTs).not.toBeNull(); // timeoutSec → expires_ts
     const active = await listActiveAwaits('sub-1');
     expect(active.map((a) => a.eventKey)).toEqual(['k:1']);
+  });
+
+  it('pins registration to the current announcement generation and rejects stale or fired pins', async () => {
+    const eventKey = 'gate:generation-pinned-await';
+    const first = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    const firstGeneration = first.causalGeneration!;
+
+    const pinned = await registerAwait({
+      subscriberId: 'pinned-waiter',
+      eventKey,
+      expectedGeneration: firstGeneration,
+    });
+    expect(pinned.eventKey).toBe(eventKey);
+
+    const second = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    expect(second.causalGeneration).toBeGreaterThan(firstGeneration);
+
+    await expect(
+      registerAwait({ subscriberId: 'stale-waiter', eventKey, expectedGeneration: firstGeneration }),
+    ).rejects.toMatchObject({
+      code: 'await_generation_mismatch',
+      currentGeneration: second.causalGeneration,
+      currentState: 'declared',
+    } satisfies Partial<AwaitGenerationMismatchError>);
+    expect(await listActiveAwaits('stale-waiter')).toEqual([]);
+
+    await stampAnnouncementsFired(eventKey, { firedBy: 'emit' });
+    await expect(
+      registerAwait({ subscriberId: 'fired-waiter', eventKey, expectedGeneration: second.causalGeneration! }),
+    ).rejects.toMatchObject({
+      code: 'await_generation_mismatch',
+      currentGeneration: second.causalGeneration,
+      currentState: 'fired',
+    } satisfies Partial<AwaitGenerationMismatchError>);
+    expect(await listActiveAwaits('fired-waiter')).toEqual([]);
   });
 
   it('upsertInboxWakeAwait is one-per-agent and KEEPS the prior handle on a null re-arm (COALESCE)', async () => {
