@@ -145,6 +145,7 @@ import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-not
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { carryProvenanceFields, retainedProvenanceText } from '../../carry-surface-provenance-stamp';
+import { hasPotentialActionClaim, readSuccessfulActionInvocations } from '../../carry-surface-action-proof';
 import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_NOTE_MAX_CHECKS,
@@ -475,7 +476,7 @@ export default defineTool({
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null };
+    const c = ctx as { harnessSlug?: string | null; workspaceId?: string | null; spawnId?: string | null };
     const items = args.items?.length
       ? args.items
       : [
@@ -1268,6 +1269,10 @@ export default defineTool({
           ...(stored !== null
             ? await carryProvenanceFields(currentProvenanceText, ident.ownerId, {
                 retainedText: retainedProvenanceText(stored, currentProvenanceText),
+                successfulActions:
+                  c.spawnId && hasPotentialActionClaim(currentProvenanceText)
+                    ? await readSuccessfulActionInvocations({ workspaceId, spawnId: c.spawnId })
+                    : undefined,
               })
             : {}),
           // EI-9325: warn-only nudge — a plain replace-on-write that shrank the

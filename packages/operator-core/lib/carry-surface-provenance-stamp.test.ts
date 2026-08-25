@@ -60,6 +60,27 @@ describe('current-vs-retained provenance split (EI-21165235642497045)', () => {
   });
 });
 
+describe('same-turn successful-action proof (EI-21375032920365268)', () => {
+  it('clears a proven first-person action claim', async () => {
+    const fields = await carryProvenanceFields('Messaged fleet leader su-bce40c51 directly', null, {
+      successfulActions: [{ toolName: 'coord:send', args: { to: ['su-bce40c51'] } }],
+    });
+    expect(fields.provenanceLint).toBeUndefined();
+  });
+
+  it('keeps unmatched and peer-reported action claims visible', async () => {
+    const fields = await carryProvenanceFields(
+      ['Messaged fleet leader su-bce40c51 directly', 'su-deadbeef replied about WI-7'].join('\n'),
+      null,
+      { successfulActions: [{ toolName: 'coord:send', args: { to: ['su-other'] } }] },
+    );
+    expect(fields.provenanceLint?.matches.map((m) => m.kind)).toEqual([
+      'unverified-action-claim',
+      'peer-reported-action',
+    ]);
+  });
+});
+
 describe('applyOwnerTurnAutoVerify (cold-carry-system-hardening-2026-07-19 P-005 — pure)', () => {
   const OWNER_TURN: CurrentTurnStamp = { ref: '[turn:abc123@2026-07-19T03:25:00Z]', verdict: 'owner-typed', origin: null };
   const LOOP_TURN: CurrentTurnStamp = { ref: '[turn:abc124@2026-07-19T03:30:00Z]', verdict: 'agent-injected', origin: 'loop-fire' };

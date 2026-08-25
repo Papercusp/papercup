@@ -30,6 +30,10 @@ import {
   type TypedSlotLintMatch,
 } from './carry-surface-typed-slots';
 import {
+  suppressProvenActionClaims,
+  type SuccessfulActionInvocation,
+} from './carry-surface-action-proof';
+import {
   parseTurnRefs,
   resolveCurrentTurnStamp,
   verifyTurnRefs,
@@ -140,8 +144,9 @@ export function applyOwnerTurnAutoVerify(
 export async function stampCarrySurfaceProvenance(
   text: string | null | undefined,
   ownerId: string | null | undefined,
+  options: { successfulActions?: readonly SuccessfulActionInvocation[] | null } = {},
 ): Promise<CarryProvenanceStamp | undefined> {
-  const lint = provenanceLintField(text);
+  const lint = suppressProvenActionClaims(provenanceLintField(text), options.successfulActions);
   const slotLint = ownerQuestionSlotField(text);
   const refs = parseTurnRefs(text);
 
@@ -186,6 +191,8 @@ export async function stampCarrySurfaceProvenance(
  *  retained bytes cannot be attributed to the current turn. */
 export interface CarryProvenanceFieldsOptions {
   retainedText?: string | null;
+  /** Successful same-turn coordination calls that can prove first-person action claims. */
+  successfulActions?: readonly SuccessfulActionInvocation[] | null;
 }
 
 /**
@@ -238,7 +245,9 @@ export async function carryProvenanceFields(
   ownerId: string | null | undefined,
   options: CarryProvenanceFieldsOptions = {},
 ): Promise<CarryProvenanceFields> {
-  const stamp = await stampCarrySurfaceProvenance(text, ownerId);
+  const stamp = await stampCarrySurfaceProvenance(text, ownerId, {
+    successfulActions: options.successfulActions,
+  });
   const retainedProvenance = options.retainedText ? provenanceLintField(options.retainedText) : undefined;
   if (!stamp && !retainedProvenance) return {};
   const out: CarryProvenanceFields = {};
