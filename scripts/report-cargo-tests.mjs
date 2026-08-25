@@ -33,10 +33,9 @@
  * (`<crate-dir> (cargo aggregate)`) so the Tests tab still has a duration signal.
  */
 import { spawn } from 'node:child_process';
-import { resolve, dirname, relative, sep, join, delimiter } from 'node:path';
+import { resolve, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync, statfsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { statfsSync } from 'node:fs';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import {
@@ -49,6 +48,7 @@ import {
   formatCargoResultLine,
   parseCargoTestResultLines,
   reclaimInactiveCargoArtifacts,
+  resolveCargoBin,
 } from './lib/cargo-result.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -85,31 +85,6 @@ function captureReporterSaturationSnapshot() {
     rssMb = null;
   }
   return { loopLagP95Ms, rssMb };
-}
-
-/**
- * Resolve an actual `cargo` binary rather than trusting a bare `spawn('cargo', ...)`
- * to find it on inherited PATH. A rustup-managed toolchain lives at `~/.cargo/bin/cargo`
- * (a shim), but a service-managed PATH (a systemd --user unit, a routine ticker host,
- * CI) can easily omit that dir — the exact same ENOENT class that already hit `node`
- * once (EI-2048) and hit `cargo` here (WI-3206, 2026-07-06: the scheduled routine's
- * first live fire recorded a single `spawn cargo ENOENT` error row instead of running
- * the suite, because papercup-bg-host.service's PATH override didn't include
- * ~/.cargo/bin). Falling back to well-known install dirs makes this recorder resilient
- * to that class of environment drift wherever it runs, not just on this one box's
- * systemd drop-in fix.
- */
-function resolveCargoBin() {
-  const pathDirs = (process.env.PATH ?? '').split(delimiter).filter(Boolean);
-  const candidates = [
-    ...pathDirs.map((d) => join(d, 'cargo')),
-    process.env.CARGO_HOME ? join(process.env.CARGO_HOME, 'bin', 'cargo') : null,
-    join(homedir(), '.cargo', 'bin', 'cargo'),
-  ].filter(Boolean);
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  return 'cargo'; // last resort — let spawn's own ENOENT surface if truly absent
 }
 
 function parseArgs(argv) {

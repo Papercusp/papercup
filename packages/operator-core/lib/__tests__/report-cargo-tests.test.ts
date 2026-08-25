@@ -33,6 +33,7 @@ import {
   formatCargoResultLine,
   parseCargoTestResultLines,
   reclaimInactiveCargoArtifacts,
+  resolveCargoBin,
   stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 } from '../../../../scripts/lib/cargo-result.mjs';
@@ -206,6 +207,18 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
 });
 
 describe('isolated Cargo target cleanup (EI-21048920599909117)', () => {
+  it('finds rustup Cargo even when the worker PATH omits ~/.cargo/bin', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-home-'));
+    const cargo = resolve(home, '.cargo/bin/cargo');
+    try {
+      mkdirSync(dirname(cargo), { recursive: true });
+      writeFileSync(cargo, '#!/bin/sh\n');
+      expect(resolveCargoBin({ PATH: '' }, home)).toBe(cargo);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('initializes the canonical tag so Cargo clean accepts a producer-created target', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-cache-tag-'));
     const targetDir = resolve(root, 'isolated-target');
@@ -229,7 +242,7 @@ describe('isolated Cargo target cleanup (EI-21048920599909117)', () => {
       expect(readFileSync(resolve(targetDir, 'CACHEDIR.TAG'), 'utf8')).toBe(CARGO_CACHE_TAG);
 
       const clean = spawnSync(
-        'cargo',
+        resolveCargoBin(),
         ['clean', '--manifest-path', manifestPath, '--target-dir', targetDir],
         { encoding: 'utf8', timeout: 300_000, killSignal: 'SIGKILL' },
       );

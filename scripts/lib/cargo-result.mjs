@@ -16,9 +16,27 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 
 const GIB = 1024 ** 3;
+
+/**
+ * Resolve an actual `cargo` binary rather than trusting a bare spawn to find it on inherited
+ * PATH. Service-managed and Vitest-worker environments can omit rustup's `~/.cargo/bin`; the
+ * well-known fallbacks keep every native-test caller on the same resolution contract.
+ */
+export function resolveCargoBin(env = process.env, home = homedir()) {
+  const pathDirs = (env.PATH ?? '').split(delimiter).filter(Boolean);
+  const candidates = [
+    ...pathDirs.map((d) => join(d, 'cargo')),
+    env.CARGO_HOME ? join(env.CARGO_HOME, 'bin', 'cargo') : null,
+    join(home, '.cargo', 'bin', 'cargo'),
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return 'cargo'; // last resort — let spawn's own ENOENT surface if Cargo is truly absent
+}
 
 /**
  * Cargo's cache-directory marker. Cargo clean requires this exact tag before
