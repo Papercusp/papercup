@@ -74,7 +74,7 @@ function expectedVerdict(row: AwaitRow): 'not-declared' | 'pending' | 'matched' 
   return 'invalid';
 }
 
-type AnnouncementOwnership = {
+export type AnnouncementOwnership = {
   declaredByLiveness: string | null;
   liveSuccessorIds: string[];
   staleOwner: boolean;
@@ -86,7 +86,7 @@ type AnnouncementOwnership = {
  * fleet leader candidate and role-slot candidates; a missing/degraded verdict
  * is deliberately not treated as live evidence.
  */
-async function resolveAnnouncementOwnership(
+export async function resolveAnnouncementOwnership(
   announcements: AwaitRow[],
   workspaceId: string | null,
 ): Promise<Map<number, AnnouncementOwnership>> {

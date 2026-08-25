@@ -56,6 +56,7 @@ import { formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-workspace';
 import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
 import { producerHealthInputSchema, resolveProducerHealthCertificate } from './producer-health';
+import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './status';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
@@ -306,6 +307,7 @@ export default defineTool({
       generation: number | null;
       expected: unknown | null;
     } | null = null;
+    let announcedGateOwnership: AnnouncementOwnership | null = null;
     let nearMiss: Array<{ key: string; kind: 'await' | 'announce'; holders: number }> | null = null;
     if (!patternAwait) {
       try {
@@ -338,6 +340,11 @@ export default defineTool({
             generation: declared.causalGeneration ?? null,
             expected: declared.expectedCondition ?? null,
           };
+          const ownership = await withBoundedTimeout(
+            resolveAnnouncementOwnership(anns, identity.workspaceId),
+            { fallback: null, timeoutMs: 1_000, label: 'events-await:announcementOwnership' },
+          );
+          announcedGateOwnership = ownership.value?.get(declared.id) ?? null;
         }
         // ── event-key-nearmiss-guard P-005: no announcement matches this key
         // exactly — advisory scan for a near-identical active key (another
@@ -522,7 +529,10 @@ export default defineTool({
         // No catalog family, no fire-latch evidence, and no fired declaration
         // history ⇒ genuinely no known emitter. An unavailable history read is
         // fail-soft: an unverifiable claim is safer than a contradictory warning.
-        if (evidence.value?.fires === 0 && declarationHistory.value && !priorGenerationFired) {
+        const hasLiveEmitterDuty = announcedGateOwnership != null &&
+          ((announcedGateOwnership.declaredByLiveness != null && announcedGateOwnership.declaredByLiveness !== 'ended') ||
+            announcedGateOwnership.liveSuccessorIds.length > 0);
+        if (evidence.value?.fires === 0 && declarationHistory.value && !priorGenerationFired && !hasLiveEmitterDuty) {
           noKnownEmitterForAnnouncedGate = { catalogNearMiss: findCatalogNearMiss(eventKey, probe.value) };
         }
       }
@@ -969,6 +979,15 @@ export default defineTool({
                 }
               : {}),
             ...(announcedGate ? { announced_gate: announcedGate } : {}),
+            ...(announcedGateOwnership
+              ? {
+                  announced_gate_ownership: {
+                    declared_by_liveness: announcedGateOwnership.declaredByLiveness,
+                    live_successor_ids: announcedGateOwnership.liveSuccessorIds,
+                    ...(announcedGateOwnership.staleOwner ? { stale_owner: true } : {}),
+                  },
+                }
+              : {}),
             ...(noKnownEmitterForAnnouncedGate
               ? {
                   no_known_emitter: true,
