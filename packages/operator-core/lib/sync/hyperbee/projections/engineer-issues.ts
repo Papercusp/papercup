@@ -405,7 +405,9 @@ async function writeToPg(
       (workspace_id, harness_slug, feature_id, item_kind, title, summary, status,
        taken_by, taken_at, payload, author_pubkey, origin, fed_ts, fed_hlc,
        created_ts, updated_ts, ts, terminal_owner, terminal_completion_ref, terminal_reason,
-       authority, closed_ts)
+       authority, closed_ts,
+       admission, admitted_at, admitted_by, state_changed_at, tags, parent_id,
+       source_plan_slug, source_plan_item_ids, expected_cost_cents)
     VALUES
       (${opts.workspaceId}, ${vSlug}, ${row.issue_id}, ${row.kind}, ${row.title},
        ${row.body}, ${row.state}, ${row.assignee}, ${row.assigned_at},
@@ -415,7 +417,15 @@ async function writeToPg(
        (extract(epoch FROM now()) * 1000)::bigint,
        (extract(epoch FROM now()) * 1000)::bigint,
        ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null},
-       ${row.authority ?? null}, ${row.closed_ts ?? null})
+       ${row.authority ?? null}, ${row.closed_ts ?? null},
+       -- EI-21467654382027859 (mig 965). The tags column binds via ::text::jsonb like
+       -- payload above, but must bind SQL NULL (not the jsonb 'null' literal) when
+       -- absent: JSON.stringify(null) would store a jsonb null that reads as present.
+       ${row.admission ?? null}, ${row.admitted_at ?? null}, ${row.admitted_by ?? null},
+       ${row.state_changed_at ?? null},
+       ${row.tags === undefined || row.tags === null ? null : JSON.stringify(row.tags)}::text::jsonb,
+       ${row.parent_id ?? null}, ${row.source_plan_slug ?? null},
+       ${row.source_plan_item_ids ?? null}::text[], ${row.expected_cost_cents ?? null})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       item_kind     = EXCLUDED.item_kind,
       title         = EXCLUDED.title,
@@ -439,7 +449,61 @@ async function writeToPg(
       authority = EXCLUDED.authority,
       -- mig 708 PART 2: honour a federated close time; the BEFORE trigger's own
       -- COALESCE/freeze logic (mig 698) then decides whether it actually wins.
-      closed_ts = EXCLUDED.closed_ts
+      closed_ts = EXCLUDED.closed_ts,
+      -- EI-21467654382027859 (mig 965). These plain content columns converge like
+      -- status does: last writer in fed_order_key space wins.
+      tags = EXCLUDED.tags,
+      parent_id = EXCLUDED.parent_id,
+      source_plan_slug = EXCLUDED.source_plan_slug,
+      source_plan_item_ids = EXCLUDED.source_plan_item_ids,
+      expected_cost_cents = EXCLUDED.expected_cost_cents,
+      -- state_changed_at COALESCEs rather than taking EXCLUDED outright, and the
+      -- difference is not cosmetic. An op from a pre-965 peer carries NULL here, and
+      -- the mig 896 BEFORE trigger treats a NULL that DIFFERS from the stored value as
+      -- "an explicit origin timestamp" and preserves it -- so a bare EXCLUDED would let
+      -- one older peer's update ERASE the state age this column exists to protect.
+      -- COALESCE means: a 965 peer supplies the true origin time, an older peer
+      -- supplies nothing and the local value stands.
+      state_changed_at = COALESCE(EXCLUDED.state_changed_at, work_items.state_changed_at),
+      -- admission is MONOTONIC (pending -> admitted/auto/unreviewed; no writer anywhere
+      -- moves it back), so it is upserted with a floor rather than blindly:
+      --
+      --   * EXCLUDED NULL  => the op predates mig 965 (or the column really is NULL).
+      --     Keep the local value. Taking NULL would read as ADMITTED at the claim gate
+      --     and un-hide a born-pending item -- the exact bypass this column federates
+      --     to close.
+      --   * EXCLUDED 'pending' over a locally PROMOTED row => a peer that has not yet
+      --     seen the promotion. Keep the promotion. The LWW guard below does not cover
+      --     this: a LOCAL promotion does not restamp fed_ts/fed_hlc, so a later remote
+      --     op legitimately outranks it in fed_order_key space and would re-hide work
+      --     that was already judged.
+      --   * otherwise => take the incoming value, including 'pending' over a NULL
+      --     legacy row (hiding is the fail-safe direction, and it is what the origin
+      --     asserts about the item).
+      --
+      -- admitted_at/admitted_by follow the SAME branch so the trio can never disagree
+      -- about who promoted the row and when.
+      admission = CASE
+        WHEN EXCLUDED.admission IS NULL THEN work_items.admission
+        WHEN EXCLUDED.admission = 'pending'
+             AND work_items.admission IS NOT NULL
+             AND work_items.admission IS DISTINCT FROM 'pending' THEN work_items.admission
+        ELSE EXCLUDED.admission
+      END,
+      admitted_at = CASE
+        WHEN EXCLUDED.admission IS NULL THEN work_items.admitted_at
+        WHEN EXCLUDED.admission = 'pending'
+             AND work_items.admission IS NOT NULL
+             AND work_items.admission IS DISTINCT FROM 'pending' THEN work_items.admitted_at
+        ELSE EXCLUDED.admitted_at
+      END,
+      admitted_by = CASE
+        WHEN EXCLUDED.admission IS NULL THEN work_items.admitted_by
+        WHEN EXCLUDED.admission = 'pending'
+             AND work_items.admission IS NOT NULL
+             AND work_items.admission IS DISTINCT FROM 'pending' THEN work_items.admitted_by
+        ELSE EXCLUDED.admitted_by
+      END
     -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
     -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
     -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
