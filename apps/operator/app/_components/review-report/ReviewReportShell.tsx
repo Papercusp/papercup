@@ -194,6 +194,9 @@ export default function ReviewReportShell({
       ?.focus({ preventScroll: true });
   };
 
+  const selectAll = () => setSelected(new Set(pendingIds));
+  const clearSelection = () => setSelected(new Set());
+
   return (
     <section className="review-report" data-testid="review-report">
       <header className="review-report__head">
@@ -259,6 +262,30 @@ export default function ReviewReportShell({
             <span className="review-report__selection-caption">
               selectable recommendation{pendingIds.size === 1 ? "" : "s"}
             </span>
+            <div className="review-report__selection-actions">
+              <Button
+                variant="ghost"
+                className="review-report__selection-action"
+                data-testid="review-report-select-all"
+                disabled={
+                  busy ||
+                  pendingIds.size === 0 ||
+                  liveSelected.size === pendingIds.size
+                }
+                onClick={selectAll}
+              >
+                Select all
+              </Button>
+              <Button
+                variant="ghost"
+                className="review-report__selection-action"
+                data-testid="review-report-clear-selection"
+                disabled={busy || liveSelected.size === 0}
+                onClick={clearSelection}
+              >
+                Clear
+              </Button>
+            </div>
           </div>
           <nav
             className="review-report__nav-list"

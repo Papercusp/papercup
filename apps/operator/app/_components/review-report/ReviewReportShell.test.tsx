@@ -194,7 +194,36 @@ describe("selection + apply", () => {
     expect(onApply).toHaveBeenCalledWith(["f1"]);
   });
 
-  it("dismiss fires onDismiss; busy disables apply, dismiss and checkboxes", () => {
+  it("selects and clears every selectable pending row from the command-center summary", () => {
+    renderShell({ defaultSelected: "none" });
+    const selectAll = screen.getByTestId(
+      "review-report-select-all",
+    ) as HTMLButtonElement;
+    const clear = screen.getByTestId(
+      "review-report-clear-selection",
+    ) as HTMLButtonElement;
+
+    expect(selectAll.disabled).toBe(false);
+    expect(clear.disabled).toBe(true);
+    fireEvent.click(selectAll);
+    expect(
+      screen.getByTestId("review-report-selection-total").textContent,
+    ).toContain("3 / 3");
+    expect(rowCheck("f1").getAttribute("aria-checked")).toBe("true");
+    expect(rowCheck("o2").getAttribute("aria-checked")).toBe("true");
+    expect(selectAll.disabled).toBe(true);
+    expect(clear.disabled).toBe(false);
+
+    fireEvent.click(clear);
+    expect(
+      screen.getByTestId("review-report-selection-total").textContent,
+    ).toContain("0 / 3");
+    expect(applyBtn().disabled).toBe(true);
+    expect(selectAll.disabled).toBe(false);
+    expect(clear.disabled).toBe(true);
+  });
+
+  it("dismiss fires onDismiss; busy disables apply, dismiss, selection controls and checkboxes", () => {
     const { onDismiss } = renderShell();
     fireEvent.click(screen.getByTestId("review-report-dismiss"));
     expect(onDismiss).toHaveBeenCalledTimes(1);
@@ -203,6 +232,14 @@ describe("selection + apply", () => {
     expect(applyBtn().disabled).toBe(true);
     expect(
       (screen.getByTestId("review-report-dismiss") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId("review-report-select-all") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId("review-report-clear-selection") as HTMLButtonElement)
         .disabled,
     ).toBe(true);
     expect(rowCheck("f1").disabled).toBe(true);

@@ -175,6 +175,21 @@
   line-height: 1.35;
 }
 
+.review-report__selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin: 5px -5px -5px;
+}
+
+.review-report__selection-action.pc-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding-inline: 5px;
+  color: var(--fg-mute);
+  font-size: 10px;
+}
+
 .review-report__nav-list {
   display: flex;
   flex-direction: column;
@@ -319,10 +334,9 @@
 
 .review-report__row {
   display: grid;
-  grid-template-columns: 26px minmax(120px, 180px) minmax(150px, 220px) minmax(
-      0,
-      1fr
-    ) 88px;
+  grid-template-columns:
+    26px minmax(120px, 180px) minmax(150px, 220px) minmax(0, 1fr)
+    88px;
   align-items: center;
   gap: 10px;
   min-height: 42px;
