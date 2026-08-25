@@ -111,7 +111,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
 import { isEngineeringDocsSentinel } from '../../../agent-tools/_harness-scope';
 import { verifyExplicitPlanHarness } from '../../../agent-tools/plans/slug-scope';
-import { evaluateAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
+import { withMcpAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
 import { DeltaProxySessionStore } from './delta-proxy-session-store';
 import {
   classifyAndConsumeFailure,
@@ -3649,9 +3649,12 @@ export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KE
 // rationale live in ./mcp-admission (kept out of this heavy side-effect module so it's
 // unit-testable). Fail-open when no lag monitor is running (loopPressure() → 'ok').
 const mcpHandler = async (req: Request): Promise<Response> => {
-  const shed = await evaluateAdmission(req, loopPressure(), ADMISSION_CONTROL_ENABLED);
-  if (shed) return shed;
-  return primeSseResponse(await handler(req));
+  return withMcpAdmission(
+    req,
+    loopPressure(),
+    ADMISSION_CONTROL_ENABLED,
+    async () => primeSseResponse(await handler(req)),
+  );
 };
 
 export { mcpHandler };

@@ -12,6 +12,7 @@ import {
   shouldShedForPressure,
   shouldShedForCapacity,
   acquireAdmission,
+  withMcpAdmission,
   evaluateAdmission,
   admissionShedResponse,
   getMcpAdmissionSnapshot,
@@ -173,6 +174,51 @@ describe('admissionShedResponse — a retryable 429 the proxy absorbs', () => {
   });
   it('honors an explicit Retry-After', () => {
     expect(admissionShedResponse(null, 3).headers.get('retry-after')).toBe('3');
+  });
+});
+
+describe('withMcpAdmission — handler-lifetime capacity lease', () => {
+  it('holds the lease through handler completion and releases it afterward', async () => {
+    let duringHandler: ReturnType<typeof getMcpAdmissionSnapshot> | undefined;
+    const res = await withMcpAdmission(post(toolsCall(12)), 'ok', true, async () => {
+      duringHandler = getMcpAdmissionSnapshot();
+      return new Response('ok');
+    });
+
+    expect(res.status).toBe(200);
+    expect(duringHandler).toMatchObject({ inFlight: 1, ordinaryInFlight: 1 });
+    expect(getMcpAdmissionSnapshot()).toEqual({
+      inFlight: 0,
+      handshakesInFlight: 0,
+      diagnosticsInFlight: 0,
+      ordinaryInFlight: 0,
+    });
+  });
+
+  it('releases the lease when the handler rejects', async () => {
+    await expect(
+      withMcpAdmission(post(toolsCall(13)), 'ok', true, async () => {
+        throw new Error('handler failed');
+      }),
+    ).rejects.toThrow('handler failed');
+    expect(getMcpAdmissionSnapshot()).toEqual({
+      inFlight: 0,
+      handshakesInFlight: 0,
+      diagnosticsInFlight: 0,
+      ordinaryInFlight: 0,
+    });
+  });
+
+  it('does not invoke the handler when admission sheds the request', async () => {
+    let invoked = false;
+    const res = await withMcpAdmission(post(toolsCall(14)), 'critical', true, async () => {
+      invoked = true;
+      return new Response('unexpected');
+    });
+
+    expect(res.status).toBe(429);
+    expect(invoked).toBe(false);
+    expect(getMcpAdmissionSnapshot()).toMatchObject({ inFlight: 0 });
   });
 });
 
