@@ -300,7 +300,19 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     // otherwise unkillable descendant can survive both SIGTERM and an escalated
     // SIGKILL. Re-probe (bounded, not wall-clock — see waitForScopeEmpty) before
     // reporting anything, and never close the row as `killed` while it is not.
-    const { empty, survivors, residue } = await waitForScopeEmpty(row, d);
+    let verification = await waitForScopeEmpty(row, d);
+    let stopFallback: { ok: boolean; detail?: string } | null = null;
+    if (!verification.empty && signal === 'SIGTERM' && !escalated) {
+      // A transient agent-session scope can accept the signal while systemd
+      // still considers the unit active. A unit-scoped stop asks systemd to
+      // complete the teardown without widening the target. `systemctl` has a
+      // bounded timeout in systemctl(), and the second bounded re-probe keeps
+      // the no-false-green contract intact.
+      const stop = await systemctl(['stop', row.scopeUnit], d);
+      stopFallback = stop;
+      verification = await waitForScopeEmpty(row, d);
+    }
+    const { empty, survivors, residue } = verification;
     if (!empty) {
       if (escalated) {
         // A SIGKILL is terminal even when cgroup teardown/reaping is slower than
@@ -319,7 +331,7 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
         taskId,
         action: 'kill',
         error: 'incomplete',
-        detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} but ${survivors} process(es) still alive after the verification window — task left LIVE (not closed) so a retry or a fresh listing can still find it${residue ? describeResidue(residue) : ''}`,
+        detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''}${stopFallback ? `; systemd stop fallback ${stopFallback.ok ? 'also left the scope non-empty' : `failed${stopFallback.detail ? `: ${stopFallback.detail}` : ''}`}` : ''} but ${survivors} process(es) still alive after the verification window — task left LIVE (not closed) so a retry or a fresh listing can still find it${residue ? describeResidue(residue) : ''}`,
       };
     }
     if (reapingResidue) {

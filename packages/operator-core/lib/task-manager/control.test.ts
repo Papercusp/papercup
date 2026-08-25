@@ -185,6 +185,50 @@ describe('killTask — confined path', () => {
     expect(store.closed).toHaveLength(0);
   });
 
+  it('falls back to a bounded unit stop when non-escalated SIGTERM leaves a survivor', async () => {
+    row({ taskId: 'b2-stop' });
+    const scopePath = '/sys/fs/cgroup/papercusp.slice/pc-b2-stop.scope';
+    const calls: string[][] = [];
+    let alive = true;
+    const out = await killTask('b2-stop', {
+      sleep: async () => {},
+      fs: {
+        readFile: (path: string) => (path === `${scopePath}/cgroup.procs` && alive ? '4242\n' : ''),
+        readDir: () => [],
+        isDir: () => true,
+      },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === 'stop') alive = false;
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(calls).toEqual([
+      ['--user', 'kill', '--signal=SIGTERM', 'pc-b2-stop.scope'],
+      ['--user', 'stop', 'pc-b2-stop.scope'],
+    ]);
+    expect(out).toMatchObject({ ok: true, taskId: 'b2-stop' });
+    expect((out as { detail: string }).detail).toMatch(/verified empty/);
+    expect(store.closed).toEqual([{ taskId: 'b2-stop', state: 'killed', reason: 'scope kill SIGTERM' }]);
+  });
+
+  it('does not use the stop fallback for an explicit SIGKILL', async () => {
+    row({ taskId: 'b2-sigkill' });
+    const calls: string[][] = [];
+    const out = await killTask('b2-sigkill', {
+      signal: 'SIGKILL',
+      sleep: async () => {},
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(calls).toEqual([['--user', 'kill', '--signal=SIGKILL', 'pc-b2-sigkill.scope']]);
+    expect(out).toMatchObject({ ok: false, taskId: 'b2-sigkill', error: 'incomplete' });
+    expect(store.closed).toHaveLength(0);
+  });
+
   it('deep-walks nested cgroups when verifying — a descendant delegated into a sub-cgroup is not invisible', async () => {
     // Top-level cgroup.procs is EMPTY (the leader exited), but a descendant left
     // a process behind in a nested child directory — the shape a bare, single-
