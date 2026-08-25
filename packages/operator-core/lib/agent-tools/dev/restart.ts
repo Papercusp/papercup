@@ -275,7 +275,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Restart a gate-sensitive target (embed-sidecar/gateway/bg-host) even though a green-checkpoint run is in flight or imminent. Only pass when the target is genuinely wedged and cannot wait — a restart mid-run can starve the gate into a FALSE red that gets misdiagnosed as a regression.',
+        'Restart a gate-sensitive target (embed-sidecar/gateway/bg-host) even though a green-checkpoint run is in flight or imminent. Rarely needed: a run in its own transient unit is cgroup-isolated and SURVIVES a restart, so the check reports would_block:false. Pass only when it blocks.',
       ),
     /** EI-18661647550414959: restart a target whose tree cannot boot. Only pass when
      *  the restart is itself the remedy — otherwise this hands you the crash-loop the
