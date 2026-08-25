@@ -322,6 +322,28 @@ describe('InboxBulkRecommendation render', () => {
     expect(screen.getByText('low confidence')).toBeTruthy();
     expect(screen.getByText('asker did not reply')).toBeTruthy();
   });
+
+  it('disables Accept, draft editing, and Discuss together while the report is busy', () => {
+    const onDiscuss = vi.fn();
+    const props = {
+      item: mkItem('a'),
+      rec: mkRec({ draftAnswer: 'Draft answer' }),
+      onAccept: async () => ({ ok: true }),
+      onDiscuss,
+    };
+    const { rerender } = render(<InboxBulkRecommendation {...props} />);
+    fireEvent.click(screen.getByTestId('inbox-bulk-edit-a'));
+    expect(screen.getByTestId('inbox-bulk-draft-a')).toBeTruthy();
+
+    rerender(<InboxBulkRecommendation {...props} busy />);
+
+    expect((screen.getByTestId('inbox-bulk-accept-a') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('inbox-bulk-edit-a') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('inbox-bulk-discuss-a') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId('inbox-bulk-draft-a') as HTMLTextAreaElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('inbox-bulk-discuss-a'));
+    expect(onDiscuss).not.toHaveBeenCalled();
+  });
 });
 
 describe('acceptRecommendation — resolve FIRST, record SECOND', () => {

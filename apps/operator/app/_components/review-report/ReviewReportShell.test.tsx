@@ -344,6 +344,15 @@ describe("selection + apply", () => {
         .disabled,
     ).toBe(true);
     expect(rowCheck("f1").disabled).toBe(true);
+    expect(
+      (screen.getByTestId(
+        "review-group-toggle-flip-to-done",
+      ) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    expect(
+      (screen.getByTestId("review-row-reason-f1") as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
   });
 
   it("restores focus to Apply after busy settles with retryable selections", () => {

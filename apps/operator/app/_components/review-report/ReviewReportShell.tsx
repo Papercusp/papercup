@@ -488,6 +488,7 @@ export default function ReviewReportShell({
                   className="review-report__group-toggle"
                   data-testid={`review-group-toggle-${group.id}`}
                   aria-expanded={!isCollapsed}
+                  disabled={busy}
                   onClick={() => toggleCollapsed(group.id)}
                 >
                   <span className="review-report__group-toggle-inner">
@@ -615,6 +616,7 @@ export default function ReviewReportShell({
                             aria-label={`Why ${row.title}`}
                             aria-expanded={reasonOpen}
                             aria-controls={reasonRegionId}
+                            disabled={busy}
                             onClick={() => toggleReason(row.id)}
                           >
                             <span className="review-report__reason-toggle-inner">
