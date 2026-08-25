@@ -119,6 +119,7 @@ import {
   normalizeOmpModelSpec,
   ompModelCompatibilityNotice,
   ompTitleMitigationArgs,
+  ompResponsesCompatibilityEnv,
   reportSessionEnded,
   reportSessionResumed,
   describeResumeClaimRefusal,
@@ -777,6 +778,61 @@ describe("OMP ox-alpha title mitigation (EI-21258695702342582)", () => {
         model,
       } as unknown as Parameters<typeof resumeArgsFor>[1]).args,
     ).not.toContain("--no-title");
+  });
+});
+
+describe("OMP ox-alpha Responses compatibility guard (EI-21439300345381616)", () => {
+  it("disables the Responses route only for exact ox-alpha models", () => {
+    for (const model of [
+      "stealth/ox-alpha",
+      "stealth/ox-alpha:max",
+      "openrouter/stealth/ox-alpha:high",
+    ]) {
+      expect(ompResponsesCompatibilityEnv("omp", model, {})).toEqual({
+        PI_OPENROUTER_RESPONSES: "0",
+      });
+    }
+    for (const [agent, model] of [
+      ["claude", "stealth/ox-alpha"],
+      ["omp", "openrouter/other/model:max"],
+      ["omp", "stealth/ox-alpha-preview:max"],
+      ["omp", null],
+    ] as const) {
+      expect(ompResponsesCompatibilityEnv(agent, model, {})).toEqual({});
+    }
+  });
+
+  it("preserves an explicit PI_OPENROUTER_RESPONSES override", () => {
+    expect(
+      ompResponsesCompatibilityEnv("omp", "stealth/ox-alpha", {
+        PI_OPENROUTER_RESPONSES: "1",
+      }),
+    ).toEqual({});
+    expect(
+      ompResponsesCompatibilityEnv("omp", "stealth/ox-alpha", {
+        PI_OPENROUTER_RESPONSES: "",
+      }),
+    ).toEqual({});
+  });
+
+  it("is wired into fresh role, fresh SU, and resume env assembly", () => {
+    const source = readFileSync(
+      join(__dirname, "..", "scripts", "psu-launcher.mjs"),
+      "utf8",
+    );
+    const roleBody = source.slice(source.indexOf("async function roleFlow("));
+    const freshBody = source.slice(source.indexOf("async function launchFreshSu("));
+    const resumeBody = source.slice(source.indexOf("async function launchResume("));
+    expect(roleBody).toContain(
+      "ompResponsesCompatibilityEnv(res.agent, roleModel",
+    );
+    expect(freshBody).toContain("ompResponsesCompatibilityEnv(");
+    expect(resumeBody).toContain(
+      "lastActiveModelFor(session) || ompDefaultModel()",
+    );
+    expect(resumeBody).toContain(
+      "ompResponsesCompatibilityEnv(session.agent, resumeModel, env)",
+    );
   });
 });
 
