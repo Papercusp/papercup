@@ -84,19 +84,7 @@ export function isRecordedInconclusiveStatus(status: string): status is Recorded
  */
 export type GateAbortKind = 'standing-condition' | 'transient' | 'peer-owned' | 'unknown';
 
-/**
- * ⚠ The value type deliberately ADMITS `'unknown'`, where it once excluded it.
- *
- * That exclusion encoded a true invariant for the original six: each names a condition the gate
- * OBSERVED, so each can be classified. `'error'` (EI-21462211894072863) is the first member for
- * which that is false BY CONSTRUCTION — it is the bucket for a run that died without saying why,
- * so whether a re-fire hits the same wall is exactly what nobody knows. Forcing it into
- * `'transient'` or `'standing-condition'` would manufacture the confident advice this module was
- * written to stop (see the header's two-directions warning); `'unknown'` already has correct,
- * conservative wording in both `gateAbortRefireClause` and `gateAbortLever`, so it is routed there
- * rather than given a fabricated kind.
- */
-const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, GateAbortKind> = {
+const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 'unknown'>> = {
   // The dev PG is behind the candidate: a real, standing precondition.
   'migrations-pending': 'standing-condition',
   // The repair queue's staging expectation does not match the tree: standing until reconciled.
@@ -109,11 +97,25 @@ const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, GateAbortKind> = {
   cancelled: 'transient',
   // A repair phase owns progress outside the full-suite verdict path.
   'repair-in-progress': 'peer-owned',
-  // EI-21462211894072863: exited without a parseable marker, and NOT via its own deadline or an
-  // external SIGTERM (those are 'deadline-exceeded' / 'cancelled'). The cause is unrecorded by
-  // definition — a transient host fault and a deterministic crash in the gate script are the same
-  // shape here — so the honest classification is 'unknown'. See the KIND_BY_STATUS note above.
-  error: 'unknown',
+  /**
+   * EI-21462211894072863: exited without publishing a parseable marker, and NOT via its own
+   * deadline or an external SIGTERM (those are 'deadline-exceeded' / 'cancelled').
+   *
+   * 'transient' by the same reasoning that already classifies `infra-inconclusive`, whose own
+   * operator message says in as many words that its mechanism is unclassified: what makes an
+   * abort transient here is not that we know the cause, it is that the tick was FAULTED by
+   * something that has already happened and left NO condition to clear. That is exactly a crash —
+   * and it is what separates 'error' from `migrations-pending` / `repair-staging-mismatch`, where
+   * a named blocker genuinely persists and a re-fire would hit it again.
+   *
+   * ⚠ Do NOT "fix" this to 'unknown' on the grounds that a crash's cause is unrecorded. That
+   * reads as the honest answer and is the one thing this table forbids: `'unknown'` is the
+   * DEFAULTED sentinel, so a recorded status mapping to it is precisely the EI-21290961259437085
+   * shape the guard test enumerates against — advice inherited rather than decided. The transient
+   * lever already carries the right words for this case ("do NOT triage the files an earlier red
+   * named" plus find the cause first, "or the next run dies the same way").
+   */
+  error: 'transient',
 };
 
 export function classifyGateAbort(status: string): GateAbortKind {
@@ -169,27 +171,8 @@ export function gateAbortLever(status: string): string {
         `clear, and a re-fire contends with them; ⚠ do NOT triage the files an earlier red named, this tick ` +
         `judged no code at all`
       );
-    case 'unknown':
-      /**
-       * EI-21462211894072863: split OUT of the standing-condition arm below, which it used to
-       * share. That arm ends "…and re-firing aborts the same way" — a confident claim about a
-       * status we have by definition not classified, and precisely the manufactured-paralysis
-       * failure this module's header documents. It was harmless while 'unknown' could not reach a
-       * reader (no unclassified status was ever RECORDED as inconclusive); adding 'error' to the
-       * recorded set makes this arm live, so it now has to be honest.
-       *
-       * Note the asymmetry with `gateAbortRefireClause`, which was ALREADY conservative for
-       * 'unknown'. The two are meant to agree — the whole reason this module exists is that a
-       * lever and its sentence drifted twice — so leaving the lever asserting a latch while the
-       * sentence beside it declined to would have re-created that exact defect a third time.
-       */
-      return (
-        `the last run recorded an abort whose cause is unclassified (${status}) — it rendered no verdict, ` +
-        `so ⚠ do NOT triage the files an earlier red named; this tick judged no code at all. Read the ` +
-        `green-checkpoint log for THIS run before deciding whether to re-fire: it is unknown whether the ` +
-        `condition still stands, so neither waiting nor re-firing is safe to assume`
-      );
     case 'standing-condition':
+    case 'unknown':
     default:
       return `clear the gate's abort condition (${status}) — it renders no verdict until then, and re-firing aborts the same way`;
   }

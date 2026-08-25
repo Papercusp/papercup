@@ -506,21 +506,27 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('error', false)).toBe('no-verdict');
   });
 
-  it('EI-21462211894072863: a crash is a RECORDED abort, classified honestly as unknown', () => {
+  it('EI-21462211894072863: a crash is a RECORDED abort, classified transient (nothing latched)', () => {
     expect(isRecordedInconclusiveStatus('error')).toBe(true);
-    expect(classifyGateAbort('error')).toBe('unknown');
-    // The conservative wording is the point — neither "re-firing aborts the same way" nor
-    // "nothing blocks a re-fire" is knowable here.
-    expect(gateAbortRefireClause('error')).not.toMatch(/aborts the same way/);
-    expect(gateAbortRefireClause('error')).not.toMatch(/blocks a re-fire/);
     /**
-     * …and the LEVER must agree with that sentence. This module exists because a lever and the
-     * sentence beside it drifted twice in the same direction, so an 'unknown' abort that told the
-     * reader "re-firing aborts the same way" while the sentence declined to would be that same
-     * defect a third time. It also has to keep the reader off the failing-test list, which is the
-     * response the whole no-verdict split exists to prevent.
+     * 'transient' matches `infra-inconclusive`, whose operator message states outright that its
+     * mechanism is unclassified. What makes an abort transient here is not that the cause is
+     * KNOWN — a crash's cause is unrecorded by definition — but that nothing is LATCHED, which is
+     * what separates it from `migrations-pending`, where a named blocker really does persist.
+     *
+     * ⚠ 'unknown' is the tempting answer and is the one value forbidden: it is the DEFAULTED
+     * sentinel, and gate-abort-status.test.ts enumerates the recorded set against it precisely so
+     * a status cannot inherit advice instead of being routed by decision. I tried 'unknown' first
+     * and that guard caught it — this assertion records the correction so it is not re-attempted.
      */
+    expect(classifyGateAbort('error')).toBe('transient');
+    expect(classifyGateAbort('error')).not.toBe('unknown');
+    // Both halves must agree — this module exists because a lever and the sentence beside it
+    // drifted twice in the same direction. Neither may claim a latch a crash does not have…
+    expect(gateAbortRefireClause('error')).not.toMatch(/aborts the same way/);
     expect(gateAbortLever('error')).not.toMatch(/aborts the same way/);
+    // …nor send the reader at a failing-test list this tick never produced, which is the exact
+    // response the whole no-verdict split exists to prevent.
     expect(gateAbortLever('error')).toMatch(/do NOT triage/i);
   });
 
