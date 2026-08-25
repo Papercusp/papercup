@@ -287,19 +287,25 @@ describe('P-011/D-023: a failing reference refuses only on the host the threshol
   /** Same shape as the calibrated host, different font metrics — a real second machine. */
   const OTHER_HOST = 'chromium/147;probe@72px[monospace=1201.500,sans-serif=1370.000]';
 
+  /**
+   * `null` and `undefined` both mean "ratified with no host recorded" — the
+   * pre-cutover / upload case. `calibrationRenderHost()` is `string | null`, so
+   * accepting null here is what lets the calibrated-host cases pass its result
+   * straight through instead of asserting non-null at every call site.
+   */
   function ratifyOnHost(
     referenceId: string,
     env: CaptureEnvironment,
     sha: string,
-    capturedOnRenderHost: string | undefined,
+    capturedOnRenderHost: string | null | undefined,
   ): RatifyReferenceInput {
     const base = ratifyFor(referenceId, env, sha);
-    if (capturedOnRenderHost === undefined) return base;
+    if (!capturedOnRenderHost) return base;
     return { ...base, provenance: { ...base.provenance, capturedOnRenderHost } };
   }
 
   /** Ratify on `host`, then record an over-threshold comparison against it. */
-  async function failingOnHost(host: string | undefined) {
+  async function failingOnHost(host: string | null | undefined) {
     const c = ctx(DESKTOP, FAILING_PIXELS);
     await ratifyReferenceVerb(ratifyOnHost(DESKTOP_REF, DESKTOP, 'a', host), CALLER, c.verbDeps);
     await compareRenderVerb(compareFor(DESKTOP_REF, DESKTOP), CALLER, c.verbDeps);
