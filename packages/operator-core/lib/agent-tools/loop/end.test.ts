@@ -43,11 +43,15 @@ vi.mock('../../carry-note', () => ({ getLoopCarryNote: vi.fn(async () => null) }
 // is the production filter.
 vi.mock('../../events/await/store', () => ({
   listActiveAwaits: vi.fn(async () => []),
+  listParkedAwaitsForSubscribers: vi.fn(async () => []),
   INBOX_WAKE_KEY_PREFIX: 'coord:inbox-wake:',
 }));
 // Keep the module graph light: these are transitive imports of the REAL
 // wind-down-disposition module loaded via importOriginal below.
-vi.mock('../../modes/store', () => ({ getModeSubject: vi.fn() }));
+vi.mock('../../modes/store', () => ({
+  getModeSubject: vi.fn(),
+  getModes: vi.fn(async () => []),
+}));
 vi.mock('../coordination/escalations', () => ({ openEscalation: vi.fn(async () => ({})) }));
 vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../goals/wind-down-disposition')>();
@@ -72,7 +76,8 @@ vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
 
 import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { getLoopCarryNote } from '../../carry-note';
-import { listActiveAwaits } from '../../events/await/store';
+import { listActiveAwaits, listParkedAwaitsForSubscribers } from '../../events/await/store';
+import { getModes } from '../../modes/store';
 import {
   GOAL_DISPOSITIONS,
   activeGoalForOwner,
@@ -92,6 +97,8 @@ const deliverReportMock = deliverGoalWindDownReport as unknown as ReturnType<typ
 const gateEnabledMock = windDownDispositionGateEnabled as unknown as ReturnType<typeof vi.fn>;
 const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<typeof vi.fn>;
 const listActiveAwaitsMock = listActiveAwaits as unknown as ReturnType<typeof vi.fn>;
+const listParkedAwaitsMock = listParkedAwaitsForSubscribers as unknown as ReturnType<typeof vi.fn>;
+const getModesMock = getModes as unknown as ReturnType<typeof vi.fn>;
 
 const ACTIVE_GOAL = {
   goalId: 'ship-paid-app-3f9a1c',
@@ -133,6 +140,110 @@ beforeEach(() => {
   acceptanceGateMock.mockResolvedValue({ satisfied: true });
   listActiveAwaitsMock.mockReset();
   listActiveAwaitsMock.mockResolvedValue([]);
+  listParkedAwaitsMock.mockReset();
+  listParkedAwaitsMock.mockResolvedValue([]);
+  getModesMock.mockReset();
+  getModesMock.mockResolvedValue([]);
+});
+
+describe('the P-012 wake-less autonomy guard', () => {
+  const mode = (id: string) => ({ mode: id });
+  const parkedAwait = {
+    subscriberId: 'su-caller-own-id',
+    eventKey: 'release:green',
+    note: 'resume when green',
+    expiresTs: null,
+    createdAt: '2026-08-25T00:00:00.000Z',
+    rootId: null,
+  };
+
+  it('refuses BEFORE deactivation when AUTO remains active and no deliberate event park survives', async () => {
+    getModesMock.mockResolvedValue([mode('auto')]);
+
+    const got = await run({ reason: 'done for now' });
+
+    expect(got).toMatchObject({
+      isError: true,
+      ok: false,
+      error: 'wake_less_autonomy_refused',
+      ownerId: 'su-caller-own-id',
+      autonomyModes: ['auto'],
+      requiredAcknowledgement: 'acknowledgeWakeLessAutonomy',
+    });
+    expect(String(got.message)).toContain('events:await');
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('derives autonomous overlays from the registry and checks the TARGET owner, not only the caller', async () => {
+    getModesMock.mockResolvedValue([mode('drain')]);
+
+    const got = await run({ ownerId: 'su-target', reason: 'leader wind-down' });
+
+    expect(got).toMatchObject({
+      isError: true,
+      error: 'wake_less_autonomy_refused',
+      ownerId: 'su-target',
+      autonomyModes: ['drain'],
+    });
+    expect(getModesMock).toHaveBeenCalledWith('ws-1', 'su-target');
+    expect(listParkedAwaitsMock).toHaveBeenCalledWith(['su-target']);
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('preserves an event-backed AUTO ending when a deliberate parked await survives', async () => {
+    getModesMock.mockResolvedValue([mode('auto')]);
+    listParkedAwaitsMock.mockResolvedValue([parkedAwait]);
+
+    const got = await run({ reason: 'parked on release' });
+
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(true);
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not mistake a platform-armed claim-release interest for a deliberate event park', async () => {
+    getModesMock.mockResolvedValue([mode('auto')]);
+    // listActiveAwaits is the broad receipt read and can see this platform
+    // interest. The guard deliberately uses listParkedAwaitsForSubscribers,
+    // whose store predicate excludes bound_to.kind=work-item-claim.
+    listActiveAwaitsMock.mockResolvedValue([
+      { id: 87786, eventKey: 'claim:released:WI-41467', expiresTs: null },
+    ]);
+
+    const got = await run({});
+
+    expect(got.error).toBe('wake_less_autonomy_refused');
+    expect(listActiveAwaitsMock).not.toHaveBeenCalled();
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('allows a conscious wake-less ending with the explicit acknowledgement', async () => {
+    getModesMock.mockResolvedValue([mode('cold-auto')]);
+
+    const got = await run({ acknowledgeWakeLessAutonomy: true });
+
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(true);
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves ordinary non-autonomous endings unchanged', async () => {
+    getModesMock.mockResolvedValue([mode('ideate')]);
+
+    const got = await run({});
+
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(true);
+  });
+
+  it('fails open when the classification read is unavailable, preserving the always-stoppable contract', async () => {
+    getModesMock.mockRejectedValue(new Error('pg down'));
+
+    const got = await run({});
+
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(true);
+  });
 });
 
 describe('the P-002 disposition gate (acceptance)', () => {
@@ -277,6 +388,8 @@ describe('argument schema', () => {
       expect(schema.safeParse({ disposition: d }).success).toBe(true);
     expect(schema.safeParse({ disposition: 'paused' }).success).toBe(false);
     expect(schema.safeParse({ disposition: 'handoff', handoffTo: 'su-next' }).success).toBe(true);
+    expect(schema.safeParse({ acknowledgeWakeLessAutonomy: true }).success).toBe(true);
+    expect(schema.safeParse({ acknowledgeWakeLessAutonomy: 'yes' }).success).toBe(false);
   });
 });
 

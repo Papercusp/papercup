@@ -31,7 +31,13 @@ import {
 } from '../../goals/wind-down-disposition';
 import { evaluateGoalWindDownOutputs } from '../../goals/goal-io-validation';
 import { getLoopCarryNote } from '../../carry-note';
-import { listActiveAwaits, INBOX_WAKE_KEY_PREFIX } from '../../events/await/store';
+import {
+  listActiveAwaits,
+  listParkedAwaitsForSubscribers,
+  INBOX_WAKE_KEY_PREFIX,
+} from '../../events/await/store';
+import { getModes } from '../../modes/store';
+import { modeImpliesAutonomy } from '../../modes/registry';
 
 /** Bound the receipt's surviving-awaits enumeration (the count stays exact). */
 const SURVIVING_AWAITS_LISTED_CAP = 10;
@@ -125,6 +131,12 @@ export default defineTool({
       .describe(
         'EI-11484 guard: open owner directives soft-block loop:end (ending removes their wake render surface). Pass true to consciously proceed with them still open.',
       ),
+    acknowledgeWakeLessAutonomy: z
+      .boolean()
+      .optional()
+      .describe(
+        'P-012 safety override: consciously end the loop while an autonomy-implying mode remains active and no deliberate independent event await will wake the session.',
+      ),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -148,6 +160,58 @@ export default defineTool({
       }
     }
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    // P-012 (loop-wake-reliability-2026-08-24 D-004): an autonomy posture is
+    // authorization to keep moving, while the loop is its recurring wake source.
+    // Ending the latter while the former remains registered — with no deliberate
+    // event park to take over — silently strands a fully-authorized session.
+    //
+    // Both classifications come from their existing authorities:
+    //   - modeImpliesAutonomy covers autonomy-axis modes AND overlays whose
+    //     registry declaration implies one (goal/drain today, future modes free);
+    //   - listParkedAwaitsForSubscribers is the deliberate-park read. It excludes
+    //     inbox liveness plumbing, platform-armed claim/fleet interests,
+    //     announcements, and expired rows, none of which means the agent chose an
+    //     event as its next wake source.
+    //
+    // Positive-finding-only: if either registry read fails, preserve loop:end's
+    // always-stoppable contract. A confirmed unsafe state refuses BEFORE
+    // deactivateLoop; the explicit acknowledgement is the escape hatch.
+    const wakeLessAutonomy = workspaceId
+      ? await Promise.all([
+          getModes(workspaceId, ownerId),
+          listParkedAwaitsForSubscribers([ownerId]),
+        ])
+          .then(([modes, parkedAwaits]) => {
+            const autonomyModes = modes
+              .map((row) => row.mode)
+              .filter((mode) => modeImpliesAutonomy(mode));
+            return autonomyModes.length > 0 && parkedAwaits.length === 0
+              ? { autonomyModes }
+              : null;
+          })
+          .catch(() => null)
+      : null;
+    if (wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'wake_less_autonomy_refused',
+              message:
+                `REFUSED — loop:end would leave ${ownerId} in autonomy-implying mode(s) ` +
+                `[${wakeLessAutonomy.autonomyModes.join(', ')}] with no deliberate independent event await. ` +
+                'Keep the loop armed, register an events:await wake, exit the autonomy-implying modes, or retry with acknowledgeWakeLessAutonomy:true to consciously create a wake-less autonomy state.',
+              ownerId,
+              autonomyModes: wakeLessAutonomy.autonomyModes,
+              requiredAcknowledgement: 'acknowledgeWakeLessAutonomy',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
     // P-002 gate: a goal-mode owner with a still-active goal winds down WITH a
     // disposition or not at all. Positive-finding-only: every resolution miss
     // (not goal mode, goal not active, flag infra down) passes the gate.
