@@ -8,7 +8,6 @@
  */
 import type { Sql } from 'postgres';
 import { z } from 'zod';
-import { getOrgPg } from '@papercusp/db-org';
 import { getFleet, type AgentFleetRecord } from '../../agent-fleets-store';
 import { getPresence, type PresenceRecord } from '../../agent-tools/coordination/presence';
 import {
@@ -449,4 +448,3 @@ export async function admitMonitorArm(
     };
   }
 }
-

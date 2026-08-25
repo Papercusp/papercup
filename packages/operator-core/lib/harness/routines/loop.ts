@@ -56,6 +56,7 @@ import {
   CARRY_NOTE_BOOKKEEPING_TOOL_NAMES,
   agentToolInvocationPredicate,
 } from '../../agent-tools/sessions/automatic-tool-names';
+import type { PersistedMonitorConfig } from './monitor-policy';
 
 /**
  * The `target_role` a loop routine carries. The DBOS fire (B-LOOP-3) recognises
@@ -320,6 +321,11 @@ export interface MaterializeLoopInput {
    *  contract (P-001c). Rides payload_template (no new column); a 'work' loop leaves
    *  payload_template byte-identical to today. */
   mode?: 'work' | 'monitor';
+  /**
+   * anti-babysitting P-003: admitted monitor policy persisted on the existing
+   * payload_template. Work loops omit it and remain byte-identical.
+   */
+  monitor?: PersistedMonitorConfig;
   /** Seed active (armed). Default true. */
   active?: boolean;
   /**
@@ -381,6 +387,7 @@ export async function materializeLoop(input: MaterializeLoopInput): Promise<{
   // WI-5345: same convention for mode — only stamp 'monitor'; a default 'work' loop's
   // payload_template stays byte-identical to today.
   if (input.mode === 'monitor') payloadTemplate.mode = 'monitor';
+  if (input.mode === 'monitor' && input.monitor) payloadTemplate.monitor = input.monitor;
   // EI-20072281215342526: persist the GOAL as its own field.
   //
   // It was previously recoverable only by reading it back out of the rendered
@@ -2102,6 +2109,8 @@ export interface PriorLoopFacts {
   carry: 'warm' | 'cold';
   continuation: 'settle' | 'gated';
   mode: 'work' | 'monitor';
+  /** Typed monitor policy on P-003+ rows; absent on legacy/work loops. */
+  monitor?: PersistedMonitorConfig | null;
   armedAt: string | null;
 }
 
@@ -2120,6 +2129,7 @@ export async function readActiveLoopFacts(ownerId: string, opts: { sql?: Sql } =
     (tx) => tx`
       SELECT r.active,
              r.reschedule_interval_sec,
+             r.install_slug,
              r.payload_template,
              COALESCE((r.metadata->>'fire_count')::int, 0) AS fire_count,
              r.metadata->>'armed_at'                       AS armed_at
@@ -2145,6 +2155,10 @@ export async function readActiveLoopFacts(ownerId: string, opts: { sql?: Sql } =
     carry: pt.carry === 'cold' ? 'cold' : 'warm',
     continuation: pt.continuation === 'gated' ? 'gated' : 'settle',
     mode: pt.mode === 'monitor' ? 'monitor' : 'work',
+    monitor:
+      pt.mode === 'monitor' && pt.monitor && typeof pt.monitor === 'object' && !Array.isArray(pt.monitor)
+        ? (pt.monitor as PersistedMonitorConfig)
+        : null,
     armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
   };
 }

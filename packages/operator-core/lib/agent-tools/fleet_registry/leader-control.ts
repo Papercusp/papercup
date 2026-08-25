@@ -39,6 +39,10 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { getPresence } from '../coordination/presence';
 import type { FleetControlState } from '../../agent-fleets-store';
+import {
+  MONITOR_NO_DELTA_BUDGET_MAX,
+  type PersistedMonitorConfig,
+} from '../../harness/routines/monitor-policy';
 
 export const LEADER_MONITOR_INTERVAL_SEC = 60;
 /** One leader/profile may never manufacture an unbounded interrupt fan-out. */
@@ -383,6 +387,17 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
       const carry = input.carry ?? priorLoop?.carry ?? priorLoopFacts?.carry ?? 'warm';
       const continuation = priorLoop?.continuation ?? priorLoopFacts?.continuation ?? 'settle';
       const mode = priorLoop?.mode ?? priorLoopFacts?.mode ?? 'monitor';
+      const monitor: PersistedMonitorConfig | undefined =
+        mode === 'monitor'
+          ? priorLoopFacts?.monitor ?? {
+              predicateKey: `fleet:${input.fleetSlug}`,
+              stopCondition:
+                `Fleet ${input.fleetSlug} is drained, enters winding-down, or ${input.ownerId} no longer holds durable leadership.`,
+              noDeltaBudget: MONITOR_NO_DELTA_BUDGET_MAX,
+              remainingNoDeltaBudget: MONITOR_NO_DELTA_BUDGET_MAX,
+              authority: { kind: 'fleet-leader', fleet: input.fleetSlug },
+            }
+          : undefined;
       const kickoff = priorLoopFacts?.kickoff?.trim() || buildLoopWakePrompt({
         ownerId: input.ownerId,
         intervalSec,
@@ -402,6 +417,7 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
         carry,
         continuation,
         mode,
+        monitor,
         // This is a repair of a stale/inactive loop read. The row-level guard
         // must yield to an explicit loop:arm that wins the race after our read.
         onlyIfInactive: true,
