@@ -98,6 +98,30 @@ export interface EngineerIssueRow {
    * wire (pre-708 history lacks it → dropped on write → NULL).
    */
   closed_ts?: number | null;
+  /**
+   * EI-21467654382027859 (mig 965) — nine columns the federated-column-completeness
+   * guard caught landing NULL on every peer. Full per-column reasoning is in mig 965's
+   * header. The one that is a correctness hole rather than data loss is `admission`:
+   * the issue claim gate is `admittedWhereSql` = `(admission IS DISTINCT FROM
+   * 'pending')`, so an item federated WITHOUT the column arrives NULL and reads as
+   * ADMITTED — a deliberately born-pending item became claimable on every peer.
+   *
+   * ALL OPTIONAL ON THE WIRE, and that is load-bearing, not stylistic: the other side
+   * of the wire is a DIFFERENT BUILD, and `decodeValue` discards a row the validator
+   * rejects — wholesale, not field-wise. Making any of these required would make an
+   * older peer's every issue op undecodable. (Learned the expensive way on this same
+   * item: the `producer` column of EI-21462599108204160 shipped required and had to be
+   * amended.)
+   */
+  admission?: string | null;
+  admitted_at?: string | null;
+  admitted_by?: string | null;
+  state_changed_at?: string | null;
+  tags?: unknown; // jsonb — opaque, like `payload`
+  parent_id?: string | null;
+  source_plan_slug?: string | null;
+  source_plan_item_ids?: string[] | null;
+  expected_cost_cents?: number | null;
 }
 
 function isString(v: unknown): v is string {
@@ -139,7 +163,30 @@ export function isEngineerIssueRow(input: unknown): input is EngineerIssueRow {
   if (r.terminal_reason !== undefined && !isStringOrNull(r.terminal_reason)) return false; // P-009/D-001 — optional on the wire
   if (r.authority !== undefined && !isStringOrNull(r.authority)) return false; // mig 708/D-035 — optional on the wire
   if (r.closed_ts !== undefined && r.closed_ts !== null && !Number.isFinite(r.closed_ts)) return false; // mig 708 PART 2 — optional on the wire
-  // payload is jsonb-opaque — accept anything (incl. undefined → null on write).
+  // EI-21467654382027859 (mig 965) — every one of these is OPTIONAL on the wire: an op
+  // from a peer running pre-965 code carries none of them, and REJECTING such a row here
+  // would discard the WHOLE issue op (decodeValue is all-or-nothing), not just the new
+  // fields. Absent ⇒ undefined ⇒ bound as null below ⇒ the ON CONFLICT preserves the
+  // local value, which is the fail-safe direction for `admission` in particular.
+  if (r.admission !== undefined && !isStringOrNull(r.admission)) return false;
+  if (r.admitted_at !== undefined && !isStringOrNull(r.admitted_at)) return false;
+  if (r.admitted_by !== undefined && !isStringOrNull(r.admitted_by)) return false;
+  if (r.state_changed_at !== undefined && !isStringOrNull(r.state_changed_at)) return false;
+  if (r.parent_id !== undefined && !isStringOrNull(r.parent_id)) return false;
+  if (r.source_plan_slug !== undefined && !isStringOrNull(r.source_plan_slug)) return false;
+  if (
+    r.source_plan_item_ids !== undefined &&
+    r.source_plan_item_ids !== null &&
+    !(Array.isArray(r.source_plan_item_ids) && r.source_plan_item_ids.every((s) => typeof s === 'string'))
+  )
+    return false;
+  if (
+    r.expected_cost_cents !== undefined &&
+    r.expected_cost_cents !== null &&
+    !Number.isFinite(r.expected_cost_cents)
+  )
+    return false;
+  // payload and tags are jsonb-opaque — accept anything (incl. undefined → null on write).
   return true;
 }
 
