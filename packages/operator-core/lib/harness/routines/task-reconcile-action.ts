@@ -19,7 +19,7 @@
  * `papercusp-task-reaper` kill-switch flag (default ON, explicit OFF honored).
  * Everything else here remains report-only.
  */
-import { statSync } from 'node:fs';
+import { readlinkSync, statSync } from 'node:fs';
 
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { sendMessage } from '../../agent-tools/coordination/messages';
@@ -33,11 +33,13 @@ import {
   decideReaps,
   evaluateReaperFloor,
   executeReaps,
+  managedResidueCandidates,
   REAP_PRESENCE_FRESH_MS,
   residualAfterPass,
   type ReapDecision,
   type ReapEffects,
 } from '../../task-manager/reaper';
+import type { ResidueGroup } from '../../task-manager/reconcile';
 import { absCgroupDir, walkCgroupTree } from '../../task-manager/cgroup-read';
 import { scopeCgroupRelPath } from '../../task-manager/types';
 import {
@@ -200,7 +202,7 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
 
   if (isMaintDue({ lastAtMs: lastReaperAtMs, nowMs, intervalMs: REAPER_INTERVAL_MS })) {
     lastReaperAtMs = nowMs;
-    await reapAgentSessionResidue(ctx, tick.scan.userManagerRoot);
+    await reapAgentSessionResidue(ctx, tick.scan.userManagerRoot, tick.confirmedUnaccounted);
   }
 
   if (isMaintDue({ lastAtMs: lastA11ySweepAtMs, nowMs, intervalMs: A11Y_SWEEP_INTERVAL_MS })) {
@@ -434,6 +436,7 @@ async function reportAgentSessionProgress(ctx: SystemActionCtx): Promise<void> {
 async function reapAgentSessionResidue(
   ctx: SystemActionCtx,
   userManagerRoot: string | null,
+  confirmedResidue: readonly ResidueGroup[] = [],
 ): Promise<void> {
   try {
     const { FLAGS } = await import('@papercusp/flags');
@@ -464,6 +467,16 @@ async function reapAgentSessionResidue(
       }
     };
     const census = censusAgentSessionProgress(live, { statMtimeMs });
+    const managedResidue = managedResidueCandidates(confirmedResidue).map((candidate) => ({
+      ...candidate,
+      logPath: fileBackedStdoutLogPath(candidate.pids),
+    }));
+
+    const scopePidCountForUnit = (scopeUnit: string): number | null => {
+      const abs = absCgroupDir(scopeCgroupRelPath(userManagerRoot, 'agent-session', scopeUnit));
+      if (!nodeCgroupFs.isDir(abs)) return 0; // scope absent — a real zero
+      return walkCgroupTree(abs, nodeCgroupFs).reduce((s, g) => s + g.pids.length, 0);
+    };
 
     // Presence heartbeats vouch for quiet-but-alive owners. Unreadable presence
     // must DISABLE the quiet class, never silently widen it.
@@ -481,6 +494,7 @@ async function reapAgentSessionResidue(
 
     const verdict = decideReaps({
       rows: [...live, ...terminal],
+      managedResidue,
       census:
         freshOwners === null
           ? { ...census, degraded: true, degradedReason: 'coord_presence unreadable — quiet class disabled' }
@@ -492,10 +506,9 @@ async function reapAgentSessionResidue(
         // service), which is what made an earlier pass count the operator's
         // processes as survivors.
         if (!row.scopeUnit) return null;
-        const abs = absCgroupDir(scopeCgroupRelPath(userManagerRoot, 'agent-session', row.scopeUnit));
-        if (!nodeCgroupFs.isDir(abs)) return 0; // scope absent — a real zero
-        return walkCgroupTree(abs, nodeCgroupFs).reduce((s, g) => s + g.pids.length, 0);
+        return scopePidCountForUnit(row.scopeUnit);
       },
+      scopePidCountForScope: scopePidCountForUnit,
       freshOwners: freshOwners ?? new Set(),
       logQuietForMs: (row) => {
         const p = row.logPath?.trim();
@@ -584,6 +597,7 @@ async function reapAgentSessionResidue(
       summary:
         `[task-reaper] reaped ${okCount}/${outcomes.length} agent-session scope(s) ` +
         `(${verdict.reap.filter((r) => r.kind === 'terminal-residue').length} terminal-residue, ` +
+        `${verdict.reap.filter((r) => r.kind === 'managed-residue').length} managed-residue, ` +
         `${verdict.reap.filter((r) => r.kind === 'quiet-zombie').length} quiet-zombie` +
         `${verdict.deferred > 0 ? `; ${verdict.deferred} deferred to next pass` : ''}` +
         `${verdict.quietClassDisabled ? '; quiet class DISABLED this pass (census degraded)' : ''}). ` +
@@ -601,6 +615,32 @@ async function reapAgentSessionResidue(
     // Enforcement must never break the reconcile tick that carries it.
     console.warn('[task-reaper] pass failed', err);
   }
+}
+
+/**
+ * Recover a file-backed stdout/stderr path from a surviving scope when the
+ * ledger row never made it to disk. Pipes, sockets, devices, and deleted files
+ * are intentionally not returned: archiveTail must never be handed an
+ * unverified path, and a missing path is safer than archiving the wrong file.
+ */
+function fileBackedStdoutLogPath(pids: readonly number[]): string | null {
+  for (const pid of pids) {
+    for (const fd of [1, 2]) {
+      let target: string;
+      try {
+        target = readlinkSync(`/proc/${pid}/fd/${fd}`);
+      } catch {
+        continue;
+      }
+      if (!target.startsWith('/') || target.endsWith(' (deleted)')) continue;
+      try {
+        if (statSync(target).isFile()) return target;
+      } catch {
+        // The process can close its fd between readlink and stat; keep probing.
+      }
+    }
+  }
+  return null;
 }
 
 /** Real-IO effects for the reaper: tail archive, addressable subtree stop, ledger close. */

@@ -95,6 +95,12 @@ export interface ReconcileTickResult {
   endedUnobservedCount: number;
   unaccountedPersisted: number;
   residueCleared: number;
+  /**
+   * Unaccounted groups confirmed across two healthy scans. The task-reconcile
+   * action passes these to the exact managed-scope reaper; foreign and
+   * unmanaged groups remain report-only there.
+   */
+  confirmedUnaccounted: ResidueGroup[];
 }
 
 export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<ReconcileTickResult> {
@@ -177,8 +183,15 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
       endedUnobservedCount: 0,
       unaccountedPersisted: 0,
       residueCleared: 0,
+      confirmedUnaccounted: [],
     };
   }
+
+  // This confirmation is deliberately computed once per healthy tick and shared
+  // by notification plus enforcement. Calling the debounce helper separately for
+  // each consumer would make the second consumer observe scan three instead of
+  // scan two and would silently delay the reaper by one full pass.
+  const confirmedUnaccounted = confirmedResidueGroups(result);
 
   // ── positive confirmations are always safe to write ──────────────────────
   const scopeDirByUnit = new Map<string, string>();
@@ -251,7 +264,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     residueCleared = await clearVanishedUnaccounted(persisted, { workspaceId: deps.workspaceId });
   }
 
-  await maybeNotify(deps, { summary, result, degraded, degradedReason });
+  await maybeNotify(deps, { summary, result, degraded, degradedReason, confirmedUnaccounted });
 
   return {
     summary,
@@ -271,6 +284,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
     endedUnobservedCount,
     unaccountedPersisted,
     residueCleared,
+    confirmedUnaccounted,
   };
 }
 
@@ -320,6 +334,7 @@ async function maybeNotify(
     result: ReconcileResult;
     degraded: boolean;
     degradedReason?: string;
+    confirmedUnaccounted: readonly ResidueGroup[];
   },
 ): Promise<void> {
   if (!deps.notify) return;
@@ -327,7 +342,7 @@ async function maybeNotify(
   // A degraded scan cannot confirm either presence or absence, so preserve the
   // prior residue observations until the next healthy scan. Degraded state itself
   // remains immediately actionable.
-  const confirmedUnaccounted = ctx.degraded ? [] : confirmedResidueGroups(ctx.result);
+  const confirmedUnaccounted = ctx.degraded ? [] : ctx.confirmedUnaccounted;
   const confirmedUnaccountedPids = confirmedUnaccounted.reduce((n, group) => n + group.pids.length, 0);
   const noteworthy = ctx.degraded || confirmedUnaccounted.length > 0 || ctx.summary.overdue > 0;
   // EI-20108913085212631: the key must identify the CONDITION, never its MAGNITUDE.

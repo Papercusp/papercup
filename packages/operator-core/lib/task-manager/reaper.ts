@@ -61,8 +61,9 @@
  * (cgroup reads, systemctl, tail archiving, ledger closes) is injected.
  */
 
-import { isAutoReapExempt, isTerminalState, type TaskRow } from './types';
+import { isAutoReapExempt, isTerminalState, taskIdFromScopeUnit, type TaskRow } from './types';
 import type { AgentSessionProgressCensus } from './agent-session-progress-census';
+import type { ResidueGroup } from './reconcile';
 
 /** A terminal row's scope gets this long after `ended_at` before its survivors
  *  are considered leftovers. Long enough for any legitimate teardown; short
@@ -84,7 +85,72 @@ export const REAP_MAX_PER_TICK = 12;
 /** Presence heartbeat younger than this vouches for a quiet session's owner. */
 export const REAP_PRESENCE_FRESH_MS = 15 * 60_000;
 
-export type ReapKind = 'terminal-residue' | 'quiet-zombie';
+export type ReapKind = 'terminal-residue' | 'managed-residue' | 'quiet-zombie';
+
+/** A two-scan-confirmed managed agent-session scope with no live ledger row. */
+export interface ManagedResidueCandidate {
+  taskId: string;
+  scopeUnit: string;
+  cgroupPath: string;
+  pids: number[];
+  sampleCmdline: string;
+  /** Best-effort file-backed stdout/stderr path discovered from a live pid. */
+  logPath?: string | null;
+}
+
+const MANAGED_AGENT_SESSION_SEGMENTS = [
+  'papercusp.slice',
+  'papercusp-agent.slice',
+  'papercusp-agent-session.slice',
+] as const;
+
+function hasManagedAgentSessionPath(cgroupPath: string, scopeUnit: string): boolean {
+  const segments = cgroupPath.split('/').filter(Boolean);
+  for (let i = 0; i <= segments.length - MANAGED_AGENT_SESSION_SEGMENTS.length - 1; i += 1) {
+    const expected = [...MANAGED_AGENT_SESSION_SEGMENTS, scopeUnit];
+    if (expected.every((segment, offset) => segments[i + offset] === segment)) return true;
+  }
+  return false;
+}
+
+/**
+ * Convert confirmed scan residue into exact, addressable agent-session scopes.
+ *
+ * The scanner can return one group per leaf cgroup beneath a scope. Merge those
+ * leaves by the scope unit, but accept a group only when the observed path has
+ * the complete managed agent-session hierarchy and the unit is a valid `.scope`.
+ * A `pc-` name in an arbitrary slice is not enough provenance to terminate it.
+ */
+export function managedResidueCandidates(groups: readonly ResidueGroup[]): ManagedResidueCandidate[] {
+  const byScope = new Map<
+    string,
+    { taskId: string; scopeUnit: string; cgroupPath: string; pids: Set<number>; sampleCmdline: string }
+  >();
+
+  for (const group of groups) {
+    const scopeUnit = group.scopeUnit?.trim() ?? '';
+    if (!scopeUnit.endsWith('.scope') || !hasManagedAgentSessionPath(group.cgroupPath, scopeUnit)) continue;
+    const taskId = taskIdFromScopeUnit(scopeUnit);
+    if (!taskId) continue;
+    const current = byScope.get(scopeUnit);
+    if (current) {
+      for (const pid of group.pids) current.pids.add(pid);
+      if (!current.sampleCmdline && group.sampleCmdline) current.sampleCmdline = group.sampleCmdline;
+      continue;
+    }
+    byScope.set(scopeUnit, {
+      taskId,
+      scopeUnit,
+      cgroupPath: group.cgroupPath,
+      pids: new Set(group.pids),
+      sampleCmdline: group.sampleCmdline,
+    });
+  }
+
+  return [...byScope.values()]
+    .map((candidate) => ({ ...candidate, pids: [...candidate.pids].sort((a, b) => a - b) }))
+    .sort((a, b) => a.scopeUnit.localeCompare(b.scopeUnit));
+}
 
 export interface ReapDecision {
   taskId: string;
@@ -102,6 +168,8 @@ export interface SpareDecision {
 export interface ReaperInputs {
   /** Ledger rows to consider — the caller passes live AND recently-terminal rows. */
   rows: readonly TaskRow[];
+  /** Confirmed managed scopes that have no corresponding live ledger row. */
+  managedResidue?: readonly ManagedResidueCandidate[];
   /** Progress census over the LIVE agent-session rows (log-mtime instrument). */
   census: AgentSessionProgressCensus;
   /**
@@ -131,6 +199,8 @@ export interface ReaperInputs {
    * reads 0 and is skipped instead of being stopped and failing.
    */
   scopePidCount: (row: TaskRow) => number | null;
+  /** Positive recheck for a no-row candidate. Missing means candidates are spared. */
+  scopePidCountForScope?: (scopeUnit: string) => number | null;
   /** coord_presence owner_ids with a heartbeat fresher than REAP_PRESENCE_FRESH_MS. */
   freshOwners: ReadonlySet<string>;
   /** ms since the row's log was last written; null = unmeasurable. Consulted for
@@ -226,8 +296,30 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
     });
   }
 
+  // A residue placeholder is deliberately not coerced into a synthetic ledger
+  // row: doing so would make a no-row process look owned by an invented record.
+  // Recheck the exact scope at decision time and skip it if an ordinary row has
+  // arrived since the reconcile scan (the normal register/adoption race).
+  const rowTaskIds = new Set(inputs.rows.map((row) => row.taskId));
+  const rowScopes = new Set(inputs.rows.map((row) => row.scopeUnit).filter(Boolean));
+  for (const candidate of inputs.managedResidue ?? []) {
+    if (rowTaskIds.has(candidate.taskId) || rowScopes.has(candidate.scopeUnit)) continue;
+    const pids = inputs.scopePidCountForScope?.(candidate.scopeUnit);
+    if (pids == null || pids <= 0) continue;
+    reap.push({
+      taskId: candidate.taskId,
+      scopeUnit: candidate.scopeUnit,
+      logPath: candidate.logPath ?? null,
+      kind: 'managed-residue',
+      why:
+        `managed scope ${candidate.scopeUnit} has no ledger row after ` +
+        `two-scan confirmation, ${pids} process(es) survive the positive recheck`,
+    });
+  }
+
   // Longest-standing residue first, bounded per tick.
-  reap.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'terminal-residue' ? -1 : 1));
+  const order: Record<ReapKind, number> = { 'terminal-residue': 0, 'managed-residue': 1, 'quiet-zombie': 2 };
+  reap.sort((a, b) => order[a.kind] - order[b.kind]);
   const deferred = Math.max(0, reap.length - cap);
   return { reap: reap.slice(0, cap), spared, quietClassDisabled, deferred };
 }

@@ -168,10 +168,13 @@ describe('reconcileTick — happy path', () => {
     };
     const first = await reconcileTick(args);
     expect(first.unaccountedPersisted).toBe(1);
+    expect(first.confirmedUnaccounted).toEqual([]);
     expect(notify).not.toHaveBeenCalled();
 
     const second = await reconcileTick(args);
     expect(second.unaccountedPersisted).toBe(1);
+    expect(second.confirmedUnaccounted).toHaveLength(1);
+    expect(second.confirmedUnaccounted[0]).toMatchObject({ cgroupPath, pids: [99] });
     expect(notify).toHaveBeenCalledOnce();
     expect(sent[0]!.summary).toMatch(/unaccounted cgroup/);
     expect(sent[0]!.summary).toContain('confirmed across 2 consecutive healthy scans');

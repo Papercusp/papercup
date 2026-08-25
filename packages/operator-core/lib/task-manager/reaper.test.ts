@@ -19,14 +19,17 @@ import {
   decideReaps,
   evaluateReaperFloor,
   executeReaps,
+  managedResidueCandidates,
   REAP_MAX_PER_TICK,
   REAP_TERMINAL_GRACE_MS,
   residualAfterPass,
   rowOwnerId,
+  type ManagedResidueCandidate,
   type ReapDecision,
   type ReaperFloorSample,
   type ReapOutcome,
 } from './reaper';
+import type { ResidueGroup } from './reconcile';
 import type { TaskRow } from './types';
 
 const NOW = Date.parse('2026-08-25T12:00:00Z');
@@ -66,6 +69,8 @@ function decide(
     pids?: Record<string, number | null>;
     freshOwners?: string[];
     logQuiet?: Record<string, number | null>;
+    managedResidue?: ManagedResidueCandidate[];
+    scopePids?: Record<string, number | null>;
     maxPerTick?: number;
   } = {},
 ) {
@@ -73,6 +78,8 @@ function decide(
     rows,
     census: census(rows, opts.mtimes ?? {}),
     scopePidCount: (r) => (opts.pids ? (r.taskId in opts.pids ? opts.pids[r.taskId] : 0) : 0),
+    managedResidue: opts.managedResidue,
+    scopePidCountForScope: (scopeUnit) => opts.scopePids?.[scopeUnit] ?? 0,
     freshOwners: new Set(opts.freshOwners ?? []),
     logQuietForMs: (r) => opts.logQuiet?.[r.taskId] ?? null,
     now: NOW,
@@ -267,6 +274,50 @@ describe('shared rails', () => {
   });
 });
 
+describe('managed no-row residue candidates', () => {
+  const root = '/user.slice/user@1000.service/papercusp.slice/papercusp-agent.slice/papercusp-agent-session.slice';
+  const scopeUnit = 'pc-missing123--fleet-member.scope';
+  const group = (over: Partial<ResidueGroup>): ResidueGroup => ({
+    cgroupPath: `${root}/${scopeUnit}`,
+    scopeUnit,
+    pids: [31],
+    sampleCmdline: 'claude',
+    ...over,
+  });
+
+  it('accepts only the exact managed agent-session hierarchy and merges leaf groups by scope', () => {
+    const candidates = managedResidueCandidates([
+      group({ cgroupPath: `${root}/${scopeUnit}/child-a`, pids: [31, 32] }),
+      group({ cgroupPath: `${root}/${scopeUnit}/child-b`, pids: [32, 33], sampleCmdline: '' }),
+      group({ cgroupPath: `/user.slice/papercusp.slice/papercusp-bash-job.slice/${scopeUnit}`, pids: [99] }),
+      group({ scopeUnit: 'pc-missing123--fleet-member.service', cgroupPath: `${root}/pc-missing123--fleet-member.service` }),
+    ]);
+    expect(candidates).toEqual([
+      {
+        taskId: 'missing123',
+        scopeUnit,
+        cgroupPath: `${root}/${scopeUnit}/child-a`,
+        pids: [31, 32, 33],
+        sampleCmdline: 'claude',
+      },
+    ]);
+  });
+
+  it('requires a positive current scope recheck and skips a scope adopted by a row', () => {
+    const candidate = managedResidueCandidates([group({})])[0]!;
+    expect(decide([], { managedResidue: [candidate], scopePids: { [scopeUnit]: 0 } }).reap).toEqual([]);
+    expect(
+      decide([], { managedResidue: [candidate], scopePids: { [scopeUnit]: 4 } }).reap,
+    ).toMatchObject([{ taskId: 'missing123', scopeUnit, kind: 'managed-residue' }]);
+    expect(
+      decide([row({ taskId: 'missing123', scopeUnit })], {
+        managedResidue: [candidate],
+        scopePids: { [scopeUnit]: 4 },
+      }).reap,
+    ).toEqual([]);
+  });
+});
+
 describe('executeReaps', () => {
   const decision: ReapDecision = {
     taskId: 'x1',
@@ -306,6 +357,27 @@ describe('executeReaps', () => {
       closeAsReaped: async () => void calls.push('close'),
     });
     expect(calls).toEqual([]);
+  });
+
+  it('archives and stops managed no-row residue without closing a nonexistent ledger row', async () => {
+    const calls: string[] = [];
+    await executeReaps(
+      [
+        {
+          taskId: 'missing123',
+          scopeUnit: 'pc-missing123--fleet-member.scope',
+          logPath: '/logs/missing123.log',
+          kind: 'managed-residue',
+          why: 'test',
+        },
+      ],
+      {
+        archiveTail: async () => (calls.push('archive'), '/arch/missing123.tail.log'),
+        stopUnit: async () => (calls.push('stop'), true),
+        closeAsReaped: async () => void calls.push('close'),
+      },
+    );
+    expect(calls).toEqual(['archive', 'stop']);
   });
 });
 
