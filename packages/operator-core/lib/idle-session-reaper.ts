@@ -196,10 +196,16 @@ export function confirmedDeadOwnerSet(
  * `activeFresh` row (coord_presence.last_active_at within grace — mig 277:
  * bumped ONLY by real activity, never by the per-60s supervisor beat, so a
  * dead process cannot keep it fresh) keeps its owner protected even when the
- * recorded pid probes dead. The cost asymmetry is deliberate: a false KEEP
- * delays lease cleanup by at most the grace window (the TTL/hourly reaper
- * remains the backstop); a false REMOVE force-releases a live worker's
- * in-flight claims — the exact false-alarm-class bug this guards against.
+ * recorded pid probes dead. The cost asymmetry is deliberate: an
+ * activity-vetoed false KEEP delays lease cleanup by at most the grace window;
+ * a loop-vetoed KEEP lasts until the loop's bounded reachability guard
+ * deactivates it. A false REMOVE force-releases a live worker's in-flight
+ * claims — the exact false-alarm-class bug this guards against.
+ *
+ * EI-21431501901242395: an ARMED engine loop is the same kind of owner-level
+ * veto. The recorded pid belongs to one native incarnation; the loop is durable
+ * continuation authority for the coordination owner across incarnations. A
+ * dead old pid therefore cannot erase active-loop protection either.
  */
 export function planDeadPidUnprotect(
   rows: ReadonlyArray<{
@@ -207,17 +213,23 @@ export function planDeadPidUnprotect(
     host?: string | null;
     pid?: number | null;
     activeFresh?: boolean;
+    loopActive?: boolean;
   }>,
   probe: (row: { host?: string | null; pid?: number | null }) => boolean | null = probeProcessLiveness,
-): { unprotect: string[]; vetoedByActivity: string[] } {
+): { unprotect: string[]; vetoedByActivity: string[]; vetoedByLoop: string[] } {
   const activeFresh = new Set<string>();
   for (const row of rows) if (row.ownerId && row.activeFresh === true) activeFresh.add(row.ownerId);
+  const loopActive = new Set<string>();
+  for (const row of rows) if (row.ownerId && row.loopActive === true) loopActive.add(row.ownerId);
   const unprotect: string[] = [];
   const vetoedByActivity: string[] = [];
+  const vetoedByLoop: string[] = [];
   for (const owner of confirmedDeadOwnerSet(rows, probe)) {
-    (activeFresh.has(owner) ? vetoedByActivity : unprotect).push(owner);
+    if (activeFresh.has(owner)) vetoedByActivity.push(owner);
+    else if (loopActive.has(owner)) vetoedByLoop.push(owner);
+    else unprotect.push(owner);
   }
-  return { unprotect, vetoedByActivity };
+  return { unprotect, vetoedByActivity, vetoedByLoop };
 }
 
 /**
@@ -346,11 +358,23 @@ export async function gatherProtectedSessionOwners(
   for (const o of opts.liveHostOwners ?? []) protectedOwners.add(o);
   if (opts.confirmDeadPids) {
     const pidRows = await sql<
-      Array<{ owner_id: string; host: string | null; pid: number | null; active_fresh: boolean }>
+      Array<{
+        owner_id: string;
+        host: string | null;
+        pid: number | null;
+        active_fresh: boolean;
+        loop_active: boolean;
+      }>
     >`
       SELECT DISTINCT owner_id, host, pid,
              (last_active_at IS NOT NULL
-              AND (now() - last_active_at) < make_interval(secs => ${graceSec})) AS active_fresh
+              AND (now() - last_active_at) < make_interval(secs => ${graceSec})) AS active_fresh,
+             EXISTS (
+               SELECT 1 FROM harness_shared.routines r
+                WHERE r.target_owner_id = coord_presence.owner_id
+                  AND r.active = true
+                  AND r.reschedule_interval_sec IS NOT NULL
+             ) AS loop_active
         FROM harness_shared.coord_presence
        WHERE owner_id IS NOT NULL AND pid IS NOT NULL AND pid > 0 AND host IS NOT NULL AND host <> ''`;
     // EI-21434105273882121: fresh GENUINE activity vetoes the dead-pid removal
@@ -359,7 +383,13 @@ export async function gatherProtectedSessionOwners(
     // recorded pid goes stale while the owner id lives on, and deleting here
     // is what force-released a progressing holder's claims mid-work.
     const { unprotect } = planDeadPidUnprotect(
-      pidRows.map((r) => ({ ownerId: r.owner_id, host: r.host, pid: r.pid, activeFresh: r.active_fresh })),
+      pidRows.map((r) => ({
+        ownerId: r.owner_id,
+        host: r.host,
+        pid: r.pid,
+        activeFresh: r.active_fresh,
+        loopActive: r.loop_active,
+      })),
     );
     for (const owner of unprotect) {
       protectedOwners.delete(owner);

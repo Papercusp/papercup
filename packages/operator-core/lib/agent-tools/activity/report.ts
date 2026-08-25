@@ -306,9 +306,10 @@ export default defineTool({
         // incarnation and resume the SAME coordination owner on its next fire. If
         // that incarnation's SessionEnd lands while the loop remains active, this
         // fast path must not erase the loop's driving work-item claim before the
-        // successor turn arrives. The ordinary P-001 liveness reaper remains the
-        // backstop if an armed loop's owner is genuinely gone; once the loop is
-        // inactive, the normal terminal release below applies unchanged.
+        // successor turn arrives. If the owner is genuinely gone, the loop's
+        // bounded reachability guard deactivates it and the ordinary P-001
+        // liveness reaper becomes the backstop; once the loop is inactive, the
+        // normal terminal release below applies unchanged.
         //
         // All three are now cross-PROCESS reads, and deliberately so: the operator is
         // clustered (N round-robin :3070 workers), so the process that marked a
@@ -350,7 +351,7 @@ export default defineTool({
           result.session_end_disposition = 'continuation';
           console.log(
             `[activity:report] session-end lease release SKIPPED for ${owner}: an engine loop remains armed ` +
-              `(same-owner warm continuation) — claims stay held; a genuinely dead owner is freed by the scheduled lease reap`,
+              `(same-owner warm continuation) — claims stay held; a genuinely dead owner is freed after the loop reachability guard deactivates it`,
           );
         } else {
           result.session_end_disposition = 'terminal';
