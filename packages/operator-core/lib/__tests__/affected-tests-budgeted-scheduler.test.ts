@@ -15,6 +15,7 @@ import {
   planAffectedTaskShards,
   readDurationHistory,
   readTaskCgroupMemoryMaxMb,
+  readTaskCgroupPidsMax,
   resolveGlobalWorkerBudget,
   resolveMemoryBudgetMb,
   resolveTaskBudget,
@@ -79,11 +80,7 @@ describe('runBudgetedTasks', () => {
     gates.get('long')!.resolve('long-result');
 
     const result = await running;
-    expect(result.results.map((entry: { task: { id: string } }) => entry.task.id)).toEqual([
-      'long',
-      'medium',
-      'short',
-    ]);
+    expect(result.results.map((entry: { task: { id: string } }) => entry.task.id)).toEqual(['long', 'medium', 'short']);
     expect(result.results.map((entry: { value: string }) => entry.value)).toEqual([
       'long-result',
       'medium-result',
@@ -206,19 +203,19 @@ describe('near-tree-wide deterministic sharding (P-011)', () => {
       taskKey: (task) => task.id,
     });
     expect(plan.shards.map((shard) => shard.tasks.length)).toEqual([3, 3, 3, 1]);
-    expect(plan.shards.flatMap((shard) => shard.tasks.map((task) => task.id))).toEqual(
-      tasks.map((task) => task.id),
-    );
+    expect(plan.shards.flatMap((shard) => shard.tasks.map((task) => task.id))).toEqual(tasks.map((task) => task.id));
     expect(new Set(plan.shards.flatMap((shard) => shard.taskKeys)).size).toBe(tasks.length);
     expect(formatAffectedTaskShardMarker(plan, 8192)).toContain('shards=4');
   });
 
   it('fails before launch when the finalized task set contains a duplicate', () => {
-    expect(() => planAffectedTaskShards([{ id: 'a' }, { id: 'a' }], {
-      blastRadius: broad,
-      maxTasksPerShard: 2,
-      taskKey: (task) => task.id,
-    })).toThrow(/duplicate affected task/);
+    expect(() =>
+      planAffectedTaskShards([{ id: 'a' }, { id: 'a' }], {
+        blastRadius: broad,
+        maxTasksPerShard: 2,
+        taskKey: (task) => task.id,
+      }),
+    ).toThrow(/duplicate affected task/);
   });
 
   it('runs shards sequentially while keeping each shard under the scheduler topology cap', async () => {
@@ -300,12 +297,8 @@ describe('runBudgetedTasks memory-aware admission (EI-20801764054303492 route (a
     const unclamped = await widthsFor({});
     const clamped = await widthsFor({ readMemAvailableMb: readerFrom([2000]).read });
 
-    expect(clamped.stats.observedMaxWorkers).toBeLessThanOrEqual(
-      unclamped.stats.observedMaxWorkers,
-    );
-    expect(clamped.stats.observedMaxMemoryMb).toBeLessThanOrEqual(
-      unclamped.stats.observedMaxMemoryMb,
-    );
+    expect(clamped.stats.observedMaxWorkers).toBeLessThanOrEqual(unclamped.stats.observedMaxWorkers);
+    expect(clamped.stats.observedMaxMemoryMb).toBeLessThanOrEqual(unclamped.stats.observedMaxMemoryMb);
     // The peak can still be SET by the unmeasured first admission — that is the documented cost
     // of skipping the re-measure there, pinned so a future change to that rule is visible.
     expect(clamped.widths[0]).toBe(unclamped.widths[0]);
@@ -419,8 +412,12 @@ describe('resolveMemoryBudgetMb', () => {
     // Previously: 4096 MiB available, 25% reserved => 3072 usable => 3 tokens.
     const budget = resolveMemoryBudgetMb({ ...base, memAvailableMb: 4096 });
     expect(budget).toBe(8 * 1024);
-    expect(resolveTaskBudget({ ...base, memoryBudgetMb: budget, maxConcurrentTasks: 8, reserveWorkers: 1 }))
-      .toMatchObject({ memoryWorkerBudget: 8, effectiveWorkerBudget: 8 });
+    expect(
+      resolveTaskBudget({ ...base, memoryBudgetMb: budget, maxConcurrentTasks: 8, reserveWorkers: 1 }),
+    ).toMatchObject({
+      memoryWorkerBudget: 8,
+      effectiveWorkerBudget: 8,
+    });
   });
 
   it('NEVER widens the budget past the worker ceiling, however much memory is free', () => {
@@ -442,22 +439,24 @@ describe('resolveMemoryBudgetMb', () => {
   });
 
   it('lets an explicit AFFECTED_GLOBAL_MEMORY_MB win over the measured host', () => {
-    expect(
-      resolveMemoryBudgetMb({ ...base, affectedGlobalMemoryMb: '2048', memAvailableMb: 999_999 }),
-    ).toBe(2048);
+    expect(resolveMemoryBudgetMb({ ...base, affectedGlobalMemoryMb: '2048', memAvailableMb: 999_999 })).toBe(2048);
   });
 
   it('caps against the hard task cgroup memory.max without re-arming host-memory heuristics', () => {
     expect(resolveMemoryBudgetMb({ ...base, memAvailableMb: 1, taskCgroupMemoryMaxMb: 4096 })).toBe(3072);
-    expect(resolveMemoryBudgetMb({
-      ...base,
-      affectedGlobalMemoryMb: 7000,
-      taskCgroupMemoryMaxMb: 4096,
-    })).toBe(3072);
-    expect(() => resolveMemoryBudgetMb({
-      ...base,
-      taskCgroupMemoryMaxMb: 1024,
-    })).toThrow(/refusing before launch/);
+    expect(
+      resolveMemoryBudgetMb({
+        ...base,
+        affectedGlobalMemoryMb: 7000,
+        taskCgroupMemoryMaxMb: 4096,
+      }),
+    ).toBe(3072);
+    expect(() =>
+      resolveMemoryBudgetMb({
+        ...base,
+        taskCgroupMemoryMaxMb: 1024,
+      }),
+    ).toThrow(/refusing before launch/);
   });
 
   it('reads memory.max from the current unified cgroup and treats max/unreadable as unbounded', () => {
@@ -472,6 +471,49 @@ describe('resolveMemoryBudgetMb', () => {
     expect(readTaskCgroupMemoryMaxMb({ readFile })).toBe(8192);
     files.set('/sys/fs/cgroup/user.slice/test.scope/memory.max', 'max');
     expect(readTaskCgroupMemoryMaxMb({ readFile })).toBeNull();
+  });
+
+  it('reads pids.max from the current unified cgroup and treats max/unreadable as unbounded', () => {
+    const files = new Map([
+      ['/proc/self/cgroup', '0::/user.slice/test.scope\n'],
+      ['/sys/fs/cgroup/user.slice/test.scope/pids.max', '2048'],
+    ]);
+    const readFile = (path: string) => {
+      if (!files.has(path)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return files.get(path)!;
+    };
+    expect(readTaskCgroupPidsMax({ readFile })).toBe(2048);
+    files.set('/sys/fs/cgroup/user.slice/test.scope/pids.max', 'max');
+    expect(readTaskCgroupPidsMax({ readFile })).toBeNull();
+  });
+
+  it('serializes a 2048-pid task scope instead of admitting two peak-sized test tasks', () => {
+    const resolved = resolveTaskBudget({ ...config, taskCgroupPidsMax: 2048 });
+    expect(resolved).toMatchObject({
+      mode: 'serial',
+      maxConcurrentTasks: 1,
+      configuredMaxConcurrentTasks: 2,
+      pidsMaxConcurrentTasks: 1,
+      taskBoundBy: 'pids',
+    });
+    const marker = formatTaskBudgetMarker(resolved);
+    expect(marker).toContain('effectiveWorkers=4 maxTasks=1 reserveWorkers=1');
+    expect(marker).toContain(
+      'configuredMaxTasks=2 pidsMaxTasks=1 taskBoundBy=pids ' +
+        'taskCgroupPidsMax=2048 pidsPerTask=1536 pidsReserve=512',
+    );
+  });
+
+  it('keeps two-task scheduling in a 4096-pid scope and refuses an undersized scope', () => {
+    expect(resolveTaskBudget({ ...config, taskCgroupPidsMax: 4096 })).toMatchObject({
+      mode: 'parallel',
+      maxConcurrentTasks: 2,
+      pidsMaxConcurrentTasks: 2,
+      taskBoundBy: 'ceiling',
+    });
+    expect(() => resolveTaskBudget({ ...config, taskCgroupPidsMax: 1024 })).toThrow(
+      /below one pidsPerConcurrentTask=1536 envelope; refusing before launch/,
+    );
   });
 
   it('falls back to the ceiling when the host reading is unavailable, never to zero', () => {
@@ -705,29 +747,21 @@ describe('operator-visible budget markers', () => {
   it('reports the host measurement when one was taken, and omits it when there was none', () => {
     const resolved = resolveTaskBudget(config);
     // Present: the operator can compare what the box had against what was admitted.
-    expect(formatTaskBudgetMarker({ ...resolved, memAvailableMb: 51_200 })).toContain(
-      'memAvailableMb=51200',
-    );
+    expect(formatTaskBudgetMarker({ ...resolved, memAvailableMb: 51_200 })).toContain('memAvailableMb=51200');
     // Absent: "no measurement" is meaningful and must NOT be rendered as 0/null, which would
     // read as "the box had no memory" — the exact misreading this marker exists to prevent.
     expect(formatTaskBudgetMarker(resolved)).not.toContain('memAvailableMb');
-    expect(formatTaskBudgetMarker({ ...resolved, memAvailableMb: null })).not.toContain(
-      'memAvailableMb',
-    );
+    expect(formatTaskBudgetMarker({ ...resolved, memAvailableMb: null })).not.toContain('memAvailableMb');
   });
 
   it('derives the binding term for a caller that supplies no boundBy (older/hand-built stats)', () => {
-    expect(
-      formatTaskBudgetMarker({ ...resolveTaskBudget(config), boundBy: undefined }),
-    ).toContain('boundBy=ceiling');
+    expect(formatTaskBudgetMarker({ ...resolveTaskBudget(config), boundBy: undefined })).toContain('boundBy=ceiling');
   });
 });
 
 describe('affected-tests scheduler wiring', () => {
   it('awaits the initial budgeted pool and preserves allocation-specific Vitest ceilings', () => {
-    expect(AFFECTED_TESTS_SRC).toContain(
-      'const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN',
-    );
+    expect(AFFECTED_TESTS_SRC).toContain('const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
     for (const variable of ['VITEST_MAX_WORKERS', 'VITEST_MAX_FORKS', 'VITEST_MAX_THREADS']) {
       expect(AFFECTED_TESTS_SRC).toContain(`${variable}: String(allocation.workers)`);
     }
@@ -763,6 +797,8 @@ describe('affected-tests scheduler wiring', () => {
     expect(AFFECTED_TESTS_SRC).toContain('const MEM_AVAILABLE_MB = readMemAvailableMb()');
     expect(AFFECTED_TESTS_SRC).toContain('memAvailableMb: MEM_AVAILABLE_MB');
     expect(AFFECTED_TESTS_SRC).toContain('taskCgroupMemoryMaxMb: TASK_CGROUP_MEMORY_MAX_MB');
+    expect(AFFECTED_TESTS_SRC).toContain('const TASK_CGROUP_PIDS_MAX = readTaskCgroupPidsMax()');
+    expect(AFFECTED_TESTS_SRC).toContain('taskCgroupPidsMax: TASK_CGROUP_PIDS_MAX');
     // MemAvailable, never MemFree/os.freemem() — the latter two ignore reclaimable page cache and
     // read catastrophically low on a long-lived box. (Asserted on the READ, not on the absence of
     // the string "os.freemem()" anywhere in the file: the prose explaining WHY we avoid it names
@@ -779,13 +815,9 @@ describe('affected-tests scheduler wiring', () => {
   });
 
   it('drains the initial pool before reporting and reuses the same scheduler for retries', () => {
-    const pool = AFFECTED_TESTS_SRC.indexOf(
-      'const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN',
-    );
+    const pool = AFFECTED_TESTS_SRC.indexOf('const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN');
     const reporting = AFFECTED_TESTS_SRC.indexOf('for (const scheduled of initialPool.results) {');
-    const retry = AFFECTED_TESTS_SRC.indexOf(
-      'const retryPool = await runBudgetedTasks([scheduled.task]',
-    );
+    const retry = AFFECTED_TESTS_SRC.indexOf('const retryPool = await runBudgetedTasks([scheduled.task]');
     expect(pool).toBeGreaterThan(-1);
     expect(reporting).toBeGreaterThan(pool);
     expect(retry).toBeGreaterThan(reporting);

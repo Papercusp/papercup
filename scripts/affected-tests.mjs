@@ -100,6 +100,7 @@ import {
   planAffectedTaskShards,
   readDurationHistory,
   readTaskCgroupMemoryMaxMb,
+  readTaskCgroupPidsMax,
   resolveGlobalWorkerBudget,
   resolveMemoryBudgetMb,
   resolveTaskBudget,
@@ -185,7 +186,10 @@ function explicitFilesArgs(files) {
     tmpdir(),
     `papercusp-affected-tests-${RUN_TOKEN}-files-${forwardedFilesResponsePaths.length}.json`,
   );
-  writeFileSync(responsePath, JSON.stringify(files), { flag: "wx", mode: 0o600 });
+  writeFileSync(responsePath, JSON.stringify(files), {
+    flag: "wx",
+    mode: 0o600,
+  });
   forwardedFilesResponsePaths.push(responsePath);
   return [`--files-from=${responsePath}`];
 }
@@ -426,6 +430,7 @@ function readMemAvailableMb() {
 // drift between them on a busy box, which makes the log unreadable exactly when it matters.
 const MEM_AVAILABLE_MB = readMemAvailableMb();
 const TASK_CGROUP_MEMORY_MAX_MB = readTaskCgroupMemoryMaxMb();
+const TASK_CGROUP_PIDS_MAX = readTaskCgroupPidsMax();
 const SCHEDULER_CONFIG = resolveTaskBudget({
   workerBudget: SCHEDULER_WORKER_BUDGET,
   memoryBudgetMb: resolveMemoryBudgetMb({
@@ -438,6 +443,7 @@ const SCHEDULER_CONFIG = resolveTaskBudget({
   workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
   maxConcurrentTasks: process.env.AFFECTED_MAX_CONCURRENT_TASKS ?? 2,
   reserveWorkers: 1,
+  taskCgroupPidsMax: TASK_CGROUP_PIDS_MAX,
 });
 const TASK_DURATION_HISTORY_PATH =
   process.env.AFFECTED_TASK_HISTORY_PATH ??
@@ -3011,7 +3017,9 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
       ? authoredDocGuardArgs()
       : guard.forwardChangedPaths
         ? explicitFilesArgs(
-            invariantGuardChangedPaths().filter((file) => guard.appliesTo(file)),
+            invariantGuardChangedPaths().filter((file) =>
+              guard.appliesTo(file),
+            ),
           )
         : [];
   selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
@@ -3846,7 +3854,9 @@ function runCapturedTask(
       // reporting loop emits `>>> <workspace> spawn error`, counts one attributed red,
       // and still reaches an AFFECTED_TESTS_RESULT terminal verdict.
       spawnError =
-        error instanceof Error ? error : new Error(String(error ?? "spawn failed"));
+        error instanceof Error
+          ? error
+          : new Error(String(error ?? "spawn failed"));
       const outcome = formatTaskOutcomeFields({
         status: 1,
         signal: null,

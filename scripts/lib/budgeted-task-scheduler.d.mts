@@ -4,6 +4,9 @@ export interface TaskBudgetInput {
   workerMemoryMb: number | string;
   maxConcurrentTasks?: number | string;
   reserveWorkers?: number | string;
+  taskCgroupPidsMax?: number | string | null;
+  pidsPerConcurrentTask?: number | string;
+  pidsReserve?: number | string;
 }
 
 export interface ResolvedTaskBudget {
@@ -13,6 +16,12 @@ export interface ResolvedTaskBudget {
   memoryWorkerBudget: number;
   effectiveWorkerBudget: number;
   maxConcurrentTasks: number;
+  configuredMaxConcurrentTasks: number;
+  pidsMaxConcurrentTasks: number | null;
+  taskCgroupPidsMax: number | null;
+  pidsPerConcurrentTask: number;
+  pidsReserve: number;
+  taskBoundBy: 'pids' | 'ceiling';
   reserveWorkers: number;
   mode: 'parallel' | 'serial';
   primaryWorkers: number;
@@ -128,6 +137,8 @@ export interface DurationHistory {
 }
 
 export const DURATION_HISTORY_VERSION: number;
+export const PIDS_PER_CONCURRENT_TASK: number;
+export const PIDS_RESERVE: number;
 
 export function resolveGlobalWorkerBudget(input: {
   affectedWorkerBudget?: number | string;
@@ -161,6 +172,12 @@ export function resolveMemoryBudgetMb(input: {
 }): number;
 
 export function readTaskCgroupMemoryMaxMb(input?: {
+  readFile?: (path: string, encoding: string) => string | Buffer;
+  procCgroupPath?: string;
+  cgroupRoot?: string;
+}): number | null;
+
+export function readTaskCgroupPidsMax(input?: {
   readFile?: (path: string, encoding: string) => string | Buffer;
   procCgroupPath?: string;
   cgroupRoot?: string;
@@ -223,10 +240,12 @@ export function runBudgetedTaskShards<Task, Value>(
     readMemAvailableMb?: () => number | null | undefined;
     runTask: (task: Task, allocation: TaskAllocation, index: number) => Value | Promise<Value>;
   },
-): Promise<BudgetedTaskRun<Task, Value> & {
-  shardStats: Array<TaskSchedulerStats & { index: number; taskCount: number }>;
-  shardPlan: AffectedTaskShardPlan<Task>;
-}>;
+): Promise<
+  BudgetedTaskRun<Task, Value> & {
+    shardStats: Array<TaskSchedulerStats & { index: number; taskCount: number }>;
+    shardPlan: AffectedTaskShardPlan<Task>;
+  }
+>;
 
 export function emptyDurationHistory(): DurationHistory;
 
@@ -247,13 +266,6 @@ export function mergeDurationHistory(
   now?: string,
 ): DurationHistory;
 
-export function writeDurationHistoryAtomic(
-  path: string,
-  history: DurationHistory,
-  nonce?: string,
-): void;
+export function writeDurationHistoryAtomic(path: string, history: DurationHistory, nonce?: string): void;
 
-export function formatTaskBudgetMarker(
-  stats: ResolvedTaskBudget,
-  prefix?: string,
-): string;
+export function formatTaskBudgetMarker(stats: ResolvedTaskBudget, prefix?: string): string;
