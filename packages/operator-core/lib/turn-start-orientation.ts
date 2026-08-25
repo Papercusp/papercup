@@ -51,6 +51,7 @@
 
 import type { CursorState } from './agent-tools/coordination/read-cursors';
 import type { ScoredItem } from './harness/improvements/digest';
+import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind-window';
 import { capPreservingOperativeDetailed } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
 
@@ -214,6 +215,19 @@ export interface OrientationState {
    * healthy OR unreadable. See OrientationToolSurface for why unknown ⇒ null.
    */
   toolSurface: OrientationToolSurface | null;
+  /**
+   * EI-21442716425230784: what the carry document could NOT have seen — the work
+   * the predecessor did between the carry snapshot and the cut. Present only on a
+   * fresh successor whose window was measured and NON-EMPTY; null otherwise,
+   * which covers "no recent cut", "the window was empty", and "unreadable"
+   * alike, because none of those is something to spend a line on.
+   *
+   * This is the first-turn line a just-respawned agent most needs and can least
+   * derive: the carry doc warns that a blind window exists but carries no signal
+   * about THIS one, so a successor cannot tell an empty window from one holding
+   * the single most owner-salient act of the session.
+   */
+  carryBlindWindow: CarryBlindWindow | null;
 }
 
 /** Default budget. Small on purpose: this fires EVERY turn and compounds. */
@@ -267,7 +281,8 @@ export function isEmptyOrientation(state: OrientationState): boolean {
     state.improvementTriage === null &&
     state.executableFrontier === null &&
     state.neverDropFacts.length === 0 &&
-    state.toolSurface === null
+    state.toolSurface === null &&
+    state.carryBlindWindow === null
   );
 }
 
@@ -405,6 +420,15 @@ export function fingerprintOrientation(
     // session that cannot act. That is the `facts` trap noted below, in the one
     // case where the agent has no way to recover the information for itself.
     toolSurface: state.toolSurface ? `${state.toolSurface.hookCalls}` : '',
+    // A one-shot BY CONSTRUCTION, not by suppression: both endpoints and the
+    // count are bounded at the CUT, so the token is frozen the moment the
+    // successor boots and the line renders exactly once per respawn. (An
+    // unbounded count would keep growing with the successor's own calls and
+    // re-emit a different line every turn — the noise this token's stability
+    // buys us.) The epoch bump at the boundary guarantees the first emission.
+    carryBlind: state.carryBlindWindow
+      ? `${state.carryBlindWindow.cutAtMs}:${state.carryBlindWindow.callsAfter}`
+      : '',
     epoch,
   };
 }
@@ -430,6 +454,13 @@ export function orientationUnchanged(committed: CursorState | null, next: Cursor
     // does NOTHING unless it is compared HERE. Omitting this line reinstates the
     // one-shot warning with no visible symptom — the block simply goes quiet.
     a.toolSurface === b.toolSurface &&
+    // Same rule again (EI-21442716425230784): the token is inert unless compared
+    // here. It also matters in the OTHER direction — a measured blind window
+    // arriving on a turn whose every other token is unchanged (the common shape:
+    // a successor's first turn holding the same items its predecessor did) must
+    // still re-emit the block, or the one warning that cannot be re-derived is
+    // the one that is suppressed.
+    (a.carryBlind ?? '') === (b.carryBlind ?? '') &&
     a.triage === b.triage &&
     (a.frontier ?? '') === (b.frontier ?? '') &&
     a.epoch === b.epoch
@@ -512,6 +543,15 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
         `${state.toolSurface.hookCalls} harness beats OK. Tool list loaded EMPTY; it cannot ` +
         `self-heal. RESTART THE SESSION (EI-21308269358666878).`,
     );
+  }
+  // Second, and above the directed-message line for one reason: it is the only
+  // line here that DECAYS. Every other line describes state the agent can re-read
+  // at any point in the session; this one describes turns that exist solely in a
+  // dead predecessor's transcript, and an owner-salient deliverable stranded there
+  // (EI-21442716425230784: an OAuth consent URL the owner was told to act on) is
+  // discovered late or never. It renders once per respawn, so the cost is bounded.
+  if (state.carryBlindWindow) {
+    lines.push(renderCarryBlindWindowLine(state.carryBlindWindow));
   }
   if (state.unansweredDirected > 0) {
     lines.push(`- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`);
