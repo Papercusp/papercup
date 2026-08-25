@@ -326,6 +326,26 @@
 }
 
 /* ── Rows ──────────────────────────────────────────────────────────────── */
+.review-report__column-head {
+  display: grid;
+  grid-template-columns:
+    26px minmax(120px, 180px) minmax(150px, 220px) minmax(0, 1fr)
+    88px;
+  gap: 10px;
+  padding: 6px 12px 5px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-mute);
+  background: color-mix(in oklab, var(--bg-2), transparent 28%);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.045em;
+  text-transform: uppercase;
+}
+
+.review-report__column-head > span:last-child {
+  justify-self: end;
+}
+
 .review-report__rows {
   list-style: none;
   margin: 0;
@@ -536,6 +556,10 @@
   .review-report__row {
     grid-template-columns: 26px minmax(0, 1fr) 78px;
     align-items: start;
+  }
+
+  .review-report__column-head {
+    display: none;
   }
 
   .review-report__row-identity,

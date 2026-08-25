@@ -94,6 +94,9 @@ describe("rendering", () => {
     expect(screen.getByText("run #7")).toBeTruthy();
     expect(screen.getAllByText("Flip to done")).toHaveLength(2);
     expect(screen.getByText("WI-100 done; completion recorded")).toBeTruthy();
+    expect(
+      screen.getByTestId("review-group-columns-flip-to-done").textContent,
+    ).toContain("TargetProposed changeEvidenceConfidence");
     expect(screen.getByText("my-plan")).toBeTruthy();
     expect(screen.getByText("P-001")).toBeTruthy();
     expect(
@@ -301,6 +304,9 @@ describe("collapse", () => {
     expect(screen.getByTestId("review-row-f1")).toBeTruthy();
     fireEvent.click(screen.getByTestId("review-group-toggle-flip-to-done"));
     expect(screen.queryByTestId("review-row-f1")).toBeNull();
+    expect(
+      screen.queryByTestId("review-group-columns-flip-to-done"),
+    ).toBeNull();
     expect(applyBtn().textContent).toContain("(3)"); // selection preserved
     fireEvent.click(screen.getByTestId("review-group-toggle-flip-to-done"));
     expect(screen.getByTestId("review-row-f1")).toBeTruthy();

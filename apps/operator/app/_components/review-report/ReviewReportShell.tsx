@@ -387,111 +387,124 @@ export default function ReviewReportShell({
                   </button>
                 </header>
                 {!isCollapsed && (
-                  <ul className="review-report__rows">
-                    {group.rows.map((row) => {
-                      const status = rowStatus(row);
-                      const selectable = rowSelectable(row);
-                      return (
-                        <li
-                          key={row.id}
-                          className={`review-report__row review-report__row--${status}`}
-                          data-testid={`review-row-${row.id}`}
-                        >
-                          <span className="review-report__row-check-slot">
-                            {selectable ? (
-                              <Checkbox
-                                dataTestId={`review-row-check-${row.id}`}
-                                ariaLabel={`Select ${row.title}`}
-                                checked={liveSelected.has(row.id)}
-                                disabled={busy}
-                                onChange={() => toggleRow(row.id)}
-                              />
-                            ) : (
-                              <span
-                                className="review-report__row-status-mark"
-                                data-testid={`review-row-mark-${row.id}`}
-                                title={
-                                  status === "pending"
-                                    ? "manual review required"
-                                    : status
-                                }
-                                aria-hidden
-                              >
-                                {status === "applied"
-                                  ? "✓"
-                                  : status === "pending"
-                                    ? "↗"
-                                    : "—"}
-                              </span>
-                            )}
-                          </span>
-                          <span className="review-report__row-identity">
-                            {row.sourceLabel != null ? (
-                              <span className="review-report__source-chip">
-                                {row.sourceLabel}
-                              </span>
-                            ) : null}
-                            {row.referenceLabel != null ? (
-                              <span className="review-report__reference">
-                                {row.referenceLabel}
-                              </span>
-                            ) : null}
-                          </span>
-                          <span className="review-report__row-change">
-                            {row.transition != null ? (
-                              <span
-                                className="review-report__transition"
-                                data-testid={`review-row-transition-${row.id}`}
-                              >
-                                <span className="review-report__state review-report__state--from">
-                                  {row.transition.from}
-                                </span>
-                                <span
-                                  className="review-report__transition-arrow"
-                                  aria-hidden="true"
-                                >
-                                  →
-                                </span>
-                                <span className="review-report__state review-report__state--to">
-                                  {row.transition.to}
-                                </span>
-                              </span>
-                            ) : (
-                              <span className="review-report__row-title">
-                                {row.title}
-                              </span>
-                            )}
-                          </span>
-                          <span className="review-report__row-evidence">
-                            {row.transition != null ? (
-                              <span className="review-report__row-title">
-                                {row.title}
-                              </span>
-                            ) : null}
-                            {row.evidence.map((line, i) => (
-                              <span
-                                key={i}
-                                className="review-report__evidence-item"
-                              >
-                                {line}
-                              </span>
-                            ))}
-                          </span>
-                          <span
-                            className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
-                            data-testid={`review-row-conf-${row.id}`}
+                  <>
+                    <div
+                      className="review-report__column-head"
+                      data-testid={`review-group-columns-${group.id}`}
+                      aria-hidden="true"
+                    >
+                      <span />
+                      <span>Target</span>
+                      <span>Proposed change</span>
+                      <span>Evidence</span>
+                      <span>Confidence</span>
+                    </div>
+                    <ul className="review-report__rows">
+                      {group.rows.map((row) => {
+                        const status = rowStatus(row);
+                        const selectable = rowSelectable(row);
+                        return (
+                          <li
+                            key={row.id}
+                            className={`review-report__row review-report__row--${status}`}
+                            data-testid={`review-row-${row.id}`}
                           >
-                            {CONFIDENCE_LABEL[row.confidence]}
-                          </span>
-                          {row.detail != null ? (
-                            <span className="review-report__row-detail">
-                              {row.detail}
+                            <span className="review-report__row-check-slot">
+                              {selectable ? (
+                                <Checkbox
+                                  dataTestId={`review-row-check-${row.id}`}
+                                  ariaLabel={`Select ${row.title}`}
+                                  checked={liveSelected.has(row.id)}
+                                  disabled={busy}
+                                  onChange={() => toggleRow(row.id)}
+                                />
+                              ) : (
+                                <span
+                                  className="review-report__row-status-mark"
+                                  data-testid={`review-row-mark-${row.id}`}
+                                  title={
+                                    status === "pending"
+                                      ? "manual review required"
+                                      : status
+                                  }
+                                  aria-hidden
+                                >
+                                  {status === "applied"
+                                    ? "✓"
+                                    : status === "pending"
+                                      ? "↗"
+                                      : "—"}
+                                </span>
+                              )}
                             </span>
-                          ) : null}
-                        </li>
-                      );
-                    })}
-                  </ul>
+                            <span className="review-report__row-identity">
+                              {row.sourceLabel != null ? (
+                                <span className="review-report__source-chip">
+                                  {row.sourceLabel}
+                                </span>
+                              ) : null}
+                              {row.referenceLabel != null ? (
+                                <span className="review-report__reference">
+                                  {row.referenceLabel}
+                                </span>
+                              ) : null}
+                            </span>
+                            <span className="review-report__row-change">
+                              {row.transition != null ? (
+                                <span
+                                  className="review-report__transition"
+                                  data-testid={`review-row-transition-${row.id}`}
+                                >
+                                  <span className="review-report__state review-report__state--from">
+                                    {row.transition.from}
+                                  </span>
+                                  <span
+                                    className="review-report__transition-arrow"
+                                    aria-hidden="true"
+                                  >
+                                    →
+                                  </span>
+                                  <span className="review-report__state review-report__state--to">
+                                    {row.transition.to}
+                                  </span>
+                                </span>
+                              ) : (
+                                <span className="review-report__row-title">
+                                  {row.title}
+                                </span>
+                              )}
+                            </span>
+                            <span className="review-report__row-evidence">
+                              {row.transition != null ? (
+                                <span className="review-report__row-title">
+                                  {row.title}
+                                </span>
+                              ) : null}
+                              {row.evidence.map((line, i) => (
+                                <span
+                                  key={i}
+                                  className="review-report__evidence-item"
+                                >
+                                  {line}
+                                </span>
+                              ))}
+                            </span>
+                            <span
+                              className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
+                              data-testid={`review-row-conf-${row.id}`}
+                            >
+                              {CONFIDENCE_LABEL[row.confidence]}
+                            </span>
+                            {row.detail != null ? (
+                              <span className="review-report__row-detail">
+                                {row.detail}
+                              </span>
+                            ) : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </>
                 )}
               </section>
             );
