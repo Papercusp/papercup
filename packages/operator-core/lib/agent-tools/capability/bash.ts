@@ -25,6 +25,8 @@ import { isAbsolute, resolve } from 'node:path';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import {
+  CAPABILITY_BASH_FOREGROUND_ENV,
+  CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV,
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   detectBufferingLastStage,
@@ -351,6 +353,13 @@ export default defineTool({
       ...(desktopEnv ?? {}),
       ...integrationEnv,
       PAPERCUSP_SID: callerSid,
+      // The marker is owned by this handler, not by caller-provided env. A
+      // foreground timeout kills the entire process tree, so mutation probes
+      // must refuse --in-tree before they touch a tracked file. Background
+      // jobs explicitly clear both names so a stale inherited value cannot
+      // make a detached probe refuse for the wrong reason.
+      [CAPABILITY_BASH_FOREGROUND_ENV]: args.run_in_background ? '' : '1',
+      [CAPABILITY_BASH_FOREGROUND_TIMEOUT_ENV]: args.run_in_background ? '' : String(timeoutMs),
     };
     const redactValues = resolvedIntegrationEntries.map((entry) => entry.value!);
     const integrationHeader =

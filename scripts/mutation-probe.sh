@@ -297,6 +297,20 @@ if [ "$IN_TREE" -eq 0 ]; then
   esac
 fi
 
+# capability:bash foreground calls terminate the WHOLE child process tree when
+# their short wall-clock deadline expires. That kill can arrive after this
+# script has applied the mutant but before Bash gets to run finish(), so the
+# trap cannot guarantee restoration of a tracked file. Refuse before creating
+# the scratch snapshot or applying any mutation; callers can safely use
+# copy-out mode, or run the in-tree probe as a durable background job.
+if [ "$IN_TREE" -eq 1 ] && [ "${PAPERCUSP_CAPABILITY_BASH_FOREGROUND:-}" = "1" ]; then
+  foreground_timeout_ms="${PAPERCUSP_CAPABILITY_BASH_FOREGROUND_TIMEOUT_MS:-unknown}"
+  die "REFUSING --in-tree from capability:bash foreground execution (captured timeout: ${foreground_timeout_ms}ms).
+      capability:bash kills this command and its whole process tree at the foreground deadline, which can strand the
+      tracked mutant before this script's restore trap runs. Use copy-out mode, or run the probe with
+      capability:bash { run_in_background: true } and read progress with capability:bash_output instead."
+fi
+
 # --in-tree is the ONLY mode that leaves a deliberately-wrong state in the
 # tracked tree, and the sweep race is the one hazard this script cannot close
 # for you: git-sync commits the WHOLE working tree on a short cadence, so a
