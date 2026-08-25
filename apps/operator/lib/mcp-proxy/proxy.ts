@@ -407,6 +407,28 @@ export interface PreparedForward {
   body: Buffer;
   headers: http.IncomingHttpHeaders;
   klass: ForwardClass;
+  /**
+   * Bounded JSON-RPC method names from the parsed batch (`initialize`,
+   * `tools/list`, `tools/call`, ...). Payloads and tool names are deliberately
+   * excluded: this exists only to split the broad `idempotent` timeout class
+   * into actionable protocol paths in the failure ledger.
+   */
+  rpcMethods: string[];
+}
+
+/** A pathological batch must not turn one telemetry record into an unbounded payload. */
+export const MAX_RECORDED_RPC_METHODS = 8;
+
+function recordedRpcMethods(messages: readonly unknown[]): string[] {
+  const out: string[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== 'object') continue;
+    const method = (message as { method?: unknown }).method;
+    if (typeof method !== 'string' || out.includes(method)) continue;
+    out.push(method);
+    if (out.length >= MAX_RECORDED_RPC_METHODS) break;
+  }
+  return out;
 }
 
 /**
@@ -471,28 +493,29 @@ export function prepareForward(
   body: Buffer,
   opts: { keyingEnabled: boolean; readonlyRetryEnabled?: boolean; genKey: () => string },
 ): PreparedForward {
-  if (method !== 'POST' || body.length === 0) return { body, headers, klass: 'opaque' };
+  if (method !== 'POST' || body.length === 0) return { body, headers, klass: 'opaque', rpcMethods: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(body.toString('utf8'));
   } catch {
-    return { body, headers, klass: 'opaque' }; // non-JSON — cannot classify → safe default
+    return { body, headers, klass: 'opaque', rpcMethods: [] }; // non-JSON — cannot classify → safe default
   }
   const msgs = Array.isArray(parsed) ? parsed : [parsed];
+  const rpcMethods = recordedRpcMethods(msgs);
   const isCall = (m: unknown): m is { method?: unknown; params?: Record<string, unknown> } =>
     !!m && typeof m === 'object' && (m as { method?: unknown }).method === 'tools/call';
   const calls = msgs.filter(isCall);
-  if (calls.length === 0) return { body, headers, klass: 'idempotent' }; // no write → free safe retry
+  if (calls.length === 0) return { body, headers, klass: 'idempotent', rpcMethods }; // no write → free safe retry
 
-  if (!opts.keyingEnabled) return { body, headers, klass: 'opaque' }; // kill-switch → refused-only
-  if (body.length > INJECT_MAX_BODY_BYTES) return { body, headers, klass: 'opaque' };
+  if (!opts.keyingEnabled) return { body, headers, klass: 'opaque', rpcMethods }; // kill-switch → refused-only
+  if (body.length > INJECT_MAX_BODY_BYTES) return { body, headers, klass: 'opaque', rpcMethods };
   // EI-21268234394605529: a provably read-only tools/call may be replayed on a post-connect
   // socket error (re-executing a read cannot double-apply). Gated behind BOTH switches: the
   // keying master switch above (PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 = pre-P-005 refused-only)
   // and its own PAPERCUSP_MCP_PROXY_READONLY_RETRY=0. Unknown / oversized / switched-off
   // bodies fall through to the existing keyed/opaque path unchanged.
   if (opts.readonlyRetryEnabled !== false && calls.every(isReadOnlyToolCall)) {
-    return { body, headers, klass: 'readonly' }; // body untouched — no key injection needed
+    return { body, headers, klass: 'readonly', rpcMethods }; // body untouched — no key injection needed
   }
 
   let mutated = false;
@@ -502,17 +525,17 @@ export function prepareForward(
     const meta =
       params._meta && typeof params._meta === 'object' ? (params._meta as Record<string, unknown>) : {};
     if (isValidIdemKey(meta.idempotencyKey)) continue; // respect a valid client key
-    if (meta.idempotencyKey !== undefined) return { body, headers, klass: 'opaque' }; // invalid client key → can't safely retry
+    if (meta.idempotencyKey !== undefined) return { body, headers, klass: 'opaque', rpcMethods }; // invalid client key → can't safely retry
     meta.idempotencyKey = opts.genKey();
     params._meta = meta;
     m.params = params;
     mutated = true;
   }
-  if (!mutated) return { body, headers, klass: 'keyed' }; // already client-keyed, body unchanged
+  if (!mutated) return { body, headers, klass: 'keyed', rpcMethods }; // already client-keyed, body unchanged
   const newBody = Buffer.from(JSON.stringify(parsed), 'utf8');
   const newHeaders: http.IncomingHttpHeaders = { ...headers, 'content-length': String(newBody.length) };
   delete newHeaders['transfer-encoding'];
-  return { body: newBody, headers: newHeaders, klass: 'keyed' };
+  return { body: newBody, headers: newHeaders, klass: 'keyed', rpcMethods };
 }
 
 /**
@@ -1421,6 +1444,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
           const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
           const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID });
+          // WI-41042 detector gap: `klass:'idempotent'` folds initialize,
+          // tools/list, ping, resources and prompts together. Preserve only the
+          // bounded protocol method names in failure telemetry so the next
+          // no-header stall identifies its handler path without logging args.
+          const rpcTrace = fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {};
           // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
           // restart-sized window (~30 attempts) and amplifying a transient stall ~30x.
           const retryWindowMs = effectiveRetryWindowMs(req.url ?? '/', opts.retryWindowMs);
@@ -1533,7 +1561,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               ures.pipe(res);
               if (attempts > 1) {
                 log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
-                record({ kind: 'recovered', method: req.method, path: req.url, status, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started });
+                record({ kind: 'recovered', method: req.method, path: req.url, status, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, ...rpcTrace });
               }
               // Forwarded a non-2xx: previously INVISIBLE (no tool_invocations row). A 4xx with
               // `connection: close` is the stale-socket-400 signature (W1.3) — record it so any
@@ -1563,7 +1591,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               )
             ) {
               handshakeTimeoutRetries++;
-              record({ kind: 'handshake_timeout_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, handshakeTimeoutRetries, elapsedMs: elapsed });
+              record({ kind: 'handshake_timeout_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, handshakeTimeoutRetries, elapsedMs: elapsed, ...rpcTrace });
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
@@ -1574,7 +1602,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
             if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, retryWindowMs)) {
               postConnectRetries++;
-              record({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? '') });
+              record({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? ''), ...rpcTrace });
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
@@ -1602,7 +1630,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             }),
           );
           log(`upstream ${refused ? 'unavailable' : 'error'} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`);
-          record({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown') });
+          record({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown'), ...rpcTrace });
         } finally {
           // EI-19305299022434394: always release the in-flight slot, on every exit path
           // (success return, exhausted-window fallthrough, or an unexpected throw).
