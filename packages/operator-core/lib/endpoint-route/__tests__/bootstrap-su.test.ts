@@ -588,22 +588,32 @@ describe('bootstrap-su', () => {
   }, 30_000);
 
   it('retains the replay claim when strict partial-row cleanup fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     recordAdvSessionMock.mockResolvedValueOnce(42);
     recordAgentLaunchResultMock.mockRejectedValueOnce(new Error('post-record result failure'));
     markAdvSessionEndedMock.mockRejectedValueOnce(new Error('terminal write unavailable'));
 
-    await expect(
-      callPost({
-        agent: 'codex',
-        harness_slug: 'papercup',
-        owner_id: 'su-replay02',
-        bootstrap_idempotency_key: 'bootstrap-key-cleanup-failed',
-      }),
-    ).rejects.toThrow('post-record result failure');
-    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'reconciler', {
-      throwOnError: true,
-    });
-    expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
+    try {
+      await expect(
+        callPost({
+          agent: 'codex',
+          harness_slug: 'papercup',
+          owner_id: 'su-replay02',
+          bootstrap_idempotency_key: 'bootstrap-key-cleanup-failed',
+        }),
+      ).rejects.toThrow('post-record result failure');
+      expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'reconciler', {
+        throwOnError: true,
+      });
+      expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'incomplete session 42 could not be terminalized; retaining bootstrap idempotency claim',
+        ),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   }, 30_000);
 
   it('stamps the resolved harness onto presence before the launched agent takes turn 1', async () => {
