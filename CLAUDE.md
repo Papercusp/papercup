@@ -245,8 +245,6 @@ This is not a paperwork nicety — it changes outcomes.
 
 ## Every plan ships with a graded acceptance rubric
 
-## Every plan ships with a graded acceptance rubric
-
 ⛔ **"ALL ITEMS TERMINAL" IS NOT A FINISHED PLAN, AND `plans:items` CANNOT TELL YOU IT ISN'T.** This is the most common way a plan is reported complete while it is not. Every item reading `done`/`dropped` means IMPLEMENTATION landed; it says nothing about whether the plan was VALIDATED, and the item list is the instrument agents reach for precisely because it is the one that cannot see the gap. A plan is finished only when it is `status: shipped`, which requires the audit and the graded rubric below. Check the PLAN's status, not its items — a plan sitting in `draft` with sixteen `done` items is a draft.
 
 ⛔ **CARRYING A PLAN "START TO FINISH" INCLUDES THESE VALIDATION STEPS — they are the finish, not paperwork after it.** An owner who says "carry out the plan", "take it from start to finish", or "finish it yourself" is asking for a SHIPPED plan. Stopping at the last implementation item and reporting done — or naming the remaining validation and handing it back — is the same silent halt in two different costumes. Neither is completion.
