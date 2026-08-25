@@ -50,6 +50,46 @@ describe('findSimilarPlans', () => {
     expect(findSimilarPlans([], ROWS)).toEqual([]);
   });
 
+  it('ignores generic planning language even when the corpus is small', () => {
+    const proposed = dedupTokens(
+      'restore-psu-pui-command-boundary-2026-08-24',
+      'Keep PSU/PUI command boundary',
+    );
+    const rows = [
+      {
+        planSlug: 'restore-papercusp-main-green-2026-08-20',
+        title: 'Restore Papercusp main green',
+        status: 'active',
+        archived: false,
+      },
+      {
+        planSlug: 'su-loop-capability-parity-2026-07-03',
+        title: 'Keep SU loop capability parity boundary',
+        status: 'active',
+        archived: false,
+      },
+    ];
+
+    expect(proposed).toEqual(['psu', 'pui', 'command']);
+    expect(findSimilarPlans(proposed, rows)).toEqual([]);
+  });
+
+  it('keeps domain overlap after removing generic planning language', () => {
+    const proposed = dedupTokens('restore-papercusp-main-green-2026-08-24', 'Keep Papercusp main green');
+    const rows = [
+      {
+        planSlug: 'papercusp-main-green-release-2026-08-20',
+        title: 'Papercusp main green release',
+        status: 'active',
+        archived: false,
+      },
+    ];
+
+    expect(findSimilarPlans(proposed, rows).map((s) => s.slug)).toEqual([
+      'papercusp-main-green-release-2026-08-20',
+    ]);
+  });
+
   it('caps at 5 candidates', () => {
     const many = Array.from({ length: 9 }, (_, i) => ({
       planSlug: `locks-grant-thing-${i}-2026-06-0${(i % 9) + 1}`,

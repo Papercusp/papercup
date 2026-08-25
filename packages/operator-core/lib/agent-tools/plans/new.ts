@@ -201,6 +201,10 @@ type NewPlanValue = { ok: true; slug: string } | { ok: false; code: 'slug_exists
 const DEDUP_STOPWORDS = new Set([
   'the', 'and', 'for', 'with', 'from', 'into', 'over', 'under',
   'plan', 'plans', 'fix', 'fixes', 'new', 'add', 'update', 'phase',
+  // Generic planning verbs/nouns are not topic identity. Keep these out even
+  // when a small corpus makes document-frequency suppression unavailable.
+  'keep', 'keeps', 'keeping', 'restore', 'restores', 'restored', 'restoring',
+  'boundary', 'boundaries',
 ]);
 
 /** Meaningful topic tokens from a slug + title (date suffix dropped). */
