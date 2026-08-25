@@ -6240,8 +6240,10 @@ export function accountProviderFromChoices(accounts, agent = "claude") {
  * pin env CLIENT-SIDE (gatewayPinEnv) — the resume mints no session, so it can't ride the
  * bootstrap-su POST that folds the pin for a fresh launch, and the launcher must not depend on a
  * server endpoint that may not be deployed where it points (the 404 deploy-skew bug). Gating reuses
- * the live `/options` choices. Returns `{ id, env, notice }`: `id` for the FORK path (folded
- * server-side via the bootstrap POST), `env`/`notice` for the in-place resume (launchResume).
+ * the live `/options` choices. Returns `{ id, forward, env, notice }`: `forward`/`id` for the FORK
+ * path (folded server-side via the bootstrap POST), `env`/`notice` for the in-place resume
+ * (launchResume). A default route forwards the explicit `system` marker because omitting the
+ * account at bootstrap means "owner-nominated default", which may be gateway-routed.
  * Scripting (`--no-picker`) with no account uses the default system login. A
  * user-selected `auto` or named pin is fail-closed: if the gateway/provider/pin
  * cannot be honored, this function throws instead of silently returning the
@@ -6253,6 +6255,7 @@ export async function chooseResumeAccount(session, args) {
     return {
       mode: "default",
       id: null,
+      forward: "system",
       env: defaultAccountEnv(),
       notice: null,
     }; // --no-picker + no --account = system credential
@@ -6265,6 +6268,7 @@ export async function chooseResumeAccount(session, args) {
     return {
       mode: "default",
       id: null,
+      forward: "system",
       env: defaultAccountEnv(),
       notice: "using the default system account (inference gateway skipped).",
     };
@@ -6280,6 +6284,7 @@ export async function chooseResumeAccount(session, args) {
       return {
         mode: "default",
         id: null,
+        forward: "system",
         env: defaultAccountEnv(),
         notice: null,
       };
@@ -6308,6 +6313,7 @@ export async function chooseResumeAccount(session, args) {
       return {
         mode: "default",
         id: null,
+        forward: "system",
         env: defaultAccountEnv(),
         notice: null,
       };
@@ -6323,6 +6329,7 @@ export async function chooseResumeAccount(session, args) {
     return {
       mode: "default",
       id: null,
+      forward: "system",
       env: defaultAccountEnv(),
       notice: requested
         ? "using the default system account (inference gateway skipped)."

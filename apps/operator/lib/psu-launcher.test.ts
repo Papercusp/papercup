@@ -3588,22 +3588,28 @@ describe("psu-launcher arg parsing", () => {
     });
   });
 
-  it("chooseResumeAccount: explicit Claude --account=default stamps the force-system-login envelope without consulting the gateway", async () => {
-    await expect(
-      chooseResumeAccount(
-        {
-          agent: "claude",
-          workspaceId: "ws1",
-          coordOwnerId: "su-resume-default",
-        },
-        { account: "default", picker: false },
-      ),
-    ).resolves.toEqual({
+  it("chooseResumeAccount: explicit Claude --account=default stamps the force-system-login envelope and tracked-fork marker without consulting the gateway", async () => {
+    const account = await chooseResumeAccount(
+      {
+        agent: "claude",
+        workspaceId: "ws1",
+        coordOwnerId: "su-resume-default",
+      },
+      { account: "default", picker: false },
+    );
+    expect(account).toEqual({
       mode: "default",
       id: null,
+      forward: "system",
       env: defaultAccountEnv(),
       notice: "using the default system account (inference gateway skipped).",
     });
+    // A tracked fork re-resolves its account through bootstrap-su. The launcher must
+    // carry the explicit system choice across that boundary; omitting it means the
+    // server interprets the request as the owner's nominated gateway default.
+    expect(
+      forkBootstrapBody({ agent: "claude", cwd: "/repo" }, account.forward ?? account.id),
+    ).toMatchObject({ account: "system" });
   });
 
   it("chooseResumeAccount: a scripted resume with no account flag also uses the system-login envelope", async () => {
@@ -3619,6 +3625,7 @@ describe("psu-launcher arg parsing", () => {
     ).resolves.toEqual({
       mode: "default",
       id: null,
+      forward: "system",
       env: defaultAccountEnv(),
       notice: null,
     });
