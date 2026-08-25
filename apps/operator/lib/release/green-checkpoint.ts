@@ -738,6 +738,21 @@ export interface CheckpointResult {
      *  {@link classifyInfraFault}. Treated as a no-op by `classifyGateStallStatus`, exactly
      *  like 'migrations-pending', so an infra fault cannot inflate the red streak. */
     | "infra-inconclusive"
+    /** EI-21465187777146773: the run CAUGHT its own crash and published this marker instead of
+     *  dying silently. No verdict was rendered (`green: null`), so it belongs to the SAME
+     *  'no-verdict' class EI-21462211894072863 gave the marker-LESS crash: counted in
+     *  `gate_health.consecutiveNoVerdict`, escalated as WEDGED at the same threshold a red streak
+     *  would, and never as a red.
+     *
+     *  Deliberately the same token `checkpointFallbackStatus` returns for an UNREPORTED crash,
+     *  rather than a reason of its own. The two are one condition observed from opposite ends —
+     *  the gate died without rendering a verdict — and sharing the status keeps every downstream
+     *  reader (`classifyGateStallStatus`, `RECORDED_INCONCLUSIVE_STATUSES`, `gate-abort-status`'s
+     *  advice table) correct with no new surface to keep in sync. What the caught path adds is
+     *  EVIDENCE, not a different class: `crashed: true` plus a `summary` carrying the thrown
+     *  stack, which is exactly what the marker-less path cannot supply.
+     *  See {@link buildCrashCheckpointResult}. */
+    | "error"
     /** EI-21436432400491183: the candidate was already fossil-old when this red suite result
      *  was ready to publish. No code verdict is rendered; the next run must judge a fresher tip. */
     | "candidate-fossil";
@@ -944,11 +959,27 @@ export function buildCrashCheckpointResult(opts: {
     // `green === null` is the ONLY dispatch for `green-checkpoint:inconclusive` (see
     // emitInconclusiveVerdict): as `false` this path told every agent parked on
     // `checkpoint:await` that the CODE was broken, on the one run where the truth is "the gate
-    // is wedged". `reason` deliberately STAYS 'not-green' — release-actions derives `status`
-    // from `reason` (not from `green`), so the red streak and the held-gate alarm keep counting
-    // a persistent crash exactly as before; only the green/inconclusive discrimination changes.
+    // is wedged".
     green: null,
-    reason: "not-green",
+    // EI-21465187777146773: 'error', NOT 'not-green'.
+    //
+    // The tri-state above only ever reached ONE reader. release-actions derives `status` from
+    // `reason` and never from `green` (`status = parsed.reason`), so 'not-green' here overrode
+    // the `green: null` two lines up and banked a RED — carrying an EMPTY `failingTests`, because
+    // a crash names no tests. That is precisely the "contentless red" WI-39841 called worse than
+    // no red: it asserts a broken build while naming nothing to fix, and it drives the held-gate
+    // alarm and the release-fixer dispatch. The result object was already saying "no verdict was
+    // rendered"; only `reason` disagreed with it.
+    //
+    // ⚠ The property the old 'not-green' protected is PRESERVED, not weakened: a crash-LOOPING
+    // gate must stay loud, because silence there is how `main` freezes with nobody told. 'error'
+    // is EI-21462211894072863's 'no-verdict' class, which counts every crash tick in
+    // `gate_health.consecutiveNoVerdict` and escalates at the SAME `stallReds` threshold a red
+    // streak would, saying WEDGED. What changed is only that staying loud no longer requires
+    // calling it a red. Do NOT "restore" 'not-green' to make the gate noisier — it already is;
+    // green-checkpoint-crash-result.test.ts pins BOTH directions (never 'red', never 'noop')
+    // through the real consumer, so neither collapse is reachable without failing there.
+    reason: "error",
     crashed: true,
     runId,
     summary: `green-checkpoint crashed before producing a normal verdict: ${message}`,
