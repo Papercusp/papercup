@@ -205,3 +205,21 @@ export function decodePngDimensions(buffer: Buffer): { width: number; height: nu
 export function sha256(buffer: Buffer): string {
   return createHash('sha256').update(buffer).digest('hex');
 }
+
+/**
+ * Digest the RAW RGBA pixels rather than the encoded PNG bytes.
+ *
+ * This is the committed identity of a corpus image, and it is deliberately NOT a
+ * digest of the file. PNG encoding runs through zlib, whose output can legitimately
+ * differ across Node and pngjs versions without a single pixel changing — so a
+ * committed digest of the FILE would fail on another machine for a reason that has
+ * nothing to do with the corpus. A digest of the pixel buffer is stable under any
+ * encoder change and still catches every change to the drawing code, which is the
+ * only thing the pin is there to protect.
+ */
+export function rasterDigest(raster: Raster): string {
+  return createHash('sha256')
+    .update(`${raster.width}x${raster.height}:`)
+    .update(Buffer.from(raster.data.buffer, raster.data.byteOffset, raster.data.byteLength))
+    .digest('hex');
+}
