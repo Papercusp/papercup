@@ -152,6 +152,7 @@ function run(
     env: {
       ...process.env,
       ...(shim ? { PATH: `${shimDir}:${process.env.PATH ?? ""}` } : {}),
+      ...(opts.env ?? {}),
     },
   });
   return { status: r.status, stderr: (r.stderr ?? "").trim() };
@@ -276,5 +277,106 @@ describe("guard-operator-desktop — operator ports (pre-existing block)", () =>
 
   it("ALLOWS a non-operator local port", () => {
     expect(run(navigate("http://localhost:5173/")).status).toBe(0);
+  });
+});
+
+/**
+ * EI-21290819499876110 — the loopback premise above ("resolves to loopback ⇒
+ * the connection lands on a LOCAL server") stopped being universally true when
+ * papercusp-sni-bypass.service began holding SSH `-L` forwards on 127.0.0.10-.17
+ * whose far end is the real origin. The guard now DERIVES the answer from the
+ * live process's own argv instead of assuming, or allowlisting addresses.
+ *
+ * Both directions are asserted deliberately. The exemption is only ever
+ * allowed to turn a BLOCK into an ALLOW, and only on positive proof — so every
+ * unproven variant below (unit inactive, pid dead, wrong port, one address not
+ * forwarded) must still block. A suite that only proved the ALLOW half would
+ * pass just as happily against a guard that had stopped blocking anything.
+ */
+describe("guard-operator-desktop — tunnel-forward exemption (EI-21290819499876110)", () => {
+  const active = () => ({
+    FAKE_BYPASS_STATE: "active",
+    FAKE_BYPASS_MAINPID: String(tunnelPid),
+  });
+
+  it("ALLOWS a loopback address that is a PROVEN live :443 forward", () => {
+    // The whole point: this name resolves to 127.0.0.10, and pre-fix that was
+    // treated as proof of localhost. It reaches prod.
+    expect(run(navigate(`https://${TUNNELED}/healthz`), { env: active() }).status).toBe(0);
+  });
+
+  it("BLOCKS that SAME url when the bypass unit is not active", () => {
+    // Calibration for the test above: identical request, one input changed.
+    // If this passed too, the ALLOW would prove nothing about the derivation.
+    const r = run(navigate(`https://${TUNNELED}/healthz`), {
+      env: { FAKE_BYPASS_STATE: "inactive", FAKE_BYPASS_MAINPID: String(tunnelPid) },
+    });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain("resolves to LOOPBACK");
+  });
+
+  it("ALLOWS through the verdict skill too", () => {
+    expect(run(verdict(`https://${TUNNELED}/?tab=seller`), { env: active() }).status).toBe(
+      0,
+    );
+  });
+
+  it("ALLOWS when EVERY resolved address is forwarded", () => {
+    expect(run(navigate(`https://${MULTI}/`), { env: active() }).status).toBe(0);
+  });
+
+  it("BLOCKS when only SOME resolved addresses are forwarded", () => {
+    // 127.0.0.99 is not a forward, so a connection to this name can still land
+    // on a local listener — partial proof is not proof.
+    expect(run(navigate(`https://${PARTIAL}/`), { env: active() }).status).toBe(2);
+  });
+
+  it("BLOCKS http:// on a host forwarded only on :443 — the port must match", () => {
+    // Same host, same live tunnel, port 80. The bypass forwards :443 only.
+    expect(run(navigate(`http://${TUNNELED}/`), { env: active() }).status).toBe(2);
+  });
+
+  it("ALLOWS an explicit non-default port that IS forwarded (attached -Lspec form)", () => {
+    expect(run(navigate(`https://${ALTPORT}:8443/`), { env: active() }).status).toBe(0);
+  });
+
+  it("BLOCKS that same host on :443, which it does not forward", () => {
+    expect(run(navigate(`https://${ALTPORT}/`), { env: active() }).status).toBe(2);
+  });
+
+  it("BLOCKS when MainPID names a process that is gone", () => {
+    // Liveness is load-bearing: the unit runs ExitOnForwardFailure=yes, so a
+    // LIVE process still holding the -L is what proves the bind succeeded.
+    const dead = spawnSync(process.execPath, ["-e", "process.exit(0)"]);
+    expect(dead.status).toBe(0);
+    const r = run(navigate(`https://${TUNNELED}/`), {
+      env: { FAKE_BYPASS_STATE: "active", FAKE_BYPASS_MAINPID: String(dead.pid) },
+    });
+    expect(r.status).toBe(2);
+  });
+
+  it("BLOCKS when the unit is active but reports MainPID 0", () => {
+    const r = run(navigate(`https://${TUNNELED}/`), {
+      env: { FAKE_BYPASS_STATE: "active", FAKE_BYPASS_MAINPID: "0" },
+    });
+    expect(r.status).toBe(2);
+  });
+
+  it("still BLOCKS genuine localhost while the tunnel is up", () => {
+    // The regression that matters most: a live bypass unit must not become a
+    // blanket amnesty for every loopback name. 127.0.0.1:443 is not forwarded.
+    const r = run(navigate(`https://${PINNED}/`), { env: active() });
+    expect(r.status).toBe(2);
+    expect(r.stderr).toContain(PINNED);
+  });
+
+  it("explains the tunnel case in the block message instead of asserting localhost", () => {
+    // Pre-fix the message claimed the connection "would hit whatever is
+    // listening on THIS machine" — false for the forwards — and pointed at an
+    // /etc/hosts comment that no longer exists.
+    const r = run(navigate(`https://${PINNED}/`), { env: active() });
+    expect(r.stderr).toContain("papercusp-sni-bypass.service");
+    expect(r.stderr).toContain("NOT ALWAYS LOCALHOST");
+    expect(r.stderr).not.toContain("flags.papercuspai.com");
   });
 });
