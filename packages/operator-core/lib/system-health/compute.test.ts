@@ -35,7 +35,7 @@ vi.mock('node:os', async (importOriginal) => ({
   homedir: homedirMock,
   tmpdir: tmpdirMock,
 }));
-import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, _resetSystemHealthCache, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, readSharedSystemHealthSnapshot, selectPreviousHealthSnapshot, _resetSystemHealthCache, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { readDiskPressure } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
@@ -104,6 +104,42 @@ describe('resolveSystemHealth — reader cold-cache guard (EI-203357)', () => {
 
     await expect(readSharedSystemHealthSnapshot('ws-shared-hit', 4_321)).resolves.toBe(shared);
     expect(readSharedSnapshotMock).toHaveBeenCalledWith('system.health', 'ws-shared-hit', 1, 4_321);
+  });
+});
+
+describe('selectPreviousHealthSnapshot — shared predecessor for cold tick hosts (EI-21401701194386826)', () => {
+  it('uses the shared snapshot when the local tick cache is cold, preserving disk band state', () => {
+    const shared = {
+      workspaceId: 'ws-shared',
+      evaluatedAt: 123_456,
+      overall: 'crit',
+      crossMonitor: { queenAlive: true, overwatchAlive: null },
+      panels: {
+        infra: {
+          key: 'infra',
+          label: 'Infra',
+          status: 'crit',
+          summary: 'DISK 94% used (crit hysteresis held)',
+          metrics: [],
+          data: { disk: [{ path: '/', usedPct: 94, freeGb: 100, band: 'crit' }] },
+        },
+      },
+    } as unknown as SystemHealth;
+
+    expect(selectPreviousHealthSnapshot(null, shared)).toBe(shared);
+    expect(selectPreviousHealthSnapshot(null, shared)?.panels.infra?.data).toMatchObject({
+      disk: [{ band: 'crit' }],
+    });
+  });
+
+  it('keeps the local snapshot authoritative when both predecessors exist', () => {
+    const local = { workspaceId: 'ws-local' } as unknown as SystemHealth;
+    const shared = { workspaceId: 'ws-shared' } as unknown as SystemHealth;
+    expect(selectPreviousHealthSnapshot(local, shared)).toBe(local);
+  });
+
+  it('returns a true cold start when neither predecessor is available', () => {
+    expect(selectPreviousHealthSnapshot(null, null)).toBeNull();
   });
 });
 

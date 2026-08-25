@@ -1954,11 +1954,12 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
         // reads as `prev` for its own edge-detection (see the infra-crit incident-capture
         // trigger a few lines below in that function) — reusing it here keeps this at the
         // same level of cross-tick rigor already trusted elsewhere in this file, with no
-        // new migration/table. It is per-PROCESS (imperfect across a `:3070` cluster's N
-        // workers, same caveat as that existing edge-detector), which is an acceptable
-        // approximation for hysteresis: a worker with no prior reading just falls back to
-        // a plain threshold check (see `diskBandWithHysteresis`'s `prevBand: null` case)
-        // rather than mis-classifying.
+        // new migration/table. A cold tick host hydrates its local cache from the prior
+        // shared snapshot in runSystemHealthTickUncached, so a worker restart or a
+        // different tick host does not discard the previous band and turn 94↔95 boundary
+        // noise back into a recovery/re-fire pair. If the shared snapshot is unavailable,
+        // the cold start still falls back to a plain threshold check (see
+        // `diskBandWithHysteresis`'s `prevBand: null` case) rather than inventing state.
         const prevDisk = cache.get(ctx.ws)?.panels?.infra?.data?.disk ?? null;
         disk = raw.map((v) => {
           const prevBand = prevDisk?.find((p) => p.path === v.path)?.band ?? null;
@@ -3039,6 +3040,19 @@ export const SHARED_SYSTEM_HEALTH_MAX_AGE_MS = 5 * 60_000;
 
 const cache = new Map<string, SystemHealth>();
 
+/**
+ * Select the predecessor for a health tick. The local cache is authoritative when present;
+ * a cold tick host may safely use the recent shared snapshot so cross-worker/restart health
+ * transitions retain per-volume disk hysteresis state. A missing shared row remains a true
+ * cold start and deliberately returns null.
+ */
+export function selectPreviousHealthSnapshot(
+  local: SystemHealth | null,
+  shared: SystemHealth | null,
+): SystemHealth | null {
+  return local ?? shared;
+}
+
 /** The precompute kill-switch, fail-OPEN to enabled (the correct behavior on the
  *  shipping target — never silently fall back to a slow inline recompute). */
 async function precomputeSharedHealthEnabled(): Promise<boolean> {
@@ -3155,7 +3169,13 @@ export async function runSystemHealthTick(workspaceId?: string): Promise<SystemH
 }
 
 async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
-  const prev = cache.get(ws) ?? null;
+  const localPrev = cache.get(ws) ?? null;
+  // Hydrate a cold tick host from the cross-process snapshot before computing the next
+  // health payload. collectInfra reads the predecessor's disk bands from this cache while
+  // classifying the new statfs sample; without this read, a host restart loses hysteresis
+  // and a 94→95 boundary can falsely resolve/re-fire infra-liveness.
+  const sharedPrev = localPrev ? null : await readSharedSystemHealthSnapshot(ws).catch(() => null);
+  const prev = selectPreviousHealthSnapshot(localPrev, sharedPrev);
   const health = await computeSystemHealth(ws);
   // P-004 (health-tab-v2): auto-clear acks whose panel recovered / snooze
   // expired, and re-apply the survivors. Fail-soft — never breaks the tick.
