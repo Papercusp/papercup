@@ -8,7 +8,7 @@ title: A UI write to pot:set-steering MUST pass pot:<home> — it defaults to '*
 description: Any SPA caller of pot:set-steering (sidebar model overrides, Mug tab, throttles) must resolve the home pot and pass it; the tool's default pot '*' is not a real Pot, so setHiveSetting throws and the write is lost. Unit tests miss it because they pass pot explicitly.
 discovered: 2026-06-25
 tags: [pot, steering, owner-steering, sidebar, model-override, papercup, overwatch, operator-vite]
-status: current
+status: active
 documents:
   - apps/operator-vite/src/components/left-sidebar/useModelOverride.ts
   - packages/operator-core/lib/agent-tools/pot/set_steering.ts

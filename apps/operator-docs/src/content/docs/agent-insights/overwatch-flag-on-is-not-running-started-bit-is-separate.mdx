@@ -8,7 +8,7 @@ title: "Overwatch (and Mug/pot) flag ON ≠ running — the 'started' control-bi
 description: "Owner flips the papercusp-overwatch flag ON, but overwatch never runs: the routine fires yet produces zero runs. The flag is only the GATE; overwatch:start sets a SEPARATE persisted control-bit (operator_settings KV) that the launch handler also requires. Flag-on without start = gated-open-but-not-armed = a silent no-op. How to spot it, why dev:sessions hides it, and the durable fix."
 discovered: 2026-06-22
 tags: [overwatch, mug, pot, feature-flags, control-state, autoloop, silent-no-op, dark-flag, system-health, diagnosis]
-status: current
+status: active
 documents:
   - packages/operator-core/lib/overwatch/control-state.ts
   - packages/operator-core/lib/overwatch/loop.ts

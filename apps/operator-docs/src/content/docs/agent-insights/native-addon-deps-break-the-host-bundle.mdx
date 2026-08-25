@@ -8,7 +8,7 @@ title: A dep with a native (.node) addon silently breaks the host bundle — tes
 description: esbuild has no .node loader, so importing a package with a native addon makes bundle-host.sh fail. Nothing in the test suite runs the bundler, so it greens — then :3170 crash-loops at the next restart and the deploy dies. Externalize the package; the lint:host-bundle-builds guard now catches it.
 discovered: 2026-07-12
 tags: [esbuild, bundle-host, native-addons, onnxruntime, deploy, green-gate]
-status: current
+status: active
 type: Insight
 generated:
   by: agent

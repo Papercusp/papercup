@@ -8,7 +8,7 @@ title: "A stale ToolSearch/tools/list schema (missing a field, wrong enum) is a 
 description: "EI-18783407644768125 reported that ToolSearch's published coord:send schema disagreed with the server's live validation (advertised `expectsReply`, omitted the now-required `expects`). Settled: this is mechanism (a) — an MCP session's tools/list is fetched ONCE at connect and never refreshed for an existing tool's schema CONTENT changing (only for session tool-surface GROWTH, and Claude gets neither) — not mechanism (b), a JSON-Schema-generation defect. A live re-fetch in a fresh session reproduces the CURRENT, correct schema every time. Distinguish the two before proposing a fix; a blanket published-vs-parse required-set equality test would false-positive on the legitimate 'shorthand + items[] duality enforced via preprocess' pattern coord:send and work_items:set_state both use on purpose."
 discovered: 2026-07-27
 tags: [mcp, tools-list, toolsearch, schema, coord-send, zod, list-changed, stale-cache]
-status: current
+status: active
 documents:
   - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts
   - packages/operator-core/lib/agent-tools/coordination/tools/send.ts

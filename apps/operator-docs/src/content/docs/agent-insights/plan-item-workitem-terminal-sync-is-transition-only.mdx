@@ -8,7 +8,7 @@ title: "A done plan-item can leave its work-item stuck in todo — the reconcile
 description: "When a plan item is done but its linked work-item still shows state:todo, the reverse reconciler is NOT missing — it exists (reconcileLinkedWorkItemsForPlanItem) but only fires on the plan-item's done TRANSITION, so a WI that reaches todo AFTER the item is already done is never re-healed. Don't add a duplicate propagation leg; the fix is the claim-lane guard + a periodic sweep."
 discovered: 2026-07-17
 tags: [plan-items, work-items, reconcile, scheduler, claim, backlog-drain, terminal-state, footgun]
-status: current
+status: active
 documents:
   - packages/operator-core/lib/plan-items/reconcile-linked-work-items.ts
   - packages/operator-core/lib/plan-items/reconcile-rule.ts

@@ -8,7 +8,7 @@ title: "Push vs poll: the 90s dedupe means push is for EVENT-driven data, not co
 description: Before migrating a UI poll to useSyncQuery push, classify the data — write-driven events push cleanly; continuous live gauges and system probes should stay polled. The invalidation bus's 90s source-side dedupe is why.
 discovered: 2026-06-23
 tags: [sync, useSyncQuery, notifySyncInvalidate, polling, performance]
-status: current
+status: active
 documents:
   - libs/generic/sync/src/server/invalidation-bus.ts
   - packages/operator-core/lib/sync-sse.ts

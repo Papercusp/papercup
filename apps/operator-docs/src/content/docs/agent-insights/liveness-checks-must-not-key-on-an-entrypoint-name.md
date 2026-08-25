@@ -8,7 +8,7 @@ title: "A liveness check keyed on an entrypoint NAME fails silently and totally 
 description: "discovery_pid_alive answered 'is our operator running?' by grepping the process cmdline for serve.mjs/serve.ts. But the process that owns the IPC socket is hono-host, not serve — so it returned false for 9 of 9 live operators on the dev box. Once that check was wired into the endpoint-ipc advertisement path, /api could never dial IPC at all: every advertisement read as a restart orphan, every stream fell back to the webview's ~6-socket HTTP pool, and the only symptom the owner saw was 'clicking an agent takes several seconds'. Nothing logged an error."
 discovered: 2026-07-28
 tags: [desktop, tauri, endpoint-ipc, liveness, false-negative, observability, libsoup, WI-6512]
-status: current
+status: active
 documents:
   - papercusp-desktop/src-tauri/src/main.rs
   - papercusp-desktop/src-tauri/src/endpoint_ipc.rs

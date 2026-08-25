@@ -8,7 +8,7 @@ title: "The env-switcher bar: ONE in-webview bar, Tauri-sourced, never self-hide
 description: "The desktop env-switcher went through three implementations (native GTK bar, chrome-webview, in-webview). Only ONE survives: the in-webview EnvSwitcherBar, fed by the list_envs Tauri command so it can't self-hide on an /api misroute, with /api following the switch via on_page_load. Why the other two were deleted — including the HARD fact that wry set_bounds is a no-op for child webviews on X11, so a second-webview bar cannot be positioned on Linux — and where the escape hatch actually lives now."
 discovered: 2026-06-30
 tags: [desktop, tauri, wry, x11, env-switcher, webkitgtk, set_bounds, multi-webview, git-sync]
-status: current
+status: active
 documents:
   - papercusp-desktop/src-tauri/src/env_switch.rs
   - papercusp-desktop/src-tauri/src/main.rs

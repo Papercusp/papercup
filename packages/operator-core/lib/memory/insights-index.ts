@@ -22,7 +22,7 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { isRetiredDocStatus } from '@papercusp/docs-engine';
+import { isRetiredDocStatus, normalizeDocStatus } from '@papercusp/docs-engine';
 
 export interface InsightEntry {
   slug: string;
@@ -141,7 +141,7 @@ export async function readInsight(
 
   const title = typeof fm.title === 'string' ? fm.title : '';
   const description = typeof fm.description === 'string' ? fm.description : '';
-  const status = typeof fm.status === 'string' ? fm.status : 'active';
+  const status = normalizeDocStatus(typeof fm.status === 'string' ? fm.status : undefined) ?? 'active';
   const tags = Array.isArray(fm.tags) ? fm.tags : [];
 
   if (!title) return null;

@@ -8,7 +8,7 @@ title: "Stop polling — await the event (events:catalog + sugar verbs)"
 description: "The await-event primitive already exists and is barely used: agents poll dev:pipeline_position / dev:build_status / a peer's status because they never find the event key that already fires. The fix is discoverability — events:catalog lists every awaitable key, and named sugar verbs (deploy:await, work-item:await, …) build the key for you. Register, END YOUR TURN, get re-invoked when it fires."
 discovered: 2026-07-03
 tags: [events, await, polling, discoverability, deploy, work-items, sugar, wake]
-status: current
+status: active
 documents:
   - packages/operator-core/lib/events/await/catalog.ts
   - packages/operator-core/lib/agent-tools/events/catalog.ts

@@ -53,8 +53,9 @@ export interface OkfFrontmatter {
   /** Absolute date, as authored (a YAML date is normalised to `YYYY-MM-DD`). */
   staleAfter?: string;
   /**
-   * NOT an OKF v0.2 field — a pre-existing LOCAL convention (`status: active |
-   * superseded | current | draft`), lower-cased here.
+   * NOT an OKF v0.2 field — a pre-existing LOCAL convention. Known values are
+   * normalised to the canonical status vocabulary here; historical aliases remain
+   * accepted at the read boundary.
    *
    * It rides along in this module rather than in a parallel one because it is the
    * same KIND of claim as `stale_after` — an authored, read-time assertion that
@@ -82,7 +83,7 @@ export interface OkfTrust {
    * this. A doc can be either, both, or neither.
    */
   superseded?: true;
-  /** The raw `status:` as authored (lower-cased), whatever its value. */
+  /** The normalized `status:` value, including an unknown value carried for compatibility. */
   status?: string;
   /** Raw verifier of the MOST RECENT verification, so the tier is always auditable. */
   verifiedBy?: string;
@@ -121,10 +122,40 @@ export function okfTrustIsNotable(t: OkfTrust): boolean {
  *
  * `draft` is deliberately NOT here: it says INCOMPLETE, not REPLACED, and
  * `insights-index` treats it as live. `retired` currently matches zero docs
- * (measured: active 561, superseded 28, current 25, draft 1) and is carried
- * anyway because the existing predicate carries it.
+ * (measured before the D-009 migration: active 561, superseded 28, current 25,
+ * draft 1) and is carried anyway because legacy readers must remain compatible.
  */
-const RETIRED_STATUSES = new Set(['superseded', 'retired']);
+/** The only status values new writers may persist. */
+export const CANONICAL_DOC_STATUSES = ['active', 'draft', 'superseded'] as const;
+export type CanonicalDocStatus = (typeof CANONICAL_DOC_STATUSES)[number];
+
+/** Historical inputs accepted for compatibility, but never emitted by writers. */
+export const DOC_STATUS_ALIASES = {
+  current: 'active',
+  retired: 'superseded',
+} as const;
+export type DocStatusAlias = keyof typeof DOC_STATUS_ALIASES;
+
+const CANONICAL_DOC_STATUS_SET = new Set<string>(CANONICAL_DOC_STATUSES);
+
+/**
+ * Normalize a docs frontmatter status at the shared boundary.
+ *
+ * Known historical aliases map to their canonical lifecycle state. Unknown values
+ * are lower-cased and carried through for forward-compatible reads; the writer's
+ * schema is what prevents a new alias from being minted.
+ */
+export function normalizeDocStatus(status: string | undefined): string | undefined {
+  if (status === undefined) return undefined;
+  const normalized = status.trim().toLowerCase();
+  if (!normalized) return undefined;
+  return DOC_STATUS_ALIASES[normalized as DocStatusAlias] ?? normalized;
+}
+
+/** True when a status is one of the canonical values (aliases are not canonical). */
+export function isCanonicalDocStatus(status: string | undefined): status is CanonicalDocStatus {
+  return status !== undefined && CANONICAL_DOC_STATUS_SET.has(status.trim().toLowerCase());
+}
 
 /**
  * Is this authored `status:` a retirement claim? Case/padding tolerant.
@@ -133,7 +164,7 @@ const RETIRED_STATUSES = new Set(['superseded', 'retired']);
  * index, and the read surfaces banner them. Same input, same answer.
  */
 export function isRetiredDocStatus(status: string | undefined): boolean {
-  return status !== undefined && RETIRED_STATUSES.has(status.trim().toLowerCase());
+  return normalizeDocStatus(status) === 'superseded';
 }
 
 /**
@@ -291,7 +322,7 @@ export function okfFromObject(meta: Record<string, unknown>): OkfFrontmatter | u
   if (staleAfter) out.staleAfter = staleAfter;
 
   if (typeof meta.status === 'string' && meta.status.trim()) {
-    out.status = meta.status.trim().toLowerCase();
+    out.status = normalizeDocStatus(meta.status);
   }
 
   return Object.keys(out).length > 0 ? out : undefined;
@@ -344,12 +375,12 @@ export function evaluateOkfTrust(fm: OkfFrontmatter | undefined, now: Date = new
     }
   }
 
-  // Reporting what the author WROTE, which is the same thing `stale_after` does
-  // and the opposite of inventing a verdict (plan D-002). An unrecognised status
-  // is carried verbatim and asserts nothing.
+  // Reporting the normalized author status, which is the same thing `stale_after`
+  // does and the opposite of inventing a verdict (plan D-002). An unrecognised
+  // status is carried through and asserts nothing.
   if (fm.status) {
     out.status = fm.status;
-    if (RETIRED_STATUSES.has(fm.status)) out.superseded = true;
+    if (isRetiredDocStatus(fm.status)) out.superseded = true;
   }
 
   return out;

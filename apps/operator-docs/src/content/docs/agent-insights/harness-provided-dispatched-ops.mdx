@@ -8,7 +8,7 @@ title: "Harness-provided dispatched ops — a blueprint declares an op, the oper
 description: "How a blueprint's `ops:` manifest becomes a runnable deterministic cadence step the HARNESS owns (not operator-core): on admission the operator registers a PROXY CoordOp per op whose run() POSTs /api/op/<name> to the harness sidecar, which executes against its own connectors/DB and returns a result validated against the manifest resultSchema. Covers the two registration timings, the transport resolution order, the work-items enqueue seam, and a worked prospect/ingest example."
 discovered: 2026-06-29
 tags: [blueprints, coord-ops, harness, dispatch, cadence, routines, dbos, proxy]
-status: current
+status: active
 documents:
   - packages/operator-core/lib/harness-ops/proxy.ts
   - packages/operator-core/lib/harness-ops/transport.ts

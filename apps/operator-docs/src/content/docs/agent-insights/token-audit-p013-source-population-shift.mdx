@@ -8,7 +8,7 @@ title: "Token audit P-013: the ≥40% gate is confounded by a work-model regime 
 description: "Why the token-usage-reduction-audit acceptance gate (weekly cache-read+write down ≥40% at flat throughput) cannot be read off raw weekly volume: the dominant token population migrated from interactive psu sessions to autonomous fleet subprocess runs between the baseline and the re-measure. Raw drop is ~85%, but it is not cleanly lever-attributable. The sound forward metric is per-unit (cache/session by source)."
 discovered: 2026-06-24
 tags: [tokens, usage-telemetry, acceptance-gate, interactive, jsonl, fleet, baseline, re-measure, agent_usage_samples, p013]
-status: current
+status: active
 documents:
   - packages/operator-core/lib/interactive-usage/ingest-claude-transcripts.ts
   - packages/operator-core/lib/agent-usage-telemetry.ts

@@ -8,7 +8,7 @@ title: "A 'freeze' watchdog that reads journald silence false-restarts a healthy
 description: "Cups/spawns kept dying at boot (exit-143, 0 invocations, EI-2186 reclaim). It looked like capacity or the gateway — it was neither. The bg-host watchdog judged 'frozen' by journalctl silence, but journald's capture had wedged host-wide, so it restarted a perfectly healthy durable-spawn host every ~5-11 min, and each unclean restart reclaim-killed every in-flight spawn. The fix + the generalizable detector-design lesson."
 discovered: 2026-06-22
 tags: [watchdog, bg-host, journald, spawn-reclaim, restart, false-positive, EI-2186, EI-2421, fleet-reliability, detector-design, exit-143]
-status: current
+status: active
 documents:
   - packages/operator-core/lib/fleet/spawn-reclaim.ts
   - packages/operator-core/lib/harness/improvements/watchdog.ts

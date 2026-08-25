@@ -8,7 +8,7 @@ title: "deploy:await{sha} / a raw events:await sha filter silently strands on a 
 description: "The deploy-landed event only ever carried payload.sha = the deployed tip. A busy tree batches N commits into one fast-forward deploy, so an agent awaiting the EXACT sha of an earlier commit in that batch timed out forever even though its fix had actually shipped. Fixed by firing the per-sha awaitable key for every commit the deploy included, not just the tip — but the batching behavior itself is worth knowing."
 discovered: 2026-07-19
 tags: [events, await, deploy, release, sha, batching, strand-risk, ei-14601]
-status: current
+status: active
 documents:
   - apps/operator/lib/release/deploy.ts
   - apps/operator/lib/release/git-ops.ts

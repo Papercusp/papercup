@@ -8,7 +8,7 @@ title: "Claude's ToolSearch cannot select a papercusp colon-form tool name — u
 description: "Every papercusp doc/prompt/contract writes tool names in colon form (server:verb, e.g. rubrics:search, curation:state-of-pot) — that IS the tool's real cross-client name. Claude's own ToolSearch only resolves the client-mangled mcp__<server>__<verb> form (colon replaced by underscore), so a fresh session following documented tool names hits a hard no-match wall on both select and keyword search. The escape hatch (tools:find, then tools:invoke) already exists and always works — this was a discoverability gap, not a missing capability."
 discovered: 2026-07-10
 tags: [tools, toolsearch, tools-find, tools-invoke, mcp, claude, tool-discovery, grade-mode]
-status: current
+status: active
 documents:
   - apps/operator/prompts/papercusp-su.claude.md
   - packages/operator-core/lib/agent-tools/tools/find.ts

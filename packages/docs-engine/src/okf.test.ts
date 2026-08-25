@@ -10,10 +10,13 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  CANONICAL_DOC_STATUSES,
   evaluateOkfTrust,
+  isCanonicalDocStatus,
   isMachineVerifier,
   isRetiredDocStatus,
   normalizeOkfDate,
+  normalizeDocStatus,
   okfFromObject,
   okfTrustBanner,
   okfTrustIsNotable,
@@ -197,8 +200,21 @@ describe('okfTrustBanner', () => {
 });
 
 describe('status: superseded — an AUTHORED retirement, not a fabricated verdict', () => {
+  it('exposes one canonical vocabulary and normalizes legacy aliases', () => {
+    expect(CANONICAL_DOC_STATUSES).toEqual(['active', 'draft', 'superseded']);
+    expect(normalizeDocStatus('  CURRENT ')).toBe('active');
+    expect(normalizeDocStatus(' retired ')).toBe('superseded');
+    expect(normalizeDocStatus('DRAFT')).toBe('draft');
+    expect(normalizeDocStatus('future-status')).toBe('future-status');
+    expect(normalizeDocStatus('   ')).toBeUndefined();
+    expect(isCanonicalDocStatus('active')).toBe(true);
+    expect(isCanonicalDocStatus('current')).toBe(false);
+  });
+
   it('normalises the authored value, case and padding included', () => {
     expect(okfFromObject({ status: '  SuperSeded ' })?.status).toBe('superseded');
+    expect(okfFromObject({ status: ' current ' })?.status).toBe('active');
+    expect(okfFromObject({ status: ' retired ' })?.status).toBe('superseded');
   });
 
   it('populates okf from `status:` ALONE, so a doc with no OKF fields is still readable', () => {
@@ -230,7 +246,8 @@ describe('status: superseded — an AUTHORED retirement, not a fabricated verdic
     // The whole point of the shared predicate: these two surfaces must not be
     // able to disagree about whether a given doc is retired. LIVE_STATUSES is
     // insights-index.test.ts's allowlist; the retired pair is its `isVisible`.
-    for (const live of ['active', 'current', 'draft', 'review', 'wip']) {
+    for (const live of [...CANONICAL_DOC_STATUSES, 'current', 'review', 'wip']) {
+      if (isRetiredDocStatus(live)) continue;
       expect(isRetiredDocStatus(live)).toBe(false);
     }
     for (const dead of ['retired', 'superseded']) {

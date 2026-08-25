@@ -8,7 +8,7 @@ title: "Dispatch flags (crossWorkspace, etc.) are read off the PROJECTED def, no
 description: "A defineTool flag like crossWorkspace can be set on the def yet silently dropped in projection, so the host dispatch never honors it. Symptom appears far from cause. Diff the source def against lookupByMcpName(name)."
 discovered: 2026-06-21
 tags: [tooldef, crossWorkspace, projection, dispatch, debugging]
-status: current
+status: active
 documents:
   - libs/generic/tooldef/src/define-tool.ts
   - packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts

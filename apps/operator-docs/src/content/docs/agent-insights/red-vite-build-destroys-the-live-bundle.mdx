@@ -8,7 +8,7 @@ title: A red operator-vite build can DESTROY the live bundle — and only some f
 description: Vite empties outDir in a renderStart hook, so a LINK-time failure (missing named export) kills the running desktop while a resolve/syntax error leaves it fine. Builds are now staged into dist.next/ and swapped only on success.
 discovered: 2026-07-12
 tags: [operator-vite, vite, build, dist, desktop, EI-10539, EI-9836]
-status: current
+status: active
 documents:
   - apps/operator-vite/bin/vite-build-singleflight
   - apps/operator-vite/vite.config.ts
