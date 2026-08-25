@@ -53,12 +53,11 @@ import {
 } from '@papercusp/testing-shell/llm';
 
 import { hash32, type GoldQuery, type PoolDoc } from './ref-expansion-gold';
+import { sha256 } from './judge-cache';
 
 // =============================================================================
-// Frozen judging contract — bump RUBRIC_VERSION when any of it changes
+// Frozen judging contract — derive RUBRIC_VERSION from the rubric content
 // =============================================================================
-
-export const JUDGE_AGREEMENT_RUBRIC_VERSION = 'search-relevance.v1';
 
 /** Frozen judge model, mirroring the judged tier's freeze discipline (D-005). */
 export const JUDGE_AGREEMENT_MODEL = 'claude-sonnet-4-6';
@@ -69,8 +68,7 @@ export const RELEVANCE_PASS_BAR = 3;
 /** Temperature of the second (self-consistency) pass — judged.ts's convention. */
 export const SELF_CONSISTENCY_TEMPERATURE = 0.4;
 
-export const SEARCH_RELEVANCE_RUBRIC: JudgeRubric = {
-  version: JUDGE_AGREEMENT_RUBRIC_VERSION,
+const SEARCH_RELEVANCE_RUBRIC_CONTENT: Pick<JudgeRubric, 'axes'> = {
   axes: [
     {
       id: 'relevance',
@@ -86,6 +84,18 @@ export const SEARCH_RELEVANCE_RUBRIC: JudgeRubric = {
       },
     },
   ],
+};
+
+// The cache key must move whenever the actual judging contract moves. Keeping
+// this derived from the serialized rubric content removes the old hand-maintained
+// version/comment binding: changing an axis, anchor, or instruction automatically
+// makes prior paid grades unreachable without relying on a remembered bump.
+export const JUDGE_AGREEMENT_RUBRIC_VERSION =
+  `search-relevance.${sha256(JSON.stringify(SEARCH_RELEVANCE_RUBRIC_CONTENT)).slice(0, 12)}`;
+
+export const SEARCH_RELEVANCE_RUBRIC: JudgeRubric = {
+  version: JUDGE_AGREEMENT_RUBRIC_VERSION,
+  ...SEARCH_RELEVANCE_RUBRIC_CONTENT,
 };
 
 const BENCH_PERSONA_TRAITS: PersonaTraits = {
@@ -287,7 +297,7 @@ export function synthesizePairRun(pair: JudgeableDoc, judgeModel: string): RunSu
 }
 
 /**
- * Judge ONE (query, document) pair on the frozen `search-relevance.v1` rubric.
+ * Judge ONE (query, document) pair on the frozen, content-versioned search rubric.
  *
  * This is the whole judging primitive: everything above it in this file is
  * gold-comparison arithmetic, and everything the labelled pass adds is

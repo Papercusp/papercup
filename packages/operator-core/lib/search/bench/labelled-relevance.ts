@@ -47,7 +47,7 @@ export const DOC_CHARS = 1200;
 // =============================================================================
 
 /**
- * Map a judge score (0..5, `search-relevance.v1`) onto the metric contract's
+ * Map a judge score (0..5, the content-versioned search rubric) onto the metric contract's
  * 0..3 grade scale.
  *
  * The bands are chosen so the two thresholds that already exist LINE UP rather

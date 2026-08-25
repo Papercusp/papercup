@@ -395,7 +395,7 @@ export const CENSUS_EXCLUSIONS: Readonly<Record<string, string>> = {
     "Same class as the bench CLIs above: P-038's labelled relevance pass (plan " +
     'semantic-search-fingerprint-coverage-2026-08-03, D-079 / WI-37638). It samples real queries from ' +
     '`tool_invocations` and runs them through the engine to MEASURE ranking quality against the frozen ' +
-    '`search-relevance.v1` rubric, so its output IS the experiment rather than something a user sees. ' +
+    'the content-versioned search-relevance rubric, so its output IS the experiment rather than something a user sees. ' +
     'Measured 2026-08-10: nothing imports it (not even a unit test) — it is run by hand via `npx tsx`, ' +
     'is read-only against PG, and costs money per run, so it can never sit on a product path.',
 };

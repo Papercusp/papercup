@@ -5,7 +5,7 @@
  *
  * Samples REAL mid/long queries from `tool_invocations` per D-079's strata,
  * runs each through the same engine path `search:semantic` uses, judges the
- * top-k with the frozen `search-relevance.v1` rubric, and scores each ranking
+ * top-k with the frozen, content-versioned search rubric, and scores each ranking
  * with `evaluateRelevance` from `@papercusp/search-core`.
  *
  * READ-ONLY against PG. It writes one JSON artifact to disk and nothing else.

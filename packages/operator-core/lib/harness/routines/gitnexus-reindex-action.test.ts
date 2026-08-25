@@ -6,7 +6,7 @@
  * source, and (b) the ORDER of the gates in `decideReindex` — the policy is only correct
  * if load outranks a missing index and the interval floor outranks staleness.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import {
   mkdtempSync,
@@ -225,6 +225,34 @@ describe('analyzeNodeArgs — the stack budget + argv order (P-004)', () => {
 });
 
 describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', () => {
+  /**
+   * The RUNNER's environment must not decide this verdict.
+   *
+   * runGitnexusAnalyze feeds the LIVE `process.env` to `analyzeEnv`, and `analyzeEnv`
+   * deliberately honours an operator-supplied heap — it early-returns whenever NODE_OPTIONS
+   * already carries `--max-old-space-size` (pinned by 'honours an operator-supplied heap
+   * instead of overriding it' above). That behaviour is correct and stays. But it means an
+   * AMBIENT NODE_OPTIONS makes the assertion below measure whatever heap the test runner was
+   * launched with instead of the cap this test exists to pin.
+   *
+   * green-checkpoint runs the suite with NODE_OPTIONS=--max-old-space-size=4096, which is
+   * exactly how candidate dfe7bd9f went red here while the same test is green in any ordinary
+   * shell — green for whoever checks it, blocking for everyone else. The DB ceiling is scrubbed
+   * for the same reason: `analyzeEnv` lets an explicit GITNEXUS_LBUG_MAX_DB_SIZE win too.
+   */
+  const RUNNER_ENV_KEYS = ['NODE_OPTIONS', 'GITNEXUS_LBUG_MAX_DB_SIZE'] as const;
+  let savedRunnerEnv: Array<[string, string | undefined]> = [];
+  beforeEach(() => {
+    savedRunnerEnv = RUNNER_ENV_KEYS.map((key) => [key, process.env[key]]);
+    for (const key of RUNNER_ENV_KEYS) delete process.env[key];
+  });
+  afterEach(() => {
+    for (const [key, value] of savedRunnerEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
   it('uses the managed build scope with provenance, resource cap, and a real deadline', async () => {
     const child = fakeManagedChild();
     taskManager.managedSpawn.mockResolvedValue({ child, taskId: 'task-gitnexus' });

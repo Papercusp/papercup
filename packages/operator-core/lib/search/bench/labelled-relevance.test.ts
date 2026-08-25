@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { precisionAtK } from '@papercusp/search-core';
 
-import { RELEVANCE_PASS_BAR, type JudgeVerdict } from './judge-agreement';
+import { JUDGE_AGREEMENT_RUBRIC_VERSION, RELEVANCE_PASS_BAR, type JudgeVerdict } from './judge-agreement';
 import {
   aggregateByTool,
   formatLabelledReport,
@@ -244,7 +244,7 @@ describe('runLabelledPass', () => {
       k: 10,
       sampleSeed: 'p038-labelled-v1',
     });
-    expect(report.rubricVersion).toBe('search-relevance.v1');
+    expect(report.rubricVersion).toBe(JUDGE_AGREEMENT_RUBRIC_VERSION);
     expect(report.passBar).toBe(RELEVANCE_PASS_BAR);
     expect(report.sampleSeed).toBe('p038-labelled-v1');
     // D-074: no floor off one run.

@@ -1,0 +1,270 @@
+/**
+ * initialization-runner.integration.test.ts — the PRODUCTION ASSEMBLY (P-046 / WI-40474)
+ * against REAL Postgres, exercising REAL RLS.
+ *
+ * Increment 1 proved the replay STORE honours execute-exactly-once in isolation. This file
+ * tests the thing that was actually missing: that `runWorkspaceHostInitialization` joins the
+ * observability ledger, the contract planner, the durable replay store and a host adapter into
+ * one flow — and that the properties survive that composition.
+ *
+ * The three claims under test are the ones a reviewer should care about:
+ *   1. an initialization is RECORDED as a first-class `action:'initialize'` host operation
+ *      (which also exercises migration 955's widened CHECK constraint against real PG);
+ *   2. every step runs EXACTLY ONCE against the host across the whole composed run; and
+ *   3. an interrupted run RESUMES — re-invoking with the same operationId must not re-execute
+ *      steps that already succeeded, because those are real remote side effects.
+ *
+ * `withWorkspace` is mocked to open an appSql transaction that sets the `app.workspace_id` GUC,
+ * i.e. the RLS-SUBJECT harness_app role — the canonical pattern from test/_org-test-db.ts. So
+ * isolation here is enforced by REAL policies, not by a WHERE clause in the test.
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import type { OrgTestDb } from '../../test/_org-test-db';
+import type {
+  WorkspaceHostCredentialDeliverySet,
+  WorkspaceHostInitializationHostOperationResult,
+  WorkspaceHostInitializationHostOperations,
+  WorkspaceHostInitializationStep,
+} from '@papercusp/deployment-driver';
+import type { WorkspaceHostCredentialRefs } from '@papercusp/deployment-driver';
+
+const h = vi.hoisted(() => ({ appSql: null as any }));
+
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  withWorkspace: async <T>(ws: string, cb: (tx: unknown) => Promise<T>): Promise<T> =>
+    h.appSql.begin(async (tx: any) => {
+      await tx`SELECT set_config('app.workspace_id', ${ws}, true)`;
+      return cb(tx);
+    }),
+}));
+
+const { runWorkspaceHostInitialization } = await import('./initialization-runner');
+const { createOrgTestDb } = await import('../../test/_org-test-db');
+
+let n = 0;
+const freshWs = () => `wh_run_ws_${++n}_${randomBytes(2).toString('hex')}`;
+
+function refs(): WorkspaceHostCredentialRefs {
+  return {
+    cloudCredentialRef: { kind: 'cloud', ref: 'cloud-resolver:v1' },
+    gitCredentialRef: { kind: 'git', ref: 'git-resolver:v1' },
+    agentCredentialRef: { kind: 'agent', ref: 'agent-resolver:v1' },
+  };
+}
+
+function delivery(): WorkspaceHostCredentialDeliverySet {
+  return {
+    cloud: { kind: 'provider-identity', generation: 1, audience: 'host-1', revocationRef: 'revoke-cloud-1' },
+    git: { kind: 'forwarded-agent', generation: 1, audience: 'host-1', revocationRef: 'revoke-git-1' },
+    agent: {
+      kind: 'short-lived-delegation',
+      generation: 1,
+      audience: 'host-1',
+      revocationRef: 'revoke-agent-1',
+      // Must be after `requestedAt` below — the planner validates the delivery window.
+      expiresAt: '2026-08-25T18:00:00.000Z',
+    },
+  };
+}
+
+/**
+ * Records every step the host actually saw. `failOn` makes one step throw, which is how the
+ * resume test creates a genuine mid-run interruption rather than simulating one.
+ */
+function recordingAdapter(failOn?: string): WorkspaceHostInitializationHostOperations & {
+  calls: string[];
+} {
+  const calls: string[] = [];
+  return {
+    calls,
+    supportedStepKinds: [
+      'create-workspace',
+      'clone-repository',
+      'pair-workspace',
+      'import-workspace',
+      'bind-credential',
+      'verify-initialization',
+    ],
+    async execute(
+      step: WorkspaceHostInitializationStep,
+    ): Promise<WorkspaceHostInitializationHostOperationResult> {
+      calls.push(step.id);
+      if (failOn && step.id === failOn) {
+        throw new Error(`host refused step ${step.id}`);
+      }
+      return {
+        observedAt: '2026-08-25T16:00:00.000Z',
+        publicEvidence: { step: step.id },
+      };
+    },
+  };
+}
+
+describe('workspace-host initialization runner (real PG + real RLS)', () => {
+  let db: OrgTestDb;
+
+  /** Seed the FK chain (connection -> host) the operation and step rows require. */
+  async function seedHost(workspaceId: string): Promise<string> {
+    const connectionId = `conn_${randomBytes(3).toString('hex')}`;
+    const hostId = `host_${randomBytes(3).toString('hex')}`;
+    await db.adminSql`
+      INSERT INTO harness_shared.workspace_host_connections (
+        workspace_id, id, target, label, credential_ref
+      ) VALUES (${workspaceId}, ${connectionId}, 'gcp', 'test connection', 'cloudCredentialRef:test')
+    `;
+    await db.adminSql`
+      INSERT INTO harness_shared.workspace_hosts (
+        workspace_id, id, name, connection_id, target, scope_label, region, size, image,
+        disk_gib, network, desired_state, observed_state
+      ) VALUES (
+        ${workspaceId}, ${hostId}, 'test host', ${connectionId}, 'gcp', 'test-project',
+        'us-central1', 'e2-standard-4', 'papercusp-host-v1', 64, 'default', 'running', 'running'
+      )
+    `;
+    return hostId;
+  }
+
+  const runInput = (workspaceId: string, hostId: string, operations: WorkspaceHostInitializationHostOperations, operationId?: string) => ({
+    workspaceId,
+    hostId,
+    ...(operationId ? { operationId } : {}),
+    requestedAt: '2026-08-25T15:00:00.000Z',
+    source: { kind: 'empty' as const },
+    credentialRefs: refs(),
+    credentialDelivery: delivery(),
+    operations,
+  });
+
+  beforeAll(async () => {
+    db = await createOrgTestDb();
+    h.appSql = db.appSql;
+  });
+
+  afterAll(async () => {
+    await db?.close?.();
+  });
+
+  it("records the run as an 'initialize' host operation and drives it to succeeded", async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const adapter = recordingAdapter();
+
+    const result = await runWorkspaceHostInitialization(runInput(ws, hostId, adapter));
+
+    // The contract's own tests pin this step set for an 'empty' source; asserting it here is
+    // what proves the runner passed a well-formed request through to the real planner.
+    expect(result.plan.steps.map((step) => step.id)).toEqual([
+      'workspace',
+      'bind-cloud',
+      'bind-git',
+      'bind-agent',
+      'verify',
+    ]);
+    expect(result.receipts).toHaveLength(5);
+
+    const [operation] = await db.adminSql`
+      SELECT action, status, percent, request
+        FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${result.operationId}
+    `;
+    // action='initialize' only inserts if migration 955 widened the CHECK constraint.
+    expect(operation.action).toBe('initialize');
+    expect(operation.status).toBe('succeeded');
+    expect(operation.percent).toBe(100);
+    // The PLAN is what gets persisted — the artifact the library asserts is secret-isolated.
+    expect(operation.request?.steps?.map((s: { id: string }) => s.id)).toEqual([
+      'workspace',
+      'bind-cloud',
+      'bind-git',
+      'bind-agent',
+      'verify',
+    ]);
+  });
+
+  it('executes every step exactly once against the host', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const adapter = recordingAdapter();
+
+    await runWorkspaceHostInitialization(runInput(ws, hostId, adapter));
+
+    expect(adapter.calls).toEqual(['workspace', 'bind-cloud', 'bind-git', 'bind-agent', 'verify']);
+    expect(new Set(adapter.calls).size).toBe(adapter.calls.length);
+  });
+
+  it('appends a timeline event per completed step plus a terminal completion event', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+
+    const result = await runWorkspaceHostInitialization(runInput(ws, hostId, recordingAdapter()));
+
+    const events = await db.adminSql`
+      SELECT phase, status FROM harness_shared.workspace_host_events
+       WHERE workspace_id = ${ws} AND operation_id = ${result.operationId}
+       ORDER BY occurred_at, phase
+    `;
+    const phases = events.map((row: { phase: string }) => row.phase);
+    expect(phases).toContain('initialize:create-workspace');
+    expect(phases).toContain('initialize:bind-credential');
+    expect(phases).toContain('initialize:complete');
+    expect(events.some((row: { phase: string; status: string }) =>
+      row.phase === 'initialize:complete' && row.status === 'succeeded')).toBe(true);
+  });
+
+  it('RESUMES an interrupted run without re-executing steps that already succeeded', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const operationId = `op_${randomBytes(4).toString('hex')}`;
+
+    // First attempt: the host refuses the third step.
+    const failing = recordingAdapter('bind-git');
+    await expect(
+      runWorkspaceHostInitialization(runInput(ws, hostId, failing, operationId)),
+    ).rejects.toThrow(/host refused step bind-git/);
+
+    expect(failing.calls).toEqual(['workspace', 'bind-cloud', 'bind-git']);
+
+    const [failed] = await db.adminSql`
+      SELECT status FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${operationId}
+    `;
+    expect(failed.status).toBe('failed');
+
+    // Second attempt, SAME operationId: a fresh adapter, so any call it records is by definition
+    // a re-execution against the host. The two already-succeeded steps must not appear.
+    const resuming = recordingAdapter();
+    const result = await runWorkspaceHostInitialization(
+      runInput(ws, hostId, resuming, operationId),
+    );
+
+    expect(resuming.calls).not.toContain('workspace');
+    expect(resuming.calls).not.toContain('bind-cloud');
+    expect(resuming.calls).toEqual(['bind-git', 'bind-agent', 'verify']);
+    expect(result.receipts).toHaveLength(5);
+
+    const [succeeded] = await db.adminSql`
+      SELECT status, percent FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${operationId}
+    `;
+    expect(succeeded.status).toBe('succeeded');
+    expect(succeeded.percent).toBe(100);
+  });
+
+  it('keeps initialization state isolated between workspaces', async () => {
+    const wsA = freshWs();
+    const wsB = freshWs();
+    const hostA = await seedHost(wsA);
+    const hostB = await seedHost(wsB);
+
+    const a = await runWorkspaceHostInitialization(runInput(wsA, hostA, recordingAdapter()));
+    await runWorkspaceHostInitialization(runInput(wsB, hostB, recordingAdapter()));
+
+    const crossRead = await db.adminSql`
+      SELECT id FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${wsB} AND id = ${a.operationId}
+    `;
+    expect(crossRead).toHaveLength(0);
+  });
+});

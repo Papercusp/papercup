@@ -19,11 +19,14 @@ import type { LlmCallFn } from '@papercusp/testing-shell/llm';
 import {
   aggregateByArm,
   buildPairsForQuery,
+  JUDGE_AGREEMENT_RUBRIC_VERSION,
   runJudgeAgreement,
   RELEVANCE_PASS_BAR,
+  SEARCH_RELEVANCE_RUBRIC,
   type JudgedPair,
   type PairOutcome,
 } from './judge-agreement';
+import { sha256 } from './judge-cache';
 import type { GoldQuery, PoolDoc } from './ref-expansion-gold';
 
 /**
@@ -114,6 +117,15 @@ describe('aggregateByArm', () => {
     expect(agg!.negatives.n).toBe(0);
     expect(agg!.negatives.specificity).toBe(0);
     expect(Number.isNaN(agg!.negatives.meanScore)).toBe(false);
+  });
+});
+
+describe('content-derived rubric version', () => {
+  it('changes the cache namespace when the serialized judging axes change', () => {
+    expect(JUDGE_AGREEMENT_RUBRIC_VERSION).toBe(
+      `search-relevance.${sha256(JSON.stringify({ axes: SEARCH_RELEVANCE_RUBRIC.axes })).slice(0, 12)}`,
+    );
+    expect(SEARCH_RELEVANCE_RUBRIC.version).toBe(JUDGE_AGREEMENT_RUBRIC_VERSION);
   });
 });
 
