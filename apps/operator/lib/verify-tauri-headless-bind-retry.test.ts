@@ -23,8 +23,10 @@
  * Tauri/Xvfb/sidecar stack, so this wiring can only be asserted at the wiring
  * site, not by running it in CI.
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
 // PROBE_SCRIPT lets scripts/mutation-probe.sh point this suite at a MUTATED COPY
@@ -36,6 +38,7 @@ import { describe, expect, it } from 'vitest';
 const SCRIPT =
   process.env.PROBE_SCRIPT ?? resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
+const BUILD_RS = resolve(__dirname, '../../../papercusp-desktop/src-tauri/build.rs');
 
 describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-time port race', () => {
   it('is the right script (guards a vacuous suite)', () => {
@@ -205,5 +208,65 @@ describe('EI-19446616147360269 — the bind-time re-pick is reachable without th
     // Guards the obvious regression: an unconditional "bridge is up" log after a
     // loop that can now exit without one.
     expect(loop).toMatch(/else\n\s*log "bridge is up after \$\{ELAPSED\}s"/);
+  });
+});
+
+describe('EI-21467292301306028 — a bind retry re-embeds the re-picked devUrl', () => {
+  it('forces attempt-one EADDRINUSE and gives attempt two a distinct Cargo rerun key', () => {
+    const launchFn = src.match(/^write_and_launch_tauri\(\) \{[\s\S]*?^\}/m)?.[0];
+    const portLostFn = src.match(/^port_lost_to_squatter\(\) \{[\s\S]*?^\}/m)?.[0];
+    expect(launchFn, 'write_and_launch_tauri() must remain directly exercisable').toBeTruthy();
+    expect(portLostFn, 'port_lost_to_squatter() must remain directly exercisable').toBeTruthy();
+
+    const dir = mkdtempSync(join(tmpdir(), 'ei21467292-'));
+    try {
+      const probe = `
+set -euo pipefail
+${launchFn}
+${portLostFn}
+start_verify_process() { printf '%s\\n' "$$"; }
+WORK="$1"
+DESKTOP_DIR="$1"
+ISOLATED_DB=0
+DISPLAY_NUM=90
+TAURI_OWNER_SID=probe-owner
+TAURI_LAUNCH_PROVENANCE=agent:probe-owner
+MEMORY_LIMIT_MB=1024
+SPA_ENV_LINE=
+ISOLATED_ENV_LINE=
+LAUNCH_PREFIX=()
+VERIFY_SCOPE_BASE=probe
+BOOT_ATTEMPTS=1
+DEV_PORT=33700
+PTY_PORT=33704
+LOG="$WORK/tauri.log"
+write_and_launch_tauri
+cp "$WORK/launch.sh" "$WORK/attempt1.sh"
+printf '%s\\n' '[hono-host] fatal uncaughtException — exiting: Error: listen EADDRINUSE: address already in use 0.0.0.0:33700' > "$LOG"
+if port_lost_to_squatter; then
+  BOOT_ATTEMPTS=2
+  DEV_PORT=33701
+  PTY_PORT=33705
+  write_and_launch_tauri
+  cp "$WORK/launch.sh" "$WORK/attempt2.sh"
+fi
+`;
+      const run = spawnSync('bash', ['-c', probe, '_', dir], { encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+
+      const attempt1 = readFileSync(join(dir, 'attempt1.sh'), 'utf8');
+      const attempt2 = readFileSync(join(dir, 'attempt2.sh'), 'utf8');
+      expect(attempt1).toContain('PAPERCUSP_VERIFY_TAURI_DEV_URL="http://127.0.0.1:33700"');
+      expect(attempt2).toContain('PAPERCUSP_VERIFY_TAURI_DEV_URL="http://127.0.0.1:33701"');
+      expect(attempt2).toContain('PAPERCUSP_DEV_API_TARGET="33701"');
+      expect(attempt2).toContain('"devUrl":"http://127.0.0.1:33701"');
+
+      const buildRs = readFileSync(BUILD_RS, 'utf8');
+      expect(buildRs).toContain(
+        'cargo:rerun-if-env-changed=PAPERCUSP_VERIFY_TAURI_DEV_URL',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

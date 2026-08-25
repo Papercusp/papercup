@@ -1605,6 +1605,13 @@ SPA_ENV_LINE=""
 # workspace/database must not create a process in the shared sidecar slice.
 # Keep every explicit spawner/git offload gate pinned off at this boundary.
 #
+# EI-21467292301306028: Tauri's `generate_context!` bakes `build.devUrl` into
+# the desktop binary. A bind-time retry regenerates this launcher with a fresh
+# port, but Cargo can reuse the first attempt's warm target artifact unless a
+# build-script input changes. Export the current URL as an explicit rerun key;
+# build.rs watches it below, so a port re-pick re-embeds the second attempt's
+# origin instead of launching a binary that still points at the lost port.
+#
 # `XDG_SESSION_TYPE=x11` (EI-19950536294124572): `-u WAYLAND_DISPLAY` already scrubs the
 # leaked host-desktop compositor var, but XDG_SESSION_TYPE — a login-session property, not
 # a "display env" var most launchers think to scrub — still leaks through from the host's
@@ -1640,6 +1647,7 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET \\
   OPERATOR_DEV_PORT="$DEV_PORT" OPERATOR_DEV_PTY_PORT="$PTY_PORT" \\
   PAPERCUSP_BIND_HOST=127.0.0.1 \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL=0 \\
+  PAPERCUSP_VERIFY_TAURI_DEV_URL="$TAURI_DEV_URL" \\
   PAPERCUSP_CLUSTER=0 PAPERCUSP_CLUSTER_WORKERS=0 \\
   PAPERCUSP_SPAWNER_SIDECAR=0 PAPERCUSP_SPAWNER_SIDECAR_MODE=0 \\
   PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR=0 \\
