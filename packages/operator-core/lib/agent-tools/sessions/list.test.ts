@@ -299,4 +299,28 @@ describe('sessions:list historical bounded census', () => {
     expect(parsed.ok).toBe(false);
     expect(JSON.stringify(parsed)).toMatch(/since must be earlier than until/);
   });
+
+  // EI-21386375248907708: a relative window used to reach PostgreSQL raw and die
+  // as `invalid input syntax for type timestamp with time zone: "3h"`.
+  it('normalizes a RELATIVE window ("3h"/"1h") instead of feeding it to ::timestamptz', async () => {
+    const before = Date.now();
+    const { parsed, txCalls } = await run(
+      { mode: 'historical', since: '3h', until: '1h' },
+      [[]],
+    );
+
+    expect(txCalls).toBe(1);
+    expect(parsed.ok).toBe(true);
+    const sinceMs = Date.parse(parsed.window.since);
+    const untilMs = Date.parse(parsed.window.until);
+    expect(Math.abs(sinceMs - (before - 3 * 3_600_000))).toBeLessThan(10_000);
+    expect(Math.abs(untilMs - (before - 1 * 3_600_000))).toBeLessThan(10_000);
+  });
+
+  it('rejects an unrecognized window value NAMING the accepted forms', async () => {
+    const { parsed, txCalls } = await run({ since: 'yesterday-ish' }, []);
+    expect(txCalls).toBe(0);
+    expect(parsed.ok).toBe(false);
+    expect(JSON.stringify(parsed)).toMatch(/relative window like "45m", "12h", "7d"/);
+  });
 });

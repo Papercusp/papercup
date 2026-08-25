@@ -100,6 +100,36 @@ interface OutHistoricalSession {
  * query path from the indexed transcript list below: a historical census must
  * begin with append-only events, not with a mutable live-session roster.
  */
+/**
+ * EI-21386375248907708: agents reach for RELATIVE windows ("3h", "30m", "7d")
+ * naturally. The permissive string schema let those values reach PostgreSQL
+ * raw, where ::timestamptz rejected them as a bare syntax error
+ * (handler_error, no guidance). Normalize accepted relative forms to an ISO
+ * instant anchored at "now" at the handler boundary, and reject anything else
+ * with the accepted forms NAMED.
+ */
+const RELATIVE_WINDOW_RE = /^\s*(\d+)\s*([smhd])\s*$/i;
+const RELATIVE_UNIT_MS = { s: 1_000, m: 60_000, h: 3_600_000, d: 86_400_000 } as const;
+
+function normalizeWindowBound(
+  value: string | undefined,
+  field: 'since' | 'until',
+): { iso?: string; error?: string } {
+  if (value === undefined) return {};
+  const rel = RELATIVE_WINDOW_RE.exec(value);
+  if (rel) {
+    const ms = Number(rel[1]) * RELATIVE_UNIT_MS[rel[2].toLowerCase() as keyof typeof RELATIVE_UNIT_MS];
+    return { iso: new Date(Date.now() - ms).toISOString() };
+  }
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) {
+    return {
+      error: `${field} must be an ISO-8601 timestamp or a relative window like "45m", "12h", "7d" (got ${JSON.stringify(value)})`,
+    };
+  }
+  return { iso: d.toISOString() };
+}
+
 async function readHistoricalCensus(
   tx: Sql,
   options: {
@@ -304,8 +334,8 @@ export default defineTool({
     owner: z.string().max(120).optional().describe("Filter to one agent ownerId ('self' = the caller)."),
     source_kind: z.enum(SESSION_SOURCE_KINDS).optional(),
     cwd_contains: z.string().max(200).optional().describe('Substring match on the session cwd.'),
-    since: z.string().max(40).optional().describe('Only sessions active after this ISO timestamp.'),
-    until: z.string().max(40).optional().describe('Historical mode upper bound (exclusive ISO timestamp); required with mode:"historical".'),
+    since: z.string().max(40).optional().describe('Only sessions active after this timestamp. Accepts ISO-8601 OR a relative window measured back from now, like "45m", "12h", "7d".'),
+    until: z.string().max(40).optional().describe('Historical mode upper bound (exclusive); required with mode:"historical". Accepts ISO-8601 OR a relative window like "30m", "2h".'),
     mode: z.enum(['indexed', 'historical']).optional().describe('Default indexed transcript list; historical requires explicit since + until and returns an append-only event census.'),
     historical: z.boolean().optional().describe('Compatibility alias for mode:"historical"; still requires explicit since + until.'),
     limit: z.number().int().min(1).max(100).optional().describe('Default 30.'),
@@ -313,6 +343,18 @@ export default defineTool({
   }),
   async handler(args, ctx: PapercuspUnifiedToolContext) {
     if (!(await sessionSearchEnabled())) return disabledResult();
+    // EI-21386375248907708: normalize relative windows FIRST — the fingerprint,
+    // the cursor, and every SQL bound below must see the same resolved instant.
+    const sinceNorm = normalizeWindowBound(args.since, 'since');
+    if (sinceNorm.error) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: sinceNorm.error }) }] };
+    }
+    const untilNorm = normalizeWindowBound(args.until, 'until');
+    if (untilNorm.error) {
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: untilNorm.error }) }] };
+    }
+    args.since = sinceNorm.iso;
+    args.until = untilNorm.iso;
     // Non-null: `tx` is optional on PapercuspUnifiedToolContext (must match the
     // framework's own optional `ctx.tx` for defineTool's overload resolution to
     // accept this handler — see _tool-context.ts) but is always bound for an
