@@ -18,6 +18,7 @@
  */
 
 import type { AgentTimelineEntry } from './endpoint-route/routes/harness/streams';
+import { blockPayloadText, codexToolCallArgsRaw } from './transcript-wire';
 
 export interface TimelineLineParser {
   parseLine(line: string): AgentTimelineEntry[];
@@ -66,9 +67,12 @@ function codexMessageText(content: unknown): string {
  *  - response_item/message assistant   → text (canonical current shape)
  *  - event_msg user_message/agent_message → legacy prompt/text fallback
  *  - response_item/function_call,
- *    custom_tool_call, tool_search_call → tool_use
+ *    custom_tool_call, tool_search_call → tool_use. The ARGUMENTS field differs
+ *    per record type (`arguments` / `input` / `query`) — read via
+ *    transcript-wire's `codexToolCallArgsRaw`, shared with the corpus parser.
  *  - response_item/function_call_output,
- *    custom_tool_call_output           → tool_result
+ *    custom_tool_call_output           → tool_result. `output` is a block ARRAY
+ *    on current builds; read via transcript-wire's `blockPayloadText`.
  *  - response_item/reasoning           → status '[thinking] …' when a readable
  *    summary exists (the content itself ships encrypted — skipped otherwise)
  *  - compacted                         → status
@@ -132,7 +136,14 @@ export function createCodexTimelineParser(): TimelineLineParser {
           return [{
             kind: 'tool_use',
             toolName: `${ns}${name}`,
-            toolInput: compactToolArgs(p.arguments),
+            // WI-41498: the args field VARIES BY RECORD TYPE and this read only
+            // knew about `function_call`'s `arguments`. `custom_tool_call` — the
+            // overwhelming majority of real codex tool calls (155 vs 4 in the
+            // measured session) — carries `input`, so every one of those chips
+            // reached the conversation popup naming a tool and showing nothing
+            // it was called with. The field list is shared with the corpus
+            // parser (transcript-wire) precisely so the two cannot drift again.
+            toolInput: compactToolArgs(codexToolCallArgsRaw(p)),
             toolId: typeof p.call_id === 'string' ? p.call_id : undefined,
             ts,
           }];
@@ -140,7 +151,12 @@ export function createCodexTimelineParser(): TimelineLineParser {
         if (pt === 'function_call_output' || pt === 'custom_tool_call_output') {
           return [{
             kind: 'tool_result',
-            text: typeof p.output === 'string' ? p.output : JSON.stringify(p.output ?? ''),
+            // WI-41498: current Codex writes `output` as an ARRAY of
+            // `{type:'input_text', text}` blocks. The old `JSON.stringify`
+            // fallback turned that into a raw `[{"type":"input_text",…}]` dump
+            // in the pane (30 of 31 results in the measured session) rather
+            // than the text the tool actually returned.
+            text: blockPayloadText(p.output),
             toolId: typeof p.call_id === 'string' ? p.call_id : undefined,
             ts,
           }];

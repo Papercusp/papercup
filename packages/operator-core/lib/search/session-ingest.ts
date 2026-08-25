@@ -51,6 +51,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
+import { blockPayloadText, codexToolCallArgsRaw } from '../transcript-wire';
 import { classifyRecordedTurn, OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
 import {
   MACHINE_SURFACE_CATALOGUE_VERSION,
@@ -319,24 +320,17 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
 /** Render a tool_use `input` / tool_result `content` payload as display text.
  *  A string passes through; anything structured is JSON — the pane shows the
  *  argument object, which is what makes a tool call readable at all. */
-function partPayloadText(v: unknown): string {
-  if (typeof v === 'string') return v;
-  if (v == null) return '';
-  if (Array.isArray(v)) {
-    // Claude tool_result content is usually [{type:'text',text}] — prefer the
-    // text parts, and fall back to JSON for image/structured blocks.
-    const texts = v
-      .filter((p): p is { type?: string; text: string } =>
-        !!p && typeof p === 'object' && typeof (p as { text?: unknown }).text === 'string')
-      .map((p) => p.text);
-    if (texts.length) return texts.join('\n');
-  }
-  try {
-    return JSON.stringify(v) ?? '';
-  } catch {
-    return '';
-  }
-}
+/**
+ * Claude tool_result content is usually [{type:'text',text}] — prefer the text
+ * parts, and fall back to JSON for image/structured blocks.
+ *
+ * WI-41498: this is now the SHARED implementation in transcript-wire, imported
+ * rather than kept here. The live-timeline parser had its own, weaker copy of
+ * the same idea (`JSON.stringify` of anything non-string) and fell behind the
+ * wire while this one stayed correct — with nothing to fail when they diverged.
+ * The local alias is kept so this module's call sites read unchanged.
+ */
+const partPayloadText = blockPayloadText;
 
 /**
  * Claude Code line → FAITHFUL parts (session-turn-storage-2026-07-28 P-001).
@@ -566,7 +560,9 @@ export function parseCodexParts(line: string): ParsedPart[] {
     push(
       'assistant',
       'tool_use',
-      partPayloadText(payload.arguments ?? payload.input ?? payload.query),
+      // WI-41498: field list shared with the live-timeline parser
+      // (transcript-wire) rather than spelled out twice.
+      partPayloadText(codexToolCallArgsRaw(payload)),
       `${namespace}${name}`,
     );
     return out;
