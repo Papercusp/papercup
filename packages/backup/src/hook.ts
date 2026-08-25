@@ -59,6 +59,7 @@ const EXCLUDED_TABLE_DATA = [
   // snapshot prevents a faithful-parts COPY from holding an AccessShareLock
   // across the whole pre-snapshot dump.
   'harness_shared.session_turns',
+  'harness_shared.session_turn_chunks',
   'harness_shared.session_turn_parts',
   'harness_shared.decision_ledger',
   'harness_shared.agent_activity',
