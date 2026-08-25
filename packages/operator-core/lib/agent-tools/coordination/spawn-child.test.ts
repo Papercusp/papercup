@@ -268,15 +268,21 @@ function opts(overrides: Partial<SpawnChildOpts> = {}): SpawnChildOpts {
 }
 
 describe('executeSpawnChild — happy path', () => {
-  it('runs scaffold → seed plan → import → assertions → start, in order', async () => {
+  // P-003 (D-002/D-005): writeAssertions MUST precede importFeatures. The child's
+  // features carry the seed plan's synthesized VAL-* ids as `claims`, and a claim is
+  // resolvable ONLY through harness_plan_assertions — a different datastore from the
+  // one importFeatures writes, with no transaction spanning both. This sequence is
+  // therefore the entire integrity guarantee, not an incidental detail: reversing it
+  // is what allowed a feature to carry claim ids whose rows never persisted.
+  it('runs scaffold → seed plan → assertions → import → start, in order', async () => {
     const { deps, calls } = stubDeps();
     const r = await executeSpawnChild(opts(), deps);
     expect(calls).toEqual([
       'resolveChild',
       'scaffold',
       'writeSeedPlan',
-      'importFeatures',
       'writeAssertions',
+      'importFeatures',
       'startPlan',
     ]);
     expect(r).toMatchObject({
@@ -371,7 +377,11 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(r.warnings.some((w) => w.includes('scaffolded-but-unseeded'))).toBe(true);
   });
 
-  it('import failure aborts assertions + start (retry completes them)', async () => {
+  // P-003: with assertions persisted FIRST, an import failure now leaves ORPHAN
+  // assertion rows instead of dangling claims. That is the benign half of the
+  // inverted failure mode — no feature references those rows, the upsert is
+  // idempotent, and a re-promote re-converges them.
+  it('import failure leaves orphan assertion rows, never dangling claims', async () => {
     const { deps } = stubDeps({
       importFeatures: vi.fn(async () => {
         throw new Error('features_import_failed:404');
@@ -381,6 +391,9 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(r.feature_ids).toEqual([]);
     expect(r.started).toBe(false);
     expect(deps.startPlan).not.toHaveBeenCalled();
+    // The rows were already written — orphaned (harmless), not dangling (corrupt).
+    expect(deps.writeAssertions).toHaveBeenCalled();
+    expect(r.assertions_written).toBe(3);
     expect(r.warnings.some((w) => w.includes('feature import failed'))).toBe(true);
   });
 
@@ -438,14 +451,62 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
     expect(describeSpawnStart('skipped')).toBe('');
   });
 
-  it('assertion-store errors degrade to warnings (claims already rode the import)', async () => {
+  // P-003 (D-002/D-005). This REPLACES a test that pinned the defect: assertion
+  // failures used to "degrade to warnings" while the claims had already ridden the
+  // import — precisely the state the plan item forbids ("no feature may carry claim
+  // ids whose assertion rows failed to persist"). A partial failure is the dangerous
+  // case, because `written > 0` made it look like the store had worked.
+  it('a PARTIAL assertion-store failure fails closed — no feature is imported', async () => {
     const { deps } = stubDeps({
       writeAssertions: vi.fn(async () => ({ written: 1, errors: ['VAL-x: dead column'] })),
     });
     const r = await executeSpawnChild(opts(), deps);
-    expect(r.assertions_written).toBe(1);
-    expect(r.started).toBe(true); // start still ran
+    expect(deps.importFeatures).not.toHaveBeenCalled();
+    expect(deps.startPlan).not.toHaveBeenCalled();
+    expect(r.feature_ids).toEqual([]);
+    expect(r.started).toBe(false);
     expect(r.warnings.some((w) => w.includes('dead column'))).toBe(true);
+    expect(r.warnings.some((w) => w.includes('claim ids with no assertion row'))).toBe(true);
+    expect(r.warnings.some((w) => w.includes('re-promote to retry'))).toBe(true);
+  });
+
+  it('a THROWN assertion store fails closed the same way (PG unreachable)', async () => {
+    const { deps } = stubDeps({
+      writeAssertions: vi.fn(async () => {
+        throw new Error('pg down');
+      }),
+    });
+    const r = await executeSpawnChild(opts(), deps);
+    expect(deps.importFeatures).not.toHaveBeenCalled();
+    expect(deps.startPlan).not.toHaveBeenCalled();
+    expect(r.feature_ids).toEqual([]);
+    expect(r.started).toBe(false);
+    expect(r.warnings.some((w) => w.includes('pg down'))).toBe(true);
+    expect(r.warnings.some((w) => w.includes('claim ids with no assertion row'))).toBe(true);
+  });
+
+  // Retry/idempotency: a re-promote after a failed assertion store must re-run the
+  // write and then proceed — the guard refuses the import, it does not latch.
+  it('a retry after a failed assertion store completes normally', async () => {
+    let attempt = 0;
+    const { deps, calls } = stubDeps({
+      writeAssertions: vi.fn(async (_s, _p, assertions) => {
+        attempt++;
+        calls.push('writeAssertions');
+        return attempt === 1
+          ? { written: 0, errors: ['VAL-x: deadlock detected'] }
+          : { written: assertions.length, errors: [] };
+      }),
+    });
+    const first = await executeSpawnChild(opts(), deps);
+    expect(first.feature_ids).toEqual([]);
+    expect(deps.importFeatures).not.toHaveBeenCalled();
+
+    const second = await executeSpawnChild(opts(), deps);
+    expect(deps.importFeatures).toHaveBeenCalledTimes(1);
+    expect(second.feature_ids).toHaveLength(3);
+    expect(second.assertions_written).toBe(3);
+    expect(second.started).toBe(true);
   });
 
   it('seed plan already existing is a no-op, not a failure (retry path)', async () => {
