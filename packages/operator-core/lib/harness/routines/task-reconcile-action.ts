@@ -458,7 +458,7 @@ async function reapAgentSessionResidue(ctx: SystemActionCtx): Promise<void> {
     let freshOwners: ReadonlySet<string> | null = null;
     try {
       const { getOrgPg } = await import('@papercusp/db-org');
-      const sql = getOrgPg();
+      const sql = getOrgPg().sql;
       const rows = await sql<{ owner_id: string }[]>`
         SELECT owner_id FROM harness_shared.coord_presence
          WHERE heartbeat_at > now() - (${REAP_PRESENCE_FRESH_MS} * interval '1 millisecond')`;
