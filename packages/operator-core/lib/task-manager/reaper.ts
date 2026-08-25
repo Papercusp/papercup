@@ -104,8 +104,32 @@ export interface ReaperInputs {
   rows: readonly TaskRow[];
   /** Progress census over the LIVE agent-session rows (log-mtime instrument). */
   census: AgentSessionProgressCensus;
-  /** Live pid count for a row's scope cgroup; null = cgroup gone / unreadable
-   *  (unreadable must never read as "has processes"). */
+  /**
+   * Live pid count for a row's scope cgroup; null = unreadable, 0 = the scope
+   * does not exist (both mean "do not reap"; unreadable must never read as
+   * "has processes").
+   *
+   * ⚠ CONTRACT — RESOLVE THIS FROM `row.scopeUnit`, NEVER FROM `row.cgroupPath`.
+   *
+   * `task_ledger.cgroup_path` is NOT trustworthy for this decision. It records
+   * the cgroup observed at ENROLMENT, and for a large minority of rows that is
+   * the SPAWNER's cgroup (the operator's own service) rather than the scope the
+   * process ends up in. Measured live 2026-08-25: of 94 non-exempt agent-session
+   * rows, 28 recorded `…/app.slice/papercup-bg-host.service`, yet 27 of those 28
+   * pids were alive INSIDE their own correct `pc-<taskId>--*.scope`. The field
+   * was simply stale.
+   *
+   * Both failure modes of trusting it are severe and were both observed:
+   *   - reading pids from the spawner's cgroup counts the OPERATOR'S OWN
+   *     processes as "survivors" (this produced the 0/12 pass that tried to stop
+   *     12 scopes which never existed, once every 5 minutes for an hour), and
+   *   - filtering on it EXCLUDES genuine residue whose scope is real — including
+   *     a session log-silent for 10h with no presence heartbeat at all.
+   *
+   * Deriving the directory from `scopeUnit` (see `scopeCgroupRelPath`) answers
+   * both correctly from ground truth: a phantom scope is simply absent, so it
+   * reads 0 and is skipped instead of being stopped and failing.
+   */
   scopePidCount: (row: TaskRow) => number | null;
   /** coord_presence owner_ids with a heartbeat fresher than REAP_PRESENCE_FRESH_MS. */
   freshOwners: ReadonlySet<string>;
@@ -143,14 +167,9 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
 
   for (const row of inputs.rows) {
     if (row.class !== 'agent-session') continue;
+    // `scopeUnit` is the ONLY addressability key, and it is a UNIQUE column
+    // (`task_ledger_scope_unit_key`). Everything below resolves through it.
     if (!row.scopeUnit) continue;
-    // An UNCONFINED spawn (scope-launch fallback to direct) records its
-    // SPAWNER's cgroup in cgroup_path — e.g. papercup-dev-api.service, the
-    // operator itself (measured live 2026-08-25: the first deployed pass chose
-    // 12 such rows, counted the operator's own pids as "survivors", and failed
-    // 0/12 stopping scopes that never existed). A row is only reap-addressable
-    // when its cgroup path's LEAF is its own scope unit.
-    if (!row.cgroupPath || !row.cgroupPath.endsWith(`/${row.scopeUnit}`)) continue;
     if (isAutoReapExempt(row)) {
       spared.push({ taskId: row.taskId, why: 'autoReapExempt (D-001 terminal-psu-session-enrolment)' });
       continue;

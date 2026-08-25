@@ -39,6 +39,7 @@ import {
   type ReapEffects,
 } from '../../task-manager/reaper';
 import { absCgroupDir, walkCgroupTree } from '../../task-manager/cgroup-read';
+import { scopeCgroupRelPath } from '../../task-manager/types';
 import {
   censusAgentSessionProgress,
   evaluateAgentSessionResidue,
@@ -199,7 +200,7 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
 
   if (isMaintDue({ lastAtMs: lastReaperAtMs, nowMs, intervalMs: REAPER_INTERVAL_MS })) {
     lastReaperAtMs = nowMs;
-    await reapAgentSessionResidue(ctx);
+    await reapAgentSessionResidue(ctx, tick.scan.userManagerRoot);
   }
 
   if (isMaintDue({ lastAtMs: lastA11ySweepAtMs, nowMs, intervalMs: A11Y_SWEEP_INTERVAL_MS })) {
@@ -430,7 +431,10 @@ async function reportAgentSessionProgress(ctx: SystemActionCtx): Promise<void> {
  *   - every pass that reaps anything broadcasts what it reaped and why, so a
  *     wrong discriminator is loud within one pass, not after a weekend.
  */
-async function reapAgentSessionResidue(ctx: SystemActionCtx): Promise<void> {
+async function reapAgentSessionResidue(
+  ctx: SystemActionCtx,
+  userManagerRoot: string | null,
+): Promise<void> {
   try {
     const { FLAGS } = await import('@papercusp/flags');
     const { getFlag } = await import('@papercusp/flags/server');
@@ -482,9 +486,14 @@ async function reapAgentSessionResidue(ctx: SystemActionCtx): Promise<void> {
           ? { ...census, degraded: true, degradedReason: 'coord_presence unreadable — quiet class disabled' }
           : census,
       scopePidCount: (row) => {
-        if (!row.cgroupPath) return null;
-        const abs = absCgroupDir(row.cgroupPath);
-        if (!nodeCgroupFs.isDir(abs)) return 0; // scope gone — a real zero
+        // Resolved from scopeUnit, NOT row.cgroupPath — see the contract on
+        // ReaperInputs.scopePidCount. The ledger's cgroup_path is the cgroup seen
+        // at enrolment and is stale for ~30% of rows (it names the spawner's own
+        // service), which is what made an earlier pass count the operator's
+        // processes as survivors.
+        if (!row.scopeUnit) return null;
+        const abs = absCgroupDir(scopeCgroupRelPath(userManagerRoot, 'agent-session', row.scopeUnit));
+        if (!nodeCgroupFs.isDir(abs)) return 0; // scope absent — a real zero
         return walkCgroupTree(abs, nodeCgroupFs).reduce((s, g) => s + g.pids.length, 0);
       },
       freshOwners: freshOwners ?? new Set(),
