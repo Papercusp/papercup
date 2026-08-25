@@ -289,6 +289,72 @@ function archiveSubjectsMatch(currentQuestion: string, archivedQuestion: string)
   return current.length === archived.length && current.every((key, i) => key === archived[i]);
 }
 
+/**
+ * A rubric critique is an INDEPENDENCE task, not an expertise task: someone
+ * who already emitted a scorecard on the instrument must not be selected to
+ * reshape that same instrument. Relevance is actively inverted here — the
+ * grader is likely to rank highly precisely because they just graded it.
+ *
+ * `consult:get_feedback` has no structured subject arg, so derive a bounded
+ * candidate set from the question and let the scorecard ledger resolve which
+ * tokens are ACTUAL rubric refs. The broad hyphenated-token leg is deliberate:
+ * real critique prompts often say only "critique acceptance-foo-2026-08-25"
+ * (the EI-21469207548268721 incident), without the word `rubric` adjacent to
+ * the ref. Non-rubric tokens are harmless because the SQL exact-match removes
+ * them. Explicit `rubricRef: 'simple'` syntax also supports refs without a
+ * hyphen. Cap before SQL so an adversarial prose body cannot widen the query.
+ */
+const RUBRIC_REF_CANDIDATE_CAP = 64;
+
+function rubricRefCandidates(question: string): string[] {
+  const refs = new Set<string>();
+  const explicit = /\brubric(?:Ref)?\s*[:#=]?\s*['"`]?([a-z0-9][a-z0-9._/-]{0,199})/gi;
+  for (const match of question.matchAll(explicit)) {
+    refs.add(match[1]);
+    if (refs.size >= RUBRIC_REF_CANDIDATE_CAP) return [...refs];
+  }
+  const durableTokens = /\b([a-z0-9][a-z0-9._/-]{2,199})\b/gi;
+  for (const match of question.matchAll(durableTokens)) {
+    const token = match[1];
+    if (!token.includes('-')) continue;
+    refs.add(token);
+    if (refs.size >= RUBRIC_REF_CANDIDATE_CAP) break;
+  }
+  return [...refs];
+}
+
+function isRubricCritiqueQuestion(question: string): boolean {
+  return /\b(critique|critic|vet|vetting|review|audit)\b/i.test(question);
+}
+
+async function rubricGraderExclusions(
+  sql: Sql,
+  workspaceId: string,
+  question: string,
+): Promise<string[]> {
+  if (!isRubricCritiqueQuestion(question)) return [];
+  const refs = rubricRefCandidates(question);
+  if (refs.length === 0) return [];
+
+  // Scorecards are issue-family work_items whose canonical discriminator is
+  // payload.observation.rubricRef. The emitter is persisted by the issue-view
+  // writer at payload._ei.created_by and projected by scorecards:list as
+  // ScorecardRow.createdBy. Read those WRITER-backed fields directly so this
+  // gate cannot drift from what scorecards:list calls a grader.
+  const rows = (await sql`
+    SELECT DISTINCT payload -> '_ei' ->> 'created_by' AS owner_id
+     FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       -- Match migration 842's expression exactly so the tiny partial
+       -- work_items_obs_rubric_ref_idx is usable; a plain payload traversal is
+       -- semantically equal but structurally misses the index after unification.
+       AND (payload - '_ei') -> 'observation' ->> 'rubricRef' = ANY(${refs}::text[])
+       AND payload -> '_ei' ->> 'created_by' IS NOT NULL
+  ORDER BY owner_id
+  `) as unknown as Array<{ owner_id: string }>;
+  return rows.map((row) => row.owner_id);
+}
+
 function consultTitle(question: string): string {
   const q = question.replace(/\s+/g, ' ').trim();
   return `consult: ${q.length > 90 ? `${q.slice(0, 90)}…` : q}`;
@@ -569,9 +635,18 @@ export async function getFeedbackCore(
 
   // 2) Route (one embedding + bounded SQL; snapshot comes back for persisting).
   //    The caller's explicit exclusions (e.g. a fresh route after an
-  //    exhausted cascade) and the recursion lineage fold into ONE
-  //    excludeOwners set (P-005 cycle refusal rides P-002's arg).
-  const excludeOwners = [...new Set([...(req.excludeOwners ?? []), ...lineageOwners])];
+  //    exhausted cascade), recursion lineage, and rubric grader/critic
+  //    independence gate fold into ONE existing excludeOwners seam. The last
+  //    leg closes EI-21469207548268721: familiarity is a disqualifier when the
+  //    task is to critique an instrument the owner already graded against.
+  const graderExclusions = await rubricGraderExclusions(
+    sql,
+    req.workspaceId,
+    req.question,
+  );
+  const excludeOwners = [
+    ...new Set([...(req.excludeOwners ?? []), ...lineageOwners, ...graderExclusions]),
+  ];
   const route = await deps.route({
     workspaceId: req.workspaceId,
     requesterId: req.requesterId,
@@ -612,6 +687,7 @@ export async function getFeedbackCore(
            AND state = 'closed_answered'
            AND query_embedding IS NOT NULL
            AND (outcome->>'source' IS DISTINCT FROM 'archive')
+           AND (responder_id IS NULL OR responder_id <> ALL(${excludeOwners}::text[]))
       ORDER BY query_embedding <=> ${qVecStr}::vector
          LIMIT 3
       `) as unknown as ConsultArchiveRow[];

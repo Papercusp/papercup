@@ -93,11 +93,13 @@ beforeAll(async () => {
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.work_items (
       feature_id text PRIMARY KEY,
+      workspace_id text NOT NULL DEFAULT 'ws-consult-core',
       admission text, admitted_at timestamptz, admitted_by text,
       taken_by text,
       status text,
       taken_at timestamptz,
-      last_progress_at timestamptz
+      last_progress_at timestamptz,
+      payload jsonb NOT NULL DEFAULT '{}'::jsonb
     )`);
 }, 120_000);
 
@@ -367,6 +369,83 @@ describe('getFeedbackCore — wake budget REMOVED (consult-min-max-and-rubric-ve
   });
 });
 
+describe('getFeedbackCore — rubric grader/critic role separation (EI-21469207548268721)', () => {
+  it('excludes prior scorecard authors before routing a critique of that rubric', async () => {
+    const rubricRef = 'acceptance-hlc-contention-free-clock-2026-08-12';
+    const grader = cand('agent-rubric-grader', { score: 0.91 });
+    const independent = cand('agent-independent-critic', { score: 0.79 });
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, workspace_id, status, payload)
+      VALUES
+        ('EI-RUBRIC-GRADE-1', ${WS}, 'done', ${rootSql.json({
+          _ei: { created_by: grader.ownerId },
+          observation: { rubricRef, ratings: { c1: { rating: 'healthy', evidence: 'first grade' } } },
+        })}),
+        ('EI-RUBRIC-GRADE-2', ${WS}, 'done', ${rootSql.json({
+          _ei: { created_by: grader.ownerId },
+          observation: {
+            rubricRef,
+            ratings: { c1: { rating: 'healthy', evidence: 'superseding grade' } },
+            supersedes: 'EI-RUBRIC-GRADE-1',
+          },
+        })})`;
+
+    const routed = routeOf([grader, independent], { all: [grader, independent] });
+    const { deps, routeCalls } = makeDeps(routed);
+    // Mirror the production routeConsult seam: owners passed in excludeOwners
+    // cannot appear in either the qualified or minimum-fill candidate pool.
+    deps.route = async (params) => {
+      routeCalls.push(params);
+      const excluded = new Set(params.excludeOwners ?? []);
+      return routeOf(
+        routed.qualified.filter((candidate) => !excluded.has(candidate.ownerId)),
+        { all: routed.snapshot.candidates.filter((candidate) => !excluded.has(candidate.ownerId)) },
+      );
+    };
+
+    const result = asOk(
+      await getFeedbackCore(
+        {
+          ...baseReq,
+          question:
+            `Fresh successor critique request for ${rubricRef} revision 2. ` +
+            'Are its criteria non-overlapping, outcome-focused, falsifiable, and complete?',
+        },
+        deps,
+      ),
+    );
+
+    expect(routeCalls).toHaveLength(1);
+    expect(routeCalls[0]?.excludeOwners).toEqual(['agent-rubric-grader']);
+    expect(result.responder?.ownerId).toBe('agent-independent-critic');
+  });
+
+  it('does not exclude a grader from an ordinary explanation request about its scorecard', async () => {
+    const rubricRef = 'acceptance-explain-scorecard-2026-08-25';
+    const grader = cand('agent-scorecard-explainer', { score: 0.91 });
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, workspace_id, status, payload)
+      VALUES ('EI-RUBRIC-EXPLAIN', ${WS}, 'done', ${rootSql.json({
+        _ei: { created_by: grader.ownerId },
+        observation: { rubricRef, ratings: { c1: { rating: 'healthy', evidence: 'grade evidence' } } },
+      })})`;
+
+    const { deps, routeCalls } = makeDeps(routeOf([grader]));
+    const result = asOk(
+      await getFeedbackCore(
+        {
+          ...baseReq,
+          question: `Explain the evidence recorded in rubricRef: '${rubricRef}'.`,
+        },
+        deps,
+      ),
+    );
+
+    expect(routeCalls[0]?.excludeOwners).toBeUndefined();
+    expect(result.responder?.ownerId).toBe(grader.ownerId);
+  });
+});
+
 describe('getFeedbackCore — min/max selection (consult-min-max-and-rubric-vetting D-001/D-002/D-003)', () => {
   /** The persisted selection block of a consult_state.routing snapshot. */
   const selectionOf = (routing: unknown) =>
@@ -612,6 +691,45 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(row.wakes_used).toBe(0);
     expect(row.outcome).toMatchObject({ source: 'archive', source_conversation_id: 'arch-src-1' });
     expect(row.has_query_embedding).toBe(true);
+  });
+
+  it('does not archive-serve a rubric critique answered by an owner who already graded that rubric', async () => {
+    const ws = 'ws-arch-rubric-role-conflict';
+    const rubricRef = 'acceptance-archive-role-conflict-2026-08-25';
+    const grader = 'agent-archived-grader';
+    const question =
+      `Critique rubric ${rubricRef}: are its criteria independent, falsifiable, and complete?`;
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, workspace_id, status, payload)
+      VALUES ('EI-ARCHIVE-RUBRIC-GRADE', ${ws}, 'done', ${rootSql.json({
+        _ei: { created_by: grader },
+        observation: { rubricRef, ratings: { c1: { rating: 'healthy', evidence: 'prior grade' } } },
+      })})`;
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-rubric-conflicted-answer',
+      vec: vecAt(0),
+      responder: grader,
+      question,
+      outcome: { answer: 'the rubric is fine', confidence: 'high' },
+    });
+
+    const independent = cand('agent-archive-independent');
+    const { deps, reached, routeCalls } = makeDeps(
+      routeOf([independent], { queryVec: qv }),
+    );
+    const result = asOk(
+      await getFeedbackCore(
+        { ...baseReq, workspaceId: ws, question },
+        deps,
+      ),
+    );
+
+    expect(routeCalls[0]?.excludeOwners).toEqual([grader]);
+    expect(result.verdict).toBe('routed');
+    expect(result.archive).toBeUndefined();
+    expect(result.responder?.ownerId).toBe(independent.ownerId);
+    expect(reached).toHaveLength(1);
   });
 
   it('does not reuse a high-similarity archive answer across incompatible named rubric/plan subjects', async () => {
