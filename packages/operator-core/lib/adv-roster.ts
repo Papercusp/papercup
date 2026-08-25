@@ -1353,10 +1353,71 @@ export async function resolveTranscriptFreshnessForEntries(
 ): Promise<void> {
   if (entries.length === 0) return;
   const { resolveSessionThinkingState, SESSION_THINKING_ACTIVE_MS } = await import('./claude-sessions');
-  const { isCodexSessionThinking, isOmpThreadThinking } = await import('./session-transcript-resolvers');
+  const { resolveCodexThinkingState, resolveOmpThinkingState } = await import('./session-transcript-resolvers');
   const nowMs = opts.nowMs ?? Date.now();
   await Promise.all(
     entries.map(async (e) => {
+      /* WI-41497: branch on the BACKEND, not on "does this row have a
+         sessionId".
+
+         The old first test was `if (e.sessionId)` → the CLAUDE resolver. But a
+         codex adv row carries its rollout/thread uuid in `session_id` (verified:
+         adv 18014's session_id is the same uuid as its rollout filename), so 237
+         of 257 live codex rows took the claude leg, missed, and were stamped
+         `thinkingResolvable:false` + `transcriptFresh:false`. The codex leg
+         below was consequently DEAD for every row that had a sessionId, and
+         neither non-claude leg ever assigned `thinkingResolvable` at all.
+
+         That false verdict is not cosmetic. It puts the "No live transcript for
+         this session — it has ended, or its transcript was rotated away" banner
+         over a healthy streaming agent, adds `ended=1` to a LIVE session's
+         stream URL, keeps the thinking dot dark, and makes AgentsRunningPill
+         veto the live-thinking affordance outright.
+
+         `nativeSession.backend` is the canonical answer (advRoster emits it per
+         row); `agent` is the fallback for a payload that predates it, and a bare
+         sessionId still means claude, which is what a bee/presence-derived row
+         carries. */
+      const backend = e.nativeSession?.backend
+        ?? (e.agent === 'codex' || e.agent === 'omp' ? e.agent : null)
+        ?? (e.sessionId ? 'claude' : null);
+      const activeMs = SESSION_THINKING_ACTIVE_MS;
+
+      if (backend === 'codex') {
+        // Prefer the adv-row key: it names the per-session CODEX_HOME, which is
+        // where a psu-launched codex agent actually writes. The rollout uuid is
+        // the fallback for a row that has no adv id (a federated/inactive row),
+        // and it resolves under the shared ~/.codex home.
+        const state = e.advSessionId != null
+          ? await resolveCodexThinkingState(e.advSessionId, { nowMs, activeMs }).catch(() => null)
+          : e.nativeSession?.backend === 'codex' && e.nativeSession.rolloutId
+            ? await resolveCodexThinkingState(e.nativeSession.rolloutId, { nowMs, activeMs }).catch(() => null)
+            : null;
+        if (state) {
+          e.transcriptFresh = state.thinking;
+          e.thinking = state.thinking;
+          e.thinkingResolvable = state.resolvable;
+        }
+        return;
+      }
+
+      if (backend === 'omp') {
+        const threadId = e.ompThreadId
+          ?? (e.nativeSession?.backend === 'omp' ? e.nativeSession.ompThreadId : null);
+        if (!threadId) return;
+        const state = await resolveOmpThinkingState(threadId, {
+          nowMs,
+          activeMs,
+          sessionKey: e.advSessionId ?? undefined,
+        }).catch(() => null);
+        if (state) {
+          e.transcriptFresh = state.thinking;
+          e.thinking = state.thinking;
+          e.thinkingResolvable = state.resolvable;
+        }
+        return;
+      }
+
       if (e.sessionId) {
         // ONE resolve → both signals: `transcriptFresh` (transcript mtime recent) AND
         // `thinkingResolvable` (a transcript exists to stream at all). A parked/ended
@@ -1367,16 +1428,6 @@ export async function resolveTranscriptFreshnessForEntries(
         e.transcriptFresh = state.thinking;
         e.thinking = state.thinking;
         e.thinkingResolvable = state.resolvable;
-      } else if (e.agent === 'codex' && e.advSessionId != null) {
-        e.transcriptFresh = await isCodexSessionThinking(e.advSessionId, { nowMs, activeMs: SESSION_THINKING_ACTIVE_MS }).catch(() => false);
-        e.thinking = e.transcriptFresh;
-      } else if (e.ompThreadId) {
-        e.transcriptFresh = await isOmpThreadThinking(e.ompThreadId, {
-          nowMs,
-          activeMs: SESSION_THINKING_ACTIVE_MS,
-          sessionKey: e.advSessionId ?? undefined,
-        }).catch(() => false);
-        e.thinking = e.transcriptFresh;
       }
     }),
   );
