@@ -2000,6 +2000,117 @@ export function stripAnsi(s) {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }
 
+/**
+ * Claude can still show its first-run wizard to a headless launch even when
+ * the persisted config says onboarding is complete. A human can press Enter
+ * through that wizard; a headless managed pty cannot. Keep the recovery
+ * deliberately narrow: only the explicit headless Claude launch mode gets
+ * these two startup answers, and only while the child is in its bounded boot
+ * window.
+ */
+export const HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS = 30_000;
+const HEADLESS_CLAUDE_ONBOARDING_BUFFER_CHARS = 32_768;
+const HEADLESS_CLAUDE_THEME_PROMPT_RE =
+  /(?:\b(?:choose|select|pick)\b[\s\S]{0,160}\btheme\b|\btheme\b[\s\S]{0,160}\b(?:dark|light|system)\b)/i;
+const HEADLESS_CLAUDE_SECURITY_PROMPT_RE =
+  /(?:\bsecurity\s+notes?\b[\s\S]{0,800}\bpress\s+enter\b|\bpress\s+enter\b[\s\S]{0,800}\bsecurity\s+notes?\b)/i;
+
+/** The onboarding actuator is never enabled for an interactive or non-Claude
+ * launch. Pure and exported so the environment gate cannot silently broaden. */
+export function headlessClaudeOnboardingEnabled(env = process.env) {
+  return (
+    String(env?.PAPERCUSP_PSU_HEADLESS ?? '').trim() === '1' &&
+    String(env?.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'claude'
+  );
+}
+
+/** Read the bounded startup window from the launch environment. */
+export function headlessClaudeOnboardingStartupMs(env = process.env) {
+  return positiveNumber(
+    env?.PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS,
+    HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS,
+  );
+}
+
+/**
+ * Decide whether one startup output chunk warrants the next onboarding Enter.
+ *
+ * The pty may split a prompt anywhere (including inside an ANSI sequence), so
+ * raw chunks accumulate before ANSI stripping and matching. The theme match
+ * advances to the security phase and clears that buffer: output that happened
+ * to contain both screens cannot cause the second Enter before the first one
+ * has been consumed by Claude. The returned `submit` action is intentionally
+ * just a decision; the host owns the child.write('\r') side effect.
+ *
+ * @param {{enabled?: boolean, startupMs?: number, now?: () => number}} [options]
+ */
+export function makeHeadlessClaudeOnboardingStateMachine({
+  enabled = true,
+  startupMs = HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS,
+  now = () => Date.now(),
+} = {}) {
+  const clock = typeof now === 'function' ? now : () => Date.now();
+  const windowMs = positiveNumber(startupMs, HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS);
+  const startedAt = clock();
+  let phase = enabled ? 'theme' : 'disabled';
+  let observed = '';
+
+  const snapshot = (action = 'none', prompt = null) => ({
+    action,
+    prompt,
+    phase,
+    active: phase === 'theme' || phase === 'security',
+    complete: phase === 'complete',
+    expired: phase === 'expired',
+  });
+
+  const expire = (at = clock()) => {
+    if (phase !== 'theme' && phase !== 'security') return snapshot();
+    phase = 'expired';
+    observed = '';
+    return { ...snapshot('expired'), expiredAt: at };
+  };
+
+  const observe = (chunk, at = clock()) => {
+    if (phase === 'disabled' || phase === 'complete' || phase === 'expired') return snapshot();
+    if (at - startedAt >= windowMs) return expire(at);
+
+    observed = `${observed}${String(chunk ?? '')}`;
+    if (observed.length > HEADLESS_CLAUDE_ONBOARDING_BUFFER_CHARS) {
+      observed = observed.slice(-HEADLESS_CLAUDE_ONBOARDING_BUFFER_CHARS);
+    }
+    const visible = stripAnsi(observed);
+
+    if (phase === 'theme' && HEADLESS_CLAUDE_THEME_PROMPT_RE.test(visible)) {
+      phase = 'security';
+      observed = '';
+      return snapshot('submit', 'theme');
+    }
+    if (phase === 'security' && HEADLESS_CLAUDE_SECURITY_PROMPT_RE.test(visible)) {
+      phase = 'complete';
+      observed = '';
+      return snapshot('submit', 'security');
+    }
+    return snapshot();
+  };
+
+  return {
+    observe,
+    expire,
+    isActive: () => phase === 'theme' || phase === 'security',
+    isComplete: () => phase === 'complete',
+    status: () => ({
+      phase,
+      active: phase === 'theme' || phase === 'security',
+      complete: phase === 'complete',
+      expired: phase === 'expired',
+      startedAt,
+      expiresAt: startedAt + windowMs,
+      bufferedChars: observed.length,
+    }),
+  };
+}
+
 /** WI-41386 — the SCROLLBACK GUARD on the child → terminal bridge.
  *
  *  `ESC[3J` (ED param 3, "erase saved lines") deletes the TERMINAL'S SCROLLBACK
@@ -3280,6 +3391,7 @@ export function hostThroughPty(o) {
   let childStartupOutput = '';
   let childStartupReady = false;
   let childStartupFirstOutputAt = 0;
+  let headlessClaudeOnboardingExpiryTimer = null;
   const baseMeta = {
     ownerId,
     advSessionId: advSessionId != null ? String(advSessionId) : null,
@@ -4752,23 +4864,73 @@ export function hostThroughPty(o) {
     // WI-41386: one guard per child — it carries partial-escape state, so a
     // respawn must not inherit the dead child's tail.
     const scrollbackGuard = makeScrollbackGuard();
+    if (headlessClaudeOnboardingExpiryTimer) {
+      clearTimeout(headlessClaudeOnboardingExpiryTimer);
+      headlessClaudeOnboardingExpiryTimer = null;
+    }
+    const headlessClaudeOnboarding = makeHeadlessClaudeOnboardingStateMachine({
+      enabled: headlessClaudeOnboardingEnabled(env),
+      startupMs: headlessClaudeOnboardingStartupMs(env),
+    });
+    if (headlessClaudeOnboarding.isActive()) {
+      headlessClaudeOnboardingExpiryTimer = setTimeout(() => {
+        const result = headlessClaudeOnboarding.expire();
+        headlessClaudeOnboardingExpiryTimer = null;
+        if (result.action === 'expired') {
+          appendHostEvent(ownerId, 'headless-claude-onboarding-expired', {
+            phase: result.phase,
+            startupMs: headlessClaudeOnboardingStartupMs(env),
+          });
+        }
+      }, headlessClaudeOnboardingStartupMs(env));
+      if (typeof headlessClaudeOnboardingExpiryTimer.unref === 'function') {
+        headlessClaudeOnboardingExpiryTimer.unref();
+      }
+    }
     child.onData((d) => {
+      const raw = typeof d === 'string' ? d : String(d);
+      if (!childStartupFirstOutputAt) childStartupFirstOutputAt = Date.now();
+      childStartupOutput += raw;
+      if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
+      const onboarding = headlessClaudeOnboarding.observe(raw);
+      if (onboarding.action === 'submit') {
+        try {
+          // One raw CR per detected prompt. Do not use controlWritesForAgent:
+          // there is no text paste to settle and a delayed write can leave the
+          // wizard parked again.
+          child.write('\r');
+          appendHostEvent(ownerId, 'headless-claude-onboarding-advanced', {
+            prompt: onboarding.prompt,
+            phase: onboarding.phase,
+          });
+        } catch {
+          /* the child-exit path owns teardown if it disappeared mid-answer */
+        }
+      } else if (onboarding.action === 'expired') {
+        appendHostEvent(ownerId, 'headless-claude-onboarding-expired', {
+          phase: onboarding.phase,
+          startupMs: headlessClaudeOnboardingStartupMs(env),
+        });
+      }
       if (!childStartupReady) {
-        if (!childStartupFirstOutputAt) childStartupFirstOutputAt = Date.now();
-        childStartupOutput += typeof d === 'string' ? d : String(d);
-        if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
+        // A normal headless Claude boot remains byte-ready. Only a positively
+        // identified theme screen turns readiness off until its Security screen
+        // receives the second CR; otherwise every healthy launch would wait for
+        // the full expiry window even when no wizard is present.
         childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
+      }
+      if (onboarding.action === 'submit' && onboarding.prompt === 'theme') {
+        childStartupReady = false;
       }
       activity.touchOutput();
       // Everything else — readiness above, the output taps below — keeps seeing
       // the RAW stream; only what reaches the owner's terminal is guarded.
-      stdout.write(scrollbackGuard.filter(typeof d === 'string' ? d : String(d)));
+      stdout.write(scrollbackGuard.filter(raw));
       // P-003: feed any live output taps (mcp-reconnect macro screen reads).
       if (outputTaps.size > 0) {
-        const s = typeof d === 'string' ? d : String(d);
         for (const t of outputTaps) {
           try {
-            t(s);
+            t(raw);
           } catch {
             /* a tap must never break the stdout bridge */
           }
@@ -4922,6 +5084,12 @@ export function hostThroughPty(o) {
       }
       try {
         clearInterval(activityTimer);
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (headlessClaudeOnboardingExpiryTimer) clearTimeout(headlessClaudeOnboardingExpiryTimer);
+        headlessClaudeOnboardingExpiryTimer = null;
       } catch {
         /* ignore */
       }

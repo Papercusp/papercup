@@ -18,6 +18,9 @@ import {
   coldResetModeForAgent,
   respawnTerminalHandoffBytes,
   makeScrollbackGuard,
+  headlessClaudeOnboardingEnabled,
+  headlessClaudeOnboardingStartupMs,
+  makeHeadlessClaudeOnboardingStateMachine,
   clearSettleMs,
   resetWritesForAgent,
   submitVerifyQuietMs,
@@ -836,6 +839,62 @@ describe('makeScrollbackGuard (WI-41386 child → terminal scrollback guard)', (
     dying.filter('orphan\x1b[3'); // killed mid-sequence, tail held
     const fresh = makeScrollbackGuard();
     expect(fresh.filter('J done')).toBe('J done');
+  });
+});
+
+describe('makeHeadlessClaudeOnboardingStateMachine (EI-21382897362160495)', () => {
+  it('enables only for the explicit headless Claude launch', () => {
+    expect(headlessClaudeOnboardingEnabled({ PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_AGENT: 'claude' })).toBe(true);
+    expect(headlessClaudeOnboardingEnabled({ PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_AGENT: 'CLAUDE' })).toBe(true);
+    expect(headlessClaudeOnboardingEnabled({ PAPERCUSP_PSU_HEADLESS: '1', PAPERCUSP_AGENT: 'codex' })).toBe(false);
+    expect(headlessClaudeOnboardingEnabled({ PAPERCUSP_PSU_HEADLESS: '0', PAPERCUSP_AGENT: 'claude' })).toBe(false);
+    expect(headlessClaudeOnboardingEnabled({ PAPERCUSP_AGENT: 'claude' })).toBe(false);
+  });
+
+  it('advances theme then Security notes once even when prompts cross output chunks', () => {
+    let clock = 1_000;
+    const machine = makeHeadlessClaudeOnboardingStateMachine({
+      now: () => clock,
+      startupMs: 5_000,
+    });
+
+    expect(machine.observe('Welcome to Claude Code\nChoose your preferred t')).toMatchObject({
+      action: 'none',
+      phase: 'theme',
+    });
+    expect(machine.observe('heme\n\u001b[32mDark mode\u001b[0m')).toMatchObject({
+      action: 'submit',
+      prompt: 'theme',
+      phase: 'security',
+    });
+
+    // The security screen must be observed after the first CR; matching output
+    // that was already in the theme chunk would send both CRs at once.
+    expect(machine.observe('Security n')).toMatchObject({ action: 'none', phase: 'security' });
+    expect(machine.observe('otes\nPress Enter to continue')).toMatchObject({
+      action: 'submit',
+      prompt: 'security',
+      phase: 'complete',
+    });
+    expect(machine.observe('Security notes\nPress Enter')).toMatchObject({ action: 'none', phase: 'complete' });
+    expect(machine.status()).toMatchObject({ phase: 'complete', active: false, complete: true });
+    clock += 1_000;
+  });
+
+  it('expires the startup actuator and stops answering after the bounded window', () => {
+    let clock = 10_000;
+    const machine = makeHeadlessClaudeOnboardingStateMachine({ now: () => clock, startupMs: 100 });
+    expect(machine.status()).toMatchObject({ phase: 'theme', expiresAt: 10_100 });
+    clock = 10_100;
+    expect(machine.observe('Choose a theme: Dark mode')).toMatchObject({ action: 'expired', phase: 'expired' });
+    expect(machine.observe('Security notes\nPress Enter')).toMatchObject({ action: 'none', phase: 'expired' });
+    expect(machine.status()).toMatchObject({ active: false, expired: true });
+  });
+
+  it('uses a positive environment override and ignores invalid startup windows', () => {
+    expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '4500' })).toBe(4_500);
+    expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '0' })).toBe(30_000);
+    expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: 'nope' })).toBe(30_000);
   });
 });
 
