@@ -45,6 +45,29 @@ vi.mock('./log', () => ({
   },
 }));
 
+/** Oracle verdicts by ownerId. An ABSENT key models a counterpart with no presence row
+ *  at all — the live `su-e40dceb1` case, and the one P-011 names explicitly. */
+let livenessVerdicts = new Map<string, { ownerId: string; sessionState: string | null }>();
+/** Set when the oracle itself should throw, to prove the degradation is `unknown`. */
+let oracleThrows = false;
+/** Subjects handed to the oracle on the last call — proves ONE batched call, not N. */
+let oracleCalls: { ownerId: string }[][] = [];
+
+vi.mock('./liveness-oracle', () => ({
+  resolveSessionStates: (subjects: readonly { ownerId: string }[]) => {
+    oracleCalls.push([...subjects]);
+    if (oracleThrows) throw new Error('oracle down');
+    const out = new Map<string, { ownerId: string; sessionState: string | null }>();
+    // Deliberately omits unknown subjects rather than returning a placeholder — the real
+    // oracle can return a map missing a subject, and that must land on 'unknown'.
+    for (const s of subjects) {
+      const v = livenessVerdicts.get(s.ownerId);
+      if (v) out.set(s.ownerId, v);
+    }
+    return Promise.resolve(out);
+  },
+}));
+
 const { fetchConsultObligations, CONSULT_DISCHARGING_POST_KINDS, COUPLING_OBLIGATION_ROW_CAP } =
   await import('./coupling-sources');
 
@@ -68,6 +91,14 @@ beforeEach(() => {
   sqlThrows = false;
   lastSqlText = '';
   lastSqlValues = [];
+  oracleThrows = false;
+  oracleCalls = [];
+  // Both parties measurable and alive by default, so a test that cares about liveness
+  // has to say so — and a test that does not is never silently exercising 'unknown'.
+  livenessVerdicts = new Map([
+    [REQUESTER, { ownerId: REQUESTER, sessionState: 'live' as string | null }],
+    [RESPONDER, { ownerId: RESPONDER, sessionState: 'live' as string | null }],
+  ]);
 });
 
 describe('P-004 — direction is read off which side of the stored pair the caller is on', () => {
@@ -80,6 +111,7 @@ describe('P-004 — direction is read off which side of the stored pair the call
         what: 'a consult reply',
         since: CREATED,
         handle: HANDLE,
+        counterpartLiveness: 'live',
       },
     ]);
   });
