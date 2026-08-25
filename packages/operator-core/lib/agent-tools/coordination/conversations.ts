@@ -141,6 +141,7 @@ import {
   type ConversationDeps,
   type ConversationDetail,
   type ConversationWithTopics,
+  type JoinConversationResult,
   type ListConversationsWithTopicsOpts,
   type OpenConversationInput,
   type OpenConversationResult,
@@ -423,7 +424,7 @@ export async function supersedeConversation(
 export function joinConversation(
   identity: AgentIdentity,
   input: { conversation_id: string; mode?: DeliveryMode; ttl_sec?: number },
-): Promise<{ ok: true; mode: DeliveryMode } | { error: 'not_found' }> {
+): Promise<JoinConversationResult> {
   return withConversationsIdentityScope(identity, undefined, () => joinConversationCore(deps, identity, input));
 }
 

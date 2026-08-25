@@ -37,7 +37,7 @@ export default defineTool({
     when:
       'A specific conversation is one you want to track or contribute to. Posting/answering auto-joins you; call this to follow without posting, or to change your delivery mode. Follow several at once via ids:[…] or items:[…].',
     notWhen:
-      'To follow an AREA (not one thread), use watch:create { targetKind:"topic", wake:false }. For a one-time read, just conversations:get.',
+      'To follow an AREA (not one thread), use watch:create { targetKind:"topic", wake:false }. For a one-time read, just conversations:get. Consult participation is router-assigned by consult:get_feedback; use consult:reply / consult:decline / consult:close only after being routed.',
     chaining:
       'conversations:list / conversations:get → conversations:join.',
     seeAlso: [
@@ -89,7 +89,16 @@ export default defineTool({
           return { ok: true as const, id: it.id, left: it.id };
         }
         const res = await joinConversation(identity, { conversation_id: it.id, mode: it.mode, ttl_sec: it.ttl_sec });
-        if ('error' in res) return { ok: false as const, id: it.id, error: res.error };
+        if ('error' in res) {
+          return {
+            ok: false as const,
+            id: it.id,
+            error: res.error,
+            ...(res.error === 'consult_participation_router_assigned'
+              ? { hint: 'Consult participation is router-assigned by consult:get_feedback; joining the conversation does not enroll you. Use consult:reply / consult:decline / consult:close only after being routed.' }
+              : {}),
+          };
+        }
         return { ok: true as const, id: it.id, mode: res.mode };
       },
       { keyOf: (it) => ({ id: it.id }) },

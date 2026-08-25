@@ -618,6 +618,15 @@ describe('settleConsultConversationCore', () => {
 });
 
 describe('join / leave', () => {
+  it('refuses generic joins for consults because participation is router-assigned', async () => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind: 'consult', body: 'q' });
+
+    const joined = await joinConversationCore(deps, ident('joiner'), { conversation_id: opened.conversation.id });
+
+    expect(joined).toEqual({ error: 'consult_participation_router_assigned' });
+    expect(await subs.listSubscriptions('joiner')).toHaveLength(0);
+  });
+
   it('join honors the requested mode and converts ttl_sec into expires_ts off the injected clock', async () => {
     const opened = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q', topics: ['area'] });
 

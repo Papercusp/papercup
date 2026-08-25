@@ -616,9 +616,14 @@ export async function joinConversationCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: { conversation_id: string; mode?: DeliveryMode; ttl_sec?: number },
-): Promise<{ ok: true; mode: DeliveryMode } | { error: 'not_found' }> {
+): Promise<JoinConversationResult> {
   const conv = await deps.conversations.get(input.conversation_id);
   if (!conv) return { error: 'not_found' };
+  // Consult participation is selected by consult:get_feedback's router. A
+  // generic subscription does not enroll a responder, so reporting a normal
+  // full-mode join would send callers toward consult:reply only to receive
+  // not_a_participant. Refuse the misleading path before writing a sub.
+  if (conv.kind === 'consult') return { error: 'consult_participation_router_assigned' };
   const now = deps.nowIso();
   const expires_ts = input.ttl_sec != null ? new Date(Date.parse(now) + input.ttl_sec * 1000).toISOString() : null;
   const sub = await deps.subs.subscribe({
@@ -631,6 +636,11 @@ export async function joinConversationCore(
   });
   return { ok: true, mode: sub.delivery_mode };
 }
+
+export type JoinConversationResult =
+  | { ok: true; mode: DeliveryMode }
+  | { error: 'not_found' }
+  | { error: 'consult_participation_router_assigned' };
 
 export async function leaveConversationCore(deps: ConversationDeps, identity: AgentIdentity, conversationId: string): Promise<void> {
   await deps.subs.unsubscribe(identity.ownerId, 'object', objectToTargetRef(convRef(conversationId)));

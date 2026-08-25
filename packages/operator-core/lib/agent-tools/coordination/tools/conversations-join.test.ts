@@ -39,6 +39,17 @@ describe('conversations:join handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_found' });
   });
 
+  it('explains that consult participation is router-assigned', async () => {
+    joinM.mockResolvedValue({ error: 'consult_participation_router_assigned' } as never);
+    const b = await body({ id: 'consult-1' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'consult-1',
+      error: 'consult_participation_router_assigned',
+      hint: expect.stringContaining('consult:get_feedback'),
+    });
+  });
+
   it('on success echoes the resolved delivery mode, keyed by id', async () => {
     joinM.mockResolvedValue({ mode: 'digest' } as never);
     const b = await body({ id: 'c1', mode: 'digest' });
