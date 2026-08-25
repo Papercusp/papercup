@@ -9,6 +9,9 @@ import {
   verifyWorkspaceHostBuildManifest,
   verifyWorkspaceHostReleaseProvenance,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+  WORKSPACE_HOST_ARTIFACT_ORIGIN,
+  WORKSPACE_HOST_ARTIFACT_PATH_PREFIX,
+  deriveWorkspaceHostCanonicalArtifactUrls,
   type WorkspaceHostBuildManifestInput,
   type WorkspaceHostReleasePins,
 } from "./index";
@@ -285,7 +288,7 @@ describe("workspace-host release provenance", () => {
     expect(verdict.errors.join("\n")).toContain("reserved non-resolvable name");
   });
 
-  it("refuses a bundle URL that does not embed the release version", () => {
+  it("refuses a bundle URL that is neither content-addressed nor version-embedded", () => {
     const bundleUrl =
       "https://releases.papercusp.example-host.net/server/server.tgz";
     const verdict = verifyWorkspaceHostReleaseProvenance(
@@ -293,7 +296,46 @@ describe("workspace-host release provenance", () => {
       pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
     );
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors.join("\n")).toContain("must embed the release version");
+    expect(verdict.errors.join("\n")).toContain("embed the release version");
+  });
+
+  // The canonical published path is content-addressed and carries NO version string. An earlier
+  // revision of this guard required the version to appear in the URL, which would have rejected
+  // the very URL the publication contract mandates — the tests passed only because the fixture
+  // above happens to use a version-style path. This case pins the canonical form directly.
+  it("accepts the canonical content-addressed URL, which carries no version", () => {
+    const bundleUrl = `https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/sha256/${SHA_A}/server.tgz`;
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
+    );
+    expect(verdict).toEqual({ ok: true, errors: [] });
+  });
+
+  it("refuses a content-addressed URL that addresses a different artifact", () => {
+    // Accepting the digest FORM without checking the digest VALUE would let a well-shaped URL
+    // point at someone else's bundle while the pin still claimed to be immutable.
+    const bundleUrl = `https://papercusp-cupboard.aviynw.workers.dev/artifacts/workspace-host/sha256/${SHA_D}/server.tgz`;
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain(
+      "is content-addressed at",
+    );
+  });
+
+  it("does not accept a digest that merely appears in the query string", () => {
+    // A 64-hex run anywhere in the URL is not an address. Only the /sha256/<digest>/ path form
+    // actually determines which bytes the origin serves.
+    const bundleUrl = `https://releases.papercusp.example-host.net/server/server.tgz?digest=${SHA_A}`;
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain("embed the release version");
   });
 
   it("refuses a bundle whose materials omit the remote initializer", () => {
@@ -330,6 +372,22 @@ describe("workspace-host release provenance", () => {
     expect(verdict.errors.join("\n")).toContain("must be marked executable");
   });
 
+  // The point of deriving URLs from the digest is that the pin they produce must SATISFY the
+  // provenance guard without any hand-authoring step in between. Asserting the string shape alone
+  // would leave the two halves free to drift apart; this binds them.
+  it("derives canonical URLs that satisfy the provenance guard end to end", () => {
+    const derived = deriveWorkspaceHostCanonicalArtifactUrls(SHA_A);
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({
+        bundleUrl: derived.bundleUrl,
+        signatureUrl: derived.signatureUrl,
+        bundleSha256: SHA_A,
+      }),
+    );
+    expect(verdict).toEqual({ ok: true, errors: [] });
+  });
+
   it("reports every provenance failure at once rather than only the first", () => {
     const bundleUrl = "https://releases.papercusp.invalid/server/latest.tgz";
     const verdict = verifyWorkspaceHostReleaseProvenance(
@@ -342,5 +400,46 @@ describe("workspace-host release provenance", () => {
     );
     expect(verdict.ok).toBe(false);
     expect(verdict.errors.length).toBeGreaterThan(3);
+  });
+});
+
+describe("canonical workspace-host artifact URLs", () => {
+  const SHA = "a".repeat(64);
+
+  it("derives the bundle, signature, and manifest paths from the digest", () => {
+    expect(deriveWorkspaceHostCanonicalArtifactUrls(SHA)).toEqual({
+      bundleUrl: `${WORKSPACE_HOST_ARTIFACT_ORIGIN}${WORKSPACE_HOST_ARTIFACT_PATH_PREFIX}/sha256/${SHA}/server.tgz`,
+      signatureUrl: `${WORKSPACE_HOST_ARTIFACT_ORIGIN}${WORKSPACE_HOST_ARTIFACT_PATH_PREFIX}/sha256/${SHA}/server.tgz.minisig`,
+      manifestUrl: `${WORKSPACE_HOST_ARTIFACT_ORIGIN}${WORKSPACE_HOST_ARTIFACT_PATH_PREFIX}/sha256/${SHA}/manifest.json`,
+    });
+  });
+
+  it("normalizes an uppercase digest rather than producing a second address for the same bytes", () => {
+    expect(deriveWorkspaceHostCanonicalArtifactUrls(SHA.toUpperCase())).toEqual(
+      deriveWorkspaceHostCanonicalArtifactUrls(SHA),
+    );
+  });
+
+  // The whole reason to derive rather than author: when the digest is missing or malformed there
+  // must be NO plausible-looking URL to fall back to. A `latest`/fixture default is exactly the
+  // failure this helper exists to make unreachable.
+  it.each([
+    ["empty", ""],
+    ["not a digest", "latest"],
+    ["truncated", "a".repeat(63)],
+    ["non-hex", `${"a".repeat(63)}z`],
+  ])("throws rather than defaulting when the digest is %s", (_name, digest) => {
+    expect(() => deriveWorkspaceHostCanonicalArtifactUrls(digest)).toThrow();
+  });
+
+  it.each([
+    ["plain HTTP", "http://papercusp-cupboard.aviynw.workers.dev"],
+    ["a reserved name", "https://cupboard.invalid"],
+    ["localhost", "https://localhost:8787"],
+    ["not a URL", "papercusp-cupboard"],
+  ])("refuses a %s origin", (_name, origin) => {
+    expect(() =>
+      deriveWorkspaceHostCanonicalArtifactUrls(SHA, { origin }),
+    ).toThrow();
   });
 });

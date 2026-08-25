@@ -220,10 +220,14 @@ export {
   verifyWorkspaceHostBuildManifest,
   verifyWorkspaceHostReleaseProvenance,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+  WORKSPACE_HOST_ARTIFACT_ORIGIN,
+  WORKSPACE_HOST_ARTIFACT_PATH_PREFIX,
+  deriveWorkspaceHostCanonicalArtifactUrls,
 } from "./workspace-host-build-manifest";
 export type {
   WorkspaceHostReleasePins,
   WorkspaceHostReleaseProvenanceResult,
+  WorkspaceHostCanonicalArtifactUrls,
 } from "./workspace-host-build-manifest";
 export type {
   WorkspaceHostImageAction,
