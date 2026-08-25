@@ -256,8 +256,10 @@ function safeLiveHostOwners(): Set<string> {
  * The set of coord owner ids that are ALIVE / must never be reaped — the same
  * alias-aware liveness as work-items-stale-claims (presence + running nursery
  * aliases) UNION in-flight wake deliveries (the owner is mid-resume) UNION any
- * work-item claim holder (never reap a session mid-claim) UNION any owner with a
- * LIVE psu-host (`liveHostOwners`; it can inject/relaunch the wake). One read.
+ * owner with an armed engine loop (durable same-owner continuation authority)
+ * UNION any work-item claim holder (never reap a session mid-claim) UNION any
+ * owner with a LIVE psu-host (`liveHostOwners`; it can inject/relaunch the wake).
+ * One read.
  *
  * WI-2858: the old bare `event_awaits` leg (protect ANY owner with an
  * unfired/uncancelled await) is REMOVED — every parked session holds an
@@ -315,6 +317,17 @@ export async function gatherProtectedSessionOwners(
       SELECT subscriber_id AS alias
         FROM harness_shared.event_wake_deliveries
        WHERE status IN ('pending', 'parked', 'delivering')
+      UNION
+      -- EI-21431501901242395: a loop deliberately survives the current native
+      -- session incarnation and re-invokes the SAME owner. Protect that owner
+      -- between warm wakes even when its heartbeat/host row is temporarily
+      -- absent; once the loop is inactive this leg disappears and ordinary
+      -- terminal cleanup remains unchanged.
+      SELECT DISTINCT target_owner_id AS alias
+        FROM harness_shared.routines
+       WHERE active = true
+         AND reschedule_interval_sec IS NOT NULL
+         AND target_owner_id IS NOT NULL AND target_owner_id <> ''
       UNION
       SELECT taken_by AS alias
         FROM harness_shared.harness_features_consolidated
