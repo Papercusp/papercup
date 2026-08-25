@@ -1,0 +1,6 @@
+{
+  "name": "coord:declare-intent",
+  "args": {
+    "intent": "EI-21388574737613226 — fix await-suppression loop re-arm bypassing routine_loop_transitions ledger"
+  }
+}

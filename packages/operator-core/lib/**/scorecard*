@@ -1,0 +1,1 @@
+{"sql": "SELECT issue_id, title, summary FROM harness_shared.engineer_issues WHERE issue_id = 'EI-21388300699021649'", "positiveControlSql": "SELECT 1 WHERE false"}
