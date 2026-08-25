@@ -258,6 +258,7 @@ export default defineTool({
                 }
               : {}),
             generation: a.causalGeneration ?? null,
+            logical_gate: a.logicalGateKey ?? null,
             state: announcementState(a),
             declared_at: a.createdAt,
             declared_by: a.subscriberId,

@@ -159,6 +159,7 @@ export default defineTool({
     let announced:
       | Array<{
           event: string;
+          logical_gate: string | null;
           note: string | null;
           scope: string;
           announced_by: string;
@@ -189,7 +190,7 @@ export default defineTool({
             .filter((a) => announcementVisibleTo(a, reader))
             .filter((a) => {
               if (!query) return true;
-              return [a.eventKey, a.note, a.scopeKind, a.scopeRef, a.subscriberId].some(
+              return [a.eventKey, a.logicalGateKey, a.note, a.scopeKind, a.scopeRef, a.subscriberId].some(
                 (value) => typeof value === 'string' && value.toLowerCase().includes(query),
               );
             })
@@ -200,6 +201,7 @@ export default defineTool({
           } catch { /* omit live_awaiters */ }
           announced = visible.map((a) => ({
             event: a.eventKey,
+            logical_gate: a.logicalGateKey ?? null,
             note: a.note,
             scope: a.scopeKind ? `${a.scopeKind}${a.scopeRef ? ':' + a.scopeRef : ''}` : 'global',
             announced_by: a.subscriberId,

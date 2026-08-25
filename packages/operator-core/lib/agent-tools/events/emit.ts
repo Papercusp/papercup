@@ -61,6 +61,12 @@ export default defineTool({
       .describe(
         "EI-9270: DECLARE the gate instead of firing it — writes a discoverable, LATCHED announcement (\"this key WILL fire; await it\") that members find via events:catalog / coord:orient with zero messages. The event key is auto-prefixed from announceScope (fleet:<slug>:<gate>) so fleets' gates can't collide. Fire it later with a normal events:emit of the RETURNED key — that stamps the latch, so even an agent that registers AFTER the fire is told immediately. No wake, no notify, `to` not allowed.",
       ),
+    logical_gate: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('announce only: stable identity for one logical gate; active declarations with another event key are rejected.'),
     announceScope: z
       .enum(['fleet', 'plan', 'harness', 'global'])
       .optional()
@@ -92,8 +98,8 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
 
-    if (!args.announce && (args.expected_sha || args.expected_predicate)) {
-      throw new Error('events:emit — expected_sha/expected_predicate describe a DECLARATION; pass announce:true or omit them.');
+    if (!args.announce && (args.expected_sha || args.expected_predicate || args.logical_gate)) {
+      throw new Error('events:emit — expected_sha/expected_predicate/logical_gate describe a DECLARATION; pass announce:true or omit them.');
     }
 
     // ── EI-9270: announce = DECLARE, don't fire ─────────────────────────────
@@ -144,6 +150,7 @@ export default defineTool({
           : args.expected_predicate
             ? { kind: 'predicate', predicate: args.expected_predicate }
             : null,
+        logicalGateKey: args.logical_gate?.trim() || null,
         expiresSec: args.expiresSec ?? null,
         boundTo,
       });
@@ -163,6 +170,7 @@ export default defineTool({
               generation: row.causalGeneration,
               scope: { kind, ref: kind === 'global' ? null : ref },
               ...(row.expectedCondition != null ? { expected: row.expectedCondition } : {}),
+              ...(row.logicalGateKey != null ? { logical_gate: row.logicalGateKey } : {}),
               expires_ts: row.expiresTs,
               ...(liveAwaiters !== undefined ? { live_awaiters: liveAwaiters } : {}),
               advice: `Gate DECLARED as generation ${row.causalGeneration ?? '?'} (not fired). Members discover it via events:catalog / coord:orient and events:await "${key}". Fire it later with events:emit { event: "${key}" } — the fire also LATCHES this generation, so agents registering after the fire are told immediately. Inspect or resync with events:status { event: "${key}"${row.causalGeneration != null ? `, after_generation: ${row.causalGeneration}` : ''} }.`,
