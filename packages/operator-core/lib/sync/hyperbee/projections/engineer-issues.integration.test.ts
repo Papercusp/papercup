@@ -602,3 +602,169 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     expect(second?.title).toBe('stable content');
   });
 });
+
+/**
+ * EI-21467654382027859 — the nine columns the federated-column-completeness guard
+ * caught landing NULL on every peer.
+ *
+ * The carrying itself is guarded statically (that drift guard for column→mapper, and
+ * issue-wire-capture-mapper-parity for mapper→capture SQL). What NEITHER can see is
+ * the ON CONFLICT semantics, which are a SEPARATE per-column decision and are where
+ * this class of change actually goes wrong: `admission` and `state_changed_at` both
+ * need a floor rather than a bare EXCLUDED, for different reasons, and a bare
+ * EXCLUDED would look correct in review and pass every other test in this file.
+ */
+describe('engineer-issues projection — EI-21467654382027859 federated columns (real PG)', () => {
+  const admissionOf = async (id: string) =>
+    (
+      await db.sql<{ admission: string | null; admitted_by: string | null; state_changed_at: Date | null }[]>`
+        SELECT admission, admitted_by, state_changed_at FROM harness_shared.work_items
+         WHERE workspace_id = ${WS} AND feature_id = ${id} AND item_kind IN ('bug', 'change', 'task')`
+    )[0] ?? null;
+
+  it('carries all nine columns onto a peer (they used to arrive NULL)', async () => {
+    await proj().writeToPg(
+      issueRow({
+        issue_id: 'EI-fed9',
+        admission: 'pending',
+        admitted_at: null,
+        admitted_by: null,
+        state_changed_at: new Date(50_000).toISOString(),
+        tags: ['triage', 'p2p'],
+        parent_id: 'EI-parent',
+        source_plan_slug: 'some-plan-2026-08-25',
+        source_plan_item_ids: ['P-001', 'P-002'],
+        expected_cost_cents: 4200,
+      }),
+      { ts: 100, fedHlc: '100:00001:a', origin: 'remote', authorPubkey: 'peer' },
+    );
+    const [r] = await db.sql<
+      {
+        admission: string | null;
+        state_changed_at: Date | null;
+        tags: unknown;
+        parent_id: string | null;
+        source_plan_slug: string | null;
+        source_plan_item_ids: string[] | null;
+        expected_cost_cents: string | null;
+      }[]
+    >`SELECT admission, state_changed_at, tags, parent_id, source_plan_slug,
+             source_plan_item_ids, expected_cost_cents
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'EI-fed9' AND item_kind IN ('bug', 'change', 'task')`;
+    expect(r.admission).toBe('pending');
+    expect(r.state_changed_at?.getTime()).toBe(50_000);
+    expect(r.tags).toEqual(['triage', 'p2p']);
+    expect(r.parent_id).toBe('EI-parent');
+    expect(r.source_plan_slug).toBe('some-plan-2026-08-25');
+    expect(r.source_plan_item_ids).toEqual(['P-001', 'P-002']);
+    expect(Number(r.expected_cost_cents)).toBe(4200);
+  });
+
+  // THE CORRECTNESS HOLE THIS ITEM CLOSES. The issue claim gate is
+  // `admittedWhereSql` = `(admission IS DISTINCT FROM 'pending')`, and there is no
+  // origin/quarantine leg on issue claims. So a born-pending row that arrives with
+  // admission NULL reads as ADMITTED and becomes claimable on the peer — the gate is
+  // not kept local by dropping the column, it is BYPASSED.
+  it('a born-pending issue stays pending on the peer — it does not arrive claimable', async () => {
+    await proj().writeToPg(issueRow({ issue_id: 'EI-pend', admission: 'pending' }), {
+      ts: 100,
+      fedHlc: '100:00001:a',
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    expect((await admissionOf('EI-pend'))?.admission).toBe('pending');
+    // The gate itself, not a proxy for it: this is the exact predicate every issue
+    // claim path composes, so a regression here is a claimable born-pending item.
+    const [{ visible }] = await db.sql<{ visible: number }[]>`
+      SELECT count(*)::int AS visible FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'EI-pend'
+         AND (admission IS DISTINCT FROM 'pending')`;
+    expect(visible).toBe(0);
+  });
+
+  // An op from a peer running pre-965 code carries NO admission key. Taking EXCLUDED
+  // blindly would write NULL over a local 'pending' — re-opening the same bypass from
+  // the other direction, and only for mixed-version fleets, which is exactly the case
+  // that would reach production unnoticed.
+  it('an op lacking admission does NOT un-hide a locally born-pending row', async () => {
+    await proj().writeToPg(issueRow({ issue_id: 'EI-mix', admission: 'pending' }), {
+      ts: 100,
+      fedHlc: '100:00001:a',
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    // Strictly newer op, so it wins the LWW guard and the ON CONFLICT SET really runs.
+    const legacy = issueRow({ issue_id: 'EI-mix', title: 'edited by an older peer' });
+    delete (legacy as Record<string, unknown>).admission;
+    await proj().writeToPg(legacy, { ts: 900, fedHlc: '900:00001:b', origin: 'remote', authorPubkey: 'peer' });
+    const after = await admissionOf('EI-mix');
+    expect((await getIssue('EI-mix'))?.title).toBe('edited by an older peer'); // the op DID apply
+    expect(after?.admission).toBe('pending'); // …without clearing the gate
+  });
+
+  // Promotion is monotonic (no writer anywhere moves admission back to 'pending'), and
+  // a LOCAL promotion does not restamp fed_ts/fed_hlc — so a later remote op from a
+  // peer that has not seen the promotion legitimately outranks it in fed_order_key
+  // space. Without the floor it would re-hide work that was already judged.
+  it('a stale pending op does NOT un-admit a row that was already promoted', async () => {
+    await proj().writeToPg(issueRow({ issue_id: 'EI-prom', admission: 'pending' }), {
+      ts: 100,
+      fedHlc: '100:00001:a',
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    await db.sql`UPDATE harness_shared.work_items
+                    SET admission = 'admitted', admitted_by = 'promoter-local'
+                  WHERE workspace_id = ${WS} AND feature_id = 'EI-prom'`;
+    await proj().writeToPg(issueRow({ issue_id: 'EI-prom', admission: 'pending', title: 'later edit' }), {
+      ts: 900,
+      fedHlc: '900:00001:b',
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    const after = await admissionOf('EI-prom');
+    expect((await getIssue('EI-prom'))?.title).toBe('later edit'); // the op applied
+    expect(after?.admission).toBe('admitted'); // …but the promotion survived
+    expect(after?.admitted_by).toBe('promoter-local'); // …and so did its provenance
+  });
+
+  // mig 896's stamp trigger treats a NULL that DIFFERS from the stored value as "an
+  // explicit origin timestamp" and preserves it. So a bare EXCLUDED would let ONE op
+  // from an older peer erase the state age the column exists to protect.
+  it('an op lacking state_changed_at does NOT erase the stored state age', async () => {
+    await proj().writeToPg(issueRow({ issue_id: 'EI-age', state_changed_at: new Date(50_000).toISOString() }), {
+      ts: 100,
+      fedHlc: '100:00001:a',
+      origin: 'remote',
+      authorPubkey: 'peer',
+    });
+    expect((await admissionOf('EI-age'))?.state_changed_at?.getTime()).toBe(50_000);
+    const legacy = issueRow({ issue_id: 'EI-age', state: 'done', title: 'older peer closes it' });
+    delete (legacy as Record<string, unknown>).state_changed_at;
+    await proj().writeToPg(legacy, { ts: 900, fedHlc: '900:00001:b', origin: 'remote', authorPubkey: 'peer' });
+    expect((await getIssue('EI-age'))?.state).toBe('done'); // the op applied
+    expect((await admissionOf('EI-age'))?.state_changed_at?.getTime()).toBe(50_000); // age preserved
+  });
+
+  // decodeValue is all-or-nothing: a row the validator rejects is discarded WHOLESALE.
+  // Making any of the nine required would make an older peer's every issue op
+  // undecodable — the defect amended on the sibling `producer` column of
+  // EI-21462599108204160, asserted here so it cannot be reintroduced.
+  it('the validator still accepts a pre-965 row carrying none of the nine', () => {
+    const legacy = issueRow();
+    for (const k of [
+      'admission',
+      'admitted_at',
+      'admitted_by',
+      'state_changed_at',
+      'tags',
+      'parent_id',
+      'source_plan_slug',
+      'source_plan_item_ids',
+      'expected_cost_cents',
+    ])
+      delete (legacy as Record<string, unknown>)[k];
+    expect(_testing.decodeValue(legacy)).not.toBeNull();
+  });
+});
