@@ -176,6 +176,22 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     });
   }
 
+  seedForeignNat(routerName: string, name: string): void {
+    const router = this.routers.get(routerName);
+    if (!router) throw new Error(`fake GCP router '${routerName}' is absent`);
+    this.nats.set(`${routerName}:${name}`, {
+      name,
+      routerName,
+      network: router.network,
+      subnetwork: 'foreign-subnetwork',
+      region: router.region,
+      natIpAllocateOption: 'AUTO_ONLY',
+      sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+      observedAt: NOW,
+    });
+    this.routers.set(routerName, { ...router, natNames: [...router.natNames, name] });
+  }
+
   rewriteDisk(name: string, patch: Partial<GcpDiskObservation>): void {
     const current = this.disks.get(name);
     if (!current) throw new Error(`fake GCP disk '${name}' is absent`);
@@ -1159,5 +1175,37 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
         context(),
       ),
     ).rejects.toThrow("not labeled as managed by workspace host 'host-gcp-1'");
+  });
+
+  it('refuses to delete a managed Router while a foreign NAT remains attached', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    client.seedForeignNat('pc-host-gcp-1-router', 'foreign-nat');
+    const plan = await provider.plan(
+      {
+        action: 'destroy',
+        operationId: 'operation:foreign-nat',
+        idempotencyKey: 'operation:foreign-nat',
+        host,
+        disposition: 'discard',
+        confirmation: { expectedHostId: host.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+      },
+      context(),
+    );
+    for (const step of plan.steps) {
+      if (step.resourceKind === 'router') {
+        await expect(
+          provider.apply(
+            { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources },
+            context(),
+          ),
+        ).rejects.toThrow('still contains NAT configuration(s): foreign-nat');
+        break;
+      }
+      await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources },
+        context(),
+      );
+    }
   });
 });
