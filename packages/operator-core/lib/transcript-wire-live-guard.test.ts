@@ -304,6 +304,27 @@ describe('transcript wire fixtures still match the live wire', () => {
         for (const rec of records) {
           if (!rec || typeof rec !== 'object') continue;
           if (!CONVERSATIONAL_FIELDS.some((f) => f in (rec as Record<string, unknown>))) continue;
+          // A turn whose content array is EMPTY carries no conversation, so it cannot be
+          // evidence that a parser branch is missing — there is nothing to read. omp writes
+          // exactly this for a model call that returned nothing (`content: []` with all-zero
+          // usage), and one failing provider session can make them the DOMINANT shape on the
+          // sampled wire: 113 of 158 assistant records in one 2026-08-25 sample.
+          //
+          // Neither escape this guard offers fits that: the parser cannot "read" an empty
+          // array, and putting `message/assistant` in IGNORED would blind the gate to the
+          // single most important omp record type forever — the reflexive widening the
+          // IGNORED comment above warns against. So skip only the contentless record, and
+          // only when `message` is its sole conversational field: any record carrying even
+          // one content block is still censused, so a genuinely new content-bearing shape
+          // still reds this gate. The empty turns themselves are an upstream runtime fault
+          // (EI filed), not wire drift a fixture or parser change here could fix.
+          const msg = (rec as { message?: { content?: unknown } }).message;
+          const otherConversational = CONVERSATIONAL_FIELDS.some(
+            (f) => f !== 'message' && f in (rec as Record<string, unknown>),
+          );
+          if (!otherConversational && msg && Array.isArray(msg.content) && msg.content.length === 0) {
+            continue;
+          }
           const r = rec as { type?: unknown; payload?: { type?: unknown }; message?: { role?: unknown } };
           const top = typeof r.type === 'string' ? r.type : '?';
           const sub = typeof r.payload?.type === 'string'
