@@ -9,12 +9,29 @@
  * design-compare/{gate,feature-gate}.test.ts and is not re-tested here.
  */
 import { describe, expect, it } from 'vitest';
-import { DesignGateUnavailableError, type FeatureDesignGateResult } from '../../design-compare/feature-gate';
+import {
+  DesignGateUnavailableError,
+  type FeatureDesignGateResult,
+  type FeatureGateReference,
+} from '../../design-compare/feature-gate';
 import {
   designEvidenceCompletionGate,
   designFeatureCandidates,
   renderDesignEvidenceRefusal,
 } from './design-evidence-gate';
+
+/**
+ * P-011/D-023: a reference whose ratification host matches the calibration
+ * host, so its verdict is allowed to refuse rather than only report.
+ */
+const ENFORCEABLE = { enforceable: true, renderHost: 'chromium/141;probe@72px[…]' } as const;
+
+/** The same verdict on a reference the shipped threshold was never measured for. */
+const NOT_ENFORCEABLE = {
+  enforceable: false,
+  reason: 'reference-host-unknown',
+  detail: 'no rendering host recorded',
+} as const;
 
 const NOT_APPLICABLE: FeatureDesignGateResult = { applicable: false, references: [] };
 
@@ -32,73 +49,75 @@ const SATISFIED: FeatureDesignGateResult = {
         cases: [],
         doesNotEstablish: ['accessibility'],
       },
+      enforceability: ENFORCEABLE,
     },
   ],
   blocking: [],
+  enforceableBlocking: [],
   doesNotEstablish: ['accessibility'],
 };
+
+/**
+ * One failing reference, built once.
+ *
+ * It was previously spelled out twice — identically — under `references` and
+ * `blocking`. Two copies of the fixture that decides whether this gate refuses
+ * is exactly the shape that drifts, and a divergence between them would look
+ * like a behaviour change rather than a typo.
+ */
+function failingReference(enforceability: FeatureGateReference['enforceability']) {
+  return {
+    referenceId: 'ref-a',
+    verdict: {
+      applicable: true,
+      satisfied: false,
+      referenceId: 'ref-a',
+      activeRevision: 2,
+      failures: [
+        {
+          caseId: 'desktop',
+          kind: 'missing',
+          reason: 'no-evidence',
+          environment: {
+            viewport: { width: 1280, height: 800 },
+            deviceScaleFactor: 2,
+            browser: 'chromium',
+            theme: 'dark',
+            fontSet: 'x',
+          },
+          rationale: 'primary',
+          remedy: 'run design-phase.compare_render',
+        },
+      ],
+      satisfiedCases: [],
+      doesNotEstablish: ['accessibility'],
+    },
+    enforceability,
+  } satisfies FeatureGateReference;
+}
 
 const UNSATISFIED: FeatureDesignGateResult = {
   applicable: true,
   satisfied: false,
-  references: [
-    {
-      referenceId: 'ref-a',
-      verdict: {
-        applicable: true,
-        satisfied: false,
-        referenceId: 'ref-a',
-        activeRevision: 2,
-        failures: [
-          {
-            caseId: 'desktop',
-            kind: 'missing',
-            reason: 'no-evidence',
-            environment: {
-              viewport: { width: 1280, height: 800 },
-              deviceScaleFactor: 2,
-              browser: 'chromium',
-              theme: 'dark',
-              fontSet: 'x',
-            },
-            rationale: 'primary',
-            remedy: 'run design-phase.compare_render',
-          },
-        ],
-        satisfiedCases: [],
-        doesNotEstablish: ['accessibility'],
-      },
-    },
-  ],
-  blocking: [
-    {
-      referenceId: 'ref-a',
-      verdict: {
-        applicable: true,
-        satisfied: false,
-        referenceId: 'ref-a',
-        activeRevision: 2,
-        failures: [
-          {
-            caseId: 'desktop',
-            kind: 'missing',
-            reason: 'no-evidence',
-            environment: {
-              viewport: { width: 1280, height: 800 },
-              deviceScaleFactor: 2,
-              browser: 'chromium',
-              theme: 'dark',
-              fontSet: 'x',
-            },
-            rationale: 'primary',
-            remedy: 'run design-phase.compare_render',
-          },
-        ],
-        satisfiedCases: [],
-        doesNotEstablish: ['accessibility'],
-      },
-    },
-  ],
+  references: [failingReference(ENFORCEABLE)],
+  blocking: [failingReference(ENFORCEABLE)],
+  enforceableBlocking: [failingReference(ENFORCEABLE)],
+  doesNotEstablish: ['accessibility'],
+};
+
+/**
+ * The same failure on a reference the shipped threshold was never measured for
+ * (P-011/D-023). `blocking` is non-empty and `enforceableBlocking` is not, which
+ * is the whole distinction: the work genuinely owes evidence, and refusing on a
+ * tolerance of ~34 pixels that was never measured against this machine's fonts
+ * would fail correct work — the harm D-021 recorded.
+ */
+const UNSATISFIED_UNENFORCEABLE: FeatureDesignGateResult = {
+  applicable: true,
+  satisfied: false,
+  references: [failingReference(NOT_ENFORCEABLE)],
+  blocking: [failingReference(NOT_ENFORCEABLE)],
+  enforceableBlocking: [],
   doesNotEstablish: ['accessibility'],
 };
 
@@ -184,6 +203,27 @@ describe('report-only rollout (D-006)', () => {
    * `enforced: false` would satisfy every assertion in this file about
    * report-only behaviour while being incapable of ever enforcing.
    */
+  /**
+   * P-011/D-023. The flag says enforcement is ON; it does not say the threshold
+   * was measured for the machine involved. Both must hold, and the calibration
+   * immediately below proves this suite can still observe a real enforcement —
+   * without it, a gate hardwired to `enforced: false` would satisfy this test.
+   */
+  it('does NOT enforce a failing reference the threshold was never measured for', async () => {
+    const outcome = await designEvidenceCompletionGate(['f'], {
+      evaluate: async () => UNSATISFIED_UNENFORCEABLE,
+      isEnabled: on,
+      isEnforcing: on,
+    });
+    expect(outcome.status).toBe('unsatisfied');
+    if (outcome.status !== 'unsatisfied') return;
+    expect(outcome.enforced).toBe(false);
+    // Still REPORTED as blocking: the work owes evidence either way, and
+    // dropping it from the report would turn "we could not enforce" into
+    // "there was nothing wrong".
+    expect(outcome.blockingReferenceIds).toEqual(['ref-a']);
+  });
+
   it('DOES enforce once the enforcement flag is on', async () => {
     const outcome = await designEvidenceCompletionGate(['f'], {
       evaluate: async () => UNSATISFIED,
