@@ -281,9 +281,29 @@ describe('design-evidence doc claims', () => {
       expect(verdict.ok).toBe(true);
     });
 
-    it('states the report-only posture rather than implying the gate blocks today', () => {
-      expect(markdown).toMatch(/REPORT-ONLY/);
+    /**
+     * P-011/D-023 replaced the report-only posture with a SCOPED enforcing one,
+     * and the doc's job changed with it. The risk is no longer "implies it
+     * blocks when it does not" but its mirror: implying it blocks EVERYWHERE
+     * when it only blocks for references ratified on the calibrated machine.
+     * A reader who takes "enforcing: ON" at face value will misread every
+     * report-only outcome as a malfunction.
+     */
+    it('states that enforcement is ON but scoped to the measured host', () => {
       expect(markdown).toContain(FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING);
+      expect(markdown).toMatch(/ENFORCING, WITHIN A MEASURED SCOPE/);
+      // The scope must be explained, not merely asserted — these are the three
+      // things a reader needs to predict whether their own work will be refused.
+      expect(markdown).toMatch(/wrong-render-host/);
+      expect(markdown).toMatch(/reference-host-unknown/);
+      expect(markdown).toMatch(/uncalibrated-host/);
+    });
+
+    it('still records that cross-host noise remains UNMEASURED (D-021)', () => {
+      // D-023 stops cross-host enforcement; it does not measure cross-host
+      // noise. Losing that distinction would turn a scoping decision into a
+      // false claim that the axis was characterised.
+      expect(markdown).toMatch(/[Cc]ross-host variance is still unmeasured/);
     });
 
     it('carries D-020: identical captures across different surfaces are a bypass', () => {
