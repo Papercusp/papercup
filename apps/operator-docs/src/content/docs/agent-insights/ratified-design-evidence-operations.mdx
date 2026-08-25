@@ -19,6 +19,7 @@ documents:
   - "packages/operator-core/lib/design-compare/feature-gate.ts"
   - "packages/operator-core/lib/design-compare/report-cli.ts"
   - "packages/operator-core/lib/design-compare/reference-store.ts"
+  - "packages/operator-core/lib/design-compare/ratification.ts"
   - "packages/operator-core/lib/agent-tools/work_items/design-evidence-gate.ts"
   - "libs/flags/src/types.ts"
   - ".github/workflows/test.yml"
@@ -71,11 +72,31 @@ A comparison returns **pass**, **fail**, or **invalid**. Evidence a surface *hol
 
 The refusal names every unmet case at once, deliberately: an agent told about one unmet reference fixes it, retries, and gets refused by the next.
 
+### Why a case is unmet — the finer grain under those four states
+
+The gate reports a `reason` beneath each state, because two cases in the same state can need opposite actions:
+
+| reason | state | what to do |
+|---|---|---|
+| `no-evidence` | missing | no comparison was ever run for this case — run `compare_render` |
+| `wrong-surface` | missing | a comparison WAS run at this environment, but it captured a different surface. Capture the surface the case names and re-run |
+| `superseded-revision` | stale | measured against a reference revision that is no longer active — re-run against the current one |
+| `unreadable-schema` | invalid | the stored record was written under a compare-result schema this build cannot read, so it is not evidence |
+| `engine-invalid` | invalid | the comparison returned `invalid` — resolve the precondition it names, then re-run |
+| `diff-exceeds-policy` | failing | fix the implementation, or ratify a new revision if the DESIGN changed |
+| `no-required-cases` | invalid | the active revision declares no required cases, so there is nothing to verify — re-ratify it |
+
+**`wrong-surface` is the one worth reading twice.** Reported as `no-evidence` it would send you to run the comparison you already ran — and under the indistinguishable-capture case above, that comparison may well have *passed* at diff ratio 0. You would read the same green a second time and conclude the gate was broken. The remedy is not "compare"; it is "compare the right thing".
+
 ### `invalid` reasons
 
-`missing-reference` · `missing-capture` · `dimension-mismatch` · `environment-mismatch` · `capture-failed` · `engine-error` · `engine-timeout` · `stale-evidence` · `unsupported-input` · `ungateable-reference-class`
+`missing-reference` · `missing-capture` · `dimension-mismatch` · `environment-mismatch` · `target-mismatch` · `capture-failed` · `engine-error` · `engine-timeout` · `stale-evidence` · `unsupported-input` · `ungateable-reference-class`
 
-`dimension-mismatch` and `environment-mismatch` are the load-bearing ones. Lost Pixel will happily *resize* unequal images before comparing them; the adapter rejects the mismatch **before** the engine is invoked (D-005), so a geometry error can never be normalised away into a plausible-looking pass.
+`dimension-mismatch`, `environment-mismatch` and `target-mismatch` are the load-bearing ones, and all three are rejected **before** the engine is invoked.
+
+Lost Pixel will happily *resize* unequal images before comparing them, so the adapter rejects a geometry mismatch up front (D-005) — it can never be normalised away into a plausible-looking pass.
+
+`target-mismatch` guards the case no threshold can (D-020, D-022). A required case is contracted against a specific **surface**, and a capture of a different surface is refused rather than measured. This matters because captures of semantically different surfaces are sometimes *byte-identical* — when the content that distinguishes them arrives after the capture settles, the comparison returns a diff ratio of **0**. That is a perfect score for building the wrong thing, and there is nothing for a threshold to catch. The contract catches it instead.
 
 ### Verb refusals — no comparison was attempted
 
