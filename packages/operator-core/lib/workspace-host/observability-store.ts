@@ -134,13 +134,15 @@ export async function readWorkspaceHostConnection(
   connectionId: string,
 ): Promise<StoredWorkspaceHostConnection | null> {
   return withWorkspace(workspaceId, async (tx) => {
-    const rows = await tx<Array<{
-      id: string;
-      target: string;
-      credential_ref: string;
-      status: ConnectionStatus;
-      status_detail: string | null;
-    }>>`
+    const rows = await tx<
+      Array<{
+        id: string;
+        target: string;
+        credential_ref: string;
+        status: ConnectionStatus;
+        status_detail: string | null;
+      }>
+    >`
       SELECT id, target, credential_ref, status, status_detail
       FROM harness_shared.workspace_host_connections
       WHERE workspace_id = ${workspaceId} AND id = ${connectionId}

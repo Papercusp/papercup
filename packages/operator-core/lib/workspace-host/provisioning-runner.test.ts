@@ -101,10 +101,7 @@ function storeHarness(initial: readonly WorkspaceHostResourceCheckpoint[] = []) 
     readCheckpoints: vi.fn(async () => checkpoints.map((entry) => ({ ...entry }))),
     upsertCheckpoint: vi.fn(async ({ checkpoint }) => {
       calls.push(`checkpoint:${checkpoint.logicalKey}:${checkpoint.state}`);
-      checkpoints = [
-        ...checkpoints.filter((entry) => entry.logicalKey !== checkpoint.logicalKey),
-        { ...checkpoint },
-      ];
+      checkpoints = [...checkpoints.filter((entry) => entry.logicalKey !== checkpoint.logicalKey), { ...checkpoint }];
     }),
     appendEvent: vi.fn(async (input) => {
       calls.push(`event:${input.phase}`);

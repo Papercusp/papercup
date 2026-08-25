@@ -1,10 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceHostDesiredSpec, WorkspaceHostProvider } from '@papercusp/deployment-driver';
 import type { RouteContext } from '../../define-route';
-import {
-  createWorkspaceHostProvisionRoute,
-  type WorkspaceHostProvisionRouteDependencies,
-} from './provision';
+import { createWorkspaceHostProvisionRoute, type WorkspaceHostProvisionRouteDependencies } from './provision';
 import {
   WorkspaceHostProvisioningConnectionError,
   WorkspaceHostProvisioningRequestError,
@@ -66,10 +63,7 @@ function harness() {
   return { dependencies, readConnection, runProvisioning };
 }
 
-async function post(
-  dependencies: WorkspaceHostProvisionRouteDependencies,
-  body: unknown,
-): Promise<Response> {
+async function post(dependencies: WorkspaceHostProvisionRouteDependencies, body: unknown): Promise<Response> {
   const route = createWorkspaceHostProvisionRoute(dependencies);
   return route.handler(
     new Request('http://operator.test/api/workspace-hosts/provision', {
@@ -96,9 +90,9 @@ describe('POST /workspace-hosts/provision', () => {
   it('distinguishes a missing connection from one that is not ready', async () => {
     const missing = harness();
     missing.readConnection.mockResolvedValueOnce(null);
-    expect(
-      await post(missing.dependencies, { connectionId: 'connection-1', name: 'Host', desired }),
-    ).toMatchObject({ status: 404 });
+    expect(await post(missing.dependencies, { connectionId: 'connection-1', name: 'Host', desired })).toMatchObject({
+      status: 404,
+    });
 
     const degraded = harness();
     degraded.readConnection.mockResolvedValueOnce({
@@ -210,9 +204,9 @@ describe('POST /workspace-hosts/provision', () => {
     unavailable.runProvisioning.mockRejectedValueOnce(
       new WorkspaceHostProvisioningConnectionError(['provider connection is not usable']),
     );
-    expect(
-      await post(unavailable.dependencies, { connectionId: 'connection-1', name: 'Host', desired }),
-    ).toMatchObject({ status: 409 });
+    expect(await post(unavailable.dependencies, { connectionId: 'connection-1', name: 'Host', desired })).toMatchObject(
+      { status: 409 },
+    );
 
     const internal = harness();
     internal.runProvisioning.mockRejectedValueOnce(new Error('secret-bearing internal detail'));

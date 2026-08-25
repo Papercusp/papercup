@@ -278,7 +278,9 @@ export async function runWorkspaceHostProvisioning(
     requestProblems.push(message(error));
   }
   if (input.provider.target !== input.desired.target) {
-    requestProblems.push(`provider target '${input.provider.target}' does not match desired target '${input.desired.target}'`);
+    requestProblems.push(
+      `provider target '${input.provider.target}' does not match desired target '${input.desired.target}'`,
+    );
   }
   if (input.connection.target !== input.desired.target) {
     requestProblems.push(
@@ -286,10 +288,7 @@ export async function runWorkspaceHostProvisioning(
     );
   }
   const desiredCloudRef = input.desired.credentials?.cloudCredentialRef;
-  if (
-    desiredCloudRef?.kind !== 'cloud' ||
-    desiredCloudRef.ref !== input.connection.cloudCredentialRef.ref
-  ) {
+  if (desiredCloudRef?.kind !== 'cloud' || desiredCloudRef.ref !== input.connection.cloudCredentialRef.ref) {
     requestProblems.push('desired cloudCredentialRef must match the selected workspace-host connection');
   }
   if (requestProblems.length > 0) throw new WorkspaceHostProvisioningRequestError(requestProblems);

@@ -62,7 +62,10 @@ export function createWorkspaceHostProvisionRoute(
         return Response.json({ ok: false, error: 'invalid connectionId' }, { status: 400 });
       }
       if (!name || name.length > 160) {
-        return Response.json({ ok: false, error: 'name must be a non-empty string of at most 160 characters' }, { status: 400 });
+        return Response.json(
+          { ok: false, error: 'name must be a non-empty string of at most 160 characters' },
+          { status: 400 },
+        );
       }
       if (!isRecord(body.desired)) {
         return Response.json({ ok: false, error: 'desired must be an object' }, { status: 400 });
@@ -95,10 +98,7 @@ export function createWorkspaceHostProvisionRoute(
         );
       }
       if (stored.target !== desired.target) {
-        return Response.json(
-          { ok: false, error: 'connection target does not match desired.target' },
-          { status: 422 },
-        );
+        return Response.json({ ok: false, error: 'connection target does not match desired.target' }, { status: 422 });
       }
       if (desired.target !== 'gcp') {
         return Response.json(
