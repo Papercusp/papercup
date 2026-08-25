@@ -35,4 +35,13 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
       expect(keys, `${removed} must remain removed`).not.toContain(removed);
     }
   });
+
+  it('discloses the hive-scoped workspace clamp and targeted-owner alternative', () => {
+    const guidance = `${tool.description}\n${JSON.stringify(tool.guidance ?? {})}`;
+
+    expect(guidance).toContain("scope:'workspace'");
+    expect(guidance).toMatch(/hive-scoped SU session.*hive_forbidden/i);
+    expect(guidance).toMatch(/targeted.*owner.*workspace peer/i);
+    expect(guidance).toMatch(/unscoped\/admin session.*workspace-wide/i);
+  });
 });

@@ -34,7 +34,7 @@ import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle'
 export default defineTool({
   name: 'coord:presence',
   description:
-    "List the live coordination roster and who can take work. Read summary.wakeable and each row's sessionState/wakeable; ended rows appear only for owner lookups. Default scope is your Hive; use scope/pot for explicit scope when widening it, owner for one row, or coord:roster { view:'live', project:'ids' } for bounded IDs. `owner` is singular. Do not pass legacy harness, ownerId, ownerIds, plan, includeStale, or include_stale keys. For plan-scoped claims use coord:roster { view:'claims', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.",
+    "List the live coordination roster and who can take work. Read summary.wakeable and each row's sessionState/wakeable; ended rows appear only for owner lookups. Default scope is your Hive. In a hive-scoped SU session, scope:'workspace' and scope:'all' are rejected with hive_forbidden; browse your Hive by default, or use a targeted { owner } lookup for one workspace peer. An unscoped/admin session is required for workspace-wide browsing. Use scope/pot for explicit scope, owner for one row, or coord:roster { view:'live', project:'ids' } for bounded IDs. `owner` is singular. Do not pass legacy harness, ownerId, ownerIds, plan, includeStale, or include_stale keys. For plan-scoped claims use coord:roster { view:'claims', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.",
   guidance: {
     when: "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, set confirmLiveness:true, send a required coord:send wake, and inspect its result; ended rows need relaunch. Use owner:<id> for one agent and coord:roster { view:'live', project:'ids' } for several.",
     notWhen:
@@ -87,7 +87,7 @@ export default defineTool({
       .enum(['hive', 'workspace', 'all'])
       .optional()
       .describe(
-        "hive (DEFAULT) = your Hive's agents + federated peers for it; workspace = the whole workspace; all = every workspace (admin/Mug). A caller with no Hive (SU/operator) falls back to workspace.",
+        "hive (DEFAULT) = your Hive's agents + federated peers for it; workspace = the whole workspace, but only from an unscoped/admin session (a hive-scoped SU session gets hive_forbidden — use owner for one workspace peer); all = every workspace (unscoped admin/Mug). A caller with no Hive (SU/operator) falls back to workspace.",
       ),
     pot: z
       .string()
