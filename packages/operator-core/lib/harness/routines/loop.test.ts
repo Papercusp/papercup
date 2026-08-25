@@ -974,6 +974,30 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({ kickoff: 'k', mode: 'monitor' });
   });
 
+  it('anti-babysitting P-003: persists admitted monitor policy on the existing payload_template', async () => {
+    const monitor = {
+      predicateKey: 'release:green:papercusp',
+      stopCondition: 'exact green verdict exists',
+      noDeltaBudget: 1,
+      remainingNoDeltaBudget: 1,
+      authority: { kind: 'work-item' as const, workItem: 'WI-42' },
+    };
+    await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+      mode: 'monitor',
+      monitor,
+    });
+    expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({
+      kickoff: 'k',
+      mode: 'monitor',
+      monitor,
+    });
+  });
+
   it("WI-5345: a WORK (or absent) mode leaves payload_template byte-identical to today (no mode key)", async () => {
     await materializeLoop({
       workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', mode: 'work',
