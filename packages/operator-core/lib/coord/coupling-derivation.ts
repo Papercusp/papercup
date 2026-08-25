@@ -47,6 +47,7 @@ import { formatElapsedSince } from '../format/relative-time';
 // `SessionState` rather than restating a literal union means a rename there breaks
 // HERE at compile time — the same discipline `ObligationRelation` uses via `Extract`.
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+import { OBLIGATION_RELATIONS } from './couplings';
 import type { DerivedCoupling, DerivedCouplingRelation } from './couplings';
 import { censusDerivedSignals, type DerivedSignalCensus } from './derived-signal-census';
 
@@ -499,7 +500,7 @@ export function deriveCouplingsFromCoordExchange(
  * HERE at compile time instead of leaving a second literal union quietly describing a
  * relation that no longer exists.
  */
-export type ObligationRelation = Extract<DerivedCouplingRelation, 'owes-me' | 'i-owe'>;
+export type ObligationRelation = (typeof OBLIGATION_RELATIONS)[number];
 
 /**
  * The counterpart's liveness as an obligation line reports it (P-011).

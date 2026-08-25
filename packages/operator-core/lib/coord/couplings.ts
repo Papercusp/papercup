@@ -152,6 +152,29 @@ export const DERIVED_COUPLING_RELATIONS = [
 export type DerivedCouplingRelation = (typeof DERIVED_COUPLING_RELATIONS)[number];
 
 /**
+ * The OBLIGATION subset of the vocabulary — the relations that mean someone owes
+ * something, as opposed to the symmetric "we are both near this" signals (P-008).
+ *
+ * Declared HERE, in the module that owns the vocabulary, because two consumers need it
+ * and neither may own it: `resolveCoupledPeers` below sorts by it, and
+ * `coupling-derivation.ts` derives its `ObligationRelation` type from it. Putting it in
+ * the derivation would force this file to import from a module that imports IT — a cycle
+ * — so the alternative was restating the two literals in both places, which is the exact
+ * drift `ObligationRelation` was written to avoid.
+ *
+ * `satisfies` pins every member to the real vocabulary, so a rename in
+ * `DERIVED_COUPLING_RELATIONS` breaks here at compile time rather than silently leaving a
+ * subset describing relations that no longer exist.
+ */
+export const OBLIGATION_RELATIONS = ['owes-me', 'i-owe'] as const satisfies
+  readonly DerivedCouplingRelation[];
+
+/** Whether a relation means someone OWES something (vs. a symmetric co-location signal). */
+export function isObligationRelation(rel: unknown): boolean {
+  return typeof rel === 'string' && (OBLIGATION_RELATIONS as readonly string[]).includes(rel);
+}
+
+/**
  * One DERIVED coupling, as P-013's derivation hands it to the union (D-078 (a)).
  *
  * Carries the SIGNAL, not just the id. A flat `string[]` loses why the edge
@@ -447,7 +470,31 @@ export function resolveCoupledPeers(
     if (suppressed.has(peer) || seen.has(peer)) continue;
     out.push({ ownerId: peer, source: 'declared', reason: e.reason, declaredBy: e.declaredBy });
   }
-  return out.sort((a, b) => a.ownerId.localeCompare(b.ownerId));
+  // P-008: OBLIGATIONS FIRST, then everything else; ownerId only as the tiebreaker.
+  //
+  // ⚠ THE ORDER IS THE FEATURE, NOT A PRESENTATION DETAIL. Every other derived relation
+  // says "we are both near this" — a shared file, a shared plan edge, a recent message.
+  // An obligation says someone is WAITING. Sorted alphabetically among dozens of
+  // symmetric peers (one live leader here supervises 234), a 4-hour-old unanswered
+  // consult from a counterpart who has since died renders in the same visual weight as
+  // "recent coord exchange", and reads as "as expected". Hoisting it is what makes it
+  // unmissable, which is the whole point of the relation existing.
+  //
+  // ownerId REMAINS the tiebreaker inside each group so the result is still totally
+  // ordered and deterministic — callers (and the roster etag) depend on a stable order,
+  // and a partial sort would make identical state render differently between reads.
+  //
+  // Age would be the ideal order WITHIN the obligation group, but a `CoupledPeer` carries
+  // no structural timestamp — only the rendered `because`. Parsing an age back out of
+  // that prose is precisely the "round-tripping a discriminant through a rendered string"
+  // erasure D-087 exists to forbid, so it is deliberately not done here; the age is on
+  // every obligation line either way (`obligationPhrase` refuses to render without one).
+  const carriesObligation = (p: CoupledPeer): boolean =>
+    (p.derivedRelations ?? []).some(isObligationRelation);
+  return out.sort((a, b) => {
+    const byObligation = Number(carriesObligation(b)) - Number(carriesObligation(a));
+    return byObligation !== 0 ? byObligation : a.ownerId.localeCompare(b.ownerId);
+  });
 }
 
 function clampReason(raw: string | null | undefined): string | null {
