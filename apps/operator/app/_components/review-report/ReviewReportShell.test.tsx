@@ -166,6 +166,36 @@ describe("rendering", () => {
       screen.getByText("Writes use the same hand-edit verbs."),
     ).toBeTruthy();
   });
+
+  it("renders a dynamic row failure as a visible atomic alert without replacing detail", () => {
+    renderShell({
+      groups: [
+        {
+          id: "retry",
+          title: "Retry",
+          rows: [
+            {
+              id: "failed-row",
+              title: "Retry this change",
+              evidence: ["write attempted"],
+              confidence: "recommended",
+              detail: "Keep these decision controls available.",
+              error: "The write was rejected; review the row and retry.",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(
+      screen.getByText("Keep these decision controls available."),
+    ).toBeTruthy();
+    const alert = screen.getByTestId("review-row-error-failed-row");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.getAttribute("aria-atomic")).toBe("true");
+    expect(alert.textContent).toContain("write was rejected");
+    expect(rowCheck("failed-row")).toBeTruthy();
+  });
 });
 
 describe("selection + apply", () => {
