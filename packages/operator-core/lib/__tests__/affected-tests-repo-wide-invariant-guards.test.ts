@@ -242,15 +242,31 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
     expect(pkg.scripts?.[GUARD_SCRIPT]).toContain('child-output-guard.test.ts');
   });
 
-  it('forwards the runner base to the vimock strand guard', () => {
+  it('forwards the runner base and exact triggering paths to the vimock strand guard', () => {
     const base = 'HEAD^';
     const out = dryTasks(OUTSIDE_TS_PATH, base);
     expect(
       out,
       `${VIMOCK_GUARD_TASK} must receive the same base that affected-tests used for its ` +
-        'authoritative changed-path derivation; otherwise git-sync leaves the guard comparing ' +
-        'HEAD with itself and reporting NOT_CHECKED',
-    ).toContain(`${VIMOCK_GUARD_TASK} (guard base: ${base})`);
+        'authoritative changed-path derivation AND the exact triggering paths; otherwise ' +
+        'git-sync leaves the guard comparing HEAD with itself or widens attribution to peers',
+    ).toContain(
+      `${VIMOCK_GUARD_TASK} (guard base: ${base}) ` +
+        `(guard args: --files=${OUTSIDE_TS_PATH})`,
+    );
+  });
+
+  it('attaches and forwards a SUBMODULE ROOT — the only superproject path for internal edits', () => {
+    const base = 'HEAD^';
+    const submodule = someSubmodulePath();
+    expect(
+      dryTasks(submodule, base),
+      `a runtime export added inside ${submodule} reaches affected-tests only as the bare ` +
+        'gitlink path; a TS-extension-only predicate silently omits the guard for the whole submodule',
+    ).toContain(
+      `${VIMOCK_GUARD_TASK} (guard base: ${base}) ` +
+        `(guard args: --files=${submodule})`,
+    );
   });
 });
 
