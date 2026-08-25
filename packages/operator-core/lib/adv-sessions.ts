@@ -1109,17 +1109,90 @@ const RESUME_CLAIM_WINDOW_SEC = 300;
  */
 export async function claimAdvSessionResume(
   id: number,
+  resumeClaimKey: string | null = null,
   windowSec: number = RESUME_CLAIM_WINDOW_SEC,
 ): Promise<boolean> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ id: number }[]>`
-    UPDATE harness_shared.adv_sessions
-       SET ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
-     WHERE id = ${id}
-       AND (ended_at IS NOT NULL OR started_at < now() - make_interval(secs => ${windowSec}))
-    RETURNING id
-  `;
-  return rows.length > 0;
+  const key = resumeClaimKey?.trim() || null;
+
+  // Legacy callers did not carry a replay key. Preserve their single-winner
+  // behavior, but clear the COMPLETE terminal tuple: ended_by/ended_signal are
+  // positive terminal evidence too, and leaving them behind creates an
+  // impossible half-live row after a successful resume.
+  if (!key) {
+    const rows = await sql<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
+             started_at = now(), shutdown_accepted_at = NULL
+       WHERE id = ${id}
+         AND (
+           ended_at IS NOT NULL
+           OR ended_by IS NOT NULL
+           OR started_at < now() - make_interval(secs => ${windowSec})
+         )
+      RETURNING id
+    `;
+    return rows.length > 0;
+  }
+
+  // WI-41450: the old launcher used a hard HTTP deadline around this mutation.
+  // When Postgres committed but the response arrived after that deadline, psu
+  // failed closed and an immediate retry lost to the freshly bumped started_at
+  // window. Use the existing agent-launch idempotency ledger as the durable
+  // response cache: the row claim and its boolean verdict commit in ONE
+  // transaction, so retrying the same key is safe after an unknown response.
+  // SELECT ... FOR UPDATE also serializes two in-flight deliveries of that key;
+  // the follower waits, then reads the winner's completed verdict.
+  const ledgerKey = `psu-resume:${id}:${key}`;
+  return sql.begin(async (tx) => {
+    const [target] = await tx<Array<{ workspace_id: string }>>`
+      SELECT workspace_id
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
+    `;
+    if (!target) return false;
+
+    const workspaceId = target.workspace_id;
+    await tx`
+      INSERT INTO harness_shared.agent_launch_idempotency
+        (workspace_id, idempotency_key, launched_at, launched_by, summary)
+      VALUES (${workspaceId}, ${ledgerKey}, ${Date.now()}, NULL, '{}'::jsonb)
+      ON CONFLICT (workspace_id, idempotency_key) DO NOTHING
+    `;
+    const [ledger] = await tx<Array<{ summary: Record<string, unknown> }>>`
+      SELECT summary
+        FROM harness_shared.agent_launch_idempotency
+       WHERE workspace_id = ${workspaceId}
+         AND idempotency_key = ${ledgerKey}
+       FOR UPDATE
+    `;
+    const prior = ledger?.summary;
+    if (prior?.kind === 'psu-resume-claim' && typeof prior.reactivated === 'boolean') {
+      return prior.reactivated;
+    }
+
+    const rows = await tx<{ id: number }[]>`
+      UPDATE harness_shared.adv_sessions
+         SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
+             started_at = now(), shutdown_accepted_at = NULL
+       WHERE id = ${id}
+         AND (
+           ended_at IS NOT NULL
+           OR ended_by IS NOT NULL
+           OR started_at < now() - make_interval(secs => ${windowSec})
+         )
+      RETURNING id
+    `;
+    const reactivated = rows.length > 0;
+    const summary = JSON.stringify({ kind: 'psu-resume-claim', reactivated });
+    await tx`
+      UPDATE harness_shared.agent_launch_idempotency
+         SET summary = ${summary}::text::jsonb
+       WHERE workspace_id = ${workspaceId}
+         AND idempotency_key = ${ledgerKey}
+    `;
+    return reactivated;
+  });
 }
 
 /**

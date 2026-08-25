@@ -7065,6 +7065,12 @@ export async function reportSessionEnded(
  * a manual resume must not spawn unless it successfully re-activates the ended row.
  * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
  * Exported with injectables for tests.
+ *
+ * @param {number|string|null} advSessionId the adv_sessions PK to claim
+ * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
+ *           timeoutMs?: number, connectBudgetMs?: number, timeoutRetries?: number,
+ *           sleep?: (ms:number) => Promise<void>, now?: () => number,
+ *           onNotice?: (message:string) => void, resumeClaimKey?: string }} [opts]
  */
 export async function reportSessionResumed(
   advSessionId,
@@ -7072,22 +7078,41 @@ export async function reportSessionResumed(
     fetchImpl = fetch,
     operatorUrl = OPERATOR_URL,
     token = null,
-    timeoutMs = 2_000,
+    timeoutMs = 10_000,
+    connectBudgetMs = 10_000,
+    timeoutRetries = 1,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    onNotice = (message) => process.stderr.write(message),
+    resumeClaimKey = randomUUID(),
   } = {},
 ) {
   if (!advSessionId) return false;
   try {
     const tok = token ?? readToken();
-    const response = await fetchImpl(
+    const response = await fetchWithResilience(
       operatorUrl + "/api/agent-mcp/console/bootstrap-su/session-resumed",
       {
         method: "POST",
-        signal: AbortSignal.timeout(timeoutMs),
         headers: {
           "content-type": "application/json",
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
         },
-        body: JSON.stringify({ advSessionId: Number(advSessionId) }),
+        body: JSON.stringify({
+          advSessionId: Number(advSessionId),
+          resumeClaimKey,
+        }),
+      },
+      {
+        fetchImpl,
+        sleep,
+        now,
+        onNotice,
+        timeoutMs,
+        connectBudgetMs,
+        timeoutRetries,
+        retryBootstrapFailures: true,
+        label: `resume claim for session #${advSessionId}`,
       },
     );
     if (!response?.ok || typeof response.json !== "function") return false;

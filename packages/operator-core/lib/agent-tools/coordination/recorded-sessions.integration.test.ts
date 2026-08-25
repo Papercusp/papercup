@@ -123,9 +123,10 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
   async function seedRow(startedAgo: string, ended: boolean): Promise<number> {
     const rows = await admin`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code)
+        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code, ended_by)
       VALUES (${WS}, 'claude', 'console', ${`s-claim-${Math.random().toString(36).slice(2, 10)}`},
-              now() - ${startedAgo}::interval, ${ended ? new Date() : null}, ${ended ? 137 : null})
+              now() - ${startedAgo}::interval, ${ended ? new Date() : null}, ${ended ? 137 : null},
+              ${ended ? 'self' : null})
       RETURNING id`;
     return Number(rows[0].id);
   }
@@ -136,11 +137,13 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
     expect(await claimAdvSessionResume(id)).toBe(true);
 
     const [row] = await admin`
-      SELECT coord_owner_id, ended_at, exit_code
+      SELECT coord_owner_id, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE id = ${id}`;
     expect(row.ended_at).toBeNull();
     expect(row.exit_code).toBeNull();
+    expect(row.ended_by).toBeNull();
+    expect(row.ended_signal).toBeNull();
     expect((await listRecordedLiveSessions({ workspaceId: WS })).map((r) => r.coordOwnerId))
       .toContain(row.coord_owner_id);
   });
@@ -158,6 +161,32 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
     const id = await seedRow('2 days', false);
     expect(await claimAdvSessionResume(id)).toBe(true);
     expect(await claimAdvSessionResume(id)).toBe(false);
+  });
+
+  it('replays the same response key after an unknown transport result without opening a second claim', async () => {
+    const id = await seedRow('2 days', false);
+    const key = `resume-replay-${Math.random().toString(36).slice(2, 10)}`;
+
+    expect(await claimAdvSessionResume(id, key)).toBe(true);
+    expect(await claimAdvSessionResume(id, key)).toBe(true);
+    expect(await claimAdvSessionResume(id, `${key}-competitor`)).toBe(false);
+  });
+
+  it('repairs and claims a recent half-terminal row carrying ended_by without ended_at', async () => {
+    const id = await seedRow('10 seconds', false);
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET ended_by = 'self'
+       WHERE id = ${id}`;
+
+    expect(await claimAdvSessionResume(id, `resume-half-${id}`)).toBe(true);
+    const [row] = await admin`
+      SELECT ended_at, ended_by, ended_signal
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}`;
+    expect(row.ended_at).toBeNull();
+    expect(row.ended_by).toBeNull();
+    expect(row.ended_signal).toBeNull();
   });
 
   it('returns false for an unknown id', async () => {

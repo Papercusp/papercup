@@ -1920,12 +1920,24 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  * a manual resume must not spawn unless it successfully re-activates the ended row.
  * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
  * Exported with injectables for tests.
+ *
+ * @param {number|string|null} advSessionId the adv_sessions PK to claim
+ * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
+ *           timeoutMs?: number, connectBudgetMs?: number, timeoutRetries?: number,
+ *           sleep?: (ms:number) => Promise<void>, now?: () => number,
+ *           onNotice?: (message:string) => void, resumeClaimKey?: string }} [opts]
  */
-export function reportSessionResumed(advSessionId: any, { fetchImpl, operatorUrl, token, timeoutMs, }?: {
-    fetchImpl?: typeof fetch | undefined;
-    operatorUrl?: any;
-    token?: null | undefined;
-    timeoutMs?: number | undefined;
+export function reportSessionResumed(advSessionId: number | string | null, { fetchImpl, operatorUrl, token, timeoutMs, connectBudgetMs, timeoutRetries, sleep, now, onNotice, resumeClaimKey, }?: {
+    fetchImpl?: typeof fetch;
+    operatorUrl?: string;
+    token?: string | null;
+    timeoutMs?: number;
+    connectBudgetMs?: number;
+    timeoutRetries?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    onNotice?: (message: string) => void;
+    resumeClaimKey?: string;
 }): Promise<boolean>;
 /**
  * Best-effort "my managed host RESPAWNED the child under a fresh native id"

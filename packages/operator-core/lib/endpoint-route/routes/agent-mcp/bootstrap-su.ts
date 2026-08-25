@@ -3135,10 +3135,20 @@ const sessionResumed = defineTool({
     const denied = await gatePrincipal(req.headers);
     if (denied) return denied;
     let advSessionId: number | null = null;
+    let resumeClaimKey: string | null = null;
     try {
-      const body = (await req.json()) as { advSessionId?: unknown };
+      const body = (await req.json()) as { advSessionId?: unknown; resumeClaimKey?: unknown };
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
+      }
+      if (body.resumeClaimKey != null) {
+        if (typeof body.resumeClaimKey !== 'string') {
+          return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
+        }
+        resumeClaimKey = body.resumeClaimKey.trim();
+        if (!resumeClaimKey || resumeClaimKey.length > 200) {
+          return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
+        }
       }
     } catch {
       /* fall through to the 400 */
@@ -3147,7 +3157,7 @@ const sessionResumed = defineTool({
       return jsonRes({ error: 'advSessionId required' }, 400);
     }
     try {
-      const claimed = await claimAdvSessionResume(advSessionId);
+      const claimed = await claimAdvSessionResume(advSessionId, resumeClaimKey);
       return jsonRes({ ok: true, reactivated: claimed });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);

@@ -56,13 +56,21 @@ async function postResumed(body: unknown): Promise<Response> {
 }
 
 describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
-  it('forwards the adv session id to the stale-safe single-winner claim', async () => {
-    const res = await postResumed({ advSessionId: 42 });
+  it('forwards the adv session id and replay key to the stale-safe single-winner claim', async () => {
+    const res = await postResumed({ advSessionId: 42, resumeClaimKey: 'resume-claim-1' });
 
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, reactivated: true });
     expect(claimResumeMock).toHaveBeenCalledOnce();
-    expect(claimResumeMock).toHaveBeenCalledWith(42);
+    expect(claimResumeMock).toHaveBeenCalledWith(42, 'resume-claim-1');
+  });
+
+  it('keeps legacy callers without a replay key compatible', async () => {
+    const res = await postResumed({ advSessionId: 42 });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true, reactivated: true });
+    expect(claimResumeMock).toHaveBeenCalledWith(42, null);
   });
 
   it('preserves a lost fresh race as reactivated:false so the launcher refuses to spawn', async () => {
@@ -86,6 +94,14 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
   it('400s malformed ids without touching the claim', async () => {
     for (const advSessionId of [undefined, 0, -1, 1.5, '42']) {
       const res = await postResumed({ advSessionId });
+      expect(res.status).toBe(400);
+    }
+    expect(claimResumeMock).not.toHaveBeenCalled();
+  });
+
+  it('400s malformed replay keys without touching the claim', async () => {
+    for (const resumeClaimKey of ['', '   ', 42, 'x'.repeat(201)]) {
+      const res = await postResumed({ advSessionId: 42, resumeClaimKey });
       expect(res.status).toBe(400);
     }
     expect(claimResumeMock).not.toHaveBeenCalled();
