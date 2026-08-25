@@ -617,11 +617,12 @@ export function couplingSourcesFor(opts: {
     // [] on any error), so a broken consult read cannot suppress supervision edges or
     // vice versa — the failure mode a naive `await a(); await b();` would introduce.
     obligations: async () => {
-      const [consults, supervision] = await Promise.all([
+      const [consults, supervision, grading] = await Promise.all([
         fetchConsultObligations(opts.selfOwnerId),
         fetchFleetSupervision(opts.selfOwnerId, opts.rosterOwnerIds),
+        fetchGradingObligations(opts.selfOwnerId),
       ]);
-      return [...consults, ...supervision];
+      return [...consults, ...supervision, ...grading];
     },
   };
 }
