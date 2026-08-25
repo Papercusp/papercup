@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
@@ -304,6 +304,42 @@ describe('submoduleRevisionAt — follow the superproject gitlink before queryin
 
     expect(result.stderr).not.toMatch(/fatal: (?:bad revision|path .* exists on disk)/);
     expect(report.examined).toContain(submoduleFile);
+  }, 120_000);
+
+  it('accepts an E2BIG-class declared set through the shared --files-from response-file surface', () => {
+    const base = execFileSync('git', ['rev-parse', 'HEAD^'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    }).trim();
+    const dir = mkdtempSync(join(tmpdir(), 'required-field-strands-files-from-'));
+    const responseFile = join(dir, 'files.json');
+    // Repetition makes the transport payload larger than Linux's ~128 KiB single-argument
+    // ceiling without making the detector do thousands of git reads: the reused parser
+    // deduplicates into the same one-file declared set before scanning.
+    writeFileSync(responseFile, JSON.stringify(Array.from({ length: 5_000 }, () => submoduleFile)));
+    expect(statSync(responseFile).size).toBeGreaterThan(128 * 1024);
+    try {
+      const result = spawnSync(
+        'node',
+        [
+          'scripts/check-required-field-strands.mjs',
+          '--base',
+          base,
+          `--files-from=${responseFile}`,
+          '--json',
+        ],
+        { cwd: ROOT, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+      );
+      const report = JSON.parse(result.stdout);
+
+      expect(result.error, `guard failed to spawn: ${result.error?.message}`).toBeUndefined();
+      expect(result.stderr).not.toContain('E2BIG');
+      expect(report.examined).toEqual([submoduleFile]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   }, 120_000);
 });
 
