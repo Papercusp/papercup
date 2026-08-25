@@ -22,6 +22,7 @@ import {
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   PC_HEAVY_SLOT_ACQUIRED_MARKER,
+  PC_HEAVY_DURABLE_CALLER_ENV,
   PREFLIGHT_ATTRIBUTION_SNAPSHOT_PREFIX,
   STREAM_LINE_OUTPUT_CAP,
   STREAM_LINE_TRUNCATION_MARKER,
@@ -396,18 +397,24 @@ describe('background jobs', () => {
     const enrolledAtSpawn = taskManagerEnabledSync();
     const job = startBackground(
       {
-        command: `printf '%s' "$${CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV}"`,
+        command:
+          `printf 'task=%s durable=%s' ` +
+          `"$${CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV}" "$${PC_HEAVY_DURABLE_CALLER_ENV}"`,
         cwd: STATE,
         stateDir: STATE,
-        env: { [CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV]: 'caller-forged-task-id' },
+        env: {
+          [CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV]: 'caller-forged-task-id',
+          [PC_HEAVY_DURABLE_CALLER_ENV]: '0',
+        },
       },
       10_000,
     );
     await waitForStatus(job.id);
     const output = readJobOutput(getJob(job.id)!);
-    if (enrolledAtSpawn) expect(output).toContain(job.taskId);
-    else expect(output).not.toContain(job.taskId);
+    if (enrolledAtSpawn) expect(output).toContain(`task=${job.taskId} durable=1`);
+    else expect(output).toContain('task= durable=');
     expect(output).not.toContain('caller-forged-task-id');
+    expect(output).not.toContain('durable=0');
   });
 
   it('runs, exposes incremental output, and reaches a terminal status', async () => {

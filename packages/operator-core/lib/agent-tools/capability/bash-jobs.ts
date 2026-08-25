@@ -135,6 +135,7 @@ export function isBackgroundTestCommand(command: string): boolean {
 /** Reserved child-env provenance for long-running physical drills. Only the
  * durable background seam may mint this marker; callers cannot override it. */
 export const CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV = 'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID';
+export const PC_HEAVY_DURABLE_CALLER_ENV = 'PC_HEAVY_DURABLE_CALLER';
 /**
  * Grace between SIGTERM and SIGKILL when a job hits its OWN deadline (WI-6677).
  * The deadline path used to SIGKILL outright, which no `trap`/`finally` can
@@ -1403,6 +1404,11 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const childEnv = {
     ...(opts.env ?? {}),
     [CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV]: enrolment.enrolled ? enrolment.taskId : '',
+    // EI-21434250273517260: the systemd-enrolled task is intentionally durable
+    // across an operator-host restart. pc-heavy must keep its materializer
+    // preemption policy, but must not mistake that old host PPID disappearing
+    // for an orphaned workload and reap the still-authoritative task.
+    [PC_HEAVY_DURABLE_CALLER_ENV]: enrolment.enrolled ? '1' : '',
   };
 
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
