@@ -111,7 +111,9 @@ describe('coord_event_log federation (real PG)', () => {
         writer_key   text,
         msg_id       text        NOT NULL,
         body         jsonb       NOT NULL,
-        ts           timestamptz NOT NULL DEFAULT now()
+        ts           timestamptz NOT NULL DEFAULT now(),
+        superseded_by_msg_id text,        -- EI-21467654382027859: corrections must federate
+        superseded_at        timestamptz  -- EI-21467654382027859
       );
     `);
 
@@ -326,6 +328,7 @@ describe('coord_event_log federation (real PG)', () => {
         CREATE TABLE harness_shared.coord_event_log (
           id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default', surface text NOT NULL,
           writer_key text, msg_id text NOT NULL, body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now(),
+          superseded_by_msg_id text, superseded_at timestamptz, -- EI-21467654382027859
           harness_slug text, origin text NOT NULL DEFAULT 'local', author_pubkey text,
           fed_ts bigint, fed_hlc text); -- mig 181 fed_ts + mig 314 fed_hlc LWW-guard columns
         CREATE UNIQUE INDEX coord_event_log_fed_uq ON harness_shared.coord_event_log (workspace_id, msg_id)
