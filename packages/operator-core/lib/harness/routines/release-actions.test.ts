@@ -1457,6 +1457,46 @@ describe('green-checkpoint scope isolation (2026-07-01 bg-host OOM blast-radius)
       }
     });
 
+    it('keeps the durable log and child alive when the live stdout mirror loses its reader', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-'));
+      const paths = checkpointRunLogPaths(dir, 'mirror-loss-run', new Date('2026-08-24T15:01:30.000Z'));
+      const wrapperPath = join(dir, 'wrapper.sh');
+      try {
+        writeFileSync(
+          wrapperPath,
+          buildScheduledCheckpointShell(
+            [
+              process.execPath,
+              '-e',
+              [
+                "process.stdout.write('before mirror loss\\n')",
+                "setTimeout(() => process.stdout.write('after mirror loss\\n'), 100)",
+                'setTimeout(() => process.exit(0), 200)',
+              ].join('; '),
+            ],
+            paths,
+          ),
+          { mode: 0o700 },
+        );
+
+        // `head` exits after the first line, closing the wrapper's live stdout reader while
+        // the child is still running. The append-only file sink must remain writable and the
+        // wrapper must still observe the child's real exit instead of manufacturing exit 1.
+        execFileSync('/bin/bash', ['-c', `/bin/bash ${JSON.stringify(wrapperPath)} | head -n 1 >/dev/null`], {
+          encoding: 'utf8',
+        });
+
+        expect(readFileSync(paths.logPath, 'utf8')).toContain('after mirror loss');
+        expect(JSON.parse(readFileSync(paths.terminalPath, 'utf8'))).toMatchObject({
+          runId: 'mirror-loss-run',
+          logPath: paths.logPath,
+          exitCode: 0,
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('does not report a clean exit when the wrapper is SIGTERMed mid-child', () => {
       const dir = mkdtempSync(join(tmpdir(), 'papercusp-scheduled-checkpoint-'));
       const paths = checkpointRunLogPaths(dir, 'killed-run', new Date('2026-08-24T15:02:00.000Z'));

@@ -179,9 +179,14 @@ export function buildScheduledCheckpointShell(
     '  exit "$ec"',
     '}',
     'trap _papercusp_write_checkpoint_terminal EXIT',
-    'exec 3> >(tee -a "$log")',
+    // The systemd scope intentionally outlives the routine/bg-host process that launched it.
+    // When that parent restarts, the live stdout/stderr pipe loses its reader. Plain `tee`
+    // exits on EPIPE, closes fd 3/4, and can crash the still-healthy checkpoint before it
+    // records a verdict or releases its run lock. Keep the append-only log authoritative and
+    // treat only PIPE output loss as best-effort; real log-file write errors still diagnose.
+    'exec 3> >(tee --output-error=warn-nopipe -a "$log")',
     'stdout_tee_pid=$!',
-    'exec 4> >(tee -a "$log" >&2)',
+    'exec 4> >(tee --output-error=warn-nopipe -a "$log" >&2)',
     'stderr_tee_pid=$!',
     `${command} >&3 2>&4`,
     'status=$?',
