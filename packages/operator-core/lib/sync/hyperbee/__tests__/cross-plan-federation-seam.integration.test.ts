@@ -145,7 +145,8 @@ async function setupPeerSchema(sql: postgres.Sql): Promise<void> {
     CREATE TABLE harness_shared.coord_event_log (
       id bigserial PRIMARY KEY, workspace_id text NOT NULL DEFAULT 'default',
       surface text NOT NULL, writer_key text, msg_id text NOT NULL,
-      body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now());
+      body jsonb NOT NULL, ts timestamptz NOT NULL DEFAULT now(),
+      superseded_by_msg_id text, superseded_at timestamptz); -- EI-21467654382027859
     CREATE UNIQUE INDEX coord_event_log_event_uq
       ON harness_shared.coord_event_log (workspace_id, surface, msg_id)
       WHERE surface IN ('handoffs', 'escalations');
