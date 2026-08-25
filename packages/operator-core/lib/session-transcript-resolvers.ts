@@ -38,6 +38,22 @@ export function ompSessionsRootForSessionKey(
     : join(home, '.papercusp', 'su-omp-homes', `session-${sessionKey}`, 'agent', 'sessions');
 }
 
+/**
+ * The container of every PER-SESSION omp home — `<here>/session-<advId>/agent/sessions/…`
+ * (WI-41496).
+ *
+ * Exported because two layers must agree on it and did not: the search corpus
+ * already walks this root (session-ingest's omp adapter, added by
+ * EI-20212281439039808 with the note "this pair must not drift again"), while
+ * this module — the LIVE transcript resolver the HUD conversation popup streams
+ * through — only ever looked in the shared `~/.omp` home. A psu-launched omp
+ * agent never writes there, so its popup was permanently empty: measured live,
+ * a 25 KB transcript on disk and `backfill: []` on the wire.
+ */
+export function ompSessionHomesRoot(home: string = homedir()): string {
+  return join(home, '.papercusp', 'su-omp-homes');
+}
+
 interface CachedPath {
   path: string;
   /** When this resolution was computed — checked against {@link CODEX_KEY_CACHE_TTL_MS}. */
@@ -46,6 +62,21 @@ interface CachedPath {
 
 const codexPathCache = new Map<string, CachedPath>();
 const ompPathCache = new Map<string, CachedPath>();
+
+/**
+ * WI-41496 — how long a FAILED per-session-home sweep suppresses the next one
+ * for the same thread id.
+ *
+ * Misses are deliberately never cached in this module (a live session's file
+ * appears mid-poll and must be seen at once), and that rule is right for the
+ * cheap single-root walks. The all-homes fallback is a different cost class —
+ * one readdir per per-session home — and the thinking route re-resolves every
+ * second while a pane is open on a session with no file yet. Short enough that
+ * a transcript appearing is picked up within a couple of ticks, long enough
+ * that N open panes cannot turn into a readdir storm.
+ */
+export const OMP_HOME_SWEEP_COOLDOWN_MS = 5_000;
+const ompHomeSweepCooldown = new Map<string, number>();
 
 /**
  * EI-20219088862022620 / WI-38090 — how long a PER-HOME ("newest rollout in this
@@ -95,6 +126,7 @@ function pathCacheKey(kind: string, id: string | number, root: string): string {
 export function __resetTranscriptResolverCaches(): void {
   codexPathCache.clear();
   ompPathCache.clear();
+  ompHomeSweepCooldown.clear();
 }
 
 async function statMtime(p: string): Promise<number | null> {
@@ -230,29 +262,86 @@ export async function findCodexRolloutPathByUuid(
  * omp analogues of claude-sessions' isSessionThinking: the session's transcript
  * file was appended within `activeMs`. Best-effort; false when unresolvable.
  */
+/**
+ * BOTH signals the roster needs about a non-claude session, from ONE resolve
+ * (WI-41497) — the codex/omp analogue of claude-sessions'
+ * `resolveSessionThinkingState`:
+ *
+ *   - `resolvable` — a transcript EXISTS to stream. False is what routes the
+ *     conversation popup to its "no live transcript … it has ended, or its
+ *     transcript was rotated away" note, so it is a claim about the record, not
+ *     a default to leave lying around: before this existed, adv-roster never
+ *     assigned it on the codex/omp legs at all and every codex row inherited a
+ *     verdict from the CLAUDE resolver, which of course could not find a codex
+ *     rollout. 237 of 257 live codex agents were being told they had ended.
+ *   - `thinking` — that transcript was appended within `activeMs`.
+ *
+ * Returned together because the callers want both and a second resolve would be
+ * a second chance for the two to disagree about the same session.
+ */
+export interface TranscriptThinkingState {
+  resolvable: boolean;
+  thinking: boolean;
+}
+
+const UNRESOLVED: TranscriptThinkingState = { resolvable: false, thinking: false };
+
+async function stateForPath(
+  p: string | null,
+  opts: { nowMs?: number; activeMs?: number },
+): Promise<TranscriptThinkingState> {
+  if (!p) return UNRESOLVED;
+  const mtime = await statMtime(p);
+  if (mtime === null) return UNRESOLVED;
+  return {
+    resolvable: true,
+    thinking: (opts.nowMs ?? Date.now()) - mtime < (opts.activeMs ?? 10_000),
+  };
+}
+
+export async function resolveCodexThinkingState(
+  sessionKey: string | number,
+  opts: { nowMs?: number; activeMs?: number; homeOverride?: string } = {},
+): Promise<TranscriptThinkingState> {
+  return stateForPath(
+    await findCodexRolloutPath(sessionKey, { homeOverride: opts.homeOverride }),
+    opts,
+  );
+}
+
+export async function resolveOmpThinkingState(
+  threadId: string,
+  opts: { nowMs?: number; activeMs?: number; rootOverride?: string; sessionKey?: string | number } = {},
+): Promise<TranscriptThinkingState> {
+  return stateForPath(
+    await findOmpSessionPath(threadId, {
+      rootOverride: opts.rootOverride,
+      sessionKey: opts.sessionKey,
+    }),
+    opts,
+  );
+}
+
+/**
+ * "Actively thinking" proxies for the roster's pulsing indicator — the codex /
+ * omp analogues of claude-sessions' isSessionThinking: the session's transcript
+ * file was appended within `activeMs`. Best-effort; false when unresolvable.
+ *
+ * Thin wrappers over the state resolvers above, so a caller that wants only the
+ * freshness half reads the same probe rather than a parallel one.
+ */
 export async function isCodexSessionThinking(
   sessionKey: string | number,
   opts: { nowMs?: number; activeMs?: number; homeOverride?: string } = {},
 ): Promise<boolean> {
-  const p = await findCodexRolloutPath(sessionKey, { homeOverride: opts.homeOverride });
-  if (!p) return false;
-  const mtime = await statMtime(p);
-  if (mtime === null) return false;
-  return (opts.nowMs ?? Date.now()) - mtime < (opts.activeMs ?? 10_000);
+  return (await resolveCodexThinkingState(sessionKey, opts)).thinking;
 }
 
 export async function isOmpThreadThinking(
   threadId: string,
   opts: { nowMs?: number; activeMs?: number; rootOverride?: string; sessionKey?: string | number } = {},
 ): Promise<boolean> {
-  const p = await findOmpSessionPath(threadId, {
-    rootOverride: opts.rootOverride,
-    sessionKey: opts.sessionKey,
-  });
-  if (!p) return false;
-  const mtime = await statMtime(p);
-  if (mtime === null) return false;
-  return (opts.nowMs ?? Date.now()) - mtime < (opts.activeMs ?? 10_000);
+  return (await resolveOmpThinkingState(threadId, opts)).thinking;
 }
 
 /**
@@ -263,10 +352,11 @@ export async function isOmpThreadThinking(
  */
 export async function findOmpSessionPath(
   threadId: string,
-  opts: { rootOverride?: string; sessionKey?: string | number } = {},
+  opts: { rootOverride?: string; sessionKey?: string | number; home?: string } = {},
 ): Promise<string | null> {
   if (!/^[A-Za-z0-9_-]{6,}$/.test(threadId)) return null;
-  const root = opts.rootOverride ?? ompSessionsRootForSessionKey(opts.sessionKey);
+  const home = opts.home ?? homedir();
+  const root = opts.rootOverride ?? ompSessionsRootForSessionKey(opts.sessionKey, home);
   const cacheKey = pathCacheKey('omp', threadId, root);
   const cached = ompPathCache.get(cacheKey);
   if (cached) {
@@ -274,6 +364,53 @@ export async function findOmpSessionPath(
     if ((await statMtime(cached.path)) !== null) return cached.path;
     ompPathCache.delete(cacheKey);
   }
+  const hit = await searchOmpRoot(root, threadId);
+  if (hit) {
+    ompPathCache.set(cacheKey, { path: hit, at: Date.now() });
+    return hit;
+  }
+
+  /* WI-41496 — the caller could not name the session's home, so search the
+     per-session homes too.
+     A caller that KNOWS the adv-session id (the roster's freshness probe, and
+     now the stream route) passes `sessionKey` and lands in exactly one home
+     above; this leg is for the callers that structurally cannot — an archive
+     re-resolve, a transcript-search deep-link that carries only the thread id.
+     Before it existed those callers searched the shared `~/.omp` home ONLY,
+     where a psu-launched agent never writes, and reported the session as having
+     no transcript at all.
+     Bounded and cooled-down rather than free: the thinking route re-resolves on
+     a 1 Hz tick while a session has no file yet, so an uncooled sweep of every
+     home would be a readdir storm for each open pane. A hit is cached by the
+     normal path cache above; a miss suppresses the sweep for
+     OMP_HOME_SWEEP_COOLDOWN_MS. */
+  if (opts.rootOverride || opts.sessionKey != null) return null;
+  const homesRoot = ompSessionHomesRoot(home);
+  const now = Date.now();
+  const cooledAt = ompHomeSweepCooldown.get(threadId);
+  if (cooledAt !== undefined && now - cooledAt < OMP_HOME_SWEEP_COOLDOWN_MS) return null;
+  let homes: string[];
+  try {
+    homes = await fs.readdir(homesRoot);
+  } catch {
+    ompHomeSweepCooldown.set(threadId, now);
+    return null;
+  }
+  for (const dir of homes) {
+    const sessionsRoot = join(homesRoot, dir, 'agent', 'sessions');
+    const p = await searchOmpRoot(sessionsRoot, threadId);
+    if (p) {
+      ompPathCache.set(cacheKey, { path: p, at: Date.now() });
+      ompHomeSweepCooldown.delete(threadId);
+      return p;
+    }
+  }
+  ompHomeSweepCooldown.set(threadId, now);
+  return null;
+}
+
+/** One omp sessions root: `<root>/<cwd-encoded>/<ts>_<threadId>.jsonl`. */
+async function searchOmpRoot(root: string, threadId: string): Promise<string | null> {
   const suffix = `_${threadId}.jsonl`;
   let cwdDirs: string[];
   try {
@@ -289,11 +426,7 @@ export async function findOmpSessionPath(
       continue;
     }
     for (const f of files) {
-      if (f.endsWith(suffix)) {
-        const p = join(root, dir, f);
-        ompPathCache.set(cacheKey, { path: p, at: Date.now() });
-        return p;
-      }
+      if (f.endsWith(suffix)) return join(root, dir, f);
     }
   }
   return null;
