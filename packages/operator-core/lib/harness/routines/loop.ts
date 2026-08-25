@@ -109,7 +109,7 @@ export const DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE = [
   '🔁 Loop wake (every ~{intervalSec}s after each turn settles). You are continuing your OWN warm session toward: {goal}',
   '',
   'Each wake:',
-  "1. Decide the next concrete unit(s) of work. If the goal is DONE or there's nothing left to do, call `loop:end` and stop — do not spin on empty wakes. An idle SELF-PULLER (your scheduler:get_next / work_items:claim_next came back empty) parks on events instead of polling: register ONE `events:await { event: \"work-item:claimable\", payload_filter: <your claim spec's view>, timeout_sec: 1800 }`, then `loop:end` — the wake re-invokes you; your pull stays the authoritative claim (re-register on a re-miss).",
+  '1. Decide the next concrete unit(s) of work. If the goal is DONE or there\'s nothing left to do, call `loop:end` and stop — do not spin on empty wakes. An idle SELF-PULLER (your scheduler:get_next / work_items:claim_next came back empty) parks on events instead of polling: register ONE `events:await { event: "work-item:claimable", payload_filter: <your claim spec\'s view>, timeout_sec: 1800 }`, then `loop:end` — the wake re-invokes you; your pull stays the authoritative claim (re-register on a re-miss).',
   '2. Work it per your persona\'s "Working as a fleet MEMBER — the member operating loop" contract — create + ' +
     'self-assign the unit atomically, pick `kind` by what it IS, finish with `work_items:complete { completion }` ' +
     'evidence (never a bare "done" assertion). harness:{harness}, assign_to:{ownerId}.',
@@ -347,9 +347,7 @@ export interface MaterializeLoopInput {
  * the same session updates the one logical row even if the resolved harness
  * namespace changes between a concrete slug and the operator wildcard fallback.
  */
-export async function materializeLoop(
-  input: MaterializeLoopInput,
-): Promise<{
+export async function materializeLoop(input: MaterializeLoopInput): Promise<{
   id: string;
   name: string;
   nextFireAt: Date | null;
@@ -464,7 +462,17 @@ export async function materializeLoop(
              concurrency = 'skip',
              catchup = 'skip-old',
              active = ${input.active ?? true},
-             next_fire_at = CASE WHEN next_fire_at = 'infinity'::timestamptz
+             -- P-011 / owner-reported missed wake (2026-08-24): infinity is
+             -- an in-flight sentinel only while the existing row is ACTIVE.
+             -- loop:end leaves next_fire_at untouched, so a later loop:arm of
+             -- that INACTIVE row used to preserve a stale parked sentinel from
+             -- an older fire. The new arm then had no finite first fire and
+             -- reported after-turn-settle forever (firesSinceArm stayed 0).
+             -- Preserve the sentinel for a genuine mid-turn retune, but treat
+             -- an inactive row as a fresh lifecycle and schedule this arm's
+             -- requested first fire.
+             next_fire_at = CASE WHEN active = TRUE
+                                      AND next_fire_at = 'infinity'::timestamptz
                                  THEN next_fire_at
                                  ELSE ${nextFireAtStr}::timestamptz END,
              reschedule_interval_sec = ${input.intervalSec},
@@ -479,7 +487,13 @@ export async function materializeLoop(
       // caller reports its live configuration and, importantly, does not stamp
       // or deactivate any shadow row as if the repair had changed the loop.
       const currentRows = await sql<
-        Array<{ id: string; name: string; next_fire_at: Date | null; target_role: string; reschedule_interval_sec: number | null }>
+        Array<{
+          id: string;
+          name: string;
+          next_fire_at: Date | null;
+          target_role: string;
+          reschedule_interval_sec: number | null;
+        }>
       >`
         SELECT id, name, next_fire_at, target_role, reschedule_interval_sec
           FROM harness_shared.routines
@@ -1130,21 +1144,12 @@ export function computeLoopFireStarvation(input: {
   if (!input.active || !input.parked) return false;
 
   const expected = input.expectedFiresSinceArm;
-  if (
-    expected == null ||
-    !Number.isFinite(expected) ||
-    expected < LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES
-  ) {
+  if (expected == null || !Number.isFinite(expected) || expected < LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES) {
     return false;
   }
 
-  const firesSinceArm = Number.isFinite(input.firesSinceArm)
-    ? Math.max(0, input.firesSinceArm)
-    : 0;
-  if (
-    expected - firesSinceArm < LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES ||
-    firesSinceArm !== 0
-  ) {
+  const firesSinceArm = Number.isFinite(input.firesSinceArm) ? Math.max(0, input.firesSinceArm) : 0;
+  if (expected - firesSinceArm < LOOP_FIRE_STARVATION_MIN_MISSED_OPPORTUNITIES || firesSinceArm !== 0) {
     return false;
   }
 
@@ -1537,22 +1542,28 @@ export function computeLoopCadence(input: {
   const armedAtMs = input.armedAtMs;
   const nowMs = input.nowMs ?? Date.now();
   const expectedFiresSinceArm =
-    intervalSec != null && Number.isFinite(intervalSec) && intervalSec > 0 &&
-    armedAtMs != null && Number.isFinite(armedAtMs) && Number.isFinite(nowMs) && nowMs >= armedAtMs
+    intervalSec != null &&
+    Number.isFinite(intervalSec) &&
+    intervalSec > 0 &&
+    armedAtMs != null &&
+    Number.isFinite(armedAtMs) &&
+    Number.isFinite(nowMs) &&
+    nowMs >= armedAtMs
       ? Math.max(0, Math.floor((nowMs - armedAtMs) / (intervalSec * 1000)))
       : null;
 
   const firesSinceArm = Number.isFinite(input.firesSinceArm) ? Math.max(0, input.firesSinceArm) : 0;
   const lastFiredAtMs = input.lastFiredAtMs;
   const elapsedSinceArmMs =
-    armedAtMs != null && Number.isFinite(armedAtMs) &&
-    lastFiredAtMs != null && Number.isFinite(lastFiredAtMs) && lastFiredAtMs >= armedAtMs
+    armedAtMs != null &&
+    Number.isFinite(armedAtMs) &&
+    lastFiredAtMs != null &&
+    Number.isFinite(lastFiredAtMs) &&
+    lastFiredAtMs >= armedAtMs
       ? lastFiredAtMs - armedAtMs
       : null;
   const effectiveIntervalSec =
-    elapsedSinceArmMs != null && firesSinceArm > 0
-      ? elapsedSinceArmMs / 1000 / firesSinceArm
-      : null;
+    elapsedSinceArmMs != null && firesSinceArm > 0 ? elapsedSinceArmMs / 1000 / firesSinceArm : null;
   const cadenceRatio =
     effectiveIntervalSec != null && intervalSec != null && Number.isFinite(intervalSec) && intervalSec > 0
       ? effectiveIntervalSec / intervalSec
@@ -2094,10 +2105,7 @@ export interface PriorLoopFacts {
   armedAt: string | null;
 }
 
-export async function readActiveLoopFacts(
-  ownerId: string,
-  opts: { sql?: Sql } = {},
-): Promise<PriorLoopFacts | null> {
+export async function readActiveLoopFacts(ownerId: string, opts: { sql?: Sql } = {}): Promise<PriorLoopFacts | null> {
   const sql = opts.sql ?? getOrgPg().sql;
   const rows = await boundedPgReadTxn<
     Array<{
@@ -2187,10 +2195,7 @@ export async function autoArmFleetMemberLoop(opts: {
   if (opts.fleetRole !== 'member') return { armed: false, reason: 'not-a-member' };
   if (!opts.planSlug) return { armed: false, reason: 'no-plan-bound' };
   try {
-    const [{ getFlag }, { FLAGS }] = await Promise.all([
-      import('@papercusp/flags/server'),
-      import('@papercusp/flags'),
-    ]);
+    const [{ getFlag }, { FLAGS }] = await Promise.all([import('@papercusp/flags/server'), import('@papercusp/flags')]);
     if (!(await getFlag(FLAGS.LOOPS, 'system'))) {
       return { armed: false, reason: 'loops-disabled' };
     }
