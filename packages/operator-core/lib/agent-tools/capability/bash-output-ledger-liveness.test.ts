@@ -301,6 +301,7 @@ describe('terminalResourceLimitFields (EI-21437837415175286)', () => {
           tasksMax: 2_048,
           detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'test-run' },
         }),
+        '/usr/bin/bash: fork: retry: Resource temporarily unavailable',
       ),
     ).toEqual({
       failure_class: 'infrastructure-resource-limit',
@@ -326,6 +327,38 @@ describe('terminalResourceLimitFields (EI-21437837415175286)', () => {
     ).toBeNull();
   });
 
+  it('does not replace a complete real-red test verdict merely because the task touched TasksMax', () => {
+    expect(
+      terminalResourceLimitFields(
+        fakeRow({
+          state: 'exited',
+          exitCode: 1,
+          pidsCurrent: 4_096,
+          tasksMax: 4_096,
+          detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'test-run' },
+        }),
+        'Test Files 4 failed | 2827 passed\nTests 4 failed | 41131 passed',
+      ),
+    ).toBeNull();
+  });
+
+  it('retains the exact bash wait-for-loss fallback when the log itself was lost', () => {
+    expect(
+      terminalResourceLimitFields(
+        fakeRow({
+          state: 'exited',
+          exitCode: 254,
+          pidsCurrent: 4_096,
+          tasksMax: 4_096,
+          detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'test-run' },
+        }),
+      ),
+    ).toMatchObject({
+      failure_class: 'infrastructure-resource-limit',
+      test_verdict: 'undetermined',
+    });
+  });
+
   it('keeps non-test resource exhaustion explicit without inventing a test verdict', () => {
     const result = terminalResourceLimitFields(
       fakeRow({
@@ -335,6 +368,7 @@ describe('terminalResourceLimitFields (EI-21437837415175286)', () => {
         tasksMax: 4_096,
         detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'other' },
       }),
+      'node: spawn EAGAIN',
     );
     expect(result).toMatchObject({
       failure_class: 'infrastructure-resource-limit',
