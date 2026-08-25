@@ -712,6 +712,46 @@ describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
       expect(row.result.content[0]?.text).toContain(`"task_id":"task-${index}"`);
     }
   });
+
+  it('preserves scalar fields in ordinary nested records at the aggressive depth boundary', () => {
+    const rows = Array.from({ length: 40 }, (_, index) => ({
+      id: `id-${index}`,
+      invoked_at: index,
+      tool_name: 'dev:pg_query',
+      status: 'success',
+      owner: `owner-${index}`,
+      goal: `goal-${index}`,
+      output: 'output-'.repeat(50),
+      args: { path: 'x'.repeat(300), index },
+    }));
+
+    const shaped = shapeCodeRunSummary({
+      summary: {
+        invocations: { rows },
+        selectedFields: ['id', 'invoked_at', 'tool_name', 'status', 'owner', 'goal', 'output', 'args'],
+      },
+    }) as {
+      summary: {
+        invocations: { rows: Array<Record<string, unknown>> };
+        selectedFields: string[];
+      };
+      summaryNotice: { truncated: true; paths: string[] };
+    };
+
+    expect(shaped.summary.invocations.rows.length).toBeGreaterThan(0);
+    expect(shaped.summary.invocations.rows.length).toBeLessThan(rows.length);
+    expect(shaped.summary.invocations.rows[0]).toMatchObject({
+      id: 'id-0',
+      invoked_at: 0,
+      tool_name: 'dev:pg_query',
+      status: 'success',
+      owner: 'owner-0',
+      goal: 'goal-0',
+    });
+    expect(shaped.summary.invocations.rows[0]?.output).toEqual(expect.stringContaining('output-'));
+    expect(shaped.summary.invocations.rows[0]?.args).toBeUndefined();
+    expect(shaped.summaryNotice.paths).toContain('summary.invocations.rows');
+  });
 });
 
 // EI-21163938645109933 / EI-21164455886001541 (P-007). Both were filed as "false field-miss
