@@ -533,8 +533,28 @@ export function looksLikeSilentCollectionFailure(output) {
  * @returns {boolean} true when the output looks like node_modules was being rewritten concurrently
  */
 export function looksLikeMidInstallCorruption(output) {
-  if (/\bvitest:\s*not found\b/i.test(output)) return true;
-  if (/ERR_MODULE_NOT_FOUND/.test(output) && /node_modules/.test(output)) return true;
+  // Require the shell diagnostic to END its line. This detector's own Vitest suite has a test
+  // named `flags the shell "vitest: not found" signature`; when any OTHER assertion in that file
+  // failed, searching the whole output matched the passing test title and fabricated a concurrent
+  // install diagnosis. The real reproduced shell shape (`sh: 1: vitest: not found`) is a complete
+  // diagnostic line, so anchoring preserves the signal while rejecting reporter/source echo.
+  if (
+    output.split(/\r?\n/).some((line) => /(?:^|:\s)vitest:\s*not found\s*$/i.test(line.trim()))
+  )
+    return true;
+  // Require the three pieces on the SAME diagnostic line. Test reporters can echo arbitrary
+  // source in an assertion diff; this detector's own implementation contains both tokens, so
+  // searching the whole output independently made an ordinary source-string mismatch diagnose
+  // itself as a concurrent install (EI-21417347162023894).
+  if (
+    output.split(/\r?\n/).some(
+      (line) =>
+        /(?:Error\s+)?\[ERR_MODULE_NOT_FOUND\]:/.test(line) &&
+        /Cannot find (?:module|package)/.test(line) &&
+        /node_modules[\\/]/.test(line),
+    )
+  )
+    return true;
   return false;
 }
 
@@ -1570,7 +1590,14 @@ export function formatRouteError(detail) {
   return `TEST_FILE_ROUTE_ERROR ${detail}; ${TESTING_RUN_GUIDANCE}`;
 }
 
-export async function main(argv = process.argv.slice(2)) {
+/**
+ * @param {string[]} [argv]
+ * @param {{runCapturedTestProcessImpl?: typeof runCapturedTestProcess}} [options]
+ */
+export async function main(
+  argv = process.argv.slice(2),
+  { runCapturedTestProcessImpl = runCapturedTestProcess } = {},
+) {
   const { dry, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
@@ -1770,7 +1797,7 @@ export async function main(argv = process.argv.slice(2)) {
     // below; forwarded verbatim on completion so nothing is lost for a live TTY. The ASYNC seam
     // emits bounded progress separately while retaining the existing 256MB capture ceiling.
     warnIfInstallInFlight(`\`vitest run\` (group cwd=${cwdLabel})`);
-    const result = await runCapturedTestProcess(
+    const result = await runCapturedTestProcessImpl(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
       { cwd: group.cwd, env: process.env, files: exact, cwdLabel },
@@ -1823,7 +1850,7 @@ export async function main(argv = process.argv.slice(2)) {
         );
         for (const file of exact) {
           console.error(`\n>>> re-running ${file} alone for detail`);
-          const detailResult = await runCapturedTestProcess(
+          const detailResult = await runCapturedTestProcessImpl(
             'npx',
             ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
             {

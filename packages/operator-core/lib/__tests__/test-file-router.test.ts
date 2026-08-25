@@ -431,7 +431,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
 
   it('wires the real Vitest run through the async seam rather than a blocking spawnSync', () => {
     const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
-    const runStart = source.indexOf("const result = await runCapturedTestProcessImpl(\n      'npx'");
+    const runStart = source.search(/const result = await runCapturedTestProcessImpl\(\s*["']npx["']/);
     const runEnd = source.indexOf('const runOutput =', runStart);
     expect(runStart).toBeGreaterThan(0);
     expect(runEnd).toBeGreaterThan(runStart);
