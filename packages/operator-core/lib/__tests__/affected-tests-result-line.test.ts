@@ -197,6 +197,15 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       expect(typo.stdout).not.toContain('AFFECTED_TESTS_SCHEDULER');
     });
 
+    it('accepts the conventional equals-form for value-taking flags', () => {
+      const result = runAffected(['--changed-paths=scripts/affected-tests.mjs', '--dry']);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('AFFECTED_DERIVATION source=explicit changedPaths=1');
+      const [marker] = markerLines(result.stdout);
+      expect(parseMarker(marker).status).toBe('dry-run');
+    });
+
     it('routes Vitest-style --run intent to the exact-file runner instead of suggesting --all', () => {
       const testPath = 'packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts';
       const result = runAffected(['--run', testPath]);
@@ -219,6 +228,7 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       const nonTest = runAffected(['scripts/affected-tests.mjs']);
       expect(nonTest.status).toBe(1);
       expect(nonTest.stderr).toContain('pass --changed-paths as one comma-delimited value');
+      expect(nonTest.stderr).toContain('--changed-paths=path/to/a.ts,path/to/b.ts');
       expect(nonTest.stderr).not.toContain('For exact files use:');
     });
 
