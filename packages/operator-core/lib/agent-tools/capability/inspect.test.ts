@@ -47,6 +47,21 @@ const INSPECT_PACKAGE = join(INSPECT_STATE, 'pkg');
 mkdirSync(INSPECT_PACKAGE);
 mkdirSync(join(INSPECT_PACKAGE, 'src'));
 writeFileSync(join(INSPECT_PACKAGE, 'src/a.ts'), 'export const a = 1;\n');
+const NODE_TEST_PACKAGE = join(INSPECT_STATE, 'node-tests');
+mkdirSync(join(NODE_TEST_PACKAGE, 'test'), { recursive: true });
+writeFileSync(
+  join(NODE_TEST_PACKAGE, 'package.json'),
+  JSON.stringify({
+    name: 'node-tests',
+    scripts: {
+      'test:node-file': 'node --test test/foo.test.js',
+      'test:node-many': 'node --test test/foo.test.js test/bar.test.js',
+    },
+  }),
+);
+writeFileSync(join(NODE_TEST_PACKAGE, 'test/foo.test.js'), '');
+writeFileSync(join(NODE_TEST_PACKAGE, 'test/bar.test.js'), '');
+writeFileSync(join(NODE_TEST_PACKAGE, 'test/unlisted.test.js'), '');
 
 type ToolResultish = { content: Array<{ text: string }>; isError?: boolean };
 type Tool = { handler: (a: unknown, c: unknown) => Promise<ToolResultish> };
@@ -265,6 +280,26 @@ describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
       ok: true,
       command: 'npm run test:file -- packages/operator-core/lib/events/await/await-store.integration.test.ts',
       cwd: BASE,
+    });
+  });
+
+  it('test with a package-declared exact node:test script → uses that script', () => {
+    expect(
+      resolveInspectCommand({ check: 'test', package: 'node-tests', path: 'test/foo.test.js' }, INSPECT_STATE),
+    ).toEqual({
+      ok: true,
+      command: 'npm run test:node-file',
+      cwd: NODE_TEST_PACKAGE,
+    });
+  });
+
+  it('test with a node:test package and no exact script → uses the fixed direct runner', () => {
+    expect(
+      resolveInspectCommand({ check: 'test', package: 'node-tests', path: 'test/unlisted.test.js' }, INSPECT_STATE),
+    ).toEqual({
+      ok: true,
+      command: 'node --test test/unlisted.test.js',
+      cwd: NODE_TEST_PACKAGE,
     });
   });
 

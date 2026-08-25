@@ -24,7 +24,7 @@
  */
 
 import { isAbsolute, basename, dirname, relative, resolve } from 'node:path';
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -154,6 +154,59 @@ const TEST_PATH_GUIDANCE =
 const LAYERED_TEST_FILE = /\.(integration|browser)\.test\.[cm]?[jt]sx?$/i;
 
 const TSCONFIG_BASENAME = /^tsconfig(\.[\w-]+)?\.json$/;
+const NODE_TEST_FILE = /\.[cm]?js$/i;
+const SAFE_NPM_SCRIPT_NAME = /^[A-Za-z0-9:_-]+$/;
+
+function normalizeTestPathToken(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function parseExactNodeTestScript(command: string): string | null {
+  const tokens = command.trim().split(/\s+/);
+  if (tokens.length !== 3 || tokens[0] !== 'node' || tokens[1] !== '--test') return null;
+  const path = normalizeTestPathToken(tokens[2]);
+  return SAFE_PATH.test(path) ? path : null;
+}
+
+function isNodeTestScript(command: string): boolean {
+  const tokens = command.trim().split(/\s+/);
+  return tokens.length >= 3 && tokens[0] === 'node' && tokens[1] === '--test';
+}
+
+/**
+ * Resolve a JavaScript test in a package that declares Node's built-in test
+ * runner. Prefer a package script that names exactly this file, then fall back
+ * to the fixed direct runner. Packages without a declared node:test script stay
+ * on the normal Vitest route.
+ */
+export function resolveNodeTestCommand(pathArg: string, cwd: string): InspectResolution | null {
+  if (!NODE_TEST_FILE.test(pathArg)) return null;
+
+  let scripts: Record<string, unknown>;
+  try {
+    const packageJson = JSON.parse(readFileSync(resolve(cwd, 'package.json'), 'utf8')) as {
+      scripts?: unknown;
+    };
+    scripts = packageJson.scripts && typeof packageJson.scripts === 'object' && !Array.isArray(packageJson.scripts)
+      ? (packageJson.scripts as Record<string, unknown>)
+      : {};
+  } catch {
+    return null;
+  }
+
+  const requested = normalizeTestPathToken(pathArg);
+  let hasNodeTestScript = false;
+  for (const [name, value] of Object.entries(scripts)) {
+    if (typeof value !== 'string' || !isNodeTestScript(value)) continue;
+    hasNodeTestScript = true;
+    const exactPath = parseExactNodeTestScript(value);
+    if (exactPath && exactPath === requested && SAFE_NPM_SCRIPT_NAME.test(name)) {
+      return { ok: true, command: `npm run ${name}`, cwd };
+    }
+  }
+
+  return hasNodeTestScript ? { ok: true, command: `node --test ${pathArg}`, cwd } : null;
+}
 
 /**
  * Map the validated args to the fixed verification command + cwd, or an error.
@@ -215,6 +268,9 @@ export function resolveInspectCommand(
     const repoRelativePath = relative(baseDir, resolve(cwd, pathArg));
     return { ok: true, command: `npm run test:file -- ${repoRelativePath}`, cwd: baseDir };
   }
+
+  const nodeTest = pathArg ? resolveNodeTestCommand(pathArg, cwd) : null;
+  if (nodeTest) return nodeTest;
 
   return { ok: true, command: `npx vitest run${pathArg ? ` ${pathArg}` : ''}`, cwd };
 }
