@@ -58,7 +58,7 @@ import {
 import { FanoutCapError, type ResolveFanoutCtx } from '@papercusp/fanout-resolver';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
-import { extractAssertions } from '../../plans/val-assertions';
+import { extractAssertions, type PlanAssertion } from '../../plans/val-assertions';
 import { matchRoutingGateHint } from '../../../routing-gate-hints';
 import { loopbackFetch, readJsonBody } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
@@ -592,6 +592,55 @@ async function backfillPromotedFromConsolidated(opts: {
       },
     ],
   };
+}
+
+/**
+ * Persist a plan's inline VAL-* assertions into harness_plan_assertions.
+ *
+ * P-003 (D-002/D-005). This is a separate, INJECTABLE unit rather than an inline
+ * block for one reason: promote's fail-closed path has to be testable. `sql` is a
+ * parameter instead of a `getOrgPg()` call made inside, so a unit test can drive a
+ * failing store directly — the same testability `spawn-child` already gets from
+ * `SpawnChildDeps.writeAssertions`, and whose absence here is why promote's refusal
+ * was otherwise only reachable through a live PG.
+ *
+ * It NEVER throws, and it NEVER decides policy: it reports per-assertion outcomes
+ * and the CALLER owns the refusal. That split is deliberate. The defect this
+ * replaced was a persistence step that silently downgraded its own failure to a
+ * warning — precisely what a helper allowed to own policy is free to do again.
+ */
+export async function persistPlanAssertions(opts: {
+  sql: ReturnType<typeof getOrgPg>['sql'];
+  workspaceId: string;
+  harnessSlug: string;
+  planSlug: string;
+  assertions: readonly PlanAssertion[];
+}): Promise<{ written: number; errors: string[] }> {
+  const { sql, workspaceId, harnessSlug, planSlug, assertions } = opts;
+  let written = 0;
+  const errors: string[] = [];
+  for (const a of assertions) {
+    try {
+      await sql`
+        INSERT INTO harness_shared.harness_plan_assertions
+          (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status, requires_test)
+        VALUES
+          (${workspaceId}, ${harnessSlug}, ${a.valId}, ${planSlug}, ${a.itemId},
+           ${a.verifyText}, ${a.evidenceText}, ${a.status}, ${a.requiresTest})
+        ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
+          plan_slug     = EXCLUDED.plan_slug,
+          item_id       = EXCLUDED.item_id,
+          verify_text   = EXCLUDED.verify_text,
+          evidence_text = EXCLUDED.evidence_text,
+          requires_test = EXCLUDED.requires_test,
+          updated_at    = now()
+      `;
+      written++;
+    } catch (e) {
+      errors.push(`${a.valId}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return { written, errors };
 }
 
 export default defineTool({
@@ -1168,35 +1217,25 @@ export default defineTool({
     // every reader above because no feature references them, and self-healing on the
     // next promote of the same plan.
     let assertionsWritten = 0;
-    const assertionErrors: string[] = [];
+    let assertionErrors: string[] = [];
     if (allAssertions.length > 0 && harnessSlug) {
       try {
         const { sql } = getOrgPg();
-        const workspaceId = ctx.workspaceId ?? '';
-        for (const a of allAssertions) {
-          try {
-            await sql`
-              INSERT INTO harness_shared.harness_plan_assertions
-                (workspace_id, harness_slug, val_id, plan_slug, item_id, verify_text, evidence_text, status, requires_test)
-              VALUES
-                (${workspaceId}, ${harnessSlug}, ${a.valId}, ${args.slug}, ${a.itemId},
-                 ${a.verifyText}, ${a.evidenceText}, ${a.status}, ${a.requiresTest})
-              ON CONFLICT (workspace_id, harness_slug, val_id) DO UPDATE SET
-                plan_slug     = EXCLUDED.plan_slug,
-                item_id       = EXCLUDED.item_id,
-                verify_text   = EXCLUDED.verify_text,
-                evidence_text = EXCLUDED.evidence_text,
-                requires_test = EXCLUDED.requires_test,
-                updated_at    = now()
-            `;
-            assertionsWritten++;
-          } catch (e) {
-            assertionErrors.push(`${a.valId}: ${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
+        const stored = await persistPlanAssertions({
+          sql,
+          workspaceId: ctx.workspaceId ?? '',
+          harnessSlug,
+          planSlug: args.slug,
+          assertions: allAssertions,
+        });
+        assertionsWritten = stored.written;
+        assertionErrors = stored.errors;
       } catch (e) {
-        assertionErrors.push(e instanceof Error ? e.message : String(e));
-        ctx.log?.(`[plans:promote] assertion PG store failed: ${assertionErrors[assertionErrors.length - 1]}`);
+        // getOrgPg() itself failed — there is no store to write to at all, so every
+        // assertion is unpersisted. Surfaced as an error (not a warning) so the
+        // refusal below fires: this is the case where EVERY claim would dangle.
+        assertionErrors = [e instanceof Error ? e.message : String(e)];
+        ctx.log?.(`[plans:promote] assertion PG store unavailable: ${assertionErrors[0]}`);
       }
     }
     // Refuse BEFORE any feature is imported. Nothing has been written to the target
