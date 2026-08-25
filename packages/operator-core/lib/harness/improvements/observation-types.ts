@@ -599,8 +599,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.targetHive === 'string' && o.targetHive.trim()) out.targetHive = o.targetHive;
   if (typeof o.rubricRef === 'string' && o.rubricRef.trim()) out.rubricRef = o.rubricRef;
   if (o.ratings && typeof o.ratings === 'object' && !Array.isArray(o.ratings)) {
+    const rawRatings = o.ratings as Record<string, unknown>;
     const ratings: ObservationRatings = {};
-    for (const [k, raw] of Object.entries(o.ratings as Record<string, unknown>)) {
+    for (const [k, raw] of Object.entries(rawRatings)) {
       if (!raw || typeof raw !== 'object') continue;
       const e = raw as Record<string, unknown>;
       if (typeof e.rating === 'string' && typeof e.evidence === 'string') {
@@ -611,7 +612,10 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         };
       }
     }
-    if (Object.keys(ratings).length > 0) out.ratings = ratings;
+    // An explicit empty object is a valid COMPLETE rating set for a rubric that
+    // intentionally declares zero criteria. Preserve that distinction from a
+    // non-empty malformed ratings object, whose entries were all rejected above.
+    if (Object.keys(ratings).length > 0 || Object.keys(rawRatings).length === 0) out.ratings = ratings;
   }
   if (o.acceptance && typeof o.acceptance === 'object' && !Array.isArray(o.acceptance)) {
     const a = o.acceptance as Record<string, unknown>;
