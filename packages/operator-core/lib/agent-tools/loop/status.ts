@@ -35,6 +35,7 @@ export default defineTool({
     returns:
       "`cadenceDrift` (EI-21276782387845111) is true only when sustained slow-cadence evidence is corroborated by a scheduled fire several intervals overdue. It stays false for a parked turn (the configured interval begins after turn settlement), missing cadence history, or a fire that is not demonstrably late; combine it with the raw cadence fields rather than treating false as proof of normal cadence.\n\n" +
       "ROOT ENVELOPE: `{ ok, ownerId, loop, carryNote, reachability, pendingAwaits, storeIdentityWarning? }` — the loop RECORD is NESTED under `loop`: `{ active, intervalSec, parked, nextFireAt, lastFiredAt, fireCount, firesSinceArm, cost-cap, … }`, or null when no loop exists for the owner. `carryNote` is the routine-scoped read-back `{ note, contentHash, updatedAtMs }`, or null when no loop exists; use its hash to reconcile an uncertain `loop:checkpoint` transport result. jq / code:run reducers must descend through `.loop`; assuming root-level `active`/interval fields iterates null (EI-21197839138727609).\n\n" +
+      "REACHABILITY SCOPE (EI-21452056705704146): `reachability` reports the standing owner wake path even when `loop:null`, including the host-registered inbox-wake waiter. `pendingAwaits.scope:'non-inbox-wake'` deliberately excludes that always-armed host channel and measures only caller-authored park awaits; its `status:'none'` is NEVER evidence that the owner is globally unreachable.\n\n" +
       "The loop record for the owner (active, intervalSec, parked, nextFireAt, lastFiredAt, fireCount, firesSinceArm, cost-cap), or null when no loop exists.\n\nFields that change what you should DO:\n• `firesSinceArm` vs `maxFires` (WI-36070) — the ONLY valid dead-man comparison. `fireCount` is a LIFETIME counter and a re-arm resets the budget, so `fireCount > maxFires` on an active loop is the EXPECTED reading, not a breached bound. Comparing those two reports a healthy loop as already-halted, and hides a loop one fire from going silently inert (EI-19899671638499010).\n• `turnsStalled` (EI-18712914572668391) — true when fires keep landing (fireCount climbing) but `lastTurnAt` (the most recent real turn-completion marker) isn't keeping pace, e.g. a wedged wake channel. This is the armed-but-not-PRODUCING case: `stalled` alone only catches a PARKED in-flight turn stuck past its dwell window, so a loop can be firing on schedule and doing nothing while `stalled` stays false.\n• `storeIdentityViolation` (EI-19384072467112035) — a `null` loop alongside this block means the process was reading from the WRONG database when it looked. Treat that null as UNKNOWN, NOT as \"no loop\", and do NOT re-arm on the strength of it alone: re-arming on a misread is how a live loop gets duplicated.\n• `pendingAwaits` (EI-19415169477907694) — your OWN live non-inbox-wake events:await registrations right now, so \"am I actually parked?\" is answerable after a call whose response you never trust (a dropped MCP transport, a backgrounded/failed events:await). `status:'found'` with a sample of keys means a registration IS live; `status:'none'` means NOTHING is registered — the loud signal that a believed-successful await never actually landed; `status:'unknown'` means the lookup itself failed and must NEVER be read as 'none'.\n• Cadence (EI-20217869515819188) — compare `expectedFiresSinceArm` with `firesSinceArm` to see how many interval-sized opportunities elapsed versus attempted fires. `effectiveIntervalSec` and `cadenceRatio` expose a slow fire path (`cadenceRatio` > 1 means slower than configured; > 3 is a warning), and `longestObservedGapSec` reports the largest arm-scoped wake gap. A null cadence field means insufficient timestamps/history, never zero.",
     notWhen: 'See the WORK a loop is producing — that is fleet:assignments (the self-assigned work_items). Whole-engine health — autoloop:status.',
     chaining: 'loop:arm to start; loop:end to stop.',
@@ -80,13 +81,14 @@ export default defineTool({
           .catch(() => ({ note: null, contentHash: null, updatedAtMs: null }))
       : null;
 
-    // WI-655 — surface LIVE wake-reachability alongside the loop row: an active loop
-    // whose owner can't receive a wake (the `no-session-now` black-hole) reads as a loud
-    // `reachable:false` here rather than only as a stale lastDeliveryOutcome. Best-effort.
-    let reachability: WakeReachabilityVerdict | null = null;
-    if (status?.active) {
-      reachability = await probeWakeReachability(ownerId).catch(() => null);
-    }
+    // WI-655 / EI-21452056705704146 — surface LIVE wake-reachability independently
+    // of whether a loop row exists. A paused/idle session can be deliberately
+    // loopless while the host-registered inbox-wake await remains its one correct
+    // resume channel. Gating this probe on status?.active made that healthy state
+    // read as reachability:null + pendingAwaits:none, which falsely looked globally
+    // unreachable and nudged agents to arm a forbidden loop during stand-down.
+    // Best-effort: probeWakeReachability already degrades its component reads.
+    const reachability: WakeReachabilityVerdict | null = await probeWakeReachability(ownerId).catch(() => null);
     const reachabilityOut = reachability
       ? {
           reachable: reachability.reachable,
@@ -115,6 +117,10 @@ export default defineTool({
     } catch {
       /* best-effort — a lookup failure must read as 'unknown', never 'none' */
     }
+    // The standing host inbox-wake is a reachability channel, not evidence that a
+    // caller-authored events:await landed. Keep the useful exclusion, but stamp the
+    // scope on the wire so status:none can no longer be misread as global absence.
+    const pendingAwaitsOut = { ...pendingAwaits, scope: 'non-inbox-wake' as const };
 
     // EI-19384072467112035: a `loop: null` here is the documented "no loop exists" signal,
     // and an agent reading it correctly re-arms. But `getLoopStatus` reads through
@@ -159,7 +165,7 @@ export default defineTool({
             loop: status,
             carryNote,
             reachability: reachabilityOut,
-            pendingAwaits,
+            pendingAwaits: pendingAwaitsOut,
             ...(storeIdentityWarning ? { storeIdentityWarning } : {}),
           }),
         },
