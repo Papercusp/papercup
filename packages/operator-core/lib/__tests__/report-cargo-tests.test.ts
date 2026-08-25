@@ -209,9 +209,21 @@ describe('isolated Cargo target cleanup (EI-21048920599909117)', () => {
   it('initializes the canonical tag so Cargo clean accepts a producer-created target', () => {
     const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-cache-tag-'));
     const targetDir = resolve(root, 'isolated-target');
-    const manifestPath = resolve(TEST_DIR, '../../../../papercusp-desktop/src-tauri/Cargo.toml');
+    const manifestPath = resolve(root, 'Cargo.toml');
 
     try {
+      // The assertion is about Cargo's real CACHEDIR.TAG parser, not the desktop workspace. Using
+      // that live manifest coupled this pure-lane guard to concurrent Cargo work in the shared
+      // checkout: the affected suite observed the child terminate with status:null while the same
+      // test passed alone. A minimal temporary crate exercises the identical `cargo clean`
+      // validation path without joining another lane's workspace locks or target discovery.
+      mkdirSync(resolve(root, 'src'), { recursive: true });
+      writeFileSync(
+        manifestPath,
+        '[package]\nname = "papercusp-cargo-tag-fixture"\nversion = "0.0.0"\nedition = "2021"\n',
+      );
+      writeFileSync(resolve(root, 'src/lib.rs'), 'pub fn fixture() {}\n');
+
       ensureCargoCacheTag(targetDir);
       writeFileSync(resolve(targetDir, 'sentinel'), 'safe-to-remove\n');
       expect(readFileSync(resolve(targetDir, 'CACHEDIR.TAG'), 'utf8')).toBe(CARGO_CACHE_TAG);
@@ -222,7 +234,10 @@ describe('isolated Cargo target cleanup (EI-21048920599909117)', () => {
         { encoding: 'utf8', timeout: 300_000, killSignal: 'SIGKILL' },
       );
 
-      expect(clean.status, clean.stderr || clean.stdout).toBe(0);
+      expect(
+        clean.status,
+        JSON.stringify({ error: clean.error?.message, signal: clean.signal, stderr: clean.stderr, stdout: clean.stdout }),
+      ).toBe(0);
       expect(clean.stderr).not.toContain('invalid signature in `CACHEDIR.TAG` file');
     } finally {
       rmSync(root, { recursive: true, force: true });
