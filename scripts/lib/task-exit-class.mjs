@@ -41,6 +41,76 @@ export function hasForkStarvationEvidence(output) {
   return FORK_STARVATION_OUTPUT.test(output);
 }
 
+// EI-21442389733525112: the sibling of fork starvation, and the one the ledger CANNOT see.
+//
+// `resolveTaskBudget` refuses a run whose cgroup envelope cannot admit even one task. That
+// refusal happens BEFORE any child is spawned, so the durable task ledger never samples
+// `pids.current` — it stays null. `terminalResourceLimitFields` keys on a terminal sample AT
+// the cap (`observed >= configured`), so the mid-run form classifies as
+// infrastructure-undetermined while the pre-launch form falls through as a bare `failed` /
+// `exit 1`. Measured on one pair of real rows: pids_current=512/tasks_max=512 exit=254
+// classified, pids_current=NULL/tasks_max=512 exit=1 did not. Same root cause, opposite
+// instrumentation outcome — and the unclassified one is indistinguishable from a red suite
+// even though `tasks=0` means zero files were measured.
+//
+// The marker below is the evidence the ledger cannot supply. It is FORMATTED and PARSED here,
+// in one module, so the emitter in `budgeted-task-scheduler.mjs` and the reader in
+// `bash_output.ts` cannot drift into two grammars — the failure mode that a hand-maintained
+// second copy of a truth always eventually reaches.
+export const TASK_BUDGET_REFUSAL_MARKER = "TASK_BUDGET_REFUSAL";
+
+/**
+ * Render the stable, machine-readable half of a pre-launch budget refusal.
+ *
+ * @param {object} refusal
+ * @param {'pids' | 'memory'} refusal.kind which envelope could not admit a task
+ * @param {'tasks' | 'mb'} refusal.unit unit the three numbers are counted in
+ * @param {number} refusal.limit the cgroup allowance actually granted
+ * @param {number} refusal.reserve the scheduler/shell reserve held back from it
+ * @param {number} refusal.requiredPerTask what one admitted task needs
+ * @returns {string}
+ */
+export function formatTaskBudgetRefusal({
+  kind,
+  unit,
+  limit,
+  reserve,
+  requiredPerTask,
+}) {
+  return (
+    `${TASK_BUDGET_REFUSAL_MARKER} kind=${kind} unit=${unit} limit=${limit} ` +
+    `reserve=${reserve} required=${requiredPerTask} remedy=processes:limit`
+  );
+}
+
+const TASK_BUDGET_REFUSAL_RE = new RegExp(
+  String.raw`\b${TASK_BUDGET_REFUSAL_MARKER}\b\s+kind=(pids|memory)\s+unit=(tasks|mb)\s+` +
+    String.raw`limit=(\d+)\s+reserve=(\d+)\s+required=(\d+)`,
+  "i",
+);
+
+/**
+ * Recover a pre-launch budget refusal from captured output.
+ *
+ * Returns null for anything that is not an unambiguous marker match, so a log that merely
+ * discusses budgets can never be promoted into an infrastructure verdict.
+ *
+ * @param {string | null | undefined} output combined captured stdout/stderr
+ * @returns {{ kind: 'pids' | 'memory', unit: 'tasks' | 'mb', limit: number, reserve: number, requiredPerTask: number } | null}
+ */
+export function parseTaskBudgetRefusal(output) {
+  if (typeof output !== "string" || output.length === 0) return null;
+  const match = TASK_BUDGET_REFUSAL_RE.exec(output);
+  if (!match) return null;
+  return {
+    kind: /** @type {'pids' | 'memory'} */ (match[1].toLowerCase()),
+    unit: /** @type {'tasks' | 'mb'} */ (match[2].toLowerCase()),
+    limit: Number(match[3]),
+    reserve: Number(match[4]),
+    requiredPerTask: Number(match[5]),
+  };
+}
+
 function hasConservativeNeverStartedEvidence({ capturedBytes, elapsedMs, durationEstimateMs }) {
   return (
     capturedBytes === 0 &&
