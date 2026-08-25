@@ -111,7 +111,7 @@ describe('sweepStalePresence (real PG)', () => {
 /**
  * fetchWakeability (the P-001 IO seam, fleet-dispatch-wake-clarity-2026-06-22)
  * against REAL Postgres. The `deriveSessionState` boundary is pure-unit-tested in
- * presence-wakeability.test.ts; here we pin the two batch SQL queries — the
+ * presence-wakeability.test.ts; here we pin the three batch SQL queries — the
  * column names + filter predicates that, if they ever drift, would SILENTLY
  * degrade the wakeable/sessionState fields to absent (the inert-feature failure
  * mode this plan exists to prevent). Reads through the module's own getOrgPg()
@@ -127,6 +127,7 @@ describe('fetchWakeability (real PG)', () => {
   async function clean(): Promise<void> {
     await admin`DELETE FROM harness_shared.event_awaits WHERE subscriber_id LIKE ${`${P}%`}`;
     await admin`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id LIKE ${`${P}%`}`;
+    await admin`DELETE FROM harness_shared.event_wake_attempts WHERE subscriber_id LIKE ${`${P}%`}`;
     await admin`DELETE FROM harness_shared.agent_activity WHERE owner_id LIKE ${`${P}%`}`;
   }
   beforeEach(clean);
@@ -165,6 +166,20 @@ describe('fetchWakeability (real PG)', () => {
       VALUES (${awaitRows[0]!.id}, ${owner}, ${eventKey}, ${opts.status},
               ${opts.channel ?? null}, ${at},
               ${opts.status === 'delivered' ? at : null})`;
+  }
+
+  /** Seed a completed coord:send wake:'required' attempt at a chosen age. */
+  async function seedAttempt(
+    id: string,
+    opts: { outcome: 'queued' | 'missed'; agoSec?: number },
+  ): Promise<void> {
+    const owner = own(id);
+    const eventKey = `${COORD_INBOX_WAKE_PREFIX}${owner}`;
+    const at = new Date(Date.now() - (opts.agoSec ?? 0) * 1000);
+    await admin`
+      INSERT INTO harness_shared.event_wake_attempts
+        (workspace_id, subscriber_id, event_key, outcome, attempted_at)
+      VALUES ('default', ${owner}, ${eventKey}, ${opts.outcome}, ${at})`;
   }
 
   /** Seed one agent_activity row at a chosen age (the `liveTurn` signal). */
@@ -285,6 +300,30 @@ describe('fetchWakeability (real PG)', () => {
     expect(m.get(own('picked'))?.wakeAttemptMiss).toBeUndefined();
     expect(m.get(own('pending'))?.wakeAttemptMiss).toBeUndefined();
     expect(m.get(own('inbox'))?.wakeAttemptMiss).toBeUndefined();
+  });
+
+  it('EI-21458515135707634: merges the newest required-send attempt with legacy delivery evidence', async () => {
+    // Required-send misses have no event_wake_deliveries row, so the new ledger
+    // must feed the same pickup-miss oracle as the legacy terminal delivery path.
+    await seedActivity('required-only', { kind: 'tool', summary: 'pre-wake work', agoSec: 5 });
+    await seedAttempt('required-only', { outcome: 'missed', agoSec: 2 });
+
+    // The required attempt is newer than the legacy delivery, so it controls the
+    // merged watermark and correctly reports a miss despite the older delivery.
+    await seedActivity('required-newest', { kind: 'tool', summary: 'pre-wake work', agoSec: 5 });
+    await seedDelivery('required-newest', { status: 'delivered', channel: 'pty-inject', agoSec: 10 });
+    await seedAttempt('required-newest', { outcome: 'queued', agoSec: 2 });
+
+    // A newer legacy delivery supersedes an older required attempt and proves
+    // that this recipient has activity after the latest wake evidence.
+    await seedActivity('legacy-newest', { kind: 'tool', summary: 'post-wake work', agoSec: 1 });
+    await seedAttempt('legacy-newest', { outcome: 'missed', agoSec: 10 });
+    await seedDelivery('legacy-newest', { status: 'delivered', channel: 'pty-inject', agoSec: 2 });
+
+    const m = await fetchWakeability([own('required-only'), own('required-newest'), own('legacy-newest')]);
+    expect(m.get(own('required-only'))?.wakeAttemptMiss).toBe(true);
+    expect(m.get(own('required-newest'))?.wakeAttemptMiss).toBe(true);
+    expect(m.get(own('legacy-newest'))?.wakeAttemptMiss).toBeUndefined();
   });
 
   it('returns an empty map for an empty ownerIds list (no query fired)', async () => {

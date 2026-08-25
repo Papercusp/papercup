@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./wake-mode', () => ({ resolveWakeMode: vi.fn() }));
 vi.mock('./pending-wakes', () => ({ stagePendingWake: vi.fn() }));
 vi.mock('../../events/await/engine', () => ({ emitAwaitedEvent: vi.fn() }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: vi.fn(),
+}));
 // Isolate from the LIVE coord roster: resolveBestEffortAgainstRoster resolves a short
 // ownerId PREFIX against coord_presence (owner-2026-06-17), so a real live session whose
 // id starts with a test recipient (e.g. 's-1' ⊂ 's-1782…') would leak into `targets`.
@@ -30,12 +34,16 @@ import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { emitAwaitedEvent } from '../../events/await/engine';
 import { knownOwnerIdSet, resolveBestEffortAgainstRoster } from './recipient-resolve';
+import { getOrgPg } from '@papercusp/db-org';
+
+const sqlMock = vi.fn(async (..._args: unknown[]) => []);
 
 beforeEach(() => {
   vi.mocked(resolveWakeMode).mockResolvedValue('auto' as never);
   vi.mocked(stagePendingWake).mockResolvedValue(undefined as never);
   vi.mocked(emitAwaitedEvent).mockResolvedValue({ woken: 1 } as never);
   vi.mocked(knownOwnerIdSet).mockResolvedValue(null);
+  vi.mocked(getOrgPg).mockReturnValue({ sql: sqlMock } as never);
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -50,6 +58,46 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(stagePendingWake).not.toHaveBeenCalled();
     expect(r.woken).toBe(2);
     expect(r.staged).toBe(0);
+  });
+
+  it('required wake records each completed fire outcome in one batched ledger write', async () => {
+    vi.mocked(emitAwaitedEvent).mockImplementation(async (input: { key: string }) => ({
+      woken: input.key.endsWith('s-queued') ? 1 : 0,
+    }) as never);
+
+    const r = await wakeRecipients(['s-queued', 's-missed'], {
+      requiredWake: true,
+      workspaceId: 'ws-1',
+    });
+
+    expect(r).toMatchObject({ woken: 1, targets: ['s-queued', 's-missed'] });
+    expect(sqlMock).toHaveBeenCalledTimes(1);
+    expect(sqlMock.mock.calls[0]?.slice(1)).toEqual([
+      'ws-1',
+      ['s-queued', 's-missed'],
+      ['coord:inbox-wake:s-queued', 'coord:inbox-wake:s-missed'],
+      ['queued', 'missed'],
+    ]);
+  });
+
+  it('a ledger failure is fail-soft and does not turn a delivered wake into a send failure', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sqlMock.mockRejectedValueOnce(new Error('ledger unavailable'));
+    try {
+      const r = await wakeRecipients(['s-1'], { requiredWake: true, workspaceId: 'ws-1' });
+      expect(r).toMatchObject({ woken: 1, targets: ['s-1'] });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('required-wake attempt ledger write failed'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('required staged wakes do not create completed-fire evidence', async () => {
+    vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
+    await wakeRecipients(['s-1'], { requiredWake: true, workspaceId: 'ws-1' });
+    expect(stagePendingWake).toHaveBeenCalledTimes(1);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(sqlMock).not.toHaveBeenCalled();
   });
 
   it('EI-20239029846984233: a stalled roster preflight degrades before the wake transport timeout', async () => {

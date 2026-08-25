@@ -415,18 +415,30 @@ export async function fetchWakeability(
          AND created_at > now() - make_interval(secs => ${missWindowSec})
        GROUP BY owner_id`,
     sql<{ owner_id: string; attempt_at: string | null }[]>`
-      SELECT subscriber_id AS owner_id,
-             max(COALESCE(delivered_at, created_at)) AS attempt_at
-        FROM harness_shared.event_wake_deliveries
-       WHERE subscriber_id = ANY(${ownerIds}::text[])
-         AND event_key = ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
-         AND status IN ('delivered', 'dropped', 'dead')
-         AND (
-           status IN ('dropped', 'dead')
-           OR channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]}::text[])
-         )
-         AND COALESCE(delivered_at, created_at) > now() - make_interval(secs => ${missWindowSec})
-       GROUP BY subscriber_id`,
+      SELECT owner_id, max(attempt_at) AS attempt_at
+        FROM (
+          SELECT subscriber_id AS owner_id,
+                 max(COALESCE(delivered_at, created_at)) AS attempt_at
+            FROM harness_shared.event_wake_deliveries
+           WHERE subscriber_id = ANY(${ownerIds}::text[])
+             AND event_key = ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
+             AND status IN ('delivered', 'dropped', 'dead')
+             AND (
+               status IN ('dropped', 'dead')
+               OR channel = ANY(${WAKE_TURN_CHANNELS as unknown as string[]}::text[])
+             )
+             AND COALESCE(delivered_at, created_at) > now() - make_interval(secs => ${missWindowSec})
+           GROUP BY subscriber_id
+          UNION ALL
+          SELECT subscriber_id AS owner_id,
+                 max(attempted_at) AS attempt_at
+            FROM harness_shared.event_wake_attempts
+           WHERE subscriber_id = ANY(${ownerIds}::text[])
+             AND event_key = ${COORD_INBOX_WAKE_PREFIX} || subscriber_id
+             AND attempted_at > now() - make_interval(secs => ${missWindowSec})
+           GROUP BY subscriber_id
+        ) AS evidence
+       GROUP BY owner_id`,
   ]);
 
   const wakeSet = new Set(wake.map((r) => r.subscriber_id));

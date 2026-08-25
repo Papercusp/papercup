@@ -1242,6 +1242,7 @@ async function sendOne(
             const fan = await wakeRecipients([originalFrom], {
               summary: msg.summary,
               source: identity.ownerId,
+              workspaceId: identity.workspaceId ?? undefined,
               // EI-18663224517726594: carry THIS message's own msg_id in the wake
               // payload so a woken agent can thread a further reply
               // (related_msg_id) without a separate coord:inbox round-trip just to
@@ -1383,6 +1384,8 @@ async function sendOne(
     const fan = await wakeRecipients(env.to, {
       summary: msg.summary,
       source: identity.ownerId,
+      workspaceId: identity.workspaceId ?? undefined,
+      requiredWake: wakeMode === 'required',
       // EI-21420024752195459: the platform-resolved stamp (never caller-authored
       // prose) lets an authenticated owner relay cross a target's manual pause
       // gate. Omit for ordinary/unverified sends so their wake behavior stays
