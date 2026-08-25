@@ -170,19 +170,22 @@ describe('sync-queries population', () => {
     expect(surfaces.map((s) => s.surfaceId).sort()).toEqual([...knownQueryNamesV2()].sort());
   });
 
-  it('keeps UNDECLARED backing tables distinguishable from none', async () => {
+  it('keeps UNDECLARED backing tables distinguishable from explicitly none', async () => {
     const surfaces = await syncQueriesProvider.enumerate(ctx);
-    const declared = surfaces.filter(
-      (s) => (s.attrs as Record<string, unknown>).backingTables != null,
-    );
-    expect(declared.length).toBeGreaterThan(0);
-    for (const s of declared) {
-      const tables = (s.attrs as Record<string, unknown>).backingTables;
-      expect(Array.isArray(tables)).toBe(true);
-      // `null` means the entry does not declare its tables; an empty array would claim it reads
-      // nothing. Collapsing the two would let un-pushed queries grade as fully covered.
-      expect((tables as unknown[]).length).toBeGreaterThan(0);
-    }
+    const backingTables = (s: ObservedSurface) =>
+      (s.attrs as Record<string, unknown>).backingTables;
+
+    // Calibrate every state on the live registry. `null` is the shrink-only legacy baseline;
+    // a populated array names table-driven invalidation; [] is an explicit declaration that the
+    // resolver reads no Postgres table (designEvidence.report is file-backed). Collapsing either
+    // null or [] into the other would make the census lie about whether liveness was considered.
+    expect(surfaces.some((s) => backingTables(s) === null)).toBe(true);
+    expect(
+      surfaces.some(
+        (s) => Array.isArray(backingTables(s)) && (backingTables(s) as unknown[]).length > 0,
+      ),
+    ).toBe(true);
+    expect(backingTables(surfaces.find((s) => s.surfaceId === 'designEvidence.report')!)).toEqual([]);
   });
 });
 

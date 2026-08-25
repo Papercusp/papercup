@@ -431,7 +431,7 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
 
   it('wires the real Vitest run through the async seam rather than a blocking spawnSync', () => {
     const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
-    const runStart = source.indexOf("const result = await runCapturedTestProcess(\n      'npx'");
+    const runStart = source.indexOf("const result = await runCapturedTestProcessImpl(\n      'npx'");
     const runEnd = source.indexOf('const runOutput =', runStart);
     expect(runStart).toBeGreaterThan(0);
     expect(runEnd).toBeGreaterThan(runStart);
@@ -642,6 +642,20 @@ Error [ERR_MODULE_NOT_FOUND]: Cannot find module '/repo/node_modules/vitest/node
       Tests  1 failed (1)
 `;
     expect(looksLikeMidInstallCorruption(withAssertionDetail)).toBe(false);
+  });
+
+  it('does NOT diagnose its own passing test title as a missing Vitest binary', () => {
+    const selfTestFailure = `
+ ✓ flags the shell "vitest: not found" signature (node_modules/.bin/vitest missing mid-install) 1ms
+ × an unrelated assertion fails 2ms
+
+ FAIL  lib/__tests__/test-file-router.test.ts > unrelated assertion
+AssertionError: expected -1 to be greater than 0
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 77 passed (78)
+`;
+    expect(looksLikeMidInstallCorruption(selfTestFailure)).toBe(false);
   });
 
   it('does NOT flag an assertion diff that merely prints detector source containing both tokens', () => {
