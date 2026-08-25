@@ -1243,11 +1243,11 @@ describe('executeWake — the liveness ladder', () => {
 
   it('delivers a cross-harness work-item completion wake instead of treating its harness as loop lineage', async () => {
     const write = vi.fn(() => true);
-    const getLoopStatusFn = vi.fn<typeof getLoopStatus>(async () => ({
+    const getLoopStatusFn = vi.fn(async () => ({
       active: true,
       harnessSlug: 'sb-devboard-hive',
       armedAt: '1970-01-01T00:00:00.000Z',
-    }));
+    })) as never;
     const d = deps({
       findPty: vi.fn(() => ({ id: 'pty-7' })) as never,
       write: write as never,
@@ -1262,6 +1262,38 @@ describe('executeWake — the liveness ladder', () => {
           kind: 'task',
           harness: 'papercusp',
           title: 'settled child work item',
+        },
+        wakeHandle: advHandle(),
+      }),
+      d,
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(write).toHaveBeenCalled();
+    expect(getLoopStatusFn).not.toHaveBeenCalled();
+  });
+
+  it('delivers the exact cross-harness work-item claim payload from EI-21388471167237888', async () => {
+    const write = vi.fn(() => true);
+    const getLoopStatusFn = vi.fn(async () => ({
+      active: true,
+      harnessSlug: 'sb-devboard-hive',
+      armedAt: '1970-01-01T00:00:00.000Z',
+    })) as never;
+    const d = deps({
+      findPty: vi.fn(() => ({ id: 'pty-7' })) as never,
+      write: write as never,
+      getLoopStatusFn,
+    });
+    const out = await executeWake(
+      work({
+        eventKey: 'work-item:claimed:WI-41252',
+        payload: {
+          id: 'WI-41252',
+          state: 'open',
+          kind: 'feature',
+          harness: 'papercusp',
+          assignee: 'su-worker',
         },
         wakeHandle: advHandle(),
       }),

@@ -163,6 +163,26 @@ describe('events:await wrapper defaults', () => {
     expect(arg).not.toHaveProperty('workspaceId');
   });
 
+  it('registers an exact work-item:claimed await without binding it to a harness or loop lineage', async () => {
+    await call({
+      event: 'work-item:claimed:WI-41252',
+      note: 'EI-21388471167237888 cross-harness claim transition',
+    });
+
+    const arg = vi.mocked(registerAwait).mock.calls[0][0];
+    expect(arg).toMatchObject({
+      subscriberId: 'su-awaiter',
+      eventKey: 'work-item:claimed:WI-41252',
+      policy: 'wake',
+      note: 'EI-21388471167237888 cross-harness claim transition',
+    });
+    // A workspace work-item event may name the item's harness in its PAYLOAD,
+    // but registration is owner-scoped and must remain deliverable when that
+    // owner's active loop is bound to another harness.
+    expect(arg).not.toHaveProperty('workspaceId');
+    expect(arg).not.toHaveProperty('harnessSlug');
+  });
+
   it('captures the wake handle NOW and stamps it onto the registration', async () => {
     await call({ event: 'k', plan_run_id: 5 });
     expect(captureWakeHandleForOwner).toHaveBeenCalledWith('su-awaiter', { planRunId: 5 });
