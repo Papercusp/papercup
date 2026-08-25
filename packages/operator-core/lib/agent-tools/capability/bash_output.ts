@@ -32,6 +32,7 @@ import { getTask, getTaskByBashJobId } from '../../task-manager/store';
 import { isTerminalState, serviceUnitForTask, type TaskRow } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
 import { readProcessCgroupPath, readProcessCmdline } from '../../task-manager/cgroup-read';
+import { hasForkStarvationEvidence } from '../../../../../scripts/lib/task-exit-class.mjs';
 
 /**
  * Cap on the spill log we will read whole to classify a dead typecheck. A tsc
@@ -449,10 +450,15 @@ export type TerminalResourceLimitFields = {
  * `status=failed exit=254` — indistinguishable from a real red suite even though
  * no AFFECTED_TESTS_RESULT existed. `pidsCurrent` is the reconciler's direct
  * cgroup `pids.current` sample and `tasksMax` is the budget written to that same
- * scope. Equality on a non-zero terminal row is therefore writer-owned evidence
- * of the hard resource boundary, not an inference from host load.
+ * scope. Equality proves PRESSURE, not CAUSALITY: a Vitest run can touch TasksMax,
+ * drain its workers, and still finish with a complete real-red summary. Attribute
+ * the non-zero exit to this limit only when the log carries fork/spawn starvation
+ * evidence, or when bash returns the observed wait-for-loss code 254.
  */
-export function terminalResourceLimitFields(row: TaskRow | null): TerminalResourceLimitFields | null {
+export function terminalResourceLimitFields(
+  row: TaskRow | null,
+  log = '',
+): TerminalResourceLimitFields | null {
   if (!row || !isTerminalState(row.state) || (row.state === 'exited' && row.exitCode === 0)) return null;
   const observed = row.pidsCurrent;
   const configured = row.tasksMax;
@@ -465,6 +471,8 @@ export function terminalResourceLimitFields(row: TaskRow | null): TerminalResour
   ) {
     return null;
   }
+  const causalEvidence = hasForkStarvationEvidence(log) || row.exitCode === 254;
+  if (!causalEvidence) return null;
   const testRun = row.detail?.workloadClass === 'test-run';
   return {
     failure_class: 'infrastructure-resource-limit',
@@ -511,7 +519,7 @@ function terminalBashTaskRecovery(
       ...(stranded ? { total_bytes: stranded.sizeBytes, total_bytes_written: stranded.sizeBytes } : {}),
       ...(row.logPath ? { log_path: row.logPath } : {}),
       recovered_from_ledger: true,
-      ...(terminalResourceLimitFields(row) ?? {}),
+      ...(terminalResourceLimitFields(row, stranded?.content ?? stranded?.tail ?? '') ?? {}),
       ...(inspected.filterError ? { filter_error: inspected.filterError } : {}),
       output_tail: output,
       output,
@@ -884,13 +892,16 @@ export default defineTool({
         ...(ledgerRow?.taskId ? { task_id: ledgerRow.taskId } : {}),
       };
       const ledgerVerdict = diagnoseFromLedger(ledgerRow);
-      const recoveredResourceLimitFields = terminalResourceLimitFields(ledgerRow);
       // The ledger path is authoritative across workers. Only fall back to the
       // local deterministic path when the durable path is absent/unreadable;
       // otherwise a stale same-ID file on this worker can mask a growing log.
       const stranded =
         (ledgerRow?.logPath ? strandedJobLookupAtPath(ledgerRow.logPath) : null) ??
         strandedJobLookup(bashId, ctx.stateDir);
+      const recoveredResourceLimitFields = terminalResourceLimitFields(
+        ledgerRow,
+        stranded?.content ?? stranded?.tail ?? '',
+      );
       if (stranded || ledgerRow) {
         const strandedLog: StrandedJobLogInspection = stranded
           ? inspectStrandedJobLog(stranded, args.filter)
@@ -1263,17 +1274,18 @@ export default defineTool({
     // cap. Deliberately computed from the SPILL LOG, not from `output`: `output`
     // is only the since-cursor chunk, so a caller that drained the log while the
     // job ran would be classified against an empty string.
+    const jobLog = readJobLogForVerdict(job);
     const deadTypecheck = backgroundTypecheckVerdict({
       command: job.command,
       status: job.status,
       exitCode: job.exitCode,
-      log: readJobLogForVerdict(job),
+      log: jobLog,
     });
     let terminalLedgerRow = attachedLedgerRow;
     if (job.status !== 'running' && (!terminalLedgerRow || !isTerminalState(terminalLedgerRow.state)) && job.taskId) {
       terminalLedgerRow = await getTask(job.taskId).catch(() => terminalLedgerRow);
     }
-    const resourceLimitFields = terminalResourceLimitFields(terminalLedgerRow);
+    const resourceLimitFields = terminalResourceLimitFields(terminalLedgerRow, jobLog);
     return {
       content: [
         {
