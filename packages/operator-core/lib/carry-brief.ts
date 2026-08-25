@@ -52,6 +52,7 @@ import {
   type FactStalenessResult,
 } from './carry-fact-staleness';
 import { transientExecHandleWarning } from './su-cold-loop';
+import type { HydratableRef } from './agent-tools/coordination/ref-hydrate';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,11 @@ export interface CarryBriefHeldItem {
    *  long before a compaction means the turns since it will NOT carry). Null when
    *  no checkpoint, or when an injected test read supplies no meta. */
   checkpointUpdatedAtMs?: number | null;
+  /** Source-plan binding carried by the work-item row. Bare P-NNN references are
+   *  not globally unique, so this is the only safe context for resolving one in
+   *  the session's carry note. */
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
 }
 
 export interface CarryBrief {
@@ -268,14 +274,28 @@ export async function readHeldWorkItems(
   // scope CASE mirrors the view's mapping so harnessOfScope() semantics are
   // unchanged (EI-8813). Terminal filters stay per-family: the issue-family list
   // is the view-era literal set; feature-family uses FEATURE_TERMINAL_STATES.
-  const held = await sql<Array<{ issue_id: string; title: string | null; body: string | null; scope: string }>>`
+  const held = await sql<Array<{
+    issue_id: string;
+    title: string | null;
+    body: string | null;
+    scope: string;
+    source_plan_slug: string | null;
+    source_plan_item_ids: string[] | null;
+  }>>`
     SELECT feature_id AS issue_id,
            title,
            COALESCE(summary, '') AS body,
            CASE
              WHEN harness_slug LIKE 'operator:%' OR harness_slug = '' OR harness_slug IS NULL THEN 'operator'
              ELSE 'harness:' || harness_slug
-           END AS scope
+           END AS scope,
+           COALESCE(source_plan_slug, payload -> 'plan_item' ->> 'plan_slug') AS source_plan_slug,
+           COALESCE(
+             source_plan_item_ids,
+             CASE WHEN payload -> 'plan_item' ->> 'item_id' IS NOT NULL
+                  THEN ARRAY[payload -> 'plan_item' ->> 'item_id']
+                  ELSE NULL END
+           ) AS source_plan_item_ids
       FROM harness_shared.work_items
      WHERE taken_by = ${ownerId}
        AND (workspace_id = ${ws} OR workspace_id = 'default')
@@ -317,7 +337,16 @@ export async function readHeldWorkItems(
     } catch {
       /* per-item best-effort */
     }
-    out.push({ id: h.issue_id, title: h.title, body: h.body, harness, checkpoint, checkpointUpdatedAtMs });
+    out.push({
+      id: h.issue_id,
+      title: h.title,
+      body: h.body,
+      harness,
+      checkpoint,
+      checkpointUpdatedAtMs,
+      ...(h.source_plan_slug !== undefined ? { sourcePlanSlug: h.source_plan_slug } : {}),
+      ...(h.source_plan_item_ids !== undefined ? { sourcePlanItemIds: h.source_plan_item_ids } : {}),
+    });
   }
   return out;
 }
@@ -372,7 +401,10 @@ export interface BuildCarryBriefOpts {
   ) => Promise<{ rows: OwnerDirectiveRow[]; totalOpen: number }>;
   /** P-002 seam: hydrate WI-/EI- ids cited in the carry note into live one-liners.
    *  Defaults to the P-008 detect→hydrate→render pipeline. */
-  hydrateNoteRefsFn?: (noteText: string) => Promise<string[]>;
+  hydrateNoteRefsFn?: (
+    noteText: string,
+    heldItems?: readonly CarryBriefHeldItem[],
+  ) => Promise<string[]>;
   /** P-003 seam: read directed inbox mail strictly after `sinceIso` (bounded).
    *  Defaults to the coordination inbox reader. */
   readPostNoteInboxFn?: (
@@ -393,15 +425,82 @@ const POST_NOTE_INBOX_LINE_CHARS = 150;
  *  single `↪ ` prefix. This used to call ref-hydrate's `renderHydratedRef`, which
  *  ALSO prefixes `↪ ` — doubling the glyph in every real (non-test) carry doc
  *  ("↪ ↪ EI-… [bug/done]: …", found while fixing EI-18726068732447732). */
-async function defaultHydrateNoteRefs(noteText: string): Promise<string[]> {
+const CARRY_NOTE_REF = /\b(?:WI|EI)-\d+\b|\bplan:[a-z0-9][a-z0-9-]*#P-\d{3,}\b|\bP-\d{3,}\b/gi;
+
+/**
+ * Resolve references in note prose without guessing. WI-/EI- ids are global;
+ * explicit plan:<slug>#P-NNN refs are complete; a bare P-NNN is admitted only
+ * when exactly one HELD work-item binds that id to a source plan. If two held
+ * lanes both contain P-007, ambiguity stays visible as an unresolved prose id
+ * instead of silently choosing the wrong plan.
+ */
+export function detectCarryNoteRefs(
+  noteText: string,
+  heldItems: readonly CarryBriefHeldItem[],
+): HydratableRef[] {
+  const refs: HydratableRef[] = [];
+  const seen = new Set<string>();
+  for (const match of noteText.matchAll(CARRY_NOTE_REF)) {
+    const token = match[0];
+    if (/^(?:WI|EI)-/i.test(token)) {
+      const id = token.toUpperCase();
+      const key = `work-item:${id}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        refs.push({ kind: 'work-item', id });
+      }
+      continue;
+    }
+    if (/^plan:/i.test(token)) {
+      const parsed = /^plan:([a-z0-9][a-z0-9-]*)#(P-\d{3,})$/i.exec(token);
+      if (!parsed) continue;
+      const slug = parsed[1].toLowerCase();
+      const item = parsed[2].toUpperCase();
+      const key = `plan-item:${slug}#${item}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        refs.push({ kind: 'plan-item', slug, item });
+      }
+      continue;
+    }
+    const item = token.toUpperCase();
+    const bindings = new Map<string, { slug: string; item: string }>();
+    for (const held of heldItems) {
+      if (!held.sourcePlanSlug || !(held.sourcePlanItemIds ?? []).includes(item)) continue;
+      const binding = { slug: held.sourcePlanSlug, item };
+      bindings.set(`${binding.slug}#${binding.item}`, binding);
+    }
+    if (bindings.size !== 1) continue;
+    const binding = [...bindings.values()][0];
+    const key = `plan-item:${binding.slug}#${binding.item}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      refs.push({ kind: 'plan-item', ...binding });
+    }
+  }
+  return refs;
+}
+
+async function defaultHydrateNoteRefs(
+  noteText: string,
+  heldItems: readonly CarryBriefHeldItem[],
+): Promise<string[]> {
   try {
-    const [{ detectBodyRefs }, { hydrateRefs }] = await Promise.all([
-      import('./agent-tools/coordination/ref-hydrate'),
+    const [{ hydrateRefs, makePlanItemResolver }] = await Promise.all([
       import('./agent-tools/coordination/ref-hydrate-resolve'),
     ]);
-    const refs = detectBodyRefs(noteText);
+    const refs = detectCarryNoteRefs(noteText, heldItems);
     if (refs.length === 0) return [];
-    const hydrated = await hydrateRefs(refs);
+    const planItemResolver: import('./agent-tools/coordination/ref-hydrate-resolve').RefResolver =
+      async (ref, budget) => {
+        if (ref.kind !== 'plan-item') return null;
+        const held = heldItems.find(
+          (item) =>
+            item.sourcePlanSlug === ref.slug && (item.sourcePlanItemIds ?? []).includes(ref.item),
+        );
+        return makePlanItemResolver(held?.harness ?? undefined)(ref, budget);
+      };
+    const hydrated = await hydrateRefs(refs, { resolvers: { 'plan-item': planItemResolver } });
     return hydrated.filter((h) => h.ok).map((h) => (h.snippet ? `${h.label}: "${h.snippet}"` : h.label));
   } catch {
     return [];
@@ -422,6 +521,25 @@ export function parseCitedRefStateTag(line: string): { id: string; state: string
   return { id: idMatch[1], state: stateMatch[1] };
 }
 
+const CITED_PLAN_ITEM_STATE_TAG = /\b(plan:([a-z0-9][a-z0-9-]*)#(P-\d{3,}))\s+\[([a-z0-9_-]+)\]/i;
+
+/** Work-item and plan-item sibling used by the carry renderer. `mention` is the
+ * exact token expected in note prose; plan labels retain the qualified id for
+ * diagnostics while matching the bare P-NNN the author actually wrote. */
+export function parseCitedLiveState(
+  line: string,
+): { id: string; mention: string; state: string } | null {
+  const workItem = parseCitedRefStateTag(line);
+  if (workItem) return { ...workItem, mention: workItem.id };
+  const planItem = CITED_PLAN_ITEM_STATE_TAG.exec(line);
+  if (!planItem) return null;
+  return {
+    id: planItem[1],
+    mention: planItem[3].toUpperCase(),
+    state: planItem[4],
+  };
+}
+
 /**
  * Which of `citedRefs` cite a work-item whose LIVE state (as already resolved
  * by the fold) is terminal — the P-002 stale-imperative contradiction detector
@@ -436,10 +554,38 @@ export function parseCitedRefStateTag(line: string): { id: string; state: string
 export function detectTerminalCitedRefs(citedRefs: readonly string[]): string[] {
   const out: string[] = [];
   for (const line of citedRefs) {
-    const tag = parseCitedRefStateTag(line);
+    const tag = parseCitedLiveState(line);
     if (tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state)) out.push(tag.id);
   }
   return out;
+}
+
+/** Put the live contradiction where stale prose is consumed, not only in a
+ * later summary block. Each affected note line gets one compact suffix; active
+ * refs remain in the existing LIVE-status block without noisy inline badges. */
+export function annotateCarryNoteLiveContradictions(
+  noteText: string,
+  citedRefs: readonly string[],
+): string {
+  const terminal = citedRefs
+    .map(parseCitedLiveState)
+    .filter(
+      (tag): tag is { id: string; mention: string; state: string } =>
+        tag != null && ANY_FAMILY_TERMINAL_STATES.includes(tag.state),
+    );
+  if (terminal.length === 0) return noteText;
+  const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return noteText
+    .split('\n')
+    .map((line) => {
+      if (line.includes('⚠ LIVE:')) return line;
+      const hits = terminal.filter((tag) =>
+        new RegExp(`\\b${escapeRegex(tag.mention)}\\b`, 'i').test(line),
+      );
+      if (hits.length === 0) return line;
+      return `${line}   ⚠ LIVE: ${hits.map((tag) => `${tag.id} status=${tag.state}`).join('; ')}`;
+    })
+    .join('\n');
 }
 
 /** Retraction-shaped language in a post-note message — "retract", "I was wrong",
@@ -566,12 +712,6 @@ export async function buildCarryBrief(
       // extraction as walls — a note that later stale-collapses or truncates
       // must not silently dissolve its carried claims/probes.
       brief.checks = splitCarryNoteChecks(meta.note).checks;
-      // P-002 (cold-carry-system-hardening-2026-07-19): hydrate the note's cited
-      // WI-/EI- ids into LIVE one-liners. Best-effort; empty on any failure.
-      if (meta.note) {
-        const hydrate = opts.hydrateNoteRefsFn ?? defaultHydrateNoteRefs;
-        brief.citedRefs = await hydrate(meta.note).catch(() => [] as string[]);
-      }
       // P-003: what landed AFTER the note was written — the note predates it.
       if (meta.note && meta.updatedAtMs != null && Number.isFinite(meta.updatedAtMs)) {
         const readDelta = opts.readPostNoteInboxFn ?? defaultReadPostNoteInbox;
@@ -589,6 +729,14 @@ export async function buildCarryBrief(
     brief.heldItems = await readHeld(ownerId, workspaceId, { sql: opts.sql });
   } catch {
     /* section stays empty */
+  }
+
+  // EI-18807865001148074: hydrate AFTER held items so a bare P-NNN can be
+  // qualified by the claimed work-item's canonical source-plan binding. This
+  // remains an independent best-effort leg; a failed lookup never blanks carry.
+  if (brief.loop?.carryNote) {
+    const hydrate = opts.hydrateNoteRefsFn ?? defaultHydrateNoteRefs;
+    brief.citedRefs = await hydrate(brief.loop.carryNote, brief.heldItems).catch(() => [] as string[]);
   }
 
   try {
@@ -1022,7 +1170,11 @@ export function renderCarryBriefText(
         );
       } else {
         const age = ageMs != null ? ` (written ${humanAge(ageMs)} ago)` : '';
-        sections.push(`${head} Its carry-note${age}:\n${brief.loop.carryNote}`);
+        const annotatedNote = annotateCarryNoteLiveContradictions(
+          brief.loop.carryNote,
+          brief.citedRefs ?? [],
+        );
+        sections.push(`${head} Its carry-note${age}:\n${annotatedNote}`);
         // P-002: LIVE hydrations of the ids the note cites — a successor trusts
         // these over the note's phrasing (the note is a snapshot; these are now).
         if (brief.citedRefs && brief.citedRefs.length > 0) {
@@ -1045,7 +1197,7 @@ export function renderCarryBriefText(
             `Cited in the note — LIVE status (trust these over the note's phrasing):\n` +
               brief.citedRefs
                 .map((l) => {
-                  const tag = parseCitedRefStateTag(l);
+                  const tag = parseCitedLiveState(l);
                   const flagged = !!tag && ANY_FAMILY_TERMINAL_STATES.includes(tag.state);
                   return `  ${flagged ? '⚠ TERMINAL ' : ''}↪ ${l}`;
                 })

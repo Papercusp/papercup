@@ -18,7 +18,10 @@ import {
   deriveCarryQueryHandles,
   renderCarryQueryHandlesBlock,
   parseCitedRefStateTag,
+  parseCitedLiveState,
+  detectCarryNoteRefs,
   detectTerminalCitedRefs,
+  annotateCarryNoteLiveContradictions,
   detectRetractionShapedLines,
   CARRY_BRIEF_FOCUS_MAX,
   CARRY_BRIEF_MAX_FACTS,
@@ -199,6 +202,39 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
 });
 
 describe('note-citation hydration + post-note delta (cold-carry-system-hardening-2026-07-19 P-002/P-003)', () => {
+  it('qualifies bare plan-item ids only through a unique held work-item binding', () => {
+    const held = [
+      {
+        id: 'WI-6389',
+        title: 'Implement P-026',
+        body: null,
+        harness: 'papercusp',
+        checkpoint: null,
+        sourcePlanSlug: 'learning-tab-surface-public-release-2026-07-27',
+        sourcePlanItemIds: ['P-026'],
+      },
+    ];
+    expect(
+      detectCarryNoteRefs('P-026 BUILD NOT STARTED; verify WI-6389', held),
+    ).toEqual([
+      {
+        kind: 'plan-item',
+        slug: 'learning-tab-surface-public-release-2026-07-27',
+        item: 'P-026',
+      },
+      { kind: 'work-item', id: 'WI-6389' },
+    ]);
+
+    // P-NNN is not globally unique. Two held lanes with the same item id must
+    // stay unresolved rather than selecting whichever row happened to sort first.
+    expect(
+      detectCarryNoteRefs('resume P-026', [
+        ...held,
+        { ...held[0]!, id: 'WI-7000', sourcePlanSlug: 'another-plan' },
+      ]),
+    ).toEqual([]);
+  });
+
   it('P-002: hydrates the ids the note cites via the injected seam and renders them under the note', async () => {
     const brief = await buildCarryBrief(
       'su-abc',
@@ -317,6 +353,47 @@ describe('stale-note contradiction detector (EI-18726068732447732)', () => {
     expect(text).toContain('WI-6054');
     expect(text).toContain('already TERMINAL');
     expect(text).toContain('⚠ TERMINAL ↪ WI-6054 [bug/done');
+    expect(text).toContain('WI-6054 citing that line   ⚠ LIVE: WI-6054 status=done');
+  });
+
+  it('qualifies a terminal plan item and marks the stale prose on the same line', async () => {
+    const note = 'P-026 (wip, claimed) — SCOPED via D-083, BUILD NOT STARTED';
+    const live =
+      'plan:learning-tab-surface-public-release-2026-07-27#P-026 [done]: "already shipped"';
+    expect(parseCitedLiveState(live)).toEqual({
+      id: 'plan:learning-tab-surface-public-release-2026-07-27#P-026',
+      mention: 'P-026',
+      state: 'done',
+    });
+    expect(annotateCarryNoteLiveContradictions(note, [live])).toBe(
+      `${note}   ⚠ LIVE: plan:learning-tab-surface-public-release-2026-07-27#P-026 status=done`,
+    );
+
+    const brief = await buildCarryBrief(
+      'su-abc',
+      fullOpts({
+        getLoopCarryNoteWithMetaFn: async () => ({ note, updatedAtMs: Date.now() - 60_000 }),
+        readHeldWorkItemsFn: async () => [
+          {
+            id: 'WI-6389',
+            title: 'Implement P-026',
+            body: null,
+            harness: 'papercusp',
+            checkpoint: null,
+            sourcePlanSlug: 'learning-tab-surface-public-release-2026-07-27',
+            sourcePlanItemIds: ['P-026'],
+          },
+        ],
+        hydrateNoteRefsFn: async (_text, heldItems) => {
+          expect(heldItems?.[0]).toMatchObject({ sourcePlanSlug: 'learning-tab-surface-public-release-2026-07-27' });
+          return [live];
+        },
+      }),
+    );
+    const text = renderCarryBriefText(brief);
+    expect(text).toContain(`${note}   ⚠ LIVE: plan:learning-tab-surface-public-release-2026-07-27#P-026 status=done`);
+    expect(text).toContain('⚠ TERMINAL ↪ plan:learning-tab-surface-public-release-2026-07-27#P-026 [done]');
+    expect(text).toContain('STALE-NOTE CONTRADICTION');
   });
 
   it('renderCarryBriefText stays quiet (no banner) when every cited ref is still active', async () => {
