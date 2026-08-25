@@ -313,12 +313,63 @@ describe('P-008 — obligations sort above symmetric relations', () => {
     expect(peers.map((p) => p.ownerId)).toEqual(['su-a', 'su-b', 'su-c']);
   });
 
-  it('sorts a DECLARED-only peer below an obligation (declared carries no relation)', () => {
+  it('sorts an UNTYPED declared peer below an obligation', () => {
     const peers = resolveCoupledPeers(
       'su-me',
       [d('su-zzz', 'they owe you a grade, open 5m, counterpart live (c4)', 'i-owe')],
       [edge('su-me', 'su-aaa', { reason: 'same file' })],
     );
     expect(peers.map((p) => p.ownerId)).toEqual(['su-zzz', 'su-aaa']);
+  });
+});
+
+/**
+ * ── P-009: A DECLARED EDGE CAN CARRY THE TYPED VOCABULARY (migration 954) ─────────────
+ *
+ * Until now a declared coupling carried only prose, so it was invisible to every typed
+ * consumer — the P-008 obligation sort and the P-010 concentration census both read
+ * `derivedRelations`. The column exists so a declared edge participates in both.
+ *
+ * ⚠ The relation stays NULLABLE and most live rows have none (D-017): across 101 real
+ * declared reasons, ~26% fit only shapes with no vocabulary member and ~30% do not
+ * classify at all. An untyped declared edge is the COMMON case, not a defect, so the
+ * untyped path is asserted here as deliberately as the typed one.
+ */
+describe('P-009 — a declared edge carries the typed relation', () => {
+  it('hoists a declared-ONLY obligation above symmetric derived peers', () => {
+    // su-zzz sorts LAST alphabetically, so this can only pass via the relation.
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [d('su-aaa', 'recent coord exchange', 'coord-exchange')],
+      [edge('su-me', 'su-zzz', { reason: 'they owe me the grade', relation: 'owes-me' })],
+    );
+    expect(peers.map((p) => p.ownerId)).toEqual(['su-zzz', 'su-aaa']);
+    expect(peers[0]?.derivedRelations).toEqual(['owes-me']);
+  });
+
+  it('an UNTYPED declared edge emits no relations at all — the common case', () => {
+    const peers = resolveCoupledPeers('su-me', [], [edge('su-me', 'su-x', { reason: 'same file' })]);
+    expect(peers[0]?.derivedRelations).toBeUndefined();
+  });
+
+  it('DEDUPES when declared and derived carry the same relation', () => {
+    // Listing it twice would double-count that relation's share in the P-010 census —
+    // inflating exactly the number the concentration guard measures.
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [d('su-p', 'they owe you a consult reply, open 1h, counterpart live (c1)', 'owes-me')],
+      [edge('su-me', 'su-p', { reason: 'declared the same debt', relation: 'owes-me' })],
+    );
+    expect(peers[0]?.derivedRelations).toEqual(['owes-me']);
+    expect(peers[0]?.source).toBe('both');
+  });
+
+  it('UNIONS a declared relation with a DIFFERENT derived one', () => {
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [d('su-p', 'recent coord exchange', 'coord-exchange')],
+      [edge('su-me', 'su-p', { reason: 'and they owe me a grade', relation: 'owes-me' })],
+    );
+    expect(peers[0]?.derivedRelations).toEqual(['coord-exchange', 'owes-me']);
   });
 });
