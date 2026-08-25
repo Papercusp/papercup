@@ -21,7 +21,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug, resolveEffectiveHarnessSlug } from './_ctx-opts';
-import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
@@ -38,6 +38,11 @@ import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { domainFailureMessage } from './plan-activation-gate';
+import {
+  recoverHarnessFromSlugs,
+  requireUnambiguousSlugScope,
+  slugScopeErrorResult,
+} from './slug-scope';
 
 /** Canonical settable plan-level lifecycle targets — what we WRITE. */
 const SETTABLE = ['draft', 'ready', 'shipped', 'superseded'] as const;
@@ -294,11 +299,31 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const sctx = harnessScopedCtx(args.harness, ctx);
-    const harnessSlug = resolveCtxHarnessSlug(sctx);
     // Caller-DX (P-006): map a friendly alias (active→ready, done→shipped) to canonical.
     const { status, mappedFrom } = normalizePlanStatus(args.status);
     const slugs = mergeIds(args.slug, args.slugs);
+    // EI-21405955283990151: lifecycle closeout already names exact plan slugs,
+    // so reuse the PG-canonical recovery used by plans:get/items instead of
+    // demanding a harness the caller cannot discover from a workspace-bound
+    // session. Writes are stricter than reads: a slug present in >1 harness is
+    // fail-loud rather than taking the most-recently-updated candidate.
+    const scope = resolveHarnessScope(args.harness, ctx);
+    let sctx: typeof ctx & { harnessSlug: string };
+    if (scope.kind === 'none') {
+      const recovered = await recoverHarnessFromSlugs(ctx, slugs);
+      const decision = requireUnambiguousSlugScope(
+        recovered,
+        ((ctx as { workspaceId?: string }).workspaceId ?? '').trim(),
+      );
+      if (decision.status !== 'resolved') return slugScopeErrorResult('plans:set-plan-status', decision);
+      sctx = { ...ctx, harnessSlug: decision.harnessSlug };
+      (ctx as { metadata?: (d: Record<string, unknown>) => void }).metadata?.({
+        harnessAutoResolved: decision.bySlug,
+      });
+    } else {
+      sctx = harnessScopedCtx(args.harness, ctx);
+    }
+    const harnessSlug = resolveCtxHarnessSlug(sctx);
     const env = await runBulk(
       slugs,
       async (slug) => {
@@ -322,7 +347,7 @@ export default defineTool({
             };
           }
           if (!gate.satisfied) {
-            const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx, args.harness);
+            const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx, harnessSlug);
             return {
               ok: false as const,
               slug,

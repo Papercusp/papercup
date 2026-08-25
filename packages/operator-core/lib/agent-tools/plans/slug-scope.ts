@@ -38,6 +38,22 @@ export type SlugScopeDecision =
     }
   | { status: 'split'; mapping: Record<string, string>; workspaceId: string };
 
+/** Write tools may reuse exact-slug recovery, but must never use the read
+ * path's "most recently updated wins" rule when one slug exists in multiple
+ * harnesses. A lifecycle mutation needs a single unambiguous owner. */
+export type WritableSlugScopeDecision =
+  | Exclude<SlugScopeDecision, { status: 'resolved' }>
+  | Extract<SlugScopeDecision, { status: 'resolved' }>
+  | { status: 'ambiguous'; candidates: SlugCandidates; workspaceId: string };
+
+export function requireUnambiguousSlugScope(
+  decision: SlugScopeDecision,
+  workspaceId: string,
+): WritableSlugScopeDecision {
+  if (decision.status !== 'resolved' || Object.keys(decision.ambiguous).length === 0) return decision;
+  return { status: 'ambiguous', candidates: decision.ambiguous, workspaceId };
+}
+
 /**
  * Pure decision over the candidate map. Ambiguity inside a single slug does
  * NOT block resolution: index 0 wins (the `resolvePlanHarnessSlug`
@@ -146,7 +162,9 @@ export async function verifyExplicitPlanHarness(
  */
 export function slugScopeErrorResult(
   toolName: string,
-  decision: Extract<SlugScopeDecision, { status: 'missing' | 'split' }>,
+  decision:
+    | Extract<SlugScopeDecision, { status: 'missing' | 'split' }>
+    | Extract<WritableSlugScopeDecision, { status: 'ambiguous' }>,
 ): { isError: true; content: Array<{ type: 'text'; text: string }> } {
   const hint =
     "Pass an explicit `harness` on this call (for example 'papercusp' for " +
@@ -162,13 +180,21 @@ export function slugScopeErrorResult(
             `in workspace '${decision.workspaceId}' — exact-slug auto-resolution found no owning ` +
             `harness there. ${hint}`,
         }
-      : {
+      : decision.status === 'split'
+        ? {
           error: 'harness_split_across_plans',
           mapping: decision.mapping,
           detail:
             `The requested slugs live in different harnesses (${JSON.stringify(decision.mapping)}); ` +
             'one call reads a single harness — pass an explicit `harness`, or split the slugs across calls.',
-        };
+          }
+        : {
+            error: 'plan_slug_ambiguous_across_harnesses',
+            candidates: decision.candidates,
+            detail:
+              `At least one requested slug exists in multiple harnesses (${JSON.stringify(decision.candidates)}). ` +
+              'A write cannot safely pick the most recently updated copy — pass an explicit `harness`.',
+          };
   return {
     isError: true,
     content: [{ type: 'text', text: JSON.stringify({ tool: toolName, ...body }) }],

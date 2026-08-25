@@ -14,6 +14,7 @@ import {
   decideSlugScope,
   exactPlanSlugsFromArgs,
   recoverHarnessFromSlugs,
+  requireUnambiguousSlugScope,
   slugScopeErrorResult,
   verifyExplicitPlanHarness,
 } from './slug-scope.js';
@@ -37,6 +38,25 @@ describe('decideSlugScope', () => {
   it('reports a split when slugs span distinct harnesses', () => {
     const d = decideSlugScope(['a', 'b'], { a: ['hive-1'], b: ['hive-2'] }, 'ws-x');
     expect(d).toEqual({ status: 'split', mapping: { a: 'hive-1', b: 'hive-2' }, workspaceId: 'ws-x' });
+  });
+});
+
+describe('requireUnambiguousSlugScope', () => {
+  it('keeps a uniquely resolved write scope', () => {
+    const decision = decideSlugScope(['a', 'b'], { a: ['hive-1'], b: ['hive-1'] }, 'ws-x');
+    expect(requireUnambiguousSlugScope(decision, 'ws-x')).toMatchObject({
+      status: 'resolved',
+      harnessSlug: 'hive-1',
+    });
+  });
+
+  it('refuses the read path\'s most-recently-updated ambiguity for writes', () => {
+    const decision = decideSlugScope(['a'], { a: ['hive-new', 'hive-old'] }, 'ws-x');
+    expect(requireUnambiguousSlugScope(decision, 'ws-x')).toEqual({
+      status: 'ambiguous',
+      candidates: { a: ['hive-new', 'hive-old'] },
+      workspaceId: 'ws-x',
+    });
   });
 });
 
@@ -157,5 +177,17 @@ describe('slugScopeErrorResult', () => {
     const parsed = JSON.parse(r.content[0].text);
     expect(parsed.error).toBe('harness_split_across_plans');
     expect(parsed.mapping).toEqual({ a: 'hive-1', b: 'hive-2' });
+  });
+
+  it('ambiguous write → names every candidate and requires an explicit harness', () => {
+    const r = slugScopeErrorResult('plans:set-plan-status', {
+      status: 'ambiguous',
+      candidates: { a: ['hive-new', 'hive-old'] },
+      workspaceId: 'ws-9',
+    });
+    const parsed = JSON.parse(r.content[0].text);
+    expect(parsed.error).toBe('plan_slug_ambiguous_across_harnesses');
+    expect(parsed.candidates).toEqual({ a: ['hive-new', 'hive-old'] });
+    expect(parsed.detail).toContain('explicit `harness`');
   });
 });

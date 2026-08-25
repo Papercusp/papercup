@@ -49,6 +49,12 @@ export interface FrozenCandidateRepairQueue {
   phase: FrozenCandidateRepairPhase;
   /** The fixed C persisted before its first suite. Never moves for this queue entry. */
   candidate: string;
+  /**
+   * Durable logical qualification that created this queue. A later, distinct
+   * qualification may retire only a safe, unstarted queue bearing the exact
+   * predecessor id; legacy queues omit it and therefore remain fail-closed.
+   */
+  qualificationAttemptId?: string | null;
   /** The green pin observed when C was selected. */
   base: string | null;
   /** The head fixes move FORWARD from. Verification and promotion target this exact SHA. */
@@ -219,6 +225,7 @@ function requireCurrentHead(queue: FrozenCandidateRepairQueue, repairHead: strin
  * tip cannot replace it; the next gate invocation resumes this exact SHA. */
 export function createFrozenCandidateQueue(input: {
   candidate: string;
+  qualificationAttemptId?: string | null;
   base: string | null;
   worktreePath: string;
   failingTests?: readonly string[];
@@ -233,6 +240,9 @@ export function createFrozenCandidateQueue(input: {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     phase: 'ready-to-test',
     candidate: input.candidate,
+    qualificationAttemptId: nonBlank(input.qualificationAttemptId)
+      ? input.qualificationAttemptId
+      : null,
     base: input.base,
     repairHead: input.candidate,
     affectedTestProofGroup: nonBlank(input.affectedTestProofGroup)
@@ -274,6 +284,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   if (!nonBlank(row.candidate) || !nonBlank(row.repairHead) || !nonBlank(row.worktreePath)) {
     return null;
   }
+  if (row.qualificationAttemptId != null && !nonBlank(row.qualificationAttemptId)) return null;
   if (row.base !== null && !nonBlank(row.base)) return null;
   if (!Number.isInteger(row.attempts) || (row.attempts as number) < 0) return null;
   if (!validTimestamp(row.openedAtMs) || !validTimestamp(row.updatedAtMs)) return null;
@@ -297,6 +308,9 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     phase: row.phase,
     candidate: row.candidate,
+    qualificationAttemptId: nonBlank(row.qualificationAttemptId)
+      ? row.qualificationAttemptId
+      : null,
     base: row.base as string | null,
     repairHead: row.repairHead,
     // v1/missing/malformed proof state keeps the queue valid but forces full execution.
