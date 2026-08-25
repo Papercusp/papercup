@@ -1588,7 +1588,8 @@ const sessionThinkingStream = defineTool({
                 : { found: false });
             }
             return true;
-          } catch {
+          } catch (error) {
+            if (process.env.DEBUG_WI_41527 === '1') throw error;
             // The DB is a convenience here, never a dependency — a failure
             // degrades to the file read, which is what shipped before P-008.
             return false;

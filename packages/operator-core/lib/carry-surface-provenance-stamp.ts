@@ -155,7 +155,10 @@ export async function stampCarrySurfaceProvenance(
   let writtenDuring: CurrentTurnStamp | null = null;
   if (ownerId) {
     const { value } = await withBoundedTimeout(
-      Promise.all([verifyTurnRefs(ownerId, refs), resolveCurrentTurnStamp(ownerId)]),
+      Promise.all([
+        verifyTurnRefs(ownerId, refs, { scope: 'cross-session' }),
+        resolveCurrentTurnStamp(ownerId),
+      ]),
       {
         fallback: [[], null] as [TurnRefVerdict[], CurrentTurnStamp | null],
         timeoutMs: STAMP_IO_BUDGET_MS,

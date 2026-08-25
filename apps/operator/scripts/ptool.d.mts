@@ -3,6 +3,13 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // apps/operator/scripts/ptool.mjs and regenerate.
 /**
+ * Whether the operator URL came from implicit local discovery and may follow a
+ * packaged operator that restarts onto a different port. Explicit CLI/env
+ * URLs are pins: changing them behind the caller's back would violate the
+ * caller's transport choice (and could route a request to the wrong host).
+ */
+export function shouldRediscoverOperatorUrl(args?: {}, env?: NodeJS.ProcessEnv): boolean;
+/**
  * Parse argv into the ptool invocation shape. The first non-flag positional
  * is the tool name (`group:verb`); everything else is a flag. Pure.
  */
@@ -336,12 +343,14 @@ export function callToolWithReplayRecovery(client: any, params: any, { reconnect
  * dispatched yet; never extend this to a tools/call transport failure, whose
  * mutation status is ambiguous.
  */
-export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope: any, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, }?: {
+export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope: any, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, rediscover, onRebase, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
     attemptTimeoutMs?: number | undefined;
     totalTimeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
+    rediscover?: null | undefined;
+    onRebase?: null | undefined;
 }): Promise<any>;
 /** Build ptool's superuser MCP URL. Pure and exported so the identity and
  * payload-tier contracts are regression-tested without opening a transport.
@@ -385,11 +394,13 @@ export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
 export const PTOOL_CONNECT_TIMEOUT_MS: number;
 export const PTOOL_CALL_TOOL_TIMEOUT_MS: 30000;
 export const PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS: 300000;
+export const PTOOL_RESPAWN_MEMBER_TIMEOUT_MS: 675000;
 export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS: 60000;
 export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS: 60000;
 export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS: 900000;
 export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS: 195000;
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS: 60000;
+export const PTOOL_COORD_ORIENT_TIMEOUT_MS: 130000;
 export const PTOOL_EVENTS_AWAIT_TIMEOUT_MS: 60000;
 export const PTOOL_PLANS_GET_TIMEOUT_MS: 60000;
 export const PTOOL_PLANS_NEW_TIMEOUT_MS: 60000;

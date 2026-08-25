@@ -130,6 +130,17 @@ afterEach(() => {
 });
 
 describe('launch-pui', () => {
+  it('pins the child to the launching operator instead of inherited/shared discovery', async () => {
+    const mod = await import('../routes/adv/launch-pui');
+    const env = mod.puiLaunchEnv({
+      PAPERCUSP_HONO_PORT: '3170',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3070/api/mcp',
+      PUI_OPERATOR: 'release',
+    });
+    expect(env.PUI_OPERATOR).toBe('http://localhost:3170');
+    expect(env.PAPERCUSP_OPERATOR_URL).toBe('http://localhost:3170');
+  });
+
   it('happy path: resolves the cargo pui binary, spawns `pui workbench`, returns ok + terminal + pid', async () => {
     const res = await callPost();
     expect(res.status).toBe(200);

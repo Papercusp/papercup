@@ -488,6 +488,23 @@ describe('capability:write', () => {
     expect(parse(r).ok).toBe(true);
     expect(readFileSync(f, 'utf8')).toBe('hi there\n');
   });
+
+  it.each([
+    'sub/*.test.ts',
+    'sub/**/scorecard*',
+    'sub/scorecard?.ts',
+    'sub/[scorecard].ts',
+  ])('rejects a glob-shaped destination before creating a literal file (%s)', async (relativePath) => {
+    const f = join(DIR, relativePath);
+    const r = (await writeTool.handler!({ file_path: f, content: '{"name":"work_items:get","args":{}}\n' }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(r.isError).toBe(true);
+    expect(parse(r)).toMatchObject({ ok: false, reason: 'invalid_path' });
+    expect(parse(r).message).toContain('concrete destination path');
+    expect(() => readFileSync(f, 'utf8')).toThrow();
+  });
 });
 
 describe('capability:edit', () => {

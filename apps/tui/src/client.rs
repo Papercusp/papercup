@@ -2,8 +2,8 @@
 //! through either the operator's IPC `sys:http` tool (local Unix socket,
 //! zero-auth) or direct HTTP+bearer (remote / Claude Code plugin). The typed
 //! method surface + the UI are transport-agnostic; only `Transport` knows the
-//! wire. Selection happens at `from_discovery()`: IPC if the socket connects,
-//! else HTTP from `operator.json`.
+//! wire. Selection happens at `from_discovery()`: an explicit launcher target
+//! first, then IPC if the socket connects, else HTTP from `operator.json`.
 #![allow(dead_code)] // some typed methods are consumed as the panels grow.
 
 use crate::agent_chats::{
@@ -139,15 +139,16 @@ pub struct OperatorClient {
 impl OperatorClient {
     /// Resolve a backend. EXPLICIT selection wins (P-001 refit): `PUI_OPERATOR`
     /// = `staging` (:3170) | `release` (:3070) | a full http(s) URL pins the
-    /// operator over HTTP — no guessing, and pane children inherit the choice
-    /// through the zellij server env. Unset/empty → the legacy chain: local
+    /// operator over HTTP. A launcher may use the standard
+    /// `PAPERCUSP_OPERATOR_URL` child env when `PUI_OPERATOR` is absent; it is
+    /// normalized to the same bare origin. This is important on a multi-operator
+    /// home: the shared IPC singleton is last-writer-wins and cannot identify the
+    /// operator that launched this pui. Unset/empty → the legacy chain: local
     /// IPC socket, else HTTP+bearer from `~/.papercusp/operator.json`.
     pub async fn from_discovery() -> Result<Self> {
-        if let Ok(sel) = std::env::var("PUI_OPERATOR") {
-            let sel = sel.trim();
-            if !sel.is_empty() {
-                return Self::from_selection(sel);
-            }
+        if let Some((source, sel)) = explicit_operator_selection() {
+            return Self::from_selection(&sel)
+                .with_context(|| format!("explicit pui endpoint {source}={sel}"));
         }
         match IpcClient::connect_discovered().await {
             Ok(ipc) => Ok(Self {
@@ -158,7 +159,8 @@ impl OperatorClient {
                     transport: Transport::Http(http),
                 }),
                 Err(http_err) => Err(anyhow!(
-                    "no backend reachable — ipc: {ipc_err}; http: {http_err}"
+                    "no backend reachable ({}) — ipc: {ipc_err}; http: {http_err}",
+                    discovery_target_description()
                 )),
             },
         }
@@ -1981,6 +1983,58 @@ impl OperatorClient {
         )
         .await
     }
+}
+
+/// Read the launcher's explicit endpoint handoff. Keep this precedence aligned
+/// with the operator-side spawn helpers: `PUI_OPERATOR` is the pui-specific
+/// override, while `PAPERCUSP_OPERATOR_URL` is the shared child callback seam.
+/// The latter may carry the historical `/api/mcp` suffix; pui needs the bare
+/// origin accepted by `base_for_selection`.
+fn explicit_operator_selection() -> Option<(&'static str, String)> {
+    for (name, raw) in [
+        ("PUI_OPERATOR", std::env::var("PUI_OPERATOR").ok()),
+        ("PAPERCUSP_OPERATOR_URL", std::env::var("PAPERCUSP_OPERATOR_URL").ok()),
+    ] {
+        let Some(raw) = raw else { continue };
+        let value = raw.trim().to_string();
+        if value.is_empty() {
+            continue;
+        }
+        let value = value
+            .strip_suffix("/api/mcp")
+            .unwrap_or(&value)
+            .trim_end_matches('/')
+            .to_string();
+        if !value.is_empty() {
+            return Some((name, value));
+        }
+    }
+    None
+}
+
+/// A bounded, non-secret description included in startup failures. It tells
+/// operators whether the pui was explicitly pinned or was using ambient IPC
+/// discovery, without printing bearer tokens or database URLs.
+fn discovery_target_description() -> String {
+    if let Ok(value) = std::env::var("PUI_OPERATOR") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return format!("PUI_OPERATOR={value}");
+        }
+    }
+    if let Ok(value) = std::env::var("PAPERCUSP_OPERATOR_URL") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return format!("PAPERCUSP_OPERATOR_URL={value}");
+        }
+    }
+    if let Ok(port) = std::env::var("PAPERCUSP_HONO_PORT") {
+        let port = port.trim();
+        if !port.is_empty() {
+            return format!("ambient endpoint-ipc (PAPERCUSP_HONO_PORT={port})");
+        }
+    }
+    "ambient endpoint-ipc discovery".to_string()
 }
 
 /// Minimal percent-encoding for a docs relative path.

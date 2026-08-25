@@ -392,3 +392,80 @@ describe('verifyTurnRefs — cross-session (owner carry-respawn chain, EI-192973
     expect(v.checked).toBe(true); // the OLDER session WAS located and searched
   });
 });
+
+// EI-21394655128717996: an explicit cross-session scope uses the durable
+// session_turns index when the predecessor is outside the successor's
+// owner-isolated transcript directory.
+describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
+  const PREDECESSOR = '21dfdd94-e8d7-43b0-a30f-4a9a2d066bf4';
+  const CURRENT = '9aa2b64c-0000-4000-8000-000000000000';
+  const OWNER = 'su-successor-owner';
+  const TS = '2026-08-25T02:21:27.909Z';
+
+  it('proves a clean predecessor owner turn as owner-turn with explicit scope', async () => {
+    const refs = parseTurnRefs(`${formatTurnRef(PREDECESSOR, TS)}: "continue the owner directive"`);
+    const calls: Array<{ prefix: string; scope: string }> = [];
+    const [verdict] = await verifyTurnRefs(OWNER, refs, {
+      filePath: join(tmpdir(), 'successor-only.jsonl'),
+      sessionId: CURRENT,
+      scope: 'cross-session',
+      loadIndexedTurns: async (prefix, scope) => {
+        calls.push({ prefix, scope });
+        return [{
+          sessionId: PREDECESSOR,
+          ts: TS,
+          speaker: 'user',
+          text: 'continue the owner directive',
+          turnOrigin: null,
+          turnOriginVerdict: 'unenrolled-origin',
+        }];
+      },
+    });
+
+    expect(calls).toEqual([{ prefix: PREDECESSOR.slice(0, 8).toLowerCase(), scope: 'cross-session' }]);
+    expect(verdict).toMatchObject({
+      found: true,
+      checked: true,
+      verdict: 'owner-turn',
+      scope: 'cross-session',
+      quoteMatch: true,
+    });
+  });
+
+  it('keeps indexed machine-injected predecessor turns non-owner', async () => {
+    const refs = parseTurnRefs(formatTurnRef(PREDECESSOR, TS));
+    const [verdict] = await verifyTurnRefs(OWNER, refs, {
+      filePath: join(tmpdir(), 'successor-only.jsonl'),
+      sessionId: CURRENT,
+      scope: 'cross-session',
+      loadIndexedTurns: async () => [{
+        sessionId: PREDECESSOR,
+        ts: TS,
+        speaker: 'user',
+        text: '⟦turn-origin:loop-fire nonce:aabbccdd00112233⟧\nreplay the loop goal',
+        turnOrigin: 'loop-fire',
+        turnOriginVerdict: 'agent-injected',
+      }],
+    });
+
+    expect(verdict).toMatchObject({
+      found: true,
+      checked: true,
+      verdict: 'agent-injected',
+      origin: 'loop-fire',
+      scope: 'cross-session',
+    });
+  });
+
+  it('preserves checked:false when the indexed predecessor cannot be resolved', async () => {
+    const refs = parseTurnRefs(formatTurnRef(PREDECESSOR, TS));
+    const [verdict] = await verifyTurnRefs(OWNER, refs, {
+      filePath: join(tmpdir(), 'successor-only.jsonl'),
+      sessionId: CURRENT,
+      scope: 'cross-session',
+      loadIndexedTurns: async () => null,
+    });
+
+    expect(verdict).toMatchObject({ found: false, checked: false, scope: 'cross-session' });
+  });
+});

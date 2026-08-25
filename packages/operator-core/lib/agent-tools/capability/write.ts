@@ -14,6 +14,22 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { fileLockedResult, guardFileLock } from '../locks/file-lock-guard';
 import { resolveCapabilityBaseDir } from './base-dir';
 
+const GLOB_METACHARS = new Set(['*', '?', '[', ']']);
+
+/**
+ * Return the first glob metacharacter in a destination path, if any.
+ *
+ * capability:write takes one concrete destination, not a shell/pathspec glob.
+ * Letting a glob-shaped argument through creates a literal file whose name is
+ * usually the serialized tool-call payload's own source path (EI-21390906760757289).
+ */
+export function findWritePathGlobMetacharacter(filePath: string): string | null {
+  for (const character of filePath) {
+    if (GLOB_METACHARS.has(character)) return character;
+  }
+  return null;
+}
+
 export default defineTool({
   name: 'capability:write',
   description:
@@ -35,6 +51,12 @@ export default defineTool({
     content: z.string().describe('Full file content to write (overwrites any existing file).'),
   }),
   async handler(args, ctx) {
+    const globMetacharacter = findWritePathGlobMetacharacter(args.file_path);
+    if (globMetacharacter) {
+      return invalidPath(
+        `file_path contains the glob metacharacter ${JSON.stringify(globMetacharacter)}; capability:write requires a concrete destination path`,
+      );
+    }
     const baseDir = resolveCapabilityBaseDir(ctx);
     const abs = isAbsolute(args.file_path) ? args.file_path : resolve(baseDir, args.file_path);
 
@@ -53,3 +75,10 @@ export default defineTool({
     return outcome.acquired ? outcome.result : await fileLockedResult(outcome.busy, outcome.reader);
   },
 });
+
+function invalidPath(message: string) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, reason: 'invalid_path', message }) }],
+    isError: true,
+  };
+}

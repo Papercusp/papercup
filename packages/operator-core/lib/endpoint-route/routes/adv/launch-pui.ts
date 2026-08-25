@@ -3,8 +3,10 @@
  * (apps/tui) in an OS-native terminal. The desktop equivalent of typing
  * `pui workbench`: the operator host (which on the desktop runs inside the
  * user's GUI session) server-spawns a terminal running `pui workbench`, which
- * materializes the zellij workbench layout and connects to the live operator
- * over endpoint-IPC (~/.papercusp/endpoint-ipc.json) — no args/env needed.
+ * materializes the zellij workbench layout and connects to THIS operator.
+ * The launch explicitly hands the operator base to the child; relying on the
+ * shared ~/.papercusp/endpoint-ipc.json singleton is unsafe when multiple
+ * operators share a home directory (it is last-writer-wins).
  *
  * Mirrors launch-su.ts: Linux-only server-side spawn via the shared
  * `terminal-spawn` helper (D-001). Same-origin (the header that calls this is
@@ -23,6 +25,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { defineTool } from '@papercusp/agent-mcp';
+import { resolveSpawnHostOperatorBaseUrl } from '../../../mcp-base-url';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
@@ -47,6 +50,29 @@ function resolvePuiBin(): string | null {
   return isOnPath('pui') ? 'pui' : null;
 }
 
+/**
+ * Build the child environment for a pui launched by THIS operator.
+ *
+ * `PUI_OPERATOR` is deliberately re-derived from the launching host rather
+ * than inherited. A staging operator can inherit a stale `PAPERCUSP_OPERATOR_URL`
+ * from the live operator's `.env.local`, and an unscoped pui can select whichever
+ * operator last rewrote the shared IPC discovery file. The pui's explicit URL
+ * selection then makes every HUD pane use the same HTTP endpoint/database as the
+ * `tui:dispatch` call that controls it.
+ */
+export function puiLaunchEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const operatorBase = resolveSpawnHostOperatorBaseUrl(env);
+  return {
+    ...env,
+    // Keep the conventional child callback identity correct for any helper
+    // launched from a pui pane as well.
+    PAPERCUSP_OPERATOR_URL: operatorBase,
+    // apps/tui accepts a full http(s) URL here and uses it as an explicit
+    // selection, bypassing ambiguous IPC discovery.
+    PUI_OPERATOR: operatorBase,
+  };
+}
+
 const launchPui = defineTool({
   method: 'POST',
   path: '/adv/sessions/launch-pui',
@@ -68,12 +94,12 @@ const launchPui = defineTool({
       );
     }
 
-    // `pui workbench` materializes the zellij layout + connects over
-    // endpoint-IPC; no args/env needed. `bash -lc` (login shell, inside
+    // `pui workbench` materializes the zellij layout + connects to the
+    // launching operator selected above. `bash -lc` (login shell, inside
     // spawnInTerminal) puts ~/.cargo/bin on PATH so pui's own `zellij` spawn
     // resolves. `puiBin` is a fixed resolved path — shellEscape guards it.
     const oneliner = `exec ${shellEscape(puiBin)} workbench`;
-    const spawned = await spawnInTerminal({ oneliner, env: process.env });
+    const spawned = await spawnInTerminal({ oneliner, env: puiLaunchEnv() });
     if (!spawned.ok) {
       return json({ status: 'error', error: spawned.error }, 500);
     }
