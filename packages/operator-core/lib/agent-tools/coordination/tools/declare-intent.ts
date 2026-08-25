@@ -133,8 +133,8 @@ export default defineTool({
       .describe('One line: what you are working on right now.'),
     current_plan_slug: z
       .string()
-      .optional()
-      .describe('Plan slug this work belongs to, if any.'),
+      .nullish()
+      .describe('Plan slug this work belongs to, if any; null is treated like omission.'),
     items: z
       .array(z.string().regex(/^P-\d{3,}$/, 'P-NNN form required'))
       .max(40)

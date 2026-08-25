@@ -118,6 +118,22 @@ describe('coord:declare-intent scheduler work-item bridge', () => {
       }),
     ).toThrow(/work-item ref required/);
   });
+
+  it('accepts null current_plan_slug as equivalent to omission at the tool boundary', async () => {
+    const args = (declareIntentTool.args as { parse: (input: unknown) => Record<string, unknown> }).parse({
+      intent: 'replacement work',
+      current_plan_slug: null,
+    });
+    expect(args.current_plan_slug).toBeNull();
+
+    const res = parse(await tool.handler(args, ctx));
+    expect(res.ok).toBe(true);
+    expect(writePresence).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ intent: 'replacement work', currentPlanSlug: null }),
+      null,
+    );
+  });
 });
 
 /** A plan row whose Stage-3 structured index carries the given item ids. */
