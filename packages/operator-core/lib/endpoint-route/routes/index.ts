@@ -425,6 +425,7 @@ import workspaceById from './workspaces/by-id';
 import workspaceSwitch from './workspaces/switch';
 import workspaceHostAudit from './workspace-hosts/audit';
 import workspaceHostInitialize from './workspace-hosts/initialize';
+import workspaceHostProvision from './workspace-hosts/provision';
 import userActionsBySlug from './user-actions/by-slug';
 import userActionsLog from './user-actions/log';
 import elevenlabsWebhook from './elevenlabs/webhook';
@@ -905,6 +906,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(workspaceSwitch as AnyRoute),
   ...flatten(workspaceHostAudit as AnyRoute),
   ...flatten(workspaceHostInitialize as AnyRoute),
+  ...flatten(workspaceHostProvision as AnyRoute),
   ...flatten(userActionsBySlug as AnyRoute),
   ...flatten(userActionsLog as AnyRoute),
   ...flatten(elevenlabsWebhook as AnyRoute),
