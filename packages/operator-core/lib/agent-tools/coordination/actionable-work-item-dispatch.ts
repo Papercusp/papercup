@@ -23,6 +23,7 @@ import {
 } from '../../scheduler/plan-item-lane-guard';
 import { wakeRecipients, type WakeRecipientsResult } from './inbox-wake';
 import { assemblePresenceSnapshot, resolvePresenceScope } from './presence-snapshot';
+import { listSessionsForAgentName, type AdoptionRow } from '../../plan-items/agent-names';
 
 const UNASSIGNED_FRONTIER_STATES = new Set(['open', 'failing', 'todo']);
 const RETAINED_EXECUTION_STATES = new Set([...UNASSIGNED_FRONTIER_STATES, 'wip', 'in_progress', 'validating']);
@@ -73,6 +74,18 @@ export interface StableAgentTargetState {
   sessionState: string | null;
   wakeable: boolean | null;
 }
+
+export interface StableAgentTargetDeps {
+  resolveScope: typeof resolvePresenceScope;
+  snapshot: typeof assemblePresenceSnapshot;
+  listSessions: typeof listSessionsForAgentName;
+}
+
+const defaultTargetDeps: StableAgentTargetDeps = {
+  resolveScope: resolvePresenceScope,
+  snapshot: assemblePresenceSnapshot,
+  listSessions: listSessionsForAgentName,
+};
 
 export type RequiredWakeFailureCode = 'target_dead' | 'target_absent' | 'target_unwakeable' | 'wake_delivery_unknown';
 
@@ -328,9 +341,9 @@ export async function resolveStableAgentTarget(args: {
   targetAgent: string;
   workspaceId?: string;
   harness?: string;
-}): Promise<StableAgentTargetState> {
+}, deps: StableAgentTargetDeps = defaultTargetDeps): Promise<StableAgentTargetState> {
   try {
-    const scope = await resolvePresenceScope(
+    const scope = await deps.resolveScope(
       { workspaceId: args.workspaceId, harnessSlug: args.harness },
       {
         scope: 'workspace',
@@ -338,14 +351,30 @@ export async function resolveStableAgentTarget(args: {
         ...(args.workspaceId ? { workspace: args.workspaceId } : {}),
       },
     );
-    const snapshot = await assemblePresenceSnapshot(scope, { owner: args.targetAgent });
+    const adoptions: AdoptionRow[] = scope.wsId
+      ? await deps.listSessions(scope.wsId, args.targetAgent)
+      : [];
+    const candidateOwnerIds = adoptions.length > 0
+      ? adoptions.map((row) => row.sessionOwnerId)
+      : [args.targetAgent];
+    const snapshot = await deps.snapshot(scope);
     const rows = snapshot.active as Array<Record<string, unknown>>;
-    const exact = rows.find((row) => row.ownerId === args.targetAgent);
-    const row = exact ?? rows[0];
+    const byOwnerId = new Map(
+      rows
+        .filter((row): row is Record<string, unknown> & { ownerId: string } => typeof row.ownerId === 'string')
+        .map((row) => [row.ownerId, row]),
+    );
+    const adoptedRows = candidateOwnerIds
+      .map((ownerId) => byOwnerId.get(ownerId))
+      .filter((row): row is Record<string, unknown> & { ownerId: string } => Boolean(row));
+    const row =
+      adoptedRows.find((candidate) => candidate.wakeable === true) ??
+      adoptedRows[0] ??
+      (adoptions.length === 0 ? rows[0] : undefined);
     if (!row) {
       return {
         requested: args.targetAgent,
-        ownerId: args.targetAgent,
+        ownerId: candidateOwnerIds[0] ?? args.targetAgent,
         present: false,
         sessionState: null,
         wakeable: false,
@@ -438,7 +467,9 @@ export async function assignAndWakeActionableWorkItems(
   const assignment = await assignActionableWorkItems(
     {
       workItemIds: args.workItemIds,
-      targetAgent: target.ownerId,
+      // Assignment is durable across sessions, so it must remain keyed on the
+      // stable adopted name. Only the wake below targets the ephemeral ownerId.
+      targetAgent: args.targetAgent,
       ...(args.harness ? { harness: args.harness } : {}),
     },
     deps,

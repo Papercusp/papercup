@@ -4,6 +4,8 @@ import {
   assignActionableWorkItems,
   assignAndWakeActionableWorkItems,
   type ActionableWorkItemDispatchDeps,
+  resolveStableAgentTarget,
+  type StableAgentTargetDeps,
   type StableAgentTargetState,
 } from './actionable-work-item-dispatch';
 
@@ -113,6 +115,41 @@ describe('assignActionableWorkItems', () => {
 });
 
 describe('assignAndWakeActionableWorkItems', () => {
+  it('persists the stable name while waking the live session that adopted it', async () => {
+    const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
+    const wake = vi.fn(async (owners: readonly string[]) => ({
+      targets: [...owners],
+      keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
+      queued: 1,
+      woken: 1,
+      pickupConfirmed: false,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+      timedOutTargets: [],
+    }));
+    const d = deps({
+      claim,
+      wake,
+      resolveTarget: vi.fn(async () =>
+        target('su-email-live', { requested: 'email-agent' }),
+      ),
+    });
+
+    const result = await assignAndWakeActionableWorkItems(
+      { workItemIds: ['WI-READY'], targetAgent: 'email-agent', harness: 'email' },
+      d,
+    );
+
+    expect(claim).toHaveBeenCalledWith('WI-READY', 'email-agent', { harness: 'email' });
+    expect(wake).toHaveBeenCalledWith(
+      ['su-email-live'],
+      expect.objectContaining({ payload: { kind: 'actionable-work-item-dispatch', workItemIds: ['WI-READY'] } }),
+    );
+    expect(result.assignment.targetAgent).toBe('email-agent');
+    expect(result.target.ownerId).toBe('su-email-live');
+  });
+
   it('does not wake when every requested descendant is still plan-blocked', async () => {
     const wake = vi.fn();
     const d = deps({
@@ -226,5 +263,76 @@ describe('assignAndWakeActionableWorkItems', () => {
     expect(result.wake?.queued).toBe(1);
     expect(result.ok).toBe(true);
     expect(result.failure).toBeUndefined();
+  });
+});
+
+describe('resolveStableAgentTarget', () => {
+  function targetDeps(rows: Array<Record<string, unknown>>): StableAgentTargetDeps {
+    return {
+      resolveScope: vi.fn(async () => ({ scope: 'workspace', wsId: 'ws', potId: null })),
+      listSessions: vi.fn(async () => [
+        {
+          workspaceId: 'ws',
+          sessionOwnerId: 'su-newest-dead',
+          agentName: 'email-agent',
+          ownerUser: 'alice',
+          adoptedAt: '2026-08-25T20:00:00Z',
+        },
+        {
+          workspaceId: 'ws',
+          sessionOwnerId: 'su-live',
+          agentName: 'email-agent',
+          ownerUser: 'alice',
+          adoptedAt: '2026-08-25T19:00:00Z',
+        },
+      ]),
+      snapshot: vi.fn(async () => ({
+        as_of: '2026-08-25T20:00:00Z',
+        scope: 'workspace',
+        summary: {
+          active: rows.length,
+          stale: 0,
+          federated: 0,
+          wakeable: 1,
+          onDesktop: 0,
+          viewerAttached: 0,
+          byState: { live: 1, parked: 0, ended: 0, recorded: 0 },
+          byContextPressure: { high: 0, critical: 0 },
+        },
+        active: rows,
+        etag: 'etag',
+      })),
+    };
+  }
+
+  it('resolves a stable name to a live adopting session', async () => {
+    const result = await resolveStableAgentTarget(
+      { targetAgent: 'email-agent', workspaceId: 'ws', harness: 'email' },
+      targetDeps([
+        { ownerId: 'su-live', sessionState: 'parked', wakeable: true },
+      ]),
+    );
+
+    expect(result).toEqual({
+      requested: 'email-agent',
+      ownerId: 'su-live',
+      present: true,
+      sessionState: 'parked',
+      wakeable: true,
+    });
+  });
+
+  it('keeps the newest durable adoption as the recovery target when no adopting session is live', async () => {
+    const result = await resolveStableAgentTarget(
+      { targetAgent: 'email-agent', workspaceId: 'ws', harness: 'email' },
+      targetDeps([]),
+    );
+
+    expect(result).toMatchObject({
+      requested: 'email-agent',
+      ownerId: 'su-newest-dead',
+      present: false,
+      wakeable: false,
+    });
   });
 });

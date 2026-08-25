@@ -113,6 +113,25 @@ export async function resolveAdoptedName(
 }
 
 /**
+ * Every session that currently adopts a stable agent-name, newest adoption
+ * first. Liveness is deliberately resolved by the caller: this registry is the
+ * durable name→session binding, not a second presence oracle.
+ */
+export async function listSessionsForAgentName(
+  workspaceId: string,
+  agentName: string,
+): Promise<AdoptionRow[]> {
+  const { sql } = getOrgPg();
+  const rows = await sql<AdoptionDbRow[]>`
+    SELECT workspace_id, session_owner_id, agent_name, owner_user, adopted_at
+      FROM harness_shared.agent_name_sessions
+     WHERE workspace_id = ${workspaceId} AND agent_name = ${agentName}
+     ORDER BY adopted_at DESC, session_owner_id
+  `;
+  return rows.map(adoptionFromDb);
+}
+
+/**
  * The agent-name to act AS for a call: an explicit override if given (and
  * registered/owned), else the session's adopted name. Throws if neither resolves —
  * a named operation must know who it is acting as.

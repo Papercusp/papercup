@@ -27,7 +27,14 @@ vi.mock('../agent-tools/coordination/identity', () => ({
 }));
 vi.mock('../agent-tools/plans/source', () => ({ resolvePlanScope: async () => ({ workspaceId: 'ws' }) }));
 
-const { registerAgentName, adoptAgentName, resolveAdoptedName, agentNameOwner, listNamesForOwner } =
+const {
+  registerAgentName,
+  adoptAgentName,
+  resolveAdoptedName,
+  agentNameOwner,
+  listNamesForOwner,
+  listSessionsForAgentName,
+} =
   await import('./agent-names');
 
 const WS = 'ws-names';
@@ -113,6 +120,16 @@ describe('agent-names registry (PG)', () => {
     expect(await resolveAdoptedName(WS, 'su-bbb')).toBe('builder-1');
     await adoptAgentName(WS, 'su-bbb', 'builder-2', 'alice'); // same session, new name
     expect(await resolveAdoptedName(WS, 'su-bbb')).toBe('builder-2'); // re-pointed, not a second binding
+  });
+
+  it('lists the sessions that adopted one stable name without leaking other names', async () => {
+    await adoptAgentName(WS, 'su-name-a', 'email-agent', 'alice');
+    await adoptAgentName(WS, 'su-name-b', 'email-agent', 'alice');
+    await adoptAgentName(WS, 'su-other', 'calendar-agent', 'alice');
+
+    const sessions = await listSessionsForAgentName(WS, 'email-agent');
+    expect(sessions.map((row) => row.sessionOwnerId).sort()).toEqual(['su-name-a', 'su-name-b']);
+    expect(sessions.every((row) => row.agentName === 'email-agent')).toBe(true);
   });
 
   it('a name is scoped to its workspace — same name in another workspace is independent', async () => {
