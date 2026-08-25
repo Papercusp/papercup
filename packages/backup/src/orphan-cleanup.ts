@@ -34,11 +34,13 @@ export interface SweepResult {
 }
 
 /**
- * Find and mark stale `running` snapshots as `failed`.
+ * Find and mark stale, inactive `running` snapshots as `failed`.
  *
  * Atomic via a single `UPDATE ... RETURNING id`. Idempotent: calling
  * twice in parallel yields the same total but each call returns the
  * rows IT marked (Postgres row-level locking handles the interleave).
+ * A recent event is liveness evidence: long pg_dump/kopia operations emit
+ * periodic progress heartbeats, so age alone must never declare them dead.
  */
 export async function sweepOrphanSnapshots(opts?: {
   olderThanMs?: number;
@@ -50,13 +52,20 @@ export async function sweepOrphanSnapshots(opts?: {
 
   const sql = backupHost().getSql();
   const rows = await sql<{ id: string }[]>`
-    UPDATE harness_shared.backup_snapshots
+    UPDATE harness_shared.backup_snapshots AS snapshot
        SET status      = 'failed',
            finished_at = now(),
            error_text  = ${errorTag}
-     WHERE status = 'running'
-       AND started_at < ${cutoffIso}::timestamptz
-     RETURNING id::text AS id
+     WHERE snapshot.status = 'running'
+       AND snapshot.started_at < ${cutoffIso}::timestamptz
+       AND NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.backup_events AS event
+          WHERE event.workspace_id = snapshot.workspace_id
+            AND event.snapshot_id = snapshot.id
+            AND event.at >= ${cutoffIso}::timestamptz
+       )
+     RETURNING snapshot.id::text AS id
   `;
   const sweptIds = rows.map((r) => r.id);
   return { swept: sweptIds.length, sweptIds };

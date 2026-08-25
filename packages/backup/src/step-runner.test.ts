@@ -30,17 +30,26 @@ import type { Sql } from 'postgres';
 
 /** A host whose SQL swallows every query (returns []) — enough for the
  *  best-effort event writes + the offsite-sync settings read in snapshot(). */
-function fakeHost() {
-  const sql = ((..._args: unknown[]) => Promise.resolve([])) as unknown as Sql;
+function fakeHost(
+  onQuery?: (strings: TemplateStringsArray, values: unknown[]) => void,
+) {
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    onQuery?.(strings, values);
+    return Promise.resolve([]);
+  }) as unknown as Sql;
   configureBackup({
     getSql: () => sql,
-    workspacesRoot: () => '/tmp/backup-test-root',
+    workspacesRoot: () => "/tmp/backup-test-root",
     ensureSchema: async () => {},
-    getHarnessAdminUrl: () => ({ url: 'postgres://u:p@localhost:5432/db', source: 'test' }),
+    getHarnessAdminUrl: () => ({
+      url: "postgres://u:p@localhost:5432/db",
+      source: "test",
+    }),
   });
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   configureBackupStepRunner(null);
   vi.restoreAllMocks();
 });
@@ -189,5 +198,73 @@ describe('snapshot() opts.onStarted (EI-18875467740392530)', () => {
 
     const result = await wb.snapshot('manual');
     expect(result.snapshotId).toBe(9);
+  });
+});
+
+describe("snapshot() progress heartbeat (EI-21393555442782456)", () => {
+  it("continues during a held long-running step and stops after snapshot settlement", async () => {
+    vi.useFakeTimers();
+    const heartbeatPayloads: string[] = [];
+    fakeHost((strings, values) => {
+      if (
+        !strings.join(" ").includes("INSERT INTO harness_shared.backup_events")
+      )
+        return;
+      const payload = values.at(-1);
+      if (
+        typeof payload === "string" &&
+        payload.includes('"phase":"heartbeat"')
+      ) {
+        heartbeatPayloads.push(payload);
+      }
+    });
+
+    let releasePreHook!: () => void;
+    let markPreHookStarted!: () => void;
+    const preHookGate = new Promise<void>((resolve) => {
+      releasePreHook = resolve;
+    });
+    const preHookStarted = new Promise<void>((resolve) => {
+      markPreHookStarted = resolve;
+    });
+    const recording: StepRunner = {
+      runStep: async <T>(name: string): Promise<T> => {
+        if (name === "backup-insert-row") {
+          return { id: 77, startedAtMs: 1000 } as T;
+        }
+        if (name === "backup-pre-snapshot-hook") {
+          markPreHookStarted();
+          await preHookGate;
+          return { ok: true, error: null } as T;
+        }
+        if (name === "backup-kopia-create") {
+          return {
+            snapshotId: "kopia-77",
+            bytesAdded: 1,
+            bytesTotal: 2,
+            durationMs: 5,
+          } as T;
+        }
+        return undefined as T;
+      },
+    };
+    configureBackupStepRunner(recording);
+
+    const wb = new WorkspaceBackup({
+      workspaceId: "ws-1",
+      workspaceRoot: "/tmp/backup-test-root/ws-1",
+    });
+    vi.spyOn(wb, "ensureRepo").mockResolvedValue(undefined);
+
+    const snapshotPromise = wb.snapshot("manual");
+    await preHookStarted;
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(heartbeatPayloads).toHaveLength(3);
+
+    releasePreHook();
+    await snapshotPromise;
+    const afterSettlement = heartbeatPayloads.length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(heartbeatPayloads).toHaveLength(afterSettlement);
   });
 });

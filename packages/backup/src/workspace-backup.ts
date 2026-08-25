@@ -36,6 +36,7 @@ import {
 import { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './policy';
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
+const SNAPSHOT_HEARTBEAT_INTERVAL_MS = 30_000;
 
 interface SnapshotInFlight {
   promise: Promise<SnapshotResult>;
@@ -307,118 +308,133 @@ export class WorkspaceBackup {
     });
     opts?.onStarted?.(snapshotRowId);
 
-    await this.event(snapshotRowId, 'progress', { phase: 'started', sources });
-
-    // Step 2 — pre-snapshot DB dump hook. Failures are logged inside the hook
-    // and do not abort the snapshot — the file tree is still useful even if
-    // the dump didn't land. The hook overwrites its dump files atomically, so
-    // re-running it on a resume is idempotent.
-    await this.event(snapshotRowId, 'progress', { phase: 'pre_snapshot_hook' });
-    // The step RETURNS the hook's outcome rather than the event-write's, so a
-    // crash-resume replays the degradation instead of silently recovering to a
-    // clean 'ok': the cached step result is the only record a resumed workflow
-    // sees of what the dump did.
-    const dumpOutcome: { ok: boolean; error: string | null } | undefined = await steps.runStep(
-      'backup-pre-snapshot-hook',
-      () =>
-        runPreSnapshotHook({
-          workspaceId: this.workspaceId,
-          workspaceRoot: this.workspaceRoot,
-        }).then(async (result) => {
-          await this.event(snapshotRowId, 'hook_pg_dump', { ...result });
-          return { ok: result.ok, error: result.error ?? null };
-        })
-          .catch(async (err) => {
-            // eslint-disable-next-line no-console
-            console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
-            await this.event(snapshotRowId, 'hook_pg_dump', { ok: false, error: String(err) });
-            return { ok: false, error: String(err) };
-          }),
-    );
+    // The durable row intentionally exists before pg_dump + kopia, which can
+    // run for well over the orphan threshold on a large workspace. Keep the
+    // existing backup_events surface fresh for that full post-row lifecycle so
+    // orphan cleanup can distinguish a slow live producer from a dead one.
+    // Event writes are best-effort and the timer is unref'd so telemetry can
+    // neither fail a snapshot nor keep a worker process alive.
+    const heartbeat = setInterval(() => {
+      void this.event(snapshotRowId, 'progress', { phase: 'heartbeat' }).catch(() => {});
+    }, SNAPSHOT_HEARTBEAT_INTERVAL_MS);
+    heartbeat.unref?.();
 
     try {
-      await this.event(snapshotRowId, 'progress', { phase: 'kopia_snapshot' });
-      // Step 3 — the kopia snapshot create (the expensive, non-PG side effect).
-      // Content-addressed, so a re-run on resume only re-dedups; caching the
-      // parsed result lets a resume skip the work entirely. The self-exclusion
-      // guard runs inside the step so the recursion check + the create are
-      // checkpointed together. durationMs is measured here so it's stable when
-      // the step result is replayed on resume.
-      const parsed = await steps.runStep('backup-kopia-create', async () => {
-        // Defense-in-depth: refuse to snapshot if the active policy doesn't
-        // self-exclude the repo dir. Without this guard the snapshot would
-        // recursively include kopia-repo/ and balloon toward 1TB.
-        await this.assertSelfExclusionPolicy(env);
-        const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });
-        const p = parseKopiaSnapshotJson(out);
-        return { ...p, durationMs: Date.now() - startedAtMs };
-      });
+      await this.event(snapshotRowId, 'progress', { phase: 'started', sources });
 
-      // Step 4 — record the result. Idempotent UPDATE keyed by the row id.
-      //
-      // A snapshot whose pre-snapshot DB dump did NOT land is not 'ok'. The
-      // kopia snapshot itself succeeded — the file tree is captured and
-      // restorable — but the database dump inside it is stale, so recording a
-      // bare 'ok' makes backup_snapshots report green over a backup that has
-      // not captured the database. That is exactly how a dead dump went
-      // unnoticed for 26 hours (EI-20109034777197353): the hook returned
-      // { ok:false } into a logfile nobody reads while this row committed
-      // 'ok', two seconds apart.
-      //
-      // 'degraded' rather than 'failed' is the honest value, and it is chosen
-      // to move exactly one consumer: the scheduler's cadence read is
-      // MAX(started_at) with no status filter (unaffected), orphan-cleanup
-      // only rewrites 'running' (unaffected), while system-health derives
-      // lastOkAtMs from status='ok' — so its existing BACKUP_STALE_MS warn
-      // finally fires instead of being fed a lie.
-      // Only a POSITIVE report of failure marks the row degraded. An absent or
-      // malformed step result means "we do not know", and a workflow RESUMED
-      // across the deploy that introduced this step legitimately replays a
-      // cached `undefined` from the old code — dereferencing that threw.
-      //
-      // Fail-open here is deliberate, and is the same lesson this bug taught
-      // one level up: the status column must not be the load-bearing detector.
-      // The artifact-freshness probe in papercup-backup-health-check.sh is what
-      // actually guards this class, keyed on the dump's mtime rather than on
-      // any status anyone remembered to write. So an unknown outcome does not
-      // fabricate an alarm here, and a genuinely dead dump is still caught
-      // there.
-      const dumpDegraded = dumpOutcome?.ok === false;
-      await steps.runStep('backup-record-result', async () => {
+      // Step 2 — pre-snapshot DB dump hook. Failures are logged inside the hook
+      // and do not abort the snapshot — the file tree is still useful even if
+      // the dump didn't land. The hook overwrites its dump files atomically, so
+      // re-running it on a resume is idempotent.
+      await this.event(snapshotRowId, 'progress', { phase: 'pre_snapshot_hook' });
+      // The step RETURNS the hook's outcome rather than the event-write's, so a
+      // crash-resume replays the degradation instead of silently recovering to a
+      // clean 'ok': the cached step result is the only record a resumed workflow
+      // sees of what the dump did.
+      const dumpOutcome: { ok: boolean; error: string | null } | undefined = await steps.runStep(
+        'backup-pre-snapshot-hook',
+        () =>
+          runPreSnapshotHook({
+            workspaceId: this.workspaceId,
+            workspaceRoot: this.workspaceRoot,
+          }).then(async (result) => {
+            await this.event(snapshotRowId, 'hook_pg_dump', { ...result });
+            return { ok: result.ok, error: result.error ?? null };
+          })
+            .catch(async (err) => {
+              // eslint-disable-next-line no-console
+              console.warn(`[backup] pre-snapshot hook for ${this.workspaceId} failed:`, err);
+              await this.event(snapshotRowId, 'hook_pg_dump', { ok: false, error: String(err) });
+              return { ok: false, error: String(err) };
+            }),
+      );
+
+      try {
+        await this.event(snapshotRowId, 'progress', { phase: 'kopia_snapshot' });
+        // Step 3 — the kopia snapshot create (the expensive, non-PG side effect).
+        // Content-addressed, so a re-run on resume only re-dedups; caching the
+        // parsed result lets a resume skip the work entirely. The self-exclusion
+        // guard runs inside the step so the recursion check + the create are
+        // checkpointed together. durationMs is measured here so it's stable when
+        // the step result is replayed on resume.
+        const parsed = await steps.runStep('backup-kopia-create', async () => {
+          // Defense-in-depth: refuse to snapshot if the active policy doesn't
+          // self-exclude the repo dir. Without this guard the snapshot would
+          // recursively include kopia-repo/ and balloon toward 1TB.
+          await this.assertSelfExclusionPolicy(env);
+          const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });
+          const p = parseKopiaSnapshotJson(out);
+          return { ...p, durationMs: Date.now() - startedAtMs };
+        });
+
+        // Step 4 — record the result. Idempotent UPDATE keyed by the row id.
+        //
+        // A snapshot whose pre-snapshot DB dump did NOT land is not 'ok'. The
+        // kopia snapshot itself succeeded — the file tree is captured and
+        // restorable — but the database dump inside it is stale, so recording a
+        // bare 'ok' makes backup_snapshots report green over a backup that has
+        // not captured the database. That is exactly how a dead dump went
+        // unnoticed for 26 hours (EI-20109034777197353): the hook returned
+        // { ok:false } into a logfile nobody reads while this row committed
+        // 'ok', two seconds apart.
+        //
+        // 'degraded' rather than 'failed' is the honest value, and it is chosen
+        // to move exactly one consumer: the scheduler's cadence read is
+        // MAX(started_at) with no status filter (unaffected), orphan-cleanup
+        // only rewrites 'running' (unaffected), while system-health derives
+        // lastOkAtMs from status='ok' — so its existing BACKUP_STALE_MS warn
+        // finally fires instead of being fed a lie.
+        // Only a POSITIVE report of failure marks the row degraded. An absent or
+        // malformed step result means "we do not know", and a workflow RESUMED
+        // across the deploy that introduced this step legitimately replays a
+        // cached `undefined` from the old code — dereferencing that threw.
+        //
+        // Fail-open here is deliberate, and is the same lesson this bug taught
+        // one level up: the status column must not be the load-bearing detector.
+        // The artifact-freshness probe in papercup-backup-health-check.sh is what
+        // actually guards this class, keyed on the dump's mtime rather than on
+        // any status anyone remembered to write. So an unknown outcome does not
+        // fabricate an alarm here, and a genuinely dead dump is still caught
+        // there.
+        const dumpDegraded = dumpOutcome?.ok === false;
+        await steps.runStep('backup-record-result', async () => {
+          await sql`
+            UPDATE harness_shared.backup_snapshots
+            SET kopia_snapshot_id = ${parsed.snapshotId},
+                finished_at       = now(),
+                status            = ${dumpDegraded ? 'degraded' : 'ok'},
+                error_text        = ${dumpDegraded ? `pre-snapshot db dump did not land: ${dumpOutcome.error ?? 'unknown'}` : null},
+                bytes_added       = ${parsed.bytesAdded},
+                bytes_total       = ${parsed.bytesTotal}
+            WHERE id = ${snapshotRowId}
+          `;
+        });
+        await this.event(snapshotRowId, 'progress', { phase: 'done', bytesAdded: parsed.bytesAdded, durationMs: parsed.durationMs });
+
+        // After-snapshot offsite replication (non-fatal). Local stays the
+        // source of truth; if sync fails the snapshot is still safe.
+        void this.syncToOffsite(env, snapshotRowId).catch(() => { /* logged inside */ });
+
+        return {
+          snapshotId: snapshotRowId,
+          kopiaSnapshotId: parsed.snapshotId,
+          bytesAdded: parsed.bytesAdded,
+          durationMs: parsed.durationMs,
+        };
+      } catch (err) {
+        const msg = String(err instanceof Error ? err.message : err);
         await sql`
           UPDATE harness_shared.backup_snapshots
-          SET kopia_snapshot_id = ${parsed.snapshotId},
-              finished_at       = now(),
-              status            = ${dumpDegraded ? 'degraded' : 'ok'},
-              error_text        = ${dumpDegraded ? `pre-snapshot db dump did not land: ${dumpOutcome.error ?? 'unknown'}` : null},
-              bytes_added       = ${parsed.bytesAdded},
-              bytes_total       = ${parsed.bytesTotal}
+          SET finished_at = now(),
+              status      = 'failed',
+              error_text  = ${msg}
           WHERE id = ${snapshotRowId}
         `;
-      });
-      await this.event(snapshotRowId, 'progress', { phase: 'done', bytesAdded: parsed.bytesAdded, durationMs: parsed.durationMs });
-
-      // After-snapshot offsite replication (non-fatal). Local stays the
-      // source of truth; if sync fails the snapshot is still safe.
-      void this.syncToOffsite(env, snapshotRowId).catch(() => { /* logged inside */ });
-
-      return {
-        snapshotId: snapshotRowId,
-        kopiaSnapshotId: parsed.snapshotId,
-        bytesAdded: parsed.bytesAdded,
-        durationMs: parsed.durationMs,
-      };
-    } catch (err) {
-      const msg = String(err instanceof Error ? err.message : err);
-      await sql`
-        UPDATE harness_shared.backup_snapshots
-        SET finished_at = now(),
-            status      = 'failed',
-            error_text  = ${msg}
-        WHERE id = ${snapshotRowId}
-      `;
-      await this.event(snapshotRowId, 'progress', { phase: 'failed', error: msg });
-      throw err;
+        await this.event(snapshotRowId, 'progress', { phase: 'failed', error: msg });
+        throw err;
+      }
+    } finally {
+      clearInterval(heartbeat);
     }
   }
 
