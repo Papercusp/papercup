@@ -194,13 +194,13 @@ index 86afb4e..187a71b 100644
 +//   1. a literal IPv4 /24 prefix match — NOT a bare "are both private?" test, which
 +//      would fire between hosts that merely happen to be private without sharing a
 +//      link, and which the evidence for this change does not cover;
-+//   2. BOTH hosts non-routable. This is NARROWER than a bare /24 match, on purpose.
++//   2. BOTH hosts RFC1918-private. This is NARROWER than a bare /24 match, on purpose.
 +//      The branch this gates ABORTS the connection when its ping fails (it calls
 +//      maybeDestroyEncryptedSocket and returns rather than falling through to the
 +//      holepunch), so any pair admitted here that is NOT actually on one link loses
 +//      a connection that holepunching would otherwise have rescued. Two peers behind
 +//      one CGNAT /24 are exactly that hazard: same prefix, no direct path. Restricting
-+//      to non-routable space keeps the shortcut to topologies where a shared /24 does
++//      to RFC1918 space keeps the shortcut to topologies where a shared /24 does
 +//      imply a shared link — which is the evidenced case (10.99.0.11 <-> 10.99.0.12).
 +// Non-IPv4 / malformed input returns false, so the caller's host-equality disjunct
 +// stays the only path for IPv6 and this change remains strictly widening.
@@ -218,7 +218,7 @@ index 86afb4e..187a71b 100644
 +
 +  if (x[0] !== y[0] || x[1] !== y[1] || x[2] !== y[2]) return false
 +
-+  return isBogon(a) && isBogon(b)
++  return x[0] === '10' || (x[0] === '172' && Number(x[1]) >= 16 && Number(x[1]) <= 31) || (x[0] === '192' && x[1] === '168')
 +}
 +
  function isRelay(relaySocket, socket, port, host) {

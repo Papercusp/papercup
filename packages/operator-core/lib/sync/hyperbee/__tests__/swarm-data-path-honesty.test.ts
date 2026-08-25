@@ -47,6 +47,19 @@ const HYPERDHT_PATCH = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../../../../../patches/hyperdht+6.32.0.patch',
 );
+const HYPERDHT_CONNECT = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../../../node_modules/hyperdht/lib/connect.js',
+);
+
+function installedSamePrivateIPv4Subnet24(): (a: unknown, b: unknown) => boolean {
+  const source = readFileSync(HYPERDHT_CONNECT, 'utf8');
+  const start = source.indexOf('function samePrivateIPv4Subnet24(');
+  const end = source.indexOf('\nfunction isRelay(', start);
+  if (start < 0 || end <= start) throw new Error('installed HyperDHT subnet helper is absent');
+  const helperSource = source.slice(start, end);
+  return new Function(`${helperSource}; return samePrivateIPv4Subnet24;`)() as (a: unknown, b: unknown) => boolean;
+}
 
 afterEach(() => {
   _setSwarmGuardForTests(null);
@@ -93,11 +106,11 @@ interface WireCounters {
 
 /** A connection socket in the shape hyperswarm hands us: an encrypted stream with
  *  hyperdht's `udx*` signalling verdict + a UDX `rawStream` carrying the counters. */
-function fakeSocket(opts: {
-  wire?: WireCounters | null;
-  udx?: Record<string, unknown> | null;
-  remoteHost?: string;
-}): { socket: unknown; close: () => void; emitError: (e: unknown) => void } {
+function fakeSocket(opts: { wire?: WireCounters | null; udx?: Record<string, unknown> | null; remoteHost?: string }): {
+  socket: unknown;
+  close: () => void;
+  emitError: (e: unknown) => void;
+} {
   const closeHandlers: Array<() => void> = [];
   const errorHandlers: Array<(e: unknown) => void> = [];
   const socket: Record<string, unknown> = {
@@ -240,9 +253,7 @@ describe('WI-5980 — the address-resolution branch is recorded, and absent stay
     for (const punchPath of ['open', 'passive', 'lan', 'cannot-holepunch'] as const) {
       expect(extractConnectionPath({ udxPunchPath: punchPath }).punchPath).toBe(punchPath);
     }
-    expect(extractConnectionPath({ udxPunchPath: 'holepunch-real' }).punchPath).toBe(
-      'holepunch-real',
-    );
+    expect(extractConnectionPath({ udxPunchPath: 'holepunch-real' }).punchPath).toBe('holepunch-real');
     // Old diagnostic corpora remain readable, but this legacy value is
     // deliberately named as ambiguous and must not be used as an attempt.
     expect(extractConnectionPath({ udxPunchPath: 'holepunch' }).punchPath).toBe('holepunch');
@@ -279,6 +290,27 @@ describe('WI-5980 — the address-resolution branch is recorded, and absent stay
     const constructor = patch.indexOf('c.puncher = new Holepuncher');
     expect(realMark).toBeGreaterThan(-1);
     expect(constructor).toBeGreaterThan(realMark);
+  });
+
+  it('widens the LAN shortcut only to same-RFC1918 /24 peers', () => {
+    const patch = readFileSync(HYPERDHT_PATCH, 'utf8');
+    expect(patch).toContain(
+      'clientAddress.host === serverAddress.host || samePrivateIPv4Subnet24(clientAddress.host, serverAddress.host)',
+    );
+    expect(patch).not.toContain('return isBogon(a) && isBogon(b)');
+
+    const samePrivate24 = installedSamePrivateIPv4Subnet24();
+    expect(samePrivate24('10.77.0.2', '10.77.0.3')).toBe(true);
+    expect(samePrivate24('172.16.4.1', '172.16.4.254')).toBe(true);
+    expect(samePrivate24('192.168.9.2', '192.168.9.3')).toBe(true);
+
+    expect(samePrivate24('10.77.0.2', '10.77.1.3')).toBe(false);
+    expect(samePrivate24('100.64.0.2', '100.64.0.3')).toBe(false);
+    expect(samePrivate24('127.0.0.2', '127.0.0.3')).toBe(false);
+    expect(samePrivate24('169.254.2.2', '169.254.2.3')).toBe(false);
+    expect(samePrivate24('8.8.8.1', '8.8.8.2')).toBe(false);
+    expect(samePrivate24('10.77.0.999', '10.77.0.3')).toBe(false);
+    expect(samePrivate24('not-an-ip', '10.77.0.3')).toBe(false);
   });
 
   it('keeps these fields out of the result entirely for a bare socket', () => {
@@ -318,7 +350,7 @@ describe('WI-5980 — the address-resolution branch is recorded, and absent stay
   });
 });
 
-describe('EI-18700336768867234 — the flattened log also carries the patch\'s own udx* names', () => {
+describe("EI-18700336768867234 — the flattened log also carries the patch's own udx* names", () => {
   const OPEN_FASTPATH_FALLBACK = {
     udxRelayed: true,
     udxPunchPath: 'open',
@@ -458,7 +490,7 @@ describe('EI-18682571591024156 — a data path that never came up is reported LO
    * (b) fed `onDataPathNeverUp` → boot-history `replication_stalled`, inflating
    * any stall count read from that log under churn.
    */
-  it('stays silent for hyperswarm\'s own duplicate-connection teardown', async () => {
+  it("stays silent for hyperswarm's own duplicate-connection teardown", async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { swarm, emit } = fakeSwarm();
     const dead: DataPathNeverUpInfo[] = [];
