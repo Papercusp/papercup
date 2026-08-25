@@ -35,9 +35,8 @@ vi.mock('./workspace-registry', async () => {
 });
 
 const { reclaimStaleIssueClaims } = await import('./work-items-stale-claims');
-const { workItemClaimLeaseEnabled, gcOrphanIssueLeases, releaseIssueClaimLease } = await import(
-  './work-item-claim-lease-wiring'
-);
+const { workItemClaimLeaseEnabled, gcOrphanIssueLeases, releaseIssueClaimLease } =
+  await import('./work-item-claim-lease-wiring');
 
 /** WORKITEM_CLAIM_LEASE FLAG (P-012/D-008): sync-cached, refreshed on flag change. */
 async function setLeaseFlag(on: boolean): Promise<void> {

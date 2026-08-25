@@ -8,7 +8,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
-import { reclaimStaleWorkItemClaims, reclaimStaleIssueClaims, reconcileStrandedWipWorkItems } from './work-items-stale-claims';
+import {
+  reclaimStaleWorkItemClaims,
+  reclaimStaleIssueClaims,
+  reconcileStrandedWipWorkItems,
+} from './work-items-stale-claims';
 import { SESSION_END_MARKER } from './agent-tools/activity/lifecycle-markers';
 
 const PRESENCE_DDL = `
@@ -202,14 +206,18 @@ async function seedLoop(ownerId: string, active = true): Promise<void> {
     VALUES (${`loop-${ownerId}`}, ${ownerId}, 60, ${active})`;
 }
 
-async function statusOf(featureId: string): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {
+async function statusOf(
+  featureId: string,
+): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {
   const [row] = await sql<{ status: string; requeue_count: number; taken_by: string | null }[]>`
     SELECT status, requeue_count, taken_by
       FROM harness_shared.harness_features_consolidated WHERE feature_id = ${featureId}`;
   return row;
 }
 
-async function workItemStatusOf(featureId: string): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {
+async function workItemStatusOf(
+  featureId: string,
+): Promise<{ status: string; requeue_count: number; taken_by: string | null }> {
   const [row] = await sql<{ status: string; requeue_count: number; taken_by: string | null }[]>`
     SELECT status, requeue_count, taken_by
       FROM harness_shared.work_items WHERE feature_id = ${featureId}`;
@@ -377,7 +385,11 @@ describe('reclaimStaleWorkItemClaims', () => {
       action: 'dead-lettered',
       requeue_count: 3,
     });
-    expect(await workItemStatusOf('WI-TASK-WIP-2')).toMatchObject({ status: 'blocked', requeue_count: 3, taken_by: null });
+    expect(await workItemStatusOf('WI-TASK-WIP-2')).toMatchObject({
+      status: 'blocked',
+      requeue_count: 3,
+      taken_by: null,
+    });
   });
 
   it('a dead-held issue-family (task) row that was already `open` keeps requeue_count untouched (nothing to bump)', async () => {
@@ -429,7 +441,12 @@ describe('reclaimStaleWorkItemClaims', () => {
     await sql`UPDATE harness_shared.harness_features_consolidated
                  SET taken_at = NULL WHERE feature_id = 'F-015'`;
     const r = await reclaimStaleWorkItemClaims(sql);
-    expect(r.released[0]).toMatchObject({ feature_id: 'F-015', reason: 'dead', new_status: 'open', action: 'requeued' });
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'F-015',
+      reason: 'dead',
+      new_status: 'open',
+      action: 'requeued',
+    });
     expect(await statusOf('F-015')).toMatchObject({ status: 'open', taken_by: null });
   });
 
@@ -500,7 +517,11 @@ describe('reclaimStaleWorkItemClaims', () => {
     await seedItem('F-012b', 'opspawn-dead-dep', 30, 'deprecated', 0);
     await markKnown('opspawn-dead-dep');
     const r = await reclaimStaleWorkItemClaims(sql);
-    expect(r.released[0]).toMatchObject({ former_status: 'deprecated', new_status: 'deprecated', action: 'freed-terminal' });
+    expect(r.released[0]).toMatchObject({
+      former_status: 'deprecated',
+      new_status: 'deprecated',
+      action: 'freed-terminal',
+    });
   });
 
   it('a `blocked` row is freed but kept blocked (its own delegator-notify signal path)', async () => {
@@ -573,7 +594,12 @@ describe('reclaimStaleWorkItemClaims', () => {
     await seedItem('F-ST2', 'su-alive-stalled2', 30, 'in_progress', 0, 30);
     await sql`INSERT INTO harness_shared.coord_presence VALUES ('su-alive-stalled2', now())`;
     const r = await reclaimStaleWorkItemClaims(sql, { includeStalled: true });
-    expect(r.released[0]).toMatchObject({ feature_id: 'F-ST2', reason: 'stalled', new_status: 'open', action: 'requeued' });
+    expect(r.released[0]).toMatchObject({
+      feature_id: 'F-ST2',
+      reason: 'stalled',
+      new_status: 'open',
+      action: 'requeued',
+    });
     expect((await statusOf('F-ST2')).taken_by).toBeNull();
   });
 
@@ -917,8 +943,11 @@ describe('EI-21431501901242395: armed-loop owner liveness between warm wakes', (
 
     await sql`UPDATE harness_shared.routines SET active = false WHERE target_owner_id = ${owner}`;
 
-    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).toContain('F-WARM-LOOP');
+    // Run the issue-specific reaper first: the unified work-item reaper also
+    // sees issue-family rows and would otherwise release EI-WARM-LOOP before
+    // this assertion could observe the issue reaper's own terminal control.
     expect((await reclaimStaleIssueClaims(sql)).released.map((r) => r.issue_id)).toContain('EI-WARM-LOOP');
+    expect((await reclaimStaleWorkItemClaims(sql)).released.map((r) => r.feature_id)).toContain('F-WARM-LOOP');
   });
 });
 
@@ -937,7 +966,7 @@ describe('WI-6039 — reconcileStrandedWipWorkItems (the general already-strande
     expect(rows.map((r) => r.feature_id)).toContain('WI-STRAND-2');
   });
 
-  it('does NOT touch a wip row that DOES have a holder — that is reclaimStaleWorkItemClaims\'s job, not this one', async () => {
+  it("does NOT touch a wip row that DOES have a holder — that is reclaimStaleWorkItemClaims's job, not this one", async () => {
     await seedTaskItem('WI-STRAND-3', 'su-live-holder', 1, 'wip');
     await markKnown('su-live-holder');
     const rows = await reconcileStrandedWipWorkItems(sql);

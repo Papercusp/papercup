@@ -62,8 +62,7 @@ vi.mock('../../carry-respawn-marker', () => ({
 
 const tool = (await import('./report')).default;
 const ctx = { principal: { workspaceId: '*' } } as unknown as Parameters<typeof tool.handler>[1];
-const run = (args: Record<string, unknown>) =>
-  tool.handler(args as Parameters<typeof tool.handler>[0], ctx);
+const run = (args: Record<string, unknown>) => tool.handler(args as Parameters<typeof tool.handler>[0], ctx);
 const responseBody = (res: Awaited<ReturnType<typeof run>>) =>
   JSON.parse((res as { content: Array<{ text: string }> }).content[0].text) as Record<string, unknown>;
 
@@ -173,7 +172,7 @@ describe('activity:report SessionEnd → carry-respawn marker suppresses the P-0
     expect(h.release).toHaveBeenCalledWith('su-flappy');
   });
 
-  it('the mark is scoped per-owner: marking su-x never suppresses su-y\'s release', async () => {
+  it("the mark is scoped per-owner: marking su-x never suppresses su-y's release", async () => {
     await markRespawnExpected('su-x');
     await run({ owner: 'su-y', kind: 'lifecycle', summary: '■ session ended' });
     expect(h.release).toHaveBeenCalledTimes(1);

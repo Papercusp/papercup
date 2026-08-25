@@ -93,7 +93,11 @@ async function issueAssignee(id: string): Promise<string | null> {
   return row?.assignee ?? null;
 }
 
-async function seedPresence(owner: string, ageMs: number, liveness: { host?: string; pid?: number } = {}): Promise<void> {
+async function seedPresence(
+  owner: string,
+  ageMs: number,
+  liveness: { host?: string; pid?: number } = {},
+): Promise<void> {
   await sql`
     INSERT INTO harness_shared.coord_presence (owner_id, heartbeat_at, host, pid)
     VALUES (${owner}, now() - make_interval(secs => ${Math.round(ageMs / 1000)}), ${liveness.host ?? hostname()}, ${liveness.pid ?? null})
