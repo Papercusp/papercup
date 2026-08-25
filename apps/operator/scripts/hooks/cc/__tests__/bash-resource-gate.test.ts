@@ -5787,7 +5787,11 @@ describe('tauri-agent-tools screenshot window-resolution advisory (EI-2138366096
       bashWithInput("tauri-agent-tools eval --pid 3593460 'document.title'", 's-tat-screenshot-2'),
     );
     expect(out.status).toBe(0);
-    const ctx = JSON.parse(out.stdout).hookSpecificOutput?.additionalContext ?? '';
+    // The gate may ALLOW silently (empty stdout) — the assertion is about the
+    // advisory being ABSENT, whichever allow shape this command took.
+    const ctx = out.stdout.trim()
+      ? ((JSON.parse(out.stdout).hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '')
+      : '';
     expect(ctx).not.toContain('screenshot advisory (EI-21383660965482252)');
   });
 });
