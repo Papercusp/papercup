@@ -311,8 +311,9 @@ describe('sessions:list historical bounded census', () => {
 
     expect(txCalls).toBe(1);
     expect(parsed.ok).toBe(true);
-    const sinceMs = Date.parse(parsed.window.since);
-    const untilMs = Date.parse(parsed.window.until);
+    const w = parsed.window as { since: string; until: string };
+    const sinceMs = Date.parse(w.since);
+    const untilMs = Date.parse(w.until);
     expect(Math.abs(sinceMs - (before - 3 * 3_600_000))).toBeLessThan(10_000);
     expect(Math.abs(untilMs - (before - 1 * 3_600_000))).toBeLessThan(10_000);
   });
