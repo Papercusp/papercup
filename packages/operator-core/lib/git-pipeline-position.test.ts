@@ -604,15 +604,23 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.summary).toMatch(/main ✓/);
     });
 
-    it('a MARKER removed by the target change CORRECTS an absent ref marker by strict count decrease', async () => {
+    /**
+     * EI-21443291930356119. A marker-DELETING change is still correctable — but only
+     * on REF-INTERNAL evidence: the ref's own newest commit to this path (MINE) has
+     * to show the drop against ITS parent. That measures a change inside the ref's
+     * history, which is the one reading a lagging ref cannot counterfeit.
+     */
+    it('a MARKER removed by the caller CORRECTS the leg when the REF\'S OWN history shows the drop', async () => {
       const git = fakeGit({
         pathCommit: PEER,
         contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
         newestInRef: { 'origin/main': MINE },
-        // The target change removes the only occurrence from the file. The ref has
-        // the target's version, so the marker is fully absent there (count 0).
+        // main's version no longer carries the marker…
         blobAtRef: { 'origin/main': 'function remains() {}\n' },
         parentBlobAtTarget: 'function looksDeadOrStuck() {}\n',
+        // …and main's OWN newest commit to this path is what removed it: its parent
+        // still had the occurrence. That is the caller's deletion, inside main.
+        parentBlobs: { [`${MINE}~1`]: 'function looksDeadOrStuck() {}\n' },
       });
       const res = await gitPipelinePosition(
         { path: P, marker: 'looksDeadOrStuck' },
@@ -625,6 +633,54 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.notes.join('\n')).toMatch(/CORRECTED to true by the marker/);
       expect(res.notes.join('\n')).toMatch(/strict net-decrease/);
       expect(res.summary).toMatch(/main ✓/);
+    });
+
+    /**
+     * EI-21443291930356119 — the production false-positive this branch used to emit,
+     * reproduced from the live shape that found it.
+     *
+     * A marker introduced by an EARLIER commit than the path's tip makes the
+     * target-parent baseline (`targetSha~1`) already carry it. A ref that simply
+     * PREDATES the marker then reads as a "strict net-decrease" against that
+     * baseline — count 0 where the baseline has 2 — and the leg was corrected to
+     * TRUE on it. Live consequence: `packages/…/session/request-compaction.ts`
+     * reported `inMain ✓ / deployed ✓ / live` while `git show origin/main:<path>`
+     * and the deployed sha both contained the marker ZERO times and the change sat
+     * behind a 42-red gate. `positions.deployed` is the leg agents act on, so this
+     * is the most expensive direction the tool can be wrong in.
+     *
+     * A decrease measured against the HEAD side is NOT evidence of containment.
+     * Deleting the `refInternalChange` gating and this test goes red.
+     */
+    it('EI-21443291930356119: a ref that merely PREDATES the marker is never corrected by "net-decrease"', async () => {
+      const git = fakeGit({
+        pathCommit: LATER,
+        contains: { HEAD: [LATER], 'origin/staging': [LATER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE, deployedsha0: MINE },
+        // main's version is simply OLD: it predates the marker entirely (count 0).
+        blobAtRef: { 'origin/main': 'nothing relevant here\n', deployedsha0: 'nothing relevant here\n' },
+        // The marker landed BEFORE the path's newest commit, so the target-parent
+        // baseline already carries it twice — the shape that produced the false.
+        parentBlobAtTarget: 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n',
+        // main's own newest commit to this path did not touch the marker either way,
+        // so there is no ref-internal drop to rest a deletion verdict on.
+        parentBlobs: { [`${MINE}~1`]: 'nothing relevant here\n' },
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+
+      expect(res.positions.inMain).toBe(false);
+      expect(res.positions.deployed).toBe(false);
+      expect(res.notes.join('\n')).not.toMatch(/CORRECTED to true by the marker/);
+      expect(res.notes.join('\n')).not.toMatch(/strict net-decrease/);
+      // The decline has to SAY why, or the caller re-reads it as the newer-commit
+      // false the marker was supposed to settle and passes the same marker again.
+      expect(res.notes.join('\n')).toMatch(/FEWER, not more/);
+      expect(res.notes.join('\n')).toMatch(/inMain: confirmed NOT present/);
+      // And the headline verdict must not render as shipped.
+      expect(res.summary).not.toMatch(/deployed ✓/);
     });
 
     it('EI-21285379200225840: a marker present only in staging never corrects path-absent main/deployed legs', async () => {
