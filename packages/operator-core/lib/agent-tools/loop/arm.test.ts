@@ -57,6 +57,13 @@ vi.mock('../../harness/routines/loop', () => ({
   // (no prior loop) so every existing test is unaffected; per-test override sets a prior.
   readActiveLoopFacts: vi.fn(async () => null),
 }));
+vi.mock('../../harness/routines/monitor-policy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../harness/routines/monitor-policy')>();
+  return {
+    ...actual,
+    admitMonitorArm: vi.fn(async ({ monitor }: { monitor: unknown }) => actual.prepareMonitorConfig(monitor)),
+  };
+});
 // WI-2429 fix A: the arm-time auto-claim of the loop's driven work-item.
 vi.mock('../../work-items', () => ({
   claimWorkItem: vi.fn(async () => null),
@@ -120,6 +127,7 @@ import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { resolveHomePotSlug } from '../pot/_resolve';
+import { admitMonitorArm, prepareMonitorConfig } from '../../harness/routines/monitor-policy';
 import { decideDefaultCarry, computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
 import { mockResolvedOnceTyped, mockResolvedTyped, mockReturnOnceTyped, mockReturnTyped } from '../../testing/typed-mock';
 
@@ -135,6 +143,7 @@ const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
 const findHostM = vi.mocked(findLiveHost);
 const homePotM = vi.mocked(resolveHomePotSlug);
+const monitorAdmissionM = vi.mocked(admitMonitorArm);
 const briefM = vi.mocked((await import('../../session-brief')).getSessionBrief);
 const potHomeM = vi.mocked((await import('../../pot/wake')).resolvePotHomeSlug);
 const wakeAwaitsM = vi.mocked((await import('../../events/await/store')).listWakeAwaitsForSubscriber);
@@ -153,6 +162,12 @@ type Out = { content: { text: string }[] };
 const call = (args: Record<string, unknown>) =>
   tool.handler({ intervalSec: 120, goal: 'g', ...args } as never, { harnessSlug: 'papercusp' } as never) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const monitorConfig = (overrides: Record<string, unknown> = {}) => ({
+  predicateKey: 'release:green:papercusp',
+  stopCondition: 'the exact green verdict is recorded',
+  authority: { kind: 'work-item', workItem: 'WI-42' },
+  ...overrides,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -178,6 +193,7 @@ beforeEach(() => {
   homePotM.mockResolvedValue('papercusp');
   briefM.mockResolvedValue(null);
   potHomeM.mockReturnValue('papercusp');
+  monitorAdmissionM.mockImplementation(async ({ monitor }) => prepareMonitorConfig(monitor));
 });
 
 describe('loop:arm — WI-1471 ownerId override', () => {
@@ -225,9 +241,66 @@ describe('loop:arm — WI-5345: mode reaches materializeLoop + the response (pre
   });
 
   it("an explicit mode:'monitor' reaches materializeLoop AND is echoed in the response", async () => {
-    const b = body(await call({ mode: 'monitor' }));
+    const b = body(await call({ mode: 'monitor', monitor: monitorConfig() }));
     expect(b.loop.mode).toBe('monitor');
-    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'monitor' }));
+    expect(b.loop.monitor).toMatchObject({
+      predicateKey: 'release:green:papercusp',
+      noDeltaBudget: 1,
+      remainingNoDeltaBudget: 1,
+    });
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'monitor',
+        monitor: expect.objectContaining({ predicateKey: 'release:green:papercusp' }),
+      }),
+    );
+  });
+});
+
+describe('loop:arm — anti-babysitting P-003 typed monitor admission', () => {
+  it('refuses a monitor with no typed config before claim or routine mutation', async () => {
+    const b = body(await call({ mode: 'monitor' }));
+    expect(b).toMatchObject({ ok: false, error: 'monitor_config_required' });
+    expect(monitorAdmissionM).not.toHaveBeenCalled();
+    expect(claimM).not.toHaveBeenCalled();
+    expect(materializeM).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
+  });
+
+  it('propagates an authority refusal before claim, materialization, or wake registration', async () => {
+    monitorAdmissionM.mockResolvedValueOnce({
+      allowed: false,
+      code: 'monitor_peer_owned_progress',
+      message: 'WI-42 is already progressing under su-peer',
+      details: { holder: 'su-peer' },
+    });
+    const b = body(await call({ mode: 'monitor', monitor: monitorConfig() }));
+    expect(b).toMatchObject({ ok: false, error: 'monitor_peer_owned_progress' });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(materializeM).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
+  });
+
+  it('uses an already-held work-item authority without re-running the claim mutation', async () => {
+    const b = body(await call({ mode: 'monitor', monitor: monitorConfig(), workItem: 'wi-42' }));
+    expect(b).toMatchObject({
+      ok: true,
+      loop: {
+        workItem: 'WI-42',
+        monitor: { authority: { kind: 'work-item', workItem: 'WI-42' } },
+      },
+    });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(materializeM).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps ordinary work loops byte-compatible and never invokes monitor admission', async () => {
+    const b = body(await call({ mode: 'work' }));
+    expect(b.loop).toMatchObject({ mode: 'work', monitor: null });
+    expect(monitorAdmissionM).not.toHaveBeenCalled();
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: 'work', monitor: undefined }),
+    );
   });
 });
 
@@ -705,7 +778,7 @@ describe('loop:arm — WI-5557 TIER 1: unbounded warm-carry WORK loop warning (a
   });
 
   it("warm + mode:'monitor' → no warning (a monitor loop is actively watched each wake by contract)", async () => {
-    const b = body(await call({ mode: 'monitor' }));
+    const b = body(await call({ mode: 'monitor', monitor: monitorConfig() }));
     expect(b.unboundedWarmLoopWarning).toBeNull();
     expect(b.note).not.toContain('unattended warm-carry WORK loop');
   });
