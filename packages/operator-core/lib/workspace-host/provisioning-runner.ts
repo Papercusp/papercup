@@ -233,8 +233,11 @@ function validateDestroyCanaryEvidence(evidence: WorkspaceHostDestroyCanaryEvide
   if (evidence.preRunZeroBaseline.reservationId) {
     problems.push('canary.preRunZeroBaseline must be passive provider evidence, not a reservation settlement');
   }
-  if (evidence.costEvidence.length === 0 && (evidence.lateObservedSpend?.length ?? 0) === 0) {
-    problems.push('canary requires at least one named cumulative or late-observed cost entry');
+  if (evidence.costEvidence.length === 0) {
+    problems.push('canary requires at least one named cumulative cost entry');
+  }
+  if ((evidence.lateObservedSpend?.length ?? 0) === 0) {
+    problems.push('canary requires at least one provider-delayed observed spend entry');
   }
   for (const [index, entry] of [
     evidence.preRunZeroBaseline,
@@ -267,6 +270,46 @@ function assertDestroyCanaryLabels(
     .map(([key, value]) => `stored desired.labels must contain '${key}=${value}'`);
   if (problems.length > 0) throw new WorkspaceHostProvisioningRequestError(problems);
   return required;
+}
+
+function preflightDestroyCanaryLedger(
+  input: RunWorkspaceHostDestroyInput,
+  target: StoredWorkspaceHostDestroyTarget,
+): void {
+  try {
+    assertDestroyCanaryLabels(target.desired, input.canary);
+    const baselineAt = Date.parse(input.canary.preRunZeroBaseline.observedAt);
+    const firstRegisteredAt = Math.min(
+      ...target.resources.map((entry) => Date.parse(entry.registeredAt)).filter(Number.isFinite),
+    );
+    if (!Number.isFinite(firstRegisteredAt) || baselineAt > firstRegisteredAt) {
+      throw new Error('pre-run zero baseline must predate every registered provider resource');
+    }
+    const ledger = new WorkspaceHostLiveCanaryHarness({
+      runId: input.canary.runId,
+      workspaceId: input.canary.workspaceId,
+      target: input.provider.target,
+      scope: target.desired.scope,
+      cloudCredentialRef: input.connection.cloudCredentialRef,
+      contractApproval: input.canary.contractApproval,
+      ...(input.canary.maxSpendCents !== undefined ? { maxSpendCents: input.canary.maxSpendCents } : {}),
+      teardownDeadlineAt: input.canary.teardownDeadlineAt,
+    });
+    ledger.recordObservedSpend(input.canary.preRunZeroBaseline);
+    for (const evidence of input.canary.costEvidence) ledger.recordObservedSpend(evidence);
+    for (const evidence of input.canary.lateObservedSpend ?? []) ledger.recordObservedSpend(evidence);
+    const cumulativeCents = [
+      input.canary.preRunZeroBaseline,
+      ...input.canary.costEvidence,
+      ...(input.canary.lateObservedSpend ?? []),
+    ].reduce((total, entry) => total + entry.cents, 0);
+    if (!Number.isSafeInteger(cumulativeCents) || cumulativeCents > ledger.maxSpendCents) {
+      throw new Error('cumulative canary spend exceeds the hard spend ceiling');
+    }
+  } catch (error) {
+    if (error instanceof WorkspaceHostProvisioningRequestError) throw error;
+    throw new WorkspaceHostProvisioningRequestError([message(error)]);
+  }
 }
 
 function destroyResourceForStep(
@@ -996,13 +1039,19 @@ export async function runWorkspaceHostDestroy(
   if (target.id !== hostId || target.desired.hostId !== hostId) {
     throw new WorkspaceHostProvisioningRequestError(['stored workspace-host identity does not match destroy hostId']);
   }
+  if (target.observedState === 'absent') {
+    throw new WorkspaceHostProvisioningRequestError(['workspace host is already absent']);
+  }
+  if (target.resources.length === 0) {
+    throw new WorkspaceHostProvisioningRequestError(['workspace host has no registered provider resource population']);
+  }
   if (target.target !== 'gcp' || target.desired.target !== 'gcp' || input.provider.target !== 'gcp') {
     throw new WorkspaceHostProvisioningRequestError(['production discard destroy is implemented for GCP only']);
   }
   if (input.connection.target !== target.target) {
     throw new WorkspaceHostProvisioningRequestError(['workspace-host connection target does not match stored host']);
   }
-  assertDestroyCanaryLabels(target.desired, input.canary);
+  preflightDestroyCanaryLedger(input, target);
 
   const context: WorkspaceHostProviderContext = {
     workspaceId,
@@ -1203,14 +1252,6 @@ export async function runWorkspaceHostDestroy(
       try {
         const evidence = await finalizeDestroyEvidence(input, store, target, workflow, checkpoints);
         const completedAt = evidence.completionReceipt.completedAt;
-        await store.updateHostState({ workspaceId, hostId, state: 'absent', observedAt: completedAt, discard: true });
-        await store.updateOperation({
-          workspaceId,
-          operationId,
-          status: 'succeeded',
-          percent: 100,
-          message: 'Workspace-host discard teardown and evidence census completed',
-        });
         await store.appendEvent({
           workspaceId,
           hostId,
@@ -1220,6 +1261,17 @@ export async function runWorkspaceHostDestroy(
           message: 'Every registered resource is absent and the provider census is clean',
           details: evidence,
         });
+        await store.updateOperation({
+          workspaceId,
+          operationId,
+          status: 'succeeded',
+          percent: 100,
+          message: 'Workspace-host discard teardown and evidence census completed',
+        });
+        // Keep this as the final write. If evidence/event/operation persistence fails, the catch
+        // below leaves the host destroying and therefore recoverable instead of projecting a
+        // falsely terminal absent state.
+        await store.updateHostState({ workspaceId, hostId, state: 'absent', observedAt: completedAt, discard: true });
         return { status: 'succeeded', operationId, hostId, plan, checkpoints, evidence };
       } catch (error) {
         await store.updateOperation({
