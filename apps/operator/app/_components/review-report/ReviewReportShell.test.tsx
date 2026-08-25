@@ -7,9 +7,19 @@
 // never selectable, Apply-selected emits the sorted selected ids, and busy
 // freezes the whole surface.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import ReviewReportShell, { type ReviewReportGroup } from "./ReviewReportShell";
+
+const REPORT_CSS = readFileSync(
+  resolve(
+    process.cwd(),
+    "app/_components/review-report/review-report.css",
+  ),
+  "utf8",
+);
 
 afterEach(cleanup);
 
@@ -142,6 +152,15 @@ describe("rendering", () => {
     expect(
       screen.queryByTestId("review-group-columns-flip-to-done"),
     ).toBeNull();
+  });
+
+  it("gives both programmatic focus fallbacks an explicit visible ring", () => {
+    expect(REPORT_CSS).toMatch(
+      /\.review-report:focus-visible\s*\{[^}]*outline: 2px solid var\(--review-accent-strong\);[^}]*outline-offset: 2px;/s,
+    );
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__row:focus-visible\s*\{[^}]*outline: 2px solid var\(--review-accent-strong\);[^}]*outline-offset: -2px;/s,
+    );
   });
 
   it("renders an applied row as done — status mark, no checkbox", () => {

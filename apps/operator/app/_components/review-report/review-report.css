@@ -45,6 +45,11 @@
   box-shadow: 0 18px 50px rgb(0 0 0 / 24%);
 }
 
+.review-report:focus-visible {
+  outline: 2px solid var(--review-accent-strong);
+  outline-offset: 2px;
+}
+
 /* ── Header ────────────────────────────────────────────────────────────── */
 .review-report__head {
   position: sticky;
@@ -227,6 +232,11 @@
   min-height: 38px;
   padding: 7px 12px;
   border-top: 1px solid var(--border);
+}
+
+.review-report__row:focus-visible {
+  outline: 2px solid var(--review-accent-strong);
+  outline-offset: -2px;
 }
 
 .review-report__row--applied {
