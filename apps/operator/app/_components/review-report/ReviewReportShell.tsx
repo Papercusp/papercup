@@ -26,7 +26,7 @@
  * collapse state; within one run, rows flipping pending→applied are handled
  * live (selection self-intersects with what is still pending).
  */
-import { useMemo, useState, type ReactNode } from 'react';
+import { useMemo, useRef, useState, type ReactNode } from 'react';
 import { Check, ChevronDown, ShieldCheck } from 'lucide-react';
 import { Button } from '../../harness/Button';
 import { Checkbox } from '../../harness/Checkbox';
@@ -129,6 +129,7 @@ export default function ReviewReportShell({
 }: ReviewReportShellProps) {
   const [selected, setSelected] = useState<Set<string>>(() => initialSelection(groups, defaultSelected));
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const groupNodes = useRef(new Map<string, HTMLElement>());
 
   const pendingIds = useMemo(() => {
     const ids = new Set<string>();
@@ -175,6 +176,18 @@ export default function ReviewReportShell({
     });
   };
 
+  const navigateToGroup = (groupId: string) => {
+    setCollapsed((prev) => {
+      if (!prev.has(groupId)) return prev;
+      const next = new Set(prev);
+      next.delete(groupId);
+      return next;
+    });
+    const node = groupNodes.current.get(groupId);
+    node?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+    node?.querySelector<HTMLButtonElement>('.review-report__group-toggle')?.focus({ preventScroll: true });
+  };
+
   return (
     <section className="review-report" data-testid="review-report">
       <header className="review-report__head">
@@ -213,14 +226,59 @@ export default function ReviewReportShell({
         </div>
       </header>
 
-      {groups.map((group) => {
-        const groupPending = group.rows.filter(rowSelectable);
-        const selCount = groupPending.filter((r) => liveSelected.has(r.id)).length;
-        const groupState: 'none' | 'some' | 'all' =
-          groupPending.length === 0 || selCount === 0 ? 'none' : selCount === groupPending.length ? 'all' : 'some';
-        const isCollapsed = collapsed.has(group.id);
-        return (
-          <section key={group.id} className="review-report__group" data-testid={`review-group-${group.id}`}>
+      <div className="review-report__body">
+        <aside className="review-report__navigator" aria-label="Report group navigation">
+          <div className="review-report__selection-summary" data-testid="review-report-selection-summary">
+            <span className="review-report__selection-kicker">Ready to apply</span>
+            <strong className="review-report__selection-total" data-testid="review-report-selection-total">
+              {liveSelected.size} / {pendingIds.size}
+            </strong>
+            <span className="review-report__selection-caption">
+              selectable recommendation{pendingIds.size === 1 ? '' : 's'}
+            </span>
+          </div>
+          <nav className="review-report__nav-list" aria-label="Jump to report group">
+            {groups.map((group, index) => {
+              const groupPending = group.rows.filter(rowSelectable);
+              const selCount = groupPending.filter((row) => liveSelected.has(row.id)).length;
+              return (
+                <button
+                  key={group.id}
+                  type="button"
+                  className="review-report__nav-button"
+                  data-testid={`review-group-nav-${group.id}`}
+                  aria-controls={`review-report-group-${index}`}
+                  onClick={() => navigateToGroup(group.id)}
+                >
+                  <span className="review-report__nav-label">{group.title}</span>
+                  <span className="review-report__nav-count">{group.rows.length}</span>
+                  <span className="review-report__nav-selection">
+                    {groupPending.length > 0 ? `${selCount}/${groupPending.length} selected` : 'reviewed'}
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+        </aside>
+
+        <div className="review-report__groups">
+          {groups.map((group, index) => {
+            const groupPending = group.rows.filter(rowSelectable);
+            const selCount = groupPending.filter((r) => liveSelected.has(r.id)).length;
+            const groupState: 'none' | 'some' | 'all' =
+              groupPending.length === 0 || selCount === 0 ? 'none' : selCount === groupPending.length ? 'all' : 'some';
+            const isCollapsed = collapsed.has(group.id);
+            return (
+              <section
+                key={group.id}
+                id={`review-report-group-${index}`}
+                ref={(node) => {
+                  if (node) groupNodes.current.set(group.id, node);
+                  else groupNodes.current.delete(group.id);
+                }}
+                className="review-report__group"
+                data-testid={`review-group-${group.id}`}
+              >
             <header className="review-report__group-head">
               <Checkbox
                 dataTestId={`review-group-check-${group.id}`}
@@ -326,9 +384,11 @@ export default function ReviewReportShell({
                 })}
               </ul>
             )}
-          </section>
-        );
-      })}
+              </section>
+            );
+          })}
+        </div>
+      </div>
       {footer != null ? (
         <footer className="review-report__footer">
           <ShieldCheck size={15} aria-hidden="true" />

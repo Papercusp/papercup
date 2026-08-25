@@ -87,7 +87,7 @@ describe('rendering', () => {
     expect(screen.getByText('Plan clean-up report')).toBeTruthy();
     expect(screen.getByTestId('review-report-icon')).toBeTruthy();
     expect(screen.getByText('run #7')).toBeTruthy();
-    expect(screen.getByText('Flip to done')).toBeTruthy();
+    expect(screen.getAllByText('Flip to done')).toHaveLength(2);
     expect(screen.getByText('WI-100 done; completion recorded')).toBeTruthy();
     expect(screen.getByText('my-plan')).toBeTruthy();
     expect(screen.getByText('P-001')).toBeTruthy();
@@ -100,6 +100,8 @@ describe('rendering', () => {
     expect(responsiveRow.querySelector('.review-report__row-conf')).toBeTruthy();
     expect(screen.getByTestId('review-row-conf-f1').textContent).toBe('provable');
     expect(screen.getByTestId('review-row-conf-f2').textContent).toBe('recommended');
+    expect(screen.getByTestId('review-report-selection-total').textContent).toContain('3 / 3');
+    expect(screen.getByTestId('review-group-nav-flip-to-done').textContent).toContain('2/2 selected');
   });
 
   it('renders an applied row as done — status mark, no checkbox', () => {
@@ -147,6 +149,8 @@ describe('selection + apply', () => {
     const { onApply } = renderShell();
     fireEvent.click(rowCheck('f2'));
     expect(applyBtn().textContent).toContain('(2)');
+    expect(screen.getByTestId('review-report-selection-total').textContent).toContain('2 / 3');
+    expect(screen.getByTestId('review-group-nav-flip-to-done').textContent).toContain('1/2 selected');
     fireEvent.click(applyBtn());
     expect(onApply).toHaveBeenCalledWith(['f1', 'o2']);
   });
@@ -219,5 +223,18 @@ describe('collapse', () => {
     expect(applyBtn().textContent).toContain('(3)'); // selection preserved
     fireEvent.click(screen.getByTestId('review-group-toggle-flip-to-done'));
     expect(screen.getByTestId('review-row-f1')).toBeTruthy();
+  });
+
+  it('the group navigator expands a collapsed group and moves focus to its heading', () => {
+    renderShell();
+    fireEvent.click(screen.getByTestId('review-group-toggle-flip-to-done'));
+    expect(screen.queryByTestId('review-row-f1')).toBeNull();
+
+    const nav = screen.getByTestId('review-group-nav-flip-to-done');
+    expect(nav.getAttribute('aria-controls')).toBe('review-report-group-0');
+    fireEvent.click(nav);
+
+    expect(screen.getByTestId('review-row-f1')).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByTestId('review-group-toggle-flip-to-done'));
   });
 });

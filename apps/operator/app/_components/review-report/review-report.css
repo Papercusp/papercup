@@ -112,8 +112,113 @@
   cursor: default;
 }
 
+/* ── Command-center navigation ───────────────────────────────────────── */
+.review-report__body {
+  display: grid;
+  grid-template-columns: 184px minmax(0, 1fr);
+  align-items: start;
+  gap: 12px;
+}
+
+.review-report__navigator {
+  position: sticky;
+  top: 54px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.review-report__selection-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in oklab, var(--good), transparent 58%);
+  border-radius: 11px;
+  background: color-mix(in oklab, var(--good) 8%, var(--bg-2));
+}
+
+.review-report__selection-kicker {
+  color: var(--fg-mute);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.review-report__selection-total {
+  color: color-mix(in oklab, var(--good), white 28%);
+  font-size: 21px;
+  line-height: 1.1;
+}
+
+.review-report__selection-caption {
+  color: var(--fg-mute);
+  font-size: 10.5px;
+  line-height: 1.35;
+}
+
+.review-report__nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.review-report__nav-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--fg);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.review-report__nav-button:hover {
+  border-color: var(--border);
+  background: color-mix(in oklab, var(--bg-2), white 3%);
+}
+
+.review-report__nav-button:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--accent), white 18%);
+  outline-offset: 1px;
+}
+
+.review-report__nav-label {
+  overflow: hidden;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-report__nav-count {
+  color: color-mix(in oklab, var(--accent), white 22%);
+  font-size: 10.5px;
+  font-weight: 750;
+}
+
+.review-report__nav-selection {
+  grid-column: 1 / -1;
+  color: var(--fg-mute);
+  font-size: 10px;
+}
+
+.review-report__groups {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
 /* ── Groups ────────────────────────────────────────────────────────────── */
 .review-report__group {
+  scroll-margin-top: 64px;
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
@@ -362,6 +467,19 @@
 
   .review-report__actions {
     width: 100%;
+  }
+
+  .review-report__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .review-report__navigator {
+    position: static;
+  }
+
+  .review-report__nav-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
   }
 
   .review-report__apply.pc-btn { flex: 1 1 auto; }
