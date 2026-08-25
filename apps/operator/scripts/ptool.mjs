@@ -1441,10 +1441,11 @@ function isLocalOperatorUrl(operatorUrl) {
 }
 
 /**
- * Retry only the proxy-generated, pre-dispatch refusals that can occur while
- * the session handshake class is full. The same MCP session remains valid: a
- * rejected tools/list never reached the upstream and is safe to replay without
- * reconnecting or creating a second session.
+ * Retry the bounded, pre-dispatch failures that can occur while discovering
+ * the tool catalog. Proxy-generated handshake refusals never reached the
+ * upstream; an MCP transport timeout/close may have reached it, but tools/list
+ * is read-only and safe to replay on the same session. In both cases the total
+ * discovery deadline below remains the hard bound.
  */
 export async function listToolsWithLocalRetry(
   client,
@@ -1482,7 +1483,7 @@ export async function listToolsWithLocalRetry(
         ? totalTimeoutMs - (Date.now() - startedAt)
         : null;
       if (
-        !isRetryableLocalHttpConnectFailure(error) ||
+        !(isRetryableLocalHttpConnectFailure(error) || isTransportFailure(error)) ||
         attempt === maxAttempts ||
         (remainingAfterFailure !== null && remainingAfterFailure <= 0)
       ) {

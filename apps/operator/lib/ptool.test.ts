@@ -659,6 +659,37 @@ describe('ptool tool catalog request budget (EI-20224721374462856)', () => {
     expect(sleep).toHaveBeenCalledWith(2_000);
   });
 
+  it('retries a bounded MCP tools/list timeout during local catalog discovery', async () => {
+    const timeout = Object.assign(new Error('Request timed out'), { code: -32001 });
+    const client = {
+      listTools: vi.fn()
+        .mockRejectedValueOnce(timeout)
+        .mockResolvedValueOnce({ tools: [{ name: 'state:read' }] }),
+    };
+    const sleep = vi.fn(async () => {});
+
+    await expect(listAllTools(client, {
+      retryLocalErrors: true,
+      timeoutMs: 10_000,
+      totalTimeoutMs: 120_000,
+      maxAttempts: 2,
+      retryDelayMs: 1_000,
+      sleep,
+    })).resolves.toEqual([{ name: 'state:read' }]);
+    expect(client.listTools).toHaveBeenCalledTimes(2);
+    expect(client.listTools).toHaveBeenNthCalledWith(
+      1,
+      {},
+      { timeout: 10_000, maxTotalTimeout: 10_000 },
+    );
+    expect(client.listTools).toHaveBeenNthCalledWith(
+      2,
+      {},
+      { timeout: 10_000, maxTotalTimeout: 10_000 },
+    );
+    expect(sleep).toHaveBeenCalledWith(1_000);
+  });
+
   it('does not retry typed handshake refusals when local retry is disabled', async () => {
     const proxyError = Object.assign(
       new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_handshake_overloaded"}'),
