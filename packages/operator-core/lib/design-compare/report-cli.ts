@@ -495,7 +495,13 @@ async function main(): Promise<void> {
     path.join(REPO_ROOT, 'apps/operator/storybook-static'),
   );
   const outDir = argValue('out', path.join(REPO_ROOT, 'design-evidence-report'));
-  const workDir = mkdtempSync(path.join(tmpdir(), 'design-evidence-'));
+  // `--work` keeps the captures and diff PNGs. CI passes it so the images can be
+  // uploaded as artifacts; a human passes it to look at what was actually
+  // compared, which is the only way to tell a real render from a blank page that
+  // reproduces perfectly.
+  const keptWorkDir = argValue('work', '');
+  const workDir = keptWorkDir === '' ? mkdtempSync(path.join(tmpdir(), 'design-evidence-')) : keptWorkDir;
+  if (keptWorkDir !== '') mkdirSync(workDir, { recursive: true });
 
   if (!existsSync(path.join(storybookStaticDir, 'index.json'))) {
     // A missing Storybook build is a real condition in CI, not a crash: report
@@ -541,7 +547,8 @@ async function main(): Promise<void> {
     console.log(formatReportSummary(report));
     console.log(`[design-evidence] wrote report -> ${path.join(outDir, 'report.json')}`);
   } finally {
-    rmSync(workDir, { recursive: true, force: true });
+    if (keptWorkDir === '') rmSync(workDir, { recursive: true, force: true });
+    else console.log(`[design-evidence] kept captures + diffs in ${workDir}`);
   }
 }
 
