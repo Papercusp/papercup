@@ -37,7 +37,7 @@ const VERY_SHORT_TASK_MS = 10 * 1000;
 const FORK_STARVATION_OUTPUT =
   /\b(?:fork|spawn)\b[\s\S]{0,200}\b(?:eagain|resource temporarily unavailable)\b|\b(?:eagain|resource temporarily unavailable)\b[\s\S]{0,200}\b(?:fork|spawn)\b/i;
 
-function hasForkStarvationEvidence(output) {
+export function hasForkStarvationEvidence(output) {
   return FORK_STARVATION_OUTPUT.test(output);
 }
 
