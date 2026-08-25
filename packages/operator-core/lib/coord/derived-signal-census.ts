@@ -143,6 +143,13 @@ export interface DerivedSignalObservation {
 export interface DerivedSignalCensus {
   v: number;
   relations: Record<string, DerivedSignalObservation>;
+  /**
+   * P-010: relations crowding out the rest with no explicit ruling. Present ONLY when
+   * violated — its absence means "checked and clean", never "not checked", because
+   * `censusDerivedSignals` evaluates it on every run. Optional so the field costs nothing
+   * on the hot metadata path in the common case.
+   */
+  concentration?: RelationConcentrationViolation[];
 }
 
 function countEdgesByRelation(emitted: readonly DerivedCoupling[]): Map<string, number> {
@@ -181,7 +188,15 @@ export function censusDerivedSignals(
       edges: byRelation.get(relation) ?? 0,
     };
   }
-  return { v: DERIVED_SIGNAL_CENSUS_VERSION, relations };
+  const base: DerivedSignalCensus = { v: DERIVED_SIGNAL_CENSUS_VERSION, relations };
+  // P-010. Evaluated HERE, on every censused run, and attached to the record that already
+  // reaches `tool_invocations.metadata_json` — because a guard nobody calls is the exact
+  // "born unobservable" condition this module exists to detect, and shipping one as the
+  // fix for that condition would be self-defeating. Present ONLY when violated, so the
+  // common case adds no bytes to a hot metadata path and a reader can treat the key's
+  // presence as the alarm.
+  const concentration = relationConcentrationViolations(base);
+  return concentration.length > 0 ? { ...base, concentration } : base;
 }
 
 /**
@@ -214,6 +229,87 @@ export function censusDerivedSignals(
  * needs to compose with other metadata, exactly one function changes instead of
  * every wiring site being re-audited.
  */
+/**
+ * Share of all emitted edges above which ONE relation is presumed to be crowding the
+ * others out, absent an explicit ruling.
+ *
+ * Measured on the live firings ledger (`tool_invocations.metadata_json.derivedSignals`,
+ * workspace papercusp-workspace, 7 days, 17,422 censused invocations):
+ *
+ *   coord-exchange 28,356 (92.1%) · awaits 2,316 (7.5%) · holds-a-lock-on 93 (0.3%)
+ *   blocks-me 13 (0.0%) · blocked-by-me 2 (0.0%)
+ *
+ * 0.75 sits below the 92.1% that must FAIL and above the largest share a healthy mix has
+ * shown, so the guard fires on the real pre-fix distribution rather than on a hypothetical.
+ */
+export const RELATION_CONCENTRATION_THRESHOLD = 0.75;
+
+/**
+ * An explicit acknowledgement that one relation legitimately dominates.
+ *
+ * ⚠ THE RULING ESCAPE HATCH IS THE DESIGN, NOT A LOOPHOLE — and it is what keeps this
+ * guard from being disabled six weeks from now. Concentration has two causes that look
+ * identical in the numbers: the other relations are BROKEN (the condition this exists to
+ * catch — `blocks-me` + `blocked-by-me` together produced 15 edges in a week because they
+ * read a table agents rarely write), or one relation legitimately has enormous fan-out
+ * (a fleet leader supervising 234 members produces 234 supervision edges from one read,
+ * and every one of them is true). A bare threshold cannot tell those apart, so it would
+ * fire constantly on the healthy case and be silenced — taking the unhealthy case with it.
+ * Requiring a stated REASON forces the distinction to be made by someone, once, in writing.
+ */
+export interface RelationConcentrationRuling {
+  relation: string;
+  /** WHY this relation is expected to dominate. A ruling with no reason is not a ruling. */
+  reason: string;
+}
+
+/** One relation crowding out the rest with no ruling to justify it. */
+export interface RelationConcentrationViolation {
+  relation: string;
+  edges: number;
+  totalEdges: number;
+  /** 0..1 share of all emitted edges. */
+  share: number;
+}
+
+/**
+ * Relations whose share of emitted edges exceeds the threshold with no explicit ruling
+ * (P-010 recurrence guard).
+ *
+ * PURE over a census, so its falsifiability is provable without a database: the tests feed
+ * it the REAL measured 92.1% distribution and require a violation, rather than asserting
+ * against a shape invented to pass.
+ *
+ * Returns `[]` when no edges were emitted at all — a run that produced nothing is not a
+ * concentrated run, and reporting 0/0 as 100% would make every idle census a violation.
+ */
+export function relationConcentrationViolations(
+  census: DerivedSignalCensus,
+  rulings: readonly RelationConcentrationRuling[] = [],
+): RelationConcentrationViolation[] {
+  const relations = census?.relations ?? {};
+  const ruled = new Set(
+    rulings.filter((r) => r?.relation && (r.reason ?? '').trim()).map((r) => r.relation),
+  );
+  let totalEdges = 0;
+  for (const obs of Object.values(relations)) {
+    const n = obs?.edges;
+    if (typeof n === 'number' && Number.isFinite(n) && n > 0) totalEdges += n;
+  }
+  if (totalEdges <= 0) return [];
+  const out: RelationConcentrationViolation[] = [];
+  for (const [relation, obs] of Object.entries(relations)) {
+    const edges = obs?.edges;
+    if (typeof edges !== 'number' || !Number.isFinite(edges) || edges <= 0) continue;
+    if (ruled.has(relation)) continue;
+    const share = edges / totalEdges;
+    if (share > RELATION_CONCENTRATION_THRESHOLD) {
+      out.push({ relation, edges, totalEdges, share });
+    }
+  }
+  return out.sort((a, b) => b.share - a.share);
+}
+
 export function censusObserverFor(ctx: unknown): ((census: DerivedSignalCensus) => void) | undefined {
   const emit = (ctx as { metadata?: (d: Record<string, unknown>) => void } | null | undefined)?.metadata;
   if (typeof emit !== 'function') return undefined;

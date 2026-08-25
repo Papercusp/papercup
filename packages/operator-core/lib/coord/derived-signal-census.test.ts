@@ -18,6 +18,9 @@ import {
   censusDerivedSignals,
   type DerivedSignalLeg,
   type DerivedSignalLegState,
+  RELATION_CONCENTRATION_THRESHOLD,
+  relationConcentrationViolations,
+  type DerivedSignalCensus,
 } from './derived-signal-census';
 
 const LEGS_ALL_ARMED: Record<DerivedSignalLeg, DerivedSignalLegState> = {
@@ -286,5 +289,129 @@ describe('the presence.ts composition: spread sources + observe', () => {
     expect(census.relations['holds-a-lock-on'].armed).toBe(true);
     expect(census.relations['coord-exchange'].armed).toBe(true);
     expect(census.relations['blocks-me'].armed).toBe(true);
+  });
+});
+
+/**
+ * ── P-010: THE CONCENTRATION RECURRENCE GUARD ────────────────────────────────────────
+ *
+ * The item demands falsifiability rather than assertion: the guard "must FAIL against the
+ * current pre-fix distribution and pass after — proving it can fire". So the fixture below
+ * is not invented. It is the REAL distribution, read from the live firings ledger
+ * (`tool_invocations.metadata_json.derivedSignals`, workspace papercusp-workspace, 7 days,
+ * 17,422 censused invocations):
+ *
+ *   coord-exchange 28,356 (92.1%) · awaits 2,316 (7.5%) · holds-a-lock-on 93 (0.3%)
+ *   blocks-me 13 (0.0%) · blocked-by-me 2 (0.0%)
+ *
+ * A guard that cannot fire on THAT is measuring nothing, whatever else it passes.
+ *
+ * ⚠ The two tail relations are not incidental colour. `blocks-me` + `blocked-by-me`
+ * produced FIFTEEN edges in a week because they read a table agents rarely write — the
+ * defect WI-41575 was filed to fix. That is the condition this guard exists to make
+ * un-silenceable.
+ */
+const census = (edgesByRelation: Record<string, number>): DerivedSignalCensus => ({
+  v: DERIVED_SIGNAL_CENSUS_VERSION,
+  relations: Object.fromEntries(
+    Object.entries(edgesByRelation).map(([rel, edges]) => [
+      rel,
+      { armed: true, inputs: edges, edges },
+    ]),
+  ),
+});
+
+/** The measured pre-fix distribution, verbatim. */
+const MEASURED_PRE_FIX = census({
+  'coord-exchange': 28356,
+  awaits: 2316,
+  'holds-a-lock-on': 93,
+  'blocks-me': 13,
+  'blocked-by-me': 2,
+});
+
+describe('P-010 — the concentration guard FIRES on the real distribution', () => {
+  it('FAILS against the measured 92.1% pre-fix distribution (the falsifiability case)', () => {
+    const violations = relationConcentrationViolations(MEASURED_PRE_FIX);
+    expect(violations).toHaveLength(1);
+    expect(violations[0]?.relation).toBe('coord-exchange');
+    expect(violations[0]?.share).toBeGreaterThan(0.9);
+    expect(violations[0]?.edges).toBe(28356);
+  });
+
+  it('passes once that concentration is EXPLICITLY RULED', () => {
+    const violations = relationConcentrationViolations(MEASURED_PRE_FIX, [
+      { relation: 'coord-exchange', reason: 'messaging is the dominant coupling by design' },
+    ]);
+    expect(violations).toEqual([]);
+  });
+
+  it('REJECTS a ruling with no stated reason — a blank reason is not a ruling', () => {
+    // Otherwise the escape hatch degrades into a mute button, which is how a guard like
+    // this normally dies.
+    const violations = relationConcentrationViolations(MEASURED_PRE_FIX, [
+      { relation: 'coord-exchange', reason: '   ' },
+    ]);
+    expect(violations).toHaveLength(1);
+  });
+
+  it('passes on a healthy mixed distribution', () => {
+    expect(
+      relationConcentrationViolations(
+        census({ 'coord-exchange': 40, awaits: 30, 'holds-a-lock-on': 20, 'owes-me': 10 }),
+      ),
+    ).toEqual([]);
+  });
+
+  it('does NOT report a run that emitted nothing — 0/0 is not 100%', () => {
+    // Every idle census would otherwise be a violation, which is the fastest way to get a
+    // guard switched off.
+    expect(relationConcentrationViolations(census({ awaits: 0, 'coord-exchange': 0 }))).toEqual([]);
+  });
+
+  it('fires for a supervision blowout too — the guard is relation-agnostic', () => {
+    // A fleet leader supervising 234 members emits 234 `i-owe` edges from ONE read. That
+    // is TRUE, not broken — which is exactly why it must surface a ruling rather than be
+    // special-cased into the threshold. The guard should notice; a human decides.
+    const violations = relationConcentrationViolations(
+      census({ 'i-owe': 234, 'coord-exchange': 3, awaits: 1 }),
+    );
+    expect(violations[0]?.relation).toBe('i-owe');
+  });
+
+  it('is WIRED — censusDerivedSignals surfaces the violation, not just the helper', () => {
+    // The guard has to run on the real path, or it is the same born-unobservable defect
+    // this module was built to detect. A concentrated run must carry `concentration`
+    // into the record that reaches tool_invocations.metadata_json.
+    const lopsided: DerivedCoupling[] = [
+      ...Array.from({ length: 20 }, (_, i) => ({
+        ownerId: `su-p${i}`,
+        relation: 'coord-exchange' as const,
+        because: 'recent coord exchange',
+      })),
+      { ownerId: 'su-x', relation: 'awaits', because: 'both awaiting gate:1' },
+    ];
+    const out = censusDerivedSignals(LEGS_ALL_ARMED, lopsided);
+    expect(out.concentration?.[0]?.relation).toBe('coord-exchange');
+  });
+
+  it('OMITS `concentration` on a healthy run — absence means checked-and-clean', () => {
+    const balanced: DerivedCoupling[] = [
+      { ownerId: 'su-a', relation: 'coord-exchange', because: 'recent coord exchange' },
+      { ownerId: 'su-b', relation: 'awaits', because: 'both awaiting gate:1' },
+      { ownerId: 'su-c', relation: 'holds-a-lock-on', because: 'shared lock' },
+    ];
+    expect(censusDerivedSignals(LEGS_ALL_ARMED, balanced).concentration).toBeUndefined();
+  });
+
+  it('CONTROL: a bare-majority rule would MISS the tail-starvation shape it must catch', () => {
+    // Permanent wrong-implementation control. A guard keyed on ">50% is bad" fires on
+    // plenty of healthy mixes and so gets tuned away; the point of the threshold sitting
+    // at 0.75 is that the measured 92.1% clears it while an ordinary 60/40 split does not.
+    const ordinarySplit = census({ 'coord-exchange': 60, awaits: 40 });
+    expect(relationConcentrationViolations(ordinarySplit)).toEqual([]);
+    expect(0.6).toBeLessThan(RELATION_CONCENTRATION_THRESHOLD);
+    // …while the real one still fires.
+    expect(relationConcentrationViolations(MEASURED_PRE_FIX)).toHaveLength(1);
   });
 });
