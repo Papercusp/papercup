@@ -264,6 +264,17 @@ const FIELDS = {
     .describe(
       'Compatibility input for the owner-action gate: true writes payload.needsOwnerAction=true and removes legacy payload.needsHuman; false unsets BOTH keys and re-admits the row. Reserve true for a genuine credential, physical-device, or external-service action only — product decisions use agent review.',
     ),
+  // WI-41509: before this, an existing work-item's payload was closed to agents except
+  // through the fixed flags above — work_items:create was the only tool with a free-form
+  // payload, and it only applies at creation. A plan that rules "stamp your verdict onto
+  // payload.<key>" was therefore unsatisfiable, and the resulting zero read as a skipped
+  // step rather than a missing capability (the learning-loop triage plan's D-004/D-058).
+  payload: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      'MERGE these keys into payload (shallow jsonb merge — sibling keys are preserved, never replaced). For durable per-item metadata a plan or rubric rules must live on the artifact. Admission/claim keys (plan_item, needs_2_machine_rig, needsOwnerAction, needsHuman, lane, claim_hold_*) and `_`-prefixed internal keys are REFUSED — use their dedicated args, which also apply the coverage edge and legacy-key unsets a bare merge would skip.',
+    ),
 };
 
 // EI-6060: `status` / `state` are NOT update fields — a work-item's lifecycle state
@@ -290,7 +301,7 @@ export default defineTool({
   name: 'work_items:update',
   profile: 'engineer',
   description:
-    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/parent/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic; parent is the duplicate/child relation and null clears it. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig; compatibility input needsHuman:true writes the strict payload.needsOwnerAction gate, while false clears both legacy and strict keys. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
+    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/parent/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic; parent is the duplicate/child relation and null clears it. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig; compatibility input needsHuman:true writes the strict payload.needsOwnerAction gate, while false clears both legacy and strict keys. `payload` shallow-MERGES free-form keys onto an existing item (admission/claim and `_`-prefixed keys refused). (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
   guidance: {
     when: 'Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, adopt/clear a goal, or backfill plan_item provenance for a plan-scoped lane. Batch via items:[…].',
     notWhen: 'Use set_state for lifecycle, amend for structural decisions, comment for notes, or tag for topics.',
@@ -370,6 +381,7 @@ export default defineTool({
           // work_items:update{needsHuman:true} was a silent no-op that still returned
           // ok:true. Wire it exactly like the sibling needsTwoMachineRig flag.
           needsHuman: it.needsHuman !== undefined ? it.needsHuman : args.needsHuman,
+          payload: it.payload ?? args.payload,
           harness: it.harness ?? args.harness,
         }))
       : [
@@ -387,12 +399,31 @@ export default defineTool({
             confirmShrink: args.confirmShrink,
             needsTwoMachineRig: args.needsTwoMachineRig,
             needsHuman: args.needsHuman, // WI-5689
+            payload: args.payload, // WI-41509
             harness: args.harness,
           },
         ];
     const env = await runBulk(
       list,
       async (it) => {
+        // WI-41509: refuse a reserved payload key BEFORE any write. The column edit and the
+        // payload merge are separate statements, so validating later would leave the title/
+        // severity half applied under an error the caller reads as "nothing happened" — the
+        // partial-write shape this tool's own okFalse/partial reporting exists to make legible.
+        const reserved = reservedPayloadKeys(it.payload);
+        if (reserved.length > 0) {
+          return {
+            ok: false as const,
+            id: it.id,
+            error:
+              `payload: refused reserved key(s) ${reserved.join(', ')} — these carry admission ` +
+              `identity or claim state that the scheduler and claim floors read as authority, and ` +
+              `writing them without their side-effects (the plan-item coverage edge, the legacy-key ` +
+              `unsets) produces a row that admits or holds on a stamp nothing else agrees with. Use ` +
+              `the dedicated args instead: plan_item, needsTwoMachineRig, needsHuman. Keys prefixed ` +
+              `"_" are system-written bookkeeping and are never caller-writable.`,
+          };
+        }
         const res = await updateWorkItem(
           it.id,
           {
@@ -420,6 +451,13 @@ export default defineTool({
               { needs_2_machine_rig: it.needsTwoMachineRig },
               { harness: it.harness },
             );
+            if (merged) item = merged;
+          }
+          // WI-41509: the free-form merge, applied like its sibling flags above — additively
+          // via mergeWorkItemPayload, never through the updateIssue column patch (which would
+          // silently drop an unknown key). Reserved keys were already refused above.
+          if (it.payload && Object.keys(it.payload).length > 0) {
+            const merged = await mergeWorkItemPayload(it.id, it.payload, { harness: it.harness });
             if (merged) item = merged;
           }
           // P-005: keep the public compatibility input while writing only the strict
@@ -539,6 +577,11 @@ export default defineTool({
         if (res.reason === 'unsupported_family') {
           const planHarness = resolveConcreteHarnessSlug(it.harness, ctx) ?? undefined;
           const flagPatch = {
+            // WI-41509: the caller's free-form keys go FIRST so the structural patches below
+            // always win a collision. Reserved keys are refused before any write, so this is a
+            // belt-and-braces ordering rather than the guard itself — but the feature path is
+            // exactly where a future reserved key could be added to one list and not the other.
+            ...(it.payload ?? {}),
             ...payloadFlagPatch(it),
             ...planItemPayloadPatch(it.plan_item, planHarness),
           };
