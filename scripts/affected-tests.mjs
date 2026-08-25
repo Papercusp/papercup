@@ -2195,6 +2195,14 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // affected-tests-repo-wide-invariant-guards.test.ts asserts it from the guard's own
     // `not-checked.mjs` import rather than from a hand-maintained list.
     notCheckedIsNonGating: true,
+    // EI-21413078976809986: selection may be driven by --changed-paths after
+    // git-sync has already committed the edit. The detector needs BOTH the
+    // runner's comparison base (to recover the before-image) and the exact
+    // triggering paths (to avoid widening to every unrelated staging change).
+    // Omitting either makes the advisory exit NOT_CHECKED while the affected
+    // runner reports a red with zero files examined.
+    forwardBase: true,
+    forwardChangedPaths: true,
     // No hostSuiteRatchet: check-required-field-strands.test.ts exercises the DETECTOR
     // over fixtures and never diffs the real tree, so operator-core's own suite running
     // implies nothing about this having executed.
@@ -2932,7 +2940,15 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   if (guard.hostSuiteRatchet && coversHostSuite(tasks, ws.name)) continue;
   if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
   const guardArgs =
-    guard.script === AUTHORED_DOC_GUARD_SCRIPT ? authoredDocGuardArgs() : [];
+    guard.script === AUTHORED_DOC_GUARD_SCRIPT
+      ? authoredDocGuardArgs()
+      : guard.forwardChangedPaths
+        ? [
+            `--files=${invariantGuardChangedPaths()
+              .filter((file) => guard.appliesTo(file))
+              .join(",")}`,
+          ]
+        : [];
   selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
   if (!printAffected)
     outSync(

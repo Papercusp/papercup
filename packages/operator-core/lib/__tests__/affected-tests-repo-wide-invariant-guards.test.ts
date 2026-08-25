@@ -1078,6 +1078,19 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
     ).toContain(RFS_TASK);
   });
 
+  it('forwards the authoritative base and exact triggering paths so git-sync cannot make it vacuous', () => {
+    const base = 'HEAD^';
+    const out = dryTasks(RFS_OUTSIDE_TS_PATH, base);
+    expect(
+      out,
+      'a post-git-sync run needs the before-image and exact scope; --files alone still ' +
+        'compares byte-identical HEAD content and exits NOT_CHECKED',
+    ).toContain(
+      `${RFS_TASK} (guard base: ${base}) ` +
+        `(guard args: --files=${RFS_OUTSIDE_TS_PATH})`,
+    );
+  });
+
   it('attaches for a SUBMODULE ROOT path — the shape the 2026-08-12 main freeze arrived as', () => {
     const submodule = someSubmodulePath();
     expect(
