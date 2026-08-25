@@ -22,6 +22,7 @@ import {
   compareRenderVerb,
   ratifyReferenceVerb,
 } from './verbs';
+import { calibrationRenderHost } from './enforceability';
 import {
   DesignGateUnavailableError,
   evaluateFeatureDesignGate,
@@ -255,5 +256,139 @@ describe('unavailability is never a pass', () => {
         { store: broken, verbDeps: { ...c.verbDeps, store: broken }, caller: CALLER },
       ),
     ).rejects.toBeInstanceOf(DesignGateUnavailableError);
+  });
+});
+
+/**
+ * P-011/D-023 — the PRODUCER side of enforceability.
+ *
+ * `cross-host-enforcement.test.ts` proves `evaluateEnforceability` decides
+ * correctly when it is HANDED two host strings. That is one seam short of the
+ * property this criterion claims. What actually decides refuse-versus-report is
+ * `enforceableBlocking` (feature-gate.ts), and nothing exercised the path that
+ * fills it: ratification records a host, the gate reads it back off the
+ * reference's OWN provenance, and only then does the filter run.
+ *
+ * Found by independent grading (EI-21431822634786425): `enforceableBlocking`
+ * appeared in none of this criterion's bound files, and `capturedOnRenderHost`
+ * in no test file at all. So three separate mutations — inverting the filter,
+ * dropping the field at ratification, or hardwiring `enforceable: false` — each
+ * left all 17 bound files green while the gate enforced NOWHERE. That is this
+ * criterion's own drift marker: a never-firing gate grading identically to a
+ * correct one.
+ *
+ * The two directions are asserted together on purpose. A positive-only test is
+ * satisfied by a filter that enforces everything, and a negative-only test by
+ * one that enforces nothing; only the pair pins the filter to the host.
+ */
+describe('P-011/D-023: a failing reference refuses only on the host the threshold was measured for', () => {
+  /** 1280x800 = 1_024_000 px, POLICY.maxDiffRatio 0.001 => >1024 differing px fails. */
+  const FAILING_PIXELS = 50_000;
+  /** Same shape as the calibrated host, different font metrics — a real second machine. */
+  const OTHER_HOST = 'chromium/147;probe@72px[monospace=1201.500,sans-serif=1370.000]';
+
+  function ratifyOnHost(
+    referenceId: string,
+    env: CaptureEnvironment,
+    sha: string,
+    capturedOnRenderHost: string | undefined,
+  ): RatifyReferenceInput {
+    const base = ratifyFor(referenceId, env, sha);
+    if (capturedOnRenderHost === undefined) return base;
+    return { ...base, provenance: { ...base.provenance, capturedOnRenderHost } };
+  }
+
+  /** Ratify on `host`, then record an over-threshold comparison against it. */
+  async function failingOnHost(host: string | undefined) {
+    const c = ctx(DESKTOP, FAILING_PIXELS);
+    await ratifyReferenceVerb(ratifyOnHost(DESKTOP_REF, DESKTOP, 'a', host), CALLER, c.verbDeps);
+    await compareRenderVerb(compareFor(DESKTOP_REF, DESKTOP), CALLER, c.verbDeps);
+    const result = await evaluate(c);
+    if (!result.applicable) throw new Error('expected a ratified reference to make the gate apply');
+    return result;
+  }
+
+  it('CALIBRATION: the shipped calibration names a host, or nothing below can enforce', () => {
+    // If this is ever falsy, every enforcement assertion in this block becomes
+    // vacuously satisfiable by a gate that enforces nowhere.
+    expect(calibrationRenderHost()).toBeTruthy();
+  });
+
+  it('CONTROL: the over-threshold diff really does block, independently of any host question', async () => {
+    // Separates "the host logic works" from "the diff was never failing in the
+    // first place" — without this, an enforceableBlocking of length 0 could
+    // simply mean nothing was blocking at all.
+    const result = await failingOnHost(calibrationRenderHost());
+    expect(result.satisfied).toBe(false);
+    expect(result.blocking.map((r) => r.referenceId)).toEqual([DESKTOP_REF]);
+  });
+
+  it('ENFORCES: ratified on the calibrated host, the failure reaches enforceableBlocking', async () => {
+    // The end-to-end path the criterion actually claims: ratify -> provenance
+    // -> read-back -> evaluateEnforceability -> the refuse-vs-report filter.
+    // Hardwiring `enforceable: false`, dropping the field at ratification, or
+    // inverting the filter each break THIS assertion.
+    const result = await failingOnHost(calibrationRenderHost());
+    expect(result.enforceableBlocking.map((r) => r.referenceId)).toEqual([DESKTOP_REF]);
+  });
+
+  it('REPORTS ONLY: ratified on a different machine, it blocks but never enforces', async () => {
+    // The mirror. Inverting the filter passes the ENFORCES case above only by
+    // failing this one, so the pair cannot both be satisfied by a filter that
+    // ignores the host.
+    const result = await failingOnHost(OTHER_HOST);
+    expect(result.blocking.map((r) => r.referenceId)).toEqual([DESKTOP_REF]);
+    expect(result.enforceableBlocking).toHaveLength(0);
+  });
+
+  it('REPORTS ONLY: a reference ratified with no host recorded never enforces, and says why', async () => {
+    // The pre-cutover and upload case. Named by reason rather than by a bare
+    // boolean so that a gate which stopped recording the host at verbs.ts is
+    // distinguishable here from one that merely stopped enforcing.
+    const result = await failingOnHost(undefined);
+    expect(result.blocking).toHaveLength(1);
+    expect(result.enforceableBlocking).toHaveLength(0);
+    const [reference] = result.blocking;
+    expect(reference.enforceability.enforceable).toBe(false);
+    if (reference.enforceability.enforceable) return;
+    expect(reference.enforceability.reason).toBe('reference-host-unknown');
+  });
+
+  it('FALSIFIABILITY CONTROL: the two wrong filters disagree with the real one on this very data', async () => {
+    // CLAUDE.md's tier for an imported module: keep the deliberately-wrong
+    // implementations here permanently, rather than mutating the shared tree to
+    // find out. Both wrong filters are applied to the REAL `blocking` array the
+    // real pipeline just produced, so this cannot drift from the subject.
+    //
+    // Without this the assertions above are only *believed* to discriminate.
+    // The whole reason this block exists is that "green" was previously
+    // indistinguishable from "never fires" (EI-21431822634786425).
+    const enforced = await failingOnHost(calibrationRenderHost());
+    const reported = await failingOnHost(OTHER_HOST);
+
+    const invertedFilter = (refs: typeof enforced.blocking) =>
+      refs.filter((r) => !r.enforceability.enforceable);
+    const hardwiredFalse = (refs: typeof enforced.blocking) => refs.filter(() => false);
+
+    // Both wrong filters answer 0 where the real one answers 1 — so the
+    // ENFORCES assertion above genuinely separates them from the real filter.
+    expect(enforced.enforceableBlocking).toHaveLength(1);
+    expect(invertedFilter(enforced.blocking)).toHaveLength(0);
+    expect(hardwiredFalse(enforced.blocking)).toHaveLength(0);
+
+    // And on the mismatched host the inverted filter answers 1 where the real
+    // one answers 0 — so the REPORTS ONLY assertion separates it too. Together
+    // the pair pins the filter in both directions; neither alone would.
+    expect(reported.enforceableBlocking).toHaveLength(0);
+    expect(invertedFilter(reported.blocking)).toHaveLength(1);
+  });
+
+  it('a reported-but-not-enforced failure is still reported, never silently dropped', async () => {
+    // The whole point of the report-only leg: an unenforceable failure must
+    // remain visible. A gate that answered "not enforceable" by forgetting the
+    // reference would pass every assertion above and lose the obligation.
+    const result = await failingOnHost(OTHER_HOST);
+    expect(result.satisfied).toBe(false);
+    expect(renderFeatureDesignGate(result)).toMatch(/NOT ENFORCED/);
   });
 });
