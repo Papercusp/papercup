@@ -472,6 +472,64 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
   });
 
+  it("reaps a dead fixer before a stale dispatch reservation and then recovers within budget", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "dead-fixer",
+      dispatchReservation: {
+        token: "stale-launcher",
+        claimedAtMs: now - 100,
+        expiresAtMs: now + 60_000,
+      },
+      failingTests: ["lib/broken.test.ts"],
+    };
+    const writes: FrozenCandidateRepairQueue[] = [];
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      if (next) writes.push(next);
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.finalizeFrozenRepairWorktree = async () => null;
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async () => ({
+      spawnId: "replacement-fixer",
+      runId: "replacement-run",
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(writes[0]).toMatchObject({
+      fixerSpawnId: null,
+      attempts: 1,
+      repairHead: frozen,
+    });
+    expect(writes[0]?.dispatchReservation).toBeUndefined();
+    expect(result).toMatchObject({
+      green: null,
+      reason: "repair-in-progress",
+      repairQueue: {
+        fixerSpawnId: "replacement-fixer",
+        attempts: 2,
+        repairHead: frozen,
+      },
+    });
+    expect(calls).not.toContain("runGreen");
+  });
+
   it("holds an active dispatch reservation without spending another suite or launching a fixer", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
@@ -1442,7 +1500,16 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       repairHead: frozen,
     });
-    expect(writes).toHaveLength(1);
+    expect(writes).toHaveLength(2);
+    expect(writes[0]).toMatchObject({
+      phase: "awaiting-fixer",
+      fixerSpawnId: null,
+      attempts: 3,
+    });
+    expect(writes[1]).toMatchObject({
+      phase: "blocked",
+      blockedReason: "attempts-exhausted",
+    });
     expect(calls).not.toContain("runGreen");
     expect(calls).not.toContain("advance");
     expect(calls.some((call) => call.startsWith("setup:"))).toBe(false);
@@ -1457,7 +1524,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         blockedReason: "attempts-exhausted",
       },
     });
-    expect(writes).toHaveLength(1);
+    expect(writes).toHaveLength(2);
     expect(calls).not.toContain("runGreen");
   });
 });

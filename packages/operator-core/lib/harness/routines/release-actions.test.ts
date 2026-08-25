@@ -161,6 +161,7 @@ import {
   buildScheduledCheckpointShell,
   checkpointRunLogPaths,
   readFrozenCandidateRepairQueue,
+  retireFrozenCandidateRepairQueue,
   reserveFrozenCandidateRepairFixer,
   renewFrozenCandidateRepairFixerReservation,
   writeFrozenCandidateRepairQueue,
@@ -2287,6 +2288,30 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       ),
       ['ws-42', 'my-harness'],
     );
+  });
+
+  it('retires only the exact inspected queue and returns the replacement on a CAS miss', async () => {
+    fakeSql.unsafe.mockResolvedValueOnce([{ retired: true }] as never);
+    await expect(retireFrozenCandidateRepairQueue(target, queue)).resolves.toEqual({
+      retired: true,
+      current: null,
+    });
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(
+        /metadata->'repair_queue' = \$3::jsonb[\s\S]+RETURNING true AS retired/,
+      ),
+      ['ws-42', 'my-harness', JSON.stringify(queue)],
+    );
+
+    const replacement = { ...queue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
+    fakeSql.unsafe
+      .mockResolvedValueOnce([] as never)
+      .mockResolvedValueOnce([{ repair_queue: replacement }] as never);
+    await expect(retireFrozenCandidateRepairQueue(target, queue)).resolves.toMatchObject({
+      retired: false,
+      current: { updatedAtMs: 3, repairHead: 'd'.repeat(40) },
+    });
   });
 
   it('reserves an unassigned fixer with precedence-safe JSONB subtraction', async () => {

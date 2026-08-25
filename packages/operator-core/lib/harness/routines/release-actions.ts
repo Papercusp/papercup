@@ -2927,6 +2927,38 @@ export async function writeFrozenCandidateRepairQueue(
   }
 }
 
+/**
+ * Retire only the exact queue an operator inspected. The full JSONB compare-and-swap prevents
+ * a stale control call from clearing a replacement fixer, renewed reservation, or advanced
+ * repair head. The caller owns liveness/phase policy; this function owns storage atomicity.
+ */
+export async function retireFrozenCandidateRepairQueue(
+  target: GateVerdictTarget,
+  expectedQueue: FrozenCandidateRepairQueue,
+): Promise<{ retired: boolean; current: FrozenCandidateRepairQueue | null }> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `UPDATE harness_shared.routines
+        SET metadata = CASE
+              WHEN metadata #>> '{gate_health,inconclusive,status}'
+                     IN ('repair-in-progress', 'repair-staging-mismatch')
+                THEN (COALESCE(metadata, '{}'::jsonb) - 'repair_queue')
+                     #- '{gate_health,inconclusive}'
+              ELSE COALESCE(metadata, '{}'::jsonb) - 'repair_queue'
+            END,
+            updated_at = now()
+      WHERE workspace_id = $1
+        AND install_slug = $2
+        AND target_role = 'system:green-checkpoint'
+        AND metadata->'repair_queue' = $3::jsonb
+      RETURNING true AS retired`,
+    [target.workspaceId, target.installSlug, JSON.stringify(expectedQueue)],
+  )) as Array<{ retired: boolean }>;
+  if (rows[0]?.retired === true) return { retired: true, current: null };
+  return { retired: false, current: await readFrozenCandidateRepairQueue(target) };
+}
+
 export interface FrozenRepairFixerDispatchResult {
   spawnId: string | null;
   runId: string | null;

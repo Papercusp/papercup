@@ -76,7 +76,13 @@ describe('release:trace tool contract', () => {
     const snapshot = {
       generatedAtMs: 123,
       deploy: { integrationRoot: '/workspace/papercusp' },
-      gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
+      gate: {
+        verdictStale: false,
+        consecutiveReds: 0,
+        failingTests: [],
+        fireStale: false,
+        repairQueue: { phase: 'blocked', candidate: 'a'.repeat(40), retireAllowed: true },
+      },
     };
     mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
     mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha: 'abcd1234' });
@@ -85,12 +91,16 @@ describe('release:trace tool contract', () => {
     mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
     mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
 
-    await tool.handler({ path: 'packages/operator-core/lib/agent-tools/release/trace.ts' } as never, {} as never);
+    const out = (await tool.handler(
+      { path: 'packages/operator-core/lib/agent-tools/release/trace.ts' } as never,
+      {} as never,
+    )) as { data: { repairQueue: unknown } };
 
     expect(mocks.gitPipelineSnapshot).toHaveBeenCalledWith(undefined, {
       useSpawnerSidecar: false,
       includeActiveRun: true,
     });
+    expect(out.data.repairQueue).toMatchObject({ phase: 'blocked', retireAllowed: true });
   });
 
   it('stamps the operator-home subject and warns a concrete foreign-harness caller', async () => {

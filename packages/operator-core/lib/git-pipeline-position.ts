@@ -1181,6 +1181,7 @@ export interface PipelinePosition {
       detail: string | null;
       observedAtMs: number | null;
     } | null;
+    repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
   };
   /**
    * EI-7846: provenance for the CURRENT gate/deploy verdict — distinct from the
@@ -3035,6 +3036,11 @@ export function computeStages(
     const pauseDetail = g.pause
       ? `Gate is DELIBERATELY PAUSED (active:false)${g.pause.reason ? `: ${g.pause.reason}` : ''} — no scheduled fire can occur until the hold is resumed.`
       : null;
+    const repairQueueDetail = g.repairQueue
+      ? `Frozen repair queue ${g.repairQueue.candidate.slice(0, 12)} is ${g.repairQueue.phase} at head ${g.repairQueue.repairHead.slice(0, 12)} ` +
+        `(age ${Math.round(g.repairQueue.ageMs / 60_000)}m, fixer ${g.repairQueue.fixerSpawnId ?? 'none'} ` +
+        `${g.repairQueue.fixerAlive === null ? 'liveness unknown' : g.repairQueue.fixerAlive ? 'live' : 'not live'}, decision ${g.repairQueue.decision}).`
+      : null;
     const gateDetail = g.pause
       ? pauseDetail
       : notInCandidate
@@ -3049,6 +3055,8 @@ export function computeStages(
               : ` (The gate is also RED — ${g.consecutiveReds} consecutive — but do NOT read that red as your change failing until a run that CONTAINS it completes.)`
             : ''
         }`
+      : repairQueueDetail
+        ? repairQueueDetail
       : // EI-19405864032365760: an ABORTED tick outranks the red streak, because the streak is
         // stale BY CONSTRUCTION whenever one is recorded — the abort judged no code, so the
         // counters still describe an older run whose candidate and failing tests are no longer
@@ -3133,6 +3141,8 @@ export function computeStages(
                 // are not what is holding the pipeline. Route to the blocking condition instead.
                 g.pause
                 ? null
+                : g.repairQueue?.nextAction
+                ? g.repairQueue.nextAction
                 : g.inconclusive
                 ? g.inconclusive.status === 'migrations-pending'
                   ? 'db:migrate (the gate aborts before judging while a migration is pending — apply it, THEN the next scheduled run judges normally; firing one now aborts the same way)'
@@ -4657,6 +4667,7 @@ export async function gitPipelinePosition(
     // already resolves the abort record, and dropping it here is what left `dev:pipeline_position`
     // (the surface every role is pointed at) reporting a stale red as the pipeline's blocker.
     inconclusive: snap.gate.inconclusive,
+    repairQueue: snap.gate.repairQueue ?? null,
     // P-004: WHO owns this red, so a reader can see the incident is already
     // claimed before filing another work-item about it. One indexed SELECT,
     // fail-soft to `no-object` — same cost/safety profile as checkpointRunInFlight.

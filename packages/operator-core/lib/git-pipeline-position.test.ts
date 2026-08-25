@@ -2555,6 +2555,44 @@ describe('computeStages: position x health', () => {
     expect(detail).not.toMatch(/PREVIOUS verdict/i);
   });
 
+  it('EI-214333: a safely retireable queue owns the gate detail and exact next action', () => {
+    const nextAction = "release:repair-queue { op: 'retire', expectedCandidate: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }";
+    const s = computeStages(
+      input({
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+        gate: {
+          ...abortedGate(3),
+          inconclusive: {
+            status: 'repair-in-progress',
+            candidate: 'a'.repeat(40),
+            detail: 'historical repair hold',
+            observedAtMs: 1,
+          },
+          repairQueue: {
+            phase: 'awaiting-fixer',
+            candidate: 'a'.repeat(40),
+            repairHead: 'b'.repeat(40),
+            attempts: 1,
+            openedAtMs: 1,
+            updatedAtMs: 2,
+            ageMs: 60_000,
+            maxAgeMs: 120_000,
+            ageExpired: false,
+            fixerSpawnId: 'dead-fixer',
+            fixerAlive: false,
+            dispatchReservation: null,
+            decision: 'recover-dead-fixer',
+            retireAllowed: true,
+            retireRefusal: null,
+            nextAction,
+          },
+        },
+      }),
+    );
+    expect(stage(s, 'gate').detail).toMatch(/Frozen repair queue|not live|recover-dead-fixer/);
+    expect(stage(s, 'gate').lever).toBe(nextAction);
+  });
+
   it('EI-7846: a force-deployed sha is `broken` — "deployed" must not imply "tested"', () => {
     const s = computeStages(
       input({

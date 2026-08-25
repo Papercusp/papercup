@@ -276,6 +276,8 @@ export interface DeployStatus {
      *  captured but previously stranded in the snapshot with no consumer. Empty on a green
      *  gate; never trust it when `verdictStale`. */
     failingTests: string[];
+    /** Normalized persisted frozen-repair queue; null/absent means no readable queue. */
+    repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
     /** EI-10902: the most recent green-checkpoint TICK, from the append-only pipeline-events
      *  history (`harness_shared.pipeline_events`, mig 177) — whichever runner produced it
      *  (routine or manual `release:checkpoint-run`, WI-4494). Answers "what did the last gate
@@ -681,6 +683,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       lastFixerCandidate: g.lastFixerCandidate,
       flakyWorkspaces: g.flakyWorkspaces,
       failingTests,
+      repairQueue: g.repairQueue ?? null,
       lastVerdict,
     },
     deploy: {

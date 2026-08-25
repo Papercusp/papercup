@@ -33,6 +33,11 @@ import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { evaluateGateVerdictFreshness, type GateVerdictFreshness } from './release/gate-verdict-freshness';
 import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from './release/gate-red-ownership';
 import { releaseFixerSpawnAlive } from './release/fixer-liveness';
+import {
+  diagnoseFrozenCandidateRepairQueue,
+  parseFrozenCandidateRepairQueue,
+  type FrozenRepairQueueDiagnostic,
+} from './release/frozen-candidate-repair-queue';
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { pipelineName } from './release/pipeline-name';
@@ -218,6 +223,9 @@ export interface GitPipelineSnapshot {
       detail: string | null;
       observedAtMs: number | null;
     } | null;
+    /** EI-21433366079878122: normalized persisted queue state, including live-fixer and
+     * exact-CAS retirement guidance. Null means the routine row carries no readable queue. */
+    repairQueue?: FrozenRepairQueueDiagnostic | null;
     /** WI-4533: the tests the gate ITSELF named in its last verdict (`gate_health.failingTests`)
      *  — the workspace(s) + file path(s) that actually redded it. The blob has carried these all
      *  along and NO read surfaced them, so every consumer asking "what is red?" fell back to
@@ -1129,6 +1137,19 @@ export async function gitPipelineSnapshot(
     });
   }
 
+  const persistedRepairQueue = parseFrozenCandidateRepairQueue(gcMeta.repair_queue);
+  let repairQueueFixerAlive: boolean | null | undefined;
+  if (persistedRepairQueue?.fixerSpawnId) {
+    repairQueueFixerAlive = await releaseFixerSpawnAlive(
+      sql,
+      persistedRepairQueue.fixerSpawnId,
+    ).catch(() => null);
+  }
+  const repairQueue = diagnoseFrozenCandidateRepairQueue(persistedRepairQueue, {
+    nowMs: Date.now(),
+    fixerAlive: repairQueueFixerAlive,
+  });
+
   // P-001: "judging vs idle" — probe the live checkpoint unit ONLY when opted in
   // (the dev.gitPipeline derived-read producer; see the interface note). Best-effort:
   // a probe failure yields null (not probed), never a broken snapshot.
@@ -1265,6 +1286,7 @@ export async function gitPipelineSnapshot(
       // written by a version that shaped it differently, must read as "no abort recorded" rather
       // than as a half-populated abort a consumer would render with empty fields.
       inconclusive: currentGateInconclusive(gateHealth.inconclusive, gcMeta.repair_queue),
+      repairQueue,
     },
     openConflict,
     windows: { day, week },

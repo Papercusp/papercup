@@ -75,6 +75,7 @@ import {
   decideFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairExhausted,
+  markFrozenRepairFixerDead,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
   markFrozenRepairStagingMismatch,
@@ -7294,11 +7295,8 @@ async function runGreenCheckpointInner(
       fixerAlive,
     });
 
-    if (
-      decision.kind === "dispatch-fixer" &&
-      repairQueue.fixerSpawnId &&
-      fixerAlive === false
-    ) {
+    if (decision.kind === "recover-dead-fixer") {
+      const deadSpawnId = decision.fixerSpawnId;
       const finishedHead = await deps
         .finalizeFrozenRepairWorktree?.(repairQueue)
         .catch((e) => {
@@ -7309,15 +7307,20 @@ async function runGreenCheckpointInner(
         });
       if (finishedHead && finishedHead !== repairQueue.repairHead) {
         repairQueue = markFrozenRepairFixerFinished(repairQueue, {
-          spawnId: repairQueue.fixerSpawnId,
+          spawnId: deadSpawnId,
           repairHead: finishedHead,
           nowMs: Date.now(),
         });
-        await deps.writeFrozenRepairQueue?.(repairQueue);
-        decision = decideFrozenCandidateRepairQueue(repairQueue, {
+      } else {
+        repairQueue = markFrozenRepairFixerDead(repairQueue, {
+          spawnId: deadSpawnId,
           nowMs: Date.now(),
         });
       }
+      await deps.writeFrozenRepairQueue?.(repairQueue);
+      decision = decideFrozenCandidateRepairQueue(repairQueue, {
+        nowMs: Date.now(),
+      });
     }
 
     if (decision.kind === "hold-exhausted") {

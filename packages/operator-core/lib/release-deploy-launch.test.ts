@@ -101,6 +101,29 @@ function mkSnap(
 }
 
 describe('computeDeployStatus — decision tree', () => {
+  it('projects the normalized repair queue into release status', () => {
+    const repairQueue = {
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      repairHead: 'b'.repeat(40),
+      attempts: 1,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      ageMs: 3,
+      maxAgeMs: 4,
+      ageExpired: false,
+      fixerSpawnId: 'fixer-1',
+      fixerAlive: false,
+      dispatchReservation: null,
+      decision: 'recover-dead-fixer',
+      retireAllowed: true,
+      retireRefusal: null,
+      nextAction: 'release:repair-queue',
+    } as const;
+    const s = computeDeployStatus(mkSnap({ repairQueue }, {}));
+    expect(s.gate.repairQueue).toEqual(repairQueue);
+  });
+
   it('green-deployable: green gate + green code ahead of the live deploy → canTriggerGreen', () => {
     const s = computeDeployStatus(mkSnap({ consecutiveReds: 0, fireStale: false }, { deployedBehindGreenPin: 2 }));
     expect(s.state).toBe('green-deployable');

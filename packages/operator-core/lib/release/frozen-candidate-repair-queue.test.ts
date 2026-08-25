@@ -5,8 +5,10 @@ import {
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
+  diagnoseFrozenCandidateRepairQueue,
   markFrozenCandidateVerificationRed,
   markFrozenRepairExhausted,
+  markFrozenRepairFixerDead,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
   markFrozenRepairStagingMismatch,
@@ -205,6 +207,73 @@ describe('frozen-candidate repair queue', () => {
     });
   });
 
+  it('recovers a definitively dead fixer before an active dispatch reservation can hide it', () => {
+    const reserved = markFrozenRepairFixerDispatched(fresh(), {
+      spawnId: 'dead-fixer',
+      nowMs: T0 + 1,
+    });
+    const withStaleLease: FrozenCandidateRepairQueue = {
+      ...reserved,
+      dispatchReservation: {
+        token: 'stale-launcher',
+        claimedAtMs: T0 + 2,
+        expiresAtMs: T0 + 10_000,
+      },
+    };
+
+    expect(
+      decideFrozenCandidateRepairQueue(withStaleLease, {
+        nowMs: T0 + 3,
+        fixerAlive: false,
+      }),
+    ).toMatchObject({
+      kind: 'recover-dead-fixer',
+      fixerSpawnId: 'dead-fixer',
+      repairHead: C,
+    });
+
+    const recovered = markFrozenRepairFixerDead(withStaleLease, {
+      spawnId: 'dead-fixer',
+      nowMs: T0 + 4,
+    });
+    expect(recovered).toMatchObject({ fixerSpawnId: null, attempts: 1, repairHead: C });
+    expect(recovered.dispatchReservation).toBeUndefined();
+    expect(decideFrozenCandidateRepairQueue(recovered, { nowMs: T0 + 5 })).toMatchObject({
+      kind: 'dispatch-fixer',
+      reason: 'unassigned',
+      nextAttempt: 2,
+    });
+  });
+
+  it('normalizes queue liveness, age, retirement guard, and the exact CAS action', () => {
+    const dead = markFrozenRepairFixerDispatched(fresh(), {
+      spawnId: 'dead-fixer',
+      nowMs: T0 + 1,
+    });
+    const diagnostic = diagnoseFrozenCandidateRepairQueue(dead, {
+      nowMs: T0 + 2,
+      fixerAlive: false,
+    });
+    expect(diagnostic).toMatchObject({
+      phase: 'awaiting-fixer',
+      candidate: C,
+      repairHead: C,
+      fixerSpawnId: 'dead-fixer',
+      fixerAlive: false,
+      decision: 'recover-dead-fixer',
+      retireAllowed: true,
+      retireRefusal: null,
+    });
+    expect(diagnostic?.nextAction).toContain(`expectedUpdatedAtMs: ${dead.updatedAtMs}`);
+
+    expect(
+      diagnoseFrozenCandidateRepairQueue(dead, {
+        nowMs: T0 + 2,
+        fixerAlive: true,
+      }),
+    ).toMatchObject({ retireAllowed: false, retireRefusal: 'live-fixer', nextAction: null });
+  });
+
   it('verifies exactly the forward head reported by the current fixer', () => {
     const dispatched = markFrozenRepairFixerDispatched(fresh(), {
       spawnId: 'spawn-1',
@@ -237,8 +306,16 @@ describe('frozen-candidate repair queue', () => {
       nowMs: T0 + 1,
     });
     expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 2, fixerAlive: false })).toMatchObject({
+      kind: 'recover-dead-fixer',
+      fixerSpawnId: 'dead-spawn',
+    });
+    queue = markFrozenRepairFixerDead(queue, {
+      spawnId: 'dead-spawn',
+      nowMs: T0 + 2,
+    });
+    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 2 })).toMatchObject({
       kind: 'dispatch-fixer',
-      reason: 'fixer-dead',
+      reason: 'unassigned',
       nextAttempt: 2,
     });
     queue = markFrozenRepairFixerDispatched(queue, {

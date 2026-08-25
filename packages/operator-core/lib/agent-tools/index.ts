@@ -937,6 +937,8 @@ import './coordination/session-reaper-config';
 import './pot/control-policy';
 // live-configurability-audit-2026-06-20 P-016 — green-checkpoint / release thresholds:
 import './release/checkpoint-config';
+// EI-21433366079878122 — guarded inspection/exact-CAS retirement of the persisted repair queue:
+import './release/repair-queue';
 // live-configurability-audit-2026-06-20 P-022 — runtime Scout workspace spend-ceiling override:
 import './learning/set-scout-budget';
 // self-learning-public-release-readiness P-011 — Blender-pane arming bridge (both spend-gating layers):
