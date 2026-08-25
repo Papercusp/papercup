@@ -353,6 +353,47 @@ describe("selection + apply", () => {
     );
   });
 
+  it("moves focus to Dismiss when a passive live refresh disables focused Apply", () => {
+    const pending = groupsFixture();
+    const applied = pending.map((group) => ({
+      ...group,
+      rows: group.rows.map((row) => ({ ...row, status: "applied" as const })),
+    }));
+    const props = {
+      title: "Passively refreshed report",
+      onApply: vi.fn(),
+      onDismiss: vi.fn(),
+    };
+    const { rerender } = render(
+      <ReviewReportShell {...props} groups={pending} />,
+    );
+    const apply = applyBtn();
+    apply.focus();
+
+    // Chromium moves focus to BODY before React's layout effects run when the
+    // live data disables Apply. jsdom retains it, so reproduce the browser's
+    // null-related focusout explicitly before committing the applied rows.
+    apply.blur();
+    expect(document.activeElement).toBe(document.body);
+    rerender(<ReviewReportShell {...props} groups={applied} />);
+
+    expect(apply.isConnected).toBe(true);
+    expect(apply.disabled).toBe(true);
+    expect(document.activeElement).toBe(
+      screen.getByTestId("review-report-dismiss"),
+    );
+
+    // A concrete outside focus move is deliberate and must not be reclaimed.
+    rerender(<ReviewReportShell {...props} groups={pending} />);
+    const outside = document.createElement("button");
+    document.body.append(outside);
+    apply.focus();
+    outside.focus();
+    rerender(<ReviewReportShell {...props} groups={applied} />);
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
   it("restores focus to Dismiss when its busy action settles without unmounting", () => {
     const props = {
       title: "Dismiss failure report",
@@ -422,6 +463,38 @@ describe("tri-state group checkbox", () => {
       ],
     });
     expect(groupCheck("all-applied").disabled).toBe(true);
+  });
+
+  it("moves focus to the group toggle when a live refresh disables its focused checkbox", () => {
+    const pending = groupsFixture();
+    const applied = pending.map((group) => ({
+      ...group,
+      rows: group.rows.map((row) => ({ ...row, status: "applied" as const })),
+    }));
+    const props = {
+      title: "Live plan cleanup report",
+      onApply: vi.fn(),
+      onDismiss: vi.fn(),
+    };
+    const { rerender } = render(
+      <ReviewReportShell {...props} groups={pending} />,
+    );
+    const check = groupCheck("flip-to-done");
+    check.focus();
+
+    // Chromium moves focus to BODY before React's layout effects run when a
+    // focused native button becomes disabled. jsdom retains it, so reproduce
+    // the browser transition explicitly while preserving the null-related
+    // focusout context the shell observes in Chromium.
+    check.blur();
+    expect(document.activeElement).toBe(document.body);
+    rerender(<ReviewReportShell {...props} groups={applied} />);
+
+    expect(check.isConnected).toBe(true);
+    expect(check.disabled).toBe(true);
+    expect(document.activeElement).toBe(
+      screen.getByTestId("review-group-toggle-flip-to-done"),
+    );
   });
 });
 

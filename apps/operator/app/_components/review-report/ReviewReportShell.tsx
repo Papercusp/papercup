@@ -153,6 +153,10 @@ export default function ReviewReportShell({
     rowId: string | null;
     groupId: string;
   } | null>(null);
+  const focusedHeaderAction = useRef<{
+    element: HTMLButtonElement;
+    action: "apply" | "dismiss";
+  } | null>(null);
   const restoreActionFocusAfterBusy = useRef<"apply" | "dismiss" | null>(null);
   const wasBusy = useRef(busy);
 
@@ -204,10 +208,52 @@ export default function ReviewReportShell({
   }, [busy, groups, liveSelected.size]);
 
   useLayoutEffect(() => {
-    const previous = focusedGroupContent.current;
+    const previous = focusedHeaderAction.current;
+    const previousFocusUnavailable =
+      previous !== null &&
+      (!previous.element.isConnected || previous.element.matches(":disabled"));
     if (
       previous === null ||
-      previous.element.isConnected ||
+      !previousFocusUnavailable ||
+      document.activeElement !== document.body
+    ) {
+      return;
+    }
+
+    // A passive busy transition can disable both actions before either is a
+    // valid landing point. Reuse the settlement path once they become usable.
+    if (busy) {
+      restoreActionFocusAfterBusy.current ??= previous.action;
+      return;
+    }
+
+    const preferred =
+      previous.action === "apply"
+        ? applyButtonRef.current
+        : dismissButtonRef.current;
+    const dismiss = dismissButtonRef.current;
+    const apply = applyButtonRef.current;
+    const target =
+      preferred && !preferred.disabled
+        ? preferred
+        : dismiss && !dismiss.disabled
+          ? dismiss
+          : apply && !apply.disabled
+            ? apply
+            : reportRef.current;
+
+    focusedHeaderAction.current = null;
+    target?.focus({ preventScroll: true });
+  }, [busy, groups, liveSelected.size]);
+
+  useLayoutEffect(() => {
+    const previous = focusedGroupContent.current;
+    const previousFocusUnavailable =
+      previous !== null &&
+      (!previous.element.isConnected || previous.element.matches(":disabled"));
+    if (
+      previous === null ||
+      !previousFocusUnavailable ||
       document.activeElement !== document.body
     ) {
       return;
@@ -275,6 +321,16 @@ export default function ReviewReportShell({
       onFocusCapture={(event) => {
         const target = event.target;
         if (!(target instanceof HTMLElement)) return;
+        const action =
+          target === applyButtonRef.current
+            ? "apply"
+            : target === dismissButtonRef.current
+              ? "dismiss"
+              : null;
+        focusedHeaderAction.current =
+          action !== null && target instanceof HTMLButtonElement
+            ? { element: target, action }
+            : null;
         const group = target.closest<HTMLElement>("[data-review-group-id]");
         if (!group?.dataset.reviewGroupId) {
           focusedGroupContent.current = null;
@@ -290,10 +346,14 @@ export default function ReviewReportShell({
       onBlurCapture={(event) => {
         const next = event.relatedTarget;
         if (next instanceof Node && reportRef.current?.contains(next)) return;
-        // Removing a focused subtree emits focusout with no related target in
-        // Chromium. Preserve that context for the layout-effect fallback, but
-        // forget it when focus deliberately moves to a concrete outside node.
-        if (next !== null) focusedGroupContent.current = null;
+        // Removing a focused subtree or disabling its focused native control
+        // emits focusout with no related target in Chromium. Preserve that
+        // context for the layout-effect fallback, but forget it when focus
+        // deliberately moves to a concrete outside node.
+        if (next !== null) {
+          focusedGroupContent.current = null;
+          focusedHeaderAction.current = null;
+        }
       }}
     >
       <header className="review-report__head">
