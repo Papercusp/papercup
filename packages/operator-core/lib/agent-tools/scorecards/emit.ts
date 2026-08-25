@@ -117,7 +117,7 @@ export const scorecardEmitArgs = z
       .max(120)
       .optional()
       .describe(
-        'Vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric (subject.ref names it). The rubric must exist AND the consult must carry at least one third-party critique reply (EI-20821478338037350) — an opened-but-unanswered consult is refused, not silently accepted. Stamped as observation.vetting with the critique count and critics.',
+        "Vetting linkage for a META-RUBRIC scorecard only (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric. Requires subject:{ kind:'rubric', ref:'<the vetted rubric id>' }. Do not pass this on the later plan-subject acceptance card; that card cites the separately emitted meta-rubric scorecard instead. The rubric must exist AND the consult must carry at least one third-party critique reply (EI-20821478338037350) — an opened-but-unanswered consult is refused, not silently accepted. Stamped as observation.vetting with the critique count and critics.",
       ),
     vettingWorkItem: z
       .string()
@@ -369,6 +369,16 @@ export async function emitScorecard(
           ok: false as const,
           error:
             "vetting linkage requires `subject` naming the vetted rubric — pass subject:{ kind:'rubric', ref:'<the acceptance rubricId>' }",
+        };
+      }
+      if (args.subject?.kind !== 'rubric') {
+        return {
+          ok: false as const,
+          error:
+            `vetting linkage is only valid on the META-RUBRIC scorecard that grades a rubric — ` +
+            `pass subject:{ kind:'rubric', ref:'<the acceptance rubricId>' }. ` +
+            `For the later ${args.subject?.kind ?? 'untyped'}-subject acceptance card, omit ` +
+            `vettingConsult/vettingWorkItem and cite the separately emitted meta-rubric scorecard instead`,
         };
       }
       const vettedRubric = await getRubric(subjectRef);
