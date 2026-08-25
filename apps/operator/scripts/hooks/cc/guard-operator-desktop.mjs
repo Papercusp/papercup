@@ -211,14 +211,23 @@ const loopbackMsg = (host, url) =>
     '',
     `  ${url}`,
     '',
-    '  This looks like a remote/prod check but it would hit whatever is',
-    '  listening on THIS machine. The local server answers 200 with a',
-    '  well-formed body and there is NO tell in the response — so the run',
-    '  would pass and you would report localhost as prod.',
+    '  This looks like a remote/prod check, and nothing here proves the',
+    '  connection leaves this machine. Whatever is listening locally answers',
+    '  200 with a well-formed body and there is NO tell in the response — so',
+    '  the run would pass and you would report localhost as prod.',
     '',
     `  Confirm the pin:   getent hosts ${host}`,
-    '  (/etc/hosts on this box deliberately pins some *.papercusp.com names;',
-    '   see the comment on the flags.papercuspai.com line before changing any.)',
+    '  (/etc/hosts deliberately pins some papercusp names — read the',
+    '   papercusp-sni-bypass block there before changing any.)',
+    '',
+    '  NOT ALWAYS LOCALHOST — loopback alone no longer decides this.',
+    '  papercusp-sni-bypass.service holds SSH :443 forwards on 127.0.0.10-.17',
+    '  that genuinely reach the real origin, because the LAN gateway forges',
+    '  DNS for papercusp names and drops TLS by SNI (EI-18859147091614600).',
+    '  Those are detected and allowed automatically, so this fired because it',
+    '  could NOT be proven: the unit is inactive, or this port is not one it',
+    '  forwards (only :443 is — http:// is NOT). Check, and restart if down:',
+    '    systemctl is-active papercusp-sni-bypass.service',
     '',
     '  To verify a REMOTE host, run the probe ON that host (ssh/docker exec)',
     '  rather than from here — the office LAN also drops TLS handshakes whose',
@@ -236,14 +245,22 @@ function urlsIn(text) {
 /** Block if any URL in `text` names a remote host that resolves to loopback. */
 function checkLoopbackDeception(text) {
   for (const url of urlsIn(text)) {
-    let host;
+    let u;
     try {
-      host = new URL(url).hostname.replace(/^\[|\]$/g, '');
+      u = new URL(url);
     } catch {
       continue;
     }
+    const host = u.hostname.replace(/^\[|\]$/g, '');
     if (isExplicitlyLocal(host)) continue;
-    if (resolvesToLoopback(host)) block(loopbackMsg(host, url));
+    const addrs = loopbackAddrs(host);
+    if (!addrs) continue;
+    const port =
+      u.port || (u.protocol === 'https:' ? '443' : u.protocol === 'http:' ? '80' : '');
+    // A PROVEN bypass forward reaches the real origin, so the premise behind
+    // loopbackMsg does not hold and blocking here would be the wrong call.
+    if (isTunnelForward(addrs, port)) continue;
+    block(loopbackMsg(host, url));
   }
 }
 
