@@ -1961,9 +1961,10 @@ describe('executeWake — the liveness ladder', () => {
   it('exited omp rematerializes an archived thread before resuming when its transcript is missing', async () => {
     const spawnDetached = vi.fn(() => 2468);
     const calls: string[] = [];
+    let collectCount = 0;
     const collectSessionFiles = vi.fn(async () => {
       calls.push('collect');
-      return [];
+      return collectCount++ === 0 ? [] : [{}];
     });
     const rematerializeSession = vi.fn(async () => {
       calls.push('rematerialize');
@@ -1991,7 +1992,35 @@ describe('executeWake — the liveness ladder', () => {
     expect(rematerializeSession).toHaveBeenCalledWith(
       expect.objectContaining({ sourceKind: 'omp', sessionId: threadId }),
     );
-    expect(calls).toEqual(['collect', 'rematerialize', 'spawn']);
+    expect(calls).toEqual(['collect', 'rematerialize', 'collect', 'spawn']);
+  });
+
+  it('exited omp with no transcript after archive recovery → inbox fallback, never a doomed resume', async () => {
+    const spawnDetached = vi.fn(() => 2468);
+    const collectSessionFiles = vi.fn(async () => []);
+    const rematerializeSession = vi.fn(async () => ({ ok: false, reason: 'not_archived' as const, written: 0, skippedExisting: 0, conflicts: [] }));
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const threadId = 'th-missing';
+    const out = await executeWake(
+      work({ wakeHandle: advHandle({ agent: 'omp', sessionId: null, ompThreadId: threadId }) }),
+      deps({
+        getSession: vi.fn(async () => session({ agent: 'omp', sessionId: null, ompThreadId: threadId })) as never,
+        alive: vi.fn(() => false),
+        presence: vi.fn(async () => stalePresence) as never,
+        collectSessionFiles: collectSessionFiles as never,
+        rematerializeSession: rematerializeSession as never,
+        sendCoordMessage: sendCoordMessage as never,
+        spawnDetached,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(collectSessionFiles).toHaveBeenCalledTimes(2);
+    expect(rematerializeSession).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceKind: 'omp', sessionId: threadId, targetRoot: expect.any(String) }),
+    );
+    expect(sendCoordMessage).toHaveBeenCalled();
+    expect(spawnDetached).not.toHaveBeenCalled();
   });
 
   it('exited omp PTY fallback → readiness-gated prompt injection into the new pty', async () => {

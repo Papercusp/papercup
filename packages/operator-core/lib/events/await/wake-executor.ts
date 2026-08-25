@@ -2542,25 +2542,49 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       }
     }
     // omp keeps flat per-cwd transcripts under the shared sessions root — same
-    // rematerialize-on-miss before the thread resume (P-008).
+    // rematerialize-on-miss before the thread resume (P-008). Unlike Claude/Codex,
+    // `omp -r` reports a permanent provider error when the transcript is still
+    // absent, so never spawn it on an unverified thread (EI-21437954951892218).
+    let ompTranscriptMissing = false;
     if (resumeAgent === 'omp') {
       const sid = fresh?.ompThreadId ?? handle.ompThreadId;
       if (sid) {
         try {
-          const have = await collectSessionFiles({ sourceKind: 'omp', sessionId: sid, sessionRoot: ompSessionsRoot() });
+          const root = ompSessionsRoot();
+          let have = await collectSessionFiles({ sourceKind: 'omp', sessionId: sid, sessionRoot: root });
           if (!have.length) {
             // WI-3940: time-bounded — see the codex leg.
             const r = await withWakeTimeout(
-              rematerializeSession({ sourceKind: 'omp', sessionId: sid }),
+              rematerializeSession({ sourceKind: 'omp', sessionId: sid, targetRoot: root }),
               `rematerialize omp/${sid}`,
               rematerializeTimeoutMs,
             );
             if (r?.ok && r.written) console.log(`[wake-executor] rematerialized omp/${sid}: ${r.written} file(s)`);
+            // The archive call is best-effort and may legitimately find no
+            // archive. Re-read after it so a zero-file/failed restore cannot
+            // become a doomed `omp -r` spawn that only fails asynchronously.
+            have = await collectSessionFiles({ sourceKind: 'omp', sessionId: sid, sessionRoot: root });
           }
+          ompTranscriptMissing = have.length === 0;
         } catch (e) {
           console.warn(`[wake-executor] omp rematerialize check failed: ${(e as Error)?.message ?? e}`);
+          ompTranscriptMissing = true;
         }
       }
+    }
+    if (ompTranscriptMissing) {
+      const p = await presence(d.subscriberId).catch(() => null);
+      if (p && !p.stale && !p.revoked) {
+        return {
+          kind: 'park',
+          reason: 'omp session transcript unavailable after archive recovery — presence is live; parked without resume',
+        };
+      }
+      return degradeToInboxOrDrop(
+        d,
+        'omp session transcript unavailable after archive recovery — no safe resume',
+        sendCoordMessage,
+      );
     }
     const resume = resumeCommandFor(
       {
