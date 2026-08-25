@@ -389,25 +389,72 @@ export function parseFailingFilesLine(text: string): Array<{
 }> | null;
 /** @param {string} [output] captured task output @returns {boolean} */
 export function hasRouteRefusal(output?: string): boolean;
+/**
+ * Attribute ONE failed task to the test files that broke it.
+ *
+ * Returns either files or a REASON it has none — never a bare empty list, because the
+ * caller accumulates these and an empty contribution is indistinguishable from "this task
+ * passed". Three ways a genuinely-red task yields no file:
+ *   - `no-captured-output` — an interactive TTY run inherited stdio, so there is no text
+ *     to parse. The failure is real; attribution was never possible.
+ *   - `no-file-rows`      — captured output in which NO known runner format named a file:
+ *     a worker crash, an OOM, a spawn error.
+ *     ⚠ Read this as "no PARSER spoke for it", not "the output named nothing" — those came
+ *     apart for `node --test` workspaces until EI-20095409199430877, where output naming the
+ *     failing file in plain text still reported this reason and read as an infra crash.
+ *     ⚠ Exactly ONE task in this repo still lands here LEGITIMATELY, and knowing which turns a
+ *     misleading reason into an expected one: `@papercusp/web :: test:el-suite`, whose checks
+ *     assert on the replies of a live remote agent — no repo file is the culprit, so there is
+ *     nothing honest to name (see {@link formatDeclaredFailingFileLines}). It is DECLARED as
+ *     unattributable in scripts/lib/test-runner-classes.mjs, so this is a known boundary
+ *     rather than a blind spot. For ANY other task, the infra causes above really are the
+ *     candidates. (This list has shrunk twice — `astro check` and `lint:el-tools` both left it
+ *     under EI-20102376842495928 — so treat a stale-looking entry here as a bug in this
+ *     docstring, which attributor-runner-coverage.test.ts pins against the real registry.)
+ *   - `route-refusal`     — the ROUTER refused the run before any test executed: it was handed
+ *     a file this config cannot match and declined the whole partial-match batch rather than
+ *     false-greening the rest. Nothing ran, so no parser can speak — but the cause is NOT
+ *     unknowable: the task's own output carries `TEST_FILE_ROUTE_ERROR requested=N matched=M`
+ *     and one `  unmatched <path>` line per offending file. Go read those; do not re-run, and
+ *     do not go hunting a flaky test. The usual cause is a file routed to the wrong RUNNER
+ *     (a Playwright spec handed to a vitest lane), which no amount of test triage can fix.
+ *     Split out of `no-file-rows` (EI-21440128879545486), where it read as an OOM for a full
+ *     session while the offending paths sat named in plain text.
+ *   - `transform`         — no FAIL/rollup rows AND a parse failure is present, i.e. the
+ *     collapse happened before the reporter ran. Split out of `no-file-rows` (WI-37607):
+ *     this docstring used to name a transform failure as one of that reason's causes, which
+ *     made a peer's mid-edit read identically to an OOM.
+ *   - `non-vitest`        — cargo and friends; this parser cannot speak for them.
+ *
+ * ⚠ `transformCulprits` is returned INDEPENDENTLY of whether files were attributed, and that
+ * independence is the point (WI-37607). Measured on the real logs: a module that fails to
+ * parse still produces FAIL/rollup rows for every test file that transitively imports it, so
+ * the common case is `entries.length === 21, unattributed.length === 0` — fully attributed,
+ * `coverage=complete`, and every one of those 21 a CASUALTY of one broken module. Reading the
+ * culprit set off the `unattributed` reason alone would therefore miss exactly the case this
+ * was built for.
+ *
+ * @param {{ workspace: string, task: string, captured: boolean, output?: string,
+ *           fallbackReason?: string }} args
+ * @returns {{ entries: Array<{ workspace: string, file: string }>,
+ *             unattributed: Array<{ task: string, reason: string }>,
+ *             transformCulprits: string[] }}
+ */
 export function attributeFailedTask({ workspace, task, captured, output, fallbackReason }: {
-    workspace: any;
-    task: any;
-    captured: any;
-    output?: string | undefined;
-    fallbackReason: any;
+    workspace: string;
+    task: string;
+    captured: boolean;
+    output?: string;
+    fallbackReason?: string;
 }): {
-    entries: never[];
-    unattributed: {
-        task: any;
-        reason: any;
-    }[];
-    transformCulprits: string[];
-} | {
-    entries: {
-        workspace: any;
+    entries: Array<{
+        workspace: string;
         file: string;
-    }[];
-    unattributed: never[];
+    }>;
+    unattributed: Array<{
+        task: string;
+        reason: string;
+    }>;
     transformCulprits: string[];
 };
 /**

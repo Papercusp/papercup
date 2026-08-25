@@ -632,6 +632,35 @@ export function parseFailingFilesLine(text) {
 }
 
 /**
+ * Did the test ROUTER refuse this run outright?
+ *
+ * `scripts/test-files.mjs` refuses a zero/partial-match run rather than false-greening the
+ * files that DID match, so the task exits 1 having executed nothing — no FAIL rows, no rollup,
+ * no parse failure. Every attribution parser above therefore speaks for nothing, and without
+ * this the reason lands on `no-file-rows`, whose documented causes are "a worker crash, an OOM,
+ * a spawn error". That is not a cosmetic mislabel: it points triage at infrastructure while the
+ * router has already printed both the refusal AND the offending paths (`  unmatched <path>`) in
+ * plain text. EI-21440128879545486 is the cost of that — a red that survived seven unrelated
+ * test fixes and froze `main`, because no test was ever broken and re-running changed nothing.
+ *
+ * The same shape as EI-20095409199430877 and EI-20098997113620795 before it: the output named
+ * the culprit, no parser spoke for it, and the honest-sounding fallback read as an infra crash.
+ *
+ * WI-41663: this pair sits ABOVE attributeFailedTask's doc block on purpose. It used to sit
+ * BETWEEN that block and the function, which detached the `@param {{…}} args` annotation —
+ * TypeScript then inferred the whole parameter object from the destructuring pattern, typing
+ * workspace/task/captured as `any` and making the OPTIONAL `fallbackReason` REQUIRED. That
+ * stranded every caller that (correctly) omits it. Keep a declaration between a JSDoc block
+ * and the function it documents and the same silent degradation returns.
+ */
+const ROUTE_REFUSAL_RE = /^TEST_FILE_ROUTE_ERROR\b/m;
+
+/** @param {string} [output] captured task output @returns {boolean} */
+export function hasRouteRefusal(output = '') {
+  return ROUTE_REFUSAL_RE.test(output);
+}
+
+/**
  * Attribute ONE failed task to the test files that broke it.
  *
  * Returns either files or a REASON it has none — never a bare empty list, because the
@@ -682,28 +711,6 @@ export function parseFailingFilesLine(text) {
  *             unattributed: Array<{ task: string, reason: string }>,
  *             transformCulprits: string[] }}
  */
-/**
- * Did the test ROUTER refuse this run outright?
- *
- * `scripts/test-files.mjs` refuses a zero/partial-match run rather than false-greening the
- * files that DID match, so the task exits 1 having executed nothing — no FAIL rows, no rollup,
- * no parse failure. Every attribution parser above therefore speaks for nothing, and without
- * this the reason lands on `no-file-rows`, whose documented causes are "a worker crash, an OOM,
- * a spawn error". That is not a cosmetic mislabel: it points triage at infrastructure while the
- * router has already printed both the refusal AND the offending paths (`  unmatched <path>`) in
- * plain text. EI-21440128879545486 is the cost of that — a red that survived seven unrelated
- * test fixes and froze `main`, because no test was ever broken and re-running changed nothing.
- *
- * The same shape as EI-20095409199430877 and EI-20098997113620795 before it: the output named
- * the culprit, no parser spoke for it, and the honest-sounding fallback read as an infra crash.
- */
-const ROUTE_REFUSAL_RE = /^TEST_FILE_ROUTE_ERROR\b/m;
-
-/** @param {string} [output] captured task output @returns {boolean} */
-export function hasRouteRefusal(output = '') {
-  return ROUTE_REFUSAL_RE.test(output);
-}
-
 export function attributeFailedTask({ workspace, task, captured, output = '', fallbackReason }) {
   if (!captured) {
     return {

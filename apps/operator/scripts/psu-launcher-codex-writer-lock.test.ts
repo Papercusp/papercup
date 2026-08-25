@@ -204,7 +204,10 @@ describe('codexThreadWriterHolder', () => {
     const home = homeWithLocks(['.coordination.lock', `${LIVE_THREAD}.lock`]);
     const got = codexThreadWriterHolder(home, null, {
       readProcLocks: () => PROC_LOCKS,
-      statFile: (p: string) => (p.includes(LIVE_THREAD) ? HELD : { dev: 66307, ino: 7 }) as never,
+      // Cast the whole function: the real default is fs.statSync, whose overloaded
+      // StatSyncFn signature a plain (p: string) => … does not satisfy.
+      statFile: ((p: string) =>
+        p.includes(LIVE_THREAD) ? HELD : { dev: 66307, ino: 7 }) as never,
     });
     expect(got.held).toBe(true);
     expect(got.sessionId).toBe(LIVE_THREAD);
