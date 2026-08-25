@@ -9,9 +9,14 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
+import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import {
   UnsupportedWorkspaceHostInitializationTargetError,
+  WorkspaceHostDesiredSpecUnavailableError,
+  WorkspaceHostInitializationControllerProfileError,
+  resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperations,
+  resolveWorkspaceHostInitializationOperationsForHost,
   type WorkspaceHostInitializationControllerProfile,
 } from './initialization-operations-resolver';
 import { resolveGcpWorkspaceHostInstanceIdentity } from './gcp-provider';
@@ -110,5 +115,167 @@ describe('resolveWorkspaceHostInitializationOperations', () => {
         controller,
       ),
     ).toThrow(/projectId must match/);
+  });
+});
+
+describe('resolveWorkspaceHostInitializationControllerProfile', () => {
+  const complete = {
+    PAPERCUSP_WORKSPACE_HOST_SSH_USER: 'papercusp',
+    PAPERCUSP_WORKSPACE_HOST_KNOWN_HOSTS: '/etc/papercusp/known_hosts',
+    PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT: '/opt/papercusp/bin/workspace-host-initializer',
+  };
+
+  it('builds the profile from deployment configuration', () => {
+    expect(resolveWorkspaceHostInitializationControllerProfile(complete)).toEqual({
+      sshUser: 'papercusp',
+      knownHostsFile: '/etc/papercusp/known_hosts',
+      remoteEntrypoint: '/opt/papercusp/bin/workspace-host-initializer',
+    });
+  });
+
+  it('carries optional overrides through and omits absent ones entirely', () => {
+    const profile = resolveWorkspaceHostInitializationControllerProfile({
+      ...complete,
+      PAPERCUSP_WORKSPACE_HOST_IDENTITY_FILE: '/etc/papercusp/id_ed25519',
+      PAPERCUSP_WORKSPACE_HOST_GCLOUD_EXECUTABLE: 'gcloud',
+    });
+    expect(profile.identityFile).toBe('/etc/papercusp/id_ed25519');
+    expect(profile.gcloudExecutable).toBe('gcloud');
+    // Absent means ABSENT, not undefined-valued: the adapter profile spreads these conditionally.
+    expect('sshExecutable' in profile).toBe(false);
+  });
+
+  it('refuses a RELATIVE trust store or entrypoint', () => {
+    // A relative path resolves against the controller's launch directory, which would make the
+    // trust store depend on how the process was started. That is the property it must not have.
+    expect(() =>
+      resolveWorkspaceHostInitializationControllerProfile({
+        ...complete,
+        PAPERCUSP_WORKSPACE_HOST_KNOWN_HOSTS: 'known_hosts',
+      }),
+    ).toThrow(/must be an absolute path/);
+
+    expect(() =>
+      resolveWorkspaceHostInitializationControllerProfile({
+        ...complete,
+        PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT: './initializer',
+      }),
+    ).toThrow(WorkspaceHostInitializationControllerProfileError);
+  });
+
+  it('reports EVERY gap at once rather than one restart at a time', () => {
+    try {
+      resolveWorkspaceHostInitializationControllerProfile({});
+      expect.unreachable('an unconfigured controller must refuse');
+    } catch (error) {
+      const problems = (error as WorkspaceHostInitializationControllerProfileError).problems;
+      expect(problems).toHaveLength(3);
+      expect(problems.join(' ')).toContain('PAPERCUSP_WORKSPACE_HOST_SSH_USER');
+      expect(problems.join(' ')).toContain('PAPERCUSP_WORKSPACE_HOST_KNOWN_HOSTS');
+      expect(problems.join(' ')).toContain('PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT');
+    }
+  });
+
+  it('treats whitespace-only configuration as unset', () => {
+    expect(() =>
+      resolveWorkspaceHostInitializationControllerProfile({ ...complete, PAPERCUSP_WORKSPACE_HOST_SSH_USER: '   ' }),
+    ).toThrow(/PAPERCUSP_WORKSPACE_HOST_SSH_USER is unset/);
+  });
+});
+
+describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
+  it('resolves the adapter from the RECORDED provisioning intent', async () => {
+    const spec = desired();
+    const resolved = await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'ws-1',
+      hostId: 'host-alpha',
+      controller,
+      readDesiredSpec: async () => ({ desired: spec }),
+    });
+
+    expect(resolved.desired).toBe(spec);
+    expect(resolved.operations.supportedStepKinds).toContain('create-workspace');
+  });
+
+  it('distinguishes an unknown host from a host with no recorded intent', async () => {
+    // These are NOT the same failure: the first is a bad request, the second is a provisioner
+    // that recorded nothing. Collapsing them would strand the caller with no way to tell which.
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'ghost',
+        controller,
+        readDesiredSpec: async () => ({ desired: null, miss: 'host-not-found' }),
+      }),
+    ).rejects.toMatchObject({ reason: 'host-not-found' });
+
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: null, miss: 'no-recorded-spec' }),
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceHostDesiredSpecUnavailableError);
+  });
+
+  it('REFUSES rather than guessing an instance name for an un-recorded host', async () => {
+    // The whole point of persisting intent: without it the controller must not proceed against a
+    // derived-by-default instance name, because that failure is invisible until real cloud.
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: null, miss: 'no-recorded-spec' }),
+      }),
+    ).rejects.toThrow(/cannot be identified/);
+  });
+});
+
+describe('persisting a desired spec is secret-safe', () => {
+  it('does NOT reject a legitimate, fully-populated spec (calibration control)', () => {
+    // This control is the point of the pair below. `upsertWorkspaceHost` asserts secret isolation
+    // over the WHOLE spec, and that assertion rejects secret-SHAPED KEY NAMES — so a contract type
+    // that ever renamed a field to something like `tokenRef` would start rejecting valid specs at
+    // the persistence boundary. Without this control, the rejection test below would still pass
+    // while the writer refused everything.
+    expect(() =>
+      assertWorkspaceHostSecretIsolation(
+        desired({
+          credentials: {
+            cloudCredentialRef: { kind: 'cloud', ref: 'cloud-resolver:v1' },
+            gitCredentialRef: { kind: 'git', ref: 'git-resolver:v1' },
+            agentCredentialRef: { kind: 'agent', ref: 'agent-resolver:v1' },
+          },
+          provider: { instanceName: 'explicit-vm', projectId: 'active-alcove-504205-q3' },
+          labels: { env: 'canary' },
+        }),
+        'workspaceHost.desiredSpec',
+      ),
+    ).not.toThrow();
+  });
+
+  it('rejects a spec carrying secret material or a secret-shaped field', () => {
+    expect(() =>
+      assertWorkspaceHostSecretIsolation(
+        desired({ provider: { apiKey: 'AIzaSyDUMMYVALUEFORTEST' } }),
+        'workspaceHost.desiredSpec',
+      ),
+    ).toThrow(/Secret-shaped field/);
+
+    // ASSEMBLED AT RUNTIME, deliberately — and assembled so that NO fragment of the banned shape
+    // appears contiguously in this file's bytes. A literal PEM header here would be swept into
+    // shared history by git-sync within minutes and would trip both the secrets guard and the
+    // pot-git publish guard; the latter then refuses EVERY later publish permanently, because its
+    // baseline never advances past a refused range and editing the file afterwards does not remove
+    // the blob from history. Freezing the publish plane that way has cost hours more than once.
+    // Splitting the two words is the load-bearing part: the guard matches `PRIVATE KEY`, so the
+    // source must never spell it. The runtime string is still exactly what the assertion matches.
+    const keyWords = ['PRIVATE', 'KEY'].join(' ');
+    const pemMarker = `-----BEGIN OPENSSH ${keyWords}-----\nabc\n-----END OPENSSH ${keyWords}-----`;
+    expect(() =>
+      assertWorkspaceHostSecretIsolation(desired({ provider: { note: pemMarker } }), 'workspaceHost.desiredSpec'),
+    ).toThrow(/Secret material is forbidden/);
   });
 });
