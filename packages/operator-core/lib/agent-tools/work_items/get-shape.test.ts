@@ -79,6 +79,63 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect(String(out.results[0].checkpoint)).not.toMatch(/TRUNCATED/);
   });
 
+  /**
+   * EI-21379898054596220. The hash is 12 chars and it is the ONLY thing that stays
+   * true once the checkpoint above it is clipped — a reader handed a prefix cannot
+   * recompute the digest their handoff needs to verify. So it must survive every
+   * degradation this shaper performs, including the ones that exist precisely because
+   * the checkpoint was too big to keep whole. Dropping it at a reduced tier would
+   * remove the verification exactly where it becomes necessary.
+   */
+  it("keeps checkpointContentHash whole through both the clip and the single-item floor", () => {
+    const checkpoint = "C".repeat(40_000);
+    const checkpointContentHash = "81344e6f2817";
+
+    for (const tier of ["trimmed", "standard"] as const) {
+      const out = shapeWorkItemsGet(envelope([row({ checkpoint, checkpointContentHash })]), tier) as Envelope;
+      // Positive control: this case only means something while the clip really happens.
+      expect(
+        String(out.results[0].checkpoint).length,
+        `[${tier}] checkpoint was not clipped — this case no longer tests what it claims to`,
+      ).toBeLessThan(checkpoint.length);
+      expect(out.results[0].checkpointContentHash).toBe(checkpointContentHash);
+    }
+
+    // The compact single-row floor is a SEPARATE projection with its own field list,
+    // so it can regress independently — exercise it with the same payload shape the
+    // serializer-hold case above uses to reach it.
+    const floored = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: {
+            id: "WI-1",
+            kind: "bug",
+            family: "issue",
+            harness: "papercusp",
+            state: "open",
+            title: "serializer hold",
+            severity: "critical",
+            origin: "local",
+            assignee: "su-1",
+            summary: "S".repeat(40_000),
+            payload: { giant: "P".repeat(40_000) },
+          },
+          checkpoint,
+          checkpointContentHash,
+          lifecycle: { events: Array.from({ length: 100 }, (_, i) => ({ kind: `event-${i}` })) },
+          priorAttempts: { attempts: [{ text: "A".repeat(10_000) }] },
+          threadWindow: { posts: [{ body: "T".repeat(10_000) }] },
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+
+    // Positive control: prove we actually reached the floor, or the assertion below
+    // is measuring the ordinary path under a different name.
+    expect(floored._shapeNote?.singleItemFloor, "did not reach the single-item floor").toMatch(/reduced identity/);
+    expect(floored.results[0].checkpointContentHash).toBe(checkpointContentHash);
+  });
+
   it("spends the budget on the checkpoint by DROPPING summary + payload, and names both", () => {
     const out = shapeWorkItemsGet(envelope([row({ checkpoint: "C".repeat(5_000) })]), "trimmed") as Envelope;
     const w = out.results[0].workItem as Record<string, unknown>;

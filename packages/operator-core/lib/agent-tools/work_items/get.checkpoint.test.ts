@@ -473,28 +473,23 @@ describe('work_items:get — checkpointContentHash (EI-21379898054596220)', () =
     expect(r.checkpointContentHash).toMatch(/^[0-9a-f]{12}$/);
   });
 
-  it('stays the STORED note\'s hash when the returned checkpoint is clipped', async () => {
-    // Long enough to exceed the single-read checkpoint budget, which is the whole
-    // point: this is when a reader most needs to verify a handoff and is least able
-    // to compute the hash themselves.
+  it('hashes the whole stored note, however long — never a prefix of it', async () => {
+    // The handler must digest what the STORE holds. Clipping happens a layer down in
+    // shapeWorkItemsGet, so the invariant "the hash survives the clip" is pinned in
+    // get-shape.test.ts; what this layer owes is a hash of the complete note.
     const stored = `${'x'.repeat(40_000)}\nTAIL-MARKER`;
     getWorkItem.mockResolvedValue(item('WI-hash-2'));
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: stored, updatedAtMs: Date.now() });
 
     const r = await one({ id: 'WI-hash-2' });
 
-    // Positive control: this case is only meaningful if the projection actually
-    // clipped. If a budget change stops clipping 40k chars, this assertion fails
-    // loudly rather than letting the assertion below pass for the wrong reason.
-    expect(
-      r.checkpoint.length,
-      'checkpoint was not clipped — this case no longer tests what it claims to',
-    ).toBeLessThan(stored.length);
     expect(r.checkpointContentHash).toBe(shortCarryHash(stored));
+    // Falsifier: any prefix-hashing implementation passes the line above only if it
+    // happens not to truncate at all, so name the failure mode directly.
     expect(
       r.checkpointContentHash,
-      'the hash tracked the CLIPPED string — it must digest the stored note, or it certifies a prefix',
-    ).not.toBe(shortCarryHash(r.checkpoint));
+      'the hash matched a PREFIX of the note — it must digest the full stored text',
+    ).not.toBe(shortCarryHash(stored.slice(0, 800)));
   });
 
   it('is null when nothing was ever checkpointed', async () => {
