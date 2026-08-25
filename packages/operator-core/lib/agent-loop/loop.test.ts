@@ -268,7 +268,7 @@ describe('runAgentLoop', () => {
   });
 
   it('an early stream EOF is an error, not a successful empty completion', async () => {
-    const { port } = scriptedPort([{ type: 'text_delta', text: 'partial' }]);
+    const { port } = scriptedPort([[{ type: 'text_delta', text: 'partial' }]]);
     const events = await collect({ port, model: 'm1', messages: [textMessage('user', 'hi')] });
     expect(events.find((e) => e.type === 'error')).toMatchObject({
       message: 'model stream ended before terminal stop/error event',
