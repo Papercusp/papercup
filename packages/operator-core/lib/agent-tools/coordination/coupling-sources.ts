@@ -319,6 +319,123 @@ async function resolveCounterpartLiveness(
 }
 
 /**
+ * A grade older than this stops being an open debt and becomes history (P-006).
+ *
+ * Measured: of 53 in-scope scorecards, 47 are already terminal and 4 are open — and one
+ * of those open cards is 218 hours (9 days) old. An unanswered grade from nine days ago
+ * is not something a reader is going to act on today; surfacing it as a live debt just
+ * teaches them to ignore the relation. Same residue reasoning as
+ * {@link SUPERVISION_MEMBERSHIP_HORIZON_MS}, different natural timescale: a fleet lane is
+ * stale in hours, a grade is stale in about a week.
+ */
+export const GRADING_OBLIGATION_HORIZON_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Statuses that mean a scorecard has been dealt with — the lifecycle half of D-010. */
+const GRADING_TERMINAL_STATUSES = ['done', 'resolved', 'dropped', 'closed', 'deprecated'];
+
+/** Envelope shape for the grading read. */
+interface GradingObligationRow {
+  handle: string | null;
+  created_ts: string | number | null;
+  grader: string | null;
+  author: string | null;
+}
+
+/**
+ * The GRADING obligation: after a grade lands, its subject's AUTHOR owes the response
+ * (P-006, scoped by D-014).
+ *
+ * ⚠ SCOPED TO `agent-run` AND `work-item` SUBJECTS ONLY, and the omission is deliberate.
+ * Measured over 281 scorecards in 7 days, the item's phrase "the graded subject's author"
+ * resolves for just 13% of cards: `agent-run` (the subject ref IS an ownerId) and
+ * `work-item` (the ref resolves through that item's `created_by`). The DOMINANT kind is
+ * `plan` at 54%, where "author" would have to mean the plan's owner — a different person
+ * from whoever did the graded work, on any plan several agents implemented. Emitting a
+ * debt against a guessed counterpart is not a smaller version of this feature; it is the
+ * failure D-011 exists to prevent, because a reader cannot tell it is wrong and will
+ * chase it. Plan-subject coverage is a deliberate follow-up, not an oversight — D-014.
+ *
+ * ⚠ SELF-GRADE IS REFUSED HERE TOO, even though it is already forbidden upstream. Measured:
+ * `grader = subject_ref` is 0 across all 281 cards, so this branch never fires in
+ * production — which is exactly why it cannot be verified against production and is
+ * proved by a constructed fixture instead. It stays because an obligation an agent owes
+ * ITSELF is nonsense the moment the upstream forbid ever slips.
+ *
+ * Direction per D-013: the author owes the response (`i-owe`), the grader is owed it
+ * (`owes-me`) — read off which side of the stored pair the caller occupies.
+ */
+export async function fetchGradingObligations(
+  selfOwnerId: string,
+  nowMs: number = Date.now(),
+): Promise<ObligationEdge[]> {
+  const self = selfOwnerId.trim();
+  if (!self || !coordHasPgFastPath()) return [];
+  try {
+    const sql = coordSql();
+    const cutoffTs = nowMs - GRADING_OBLIGATION_HORIZON_MS;
+    const rows = await sql<GradingObligationRow[]>`
+      WITH cards AS (
+        SELECT sc.feature_id AS handle,
+               sc.created_ts,
+               sc.payload->'_ei'->>'created_by' AS grader,
+               CASE
+                 WHEN sc.payload->'observation'->'subject'->>'kind' = 'agent-run'
+                   THEN sc.payload->'observation'->'subject'->>'ref'
+                 ELSE subj.payload->'_ei'->>'created_by'
+               END AS author
+          FROM harness_shared.work_items sc
+          LEFT JOIN harness_shared.work_items subj
+            ON subj.workspace_id = sc.workspace_id
+           AND subj.feature_id = sc.payload->'observation'->'subject'->>'ref'
+         WHERE sc.workspace_id = ${coordWorkspaceId()}
+           AND sc.lane = 'observation'
+           AND sc.payload->'observation'->>'rubricRef' IS NOT NULL
+           AND sc.payload->'observation'->'subject'->>'kind' = ANY(${['agent-run', 'work-item']})
+           AND NOT (sc.status = ANY(${GRADING_TERMINAL_STATUSES}))
+           AND sc.created_ts > ${cutoffTs}
+      )
+      SELECT handle, created_ts, grader, author
+        FROM cards
+       WHERE grader IS NOT NULL
+         AND author IS NOT NULL
+         AND grader <> author
+         AND (grader = ${self} OR author = ${self})
+       ORDER BY created_ts ASC
+       LIMIT ${COUPLING_OBLIGATION_ROW_CAP}
+    `;
+    const pending: PendingObligation[] = [];
+    for (const r of rows) {
+      const grader = (r.grader ?? '').trim();
+      const author = (r.author ?? '').trim();
+      const handle = (r.handle ?? '').trim();
+      const ts = typeof r.created_ts === 'string' ? Number(r.created_ts) : r.created_ts;
+      if (!grader || !author || !handle) continue;
+      if (grader === author) continue; // belt-and-braces on the SQL guard above
+      if (typeof ts !== 'number' || !Number.isFinite(ts)) continue;
+      const iAmAuthor = author === self;
+      const counterpart = iAmAuthor ? grader : author;
+      if (counterpart === self) continue;
+      pending.push({
+        ownerId: counterpart,
+        // The AUTHOR owes the response to a grade; the grader is owed it.
+        direction: iAmAuthor ? 'i-owe' : 'owes-me',
+        what: 'a response to a grade',
+        since: new Date(ts).toISOString(),
+        handle,
+      });
+    }
+    if (pending.length === 0) return [];
+    const liveness = await resolveCounterpartLiveness(pending.map((p) => p.ownerId));
+    return pending.map((p) => ({
+      ...p,
+      counterpartLiveness: liveness.get(p.ownerId) ?? 'unknown',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * A fleet peer whose presence row is colder than this is membership RESIDUE, not a
  * supervision relationship (P-007).
  *
