@@ -319,6 +319,17 @@ export default function InboxBulkReport({
   );
 
   useEffect(() => {
+    if (activeDrillId === null) return;
+    if (attentionById.has(activeDrillId) && runItemById.has(activeDrillId)) {
+      return;
+    }
+    // Both inputs are live current-state feeds. Once either source stops
+    // representing the open desk, close it permanently so the same stable id
+    // cannot silently remount an expanded region if it reappears later.
+    setActiveDrillId(null);
+  }, [activeDrillId, attentionById, runItemById]);
+
+  useEffect(() => {
     if (activeDrillId !== null) return;
     const itemId = pendingFocusRestoreId.current;
     if (!itemId) return;

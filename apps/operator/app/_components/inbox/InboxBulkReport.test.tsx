@@ -333,6 +333,15 @@ describe("<InboxBulkReport>", () => {
     expect(screen.queryByTestId("inbox-bulk-drill-a")).toBeNull();
     expect(document.activeElement).toBe(survivingRow);
 
+    // If the stable attention id later returns to current state, it must not
+    // silently resurrect an expanded region without a fresh user activation.
+    rerender(report([item], [attention("a")]));
+    expect(
+      screen.getByTestId("inbox-bulk-drill-a").getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.queryByTestId("inbox-bulk-decision-desk-a")).toBeNull();
+    expect(document.activeElement).toBe(survivingRow);
+
     // A later run refresh may remove the row too. Dismiss is the nearest
     // stable report action after both the row and its group disappear.
     rerender(report([], []));
