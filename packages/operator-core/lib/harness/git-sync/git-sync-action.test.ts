@@ -138,6 +138,8 @@ vi.mock('./run-git-sync', () => ({
   // exercised here never reach them with empty stash/submodule sets.
   runGitBounded: async () => ({ code: 0, stdout: '', stderr: '' }),
   gitTimeoutMsFor: () => 30_000,
+  DEFAULT_MAX_BLOB_BYTES: 95 * 1024 * 1024,
+  DEFAULT_MAX_COMMIT_TOTAL_BYTES: 250 * 1024 * 1024,
 }));
 
 // EI-438 content-guard kill-switch flag — default ON; a test can flip it to exercise
@@ -1214,6 +1216,7 @@ describe('clean sync outcome', () => {
         branch: 'staging',
         remote: 'upstream',
         max_blob_bytes: 1024,
+        max_commit_total_bytes: 2048,
       },
     });
 
@@ -1226,6 +1229,7 @@ describe('clean sync outcome', () => {
         branch: 'staging',
         remote: 'upstream',
         maxBlobBytes: 1024,
+        maxCommitTotalBytes: 2048,
       },
       deletionGuard: true,
       diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
