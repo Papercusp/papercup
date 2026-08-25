@@ -28,6 +28,7 @@ import {
   detectEphemeralDeliverableReferences,
   renderEphemeralDeliverableWarning,
 } from '../../turn-end-tracking';
+import { provenanceLintField } from '../../carry-surface-provenance-lint';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -213,6 +214,37 @@ export default defineTool({
           /* fail-open: the Now write already landed */
         }
 
+        // WI-41690 / EI-21459558956325262: the Now block is re-injected verbatim
+        // to every future reader as binding context, so an owner-attribution
+        // asserted here ("Approved by <owner>") is read as authorization by
+        // agents that never saw the conversation. That is the WI-3532
+        // telephone-game shape, observed live on
+        // llm-agent-evaluation-measurement-integrity-2026-08-25: a self-authored
+        // approval line was quoted back as authority by a later session and came
+        // one call short of activating a five-item plan.
+        //
+        // facts:assert, loop:checkpoint, work_items:checkpoint and
+        // session:request-compaction already run this same shared lint. The plan
+        // Now block was the one carry surface left unguarded — despite having the
+        // widest blast radius of the five, since the others are read mainly by
+        // their own author and this one is delivered to everyone.
+        //
+        // Deliberately the SYNC provenanceLintField, not the async
+        // carryProvenanceFields the other four use: this runs inside the plan
+        // lock, and carryProvenanceFields performs turn-ref IO under a 3s budget.
+        // Paying IO inside a held lock to buy ref VERIFICATION is the wrong trade
+        // for an advisory detector — the flag and its remedy note are the
+        // load-bearing part, and they need no IO.
+        //
+        // Advisory and fail-open, exactly like the ephemeral guard above: a
+        // detector fault must never lose the state update it exists to protect.
+        let provenanceLint: ReturnType<typeof provenanceLintField>;
+        try {
+          provenanceLint = provenanceLintField(`${args.state}\n${next}`);
+        } catch {
+          /* fail-open: the Now write already landed */
+        }
+
         await emitPlanEventForCaller(ctx, {
           planSlug: slug,
           event: 'now_updated',
@@ -227,6 +259,7 @@ export default defineTool({
           revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
           ...(result.activationAudit ? { activationAudit: result.activationAudit } : {}),
           ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
+          ...(provenanceLint ? { provenanceLint } : {}),
         };
       },
       { keyOf: (slug) => ({ slug }) },
