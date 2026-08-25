@@ -289,6 +289,15 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     // machine-local, re-embedded locally from the row's federated content.
     embedding: 'embedder-mode-specific vector, machine-local (mig 776) — foreign-space noise if federated, re-embedded locally instead',
     embedding_mode: 'tags which embedder produced `embedding` on THIS machine, machine-local (mig 776)',
+    // EI-21467654382027859 (mig 965): the other NINE columns this guard named
+    // (admission/admitted_at/admitted_by, state_changed_at, tags, parent_id,
+    // source_plan_slug, source_plan_item_ids, expected_cost_cents) now federate —
+    // see mig 965's header for the per-column reasoning. These two do NOT, and the
+    // reasons are different from each other:
+    goal_id:
+      'pointer into harness_shared.goals, which does not federate — would dangle on every peer (EI-21467654382027859; same ruling as harness_plans.goal_id above, decided on the same item)',
+    redundancy:
+      'per-item work-distribution fan-out factor (mig 195), inert unless PAPERCUSP_WORKITEM_REDUNDANCY is on — same family as feature_order above, whose cross-machine posture is the open work-distribution-activation question (REVIEW: remaining-lanes P-201)',
   },
   harness_plan_parts: {
     author: 'rides the op provenance (writerPubkey → author_pubkey), not the row value (mapper doc)',
