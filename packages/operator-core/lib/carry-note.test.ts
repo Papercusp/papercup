@@ -248,6 +248,34 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(parseCheckLine(rendered)).toEqual(row);
   });
 
+  it('does not downgrade a verified claim when an unrelated predicate is unverified', () => {
+    const claim = 'checkpoint-correction ownership and provenance are correct';
+    const evidence = 'checkpoint-correction ownership and provenance verified; stable-zero remains unverified';
+    expect(findVerificationConflict(evidence, claim)).toBeNull();
+
+    const [row] = normalizeCheckEntries(
+      [{ claim, recheck: 'inspect checkpoint-correction evidence', verified: evidence }],
+      [],
+      Date.parse('2026-08-25T07:00:00.000Z'),
+    );
+    expect(row).toMatchObject({ claim, verified: expect.stringContaining(evidence) });
+    expect(row).not.toHaveProperty('contested');
+  });
+
+  it('still downgrades an unresolved marker tied to the claim subject', () => {
+    const claim = 'checkpoint-correction ownership and provenance are correct';
+    const evidence = 'checkpoint-correction ownership and provenance remains unverified';
+    expect(findVerificationConflict(evidence, claim)).not.toBeNull();
+
+    const [row] = normalizeCheckEntries(
+      [{ claim, recheck: 'inspect checkpoint-correction evidence', verified: evidence }],
+      [],
+      Date.parse('2026-08-25T07:00:00.000Z'),
+    );
+    expect(row).toMatchObject({ claim, contested: expect.stringContaining(evidence) });
+    expect(row).not.toHaveProperty('verified');
+  });
+
   it('does not downgrade completed negative measurements that merely mention status vocabulary', () => {
     const cleanEvidence = [
       'no in-flight checkpoint/deploy',
