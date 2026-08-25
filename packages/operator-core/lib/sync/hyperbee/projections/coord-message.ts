@@ -49,6 +49,18 @@ export interface CoordMessageRow {
   writer_key: string | null;
   body: Record<string, unknown>;    // the CoordEnvelope
   ts: number;                       // epoch ms
+  /** The CORRECTION that supersedes this message (EI-21467654382027859).
+   *
+   *  Without it a message corrected on one machine reads as CURRENT on every
+   *  other — a peer acts on the original with no sign a correction exists,
+   *  which is the exact failure the correction was sent to prevent.
+   *
+   *  OPTIONAL on the wire, deliberately: a peer running older code omits the
+   *  key, and decodeValue DISCARDS a row the validator rejects, so a required
+   *  field would drop that peer's messages entirely. Absent === not superseded. */
+  superseded_by_msg_id?: string | null;
+  /** epoch ms | null — when it was superseded. Optional, as above. */
+  superseded_at?: number | null;
 }
 
 function isString(v: unknown): v is string {
@@ -70,6 +82,19 @@ export function isCoordMessageRow(input: unknown): input is CoordMessageRow {
   // capture trigger's notify_kind filter.
   if ((r.body as Record<string, unknown>).notify_kind != null) return false;
   if (typeof r.ts !== 'number' || !Number.isFinite(r.ts)) return false;
+  // `undefined` accepted on purpose — an older peer omits these keys entirely,
+  // and rejecting that would drop the whole message. Loosened for ABSENT, not
+  // for a wrong type.
+  if (!(r.superseded_by_msg_id === undefined || isStringOrNull(r.superseded_by_msg_id))) return false;
+  if (
+    !(
+      r.superseded_at === undefined ||
+      r.superseded_at === null ||
+      (typeof r.superseded_at === 'number' && Number.isFinite(r.superseded_at))
+    )
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -330,11 +355,14 @@ async function writeToPg(
   const applied = await sql<{ inserted: boolean }[]>`
     INSERT INTO harness_shared.coord_event_log
       (workspace_id, surface, writer_key, msg_id, body, harness_slug,
-       ts, origin, author_pubkey, fed_ts, fed_hlc)
+       ts, superseded_by_msg_id, superseded_at, origin, author_pubkey, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.surface}, ${row.writer_key}, ${row.msg_id},
        ${JSON.stringify(body)}::text::jsonb, ${row.harness_slug},
-       to_timestamp(${row.ts} / 1000.0), ${origin}, ${authorPubkey}, ${fedTs}, ${fedHlc})
+       to_timestamp(${row.ts} / 1000.0),
+       ${row.superseded_by_msg_id ?? null},
+       ${row.superseded_at == null ? null : sql`to_timestamp(${row.superseded_at} / 1000.0)`},
+       ${origin}, ${authorPubkey}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, msg_id)
       WHERE harness_slug IS NOT NULL AND (body->>'notify_kind') IS NULL
     DO UPDATE SET
