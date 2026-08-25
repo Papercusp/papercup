@@ -8,7 +8,7 @@
  * NOT a `*-su` wrapper.
  */
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { homedir, hostname, tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFleetRecord } from '../../agent-fleets-store';
@@ -348,15 +348,19 @@ vi.mock('../../fleet-membership-store', async (orig) => ({
 const writePresenceMock = vi.fn(
   async (_identity: unknown, _input: unknown, _harness: unknown) => {},
 );
-// EI-21365235532676472: the supervisor-beat death witness is faked per-test through
-// this override (true alive / false ESRCH-dead / null inconclusive).
-const probeBeatMock = vi.fn((_record: { host?: string | null; pid?: number | null }): boolean | null => null);
 vi.mock('../../agent-tools/coordination/presence', async (orig) => ({
   ...((await orig()) as Record<string, unknown>),
   writePresence: (...args: unknown[]) =>
     writePresenceMock(...(args as [unknown, unknown, unknown])),
-  probeProcessLiveness: (...args: unknown[]) =>
-    probeBeatMock(...(args as [{ host?: string | null; pid?: number | null }])),
+}));
+// EI-21442511412659661: bootstrap must consult the shared liveness oracle and
+// treat an absent/rejected read as unknown (therefore blocking). Keep the route
+// suite PG-free while asserting the exact hydrated call shape.
+const resolveSessionStatesMock = vi.hoisted(() =>
+  vi.fn(async (_subjects: readonly { ownerId: string }[], _opts?: unknown) => new Map()),
+);
+vi.mock('../../agent-tools/coordination/liveness-oracle', () => ({
+  resolveSessionStates: (...args: unknown[]) => resolveSessionStatesMock(...(args as [any, any])),
 }));
 type FakeOrgSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
 // EI-21365235532676472: pin pty discovery hermetically — no fake owner has a real
@@ -436,6 +440,7 @@ async function callBrainGet(): Promise<Response> {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
   claimAgentLaunchMock.mockReset().mockResolvedValue({
     won: true,
     priorSummary: null,
@@ -1926,38 +1931,57 @@ describe('EI-21365235532676472: failed-resume binding reclaim', () => {
   beforeEach(() => {
     dbState.advRows = [];
     dbState.beatRows = [];
-    probeBeatMock.mockReset();
-    probeBeatMock.mockReturnValue(null);
+    resolveSessionStatesMock.mockReset().mockResolvedValue(new Map());
     markAdvSessionEndedMock.mockClear();
   });
 
-  it('ends an explicitly-dead stranded binding (ESRCH beat) and lets the fresh successor launch instead of 409-ing', async () => {
+  it('uses the hydrated shared oracle and reclaims an ended stranded binding', async () => {
     dbState.advRows = [{ id: '900', display: 'terminal', has_session: true }];
-    dbState.beatRows = [{ pid: 17840, host: hostname() }];
-    probeBeatMock.mockReturnValue(false); // kill(pid, 0) -> ESRCH: authoritative death
+    resolveSessionStatesMock.mockResolvedValueOnce(
+      new Map([['su-dead01', { sessionState: 'ended' }]]),
+    );
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-dead01' });
     expect(res.status).toBe(200);
+    expect(resolveSessionStatesMock).toHaveBeenCalledWith(
+      [{ ownerId: 'su-dead01' }],
+      { hydratePerId: true },
+    );
     expect(markAdvSessionEndedMock).toHaveBeenCalledTimes(1);
     expect(markAdvSessionEndedMock).toHaveBeenCalledWith(900, null, 'reconciler');
     const json = await res.json();
     expect(json.error ?? '').not.toContain('already bound');
   });
 
-  it('keeps refusing while liveness is merely unknown (no beat evidence) — absence is not proof of death', async () => {
-    dbState.advRows = [{ id: '900', display: 'terminal', has_session: true }];
-    dbState.beatRows = []; // no supervisor beat ever recorded
-    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-unkn01' });
+  it('also reclaims a suspect stranded binding (claims-held terminal verdict)', async () => {
+    dbState.advRows = [{ id: '901', display: 'terminal', has_session: true }];
+    resolveSessionStatesMock.mockResolvedValueOnce(
+      new Map([['su-suspect', { sessionState: 'suspect' }]]),
+    );
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-suspect' });
+    expect(res.status).toBe(200);
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(901, null, 'reconciler');
+  });
+
+  it.each([
+    ['recorded', 'su-recorded'],
+    ['live', 'su-live01'],
+    [null, 'su-unkn01'],
+  ] as const)('keeps a %s oracle verdict blocking the pre-pinned owner', async (state, ownerId) => {
+    dbState.advRows = [{ id: '902', display: 'terminal', has_session: true }];
+    resolveSessionStatesMock.mockResolvedValueOnce(
+      new Map([[ownerId, { sessionState: state }]]),
+    );
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: ownerId });
     expect(res.status).toBe(409);
     const json = await res.json();
-    expect(String(json.error)).toContain('already bound to live adv session 900');
+    expect(String(json.error)).toContain('already bound to live adv session 902');
     expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
   });
 
-  it('keeps refusing a LIVE row (beat pid alive) even though no pty host exists', async () => {
-    dbState.advRows = [{ id: '901', display: null, has_session: true }];
-    dbState.beatRows = [{ pid: 17841, host: hostname() }];
-    probeBeatMock.mockReturnValue(true); // headless member, process alive
-    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-live01' });
+  it('fails closed when the shared oracle read rejects', async () => {
+    dbState.advRows = [{ id: '903', display: 'terminal', has_session: true }];
+    resolveSessionStatesMock.mockRejectedValueOnce(new Error('oracle unavailable'));
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', owner_id: 'su-oracle-fail' });
     expect(res.status).toBe(409);
     expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
   });

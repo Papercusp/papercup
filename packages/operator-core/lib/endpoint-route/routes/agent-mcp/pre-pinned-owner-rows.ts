@@ -1,4 +1,5 @@
 import { DISPLAY_TERMINAL_LAUNCH } from '../../../adv-sessions';
+import type { LivenessVerdict } from '../../../agent-tools/coordination/liveness-oracle';
 
 /**
  * The shape bootstrap-su reads when deciding whether a PRE-PINNED coord owner id
@@ -9,13 +10,8 @@ export type PrePinnedOwnerRow = {
   id: string;
   display: string | null;
   has_session: boolean;
-  /**
-   * Process evidence for a non-precursor row. This is deliberately a
-   * three-way value: only a positive dead-process observation authorises
-   * reconciliation. Missing/unknown evidence must keep the row blocking a
-   * pre-pinned owner, because a lost response is not proof that the claimant
-   * lost its race.
-   */
+  /** The shared liveness-oracle verdict, reduced by
+   * `mapPrePinnedOwnerSessionState` for this launch guard. */
   liveness?: PrePinnedOwnerLiveness;
 };
 
@@ -23,9 +19,9 @@ export type PrePinnedOwnerLiveness = 'live' | 'dead' | 'unknown';
 
 export type PrePinnedOwnerClassification<T extends PrePinnedOwnerRow> = {
   precursors: T[];
-  /** Non-precursor rows with positive dead-process evidence. */
+  /** Non-precursor rows whose shared oracle verdict is `ended` or `suspect`. */
   reclaimableConflicts: T[];
-  /** Non-precursor rows that must continue to block the owner id. */
+  /** Non-precursor rows with any other, missing, or unknown verdict. */
   conflicts: T[];
 };
 
@@ -38,8 +34,8 @@ export type PrePinnedOwnerClassification<T extends PrePinnedOwnerRow> = {
  * render the session during its boot window). bootstrap-su ADOPTS it instead of
  * inserting a second row. A conflict is anything else — which is the split-identity
  * case the freshness guard exists to refuse (WI-5002/EI-13277). A conflict may be
- * placed in `reclaimableConflicts` only when the caller supplies POSITIVE dead-process
- * evidence; live and unknown rows stay in `conflicts`.
+ * placed in `reclaimableConflicts` only when the shared oracle maps the owner to
+ * `dead` from its `ended`/`suspect` verdict; live and unknown rows stay in `conflicts`.
  *
  * ⚠ Why this is ONE pass and not two filters. The original shape was:
  *
@@ -75,81 +71,20 @@ export function classifyPrePinnedOwnerRows<T extends PrePinnedOwnerRow>(
 }
 
 /**
- * The witnesses a caller supplies for resolving three-way liveness on the rows
- * bound to ONE pre-pinned owner. Both legs key on the owner id, so a single
- * resolution covers every candidate row.
+ * Map the shared oracle's owner-level verdict to the narrower launch-guard
+ * vocabulary. The caller resolves the owner once through the shared liveness
+ * oracle and every candidate row receives that same owner-level verdict.
  */
-export type PrePinnedOwnerLivenessWitness = {
-  /**
-   * Self-validating psu-pty host discovery (`findLiveHost`): a non-null result
-   * is POSITIVE live evidence — pid alive + socket present + psu-host identity.
-   * Null proves nothing by itself (a headless member legitimately has no pty
-   * host between wakes), so it must never authorise a 'dead' verdict.
-   */
-  findHost: (ownerId: string) => unknown;
-  /**
-   * The psu supervisor beat's self-reported record persisted for this owner
-   * (`coord_presence.host` / `.pid`), or null when no beat ever ran. The beat
-   * runs AS the agent's own parent process — the process whose death IS the
-   * session's death — which is what makes an ESRCH probe of it trustworthy.
-   */
-  beat: { pid?: number | null; host?: string | null } | null;
-  /**
-   * {@link probeProcessLiveness}-shaped: true = alive, false = ESRCH-dead,
-   * null = inconclusive (no recorded pid/host, foreign host, or EPERM).
-   */
-  probeBeat: (record: { host?: string | null; pid?: number | null }) => boolean | null;
-};
-
-/**
- * Resolve the three-way process evidence for the rows bound to one pre-pinned
- * owner id.
- *
- * Precedence: positive live evidence wins first (a live pty host settles it),
- * then the supervisor-beat probe — and ONLY an authoritative ESRCH yields
- * 'dead'. Every inconclusive shape (no beat, remote/unknown host, EPERM)
- * returns 'unknown', because absence of evidence is not proof of death:
- * reclaiming on 'unknown' would tear down a possibly-live session's binding —
- * exactly the harm this guard exists to prevent.
- */
-export function resolvePrePinnedOwnerLiveness(
-  ownerId: string,
-  witness: PrePinnedOwnerLivenessWitness,
+export function mapPrePinnedOwnerSessionState(
+  sessionState: LivenessVerdict['sessionState'] | undefined,
 ): PrePinnedOwnerLiveness {
-  if (witness.findHost(ownerId)) return 'live';
-  const probed = witness.probeBeat(witness.beat ?? {});
-  if (probed === false) return 'dead';
-  if (probed === true) return 'live';
+  // Reclaim is deliberately narrower than the oracle's full state machine:
+  // only its confirmed terminal states (`ended` / `suspect`) may release an
+  // existing binding. `recorded`, `live`, `parked`, `draining`, null, and a
+  // failed/omitted read all remain non-reclaimable and therefore block.
+  if (sessionState === 'ended' || sessionState === 'suspect') return 'dead';
+  if (sessionState === 'live') return 'live';
   return 'unknown';
-}
-
-/**
- * EI-21417550055038906: refine ONE row's liveness with the row's own persisted
- * terminal evidence (`ended_by` written without `ended_at` — the half-terminal
- * tuple a teardown that died mid-write leaves behind).
- *
- * The owner-level witness (`resolvePrePinnedOwnerLiveness`) cannot see this: a
- * psu fleet member's coord_presence beat carries pid NULL / host '' so its
- * probe is permanently inconclusive ('unknown'), and 'unknown' keeps the ghost
- * row blocking — which refused every cold-carry respawn of the owner's OWN
- * successor with the 409 until a human stamped the row. A row that carries
- * positive terminal evidence is its own dead-process witness: the teardown
- * writer already observed the death; only its timestamp write was lost.
- *
- * Precedence mirrors the owner-level resolver: POSITIVE live evidence still
- * wins. A live pty host for this owner means a session is genuinely running,
- * and until the resume-reactivation paths reliably clear the complete terminal
- * tuple, a LIVE resumed session can carry stale `ended_by` residue — reclaiming
- * its binding on that residue would mint the exact split identity this guard
- * exists to prevent. Terminal evidence therefore upgrades only a non-live
- * verdict ('unknown'/'dead') to 'dead', never overrides 'live'.
- */
-export function refinePrePinnedRowLiveness(
-  ownerLiveness: PrePinnedOwnerLiveness,
-  rowHasTerminalEvidence: boolean,
-): PrePinnedOwnerLiveness {
-  if (ownerLiveness === 'live') return 'live';
-  return rowHasTerminalEvidence ? 'dead' : ownerLiveness;
 }
 
 /**

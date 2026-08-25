@@ -1954,11 +1954,11 @@ const post = defineTool({
           409,
         );
       }
-      // EI-21365235532676472: reclaimableConflicts carry POSITIVE dead-process evidence
-      // (authoritative ESRCH on the supervisor-beat pid of this machine). End those
-      // stranded bindings so the documented fresh-successor recovery path can run
-      // instead of 409-ing forever. 'reconciler' because THIS launch noticed the death;
-      // exit_code stays null because we observed neither a voluntary exit nor a signal.
+      // EI-21442511412659661: reclaimableConflicts carry the shared oracle's POSITIVE
+      // terminal verdict (`ended` or `suspect`). End those stranded bindings so the
+      // documented fresh-successor recovery path can run instead of 409-ing forever.
+      // 'reconciler' because THIS launch noticed the terminal state; exit_code stays
+      // null because we observed neither a voluntary exit nor a signal.
       // markAdvSessionEnded is idempotent — it stamps only an unset ended_at — so a
       // concurrent genuine teardown cannot be double-written.
       for (const stranded of reclaimableConflicts) {

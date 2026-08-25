@@ -3,8 +3,7 @@ import { DISPLAY_TERMINAL_LAUNCH } from '../../../adv-sessions';
 import {
   classifyPrePinnedOwnerRows,
   describePrePinnedConflicts,
-  refinePrePinnedRowLiveness,
-  resolvePrePinnedOwnerLiveness,
+  mapPrePinnedOwnerSessionState,
   type PrePinnedOwnerRow,
 } from './pre-pinned-owner-rows';
 
@@ -137,79 +136,37 @@ describe('describePrePinnedConflicts', () => {
   });
 });
 
-describe('resolvePrePinnedOwnerLiveness', () => {
-  const witnessWith = (over: {
-    findHost?: (id: string) => unknown;
-    beat?: { pid?: number | null; host?: string | null } | null;
-    probe?: (r: { host?: string | null; pid?: number | null }) => boolean | null;
-  }) => ({
-    findHost: over.findHost ?? (() => null),
-    beat: over.beat === undefined ? null : over.beat,
-    probeBeat: over.probe ?? (() => null),
+describe('mapPrePinnedOwnerSessionState', () => {
+  it.each([
+    ['ended', 'dead'],
+    ['suspect', 'dead'],
+    ['recorded', 'unknown'],
+    ['live', 'live'],
+    ['parked', 'unknown'],
+    ['draining', 'unknown'],
+    [null, 'unknown'],
+    [undefined, 'unknown'],
+  ] as const)('maps oracle %s to %s', (state, expected) => {
+    expect(mapPrePinnedOwnerSessionState(state)).toBe(expected);
   });
 
-  it('a live pty host is positive live evidence and settles the verdict before probing', () => {
-    let probed = false;
-    const verdict = resolvePrePinnedOwnerLiveness(
-      'su-x01',
-      witnessWith({ findHost: () => ({ ownerId: 'su-x01' }), probe: () => (probed = true) && false }),
-    );
-    expect(verdict).toBe('live');
-    expect(probed).toBe(false);
+  it('keeps recorded, live, and unknown oracle states blocking', () => {
+    const rows = (['recorded', 'live', null] as const).map((sessionState, i) => ({
+      ...registered(String(900 + i)),
+      liveness: mapPrePinnedOwnerSessionState(sessionState),
+    }));
+    const { reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(rows);
+    expect(reclaimableConflicts).toEqual([]);
+    expect(conflicts.map((r) => r.id)).toEqual(['900', '901', '902']);
   });
 
-  it('an authoritative ESRCH on the supervisor-beat pid is the ONLY dead verdict', () => {
-    expect(
-      resolvePrePinnedOwnerLiveness('su-x02', witnessWith({ beat: { pid: 17840, host: 'this-box' }, probe: () => false })),
-    ).toBe('dead');
-  });
-
-  it('a living beat pid reads live even without a pty host — headless between wakes is alive', () => {
-    expect(
-      resolvePrePinnedOwnerLiveness('su-x03', witnessWith({ beat: { pid: 1, host: 'this-box' }, probe: () => true })),
-    ).toBe('live');
-  });
-
-  it('every inconclusive shape stays unknown: no beat, foreign host, EPERM', () => {
-    expect(resolvePrePinnedOwnerLiveness('su-x04', witnessWith({}))).toBe('unknown');
-    expect(
-      resolvePrePinnedOwnerLiveness('su-x05', witnessWith({ beat: { pid: 2, host: 'elsewhere' }, probe: () => null })),
-    ).toBe('unknown');
-    expect(resolvePrePinnedOwnerLiveness('su-x06', witnessWith({ beat: { pid: 3, host: 'this-box' }, probe: () => null }))).toBe('unknown');
-  });
-});
-
-describe('refinePrePinnedRowLiveness (EI-21417550055038906 — the half-terminal ghost)', () => {
-  it("a row's own terminal evidence upgrades an inconclusive owner verdict to dead", () => {
-    // The measured stranding: psu members carry pid NULL / host '' beats, so the
-    // owner-level probe is permanently 'unknown' — only the row's persisted
-    // ended_by can testify that its teardown observed the death.
-    expect(refinePrePinnedRowLiveness('unknown', true)).toBe('dead');
-  });
-
-  it('positive live evidence for the owner still wins over row residue', () => {
-    // Until every reactivation path reliably clears the complete terminal tuple,
-    // a LIVE resumed session can carry stale ended_by residue; reclaiming its
-    // binding would mint the split identity the guard exists to prevent.
-    expect(refinePrePinnedRowLiveness('live', true)).toBe('live');
-  });
-
-  it('no terminal evidence passes the owner verdict through unchanged', () => {
-    expect(refinePrePinnedRowLiveness('unknown', false)).toBe('unknown');
-    expect(refinePrePinnedRowLiveness('dead', false)).toBe('dead');
-    expect(refinePrePinnedRowLiveness('live', false)).toBe('live');
-  });
-
-  it('feeds the classifier: a half-terminal registered row lands reclaimable, not blocking', () => {
-    // End-to-end through classifyPrePinnedOwnerRows, the exact bootstrap-su
-    // mapping: owner verdict 'unknown' + row terminal evidence ⇒ 'dead' ⇒
-    // reclaimableConflicts ⇒ markAdvSessionEnded stamps it instead of 409-ing
-    // the owner's own cold-carry successor.
-    const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows([
-      { ...registered('18422'), liveness: refinePrePinnedRowLiveness('unknown', true) },
-    ]);
-    expect(precursors).toEqual([]);
-    expect(reclaimableConflicts.map((r) => r.id)).toEqual(['18422']);
+  it('lets only ended and suspect oracle states enter the reclaimable bucket', () => {
+    const rows = (['ended', 'suspect'] as const).map((sessionState, i) => ({
+      ...registered(String(910 + i)),
+      liveness: mapPrePinnedOwnerSessionState(sessionState),
+    }));
+    const { reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(rows);
+    expect(reclaimableConflicts.map((r) => r.id)).toEqual(['910', '911']);
     expect(conflicts).toEqual([]);
   });
 });
