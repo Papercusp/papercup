@@ -11,6 +11,11 @@
       "types": "./src/index.ts",
       "import": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./application-names": {
+      "types": "./src/application-names.ts",
+      "import": "./src/application-names.ts",
+      "default": "./src/application-names.ts"
     }
   },
   "scripts": {

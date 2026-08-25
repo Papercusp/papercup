@@ -13,6 +13,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import {
+  HOST_BACKUP_APPLICATION_NAME,
+  WORKSPACE_BACKUP_APPLICATION_NAME,
+} from './application-names';
 
 const h = vi.hoisted(() => ({
   adminUrl: { url: 'postgres://postgres:postgres@127.0.0.1:5432/db', source: 'env' },
@@ -210,7 +214,8 @@ describe('runPreSnapshotHook admin-URL → spawn args', () => {
 
   it('tags the workspace dump backend so migration preflight can avoid its relation locks', async () => {
     await runPreSnapshotHook(ctx);
-    expect(pgDumpCall()!.env?.PGAPPNAME).toBe('pcbackup');
+    expect(pgDumpCall()!.env?.PGAPPNAME).toBe(WORKSPACE_BACKUP_APPLICATION_NAME);
+    expect(WORKSPACE_BACKUP_APPLICATION_NAME).not.toBe(HOST_BACKUP_APPLICATION_NAME);
   });
 
   it('bounds PostgreSQL lock acquisition and statement lifetime below the client watchdog', async () => {

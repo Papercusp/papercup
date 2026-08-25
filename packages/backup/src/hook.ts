@@ -40,6 +40,7 @@ interface HookContext {
 // it to ~/.papercusp/embedded-pg.json (or honors PAPERCUSP_PG_PORT env).
 // Use the discovery helper instead of a hardcoded port.
 import { backupHost } from './config';
+import { WORKSPACE_BACKUP_APPLICATION_NAME } from './application-names';
 
 // Keep the hot-state dump bounded and restorable. A full database dump on the
 // standing dev box includes multi-GB telemetry/audit streams and plugin schemas
@@ -98,7 +99,7 @@ const GIB = 1024n * 1024n * 1024n;
 
 /** Stable application identity used by migration preflight and lock monitors
  * to distinguish the workspace's pg_dump transaction from ordinary readers. */
-export const WORKSPACE_BACKUP_APPLICATION_NAME = 'pcbackup';
+export { WORKSPACE_BACKUP_APPLICATION_NAME } from './application-names';
 
 /**
  * Multiple of the previous dump's size to require free. The new `.tmp` and the

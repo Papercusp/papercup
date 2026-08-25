@@ -27,6 +27,11 @@ import { migrationReservationGuardSql } from '../../migration-reservation';
 import { isRetryableLockFailure, lockRetryBackoffMs } from '../../pg-retryable-failure';
 import { openEscalation } from '../coordination/escalations';
 import { checkResourceAction, recordResourceAction, getTxPool, type ResourceHolder } from '../locks/su-lock-store';
+import {
+  BACKUP_APPLICATION_NAMES,
+  HOST_BACKUP_APPLICATION_NAME,
+  WORKSPACE_BACKUP_APPLICATION_NAME,
+} from '@papercusp/backup/application-names';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 60;
@@ -75,10 +80,15 @@ const CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS = 2;
 // alive well inside that window while still avoiding a noisy progress stream.
 export const PSQL_PROGRESS_INTERVAL_MS = 30_000;
 
-/** Stable identity used by the workspace pg_dump hook. Keep this literal in
- * the migration guard so a backup transaction is recognizable even when the
- * migration is running through a fresh psql process. */
-export const WORKSPACE_BACKUP_APPLICATION_NAME = 'pcbackup';
+export {
+  BACKUP_APPLICATION_NAMES,
+  HOST_BACKUP_APPLICATION_NAME,
+  WORKSPACE_BACKUP_APPLICATION_NAME,
+} from '@papercusp/backup/application-names';
+
+const BACKUP_APPLICATION_NAMES_SQL = BACKUP_APPLICATION_NAMES
+  .map((name) => `'${name}'`)
+  .join(', ');
 
 /**
  * SQL guard inserted immediately before a migration's `\\i`.
@@ -89,6 +99,8 @@ export const WORKSPACE_BACKUP_APPLICATION_NAME = 'pcbackup';
  * AccessShare readers behind the migration too. Fail before `\\i` while the
  * backup is identifiable, using the same text/SQLSTATE as lock_timeout so the
  * existing bounded retry loop waits for the backup without issuing any DDL.
+ * Host and workspace dumps have distinct ownership identities so either
+ * producer can reap its own abandoned backends without killing the other.
  */
 export function migrationBackupLockGuardSql(): string {
   return (
@@ -101,11 +113,11 @@ export function migrationBackupLockGuardSql(): string {
     `    WHERE l.locktype = 'relation'\n` +
     `      AND l.granted\n` +
     `      AND l.mode = 'AccessShareLock'\n` +
-    `      AND a.application_name = '${WORKSPACE_BACKUP_APPLICATION_NAME}'\n` +
+    `      AND a.application_name IN (${BACKUP_APPLICATION_NAMES_SQL})\n` +
     `      AND a.datname = current_database()\n` +
     `      AND a.pid <> pg_backend_pid()\n` +
     `  ) THEN\n` +
-    `    RAISE EXCEPTION 'canceling statement due to lock timeout (workspace pg_dump holds AccessShareLock)' USING ERRCODE = '55P03';\n` +
+    `    RAISE EXCEPTION 'canceling statement due to lock timeout (backup pg_dump holds AccessShareLock)' USING ERRCODE = '55P03';\n` +
     `  END IF;\n` +
     `END\n` +
     `$papercusp_backup_lock_guard$;\n`

@@ -32,8 +32,11 @@
 #     terminating the backend — not the process — is what actually releases it:
 #     reap_own_stragglers() does that at both ends of every run, so even a
 #     SIGKILLed client cannot leave a migration-blocking lock behind.
-#   * NOT REAPABLE BY MISTAKE. Every connection is tagged PGAPPNAME=pcbackup,
-#     so it never matches an `application_name LIKE 'pg_dump%'` orphan reaper.
+#   * NOT REAPABLE BY MISTAKE. Every HOST connection is tagged with the exact
+#     host identity `pcbackup`, while the per-workspace hook uses the distinct
+#     `pcbackup-workspace` identity. Cleanup may therefore reap this producer's
+#     abandoned backends without terminating a healthy workspace snapshot.
+#     Neither identity matches an `application_name LIKE 'pg_dump%'` reaper.
 #     An age-based reaper (EI-10730's) would otherwise terminate this dump the
 #     moment it legitimately ran longer than 90s.
 #   * FAILURE IS LOUD. Success/failure is recorded in STATUS.json and the
@@ -67,8 +70,11 @@ PSQL="sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc"
 PGOUT="$DUMP/pg"
 sudo -n install -d -o postgres -g "$BACKUP_GROUP" -m 0775 "$PGOUT" 2>/dev/null || true
 
-# Our tag. Must NOT start with "pg_dump" or an orphan reaper would kill us.
-export PGAPPNAME=pcbackup
+# Our ownership tag. Keep distinct from packages/backup's
+# WORKSPACE_BACKUP_APPLICATION_NAME: reap_own_stragglers() below is deliberately
+# exact-owner cleanup, not a cluster-wide backup kill switch.
+readonly HOST_BACKUP_APPLICATION_NAME=pcbackup
+export PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME"
 
 # Generous but finite. A 29 GB parallel dump measures in minutes; this is the
 # ceiling past which we declare the dump wedged rather than let it hold locks
@@ -97,7 +103,7 @@ ionice -c3 -p $$ >/dev/null 2>&1 || true
 
 # ── orphan sweep ────────────────────────────────────────────────────────────
 # Reap by PROVENANCE, not age. Anything named pg_dump* is BY DEFINITION not us
-# (we are `pcbackup`), so it is a stray or an orphan from the old broken hook —
+# (we use the exact host identity above), so it is a stray or an orphan from the old broken hook —
 # never a healthy dump of ours. This is the predicate EI-10730's reaper should
 # have used: its age-based rule ("older than 60s must be an orphan") is only
 # true while the dump is broken, and would execute this script's own dump.
@@ -118,7 +124,7 @@ reap_foreign_dumps() {
 # so killing the process is not sufficient — terminate the backend.
 reap_own_stragglers() {
   $PSQL "SELECT pg_terminate_backend(pid) FROM pg_stat_activity
-          WHERE application_name = 'pcbackup' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
+          WHERE application_name = '$HOST_BACKUP_APPLICATION_NAME' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
 }
 
 # Bounded run. NOTE the grandchild trap of EI-10730 does not exist here BY
@@ -145,7 +151,7 @@ FAILED=()
 DUMPED=()
 
 # ── globals (roles, tablespaces) — tiny, but a restore is useless without them
-if run_bounded 120 sudo -n -u postgres env PGAPPNAME=pcbackup \
+if run_bounded 120 sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
       pg_dumpall -h /var/run/postgresql --globals-only -f "$PGOUT/globals.sql.tmp"; then
   mv -f "$PGOUT/globals.sql.tmp" "$PGOUT/globals.sql"
   log "globals ok ($(stat -c%s "$PGOUT/globals.sql") bytes)"
@@ -191,7 +197,7 @@ for db in $DBS; do
   out="$PGOUT/$db"
   rm_tmp "$out.tmp"
   dumperr=$(mktemp -t "pcbackup-$db-XXXXXX.err")
-  if run_bounded "$TIMEOUT_SEC" sudo -n -u postgres env PGAPPNAME=pcbackup \
+  if run_bounded "$TIMEOUT_SEC" sudo -n -u postgres env "PGAPPNAME=$HOST_BACKUP_APPLICATION_NAME" \
         pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none -f "$out.tmp" "$db" 2>"$dumperr"; then
 
     # pg_dump chmods its -Fd output to 0700 postgres:postgres. Left that way the
@@ -332,7 +338,7 @@ else
     # PGPASSWORD is exported INSIDE a subshell so it is neither in argv nor in
     # this script's environment for anything else that runs after.
     (
-      export PGPASSWORD="$odds_pass" PGAPPNAME=pcbackup
+      export PGPASSWORD="$odds_pass" PGAPPNAME="$HOST_BACKUP_APPLICATION_NAME"
       run_bounded "$TIMEOUT_SEC" pg_dump -h "$odds_host" -p "$odds_port" -U "$odds_user" \
         -Fd -j "$JOBS" --compress=none -f "$odds_out.tmp" "$odds_db"
     ) 2>"$odds_err"

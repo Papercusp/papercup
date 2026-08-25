@@ -41,6 +41,11 @@ export {
   type VerifyResult,
 } from './types';
 export { deriveRepoPassword } from './password';
+export {
+  BACKUP_APPLICATION_NAMES,
+  HOST_BACKUP_APPLICATION_NAME,
+  WORKSPACE_BACKUP_APPLICATION_NAME,
+} from './application-names';
 export { workspaceBackupFor } from './singleton';
 export {
   startKopiaServer,

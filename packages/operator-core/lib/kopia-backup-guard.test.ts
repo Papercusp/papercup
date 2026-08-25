@@ -18,6 +18,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  HOST_BACKUP_APPLICATION_NAME,
+  WORKSPACE_BACKUP_APPLICATION_NAME,
+} from '@papercusp/backup/application-names';
 
 const systemdDir = fileURLToPath(new URL('../../../apps/operator/scripts/systemd/', import.meta.url));
 const guard = join(systemdDir, 'kopia-backup-guard.sh');
@@ -370,6 +374,19 @@ describe('Kopia managed entrypoint contract', () => {
     expect(dbService).toContain('MemorySwapMax=0');
     expect(dbService).toContain('OOMPolicy=kill');
     expect(dbService).toContain('kopia-backup-guard.sh --mode wait --label db-dump');
+  });
+
+  it('reaps only host-owned database dumps, never the concurrent workspace dump', () => {
+    expect(HOST_BACKUP_APPLICATION_NAME).not.toBe(WORKSPACE_BACKUP_APPLICATION_NAME);
+    expect(dbScript).toContain(
+      `readonly HOST_BACKUP_APPLICATION_NAME=${HOST_BACKUP_APPLICATION_NAME}`,
+    );
+    expect(dbScript).toContain(
+      "WHERE application_name = '$HOST_BACKUP_APPLICATION_NAME' AND pid <> pg_backend_pid();",
+    );
+    expect(dbScript).not.toContain(
+      `WHERE application_name = '${WORKSPACE_BACKUP_APPLICATION_NAME}'`,
+    );
   });
 
   it('hot cleanup kills only the exact recorded root Kopia child', () => {

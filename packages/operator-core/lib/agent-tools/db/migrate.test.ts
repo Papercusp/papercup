@@ -97,6 +97,9 @@ import migrateTool, {
   isTransientConnectionFailure,
   connectionRetryBackoffMs,
   isDuplicateMigrationLedgerFailure,
+  BACKUP_APPLICATION_NAMES,
+  HOST_BACKUP_APPLICATION_NAME,
+  WORKSPACE_BACKUP_APPLICATION_NAME,
   migrationBackupLockGuardSql,
   PSQL_PROGRESS_INTERVAL_MS,
 } from './migrate';
@@ -454,17 +457,22 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     expect(out.attempts).toBe(1);
     const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
     expect(script).toContain("SET LOCAL lock_timeout = '10s';");
-    expect(script).toContain("a.application_name = 'pcbackup'");
+    for (const applicationName of BACKUP_APPLICATION_NAMES) {
+      expect(script).toContain(`'${applicationName}'`);
+    }
     expect(script).toContain("ERRCODE = '55P03'");
-    expect(script).toContain('workspace pg_dump holds AccessShareLock');
-    expect(script.indexOf('workspace pg_dump holds AccessShareLock')).toBeLessThan(script.indexOf('\\i'));
+    expect(script).toContain('backup pg_dump holds AccessShareLock');
+    expect(script.indexOf('backup pg_dump holds AccessShareLock')).toBeLessThan(script.indexOf('\\i'));
     expect(script.indexOf('SET LOCAL lock_timeout')).toBeLessThan(script.indexOf('\\i'));
   });
 
   it('exports a backup-lock guard that raises the retryable lock-timeout shape before DDL', () => {
     const guard = migrationBackupLockGuardSql();
     expect(guard).toContain("l.mode = 'AccessShareLock'");
-    expect(guard).toContain("a.application_name = 'pcbackup'");
+    expect(HOST_BACKUP_APPLICATION_NAME).not.toBe(WORKSPACE_BACKUP_APPLICATION_NAME);
+    expect(guard).toContain(
+      `a.application_name IN ('${HOST_BACKUP_APPLICATION_NAME}', '${WORKSPACE_BACKUP_APPLICATION_NAME}')`,
+    );
     expect(guard).toContain("USING ERRCODE = '55P03'");
     expect(guard).toContain('canceling statement due to lock timeout');
   });
