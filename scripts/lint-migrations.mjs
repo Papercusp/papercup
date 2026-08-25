@@ -208,6 +208,10 @@ export const FROZEN_TXCTL_EXEMPTIONS = new Map([
  */
 export const FROZEN_INDEX_SWAP_EXEMPTIONS = new Map([
   [
+    "959-owned-trigger-source-account-identity.sql",
+    "Applied 2026-08-25T21:55:23Z (sha 3bf8fbad). This swap was NOT safe in isolation: the deployed writer still targeted the dropped owner+kind ON CONFLICT arbiter, which caused the WI-41703 rollout incident. The file is frozen, so the required repair is the already-applied 960-restore-owned-trigger-legacy-arbiter.sql (2026-08-25T22:19:31Z, sha bb8a07b8), which recreates the exact old column set and predicate while retaining the new account-scoped index. On this check's hazard model, the complete applied chain now leaves every deployed ON CONFLICT target backed by a matching unique index; a later contract migration may remove the legacy arbiter only after the old writer is gone.",
+  ],
+  [
     "937-bulk-run-kind-plan-cleanup.sql",
     "Applied 2026-08-24T03:24:05Z (sha 882e5741). Re-keys bulk-run single-flight (workspace_id) → (workspace_id, run_kind). Verified safe on this check's own hazard model before exempting (WI-41214): no ON CONFLICT anywhere — the deployed papercup-release checkout included — targets the swapped index (the only ON CONFLICT on these tables is the attention_bulk_run_items PK, untouched); single-flight is enforced by catching 23505 and substring-matching the index NAME in bulk-run-store.ts, and the replacement name deliberately keeps 'one_active_per_workspace'; every old-code row carries run_kind='inbox-resolve' (column default), so the new index enforces the identical one-active-per-workspace rule for every deployed reader. The in-file allow-index-swap pragma is refused by the immutability guard because the file is applied.",
   ],
