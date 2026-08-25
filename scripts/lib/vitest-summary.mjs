@@ -653,6 +653,15 @@ export function parseFailingFilesLine(text) {
  *     candidates. (This list has shrunk twice — `astro check` and `lint:el-tools` both left it
  *     under EI-20102376842495928 — so treat a stale-looking entry here as a bug in this
  *     docstring, which attributor-runner-coverage.test.ts pins against the real registry.)
+ *   - `route-refusal`     — the ROUTER refused the run before any test executed: it was handed
+ *     a file this config cannot match and declined the whole partial-match batch rather than
+ *     false-greening the rest. Nothing ran, so no parser can speak — but the cause is NOT
+ *     unknowable: the task's own output carries `TEST_FILE_ROUTE_ERROR requested=N matched=M`
+ *     and one `  unmatched <path>` line per offending file. Go read those; do not re-run, and
+ *     do not go hunting a flaky test. The usual cause is a file routed to the wrong RUNNER
+ *     (a Playwright spec handed to a vitest lane), which no amount of test triage can fix.
+ *     Split out of `no-file-rows` (EI-21440128879545486), where it read as an OOM for a full
+ *     session while the offending paths sat named in plain text.
  *   - `transform`         — no FAIL/rollup rows AND a parse failure is present, i.e. the
  *     collapse happened before the reporter ran. Split out of `no-file-rows` (WI-37607):
  *     this docstring used to name a transform failure as one of that reason's causes, which
@@ -673,6 +682,28 @@ export function parseFailingFilesLine(text) {
  *             unattributed: Array<{ task: string, reason: string }>,
  *             transformCulprits: string[] }}
  */
+/**
+ * Did the test ROUTER refuse this run outright?
+ *
+ * `scripts/test-files.mjs` refuses a zero/partial-match run rather than false-greening the
+ * files that DID match, so the task exits 1 having executed nothing — no FAIL rows, no rollup,
+ * no parse failure. Every attribution parser above therefore speaks for nothing, and without
+ * this the reason lands on `no-file-rows`, whose documented causes are "a worker crash, an OOM,
+ * a spawn error". That is not a cosmetic mislabel: it points triage at infrastructure while the
+ * router has already printed both the refusal AND the offending paths (`  unmatched <path>`) in
+ * plain text. EI-21440128879545486 is the cost of that — a red that survived seven unrelated
+ * test fixes and froze `main`, because no test was ever broken and re-running changed nothing.
+ *
+ * The same shape as EI-20095409199430877 and EI-20098997113620795 before it: the output named
+ * the culprit, no parser spoke for it, and the honest-sounding fallback read as an infra crash.
+ */
+const ROUTE_REFUSAL_RE = /^TEST_FILE_ROUTE_ERROR\b/m;
+
+/** @param {string} [output] captured task output @returns {boolean} */
+export function hasRouteRefusal(output = '') {
+  return ROUTE_REFUSAL_RE.test(output);
+}
+
 export function attributeFailedTask({ workspace, task, captured, output = '', fallbackReason }) {
   if (!captured) {
     return {
@@ -707,7 +738,12 @@ export function attributeFailedTask({ workspace, task, captured, output = '', fa
       unattributed: [
         {
           task,
-          reason: transformCulprits.length > 0 ? 'transform' : (fallbackReason ?? 'no-file-rows'),
+          // Ordering is deliberately conservative: a declared `fallbackReason` still wins, so
+          // this can only ever REPLACE the reason that would have been `no-file-rows`.
+          reason:
+            transformCulprits.length > 0
+              ? 'transform'
+              : (fallbackReason ?? (hasRouteRefusal(output) ? 'route-refusal' : 'no-file-rows')),
         },
       ],
       transformCulprits,
