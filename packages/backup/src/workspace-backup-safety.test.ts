@@ -64,6 +64,61 @@ describe('backup cadence safety floor', () => {
   });
 });
 
+// -------------------------------------------------------------------------
+// Snapshot concurrency — the scheduler's in-memory admission map cannot see
+// direct callers such as backup:snapshot_create. The shared WorkspaceBackup
+// operation must therefore join a second request to the first one instead of
+// starting another pg_dump/kopia pair for the same workspace.
+// -------------------------------------------------------------------------
+describe('snapshot concurrency guard (EI-21378460739616032)', () => {
+  it('joins a concurrent snapshot and forwards the started row id', async () => {
+    const calls: string[] = [];
+    let releaseKopia!: () => void;
+    let markKopiaEntered!: () => void;
+    const kopiaEntered = new Promise<void>((resolve) => { markKopiaEntered = resolve; });
+    const kopiaGate = new Promise<void>((resolve) => { releaseKopia = resolve; });
+
+    configureBackupStepRunner({
+      runStep: async <T>(name: string): Promise<T> => {
+        calls.push(name);
+        if (name === 'backup-kopia-create') {
+          markKopiaEntered();
+          await kopiaGate;
+        }
+        const canned: Record<string, unknown> = {
+          'backup-insert-row': { id: 7, startedAtMs: 1000 },
+          'backup-pre-snapshot-hook': undefined,
+          'backup-kopia-create': {
+            snapshotId: 'kopia-7', bytesAdded: 11, bytesTotal: 22, durationMs: 5,
+          },
+          'backup-record-result': undefined,
+        };
+        return canned[name] as T;
+      },
+    });
+    vi.spyOn(wb, 'ensureRepo').mockResolvedValue(undefined);
+
+    const first = wb.snapshot('interval');
+    await kopiaEntered;
+
+    let joinedStartedId: number | undefined;
+    const secondWb = new WorkspaceBackup({ workspaceId: 'ws', workspaceRoot: root });
+    const second = secondWb.snapshot('manual', undefined, {
+      onStarted: (snapshotId) => { joinedStartedId = snapshotId; },
+    });
+    await Promise.resolve();
+
+    expect(joinedStartedId).toBe(7);
+    expect(calls.filter((name) => name === 'backup-insert-row')).toHaveLength(1);
+    expect(calls.filter((name) => name === 'backup-kopia-create')).toHaveLength(1);
+
+    releaseKopia();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(secondResult).toEqual(firstResult);
+    expect(firstResult).toMatchObject({ snapshotId: 7, kopiaSnapshotId: 'kopia-7' });
+  });
+});
+
 async function dirWith(p: string, marker: string): Promise<void> {
   await mkdir(p, { recursive: true });
   await writeFile(join(p, 'marker.txt'), marker);

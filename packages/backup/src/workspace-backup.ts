@@ -37,6 +37,17 @@ import { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './poli
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 
+interface SnapshotInFlight {
+  promise: Promise<SnapshotResult>;
+  startedId?: number;
+  pendingStartedCallbacks: Array<(snapshotId: number) => void>;
+}
+
+// Keep admission keyed by workspace rather than by WorkspaceBackup instance:
+// the public class can be wrapped more than once, while all callers for a
+// workspace must still share one pg_dump/kopia operation.
+const SNAPSHOT_IN_FLIGHT = new Map<string, SnapshotInFlight>();
+
 export interface WorkspaceBackupOpts {
   workspaceId: string;
   /** Override workspace root; defaults to ~/.papercusp-workspaces/<id>. */
@@ -48,6 +59,13 @@ export class WorkspaceBackup {
   readonly workspaceRoot: string;
   readonly repoPath: string;
 
+  /**
+   * One snapshot at a time per workspace. The scheduler's own
+   * in-flight map cannot see direct callers such as backup:snapshot_create or
+   * the loopback POST route, so the guard belongs at this shared operation
+   * boundary. Joiners receive the same result instead of starting another
+   * pg_dump/kopia pair.
+   */
   constructor(opts: WorkspaceBackupOpts) {
     this.workspaceId = opts.workspaceId;
     this.workspaceRoot = opts.workspaceRoot
@@ -194,6 +212,55 @@ export class WorkspaceBackup {
   }
 
   async snapshot(
+    reason: SnapshotTriggerReason,
+    context?: Record<string, unknown>,
+    opts?: {
+      onStarted?: (snapshotId: number) => void;
+    },
+  ): Promise<SnapshotResult> {
+    const current = SNAPSHOT_IN_FLIGHT.get(this.workspaceId);
+    if (current) {
+      if (opts?.onStarted) {
+        if (current.startedId !== undefined) {
+          opts.onStarted(current.startedId);
+        } else {
+          current.pendingStartedCallbacks.push(opts.onStarted);
+        }
+      }
+      return current.promise;
+    }
+
+    const entry: SnapshotInFlight = {
+      promise: undefined as unknown as Promise<SnapshotResult>,
+      pendingStartedCallbacks: opts?.onStarted ? [opts.onStarted] : [],
+    };
+
+    const run = this.snapshotOnce(reason, context, {
+      onStarted: (snapshotId) => {
+        entry.startedId = snapshotId;
+        const callbacks = entry.pendingStartedCallbacks.splice(0);
+        for (const callback of callbacks) callback(snapshotId);
+      },
+    });
+    entry.promise = run.then(
+      (result) => {
+        if (SNAPSHOT_IN_FLIGHT.get(this.workspaceId) === entry) {
+          SNAPSHOT_IN_FLIGHT.delete(this.workspaceId);
+        }
+        return result;
+      },
+      (error) => {
+        if (SNAPSHOT_IN_FLIGHT.get(this.workspaceId) === entry) {
+          SNAPSHOT_IN_FLIGHT.delete(this.workspaceId);
+        }
+        throw error;
+      },
+    );
+    SNAPSHOT_IN_FLIGHT.set(this.workspaceId, entry);
+    return entry.promise;
+  }
+
+  private async snapshotOnce(
     reason: SnapshotTriggerReason,
     context?: Record<string, unknown>,
     opts?: {
