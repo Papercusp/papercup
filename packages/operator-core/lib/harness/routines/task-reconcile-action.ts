@@ -8,11 +8,16 @@
  * production deps — the real /sys + /proc reader, the repo-root foreign
  * signature, and the coord broadcast.
  *
- * REPORT-ONLY by construction (plan D-010). There is no auto-kill and no
- * auto-freeze path in this action, and that is not a flag: the code to do it does
- * not exist yet. Residue classification has to be right for a sustained window
- * before anything acts on it, because a reaper firing on a false `unaccounted`
- * takes out real work — strictly worse than the bypass it polices.
+ * REPORT-ONLY for the general population (plan D-010) — with ONE enforcement
+ * carve-out since 2026-08-25: the AGENT-SESSION reaper (`./task-manager/reaper`,
+ * WI-41607 / plan agent-session-scope-reaper-2026-08-25). D-010's precondition
+ * ("classification right for a sustained window") was met by the censuses this
+ * file already runs, and the owner directed enforcement twice after the third
+ * residue accumulation. The reaper touches ONLY `class='agent-session'` rows,
+ * consults `isAutoReapExempt` (terminal-psu-session-enrolment D-001), archives
+ * log tails first, is capped per tick, and sits behind the
+ * `papercusp-task-reaper` kill-switch flag (default ON, explicit OFF honored).
+ * Everything else here remains report-only.
  */
 import { statSync } from 'node:fs';
 
@@ -23,7 +28,15 @@ import { REPO_ROOT } from '../../agent-tools/docs/_repo-paths';
 import { isTaskManagerEnabled } from '../../task-manager/enabled';
 import { reconcileTick } from '../../task-manager/reconcile-tick';
 import { defaultForeignSignature } from '../../task-manager/scan';
-import { gcTerminalTasks, listLiveTasks } from '../../task-manager/store';
+import { gcTerminalTasks, listLiveTasks, listTasks, markStranded } from '../../task-manager/store';
+import {
+  decideReaps,
+  executeReaps,
+  REAP_PRESENCE_FRESH_MS,
+  type ReapDecision,
+  type ReapEffects,
+} from '../../task-manager/reaper';
+import { absCgroupDir, walkCgroupTree } from '../../task-manager/cgroup-read';
 import {
   censusAgentSessionProgress,
   evaluateAgentSessionResidue,
@@ -119,6 +132,12 @@ let lastResidueNotifyAtMs = 0;
 let lastProgressAtMs: number | null = null;
 let lastProgressNotifyAtMs = 0;
 let lastA11ySweepAtMs: number | null = null;
+/** The agent-session reaper's own cadence (WI-41607). 5 minutes: fast enough
+ *  that "stop a session" visibly clears the box, slow enough that a wrong
+ *  discriminator — already capped per pass — is caught by its own broadcasts
+ *  long before it can matter. */
+const REAPER_INTERVAL_MS = 5 * 60_000;
+let lastReaperAtMs: number | null = null;
 
 registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   // WI-6499: the routine stays REGISTERED but no-ops while the task manager is
@@ -168,6 +187,11 @@ registerSystemAction('task-reconcile', async (ctx: SystemActionCtx) => {
   if (isMaintDue({ lastAtMs: lastProgressAtMs, nowMs, intervalMs: PROGRESS_INTERVAL_MS })) {
     lastProgressAtMs = nowMs;
     await reportAgentSessionProgress(ctx);
+  }
+
+  if (isMaintDue({ lastAtMs: lastReaperAtMs, nowMs, intervalMs: REAPER_INTERVAL_MS })) {
+    lastReaperAtMs = nowMs;
+    await reapAgentSessionResidue(ctx);
   }
 
   if (isMaintDue({ lastAtMs: lastA11ySweepAtMs, nowMs, intervalMs: A11Y_SWEEP_INTERVAL_MS })) {
@@ -382,4 +406,149 @@ async function reportAgentSessionProgress(ctx: SystemActionCtx): Promise<void> {
   } catch {
     /* the indicator must never break the reconcile it observes */
   }
+}
+
+/**
+ * The agent-session RESIDUE REAPER (WI-41607) — the enforcement pass.
+ *
+ * Decision logic is pure and lives in `../../task-manager/reaper` with its own
+ * falsifiability suite; this function only assembles real inputs (ledger rows,
+ * the log-mtime census, live cgroup pid counts, fresh presence heartbeats) and
+ * wires real effects (tail archive → `systemctl --user stop` → ledger close).
+ *
+ * Fail-SAFE biases, distinct from the fail-open flag read:
+ *   - presence unreadable ⇒ the quiet-zombie class is disabled for the tick
+ *     (a missing safety input must never widen the kill set);
+ *   - every pass that reaps anything broadcasts what it reaped and why, so a
+ *     wrong discriminator is loud within one pass, not after a weekend.
+ */
+async function reapAgentSessionResidue(ctx: SystemActionCtx): Promise<void> {
+  try {
+    const { FLAGS } = await import('@papercusp/flags');
+    const { getFlag } = await import('@papercusp/flags/server');
+    // Kill-switch: default ON (the subsystem is shipped); an explicit OFF is
+    // always honored, matching the task-manager flag's own bias.
+    const on = await getFlag(FLAGS.TASK_REAPER, 'task-reaper').catch(() => true);
+    if (!on) return;
+
+    const workspaceId = ctx.workspaceId ?? undefined;
+    const live = (await listLiveTasks(workspaceId)).filter((r) => r.class === 'agent-session');
+    const dayAgoMs = Date.now() - 24 * 3600_000;
+    const terminal = (
+      await listTasks({
+        workspaceId,
+        classes: ['agent-session'],
+        states: ['exited', 'killed', 'timed_out', 'stranded', 'ended_unobserved'],
+        includeEnded: true,
+        limit: 500,
+      })
+    ).filter((r) => r.scopeUnit && r.endedAt && Date.parse(r.endedAt) > dayAgoMs);
+
+    const statMtimeMs = (path: string): number | null => {
+      try {
+        return statSync(path).mtimeMs;
+      } catch {
+        return null;
+      }
+    };
+    const census = censusAgentSessionProgress(live, { statMtimeMs });
+
+    // Presence heartbeats vouch for quiet-but-alive owners. Unreadable presence
+    // must DISABLE the quiet class, never silently widen it.
+    let freshOwners: ReadonlySet<string> | null = null;
+    try {
+      const { getOrgPg } = await import('@papercusp/db-org');
+      const sql = getOrgPg();
+      const rows = await sql<{ owner_id: string }[]>`
+        SELECT owner_id FROM harness_shared.coord_presence
+         WHERE heartbeat_at > now() - (${REAP_PRESENCE_FRESH_MS} * interval '1 millisecond')`;
+      freshOwners = new Set(rows.map((r) => r.owner_id));
+    } catch {
+      freshOwners = null;
+    }
+
+    const verdict = decideReaps({
+      rows: [...live, ...terminal],
+      census:
+        freshOwners === null
+          ? { ...census, degraded: true, degradedReason: 'coord_presence unreadable — quiet class disabled' }
+          : census,
+      scopePidCount: (row) => {
+        if (!row.cgroupPath) return null;
+        const abs = absCgroupDir(row.cgroupPath);
+        if (!nodeCgroupFs.isDir(abs)) return 0; // scope gone — a real zero
+        return walkCgroupTree(abs, nodeCgroupFs).reduce((s, g) => s + g.pids.length, 0);
+      },
+      freshOwners: freshOwners ?? new Set(),
+      logQuietForMs: (row) => {
+        const p = row.logPath?.trim();
+        if (!p) return null;
+        const m = statMtimeMs(p);
+        return m === null ? null : Date.now() - m;
+      },
+      now: Date.now(),
+    });
+
+    if (verdict.reap.length === 0) return;
+
+    const outcomes = await executeReaps(verdict.reap, nodeReapEffects());
+    const okCount = outcomes.filter((o) => o.ok).length;
+    const failed = outcomes.filter((o) => !o.ok);
+    await sendMessage(TASK_MANAGER_IDENTITY, {
+      to: ['*'],
+      summary:
+        `[task-reaper] reaped ${okCount}/${outcomes.length} agent-session scope(s) ` +
+        `(${verdict.reap.filter((r) => r.kind === 'terminal-residue').length} terminal-residue, ` +
+        `${verdict.reap.filter((r) => r.kind === 'quiet-zombie').length} quiet-zombie` +
+        `${verdict.deferred > 0 ? `; ${verdict.deferred} deferred to next pass` : ''}` +
+        `${verdict.quietClassDisabled ? '; quiet class DISABLED this pass (census degraded)' : ''}). ` +
+        `Log tails archived under ~/.papercusp/reap-archive/. ` +
+        outcomes
+          .slice(0, 6)
+          .map((o) => `${o.ok ? '✓' : '✗'} ${o.taskId} (${o.kind})`)
+          .join(' · ') +
+        (failed.length > 0 ? ` — ${failed.length} FAILED: ${failed.map((f) => f.taskId).join(',')}` : ''),
+      category: 'task-manager',
+      kind: failed.length > 0 ? 'escalation' : 'message',
+      harnessSlug: ctx.installSlug,
+    });
+  } catch (err) {
+    // Enforcement must never break the reconcile tick that carries it.
+    console.warn('[task-reaper] pass failed', err);
+  }
+}
+
+/** Real-IO effects for the reaper: tail archive, addressable subtree stop, ledger close. */
+function nodeReapEffects(): ReapEffects {
+  return {
+    async archiveTail(d: ReapDecision): Promise<string | null> {
+      if (!d.logPath) return null;
+      const { mkdir, open, writeFile } = await import('node:fs/promises');
+      const { homedir } = await import('node:os');
+      const { join } = await import('node:path');
+      const dir = join(homedir(), '.papercusp', 'reap-archive', new Date().toISOString().slice(0, 10));
+      await mkdir(dir, { recursive: true });
+      const dest = join(dir, `${d.taskId}.tail.log`);
+      const fh = await open(d.logPath, 'r');
+      try {
+        const { size } = await fh.stat();
+        const len = Math.min(size, 128 * 1024);
+        const buf = Buffer.alloc(len);
+        await fh.read(buf, 0, len, size - len);
+        await writeFile(dest, buf);
+      } finally {
+        await fh.close();
+      }
+      return dest;
+    },
+    async stopUnit(scopeUnit: string): Promise<boolean> {
+      const { execFile } = await import('node:child_process');
+      return await new Promise<boolean>((resolve) => {
+        execFile('systemctl', ['--user', 'stop', scopeUnit], { timeout: 20_000 }, (err) => resolve(!err));
+      });
+    },
+    async closeAsReaped(taskId: string, why: string): Promise<void> {
+      await markStranded([{ taskId, reason: `reaped: ${why}` }]);
+    },
+  };
 }

@@ -69,6 +69,13 @@ import type { AgentSessionProgressCensus } from './agent-session-progress-census
  *  enough that "stop a session" visibly clears the box. */
 export const REAP_TERMINAL_GRACE_MS = 10 * 60_000;
 
+/** Terminal-residue guard against the CARRY-RESPAWN edge: respawns re-enter the
+ *  SAME scope (measured 2026-08-25 — two process generations in one scope), so a
+ *  terminal row's scope can briefly hold a LIVE successor. A live session writes
+ *  its log; leftovers do not. A terminal row whose log was written more recently
+ *  than this is therefore spared as an anomaly, never reaped. */
+export const REAP_TERMINAL_LOG_QUIET_MS = 30 * 60_000;
+
 /** Bounded blast radius per tick. 12 covers the measured steady-state churn
  *  (5 stranded scopes on 2026-08-25) with headroom, while a false discriminator
  *  would need many ticks — each broadcasting its decisions — to do real damage. */
@@ -102,6 +109,10 @@ export interface ReaperInputs {
   scopePidCount: (row: TaskRow) => number | null;
   /** coord_presence owner_ids with a heartbeat fresher than REAP_PRESENCE_FRESH_MS. */
   freshOwners: ReadonlySet<string>;
+  /** ms since the row's log was last written; null = unmeasurable. Consulted for
+   *  TERMINAL rows only (live rows are judged by the census) — the carry-respawn
+   *  guard above. */
+  logQuietForMs: (row: TaskRow) => number | null;
   now: number;
   maxPerTick?: number;
 }
@@ -146,6 +157,16 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
       const pids = inputs.scopePidCount(row);
       if (pids === null) continue; // unreadable is not "has processes"
       if (pids <= 0) continue; // nothing survives — systemd will collect the empty scope
+      const logQuiet = inputs.logQuietForMs(row);
+      if (logQuiet !== null && logQuiet < REAP_TERMINAL_LOG_QUIET_MS) {
+        // Terminal row, live log: a successor generation (carry-respawn) is in
+        // this scope. Never reap it — surface the anomaly instead.
+        spared.push({
+          taskId: row.taskId,
+          why: `ANOMALY: row ${row.state} but log written ${Math.round(logQuiet / 60_000)}min ago — live successor in scope, investigate`,
+        });
+        continue;
+      }
       reap.push({
         taskId: row.taskId,
         scopeUnit: row.scopeUnit,

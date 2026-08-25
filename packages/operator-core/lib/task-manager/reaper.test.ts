@@ -60,6 +60,7 @@ function decide(
     mtimes?: Record<string, number | null>;
     pids?: Record<string, number | null>;
     freshOwners?: string[];
+    logQuiet?: Record<string, number | null>;
     maxPerTick?: number;
   } = {},
 ) {
@@ -68,6 +69,7 @@ function decide(
     census: census(rows, opts.mtimes ?? {}),
     scopePidCount: (r) => (opts.pids ? (r.taskId in opts.pids ? opts.pids[r.taskId] : 0) : 0),
     freshOwners: new Set(opts.freshOwners ?? []),
+    logQuietForMs: (r) => opts.logQuiet?.[r.taskId] ?? null,
     now: NOW,
     maxPerTick: opts.maxPerTick,
   });
@@ -102,6 +104,19 @@ describe('terminal-residue class', () => {
   it('leaves an emptied scope to systemd collection (CONTROL)', () => {
     const r = row({ taskId: 't4', state: 'exited', endedAt: new Date(NOW - HOUR).toISOString() });
     expect(decide([r], { pids: { t4: 0 } }).reap).toHaveLength(0);
+  });
+
+  it('spares a terminal row whose log is freshly written — a carry-respawn successor lives in the scope (CONTROL)', () => {
+    const r = row({ taskId: 't5', state: 'exited', endedAt: new Date(NOW - HOUR).toISOString() });
+    const v = decide([r], { pids: { t5: 6 }, logQuiet: { t5: 4 * 60_000 } });
+    expect(v.reap).toHaveLength(0);
+    expect(v.spared.some((s) => s.taskId === 't5' && /ANOMALY/.test(s.why))).toBe(true);
+  });
+
+  it('still reaps a terminal row whose log has been quiet well past the respawn guard (CAUGHT)', () => {
+    const r = row({ taskId: 't6', state: 'exited', endedAt: new Date(NOW - HOUR).toISOString() });
+    const v = decide([r], { pids: { t6: 6 }, logQuiet: { t6: 2 * HOUR } });
+    expect(v.reap).toHaveLength(1);
   });
 });
 
