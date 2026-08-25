@@ -1627,6 +1627,72 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(afterDrain.status).toBe(200);
   }, 10_000);
 
+  it('EI-21391953229965975: watchdog probe bypasses ordinary reserved tools/call socket starvation', async () => {
+    let releaseOrdinary: () => void = () => {};
+    const ordinaryGate = new Promise<void>((resolve) => {
+      releaseOrdinary = resolve;
+    });
+    let ordinaryStarted: () => void = () => {};
+    const ordinaryStartedGate = new Promise<void>((resolve) => {
+      ordinaryStarted = resolve;
+    });
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('client');
+      if (client === 'mcp-proxy-watchdog') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":{"tools":[{"name":"coord:orient"}]}}');
+        return;
+      }
+      ordinaryStarted();
+      void ordinaryGate.then(() => {
+        if (res.destroyed) return;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":{"ok":true}}');
+      });
+    }));
+    await listen(upstream);
+
+    const controlPlaneAgent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const watchdogAgent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: '127.0.0.1',
+      targetPort: port(upstream),
+      retryWindowMs: 1_000,
+      retryBackoffMs: 10,
+      handshakeTimeoutMs: 100,
+      maxInFlight: 10,
+      controlPlaneReserve: 1,
+      controlPlaneAgent,
+      watchdogAgent,
+      log: () => {},
+    }));
+    await listen(proxy);
+
+    const ordinary = request(
+      port(proxy),
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'coord:orient', arguments: {} } }),
+      '/api/mcp?client=ordinary-control-plane',
+    );
+    await ordinaryStartedGate;
+
+    const watchdog = request(
+      port(proxy),
+      JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+      '/api/mcp?superuser=1&client=mcp-proxy-watchdog&tools=coord%3Aorient',
+    );
+    const watchdogBeforeOrdinaryRelease = await Promise.race([
+      watchdog,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+    ]);
+
+    expect(watchdogBeforeOrdinaryRelease?.status).toBe(200);
+    releaseOrdinary();
+    expect((await ordinary).status).toBe(200);
+    watchdogAgent.destroy();
+    controlPlaneAgent.destroy();
+  });
+
   it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {
     expect(shouldShedForInFlight(4, 5)).toBe(false);
     expect(shouldShedForInFlight(5, 5)).toBe(true);

@@ -202,6 +202,13 @@ export interface McpProxyOptions {
   /** Injectable reserved-control-plane agent. Caller owns an injected agent's lifecycle. */
   controlPlaneAgent?: http.Agent;
   /**
+   * Injectable diagnostic agent for the watchdog's session-plane probe. The watchdog must not
+   * queue behind ordinary reserved-control-plane calls (`coord:orient`, `tools:find`, ...), or
+   * the detector can report the proxy as wedged while its own control-plane pool is saturated.
+   * Caller owns an injected agent's lifecycle.
+   */
+  watchdogAgent?: http.Agent;
+  /**
    * EI-19305299022434394 — the absolute ceiling (ms) on how long a NON-idempotent forward
    * (a real tools/call: 'keyed' or 'opaque') may hold its upstream socket waiting for response
    * headers, distinct from `handshakeTimeoutMs` (which bounds only the write-free control-plane
@@ -993,6 +1000,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     keepAlive: false,
     maxSockets: Math.max(1, controlPlaneReserve),
   });
+  const ownsWatchdogAgent = opts.watchdogAgent === undefined;
+  // Keep one independent upstream socket for the watchdog. Admission reservation alone is not
+  // enough: ordinary reserved tools/call traffic can occupy every socket in controlPlaneAgent
+  // while its requests wait on a slow upstream, leaving the watchdog queued behind the failure
+  // it is meant to diagnose.
+  const watchdogAgent = opts.watchdogAgent ?? new http.Agent({
+    keepAlive: false,
+    maxSockets: 1,
+  });
   const maxHandshakeInFlight = opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
   let handshakeInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
@@ -1294,9 +1310,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 req.url ?? '/',
                 fwd.headers,
                 fwd.body,
-                reservedControlPlane && controlPlaneReserve > 0
-                  ? controlPlaneAgent
-                  : upstreamAgent,
+                watchdogSessionProbe
+                  ? watchdogAgent
+                  : reservedControlPlane && controlPlaneReserve > 0
+                    ? controlPlaneAgent
+                    : upstreamAgent,
                 fwd.klass === 'idempotent'
                   ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS)
                   : maxHoldMs > 0
@@ -1487,6 +1505,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     for (const timer of stallTimers.values()) clearTimeout(timer);
     stallTimers.clear();
     if (ownsControlPlaneAgent) controlPlaneAgent.destroy();
+    if (ownsWatchdogAgent) watchdogAgent.destroy();
   });
   return server;
 }
