@@ -4,19 +4,15 @@
  * Axes scored 0..5 by the judge. Anchors guide the judge prompt; version
  * is recorded on every run so historical scores stay comparable.
  *
- * Adding an axis bumps the version. Removing one bumps + scenarios drop
- * their reference. Changing an anchor bumps + identity_hash changes.
+ * The version is DERIVED from the content below (WI-41678), so adding an axis,
+ * removing one, or rewording an anchor moves it — and moves identity_hash —
+ * with no bump to remember. Historical scores keyed to the old hand-maintained
+ * '1.0.0'/'1.1.0' values stay in PG but no longer trend-compare to new runs.
  */
 
-import type { JudgeRubric } from '@papercusp/testing-shell/llm';
+import { deriveRubricVersion, type JudgeRubric } from '@papercusp/testing-shell/llm';
 
-// 1.1.0 — added `ideasOwnership` axis (operator-behavior-tests-2026-05-14.md §4.4).
-// Identity hash for any scenario using this rubric will change on the next run;
-// historical scores under 1.0.0 stay in PG but don't trend-compare to new runs.
-export const OPERATOR_RUBRIC_VERSION = '1.1.0';
-
-export const OPERATOR_RUBRIC: JudgeRubric = {
-  version: OPERATOR_RUBRIC_VERSION,
+const OPERATOR_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   axes: [
     {
       id: 'helpfulness',
@@ -88,9 +84,22 @@ export const OPERATOR_RUBRIC: JudgeRubric = {
   criticality: 'normal',
 };
 
+export const OPERATOR_RUBRIC_VERSION = deriveRubricVersion('operator', OPERATOR_RUBRIC_CONTENT);
+
+export const OPERATOR_RUBRIC: JudgeRubric = {
+  version: OPERATOR_RUBRIC_VERSION,
+  ...OPERATOR_RUBRIC_CONTENT,
+};
+
 /**
  * Variant with multi-pass judging — used by `criticality: 'high'` scenarios
  * that need bias-mitigation via two independent passes.
+ *
+ * Deliberately shares OPERATOR_RUBRIC's version: the judged INSTRUCTIONS are
+ * identical and only the number of passes differs, so runs stay on one trend
+ * line. Whether a single-pass and a two-pass run of the same rubric are truly
+ * comparable is a separate question, tracked as its own observation rather than
+ * silently re-decided here.
  */
 export const OPERATOR_RUBRIC_HIGH_CRITICALITY: JudgeRubric = {
   ...OPERATOR_RUBRIC,

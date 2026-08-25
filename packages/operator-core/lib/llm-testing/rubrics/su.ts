@@ -17,16 +17,16 @@
  * first real behavioral run (7/9 scenarios `failed`, but S01-S07 all passed
  * their deterministic asserts).
  *
- * Mirrors the shape of `rubrics/operator.ts`. Bump the version on any anchor
- * OR behavioral change (it feeds the per-run identity hash).
+ * Mirrors the shape of `rubrics/operator.ts`. The version is DERIVED from the
+ * content below (WI-41678) rather than hand-maintained, so an anchor or
+ * behavioral change moves the per-run identity hash by construction. The
+ * semver-ish references above ('1.1.0') are historical: they name the era a
+ * change landed in, not a value this file still carries.
  */
 
-import type { JudgeRubric } from '@papercusp/testing-shell/llm';
+import { deriveRubricVersion, type JudgeRubric } from '@papercusp/testing-shell/llm';
 
-export const SU_RUBRIC_VERSION = '1.1.0';
-
-export const SU_RUBRIC: JudgeRubric = {
-  version: SU_RUBRIC_VERSION,
+const SU_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   judgeAdvisory: true,
   axes: [
     {
@@ -73,4 +73,11 @@ export const SU_RUBRIC: JudgeRubric = {
     },
   ],
   criticality: 'normal',
+};
+
+export const SU_RUBRIC_VERSION = deriveRubricVersion('su', SU_RUBRIC_CONTENT);
+
+export const SU_RUBRIC: JudgeRubric = {
+  version: SU_RUBRIC_VERSION,
+  ...SU_RUBRIC_CONTENT,
 };

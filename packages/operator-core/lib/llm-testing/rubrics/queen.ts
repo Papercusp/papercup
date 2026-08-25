@@ -4,16 +4,16 @@
  * asserts (did `blender:grade-idea` fire, with the C-3/D-007 arg shape, no
  * sovereignty retry) are the load-bearing check.
  *
- * Mirrors the shape of `rubrics/su.ts`. Bump the version on any anchor change
- * (it feeds the per-run identity hash).
+ * Mirrors the shape of `rubrics/su.ts`. The version is DERIVED from the content
+ * below (WI-41678) — an anchor change moves it by construction, so there is no
+ * bump to remember. This file is why: commit b7c7f2db8d rewrote these anchors
+ * while the version stayed '1.0.0', silently making runs either side of it look
+ * comparable.
  */
 
-import type { JudgeRubric } from '@papercusp/testing-shell/llm';
+import { deriveRubricVersion, type JudgeRubric } from '@papercusp/testing-shell/llm';
 
-export const QUEEN_RUBRIC_VERSION = '1.0.0';
-
-export const QUEEN_RUBRIC: JudgeRubric = {
-  version: QUEEN_RUBRIC_VERSION,
+const QUEEN_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   axes: [
     {
       id: 'gradingDiscipline',
@@ -54,7 +54,12 @@ export const QUEEN_RUBRIC: JudgeRubric = {
   ],
 };
 
-export const QUEEN_DECIDER_RUBRIC_VERSION = '1.0.0';
+export const QUEEN_RUBRIC_VERSION = deriveRubricVersion('queen', QUEEN_RUBRIC_CONTENT);
+
+export const QUEEN_RUBRIC: JudgeRubric = {
+  version: QUEEN_RUBRIC_VERSION,
+  ...QUEEN_RUBRIC_CONTENT,
+};
 
 /**
  * Queen-as-decider rubric — self-learning-frontier-2026-06-12 P-045 (FB-19,
@@ -63,8 +68,7 @@ export const QUEEN_DECIDER_RUBRIC_VERSION = '1.0.0';
  * gym/reject vocabulary, the graduation report gated, calibration consulted)
  * are the load-bearing check.
  */
-export const QUEEN_DECIDER_RUBRIC: JudgeRubric = {
-  version: QUEEN_DECIDER_RUBRIC_VERSION,
+const QUEEN_DECIDER_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   axes: [
     {
       id: 'rankedQueueDiscipline',
@@ -105,7 +109,15 @@ export const QUEEN_DECIDER_RUBRIC: JudgeRubric = {
   ],
 };
 
-export const SCHEDULER_USE_RUBRIC_VERSION = '1.0.0';
+export const QUEEN_DECIDER_RUBRIC_VERSION = deriveRubricVersion(
+  'queen-decider',
+  QUEEN_DECIDER_RUBRIC_CONTENT,
+);
+
+export const QUEEN_DECIDER_RUBRIC: JudgeRubric = {
+  version: QUEEN_DECIDER_RUBRIC_VERSION,
+  ...QUEEN_DECIDER_RUBRIC_CONTENT,
+};
 
 /**
  * Scheduler-USE rubric — hybrid-bee-scheduler-work-stealing-2026-06-22 (P-003). Secondary judge
@@ -114,8 +126,7 @@ export const SCHEDULER_USE_RUBRIC_VERSION = '1.0.0';
  * are the load-bearing check. Applies to BOTH the queen (steer-via-spec) and bee (pull-via-spec)
  * sides — the judge sees each scenario's description for which side it is reading.
  */
-export const SCHEDULER_USE_RUBRIC: JudgeRubric = {
-  version: SCHEDULER_USE_RUBRIC_VERSION,
+const SCHEDULER_USE_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   axes: [
     {
       id: 'steerNotDispatch',
@@ -145,4 +156,14 @@ export const SCHEDULER_USE_RUBRIC: JudgeRubric = {
       },
     },
   ],
+};
+
+export const SCHEDULER_USE_RUBRIC_VERSION = deriveRubricVersion(
+  'scheduler-use',
+  SCHEDULER_USE_RUBRIC_CONTENT,
+);
+
+export const SCHEDULER_USE_RUBRIC: JudgeRubric = {
+  version: SCHEDULER_USE_RUBRIC_VERSION,
+  ...SCHEDULER_USE_RUBRIC_CONTENT,
 };
