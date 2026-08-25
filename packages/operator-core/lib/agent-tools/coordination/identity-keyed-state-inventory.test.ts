@@ -105,6 +105,11 @@ const ALLOWLIST: Record<string, Classification> = {
   // duplicate, and the original lingers under the dead sid, swept forever and
   // cancellable by nobody. COVERED, active rows only (an inactive watch is spent).
   'interest_watches.owner_id': { status: 'covered', surface: 'interest-watches' },
+  // EI-21457373491665728: consult verbs authorize CURRENT participants through
+  // these columns. Open rows follow a rebound session, and expired rows do too
+  // because consult:close retains a requester-only late-disposition action.
+  'consult_state.requester_id': { status: 'covered', surface: 'consult-participants' },
+  'consult_state.responder_id': { status: 'covered', surface: 'consult-participants' },
   'plan_item_claims.owner': { status: 'covered', surface: 'plan-claims' },
   'work_item_claims.owner': { status: 'covered', surface: 'work-claims' },
   'coord_watermarks.owner_id': { status: 'covered', surface: 'watermarks' },
@@ -441,6 +446,8 @@ const IDENTITY_COLUMN_NAMES = new Set([
   'bee_id',
   'session_owner_id',
   'coord_owner_id',
+  'requester_id',
+  'responder_id',
   'scope_ref', // only identity-shaped when paired with scope='owner' (agent_facts) — swept in, classified by table.
 ]);
 

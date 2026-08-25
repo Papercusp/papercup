@@ -480,12 +480,13 @@ export async function rebindIdentity(
     r.moved = moved.length;
   });
 
-  // 7c. Actionable consult requester ownership — consult:close authorizes an
-  //     expired row's late disposition by comparing the caller directly with
-  //     consult_state.requester_id. Without this re-key, a successor that has
-  //     otherwise recovered every coordination surface is no longer the
-  //     requester and cannot record the terminal answer gathered before its
-  //     identity changed (EI-21457373491665728).
+  // 7c. Actionable consult participant ownership — consult verbs authorize by
+  //     comparing the caller directly with consult_state.requester_id /
+  //     responder_id. Most visibly, consult:close admits an expired row's late
+  //     disposition ONLY when the caller equals requester_id. Without this
+  //     re-key, a successor that has otherwise recovered every coordination
+  //     surface is no longer a participant and cannot finish the conversation
+  //     that survived its identity change (EI-21457373491665728).
   //
   //     Open rows follow the live identity, as do expired rows because expiry
   //     deliberately preserves one requester-only action: late close. Fully
@@ -493,10 +494,13 @@ export async function rebindIdentity(
   //     it, matching held-items / held-work-items above and below. `closed_at`
   //     is the future-proof open-state discriminator; the explicit expired
   //     exception is the authorization seam this migration repairs.
-  await run('consult-requesters', async (r) => {
+  await run('consult-participants', async (r) => {
     const moved = await sql<Array<{ conversation_id: string }>>`
-      UPDATE harness_shared.consult_state SET requester_id = ${t}
-       WHERE requester_id = ${f} AND (closed_at IS NULL OR state = 'expired')
+      UPDATE harness_shared.consult_state
+         SET requester_id = CASE WHEN requester_id = ${f} THEN ${t} ELSE requester_id END,
+             responder_id = CASE WHEN responder_id = ${f} THEN ${t} ELSE responder_id END
+       WHERE (requester_id = ${f} OR responder_id = ${f})
+         AND (closed_at IS NULL OR state = 'expired')
        RETURNING conversation_id
     `;
     r.moved = moved.length;
