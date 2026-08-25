@@ -32,6 +32,11 @@ export default defineTool({
       'rubrics:trend (how this rubric\'s criteria trend over time)',
     ],
   },
+  // The criteria are the machine-readable grading contract, not browseable list
+  // detail. Let the result door spill the complete rubric instead of allowing the
+  // ambient trimmed session tier to rebuild the response and silently remove
+  // criterion keys/methods (EI-21406267171411887).
+  ignoreSessionPayloadTier: true,
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES, 'judge'],
