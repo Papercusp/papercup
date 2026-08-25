@@ -437,6 +437,21 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
         'DBOS workflows / routines EXECUTE in bg-host, which runs `npx tsx bin/hono-host.ts` from THIS TREE (PAPERCUSP_BACKGROUND_WORKERS=1) — not from the release checkout. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. The :3070 deploy does not carry it.',
     },
   },
+  // EI-21458114771988888: Google Pub/Sub provisioning/pull/ack helpers are
+  // imported only by the `google-gmail-poll` system action below the routine
+  // boundary. The action is dispatched by routinesTick in bg-host, so this
+  // dependency must receive the same activation verdict even though it lives
+  // under external-triggers rather than harness/routines.
+  {
+    match: /^packages\/operator-core\/lib\/external-triggers\/google-pubsub\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'Google Pub/Sub Gmail polling imports this module from the `google-gmail-poll` system action, dispatched by routinesTick only when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host). It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it.',
+    },
+  },
   // EI-11120: `system:<action>` routine handlers (register-system-actions.ts's
   // side-effect registry + every `*-action.ts` it wires in — git-sync, scout-cycle,
   // blueprint-run, improvement-implement, ...) plus the dispatch machinery itself are

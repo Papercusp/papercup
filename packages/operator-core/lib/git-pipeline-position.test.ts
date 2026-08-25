@@ -1871,6 +1871,14 @@ describe('runtime-owner map (EI-10895)', () => {
     expect(own.activation).toMatch(/dev:restart.*bg-host/s);
   });
 
+  it('EI-21458114771988888: google-pubsub.ts is a bg-host dependency of the Gmail polling routine', () => {
+    const own = classifyRuntimeOwner('packages/operator-core/lib/external-triggers/google-pubsub.ts')!;
+    expect(own.host).toBe('bg-host');
+    expect(own.releasePipelineApplies).toBe(false);
+    expect(own.restartTarget).toBe('bg-host');
+    expect(own.activation).toMatch(/dev:restart.*bg-host/s);
+  });
+
   it('EI-11120: a *-action.ts TEST file under harness/routines/ is NOT misclassified (only the handler itself is bg-host-exclusive)', () => {
     // improvement-actions.test.ts ends in `.test.ts`, not `-action.ts` — must not match.
     const own = classifyRuntimeOwner('packages/operator-core/lib/harness/routines/improvement-actions.test.ts')!;
