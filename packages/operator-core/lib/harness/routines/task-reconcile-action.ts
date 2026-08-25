@@ -522,7 +522,11 @@ async function reapAgentSessionResidue(
       verdict.reap.length > 0 ? await executeReaps(verdict.reap, nodeReapEffects()) : [];
     const okCount = outcomes.filter((o) => o.ok).length;
     const failed = outcomes.filter((o) => !o.ok);
-    const residual = residualAfterPass(verdict, outcomes);
+    // Failed stops only — NOT deferred. A pass that deferred work past the
+    // per-tick cap is rate-limited, not stuck, and counting deferral here made a
+    // healthy backlog drain fire the alarm on its third pass. See the contract
+    // on residualAfterPass.
+    const residual = residualAfterPass(outcomes);
 
     const floorRing = appendResidueSample(await readResidueSamples(reaperTarget, 'reaper_floor'), {
       atMs: passAtMs,

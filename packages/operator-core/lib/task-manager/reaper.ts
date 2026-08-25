@@ -305,19 +305,31 @@ export interface ReaperFloorVerdict {
 }
 
 /**
- * PURE: how much residue survived one pass.
+ * PURE: how much of what this pass SELECTED it could not clear.
  *
- * Deferred candidates (beyond the per-tick cap) plus attempted-but-failed stops.
- * A spared row is deliberately NOT counted: sparing is the rails working as
- * designed (exempt session, live successor in scope, degraded census), and
- * counting it would make correct caution indistinguishable from failure.
+ * Attempted-but-failed stops, and nothing else. The alarm this feeds says
+ * "enforcement is selecting scopes it cannot clear", so everything counted here
+ * must be evidence of INABILITY — not of restraint, and not of throughput.
+ * Two exclusions, both deliberate, both for that one reason:
+ *
+ *   - a SPARED row is the rails working as designed (exempt session, live
+ *     successor in the scope, degraded census). Counting it would make correct
+ *     caution indistinguishable from failure.
+ *   - a DEFERRED row is one the per-tick cap did not reach. The reaper did not
+ *     try and fail; it has not tried yet, and the next pass will. Counting it
+ *     made any healthy backlog drain wider than REAP_MAX_PER_TICK alarm on its
+ *     third consecutive pass, carrying a diagnosis that was flatly untrue —
+ *     the scopes were being cleared, just rate-limited. Deferral is reported in
+ *     the pass line and in the alarm body as context; it is not evidence of a
+ *     stuck reaper. (Found 2026-08-25 while writing this plan's acceptance
+ *     rubric: the drift marker that rejected spared rows applies verbatim to
+ *     deferred ones, and the original implementation counted them.)
+ *
+ * The incident this guard exists for is untouched: 12 selected, 0 reaped, 12
+ * FAILED, flat across every pass, is twelve failures and still fires.
  */
-export function residualAfterPass(
-  verdict: Pick<ReaperVerdict, 'deferred'>,
-  outcomes: readonly ReapOutcome[],
-): number {
-  const failed = outcomes.filter((o) => !o.ok).length;
-  return verdict.deferred + failed;
+export function residualAfterPass(outcomes: readonly ReapOutcome[]): number {
+  return outcomes.filter((o) => !o.ok).length;
 }
 
 /**
