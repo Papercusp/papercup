@@ -19,6 +19,33 @@ const valid: CoordMessageRow = {
   ts: 1_700_000_000_000,
 };
 
+describe('coord-message supersede federation (EI-21467654382027859)', () => {
+  it('accepts a message marked superseded by a correction', () => {
+    // Without these fields on the wire, a message CORRECTED on one machine reads
+    // as current on every other — a peer acts on the original with no sign a
+    // correction exists, which is what the correction was sent to prevent.
+    const corrected: CoordMessageRow = {
+      ...valid,
+      superseded_by_msg_id: 'mq00-0000-correction',
+      superseded_at: 1_700_000_500_000,
+    };
+    expect(isCoordMessageRow(corrected)).toBe(true);
+  });
+
+  it('accepts a row from a peer that omits the superseded_* keys entirely', () => {
+    // decodeValue DISCARDS a row the validator rejects, so a required field here
+    // would drop every message from a peer running older code — strictly worse
+    // than the missing marker. Absent means "not superseded".
+    expect('superseded_by_msg_id' in valid).toBe(false);
+    expect(isCoordMessageRow(valid)).toBe(true);
+  });
+
+  it('still rejects superseded_* of the wrong TYPE (loosened for absent, not for garbage)', () => {
+    expect(isCoordMessageRow({ ...valid, superseded_by_msg_id: 7 })).toBe(false);
+    expect(isCoordMessageRow({ ...valid, superseded_at: 'yesterday' })).toBe(false);
+  });
+});
+
 describe('coord-message projection', () => {
   it('exposes the registered tableTag', () => {
     const p = buildCoordMessageProjection({ workspaceId: 'w', harnessSlug: 'papercup' });

@@ -540,6 +540,10 @@ function toMessageValue(row: Record<string, unknown>): CoordMessageRow {
     body:
       row.body && typeof row.body === 'object' && !Array.isArray(row.body) ? (row.body as Record<string, unknown>) : {},
     ts: isoOrMsToEpochMs(row.ts) ?? 0,
+    // EI-21467654382027859: a CORRECTED message must read as corrected on every
+    // peer, or the original is acted on as current and the correction is inert.
+    superseded_by_msg_id: strOrNull(row.superseded_by_msg_id),
+    superseded_at: isoOrMsToEpochMs(row.superseded_at),
   };
 }
 
