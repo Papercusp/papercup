@@ -25,6 +25,9 @@ import {
   CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
   shouldShedForInFlight,
   DEFAULT_MAX_IN_FLIGHT,
+  DEFAULT_MAX_HANDSHAKES_IN_FLIGHT,
+  isMcpSessionHandshakeCall,
+  isMcpProxyWatchdogProbePath,
   isReservedControlPlaneCall,
   isReservedControlPlanePath,
   shouldSkipDefaultFailureLog,
@@ -1287,6 +1290,31 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
   });
 
+  it('classifies only an all-handshake JSON-RPC batch for the reconnect bulkhead', () => {
+    const body = (value: unknown) => Buffer.from(JSON.stringify(value));
+    expect(isMcpSessionHandshakeCall(body({ method: 'initialize', params: {} }))).toBe(true);
+    expect(isMcpSessionHandshakeCall(body({ method: 'ping', params: {} }))).toBe(true);
+    expect(isMcpSessionHandshakeCall(body({ method: 'tools/list', params: {} }))).toBe(true);
+    expect(isMcpSessionHandshakeCall(body([
+      { method: 'initialize', params: {} },
+      { method: 'tools/list', params: {} },
+    ]))).toBe(true);
+    expect(isMcpSessionHandshakeCall(body({ method: 'resources/list', params: {} }))).toBe(false);
+    expect(isMcpSessionHandshakeCall(body([
+      { method: 'tools/list', params: {} },
+      { method: 'tools/call', params: { name: 'facts:list' } },
+    ]))).toBe(false);
+    expect(isMcpSessionHandshakeCall(Buffer.from('{bad json'))).toBe(false);
+  });
+
+  it('recognizes only the exact watchdog MCP client path for the diagnostic exemption', () => {
+    expect(isMcpProxyWatchdogProbePath('/api/mcp?client=mcp-proxy-watchdog')).toBe(true);
+    expect(isMcpProxyWatchdogProbePath('/api/mcp?tools=coord%3Aorient&client=mcp-proxy-watchdog&superuser=1')).toBe(true);
+    expect(isMcpProxyWatchdogProbePath('/api/mcp?client=mcp-proxy-watchdog-db')).toBe(false);
+    expect(isMcpProxyWatchdogProbePath('/api/health?client=mcp-proxy-watchdog')).toBe(false);
+    expect(isMcpProxyWatchdogProbePath(undefined)).toBe(false);
+  });
+
   it('recognizes psu launch/resume REST preflight paths and leaves the repeating heartbeat unreserved', () => {
     const ordinaryBody = Buffer.from(JSON.stringify({ ownerId: 'su-test' }));
     expect(isReservedControlPlanePath('/api/adv/sessions/resumable')).toBe(true);
@@ -1540,22 +1568,34 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
       targetPort: port(upstream),
       retryWindowMs: 2_000,
       retryBackoffMs: 10,
-      handshakeTimeoutMs: 250,
+      // Keep the first admitted class silent long enough for all 57 surplus loopback
+      // clients to reach admission before any slot can recycle.
+      handshakeTimeoutMs: 1_500,
       maxInFlight: 100,
       controlPlaneReserve: handshakeLimit + 1,
       controlPlaneAgent,
-      // Red-first: current code ignores this injected class cap, so all 60 reconnects
-      // enter the shared control-plane queue and the assertions below fail.
+      // Scaled-down production policy: reserve one diagnostic socket outside the class cap.
       maxHandshakeInFlight: handshakeLimit,
       log: () => {},
-    } as Parameters<typeof createMcpProxy>[0] & { maxHandshakeInFlight: number }));
+    }));
     await listen(proxy);
 
     const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    const completedBeforeRelease: Array<{ status: number; body: string }> = [];
     const herd = Array.from({ length: reconnects }, (_, i) =>
-      request(port(proxy), body, `/api/mcp?client=reconnect-${i}`),
+      request(port(proxy), body, `/api/mcp?client=reconnect-${i}`).then((result) => {
+        completedBeforeRelease.push(result);
+        return result;
+      }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 60));
+    const arrivalDeadline = Date.now() + 1_000;
+    while (
+      completedBeforeRelease.filter((result) => result.status === 429).length < reconnects - handshakeLimit &&
+      Date.now() < arrivalDeadline
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    const shedBeforeRelease = completedBeforeRelease.filter((result) => result.status === 429).length;
 
     // The proxy's own route stays responsive while the upstream-facing class is saturated.
     expect((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).status).toBe(200);
@@ -1576,11 +1616,15 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
 
     const shed = results.filter((result) => result.status === 429);
     const admitted = results.filter((result) => result.status === 200);
+    expect(shedBeforeRelease).toBe(reconnects - handshakeLimit);
     expect(shed).toHaveLength(reconnects - handshakeLimit);
     expect(admitted).toHaveLength(handshakeLimit);
     expect(shed.every((result) => JSON.parse(result.body).error === 'mcp_proxy_handshake_overloaded')).toBe(true);
     expect(maxOrdinaryActive).toBeLessThanOrEqual(handshakeLimit);
     expect(ordinaryHits).toBeLessThanOrEqual(handshakeLimit * (MAX_HANDSHAKE_TIMEOUT_RETRIES + 1));
+
+    const afterDrain = await request(port(proxy), body, '/api/mcp?client=reconnect-after-drain');
+    expect(afterDrain.status).toBe(200);
   }, 10_000);
 
   it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {
@@ -1597,6 +1641,8 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
   it('has a bounded, non-Infinity default so shedding is not opt-in by accident', () => {
     expect(DEFAULT_MAX_IN_FLIGHT).toBeGreaterThan(0);
     expect(Number.isFinite(DEFAULT_MAX_IN_FLIGHT)).toBe(true);
+    expect(DEFAULT_MAX_HANDSHAKES_IN_FLIGHT).toBeGreaterThan(0);
+    expect(Number.isFinite(DEFAULT_MAX_HANDSHAKES_IN_FLIGHT)).toBe(true);
   });
 
   it('sheds an EXCESS request with 429 the instant maxInFlight is reached, and admits the rest once slots free up', async () => {

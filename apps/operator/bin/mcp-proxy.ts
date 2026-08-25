@@ -20,6 +20,11 @@
  *                                     also what psu reads — see WI-6738: this window
  *                                     is only useful if the CLIENT waits at least
  *                                     this long, and it used to give up at 45s.
+ *   PAPERCUSP_MCP_PROXY_MAX_HANDSHAKES_IN_FLIGHT
+ *                                     write-free initialize/ping/tools-list class cap
+ *                                     (default: control-plane reserve minus one, currently 7;
+ *                                     non-positive disables). Keeps one reserved socket for
+ *                                     the mcp-proxy-watchdog during a reconnect herd.
  */
 import { readOperatorJsonTarget, startMcpProxy } from '../lib/mcp-proxy/proxy';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
