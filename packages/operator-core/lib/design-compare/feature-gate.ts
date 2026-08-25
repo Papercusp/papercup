@@ -19,6 +19,13 @@ import { getDesignEvidenceVerb, type VerbCaller, type VerbDeps } from './verbs';
 export interface FeatureGateReference {
   readonly referenceId: string;
   readonly verdict: DesignGateVerdict;
+  /**
+   * Whether this reference's verdict may REFUSE a completion, as opposed to
+   * report (P-011/D-023). Carried beside the verdict rather than folded into it
+   * because they answer different questions — the verdict is about the work,
+   * this is about whether the threshold was measured for the machine involved.
+   */
+  readonly enforceability: EnforceabilityOutcome;
 }
 
 export type FeatureDesignGateResult =
@@ -33,6 +40,17 @@ export type FeatureDesignGateResult =
       readonly references: readonly FeatureGateReference[];
       /** Only the references that are ratified AND unsatisfied. */
       readonly blocking: readonly FeatureGateReference[];
+      /**
+       * The subset of `blocking` whose threshold was actually measured for the
+       * machine involved, and which may therefore refuse rather than report.
+       *
+       * A separate list rather than a boolean because the two populations get
+       * different treatment in the same completion: an enforceable reference
+       * refuses, an unenforceable one is reported, and collapsing them would
+       * either refuse on an uncalibrated host or let a calibrated failure
+       * through on the strength of an unrelated reference.
+       */
+      readonly enforceableBlocking: readonly FeatureGateReference[];
       readonly doesNotEstablish: readonly string[];
     };
 
