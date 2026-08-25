@@ -208,6 +208,22 @@ set -uo pipefail
 # (EI-20227475180704442).
 main() {
 
+# Return Linux /proc's process start-time tick for PID. Pairing this with the
+# numeric PID distinguishes a still-live caller from a later process that reused
+# its PID. Fail closed to the caller of this helper; the liveness guard below is
+# deliberately fail-open when /proc is unavailable or malformed.
+_pc_heavy_proc_start_ticks() {
+  local _pid="${1:-}" _stat='' _after_comm=''
+  case "$_pid" in ''|*[!0-9]*) return 1 ;; esac
+  IFS= read -r _stat < "/proc/$_pid/stat" 2>/dev/null || return 1
+  # comm is parenthesized and may contain spaces. Strip through the LAST `) `,
+  # after which token 1 is field 3 (state), making token 20 field 22 (starttime).
+  _after_comm="${_stat##*) }"
+  set -- $_after_comm
+  [ "$#" -ge 20 ] || return 1
+  printf '%s\n' "${20}"
+}
+
 # Internal command runner used by EVERY ordinary slot holder, including a
 # coalescing leader. It is dispatched before the PC_HEAVY_BYPASS fast path so
 # the outer wrapper can keep its slot/cache responsibilities while this child
@@ -232,6 +248,8 @@ _pc_heavy_internal_preempt_run() {
   local _preempt_pid_file="$_preempt_pid_dir/preemptible.$$.pid"
   local _preempt_notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
   local _preempt_ready_file="${PC_HEAVY_PREEMPT_READY_FILE:-}"
+  local _preempt_caller_pid="${PC_HEAVY_CALLER_PID:-}"
+  local _preempt_caller_start_ticks="${PC_HEAVY_CALLER_START_TICKS:-}"
   local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at='' _preempt_free_since=''
   local _preempt_now='' _preempt_start_deadline='' _preempt_term_deadline=''
   local _preempt_result_emitted=0
@@ -261,6 +279,10 @@ _pc_heavy_internal_preempt_run() {
   case "$_preempt_grace" in ''|*[!0-9]*) _preempt_grace=30 ;; esac
   case "$_preempt_term_grace" in ''|*[!0-9]*) _preempt_term_grace=30 ;; esac
   case "$_preempt_poll" in ''|*[!0-9.]*) _preempt_poll=0.1 ;; esac
+  case "$_preempt_caller_pid" in ''|*[!0-9]*) _preempt_caller_pid=''; _preempt_caller_start_ticks='' ;; esac
+  case "$_preempt_caller_start_ticks" in
+    ''|*[!0-9]*) _preempt_caller_pid=''; _preempt_caller_start_ticks='' ;;
+  esac
   mkdir -p "$_preempt_pid_dir" 2>/dev/null || true
   rm -f "$_preempt_pid_file" 2>/dev/null || true
 
@@ -377,6 +399,20 @@ _pc_heavy_internal_preempt_run() {
   _preempt_leader_alive() {
     [ -n "$_preempt_wait_pid" ] && kill -0 "$_preempt_wait_pid" 2>/dev/null
   }
+  # EI-21399496097779784: the outer wrapper can outlive the shell/agent that
+  # launched it because it is itself waiting on the detached monitor. Checking
+  # only `_outer_pid` therefore misses the exact orphan class: the caller dies,
+  # init adopts the wrapper, and an already-published after-ready marker exempts
+  # the workload from preemption for the full 900-second exclusive drain. Pin
+  # the original caller by PID + start tick so PID reuse cannot keep an orphan
+  # alive. No usable identity means fail-open to the established outer-wrapper
+  # guard (important on a non-/proc host).
+  _preempt_caller_alive() {
+    local _current_start=''
+    [ -z "${_preempt_caller_pid:-}" ] && return 0
+    _current_start="$(_pc_heavy_proc_start_ticks "$_preempt_caller_pid" 2>/dev/null)" || return 1
+    [ "$_current_start" = "$_preempt_caller_start_ticks" ]
+  }
   # EI-21355065353185484 — this probe MUST NOT perturb what it measures.
   # It runs every _preempt_poll (0.1s default) for the whole life of a heavy job,
   # so any lock it takes is effectively held continuously from the point of view
@@ -446,6 +482,7 @@ _pc_heavy_internal_preempt_run() {
       *) eval "exec ${_notify_fd}>&-" 2>/dev/null || true ;;
     esac
     unset PC_HEAVY_PREEMPT_NOTIFY_FD
+    unset PC_HEAVY_CALLER_PID PC_HEAVY_CALLER_START_TICKS
     _pid_file="$1"
     shift
     printf "%s\n" "$$" > "$_pid_file"
@@ -492,6 +529,13 @@ _pc_heavy_internal_preempt_run() {
       _preempt_notify "[pc-heavy] outer slot wrapper exited — reaping its interruptible child group"
       _preempt_reap_group
       _preempt_emit_result undetermined outer-wrapper-exited 143
+      trap - EXIT TERM INT HUP
+      return 143
+    fi
+    if ! _preempt_caller_alive; then
+      _preempt_notify "[pc-heavy] original caller exited — reaping its orphaned heavy workload"
+      _preempt_reap_group
+      _preempt_emit_result undetermined caller-exited 143
       trap - EXIT TERM INT HUP
       return 143
     fi
@@ -2111,6 +2155,21 @@ case "$_preempt_after_ready" in
     ;;
 esac
 if [ "$_preemptible" = 1 ]; then
+  # The monitor must follow the ORIGINAL caller, not only this wrapper. A dead
+  # caller leaves the wrapper blocked in its wait and reparented to init, so the
+  # wrapper PID alone is not an ownership signal. Start ticks make the identity
+  # stable across PID reuse; if /proc cannot provide them, keep the established
+  # outer-wrapper-only behaviour rather than guessing.
+  unset PC_HEAVY_CALLER_PID PC_HEAVY_CALLER_START_TICKS
+  _pc_heavy_caller_pid="${PPID:-}"
+  _pc_heavy_caller_start_ticks="$(_pc_heavy_proc_start_ticks "$_pc_heavy_caller_pid" 2>/dev/null || true)"
+  case "$_pc_heavy_caller_pid:$_pc_heavy_caller_start_ticks" in
+    *[!0-9:]*|:*|*:) ;;
+    *)
+      export PC_HEAVY_CALLER_PID="$_pc_heavy_caller_pid"
+      export PC_HEAVY_CALLER_START_TICKS="$_pc_heavy_caller_start_ticks"
+      ;;
+  esac
   # Keep the monitor outside the outer wrapper's process group. Do NOT use
   # `setsid --fork --wait` here: its waitable parent stays in the outer group,
   # and killing that group also tears down the forked monitor before it can reap

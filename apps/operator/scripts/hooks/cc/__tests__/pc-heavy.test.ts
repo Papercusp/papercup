@@ -594,6 +594,88 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   }, 15_000);
 
+  it('EI-21399496097779784: reaps an after-ready workload when its original caller exits', async () => {
+    const readyDir = join(dir, 'caller-exit-ready');
+    const readyPublished = join(dir, 'caller-exit-published');
+    const wrapperPidFile = join(dir, 'caller-exit-wrapper.pid');
+    const workloadPidFile = join(dir, 'caller-exit-workload.pid');
+    const terminatedFile = join(dir, 'caller-exit-terminated');
+    const holderOut = join(dir, 'caller-exit-holder.out');
+    const holderErr = join(dir, 'caller-exit-holder.err');
+    const workload = [
+      `echo "$$" > "$WORKLOAD_PID_FILE"`,
+      `trap 'echo terminated > "$TERMINATED_FILE"; exit 143' TERM`,
+      `printf '%s\\n' "$$" > "$PC_HEAVY_PREEMPT_READY_FILE"`,
+      `echo published > "$READY_PUBLISHED"`,
+      'while :; do sleep 1; done',
+    ].join('; ');
+    const env = baseEnv({
+      PC_HEAVY_SCRIPT: PC_HEAVY,
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_PREEMPT_AFTER_READY: '1',
+      PC_HEAVY_PREEMPT_READY_DIR: readyDir,
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      WORKLOAD_SCRIPT: workload,
+      WORKLOAD_PID_FILE: workloadPidFile,
+      TERMINATED_FILE: terminatedFile,
+      READY_PUBLISHED: readyPublished,
+      WRAPPER_PID_FILE: wrapperPidFile,
+      HOLDER_OUT: holderOut,
+      HOLDER_ERR: holderErr,
+    });
+    // The short-lived shell is the real caller. It waits until the protected
+    // marker is published, then exits while leaving pc-heavy itself alive and
+    // reparented — exactly the live incident. Redirecting the background
+    // wrapper's stdio prevents the caller's Node pipes from keeping it alive.
+    const caller = spawn(
+      'bash',
+      ['-c', [
+        'nohup bash "$PC_HEAVY_SCRIPT" bash -c "$WORKLOAD_SCRIPT" >"$HOLDER_OUT" 2>"$HOLDER_ERR" &',
+        'echo "$!" > "$WRAPPER_PID_FILE"',
+        'while [ ! -e "$READY_PUBLISHED" ]; do sleep 0.02; done',
+      ].join('\n')],
+      { env, cwd: dir },
+    );
+    const callerExit = new Promise<number>((resolve) => caller.on('exit', (code) => resolve(code ?? -1)));
+    let wrapperPid = 0;
+    let workloadPid = 0;
+    try {
+      expect(await callerExit).toBe(0);
+      await waitFor('the orphan fixture publishing wrapper and workload pids', () =>
+        existsSync(wrapperPidFile) && existsSync(workloadPidFile),
+      );
+      wrapperPid = Number(readFileSync(wrapperPidFile, 'utf8').trim());
+      workloadPid = Number(readFileSync(workloadPidFile, 'utf8').trim());
+      expect(Number.isSafeInteger(wrapperPid) && wrapperPid > 1).toBe(true);
+      expect(Number.isSafeInteger(workloadPid) && workloadPid > 1).toBe(true);
+
+      // The ready marker must NOT immunize a job whose owner disappeared.
+      await waitFor('the orphaned after-ready workload receiving TERM', () => existsSync(terminatedFile), 5_000);
+      await waitFor('the reparented pc-heavy wrapper exiting', () => {
+        try { process.kill(wrapperPid, 0); return false; } catch { return true; }
+      }, 5_000);
+      await waitFor('the orphaned workload process group being fully reaped', () => {
+        try { process.kill(-workloadPid, 0); return false; } catch { return true; }
+      }, 5_000);
+
+      const err = readFileSync(holderErr, 'utf8');
+      expect(err).toContain('original caller exited — reaping its orphaned heavy workload');
+      expect(err).toContain('PC_HEAVY_RESULT status=undetermined reason=caller-exited exit=143');
+      expect(readdirSync(readyDir)).toEqual([]);
+      expect(heldSlotCount(dir, 1)).toBe(0);
+    } finally {
+      try { caller.kill('SIGKILL'); } catch { /* already exited */ }
+      if (wrapperPid > 1) {
+        try { process.kill(wrapperPid, 'SIGTERM'); } catch { /* already exited */ }
+      }
+      if (workloadPid > 1) {
+        try { process.kill(-workloadPid, 'SIGKILL'); } catch { /* already reaped */ }
+      }
+    }
+  }, 15_000);
+
   it('WI-41318: reaps the workload group when a caller hard-kills the outer wrapper', async () => {
     const workloadPidFile = join(dir, 'hard-killed-workload.pid');
     const terminatedFile = join(dir, 'hard-killed-workload.terminated');
