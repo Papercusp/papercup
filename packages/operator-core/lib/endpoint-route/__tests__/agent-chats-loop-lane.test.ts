@@ -126,24 +126,25 @@ async function loopLaneRoutes(
 }> {
   const updates: string[] = [];
   const updateArgs: unknown[][] = [];
-  const runLoopChatTurn = vi.fn(
-    async (opts: { sink: { event: (n: string, d: unknown) => void }; deferTerminalEvent?: boolean }) => {
-      opts.sink.event('text_delta', { type: 'text_delta', stepIndex: 0, text: 'loop says hi' });
-      if (!opts.deferTerminalEvent) {
-        opts.sink.event('done', { type: 'done', stopReason: 'complete', finalText: 'loop says hi' });
-      }
-      return {
-        stopReason: 'complete',
-        finalText: 'loop says hi',
-        tokensIn: 12,
-        tokensOut: 7,
-        costUsd: 0.05,
-        errorMessage: null,
-        stepCount: 1,
-        ...engineResult,
-      };
-    },
-  );
+  const runLoopChatTurn = vi.fn(async (opts: {
+    sink: { event: (n: string, d: unknown) => void };
+    deferTerminalEvent?: boolean;
+  }) => {
+    opts.sink.event('text_delta', { type: 'text_delta', stepIndex: 0, text: 'loop says hi' });
+    if (!opts.deferTerminalEvent) {
+      opts.sink.event('done', { type: 'done', stopReason: 'complete', finalText: 'loop says hi' });
+    }
+    return {
+      stopReason: 'complete',
+      finalText: 'loop says hi',
+      tokensIn: 12,
+      tokensOut: 7,
+      costUsd: 0.05,
+      errorMessage: null,
+      stepCount: 1,
+      ...engineResult,
+    };
+  });
   const resolveLoopApproval = vi.fn(async () => true);
   const listPendingLoopApprovals = vi.fn(async () => []);
   const assembleHarnessRolePrompt = vi.fn(() => ({
@@ -181,10 +182,7 @@ async function loopLaneRoutes(
       getLegacyClient: () => ({
         prepare: (sql: string) => ({
           get: async () => (/^SELECT \* FROM agent_chats/.test(sql.trim()) ? chatRow : { total: 0 }),
-          run: async (...args: unknown[]) => {
-            updates.push(sql.trim());
-            updateArgs.push(args);
-          },
+          run: async (...args: unknown[]) => { updates.push(sql.trim()); updateArgs.push(args); },
         }),
       }),
     };
@@ -242,8 +240,8 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     expect(text).toContain('text_delta');
     expect(text).toContain('loop says hi');
     expect(text).toContain('event: provenance');
-    expect(text).toContain('"model":"m-override:high"');
-    expect(text).toContain('"accountRoute":"acct-7"');
+    expect(text).toContain('\"model\":\"m-override:high\"');
+    expect(text).toContain('\"accountRoute\":\"acct-7\"');
 
     expect(mocks.runLoopChatTurn).toHaveBeenCalledTimes(1);
     const opts = mocks.runLoopChatTurn.mock.calls[0][0] as {
@@ -270,11 +268,7 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     // Persistence: user turn first (preflight), then the assistant turn with totals.
     expect(mocks.updates.length).toBeGreaterThanOrEqual(2);
     const finalUpdate = mocks.updateArgs.at(-1)!;
-    const transcript = JSON.parse(finalUpdate[0] as string) as Array<{
-      role: string;
-      content: string;
-      tokens_in?: number;
-    }>;
+    const transcript = JSON.parse(finalUpdate[0] as string) as Array<{ role: string; content: string; tokens_in?: number }>;
     expect(transcript.at(-1)).toMatchObject({
       role: 'assistant',
       content: 'loop says hi',
@@ -309,24 +303,20 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
   });
 
   it('an engine errorMessage persists a failure-marker turn and still closes the stream', async () => {
-    const { routes, mocks } = await loopLaneRoutes(
-      { ...baseRow },
-      {
-        errorMessage: 'gateway exploded',
-        finalText: '',
-        stopReason: 'error',
-      },
-    );
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow }, {
+      errorMessage: 'gateway exploded',
+      finalText: '',
+      stopReason: 'error',
+    });
     const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
-    const res = (await messages.handler(postReq({ content: 'hello loop', engine: 'loop' }), ctxFor(CHAT))) as Response;
+    const res = (await messages.handler(
+      postReq({ content: 'hello loop', engine: 'loop' }),
+      ctxFor(CHAT),
+    )) as Response;
     const { closed } = await drainSse(res.body, 8_000);
     expect(closed).toBe(true);
     const finalUpdate = mocks.updateArgs.at(-1)!;
-    const transcript = JSON.parse(finalUpdate[0] as string) as Array<{
-      role: string;
-      content: string;
-      error?: boolean;
-    }>;
+    const transcript = JSON.parse(finalUpdate[0] as string) as Array<{ role: string; content: string; error?: boolean }>;
     expect(transcript.at(-1)).toMatchObject({
       role: 'assistant',
       content: 'gateway exploded',
@@ -344,7 +334,10 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       transcript: [pendingUser],
     });
     const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
-    const res = (await messages.handler(postReq({ content: 'retry me', engine: 'loop' }), ctxFor(CHAT))) as Response;
+    const res = (await messages.handler(
+      postReq({ content: 'retry me', engine: 'loop' }),
+      ctxFor(CHAT),
+    )) as Response;
     const { text, closed } = await drainSse(res.body, 8_000);
     expect(closed).toBe(true);
     expect(text).toContain('event: done');
@@ -355,13 +348,10 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
   });
 
   it('empty final output becomes a persisted visible terminal error, never done', async () => {
-    const { routes, mocks } = await loopLaneRoutes(
-      { ...baseRow },
-      {
-        finalText: '',
-        errorMessage: null,
-      },
-    );
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow }, {
+      finalText: '',
+      errorMessage: null,
+    });
     // Suppress the mock's text delta too by replacing its implementation.
     mocks.runLoopChatTurn.mockImplementationOnce(async () => ({
       stopReason: 'complete',
@@ -373,17 +363,16 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       stepCount: 1,
     }));
     const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
-    const res = (await messages.handler(postReq({ content: 'answer me', engine: 'loop' }), ctxFor(CHAT))) as Response;
+    const res = (await messages.handler(
+      postReq({ content: 'answer me', engine: 'loop' }),
+      ctxFor(CHAT),
+    )) as Response;
     const { text, closed } = await drainSse(res.body, 8_000);
     expect(closed).toBe(true);
     expect(text).toContain('event: error');
     expect(text).toContain('completed without assistant content');
     expect(text).not.toContain('event: done');
-    const persisted = JSON.parse(mocks.updateArgs.at(-1)![0] as string) as Array<{
-      role: string;
-      content: string;
-      error?: boolean;
-    }>;
+    const persisted = JSON.parse(mocks.updateArgs.at(-1)![0] as string) as Array<{ role: string; content: string; error?: boolean }>;
     expect(persisted.at(-1)).toMatchObject({
       role: 'assistant',
       content: 'agent loop completed without assistant content',
@@ -397,7 +386,10 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     // The legacy lane needs the agent_chats:chat tool registered; with
     // '../../agent-tools' mocked empty the lookup fails and the route 500s —
     // which is exactly the discriminator needed: the loop engine must NOT run.
-    const res = (await messages.handler(postReq({ content: 'hello legacy' }), ctxFor(CHAT))) as Response;
+    const res = (await messages.handler(
+      postReq({ content: 'hello legacy' }),
+      ctxFor(CHAT),
+    )) as Response;
     expect(mocks.runLoopChatTurn).not.toHaveBeenCalled();
     expect(res.status).toBe(500);
   });
@@ -452,9 +444,14 @@ describe('approval routes', () => {
 
   it('GET approvals returns the pending list', async () => {
     const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
-    mocks.listPendingLoopApprovals.mockResolvedValueOnce([{ chatId: CHAT, callId: 'c1', toolName: 'capability:bash' }]);
+    mocks.listPendingLoopApprovals.mockResolvedValueOnce([
+      { chatId: CHAT, callId: 'c1', toolName: 'capability:bash' },
+    ]);
     const route = findRoute(routes, 'GET', '/harness/:slug/agent-chats/:chatId/approvals');
-    const res = (await route.handler(new Request('http://localhost/x'), ctxFor(CHAT))) as Response;
+    const res = (await route.handler(
+      new Request('http://localhost/x'),
+      ctxFor(CHAT),
+    )) as Response;
     expect(res.status).toBe(200);
     const body = (await res.json()) as { approvals: Array<{ callId: string }> };
     expect(body.approvals).toHaveLength(1);

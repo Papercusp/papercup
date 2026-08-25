@@ -18,7 +18,11 @@ import {
   type LoopChatSink,
 } from './chat-engine';
 import type { TranscriptTurn } from '../agent-chats-data';
-import type { LoopSessionRow, LoopSessionStore, SaveLoopSessionTurnArgs } from './session-store';
+import type {
+  LoopSessionRow,
+  LoopSessionStore,
+  SaveLoopSessionTurnArgs,
+} from './session-store';
 
 function scriptedPort(scripts: ModelStreamEvent[][]) {
   const requests: Parameters<ModelPort['stream']>[0][] = [];
@@ -43,7 +47,9 @@ function recordingSink() {
 describe('resolveLoopChatModel', () => {
   it('reports the server default and replaces an existing effort suffix exactly once', () => {
     expect(resolveLoopChatModel({})).toBe(DEFAULT_LOOP_CHAT_MODEL);
-    expect(resolveLoopChatModel({ model: 'claude-opus-4-6:low', effort: 'high' })).toBe('claude-opus-4-6:high');
+    expect(resolveLoopChatModel({ model: 'claude-opus-4-6:low', effort: 'high' })).toBe(
+      'claude-opus-4-6:high',
+    );
   });
 });
 
@@ -91,7 +97,9 @@ describe('clampForWire', () => {
 
 describe('runLoopChatTurn', () => {
   it('streams a text turn: native wire events + totals for persistence', async () => {
-    const { port, requests } = scriptedPort([textStop('hello from the loop', { inputTokens: 11, outputTokens: 4 })]);
+    const { port, requests } = scriptedPort([
+      textStop('hello from the loop', { inputTokens: 11, outputTokens: 4 }),
+    ]);
     const { sink, events } = recordingSink();
     const result = await runLoopChatTurn({
       chatId: 'c1',
@@ -145,7 +153,9 @@ describe('runLoopChatTurn', () => {
   });
 
   it('can defer terminal events so the route persists before exposing done/error', async () => {
-    const { port } = scriptedPort([textStop('durable first', { inputTokens: 2, outputTokens: 3 })]);
+    const { port } = scriptedPort([
+      textStop('durable first', { inputTokens: 2, outputTokens: 3 }),
+    ]);
     const { sink, events } = recordingSink();
     const result = await runLoopChatTurn({
       chatId: 'c-deferred',
@@ -157,7 +167,11 @@ describe('runLoopChatTurn', () => {
       deferTerminalEvent: true,
     });
     expect(result.finalText).toBe('durable first');
-    expect(events.map((event) => event.name)).toEqual(['step_start', 'text_delta', 'step_end']);
+    expect(events.map((event) => event.name)).toEqual([
+      'step_start',
+      'text_delta',
+      'step_end',
+    ]);
   });
 
   it('runs a gated tool through the ApprovalPort and forwards the round-trip', async () => {
@@ -199,10 +213,7 @@ describe('runLoopChatTurn', () => {
     expect(names).toContain('tool_call');
     expect(names).toContain('approval_resolved');
     expect(names).toContain('tool_result');
-    const toolCall = events.find((e) => e.name === 'tool_call')!.data as {
-      call: { id: string };
-      needsApproval: boolean;
-    };
+    const toolCall = events.find((e) => e.name === 'tool_call')!.data as { call: { id: string }; needsApproval: boolean };
     expect(toolCall.needsApproval).toBe(true);
     expect(toolCall.call.id).toBe('t1');
     const resolved = events.find((e) => e.name === 'approval_resolved')!.data as { approved: boolean };
@@ -352,7 +363,9 @@ describe('P-009 session resume + persist', () => {
     const { store, saves } = fakeSessions(
       mkRow({ messages: storedMessages, summary: 'earlier stuff', compactedCount: 3, transcriptTurns: 2 }),
     );
-    const { port, requests } = scriptedPort([textStop('a2', { inputTokens: 10, outputTokens: 5 })]);
+    const { port, requests } = scriptedPort([
+      textStop('a2', { inputTokens: 10, outputTokens: 5 }),
+    ]);
     const { sink } = recordingSink();
     const result = await runLoopChatTurn({
       chatId: 'c9',
@@ -453,7 +466,9 @@ describe('P-009 session resume + persist', () => {
     });
     expect(result.errorMessage).toBe('boom');
     expect(saves.length).toBe(1);
-    expect(saves[0].messages).toEqual([{ role: 'user', content: [{ type: 'text', text: 'q1' }] }]);
+    expect(saves[0].messages).toEqual([
+      { role: 'user', content: [{ type: 'text', text: 'q1' }] },
+    ]);
   });
 
   it('a saveTurn failure never fails the completed turn', async () => {
