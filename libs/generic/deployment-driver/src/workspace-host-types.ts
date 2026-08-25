@@ -110,6 +110,10 @@ export const WORKSPACE_HOST_LIFECYCLE_ACTIONS = [
   "upgrade",
   "repair",
   "destroy",
+  // Workspace initialization (create/clone/pair/import + credential binding) is a lifecycle
+  // action on an already-provisioned host, so it is recorded as an operation like any other
+  // rather than in a parallel ledger. Migration 955 widens the matching DB CHECK constraint.
+  "initialize",
 ] as const;
 export type WorkspaceHostLifecycleAction =
   (typeof WORKSPACE_HOST_LIFECYCLE_ACTIONS)[number];
