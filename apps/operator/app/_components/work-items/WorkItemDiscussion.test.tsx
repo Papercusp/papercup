@@ -137,6 +137,34 @@ describe("WorkItemDiscussion", () => {
     expect(conversation.sendUserMessage).not.toHaveBeenCalled();
   });
 
+  it("defers opt-in focus until its inert takeover ancestor is released", async () => {
+    H.rows = [{ id: "conversation-existing" }];
+    const outside = document.createElement("button");
+    const coveredPane = document.createElement("div");
+    coveredPane.setAttribute("inert", "");
+    document.body.append(outside, coveredPane);
+    outside.focus();
+
+    const view = render(
+      <WorkItemDiscussion
+        harnessSlug="papercusp"
+        workItemId="WI-43"
+        focusWhenInteractive
+      />,
+      { container: coveredPane },
+    );
+    const discussion = screen.getByTestId("work-item-discussion-WI-43");
+    expect(discussion.getAttribute("tabindex")).toBe("-1");
+    expect(document.activeElement).toBe(outside);
+
+    coveredPane.removeAttribute("inert");
+    await waitFor(() => expect(document.activeElement).toBe(discussion));
+
+    view.unmount();
+    outside.remove();
+    coveredPane.remove();
+  });
+
   it("waits for durable history, then starts a new work-item discussion exactly once without global starters", async () => {
     H.rows = [{ id: "conversation-empty" }];
     conversation.messages = [];

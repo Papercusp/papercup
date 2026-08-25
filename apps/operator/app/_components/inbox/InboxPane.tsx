@@ -830,6 +830,7 @@ export default function InboxPane() {
                         workItemId={workItemId}
                         title={i.title}
                         onClose={() => void setDiscussionRef(null)}
+                        focusWhenInteractive
                       />
                     );
                   })()}
