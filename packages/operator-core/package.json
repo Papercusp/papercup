@@ -167,6 +167,8 @@
   "devDependencies": {
     "@papercusp/test-config": "*",
     "js-tiktoken": "*",
+    "lost-pixel": "^3.22.0",
+    "pngjs": "^7.0.0",
     "vitest": "^4.1.4"
   }
 }
