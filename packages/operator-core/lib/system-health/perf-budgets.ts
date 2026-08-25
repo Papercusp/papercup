@@ -498,7 +498,9 @@ function withCgroupCpuAttribution(
     return `${reason}; cgroup CPU attribution unavailable — pressure owner unconfirmed`;
   }
   const pids = owner.directPids === null ? '' : `, ${owner.directPids} direct pid(s)`;
-  const partial = attribution.partial ? ', partial cgroup scan' : '';
+  // `owner` is only non-null when `attribution` was non-null (it comes from `attribution?.top`),
+  // but that implication does not survive the reduce, so narrow explicitly rather than assert.
+  const partial = attribution?.partial ? ', partial cgroup scan' : '';
   return `${reason}; top cgroup CPU owner (correlation, not proof of causality): ${owner.path} ` +
     `(${owner.cpuPct.toFixed(1)}% CPU${pids}${partial})`;
 }
