@@ -166,9 +166,7 @@ function armPgLaunchRetry(): void {
       if (pgRetryInFlight) return; // single-flight: never overlap probes/launches
       pgRetryInFlight = true;
       void startDbos()
-        .catch((e) =>
-          console.warn('[dbos] launch retry failed:', e instanceof Error ? e.message : e),
-        )
+        .catch((e) => console.warn('[dbos] launch retry failed:', e instanceof Error ? e.message : e))
         .finally(() => {
           pgRetryInFlight = false;
           if (G.__papercuspDbosStarted && pgRetryTimer) {
@@ -227,6 +225,10 @@ export async function startDbos(): Promise<void> {
 
   // Register workflows BEFORE launch so recovery + the scheduler can bind them.
   await import('./hello-workflow');
+  // BYOC P-046 / D-100: every workspace-host provision enters this host-scoped
+  // dedup workflow. It is always registered because the route is flag-ON and a
+  // recovered in-flight host operation must bind even before a new request arrives.
+  await import('./workspace-host-provision-workflow');
   // The director-cadence autoloop workflow is RETIRED (autoloop-pot-operator-
   // rebuild-2026-06-05 P-010 / D-009): it read `.papercusp/director-config.json`,
   // an enablement surface nothing wrote. Scheduled decider fires are the routines
@@ -330,9 +332,7 @@ export async function startDbos(): Promise<void> {
   await DBOS.launch();
   G.__papercuspDbosStarted = true;
   wireCheckpointEligibilityWait();
-  console.log(
-    `[dbos] launched (schema=dbos, source=${source}, appVersion=${PINNED_APP_VERSION})`,
-  );
+  console.log(`[dbos] launched (schema=dbos, source=${source}, appVersion=${PINNED_APP_VERSION})`);
 
   // EI-455 — start the dead-executor reaper: an immediate boot reap (clears dedup
   // wedges left by a prior crash/restart) plus a 2-min process-level sweep that runs
@@ -442,34 +442,27 @@ export async function startDbos(): Promise<void> {
     // WI-4663: Codex 0.144+ can keep a live process + history.jsonl fresh while
     // its rollout JSONL stops appending. Detect that silent transcript loss
     // outside DBOS so a scheduler wedge cannot hide the alarm.
-    const { startCodexRolloutPersistenceWatchdog } = await import(
-      '../system-health/codex-rollout-persistence-watchdog'
-    );
+    const { startCodexRolloutPersistenceWatchdog } =
+      await import('../system-health/codex-rollout-persistence-watchdog');
     startCodexRolloutPersistenceWatchdog(getOrgPg().sql);
     // Sibling (agent-managed-compaction P-009): caches each limit-setting session's
     // context-size estimate on coord_presence (feeds the coord:inbox usage signal, P-007)
     // and logs sessions that ran past their own compaction_limit. Kill-switch:
     // PAPERCUSP_COMPACTION_WATCHDOG='0'.
-    const { startCompactionComplianceWatchdog } = await import(
-      '../system-health/compaction-compliance-watchdog'
-    );
+    const { startCompactionComplianceWatchdog } = await import('../system-health/compaction-compliance-watchdog');
     startCompactionComplianceWatchdog(getOrgPg().sql);
     // EI-12755: escalate dropped/respawn-failed P-020 carry drills in real time
     // (the shared drill ledger is durable but was only read on demand — 2/2
     // silent failures sat unnoticed ~40min on 2026-07-15). Runtime gate:
     // FLAGS.CARRY_DRILL_DROP_WATCHER (default ON), checked per tick.
-    const { startCarryDrillDropWatchdog } = await import(
-      '../system-health/carry-drill-drop-watchdog'
-    );
+    const { startCarryDrillDropWatchdog } = await import('../system-health/carry-drill-drop-watchdog');
     startCarryDrillDropWatchdog();
     // EI-18741922664751805: alarm on the RATE at which the long-lived operator
     // units restart. :3170 ran ~10 restarts/hour through 2026-07-26 with nothing
     // watching, and a restart storm on papercup-dev-api is worse still — the
     // headless fleet children live in THAT unit's cgroup. Runtime gate:
     // FLAGS.SERVICE_RESTART_RATE_WATCHDOG (default ON), checked per tick.
-    const { startServiceRestartRateWatchdog } = await import(
-      '../system-health/service-restart-rate-watchdog'
-    );
+    const { startServiceRestartRateWatchdog } = await import('../system-health/service-restart-rate-watchdog');
     startServiceRestartRateWatchdog();
     // cold-with-carry-activation-2026-07-20 (A2): the BOOTSTRAP for P-021 cold-by-default.
     // Grades prior respawned drills + starts ONE cold-boot drill per pass on an eligible
@@ -477,9 +470,7 @@ export async function startDbos(): Promise<void> {
     // finally engages for the headless fleet (EI-18133456688790756). Runtime gate:
     // FLAGS.COLD_BOOT_DRILL_AUTORUNNER (default ON); hard kill-switch:
     // PAPERCUSP_COLD_BOOT_DRILL_AUTORUNNER='0'.
-    const { startColdBootDrillAutorunner } = await import(
-      '../system-health/cold-boot-drill-autorunner'
-    );
+    const { startColdBootDrillAutorunner } = await import('../system-health/cold-boot-drill-autorunner');
     startColdBootDrillAutorunner();
     // EI-18754773151573358: the sibling of dead-workflow-monitor for the OTHER silent
     // DBOS failure — a workflow DBOS keeps loyally RECOVERING forever because it hangs
@@ -521,9 +512,7 @@ export async function startDbos(): Promise<void> {
     // instance hid for 19 days. A periodic sweep is the only thing that closes
     // the never-touched mis-file. Runtime gate:
     // FLAGS.UNSERVABLE_CRITICAL_WATCHDOG (default ON), checked per tick.
-    const { startUnservableCriticalWatchdog } = await import(
-      '../system-health/unservable-critical-watchdog'
-    );
+    const { startUnservableCriticalWatchdog } = await import('../system-health/unservable-critical-watchdog');
     startUnservableCriticalWatchdog(getOrgPg().sql);
     // system-notices-on-its-own-2026-08-16 P-002: alarm when a sustained share of
     // hybrid searches did not run at full strength. summariseLegs already judged
@@ -531,9 +520,7 @@ export async function startDbos(): Promise<void> {
     // and this reads the rate. Armed HERE because the counter is in-process and
     // this is the process the agent-facing search paths run in. Runtime gate:
     // FLAGS.RETRIEVAL_DEGRADATION_WATCHDOG (default ON), checked per tick.
-    const { startRetrievalDegradationWatchdog } = await import(
-      '../system-health/retrieval-degradation-watchdog'
-    );
+    const { startRetrievalDegradationWatchdog } = await import('../system-health/retrieval-degradation-watchdog');
     startRetrievalDegradationWatchdog();
     // EI-20581099901890760 half 2: alarm on a live-HELD goal missing the standing
     // drain fleet the GOAL contract requires. Sibling of the liveness watchdog
@@ -541,9 +528,7 @@ export async function startDbos(): Promise<void> {
     // nobody is working a goal; this one fires only when somebody IS and the
     // drain fleet — the mechanism that makes never-implement livable — is absent
     // or dead. Runtime gate: FLAGS.GOAL_DRAIN_FLEET_WATCHDOG (default ON).
-    const { startGoalDrainFleetWatchdog } = await import(
-      '../system-health/goal-drain-fleet-watchdog'
-    );
+    const { startGoalDrainFleetWatchdog } = await import('../system-health/goal-drain-fleet-watchdog');
     startGoalDrainFleetWatchdog(getOrgPg().sql);
     // P-008 (EI-20581177540737568 half 2): near-real-time alarm on the FIRST
     // edit-claim by a goal-mode owner — the deterministic never-implements
@@ -552,9 +537,7 @@ export async function startDbos(): Promise<void> {
     // measured, WI-39348); this sweep closes it to ≤~2 min and injects both the
     // subject and its graders. Runtime gate: FLAGS.GOAL_EDIT_CLAIM_WATCHDOG
     // (default ON), checked per tick.
-    const { startGoalEditClaimWatchdog } = await import(
-      '../system-health/goal-edit-claim-watchdog'
-    );
+    const { startGoalEditClaimWatchdog } = await import('../system-health/goal-edit-claim-watchdog');
     startGoalEditClaimWatchdog(getOrgPg().sql);
     // P-009: nudge a goal-mode owner whose ACTIVE goal has gone report-silent past
     // the 4h cadence floor — one directed wake per silence with the GOAL contract's
@@ -563,9 +546,7 @@ export async function startDbos(): Promise<void> {
     // 5h of silence including at goal-met. Fires only on a POSITIVELY-alive owner
     // (a dead one is the liveness watchdog's lane). Runtime gate:
     // FLAGS.GOAL_OWNER_REPORT_WATCHDOG (default ON), checked per tick.
-    const { startGoalOwnerReportWatchdog } = await import(
-      '../system-health/goal-owner-report-watchdog'
-    );
+    const { startGoalOwnerReportWatchdog } = await import('../system-health/goal-owner-report-watchdog');
     startGoalOwnerReportWatchdog(getOrgPg().sql);
     // goal-mode-design-intent-hardening-2026-08-16 P-005 (D-003): the goal spend
     // rollup tick — writes goals.metadata.spentCents platform-side from the cost
