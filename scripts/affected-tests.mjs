@@ -1590,6 +1590,24 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "scripts/project-doc-parts.mjs",
   },
   {
+    // D-017/P-019 — deterministic carry-respawn pushes recovery into the
+    // successor context. Reintroducing an unconditional first-call orient adds
+    // one redundant full fold to every compaction and can double-run fallback
+    // recovery. This source-tree guard is cheap and global across canonical
+    // non-generated producer/prompt roots; it includes positive + negative
+    // controls so a regex that silently stops firing cannot report green.
+    workspace: "@papercusp/operator-core",
+    script: "lint:post-compaction-recovery-contract",
+    appliesTo: (f) =>
+      f.startsWith("packages/operator-core/lib/") ||
+      f.startsWith("apps/operator/prompts/") ||
+      f.startsWith(
+        "libs/papercusp/packages/harness/blueprints/base/prompts/",
+      ) ||
+      f === "scripts/check-post-compaction-recovery-contract.ts" ||
+      f === "scripts/affected-tests.mjs",
+  },
+  {
     // WI-38239 — `gen:compaction:check` was one of the 8 orphaned `gen:*:check` guards the
     // census widening exposed (it ran on NO blocking path). It is the ONLY real-tree assertion
     // that the shipped compaction floor renders: compaction-strategy.test.ts exercises

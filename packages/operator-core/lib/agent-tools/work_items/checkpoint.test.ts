@@ -1923,6 +1923,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(stored).toContain('LEGACY-50 holds');
         });
 
+        it('refuses an append when over-cap legacy checks would trim the submitted body', async () => {
+          const legacyChecks = Array.from({ length: 83 }, (_, i) => ({
+            id: `legacy-${String(i + 1).padStart(2, '0')}`,
+            claim: `LEGACY-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `legacy recheck ${i + 1} ${'r'.repeat(180)}`,
+            verified: `legacy evidence ${i + 1} ${'v'.repeat(180)}`,
+          }));
+          const prior = withCarryNoteChecks('legacy body', legacyChecks);
+          const readCurrent = installLegacyPrior(prior);
+          const addendum = '2026-08-25T04:50Z — the new progress body must survive';
+
+          const r = (await one({ id: 'WI-7', checkpoint: addendum, append: true })) as {
+            ok: boolean;
+            error?: string;
+            errorCode?: string;
+          };
+
+          expect(r.ok).toBe(false);
+          expect(r.errorCode).toBe('append_body_overflow');
+          expect(r.error).toContain('submitted append body');
+          expect(readCurrent()).toBe(prior);
+        });
+
         /**
          * EI-21228214077347799 — the SAME cap-eviction loss as EI-20004424625703051
          * above, reached through the door that guard does not cover.

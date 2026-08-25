@@ -89,7 +89,12 @@ export const DERIVED_SIGNAL_CENSUS_VERSION = 2;
 export const DERIVED_SIGNAL_CENSUS_KEY = 'derivedSignals';
 
 /** The INPUTS the derivation computes its relations from. */
-export type DerivedSignalLeg = 'roster' | 'heldFiles' | 'planEdges' | 'recentPartners';
+export type DerivedSignalLeg =
+  | 'roster'
+  | 'heldFiles'
+  | 'planEdges'
+  | 'recentPartners'
+  | 'obligations';
 
 /**
  * Which input each derived relation is computed FROM.

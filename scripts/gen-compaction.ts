@@ -9,6 +9,7 @@
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { renderCompactionStrategy } from '../packages/operator-core/lib/desktop-install/papercusp-files';
+import { findUnconditionalPostCompactionRecoveryDirectives } from "../packages/operator-core/lib/instruction-lint";
 
 async function main(): Promise<void> {
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -25,6 +26,14 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   if (check) {
+    const unconditional =
+      findUnconditionalPostCompactionRecoveryDirectives(out);
+    if (unconditional.length > 0) {
+      console.error(
+        `[gen:compaction] FAILED — rendered compaction prompt contains ${unconditional.length} unconditional post-compaction recovery-orient directive(s).`,
+      );
+      process.exit(1);
+    }
     console.log(`[gen:compaction] OK — canonical compaction source renders cleanly (${out.length} chars).`);
   } else {
     process.stdout.write(out + '\n');

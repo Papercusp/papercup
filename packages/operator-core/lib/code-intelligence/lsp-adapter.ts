@@ -1211,6 +1211,18 @@ export async function lspDiagnostics(query: {
       detail: [d.source, d.code, d.message].filter(Boolean).join(' ') || null,
     }));
     certifyCanaryAnswer(client, intent, readiness, sites.length, JSON.stringify(sites));
+    const answerHealth = healthForAnswer(client, intent, sites.length);
+    // A publish proves that the server spoke about this URI, not that an empty
+    // result is complete. If readiness is still unproven, keep the empty loud:
+    // `isTrustworthyEmpty` accepts an error as an honest degraded answer, while
+    // `error:null` plus degraded health would be an untrustworthy silent empty.
+    if (sites.length === 0 && answerHealth !== 'healthy') {
+      return fail(
+        `textDocument/publishDiagnostics was observed for ${query.file}, but diagnostics readiness ` +
+          `is not certified; an empty result is not a clean bill of health`,
+        answerHealth,
+      );
+    }
 
     return {
       backend: 'lsp-adapter',
@@ -1223,7 +1235,7 @@ export async function lspDiagnostics(query: {
         // that has never reported itself quiescent must not be certifiable as
         // absence — "no results", "file is clean" and "nothing to rename" are
         // all read as facts by callers via isTrustworthyEmpty().
-        health: healthForAnswer(client, intent, sites.length),
+        health: answerHealth,
         indexedAt: new Date(entry.receivedAt).toISOString(),
         staleVsDisk: false,
         indexedCommit: null,

@@ -155,6 +155,7 @@ import {
   normalizeCheckEntries,
   patchExistingCheckEntries,
   splitCarryNoteChecks,
+  splitCarryNoteWalls,
   truncateCarryField,
   withCarryNoteChecks,
 } from '../../carry-note';
@@ -950,6 +951,30 @@ export default defineTool({
               }
             : null;
         /**
+         * EI-21399238191579954: legacy notes can carry more check bytes than the
+         * current cap permits. The append transform preserves those rows, then
+         * front-trims the narrative body to make room; when the rows alone consume
+         * the cap, that trim removes the submitted addendum entirely while the
+         * write still returns `verified:true`. Re-run the exact transform under the
+         * same locked prior and refuse unless the submitted body remains intact.
+         */
+        const appendBodyPreservationGuard: CheckpointGuard | null =
+          !wantsConfirmShrink && didAttemptJoin && joinAddendum
+            ? (priorNote) => {
+                const candidate = checksTransform?.(priorNote, checkpointToStore);
+                const candidateBody = candidate
+                  ? splitCarryNoteWalls(splitCarryNoteChecks(candidate).body).body.trim()
+                  : '';
+                const submitted = joinAddendum.trim();
+                return candidateBody.endsWith(submitted)
+                  ? null
+                  : `append_body_overflow — preserving the carried check rows would trim the submitted append ` +
+                    `body from the ${CHECKPOINT_CAP}-character checkpoint. Refusing the write rather than ` +
+                    'reporting success with the new progress note missing; retire stale legacy checks or shorten ' +
+                    'the carried note before retrying, or pass { confirmShrink: true } only if that loss is intentional.';
+              }
+            : null;
+        /**
          * Armed independently of `isPlainReplace` — that is the EI-21228214077347799 fix.
          * It also covers the shrink-retry below: that retry sets `preservePriorOnShrink`,
          * which makes the checks additive (see `effectiveChecks`), so the same closure —
@@ -974,7 +999,13 @@ export default defineTool({
           : null;
         let res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
           ...(checksTransform ? { transform: checksTransform } : {}),
-          guard: composeGuards(appendBaseGuard, bodyPreservationGuard, overflowGuard, shrinkGuard),
+          guard: composeGuards(
+            appendBaseGuard,
+            bodyPreservationGuard,
+            overflowGuard,
+            appendBodyPreservationGuard,
+            shrinkGuard,
+          ),
           ...depsOpt,
         });
         // EI-20232176364474286: retain the existing guard's no-loss behavior, but do

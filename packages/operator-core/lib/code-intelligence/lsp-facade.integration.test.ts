@@ -367,6 +367,15 @@ describe(`concurrent-start budget ${skipReason}`, () => {
       const infoSpy = vi.spyOn(console, 'info').mockImplementation((...a: unknown[]) => void infos.push(a.join(' ')));
       try {
         await shutdownAllLspClients();
+        // managed-spawn's bounded handoff check reports the expected info
+        // asynchronously after the client exit; keep the spy installed until
+        // that signal arrives instead of racing its 250ms grace window.
+        await vi.waitFor(
+          () => {
+            expect(infos.some((line) => /scope still holds processes|WI-37509/.test(line))).toBe(true);
+          },
+          { interval: 25, timeout: 1_000 },
+        );
       } finally {
         warnSpy.mockRestore();
         infoSpy.mockRestore();

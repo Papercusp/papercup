@@ -146,6 +146,7 @@
     "gen:lib-api": "tsx scripts/gen-lib-api-docs.ts",
     "gen:compaction": "tsx scripts/gen-compaction.ts",
     "gen:compaction:check": "tsx scripts/gen-compaction.ts --check",
+    "lint:post-compaction-recovery-contract": "tsx scripts/check-post-compaction-recovery-contract.ts",
     "docs:preview": "npm run gen:openapi && npm run build:preview -w @papercupai/operator-docs",
     "docs:preview:serve": "npm run serve:preview -w @papercupai/operator-docs",
     "docs:rebuild": "bash scripts/pc-heavy.sh -- npm run build -w @papercupai/operator-docs",

@@ -122,6 +122,31 @@ export const DERIVED_COUPLING_RELATIONS = [
   'blocked-by-me',
   /** Recent DIRECTED coord exchange (broadcasts excluded at the source). */
   'coord-exchange',
+  // ── THE OBLIGATION FAMILY (agent-obligation-coupling-and-consult-liveness-2026-08-25,
+  // P-003). DIRECTIONAL, like `blocks-me`/`blocked-by-me` and for the same reason: the
+  // reader's ACTION differs. A peer who owes you is someone to CHASE; a peer you owe is
+  // work you have not discharged, and it is the one an agent is least likely to discover
+  // on its own.
+  //
+  // Both entries are held to D-054's test for a new relation, stated above:
+  //   (a) a pairwise relation the two agents actually ENTERED — a consult is ASSIGNED by
+  //       the router to a named requester and a named responder, so the edge is recorded
+  //       at the moment it is entered rather than inferred from co-occupancy. This is the
+  //       property `same-fleet` failed: set membership nobody opted into.
+  //   (b) information the base payload cannot express — a roster row cannot say "owes you
+  //       a consult reply, open 14m". Age and direction exist nowhere else on the payload,
+  //       and an obligation without its age invites "as expected" (58-hour means are
+  //       invisible without it).
+  //
+  // ⚠ THESE ARE THE FIRST RELATIONS WHOSE `because` IS BUILT BY A CHECKED RENDERER
+  // (`obligationPhrase`) RATHER THAN AN INLINE TEMPLATE. An obligation missing its age or
+  // its handle degrades to "they owe you something", which reads as informative while
+  // being unactionable — so the renderer REFUSES to emit a partial phrase and the
+  // derivation skips that edge. See coupling-derivation.ts.
+  /** A peer owes ME an outstanding answer/grade/decision — who to chase. */
+  'owes-me',
+  /** I owe a peer — an obligation I entered and have not discharged. */
+  'i-owe',
 ] as const;
 
 export type DerivedCouplingRelation = (typeof DERIVED_COUPLING_RELATIONS)[number];
