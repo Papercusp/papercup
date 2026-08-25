@@ -427,6 +427,34 @@ describe('real-account canary safety harness', () => {
     expect(harness.orphanCensus([])).toMatchObject({ clean: true });
   });
 
+  it('rehydrates an already-registered resource after the teardown deadline without admitting new work', () => {
+    const harness = new WorkspaceHostLiveCanaryHarness(canarySpec(), () => LATER);
+    const resource: WorkspaceHostResourceRef = {
+      target: 'gcp',
+      kind: 'vm',
+      providerId: 'instance-1',
+    };
+
+    expect(() => harness.registerResource({ resource, tags: harness.tags(), createdAt: NOW })).toThrow(
+      'teardown deadline has passed',
+    );
+    expect(() =>
+      harness.restoreRegisteredResource({ resource, tags: harness.tags(), createdAt: NOW }),
+    ).not.toThrow();
+    harness.confirmResourceAbsent({
+      hostId: 'host-1',
+      providerResourceId: 'instance-1',
+      confirmedAbsentAt: LATER,
+      source: 'provider-read',
+    });
+    harness.recordObservedSpend({
+      cents: 1,
+      observedAt: LATER,
+      providerEvidenceRef: 'billing://gcp/delayed',
+    });
+    expect(harness.finalize([], LATER)).toMatchObject({ resourceCount: 1, spentCents: 1 });
+  });
+
   it('requires cost evidence and a clean orphan census before emitting a completion receipt', () => {
     const harness = new WorkspaceHostLiveCanaryHarness(canarySpec(), () => NOW);
     const resource: WorkspaceHostResourceRef = {
