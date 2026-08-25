@@ -1289,3 +1289,158 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb?.reason).toMatch(/do not await a candidate-bound result/i);
   });
 });
+
+describe('EI-21456558908416090: withheld manual checkpoint-run authority', () => {
+  /** The exact live shape: a stale gate verdict, which recommends release:checkpoint-run. */
+  function staleGate(gateOver: Partial<ReleaseTraceGate> = {}) {
+    return input({
+      position: position({
+        positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+      }),
+      gate: {
+        ...input().gate,
+        verdictStale: true,
+        verdictStaleReason: 'no fire in 3h',
+        ...gateOver,
+      },
+    });
+  }
+
+  const withheld = {
+    withheld: true as const,
+    governingRef: 'stable-candidate-related-gate-2026-08-23#D-061',
+    source: 'manual-run-hold' as const,
+    reason: "D-042's never-launch-a-duplicate survives this decision intact.",
+  };
+
+  // ── CONTROLS ───────────────────────────────────────────────────────────────
+  // These two are PERMANENT falsifiability controls, not setup. Without them a
+  // suppression that fired unconditionally — the easiest way to get this wrong, and one that
+  // would silently blind every reader of a healthy pipeline — would pass the whole suite.
+
+  it('CONTROL: with no withheld authority, a stale gate still recommends release:checkpoint-run', () => {
+    const out = buildReleaseTrace(staleGate());
+    expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
+    expect(out.constraints.map((c) => c.code)).not.toContain('manual-checkpoint-authority-withheld');
+  });
+
+  it('CONTROL: withheld:false is authority GRANTED, not withheld', () => {
+    const out = buildReleaseTrace(
+      staleGate({ manualRunAuthority: { ...withheld, withheld: false } }),
+    );
+    expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
+  });
+
+  it('CONTROL: a withheld authority with a blank governingRef does not suppress', () => {
+    // An unattributable prohibition is how an unexplained frozen gate happens. It must not be
+    // able to silently remove the recommendation with nothing naming who to ask.
+    const out = buildReleaseTrace(
+      staleGate({ manualRunAuthority: { ...withheld, governingRef: '   ' } }),
+    );
+    expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
+  });
+
+  // ── THE DEFECT ─────────────────────────────────────────────────────────────
+
+  it('suppresses the release:checkpoint-run recommendation and names the governing decision', () => {
+    const out = buildReleaseTrace(staleGate({ manualRunAuthority: withheld }));
+
+    expect(out.nextVerb?.name).not.toBe('release:checkpoint-run');
+    expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
+    // A bare null would teach the reader nothing and invite them to reach for the forbidden
+    // verb from memory; the reply must say which decision withholds it.
+    expect(out.nextVerb?.reason).toContain('stable-candidate-related-gate-2026-08-23#D-061');
+    expect(out.nextVerb?.reason).toMatch(/MANUAL CHECKPOINT AUTHORITY WITHHELD/);
+  });
+
+  it('generalizes: any governing ref suppresses, not just the decision ids seen so far', () => {
+    // The regression this whole item exists to prevent. The prior implementation typed
+    // governingRef as the D-053 literal, so D-061 fell through. A future D-099 must not.
+    const out = buildReleaseTrace(
+      staleGate({
+        manualRunAuthority: { ...withheld, governingRef: 'some-future-plan-2027-01-01#D-099' },
+      }),
+    );
+    expect(out.nextVerb?.name).toBe('checkpoint:await');
+    expect(out.nextVerb?.reason).toContain('some-future-plan-2027-01-01#D-099');
+  });
+
+  it('guards a SECOND recommendation site: the ahead-of-gate deployed lineage', () => {
+    // Proves the guard sits at the boundary rather than on one branch. Four separate paths
+    // can return release:checkpoint-run; a per-branch fix would leave three armed.
+    const aheadOfGate = input({
+      position: position({
+        positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+        verdictProvenance: {
+          ...position().verdictProvenance,
+          deployOrigin: 'ahead-of-gate',
+        },
+      }),
+    });
+    expect(buildReleaseTrace(aheadOfGate).nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
+
+    const guarded = buildReleaseTrace({
+      ...aheadOfGate,
+      gate: { ...aheadOfGate.gate, manualRunAuthority: withheld },
+    });
+    expect(guarded.nextVerb?.name).toBe('checkpoint:await');
+  });
+
+  it('reports the withholding as a NON-blocking constraint, so a green target still reads ok', () => {
+    // `ok` means "this exact SHA is release-complete". A governance decision about who may fire
+    // the gate by hand says nothing about that, so it must not flip a green, deployed,
+    // parity-matched target to ok:false.
+    const complete = input({
+      position: position({
+        positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      }),
+      gate: { ...input().gate, manualRunAuthority: withheld },
+    });
+    const out = buildReleaseTrace(complete);
+
+    expect(out.ok).toBe(true);
+    expect(out.constraints).toContainEqual(
+      expect.objectContaining({ code: 'manual-checkpoint-authority-withheld', blocking: false }),
+    );
+    expect(
+      out.constraints.find((c) => c.code === 'manual-checkpoint-authority-withheld')?.summary,
+    ).toMatch(/Scheduled gate fires are unaffected/);
+  });
+
+  it('does not double-report when the in-module D-053 consumed authority already applies', () => {
+    // The consumed authority raises its own BLOCKING constraint and suppresses the verb
+    // entirely; adding a second, non-blocking constraint for the same fact would make one
+    // prohibition read as two.
+    const checkpointRun = {
+      active: false,
+      terminalMarker: true,
+      terminalEvidence: {
+        source: 'systemd-exec-stop-post' as const,
+        candidate: sha,
+        serviceResult: 'oom-kill',
+        exitCode: 'killed',
+        exitStatus: 'KILL',
+        abnormal: true,
+      },
+      candidate: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      asOfAgeMs: 0,
+    };
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+          gate: { ...position().gate, checkpointRunInFlight: checkpointRun },
+        }),
+        gate: { ...input().gate, checkpointRunInFlight: checkpointRun, manualRunAuthority: withheld },
+      }),
+    );
+
+    expect(out.constraints).toContainEqual(
+      expect.objectContaining({ code: 'checkpoint-authority-consumed', blocking: true }),
+    );
+    expect(out.constraints.map((c) => c.code)).not.toContain('manual-checkpoint-authority-withheld');
+    expect(out.nextVerb).toBeNull();
+  });
+});
