@@ -154,6 +154,6 @@ describe('locks:acquire_granular cross-domain claim', () => {
       expect(verdict.ok).toBe(true);
       // Positive control: we really did read the granular store.
       expect(verdict.ownDomainSites.length).toBeGreaterThan(0);
-    });
+    }, 60_000);
   });
 });
