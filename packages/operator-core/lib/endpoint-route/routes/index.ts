@@ -424,6 +424,7 @@ import workspaces from './workspaces/index';
 import workspaceById from './workspaces/by-id';
 import workspaceSwitch from './workspaces/switch';
 import workspaceHostAudit from './workspace-hosts/audit';
+import workspaceHostInitialize from './workspace-hosts/initialize';
 import userActionsBySlug from './user-actions/by-slug';
 import userActionsLog from './user-actions/log';
 import elevenlabsWebhook from './elevenlabs/webhook';
