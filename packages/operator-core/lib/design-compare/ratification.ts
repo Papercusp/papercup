@@ -47,6 +47,21 @@ export interface ReferenceProvenance {
    * derived from, so the audit trail back to the original mockup survives.
    */
   readonly derivedFrom?: string;
+  /**
+   * The rendering host this reference IMAGE was captured on (P-011, D-023), as
+   * `render-host.ts`'s canonical string. Absent when the reference was not
+   * captured at all — an upload or a Figma export — which is also why the
+   * classes that carry one are exactly the classes that can gate.
+   *
+   * This field is what makes enforcement scopeable. The shipped threshold
+   * (3.3816e-5, about 34 pixels of a 1280x800 render) was derived from
+   * same-host noise only, and D-021 recorded that enforcing it across hosts
+   * "fails correct work on the first runner whose fonts differ". A reference
+   * with no recorded host is therefore never enforced — which also gives
+   * P-011's "newly ratified design work only" for free, from a measured
+   * property rather than a date comparison.
+   */
+  readonly capturedOnRenderHost?: string;
 }
 
 /**
