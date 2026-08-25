@@ -221,6 +221,35 @@ describe('work_items:get — checkpoint field', () => {
     expect(r.priorWorkWarning).toBeUndefined();
   });
 
+  it('retains the never-checkpointed warning for a terminal item with no completion evidence', async () => {
+    // EI-21468098008124968: this is the mutation control for the fourth
+    // `completionSupersedesClearedCheckpoint` conjunct. A settled state plus a
+    // successful checkpoint:null read is NOT enough to infer that completion
+    // harvested the checkpoint — only stored terminal evidence proves that
+    // boundary. Removing the evidence conjunct must make this case fail.
+    getWorkItem.mockResolvedValue({
+      id: 'WI-terminal-without-evidence',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'terminal item without completion evidence',
+      state: 'done',
+      terminalCompletionEvidence: null,
+    });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
+    getClaimTimePriorWorkHint.mockResolvedValue({
+      lastReleasedBy: 'su-prior',
+      releasedAtMs: Date.now() - 1000,
+      attempts: 1,
+      priorWorkers: ['su-prior'],
+    });
+
+    const r = await one({ id: 'WI-terminal-without-evidence' });
+
+    expect(r).toMatchObject({ ok: true, checkpoint: null });
+    expect(r.priorWorkWarning).toMatch(/NO checkpoint was ever written/);
+  });
+
   it('retains the never-checkpointed warning for open prior work even when evidence is present', async () => {
     getWorkItem.mockResolvedValue({
       id: 'WI-open',
