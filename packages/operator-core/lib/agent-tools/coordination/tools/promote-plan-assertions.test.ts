@@ -183,3 +183,84 @@ describe('persistPlanAssertions — failures are reported, never swallowed', () 
     expect(result.errors[0]).not.toContain('undefined');
   });
 });
+
+// ---------------------------------------------------------------------------
+// FALSIFIABILITY CONTROLS
+//
+// Everything above passes today. That is not evidence the assertions can
+// DISCRIMINATE — a test suite that would also pass against the defect it was
+// written to catch is decoration. Rather than mutate the shared tree to find
+// out (git-sync sweeps it on a timer and would commit the mutant), the broken
+// implementations live here permanently: the contract is stated once and run
+// against the real seam AND against each way it has plausibly been written
+// wrong. The real seam must pass it; every control must fail it.
+// ---------------------------------------------------------------------------
+
+type PersistFn = (opts: Parameters<typeof persistPlanAssertions>[0]) => Promise<{ written: number; errors: string[] }>;
+
+/** The fail-closed contract, stated once so both the subject and the controls run the identical assertions. */
+async function checkFailClosedContract(persist: PersistFn): Promise<void> {
+  const { sql, attempted } = makeSql((valId) => (valId === 'VAL-2' ? new Error('unique violation') : null));
+  const assertions = [assertion('VAL-1'), assertion('VAL-2'), assertion('VAL-3')];
+
+  const result = await persist({ ...BASE, sql, assertions });
+
+  expect(result.errors.length).toBeGreaterThan(0); // a partial failure is a REFUSAL signal
+  expect(result.errors[0]).toContain('VAL-2'); // ...attributed to the assertion that failed
+  expect(result.written).toBe(2); // ...with the survivors actually persisted
+  expect(attempted).toEqual(['VAL-1', 'VAL-2', 'VAL-3']); // ...and no assertion skipped
+}
+
+/** THE ORIGINAL DEFECT: the failure is downgraded to a warning and never reaches the caller. */
+const swallowsErrors: PersistFn = async ({ sql, assertions }) => {
+  let written = 0;
+  for (const a of assertions) {
+    try {
+      await sql`INSERT ${a.valId}`;
+      written++;
+    } catch {
+      /* "best effort" — the exact silence P-003 removed */
+    }
+  }
+  return { written, errors: [] };
+};
+
+/** Reports the first failure, then stops — so `errors` under-counts the dangling claims. */
+const abortsOnFirstError: PersistFn = async ({ sql, assertions }) => {
+  let written = 0;
+  const errors: string[] = [];
+  for (const a of assertions) {
+    try {
+      await sql`INSERT ${a.valId}`;
+      written++;
+    } catch (e) {
+      errors.push(`${a.valId}: ${e instanceof Error ? e.message : String(e)}`);
+      break;
+    }
+  }
+  return { written, errors };
+};
+
+/** Owns policy by throwing — collapsing a per-assertion list into one opaque message. */
+const throwsOnError: PersistFn = async ({ sql, assertions }) => {
+  let written = 0;
+  for (const a of assertions) {
+    await sql`INSERT ${a.valId}`;
+    written++;
+  }
+  return { written, errors: [] };
+};
+
+describe('persistPlanAssertions — the contract is falsifiable', () => {
+  it('the real seam SATISFIES the fail-closed contract', async () => {
+    await expect(checkFailClosedContract(persistPlanAssertions)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ['swallows errors into a warning (the original defect)', swallowsErrors],
+    ['aborts on the first error, under-counting the rest', abortsOnFirstError],
+    ['throws instead of reporting', throwsOnError],
+  ])('a control that %s FAILS the contract', async (_name, impl) => {
+    await expect(checkFailClosedContract(impl)).rejects.toThrow();
+  });
+});
