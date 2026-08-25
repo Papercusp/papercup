@@ -32,6 +32,53 @@ type QuerySql = Sql | TransactionSql;
 
 export const CONVERSATION_KINDS: readonly ConversationKind[] = ['question', 'discussion', 'consult'];
 
+/**
+ * The tool that opened a conversation (EI-21462599108204160).
+ *
+ * This is DECLARED by each caller, never inferred. It has to be: the only
+ * previous record of which tool asked was the Decision-tier escalation twin
+ * `coord:ask-owner` writes, and `resolveConversation` closes that twin when the
+ * question is answered — so attribution was destroyed by the act of answering,
+ * and the answer rate per tool was the one number this table could not produce.
+ *
+ * A UNION rather than free text so a typo is a compile error and the values
+ * stay enumerable for the group-by this exists to serve. Names are the
+ * USER-FACING tool names: note the coord-op internally registered as
+ * `coord:ask` is exposed as the agent tool `coord:ask-owner`, and is distinct
+ * from the agent-to-agent `coord:ask` in tools/ask.ts (coord-ops/agent-tools.ts:101).
+ */
+export type ConversationProducer =
+  | 'coord:ask-owner'
+  | 'coord:ask'
+  | 'coord:message-agent'
+  | 'coord:thread-open'
+  | 'conversations:post'
+  | 'conversations:supersede'
+  | 'consult:get_feedback'
+  | 'scout:goal-consult'
+  | 'cross-hive-boundary'
+  | 'test';
+
+const CONVERSATION_PRODUCERS: ReadonlySet<string> = new Set<ConversationProducer>([
+  'coord:ask-owner',
+  'coord:ask',
+  'coord:message-agent',
+  'coord:thread-open',
+  'conversations:post',
+  'conversations:supersede',
+  'consult:get_feedback',
+  'scout:goal-consult',
+  'cross-hive-boundary',
+  'test',
+]);
+
+/** Narrow a stored/federated `producer` back to the union. A row written by an
+ *  older peer (or before this column existed) carries NULL or a name this build
+ *  does not know — both are legitimately "unattributed", never a crash. */
+export function isConversationProducer(v: unknown): v is ConversationProducer {
+  return typeof v === 'string' && CONVERSATION_PRODUCERS.has(v);
+}
+
 export interface ConversationRow {
   id: string;
   kind: ConversationKind;
@@ -45,6 +92,10 @@ export interface ConversationRow {
   accepted_post_id: number | null;
   capture_target: string | null;
   promoted_issue_id: string | null;
+  /** The tool that opened this conversation. NULL for rows written before
+   *  attribution existed, or federated from a peer running older code — the
+   *  open path requires it, so a live writer cannot leave it unset. */
+  producer: string | null;
   /** The replacement conversation when this ask was retracted. */
   superseded_by: string | null;
   /** ISO-8601. */
@@ -62,6 +113,10 @@ export interface CreateConversationInput {
   asker_id: string;
   title?: string | null;
   body: string;
+  /** REQUIRED, and deliberately not defaulted: every caller already knows which
+   *  tool it is, and a default here is what would silently re-open the
+   *  attribution gap this column closes (EI-21462599108204160). */
+  producer: ConversationProducer;
   /** ISO-8601 create time (host clock). */
   created_ts: string;
 }
@@ -127,6 +182,7 @@ interface ConversationRowDb {
   accepted_post_id: string | number | null;
   capture_target: string | null;
   promoted_issue_id: string | null;
+  producer: string | null;
   superseded_by: string | null;
   created_at: unknown;
   updated_at: unknown;
@@ -148,6 +204,7 @@ function toRow(r: ConversationRowDb): ConversationRow {
     accepted_post_id: r.accepted_post_id == null ? null : Number(r.accepted_post_id),
     capture_target: r.capture_target,
     promoted_issue_id: r.promoted_issue_id,
+    producer: r.producer,
     superseded_by: r.superseded_by,
     created_ts: tsToIso(r.created_at),
     updated_ts: tsToIso(r.updated_at),
@@ -157,7 +214,7 @@ function toRow(r: ConversationRowDb): ConversationRow {
 }
 
 const SELECT_COLS = `id, kind, scope, harness_slug, asker_id, title, body, state,
-  accepted_answer, accepted_post_id, capture_target, promoted_issue_id, superseded_by,
+  accepted_answer, accepted_post_id, capture_target, promoted_issue_id, producer, superseded_by,
   created_at, updated_at, resolved_at, superseded_at`;
 
 export interface SupersedeStoreResult {
@@ -195,9 +252,9 @@ export class PgConversationStore {
     const sql = this.opts.getSql();
     await sql`
       INSERT INTO harness_shared.coord_conversations
-        (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, created_at, updated_at)
+        (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, producer, created_at, updated_at)
       VALUES (${this.ws}, ${input.id}, ${input.kind}, ${input.scope}, ${input.harness_slug ?? null},
-              ${input.asker_id}, ${input.title ?? null}, ${input.body}, ${input.created_ts}, ${input.created_ts})
+              ${input.asker_id}, ${input.title ?? null}, ${input.body}, ${input.producer}, ${input.created_ts}, ${input.created_ts})
       ON CONFLICT (workspace_id, id) DO NOTHING`;
     const row = await this.get(input.id);
     if (!row) throw new Error(`coord_conversations: failed to read back conversation ${input.id}`);
@@ -421,6 +478,7 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
       accepted_post_id bigint,
       capture_target   text,
       promoted_issue_id text,
+      producer         text,
       superseded_by text,
       created_at       timestamptz NOT NULL DEFAULT now(),
       updated_at       timestamptz NOT NULL DEFAULT now(),
@@ -438,7 +496,8 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
   await sql`
     ALTER TABLE harness_shared.coord_conversations
       ADD COLUMN IF NOT EXISTS superseded_by text,
-      ADD COLUMN IF NOT EXISTS superseded_at timestamptz`;
+      ADD COLUMN IF NOT EXISTS superseded_at timestamptz,
+      ADD COLUMN IF NOT EXISTS producer text`;
   await sql`ALTER TABLE harness_shared.coord_conversations DROP CONSTRAINT IF EXISTS coord_conversations_state_check`;
   await sql`
     ALTER TABLE harness_shared.coord_conversations
