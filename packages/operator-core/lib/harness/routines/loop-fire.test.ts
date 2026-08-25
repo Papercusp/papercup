@@ -356,6 +356,26 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       warn.mockRestore();
     });
 
+    it('a zero-row re-arm CAS fails open and delivers instead of silently stranding infinity', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          {
+            eventKey: 'work-item:claimable',
+            expiresTs: new Date(Date.now() + 5 * 60_000).toISOString(),
+            createdAt: new Date().toISOString(),
+          },
+        ]) as never,
+        rescheduleSuppressedWake: vi.fn(async () => false) as never,
+      });
+      const res = await fireLoopWake(baseInput, deps);
+
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.wake).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('compare-and-set matched no parked pure-loop row'));
+      warn.mockRestore();
+    });
+
     it('an active blocking await → fire WITHHELD, no wake, nothing recorded (silent, benign skip)', async () => {
       const deps = mkDeps({
         listBlockingAwaits: vi.fn(async () => [

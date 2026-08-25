@@ -765,11 +765,23 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
       let rearmFailed = false;
       if (decision.resumeAtMs != null) {
         try {
-          await rescheduleSuppressedWake({
+          const rearmed = await rescheduleSuppressedWake({
             routineId: input.routineId,
             resumeAtMs: decision.resumeAtMs,
             sql: input.sql,
           });
+          if (!rearmed) {
+            // A false result means the parked row did not satisfy the repair CAS. The
+            // caller cannot prove that another writer installed a finite schedule, so
+            // treating this as a successful suppression can strand next_fire_at at
+            // infinity just as surely as a thrown write. Fail open and let the normal
+            // wake completion path establish the next finite schedule.
+            rearmFailed = true;
+            console.warn(
+              `[loop-fire] await suppression re-arm failed for '${input.routineId}' — delivering wake: ` +
+                'compare-and-set matched no parked pure-loop row',
+            );
+          }
         } catch (error) {
           // The row is already parked by claimDueRoutine. If this repair write fails, do not
           // return the old silent-withhold result: fail open and deliver this wake so the

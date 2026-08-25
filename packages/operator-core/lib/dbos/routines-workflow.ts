@@ -209,6 +209,10 @@ async function routineFireImpl(
           if (!res.fired) {
             console.warn(`[routines] loop ${routineId} fire WITHHELD (${res.reason}: ${res.detail ?? ''})`);
           }
+          // The step return is DBOS's durable operation_output. Preserve the full
+          // LoopFireResult so a withheld/failed fire is forensic evidence rather than
+          // an indistinguishable successful step with an undefined output.
+          return res;
         },
         { name: 'loop:wake' },
       );
