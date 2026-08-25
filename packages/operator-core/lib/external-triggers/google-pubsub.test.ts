@@ -1,3 +1,6 @@
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   acknowledgeGoogleGmailNotifications,
@@ -146,5 +149,99 @@ describe('provisionGoogleGmailPubSub', () => {
     ]);
     await expect(acknowledgeGoogleGmailNotifications(INPUT, ['ack-1', 'ack-2', 'ack-1'], deps)).resolves.toBe(2);
     expect(fetchMock.mock.calls.every(([url]) => String(url).includes(SUBSCRIPTION_ID))).toBe(true);
+  });
+});
+
+describe('Pub/Sub authorization failures name the denied principal', () => {
+  /**
+   * Regression guard for WI-41639. Google answers an unauthorized Pub/Sub call
+   * with a bare "User not authorized to perform this action." naming no
+   * principal, which is indistinguishable from an expired *user* login — the
+   * ambiguity that left Gmail trigger source 62b7f9e2 degraded for ~12h under a
+   * wall that offered "interactive gcloud reauth OR a Pub/Sub grant" as equal
+   * options. Only the grant is real: this provisioner authenticates as the
+   * GOOGLE_APPLICATION_CREDENTIALS service account and never touches gcloud.
+   */
+  async function withKeyFile<T>(
+    body: (path: string) => Promise<T>,
+    key: Record<string, unknown> = {
+      project_id: 'active-alcove-504205-q3',
+      client_email: 'omp-vertex@active-alcove-504205-q3.iam.gserviceaccount.com',
+    },
+  ): Promise<T> {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'pubsub-key-'));
+    const path = join(dir, 'sa.json');
+    await fs.writeFile(path, JSON.stringify(key), 'utf8');
+    try {
+      return await body(path);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  function denying(status: number) {
+    return vi.fn(async () =>
+      json({ error: { message: 'User not authorized to perform this action.' } }, status),
+    );
+  }
+
+  it('appends principal, project, permission, and the exact grant to a 403', async () => {
+    const message = await withKeyFile(async (serviceAccountPath) => {
+      const error = await provisionGoogleGmailPubSub(
+        { ...INPUT, serviceAccountPath },
+        { fetch: denying(403) as unknown as typeof fetch, getAccessToken: async () => 'access-token' },
+      ).catch((caught: unknown) => caught as Error);
+      return (error as Error).message;
+    });
+
+    // Prefix preserved byte-for-byte so existing matchers keep working.
+    expect(message.startsWith('google_pubsub_get_topic_403:User not authorized to perform this action.')).toBe(true);
+    expect(message).toContain('denied_principal=omp-vertex@active-alcove-504205-q3.iam.gserviceaccount.com');
+    expect(message).toContain('project=active-alcove-504205-q3');
+    expect(message).toContain('missing_permission=pubsub.topics.get');
+    expect(message).toContain('required_role=roles/pubsub.admin');
+    expect(message).toContain('--role=roles/pubsub.admin');
+  });
+
+  it('leaves non-authorization failures untouched', async () => {
+    const message = await withKeyFile(async (serviceAccountPath) => {
+      const error = await provisionGoogleGmailPubSub(
+        { ...INPUT, serviceAccountPath },
+        { fetch: denying(503) as unknown as typeof fetch, getAccessToken: async () => 'access-token' },
+      ).catch((caught: unknown) => caught as Error);
+      return (error as Error).message;
+    });
+
+    expect(message).toContain('google_pubsub_get_topic_503');
+    expect(message).not.toContain('denied_principal');
+    expect(message).not.toContain('required_role');
+  });
+
+  it('still reports a 403 when the key file has no client_email', async () => {
+    const message = await withKeyFile(
+      async (serviceAccountPath) => {
+        const error = await provisionGoogleGmailPubSub(
+          { ...INPUT, serviceAccountPath },
+          { fetch: denying(403) as unknown as typeof fetch, getAccessToken: async () => 'access-token' },
+        ).catch((caught: unknown) => caught as Error);
+        return (error as Error).message;
+      },
+      { project_id: 'active-alcove-504205-q3' },
+    );
+
+    expect(message).toContain('denied_principal=unresolved');
+    expect(message).toContain('required_role=roles/pubsub.admin');
+  });
+
+  it('does not require a readable key file when the caller supplies projectId', async () => {
+    const error = await provisionGoogleGmailPubSub(INPUT, {
+      fetch: denying(403) as unknown as typeof fetch,
+      getAccessToken: async () => 'access-token',
+    }).catch((caught: unknown) => caught as Error);
+
+    // INPUT.serviceAccountPath is deliberately nonexistent: the identity read is
+    // best-effort, so provisioning still reaches the API and fails on the 403.
+    expect((error as Error).message).toContain('google_pubsub_get_topic_403');
+    expect((error as Error).message).toContain('denied_principal=unresolved');
   });
 });
