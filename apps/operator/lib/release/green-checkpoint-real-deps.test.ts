@@ -455,8 +455,9 @@ describe("WI-41720 / D-073: dependency-generation fatal path reaches the real CL
         await emitTerminalCheckpointResult(result, {
           writeHuman: () => observed.push("human"),
           writeMarker: (line) => observed.push(`marker:${line}`),
-          emitInconclusive: async (terminal) =>
-            observed.push(`event:${terminal.candidate}:${terminal.green}`),
+          emitInconclusive: async (terminal) => {
+            observed.push(`event:${terminal.candidate}:${terminal.green}`);
+          },
           // Use the production retirement policy, not a look-alike cleanup callback. This is
           // what guards skipped-locked from clearing another run's marker while requiring every
           // true terminal result (including this crash) to retire its exact in-flight candidate.
