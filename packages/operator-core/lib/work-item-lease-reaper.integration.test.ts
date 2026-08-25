@@ -211,6 +211,10 @@ describe('gatherProtectedSessionOwners includeClaimHolders toggle (the circulari
   it('an armed loop protects its same-owner driving claim between warm wakes, independently of claim-holder protection', async () => {
     const owner = 'su-warm-loop-owner';
     await seedFeature('F-WARM-LOOP-PROTECT', owner, 5 * GRACE_MS);
+    // The recorded pid is affirmatively dead and the heartbeat is stale: this
+    // proves the pid-confirmation pass cannot undo the loop-authority protection
+    // merely because one native incarnation ended between warm wakes.
+    await seedPresence(owner, 5 * GRACE_MS, { host: hostname(), pid: 999_999_999 });
     await seedLoop(owner);
 
     const protectedOwners = await gatherProtectedSessionOwners(sql, { includeClaimHolders: false });

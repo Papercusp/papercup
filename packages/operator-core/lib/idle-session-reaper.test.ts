@@ -181,6 +181,16 @@ describe('planDeadPidUnprotect (EI-21434105273882121 — activity veto over the 
     expect(out.vetoedByActivity).toEqual([]);
   });
 
+  it('vetoes the dead-incarnation probe when the coordination owner still has an armed engine loop', () => {
+    const out = planDeadPidUnprotect(
+      [{ ownerId: 'su-warm-loop', host: 'box', pid: 10, activeFresh: false, loopActive: true }],
+      probe,
+    );
+    expect(out.unprotect).toEqual([]);
+    expect(out.vetoedByActivity).toEqual([]);
+    expect(out.vetoedByLoop).toEqual(['su-warm-loop']);
+  });
+
   it('never lists an owner whose probe is alive or inconclusive, whatever its activity freshness', () => {
     const out = planDeadPidUnprotect(
       [
