@@ -300,7 +300,10 @@ function scheduleSessionEndLeaseReleaseAttempt(
         // protected for this ended row, so retrying would only add timers.
         if (result.reason === 'owner-resumed') return;
         if (result.reason === 'owner-live') {
-          const maxRetries = Math.max(0, opts.maxOwnerLiveRetries ?? SESSION_END_LEASE_RELEASE_MAX_OWNER_LIVE_RETRIES);
+          const maxRetries = Math.max(
+            0,
+            opts.maxOwnerLiveRetries ?? SESSION_END_LEASE_RELEASE_MAX_OWNER_LIVE_RETRIES,
+          );
           if (ownerLiveRetries < maxRetries) {
             scheduleSessionEndLeaseReleaseAttempt(advSessionId, opts, ownerLiveRetries + 1);
           } else {
