@@ -449,30 +449,25 @@ async function mutateStoredQualification(
       }
       const transition = change(current);
       if (transition.status !== 'updated') return transition;
-      const reconciliation =
+      const predecessor =
         options.successorInput &&
         current &&
         isTerminalQualificationOutcome(current.outcome) &&
         current.attemptId !== transition.transaction.attemptId
+          ? current
+          : null;
+      const reconciliation =
+        predecessor && options.successorInput
           ? assessTerminalRepairQueueReconciliation(
-              current,
+              predecessor,
               options.successorInput,
               metadata.repair_queue,
             )
           : null;
-      // `reconciliation` is only produced from a parsed predecessor. Keep that
-      // runtime invariant explicit so the conflict branches below cannot
-      // accidentally return a nullable transaction if this logic is refactored.
-      if (reconciliation && !current) {
-        return {
-          status: 'unreadable' as const,
-          error: 'repair queue reconciliation has no predecessor qualification',
-        };
-      }
       if (reconciliation?.status === 'blocked') {
         return {
           status: 'conflict' as const,
-          transaction: current,
+          transaction: predecessor!,
           repairQueueReconciliation: reconciliation,
         };
       }
@@ -501,7 +496,7 @@ async function mutateStoredQualification(
         if (updatedRows.length === 0) {
           return {
             status: 'conflict' as const,
-            transaction: current,
+            transaction: predecessor!,
             repairQueueReconciliation: {
               ...reconciliation,
               status: 'blocked',
