@@ -20,7 +20,8 @@
  * Hygiene: mandatory TTL (default 7d), per-scope cap, expiry sweep on the
  * routines tick. The cap evicts by the ranking at the ORDER BY around L1221 —
  * confidence, then the remaining fraction of declared TTL, with
- * `updated_at DESC` only as a tiebreak. It is NOT
+ * `updated_at DESC` only as a tiebreak. An ordinary write that would evict
+ * another author's `verified` fact is refused before insertion. It is NOT
  * "LRU-ish / oldest-updated", which is what this line said until 2026-08-04
  * and which stopped being true at WI-7292; two agents chased that stale
  * sentence to opposite wrong conclusions about a live eviction. Read the
@@ -1371,6 +1372,27 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   const recheck = normalizeFactRecheck(input.recheck);
   const dependsOn = normalizeFactDependencies(input.dependsOn);
   const claim = input.claim && typeof input.claim === 'object' ? input.claim : null;
+
+  // EI-21442182972969040: an ordinary at-cap write must not silently destroy
+  // another author's verified fact. Run this admission check BEFORE the
+  // append/supersede statement, so a refusal leaves both the incoming fact and
+  // the protected incumbent untouched. The tool layer already places the full
+  // multi-query write in boundedOrgTxn; this pre-write check also keeps direct
+  // store callers from committing a fact before learning that its cap cost is
+  // unacceptable. `previewFactCapImpact` remains the explicit dry-run surface
+  // and typed exempt slots bypass this guard because they take no cap seat.
+  if (capPartition === 'ordinary') {
+    const protectedVictim = await findCrossAuthorVerifiedCapVictim(input, sql, cap);
+    if (protectedVictim) {
+      throw new InvalidInputError(
+        `facts:assert — REFUSED before write: the ordinary ${FACTS_PER_SCOPE_CAP}-fact cap would evict ` +
+          `another author's verified fact "${protectedVictim.key}" (owner ${protectedVictim.created_by}). ` +
+          'No fact was written. Use dryRun:true to inspect the cap cost, narrow the scope, or coordinate with ' +
+          'the fact owner before retrying.',
+      );
+    }
+  }
+
   // P-008 (a): APPEND-VERSIONING, not upsert-in-place (migration 689).
   //
   // This used to be ON CONFLICT DO UPDATE SET body = EXCLUDED.body — which
@@ -2075,6 +2097,50 @@ function capPopulationPredicate(
          AND ${measurementPartition}`;
 }
 
+function isFactCapExempt(input: Pick<AssertFactInput, 'key' | 'kind'>): boolean {
+  const key = input.key.trim();
+  return (
+    input.kind === 'convention' ||
+    key.startsWith(WALL_KEY_PREFIX) ||
+    key.startsWith(DEAD_END_KEY_PREFIX) ||
+    key.startsWith(GUARD_RAIL_KEY_PREFIX)
+  );
+}
+
+/** Find the first protected victim an ordinary write would evict, without writing. */
+async function findCrossAuthorVerifiedCapVictim(
+  input: AssertFactInput,
+  sql: Sql,
+  cap: number,
+): Promise<{ key: string; confidence: string | null; created_by: string } | null> {
+  if (isFactCapExempt(input)) return null;
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
+  const key = input.key.trim();
+  const rows = await sql<{ key: string; confidence: string | null; created_by: string }[]>`
+    SELECT doomed.key, doomed.confidence, doomed.created_by
+      FROM (
+        SELECT key, confidence, created_by
+          FROM harness_shared.agent_facts
+         WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', 'ordinary')}
+           AND key <> ${key}
+         ORDER BY CASE confidence
+                    WHEN 'verified'    THEN 0
+                    WHEN 'provisional' THEN 1
+                    WHEN 'suspected'  THEN 2
+                    ELSE 1
+                  END ASC,
+                  (EXTRACT(epoch FROM (expires_at - now()))
+                     / GREATEST(EXTRACT(epoch FROM (expires_at - created_at)), 1)) DESC,
+                  updated_at DESC
+         OFFSET ${Math.max(0, cap - 1)}
+      ) AS doomed
+     WHERE doomed.confidence = 'verified'
+       AND doomed.created_by <> ${input.createdBy}
+     LIMIT 1`;
+  return rows[0] ?? null;
+}
+
 /**
  * What an assert WOULD cost, computed WITHOUT writing anything
  * (EI-20515478467800187).
@@ -2128,17 +2194,13 @@ export async function previewFactCapImpact(
   if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
   const ws = input.workspaceId ?? activeWorkspaceId();
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
-  const capPartition: FactCapPartition = input.subjectVolatile === true ? 'volatile' : 'ordinary';
+  const capPartition: FactCapPartition = input.subjectVolatile === true || Boolean(input.measuredAt?.trim()) ? 'volatile' : 'ordinary';
   const cap = factCapFor(capPartition);
 
   // The exemptions are the SAME three the cap population excludes. Stated here
   // in TS because the row does not exist yet to be filtered by SQL — if you
   // change capPopulationPredicate's exemptions, change these in the same edit.
-  const exempt =
-    input.kind === 'convention' ||
-    key.startsWith(WALL_KEY_PREFIX) ||
-    key.startsWith(DEAD_END_KEY_PREFIX) ||
-    key.startsWith(GUARD_RAIL_KEY_PREFIX);
+  const exempt = isFactCapExempt(input);
 
   const population = await sql<
     {
