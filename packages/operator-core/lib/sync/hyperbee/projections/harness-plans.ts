@@ -333,7 +333,8 @@ async function writeToPg(
     await sql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, content_hash, version,
-         title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema, forced_past, supersedes, superseded_by,
+         title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
+       output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
          archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
       VALUES
         (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
@@ -356,7 +357,8 @@ async function writeToPg(
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version,
-       title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema, forced_past, supersedes, superseded_by,
+       title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
+       output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
        archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
@@ -364,6 +366,11 @@ async function writeToPg(
        -- jsonb: bind via JSON.stringify(x)::text::jsonb (sql.json throws under getOrgPg)
        ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
        ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
+       ${row.output_schema == null ? null : JSON.stringify(row.output_schema)}::text::jsonb,
+       -- property_schema and properties are NOT NULL DEFAULT '{}' locally, so an
+       -- absent wire value must land as '{}' and never as NULL.
+       COALESCE(${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb, '{}'::jsonb),
+       COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
        ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
        ${row.supersedes}, ${row.superseded_by},
        ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
@@ -383,6 +390,18 @@ async function writeToPg(
       template_data  = EXCLUDED.template_data,
       promote_policy = EXCLUDED.promote_policy,
       input_schema   = EXCLUDED.input_schema,
+      output_schema  = EXCLUDED.output_schema,
+      -- NOT EXCLUDED for these two. Their INSERT coerces an absent wire value to
+      -- '{}', so EXCLUDED cannot distinguish "peer sent empty" from "peer omitted
+      -- the key" — taking it blindly would let a peer predating these columns
+      -- overwrite real local properties with an empty object. Bind the raw
+      -- parameter again instead and fall back to the row already stored.
+      property_schema = COALESCE(
+        ${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb,
+        harness_shared.harness_plans.property_schema),
+      properties      = COALESCE(
+        ${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb,
+        harness_shared.harness_plans.properties),
       forced_past    = EXCLUDED.forced_past,
       supersedes    = EXCLUDED.supersedes,
       superseded_by = EXCLUDED.superseded_by,

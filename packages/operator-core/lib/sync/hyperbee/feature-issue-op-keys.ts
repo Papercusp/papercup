@@ -475,6 +475,12 @@ function toPlanValue(row: Record<string, unknown>): HarnessPlanRow {
     template_data: row.template_data ?? null,
     promote_policy: row.promote_policy ?? null,
     input_schema: row.input_schema ?? null,
+    // EI-21467654382027859 — same rationale as input_schema: the declared OUTPUT
+    // shape, the property schema and the property VALUES are all part of the
+    // plan's definition, and were landing NULL/'{}' on every peer.
+    output_schema: row.output_schema ?? null,
+    property_schema: row.property_schema ?? null,
+    properties: row.properties ?? null,
     forced_past: row.forced_past ?? null,
     supersedes: Array.isArray(row.supersedes) ? row.supersedes.filter((s): s is string => typeof s === 'string') : [],
     superseded_by: strOrNull(row.superseded_by),
