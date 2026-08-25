@@ -898,8 +898,13 @@ function projectCodeRunSummaryDepthBoundary(
 
   const projected: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (CODE_RUN_SUMMARY_HANDLE_KEYS.has(key) || CODE_RUN_SUMMARY_HANDLE_CONTEXT_KEYS.has(key)) {
-      if (!isCodeRunSummaryScalar(entry)) continue;
+    // EI-21382842145185659: ordinary nested records (for example rows returned by
+    // dev:pg_query) are DATA, not MCP launch handles. The old handle-context
+    // whitelist kept only `status`, so a large row batch silently changed from
+    // `{ id, invoked_at, tool_name, status, ... }` to `{ status }`. Preserve every
+    // scalar field at the boundary, while still clipping strings and leaving nested
+    // values to the specialized `content` handling below.
+    if (isCodeRunSummaryScalar(entry)) {
       projected[key] =
         typeof entry === 'string'
           ? clipCodeRunSummaryString(entry, `${path}.${key}`, options.stringChars, stats)
