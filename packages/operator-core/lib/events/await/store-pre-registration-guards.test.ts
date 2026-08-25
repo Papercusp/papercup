@@ -43,7 +43,9 @@ describe('events:await pre-registration store guards', () => {
     await expect(cancelAwaitsForSubscribersOnKeys(['sub-a'], ['gate:test'])).resolves.toBe(1);
 
     expect(h.boundedOrgTxn).toHaveBeenCalledWith(expect.any(Function), boundedOptions);
-    expect(h.tx).toHaveBeenCalledTimes(2);
+    // Two optional SQL fragments (`once` + note scope) are composed through
+    // the same tagged-template seam before the UPDATE itself executes.
+    expect(h.tx).toHaveBeenCalledTimes(3);
     expect(h.rawSql).not.toHaveBeenCalled();
   });
 });

@@ -139,9 +139,9 @@ describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
   // rejection never said so, and "the documented since filter is missing" was
   // filed 10+ times. The authored redirect makes the rejection itself name
   // where a time-bounded read lives; the description steers upfront.
-  const redirectKeys = ['since', 'since_ts'] as const;
+  const redirectKeys = ['since'] as const;
 
-  it('authors a cross-tool redirect to coord:feed for since/since_ts', () => {
+  it('authors a cross-tool redirect to coord:feed for since', () => {
     for (const key of redirectKeys) {
       const redirect = inboxTool.guidance?.argRedirects?.[key];
       expect(redirect, `argRedirects.${key}`).toBeDefined();
@@ -160,7 +160,7 @@ describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
     }
   });
 
-  it('keeps since/since_ts UNDECLARED on the inbox schema (redirects fire only for unknown keys)', () => {
+  it('keeps since UNDECLARED on the inbox schema (redirects fire only for unknown keys)', () => {
     const shape = (inboxTool.args as { shape: Record<string, unknown> }).shape;
     for (const key of redirectKeys) {
       expect(shape, `inbox must not declare \`${key}\``).not.toHaveProperty(key);
