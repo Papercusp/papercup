@@ -411,6 +411,25 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('returns the routines pause metadata redirect for a paused_reason guess', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "paused_reason" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      { table: 'harness_shared.routines', columns: ['metadata: jsonb', 'active: boolean'] },
+    ]);
+    const res = await pgQueryTool.handler(
+      {
+        sql: "SELECT paused_reason FROM harness_shared.routines WHERE workspace_id = 'ws'",
+      } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42703',
+      schemaColumn: expect.stringContaining("metadata->'pause'->>'reason'"),
+    });
+  });
+
   it('redirects the legacy result_json guess to tool_invocations output columns', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('column "result_json" does not exist'), { code: '42703' }),

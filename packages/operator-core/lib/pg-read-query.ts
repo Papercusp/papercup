@@ -705,12 +705,11 @@ export function buildDerivedColumnRedirect(rawSql: string, errorMessage: string)
 }
 
 /**
- * A small registry for physical-column names that are routinely confused with
- * the platform vocabulary. Unlike a derived-column redirect, these values are
- * real columns on the relation; the failure is that the caller used the name
- * from a different projection/table family. Keep this separate from
- * `DERIVED_COLUMN_REDIRECTS` so the error does not claim a stored value is
- * computed at read time.
+ * A small registry for schema/projection names that are routinely confused with
+ * the platform vocabulary. Unlike a derived-column redirect, these are
+ * schema-shape mismatches: the caller used a name from a different projection,
+ * table family, or JSONB path. Keep this separate from `DERIVED_COLUMN_REDIRECTS`
+ * so the error does not claim a stored value is computed at read time.
  */
 const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
   relation: string;
@@ -730,6 +729,13 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
     missing: 'harness_slug',
     actual: 'install_slug',
     scope: 'workspace_id',
+  },
+  {
+    relation: 'routines',
+    missing: 'paused_reason',
+    message:
+      'pause state is stored in the JSONB `metadata` column under `pause`, not as a physical column; ' +
+      'use `metadata->\'pause\'->>\'reason\'` for a raw read or use `routines:list` and its `paused` field',
   },
   {
     relation: 'tool_invocations',

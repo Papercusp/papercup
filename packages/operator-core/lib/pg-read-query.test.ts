@@ -1553,6 +1553,17 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('harness_shared.routines');
   });
 
+  it('redirects the legacy paused_reason guess to routines metadata.pause', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT paused_reason FROM harness_shared.routines WHERE workspace_id = 'ws'",
+      'column "paused_reason" does not exist',
+    );
+    expect(out).toContain('metadata');
+    expect(out).toContain("metadata->'pause'->>'reason'");
+    expect(out).toContain('routines:list');
+    expect(out).toContain('harness_shared.routines');
+  });
+
   it('stays silent for joined relations where the missing name may belong elsewhere', () => {
     expect(
       buildSchemaColumnRedirect(
