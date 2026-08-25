@@ -272,7 +272,30 @@ describe('GET /api/oauth/callback', () => {
     expect(exchangeCode).toHaveBeenCalledWith('authorization-code', { codeVerifier: 'persisted-verifier' });
   });
 
-  it('provisions the owned Workspace capability sources after Google token storage', async () => {
+  it('provisions one Google account without replacing another account token', async () => {
+    const cfgDir = join(TMP_HOME, 'harnesses/papercusp/plugin-configs');
+    const cfgPath = join(cfgDir, 'google-workspace.json');
+    await fs.mkdir(cfgDir, { recursive: true });
+    await fs.writeFile(
+      cfgPath,
+      JSON.stringify({
+        'other-private-field': 'keep-other-access',
+        'other-private-field_refresh': 'keep-other-refresh',
+      }),
+    );
+    sourceMocks.listOwned.mockResolvedValue([
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        workspaceId: 'workspace-1',
+        kind: 'gmail',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        providerAccountId: 'other@example.com',
+        credentialRef: 'google-workspace:other-private-field',
+        status: 'connected',
+        config: {},
+        cursor: { historyId: 'keep-other-cursor' },
+      },
+    ]);
     providers.registerProvider({
       id: 'google',
       config: {
@@ -307,7 +330,6 @@ describe('GET /api/oauth/callback', () => {
       expect.objectContaining({ kind: 'gmail', ownerUserId: '22222222-2222-4222-8222-222222222222' }),
       'owner:22222222-2222-4222-8222-222222222222',
     );
-    const cfgPath = join(TMP_HOME, 'harnesses/papercusp/plugin-configs/google-workspace.json');
     const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
     expect(cfg['owner-22222222-2222-4222-8222-222222222222']).toBe('google-access');
     expect(cfg['owner-22222222-2222-4222-8222-222222222222_refresh']).toBe('google-refresh');
@@ -315,6 +337,8 @@ describe('GET /api/oauth/callback', () => {
       'https://www.googleapis.com/auth/gmail.readonly',
       'https://www.googleapis.com/auth/calendar.events',
     ]);
+    expect(cfg['other-private-field']).toBe('keep-other-access');
+    expect(cfg['other-private-field_refresh']).toBe('keep-other-refresh');
     expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=google-workspace');
   });
 
@@ -388,6 +412,9 @@ describe('GET /api/oauth/callback', () => {
     );
     expect(sourceMocks.renameAccount).not.toHaveBeenCalled();
     expect(sourceMocks.provision).not.toHaveBeenCalled();
+    await expect(
+      fs.access(join(TMP_HOME, 'harnesses/papercusp/plugin-configs/google-workspace.json')),
+    ).rejects.toThrow();
   });
 
   it('fails closed when a Google Workspace callback lacks server-owned identity context', async () => {
