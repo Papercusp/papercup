@@ -403,7 +403,8 @@ describe('renderCarryDoc (pure)', () => {
     expect(text).toContain('"memoryEpoch":23');
     expect(text).toContain('"controlGeneration":17');
     expect(text).toContain('Do NOT call coord:orient');
-    expect(text).toContain('coord:declare-intent');
+    expect(text).toContain('coord:declare-intent { intent, current_plan_slug, items }');
+    expect(text).not.toContain('planItems');
     expect(text).toContain('control generation 17');
   });
 

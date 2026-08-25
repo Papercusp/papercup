@@ -622,7 +622,7 @@ describe('WI-3280: SessionStart playbook recovery', () => {
 /**
  * compaction-continuity-hardening-2026-07-07 P-004 (implements WI-2537) — the
  * post-compaction continuity anchor. On SessionStart[source=compact] the SAME
- * generated hook injects the orient-afterCompaction mandate + the
+ * generated hook injects the marker-aware recovery contract + the
  * volatile-claims checklist (static, operator-down-proof) and appends the carry
  * brief fetched live from /api/agent-mcp/session-recovery-brief (fail-soft).
  */
@@ -708,7 +708,12 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
       const ctx = out.hookSpecificOutput.additionalContext as string;
       expect(out.hookSpecificOutput.hookEventName).toBe('SessionStart');
       expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
+      expect(ctx).toContain('⟦post-compaction-recovery⟧');
+      expect(ctx).toContain('do not call coord:orient');
+      expect(ctx).toContain('coord:declare-intent { intent, current_plan_slug, items }');
       expect(ctx).toContain('coord:orient { afterCompaction: true }');
+      expect(ctx).toContain('exactly once only when the marker is absent');
+      expect(ctx).not.toContain('run coord:orient { afterCompaction: true }');
       expect(ctx).toContain('HYPOTHESES to re-verify');
       // EI-10942: the anchor hands the successor a single batched ToolSearch so the
       // core deferred su tools reload in ONE round-trip instead of being rediscovered
@@ -716,6 +721,7 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
       // is itself one of the deferred tools being preloaded).
       expect(ctx).toContain('TOOL PRELOAD');
       expect(ctx).toContain('select:mcp__papercusp-su__coord_orient');
+      expect(ctx).toContain('mcp__papercusp-su__coord_declare_intent');
       expect(ctx).toContain('mcp__papercusp-su__work_items_checkpoint');
       expect(ctx.indexOf('TOOL PRELOAD')).toBeLessThan(ctx.indexOf('FIRST ACTION'));
       // turn-provenance P-004: native continuations are stamped machine-generated.
@@ -742,12 +748,18 @@ describe('P-004: SessionStart[source=compact] continuity anchor', () => {
     );
     const ctx = out.hookSpecificOutput.additionalContext as string;
     expect(ctx).toContain('POST-COMPACTION CONTINUITY ANCHOR');
+    expect(ctx).toContain('⟦post-compaction-recovery⟧');
+    expect(ctx).toContain('do not call coord:orient');
+    expect(ctx).toContain('coord:declare-intent { intent, current_plan_slug, items }');
     expect(ctx).toContain('coord:orient { afterCompaction: true }');
+    expect(ctx).toContain('exactly once only when the marker is absent');
+    expect(ctx).not.toContain('run coord:orient { afterCompaction: true }');
     // EI-10942: the tool-preload line is STATIC — it must land even with the operator
     // down (it needs no live data, and a blind post-compaction turn is exactly when a
     // degraded operator is most likely).
     expect(ctx).toContain('TOOL PRELOAD');
     expect(ctx).toContain('select:mcp__papercusp-su__coord_orient');
+    expect(ctx).toContain('mcp__papercusp-su__coord_declare_intent');
     expect(ctx).not.toContain('carry brief (read live');
   });
 

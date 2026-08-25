@@ -681,7 +681,12 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
     // booted the successor but intentionally skipped injectTurnAtPrompt; a solo
     // interactive session with no loop/event wake then parked until Avi typed.
     expect(payload.data).toMatch(/^⟦turn-origin:watchdog nonce:/);
+    expect(payload.data).toContain('⟦post-compaction-recovery⟧');
+    expect(payload.data).toContain('do not call coord:orient');
+    expect(payload.data).toContain('coord:declare-intent { intent, current_plan_slug, items }');
     expect(payload.data).toContain('coord:orient { afterCompaction: true }');
+    expect(payload.data).toContain('exactly once only when the marker is absent');
+    expect(payload.data).not.toContain('First re-run coord:orient');
     expect(payload.data).toContain("sessions:search { session:'self', mode:'verbatim' }");
     expect(payload.systemPromptAddendum).toBe('deterministic carry');
     expect(payload.ownerId).toBe('hot');

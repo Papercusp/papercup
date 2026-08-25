@@ -142,6 +142,19 @@ describe('buildCompactionRecovery — held-item checkpoint fold', () => {
 });
 
 describe('buildAutomaticCompactionRecovery — deterministic boundary marker (D-017/P-017)', () => {
+  it('publishes the marker-aware success/fallback contract with coord:declare-intent live field names (D-018)', async () => {
+    const { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } = await import('./compaction-recovery');
+    expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).toContain('⟦post-compaction-recovery⟧');
+    expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).toContain('do not call coord:orient');
+    expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).toContain(
+      'coord:declare-intent { intent, current_plan_slug, items }',
+    );
+    expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).toContain(
+      'exactly once only when the marker is absent, incomplete, generation-mismatched',
+    );
+    expect(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION).not.toContain('planItems');
+  });
+
   it('stamps a complete recovery with the current memory epoch + control generation and reuses supplied held items', async () => {
     const [{ buildAndPersistControlAnchor }, { readHeldWorkItems }, { buildAutomaticCompactionRecovery }] =
       await Promise.all([

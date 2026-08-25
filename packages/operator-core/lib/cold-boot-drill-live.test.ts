@@ -79,6 +79,11 @@ describe('startColdBootDrill — explicit/default-off live cut', () => {
       },
     });
     expect(String(h.injected[0].msg.data)).toContain('⟦carry-drill:drill-1⟧');
+    expect(String(h.injected[0].msg.data)).toContain('⟦post-compaction-recovery⟧');
+    expect(String(h.injected[0].msg.data)).toContain('do not call coord:orient');
+    expect(String(h.injected[0].msg.data)).toContain('coord:declare-intent { intent, current_plan_slug, items }');
+    expect(String(h.injected[0].msg.data)).toContain('exactly once only when the marker is absent');
+    expect(String(h.injected[0].msg.data)).not.toContain('First run coord:orient');
     expect(String(h.injected[0].msg.data)).toContain('session:carry-drill { op: "grade"');
   });
 

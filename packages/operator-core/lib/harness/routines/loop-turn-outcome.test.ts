@@ -346,6 +346,13 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
       }),
       15 * 60_000,
     );
+    const recoveryPayload = (injectPsuHost.mock.calls as unknown as Array<[string, { data?: unknown }]>)[0]?.[1];
+    const recoveryPrompt = String(recoveryPayload?.data ?? '');
+    expect(recoveryPrompt).toContain('⟦post-compaction-recovery⟧');
+    expect(recoveryPrompt).toContain('do not call coord:orient');
+    expect(recoveryPrompt).toContain('coord:declare-intent { intent, current_plan_slug, items }');
+    expect(recoveryPrompt).toContain('exactly once only when the marker is absent');
+    expect(recoveryPrompt).not.toContain('Re-run coord:orient');
     expect(bumpSessionEpoch).toHaveBeenCalledWith(sql, 'su-owner');
     expect(materializedInput).toMatchObject({
       workspaceId: 'ws-papercusp',

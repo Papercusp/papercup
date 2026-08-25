@@ -307,7 +307,11 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(typeof msg.data).toBe('string');
     expect(msg.data.length).toBeGreaterThan(0);
     expect(msg.data).toContain('finish the ratchet fix');
-    expect(msg.data.toLowerCase()).toContain('orient'); // re-orient-first (stale-snapshot boundary)
+    expect(msg.data).toContain('⟦post-compaction-recovery⟧');
+    expect(msg.data).toContain('do not call coord:orient');
+    expect(msg.data).toContain('coord:declare-intent { intent, current_plan_slug, items }');
+    expect(msg.data).toContain('exactly once only when the marker is absent');
+    expect(msg.data).not.toContain('First re-run coord:orient');
     // turn-provenance P-002: the machine-authored continuation is envelope-tagged.
     expect(msg.data).toMatch(ENVELOPE_LINE);
     expect(b).toMatchObject({
