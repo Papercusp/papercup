@@ -18,7 +18,7 @@
  * own resolver error is worse than the bug it prevents.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { join } from "node:path";
@@ -35,9 +35,40 @@ const REMOTE = "real-remote.example.test"; // → a routable address
 const SPLIT = "split-horizon.example.test"; // → loopback AND routable
 const UNKNOWN = "no-such-host.example.test"; // → getent exits 2
 
-let shimDir: string;
+// EI-21290819499876110 — hosts whose loopback answer is an SSH `-L` forward
+// that genuinely reaches the real origin. Loopback-ness alone must NOT decide
+// these; the hook derives the answer from the live bypass process's argv.
+const TUNNELED = "tunneled-prod.example.test"; //   → 127.0.0.10 (forwarded :443)
+const MULTI = "multi-tunnel.example.test"; //       → .10 + .11 (both forwarded)
+const PARTIAL = "partial-tunnel.example.test"; //   → .10 + .99 (only .10 forwarded)
+const ALTPORT = "altport-prod.example.test"; //     → 127.0.0.12 (forwarded :8443 only)
 
-beforeAll(() => {
+let shimDir: string;
+/** A stand-in for the bypass unit's MainPID: a live process whose argv carries
+ *  real `-L bind:port:host:hostport` specs, exactly as the ssh tunnel's does.
+ *  argv0 is deliberately NOT ssh — systemd's MainPID already establishes
+ *  identity, and demanding ssh would make this untestable. */
+let tunnelProc: ChildProcess | undefined;
+let tunnelPid = 0;
+
+/** Wait until the forked helper has exec'd and /proc exposes its real argv. */
+async function waitForArgv(pid: number, timeoutMs = 5000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const raw = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      if (raw.includes("-L")) return raw;
+    } catch {
+      /* not visible yet */
+    }
+    if (Date.now() > deadline) {
+      throw new Error(`tunnel helper ${pid} never exposed its argv`);
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+beforeAll(async () => {
   shimDir = fs.mkdtempSync(join(os.tmpdir(), "guard-desktop-shim-"));
   const getent = join(shimDir, "getent");
   fs.writeFileSync(
@@ -49,16 +80,67 @@ beforeAll(() => {
       `  ${PINNED}) echo "127.0.0.1       ${PINNED}" ;;`,
       `  ${REMOTE}) echo "93.184.216.34   ${REMOTE}" ;;`,
       `  ${SPLIT}) echo "127.0.0.1       ${SPLIT}"; echo "93.184.216.34   ${SPLIT}" ;;`,
+      `  ${TUNNELED}) echo "127.0.0.10      ${TUNNELED}" ;;`,
+      `  ${MULTI}) echo "127.0.0.10      ${MULTI}"; echo "127.0.0.11      ${MULTI}" ;;`,
+      `  ${PARTIAL}) echo "127.0.0.10      ${PARTIAL}"; echo "127.0.0.99      ${PARTIAL}" ;;`,
+      `  ${ALTPORT}) echo "127.0.0.12      ${ALTPORT}" ;;`,
       "  *) exit 2 ;;", // getent's "not found" status
       "esac",
       "exit 0",
     ].join("\n"),
     { mode: 0o755 },
   );
-});
-afterAll(() => fs.rmSync(shimDir, { recursive: true, force: true }));
 
-function run(input: string, opts: { shim?: boolean } = {}) {
+  // `systemctl` is shimmed too, so the bypass unit's state is an INPUT to each
+  // case rather than a property of whatever this box happens to be running.
+  // Without it, every assertion below would silently depend on whether the
+  // real papercusp-sni-bypass.service is up right now.
+  fs.writeFileSync(
+    join(shimDir, "systemctl"),
+    [
+      "#!/usr/bin/env bash",
+      "# Fake `systemctl` — the bypass unit's live state, from the environment.",
+      'state="${FAKE_BYPASS_STATE:-inactive}"',
+      'case "$1" in',
+      '  is-active) echo "$state"; [ "$state" = active ] || exit 3 ;;',
+      // `show -p MainPID --value` prints the bare pid; 0 means "no main process".
+      '  show) echo "${FAKE_BYPASS_MAINPID:-0}" ;;',
+      "  *) exit 1 ;;",
+      "esac",
+      "exit 0",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+
+  // The stand-in tunnel process. Both `-L spec` and the attached `-Lspec` form
+  // appear, because ssh accepts both and the hook parses both.
+  const sleeper = join(shimDir, "tunnel-helper.mjs");
+  fs.writeFileSync(sleeper, "setTimeout(() => {}, 120_000);\n");
+  tunnelProc = spawn(
+    process.execPath,
+    [
+      sleeper,
+      "-L",
+      "127.0.0.10:443:origin.example.test:443",
+      "-L",
+      "127.0.0.11:443:origin.example.test:443",
+      "-L127.0.0.12:8443:origin.example.test:443",
+    ],
+    { stdio: "ignore" },
+  );
+  tunnelPid = tunnelProc.pid ?? 0;
+  expect(tunnelPid).toBeGreaterThan(0);
+  await waitForArgv(tunnelPid);
+});
+afterAll(() => {
+  tunnelProc?.kill("SIGKILL");
+  fs.rmSync(shimDir, { recursive: true, force: true });
+});
+
+function run(
+  input: string,
+  opts: { shim?: boolean; env?: Record<string, string> } = {},
+) {
   const shim = opts.shim ?? true;
   // Launch by ABSOLUTE path: some cases below strip PATH to starve the hook's
   // `getent` lookup, and a bare "node" would then fail to spawn at all —
