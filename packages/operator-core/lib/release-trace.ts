@@ -84,6 +84,14 @@ export interface ReleaseTraceConstraint {
   summary: string;
 }
 
+export interface ReleaseTraceConsumedAuthority {
+  governingRef: 'stable-candidate-related-gate-2026-08-23#D-053';
+  candidate: string;
+  status: 'consumed';
+  retryAllowed: false;
+  reason: string;
+}
+
 export interface ReleaseTraceNextVerb {
   name: string;
   args?: Record<string, unknown>;
@@ -264,6 +272,32 @@ function checkpointRunCancelledNoProducer(input: Pick<ReleaseTraceInput, 'positi
 }
 
 /**
+ * D-053 authorizes one post-D-052 checkpoint only. An exact-candidate abnormal
+ * terminal is therefore a consumed authority, even when systemd recorded a
+ * terminal marker: the marker proves that the process ended, not that it
+ * published an authoritative exact-candidate verdict.
+ */
+function checkpointAuthorityConsumed(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): ReleaseTraceConsumedAuthority | null {
+  const checkpointRun = input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
+  const evidence = checkpointRun?.terminalEvidence;
+  const targetSha = input.position.targetSha;
+  if (checkpointRun?.active !== false || evidence?.abnormal !== true || !targetSha || !sameSha(targetSha, evidence.candidate)) {
+    return null;
+  }
+
+  return {
+    governingRef: 'stable-candidate-related-gate-2026-08-23#D-053',
+    candidate: evidence.candidate ?? targetSha,
+    status: 'consumed',
+    retryAllowed: false,
+    reason:
+      `The exact candidate ended abnormally (${evidence.serviceResult}/${evidence.exitCode}:${evidence.exitStatus}) ` +
+      'without an authoritative exact-candidate verdict; D-053 consumes its one-shot checkpoint authority. ' +
+      'A retry requires another recorded decision.',
+  };
+}
+
+/**
  * Prefer the canonical gate owner over a historical release-fixer record.
  *
  * `gate.redOwner` comes from `last_fixer`, which is useful lineage for the
@@ -371,6 +405,7 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
   const terminalInconclusive = checkpointRunTerminalInconclusive(input);
   const cancelledNoProducer = checkpointRunCancelledNoProducer(input);
+  const consumedAuthority = checkpointAuthorityConsumed(input);
   const candidateVerdict = classifyCandidateVerdict(input);
 
   if (!position.targetSha) add('target-unresolved', true, 'The requested path/SHA did not resolve to a commit.');
@@ -388,8 +423,11 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
       'checkpoint-run-cancelled',
       true,
       `The checkpoint for ${cancelledNoProducer.candidate ?? position.targetSha ?? 'this target'} was externally cancelled ` +
-        'without a verdict, and the measured run-lock is idle; no producer remains for a candidate-bound checkpoint:await.',
+      'without a verdict, and the measured run-lock is idle; no producer remains for a candidate-bound checkpoint:await.',
     );
+  }
+  if (consumedAuthority) {
+    add('checkpoint-authority-consumed', true, consumedAuthority.reason);
   }
   if (position.dirtyUncommitted) {
     add('dirty-path', true, 'The path has uncommitted edits; its reported target SHA predates those edits.');
@@ -493,6 +531,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
   const terminalInconclusive = checkpointRunTerminalInconclusive(input);
   const cancelledNoProducer = checkpointRunCancelledNoProducer(input);
+  const consumedAuthority = checkpointAuthorityConsumed(input);
   const candidateVerdict = classifyCandidateVerdict(input);
   if (!targetSha) {
     return {
@@ -524,6 +563,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
         }
       : null;
   }
+  if (consumedAuthority) return null;
   if (terminalInconclusive) {
     return {
       name: 'release:checkpoint-run',
@@ -698,6 +738,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
     measuredTargetInGreenPin === undefined ? input.position.positions.inMain : measuredTargetInGreenPin === true;
   const parity = targetSha != null && targetInGreenPin && input.position.positions.deployed && pinParity.ok;
   const nextVerb = safeNextVerb(effectiveInput);
+  const consumedAuthority = checkpointAuthorityConsumed(effectiveInput);
   const ok = input.position.positions.deployed && parity && constraints.every((c) => !c.blocking);
 
   return {
@@ -712,7 +753,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
       presence: input.position.positions,
       runtime: input.position.runtime,
     },
-    gate: { ...effectiveInput.gate, candidateVerdict },
+    gate: { ...effectiveInput.gate, candidateVerdict, consumedAuthority },
     greenPin: {
       sha: testedSha,
       targetIncluded: input.position.verdictProvenance.targetIncludedInGreenPin ?? null,
