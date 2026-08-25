@@ -226,6 +226,82 @@ export function resolveLaunchOptions(input: LaunchOptionInput): ResolvedLaunchOp
   };
 }
 
+/** psu --role for each half of a pair. P-001 / P-002 author these personas. */
+export const PAIR_ROLE_DIRECTOR = 'pair-director';
+export const PAIR_ROLE_IMPLEMENTER = 'directed-implementer';
+
+/**
+ * Seat ordering inside a paired launch is INTERLEAVED (D-014): seat 2k is the
+ * DIRECTOR of pair k, seat 2k+1 is its IMPLEMENTER.
+ *
+ * The alternative — blocked (`d,d,…,i,i,…`) — is what you reach for first, and
+ * it is wrong here for one decisive reason: **launch waves get clamped.** Both
+ * the capacity clamp and MAX_MEMBERS routinely open fewer seats than asked.
+ * Under interleaving a truncated wave degrades to FEWER WHOLE PAIRS, which is a
+ * smaller version of the thing the caller asked for. Under blocking it degrades
+ * to all-directors-and-no-implementers: every seat opens, nothing can be
+ * coupled, and the fleet is silently useless in a way `openCount` still reports
+ * as success.
+ *
+ * Interleaving also makes pair identity derivable from the index ALONE, which is
+ * what the auto-coupling (P-012) consumes — no side table, and nothing to keep
+ * in sync when a member is respawned into an existing seat.
+ */
+export function pairSeatRole(seat: number): 'director' | 'implementer' {
+  return seat % 2 === 0 ? 'director' : 'implementer';
+}
+
+/** Which pair seat `seat` belongs to. Seats 0,1 → pair 0; seats 2,3 → pair 1. */
+export function pairIndexOfSeat(seat: number): number {
+  return Math.floor(seat / 2);
+}
+
+/**
+ * Round a requested seat count DOWN to whole pairs.
+ *
+ * A lone director with no implementer is not a degraded pair, it is a broken
+ * one: it has nobody to direct, and the implementer-side tool denials mean it
+ * cannot fall back to doing the work itself. So an odd seat allowance opens one
+ * fewer seat rather than one half-pair — and callers are told, because silently
+ * opening `count-1` seats is how a clamp becomes a mystery.
+ */
+export function wholePairSeats(requestedSeats: number): number {
+  if (!Number.isFinite(requestedSeats) || requestedSeats < 2) return 0;
+  return Math.floor(requestedSeats / 2) * 2;
+}
+
+/**
+ * The per-member override list for a paired launch, in seat order.
+ *
+ * This is deliberately expressed as the SAME `members: MemberSpec[]` per-member
+ * override mechanism a single fleet already uses (per-member-declarative-launch-
+ * specs P-002), not as a second member-command path. The paired arm therefore
+ * inherits every downstream behaviour for free — the member>fleet>system
+ * precedence fold, launch-context composition, the attestation records, the
+ * saved-launch-spec round trip — and there is exactly one place where a member
+ * command is built, so the two arms cannot drift.
+ *
+ * Returns a structurally MemberSpec-compatible list; the caller folds it over
+ * the fleet defaults.
+ */
+export function expandPairedMembers(
+  resolved: ResolvedPairedLaunch,
+  seats: number,
+): Array<RoleLaunchOptions & { role: string }> {
+  const usable = wholePairSeats(seats);
+  return Array.from({ length: usable }, (_v, seat) => {
+    const isDirector = pairSeatRole(seat) === 'director';
+    const role = isDirector ? PAIR_ROLE_DIRECTOR : PAIR_ROLE_IMPLEMENTER;
+    const slice = isDirector ? resolved.directors : resolved.implementers;
+    // Only DEFINED knobs are emitted: an unset per-role field must fall through
+    // to the fleet default, never zero it (the D-001 precedence rule the fold
+    // implements). Spreading the slice wholesale would be enough today, but
+    // pickRole already guarantees no undefined keys — keep it explicit so a
+    // later field addition cannot smuggle an `undefined` into the override.
+    return { ...pickRole(slice), role };
+  });
+}
+
 /**
  * The spawn-announcement line(s) the persona rule requires. A paired launch owes
  * the owner ONE LINE PER ROLE (account + model + carry), not a merged summary —
