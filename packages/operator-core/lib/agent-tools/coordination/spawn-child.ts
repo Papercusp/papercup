@@ -429,7 +429,41 @@ export async function executeSpawnChild(
     return result;
   }
 
-  // ── 3. Import the wave's features into the child ──────────────────────────
+  // ── 3. Assertions, BEFORE the import (P-003, D-002/D-005) ────────────────
+  // The child's features carry the seed plan's synthesized VAL-* ids as `claims`
+  // (buildChildImportPayload), and a claim is only resolvable through
+  // harness_shared.harness_plan_assertions — a DIFFERENT datastore from the child
+  // harness DB that `importFeatures` writes. No transaction spans both, so step
+  // ORDER is the only integrity boundary available. Running this AFTER the import
+  // (the previous order, explicitly best-effort) left the child durably carrying
+  // claim ids with no assertion row whenever the store failed, and said so only in
+  // a warning: /assertion/:valId then resolves nothing and harness-test-gate cannot
+  // approve the required test those claims exist to demand.
+  //
+  // Persisting first makes the surviving failure mode ORPHAN ROWS — nothing
+  // references them, the upsert is idempotent, and the next promote re-converges.
+  const assertions = extractAssertions(seed.body);
+  if (assertions.length > 0) {
+    const abort = (detail: string) => {
+      warn(
+        `${detail} — features were NOT imported rather than carry claim ids with no assertion row; ` +
+          `seed plan exists but carries no features, re-promote to retry (the assertion upsert is idempotent)`,
+      );
+      return result;
+    };
+    try {
+      const a = await deps.writeAssertions(opts.child.slug, seedSlug, assertions);
+      result.assertions_written = a.written;
+      for (const err of a.errors) warn(`assertion write: ${err}`);
+      if (a.errors.length > 0) {
+        return abort(`${a.errors.length} of ${assertions.length} assertion row(s) failed to persist`);
+      }
+    } catch (e) {
+      return abort(`assertion store threw: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  // ── 4. Import the wave's features into the child ──────────────────────────
   const childIds = mintChildFeatureIds(opts.child.slug, opts.features.length);
   const payload = buildChildImportPayload({
     features: opts.features,
@@ -445,18 +479,6 @@ export async function executeSpawnChild(
   } catch (e) {
     warn(`feature import failed: ${e instanceof Error ? e.message : String(e)} — seed plan exists but carries no features; re-promote to retry`);
     return result;
-  }
-
-  // ── 4. Assertions (best-effort — claims already rode the import) ─────────
-  const assertions = extractAssertions(seed.body);
-  if (assertions.length > 0) {
-    try {
-      const a = await deps.writeAssertions(opts.child.slug, seedSlug, assertions);
-      result.assertions_written = a.written;
-      for (const err of a.errors) warn(`assertion write: ${err}`);
-    } catch (e) {
-      warn(`assertion store failed (claims still rode the import): ${e instanceof Error ? e.message : String(e)}`);
-    }
   }
 
   // ── 5. Start the seed plan (the RETIRED dispatcher eligibility gate) ─────

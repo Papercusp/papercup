@@ -1147,33 +1147,26 @@ export default defineTool({
       }
       return out;
     });
-    // A pure spawn_child promote has no parent-bound features — skip the
-    // target-harness import entirely (harnessSlug may legitimately be unset).
-    const importRes =
-      importPayload.length > 0 && harnessSlug
-        ? await postFeaturesImport(harnessSlug, importPayload)
-        : { ids: [] as string[], inserted: 0, updated: 0 };
-
-    // Destructive replan: the import above is additive; now converge the harness
-    // to the plan's CURRENT set by deprecating features it dropped (source_plan=
-    // slug, no longer in importRes.ids). Fail closed on an empty-plan wipe.
-    let destructive: DestructiveReplanOutcome | undefined;
-    if (args.destructive && harnessSlug) {
-      const dr = await runDestructiveReplan({
-        harnessSlug,
-        planSlug: args.slug,
-        workspaceId: ctx.workspaceId ?? '',
-        currentFeatureIds: importRes.ids,
-        force: args.force,
-        apply: true,
-      });
-      if ('refuse' in dr) return fail(dr.refuse.code, dr.refuse.detail);
-      destructive = dr.outcome;
-    }
-
-    // Store assertions in harness_plan_assertions (PG). Best-effort — features
-    // are already imported with their claims, so assertion lookup failures
-    // don't break validation, just degrade the /assertion/:valId endpoint.
+    // P-003 (llm-agent-evaluation-measurement-integrity-2026-08-25, D-002/D-005):
+    // persist assertion rows BEFORE the feature import, and FAIL CLOSED if they
+    // cannot be persisted.
+    //
+    // Features and assertions live in two DIFFERENT datastores — features in the
+    // target harness DB (written by /features/import below), assertion rows in
+    // operator PG — so no single transaction spans both and ORDERING is the only
+    // integrity boundary available. Importing first (the previous behaviour, whose
+    // assertion write was explicitly best-effort) made the failure mode DANGLING
+    // CLAIMS: a feature durably carrying VAL-* ids with no assertion row, written
+    // silently, because a swallowed PG error still left the import committed. Every
+    // reader of harness_plan_assertions then under-reports with nothing failing
+    // loudly — /assertion/:valId resolves nothing, harness-test-gate cannot approve
+    // a required test, and plans:get planItemTests / testing.ts coverage joins miss
+    // the row entirely.
+    //
+    // Persisting first inverts that into ORPHAN ASSERTION ROWS when a later step
+    // fails: benign, idempotent (the upsert is ON CONFLICT DO UPDATE), invisible to
+    // every reader above because no feature references them, and self-healing on the
+    // next promote of the same plan.
     let assertionsWritten = 0;
     const assertionErrors: string[] = [];
     if (allAssertions.length > 0 && harnessSlug) {
@@ -1205,6 +1198,42 @@ export default defineTool({
         assertionErrors.push(e instanceof Error ? e.message : String(e));
         ctx.log?.(`[plans:promote] assertion PG store failed: ${assertionErrors[assertionErrors.length - 1]}`);
       }
+    }
+    // Refuse BEFORE any feature is imported. Nothing has been written to the target
+    // harness yet, so this leaves no partial promotion to reconcile — the caller can
+    // re-run the identical promote once PG is reachable and the upsert re-converges.
+    if (assertionErrors.length > 0) {
+      return fail(
+        'assertion_store_failed',
+        `${assertionErrors.length} of ${allAssertions.length} inline VAL-* assertion(s) could not be persisted to ` +
+          `harness_shared.harness_plan_assertions, so features carrying them as claims were NOT imported ` +
+          `(refusing rather than promoting claim ids with no assertion row). Re-run this promote once the ` +
+          `store is reachable; the upsert is idempotent. Errors: ${assertionErrors.join('; ')}`,
+      );
+    }
+
+    // A pure spawn_child promote has no parent-bound features — skip the
+    // target-harness import entirely (harnessSlug may legitimately be unset).
+    const importRes =
+      importPayload.length > 0 && harnessSlug
+        ? await postFeaturesImport(harnessSlug, importPayload)
+        : { ids: [] as string[], inserted: 0, updated: 0 };
+
+    // Destructive replan: the import above is additive; now converge the harness
+    // to the plan's CURRENT set by deprecating features it dropped (source_plan=
+    // slug, no longer in importRes.ids). Fail closed on an empty-plan wipe.
+    let destructive: DestructiveReplanOutcome | undefined;
+    if (args.destructive && harnessSlug) {
+      const dr = await runDestructiveReplan({
+        harnessSlug,
+        planSlug: args.slug,
+        workspaceId: ctx.workspaceId ?? '',
+        currentFeatureIds: importRes.ids,
+        force: args.force,
+        apply: true,
+      });
+      if ('refuse' in dr) return fail(dr.refuse.code, dr.refuse.detail);
+      destructive = dr.outcome;
     }
 
     // Mark plan items as done via withPlanLock + flipStatusInBody. Also covers
