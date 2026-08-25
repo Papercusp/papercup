@@ -44,7 +44,7 @@ describe('scorecards:list correctness payload', () => {
     const ratings = Object.fromEntries(
       Array.from({ length: 7 }, (_, i) => [
         `criterion-${i + 1}`,
-        { rating: i < 4 ? 'healthy' : 'degraded', evidence: `evidence-${i + 1} ${'e'.repeat(900)}` },
+        { rating: i < 4 ? 'healthy' : 'degraded', evidence: `evidence-${i + 1} ${'e'.repeat(1200)}` },
       ]),
     );
     const scorecard = {
