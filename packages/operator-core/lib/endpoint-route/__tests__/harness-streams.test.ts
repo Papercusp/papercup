@@ -33,6 +33,7 @@ const dbSql = vi.hoisted(() => vi.fn((strings: TemplateStringsArray) => {
   }
   return Promise.resolve([]);
 }));
+const getOrgPgProbe = vi.hoisted(() => vi.fn());
 
 vi.mock('@papercusp/sse', () => ({
   sseResponse: (opts: { setup: CapturedSetup }) => {
@@ -54,7 +55,10 @@ vi.mock('@papercusp/scheduled-registry', () => ({
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: dbSql }),
+  getOrgPg: () => {
+    getOrgPgProbe();
+    return { sql: dbSql };
+  },
 }));
 vi.mock('../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => null),
@@ -72,6 +76,7 @@ vi.mock('../../session-timeline-parsers', () => ({
 
 import {
   default as streamRoutes,
+  backfillFromSessionTurns,
   parseAgentTimelineChunks,
   capEntryText,
   THINKING_ENTRY_TEXT_CAP,
@@ -100,6 +105,7 @@ beforeEach(() => {
   routeProbe.setup = null;
   resolverProbe.codexByUuid.mockClear();
   dbSql.mockClear();
+  getOrgPgProbe.mockClear();
 });
 
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).byteLength;
@@ -546,6 +552,9 @@ describe('live session DB fallback (WI-41527)', () => {
 
     resolverProbe.codexByUuid.mockResolvedValueOnce(null);
     await routeProbe.setup!();
+
+    const directTurns = await backfillFromSessionTurns({ sourceKind: 'codex', sessionId: 'missing-transcript' });
+    expect(directTurns).not.toBeNull();
 
     expect(resolverProbe.codexByUuid).toHaveBeenCalledWith('missing-transcript');
     expect(routeProbe.events).toContainEqual({
