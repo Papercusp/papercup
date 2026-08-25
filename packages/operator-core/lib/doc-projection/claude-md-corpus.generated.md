@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 292
+  corpus-parts: 293
   corpus-blocks: 255
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -1770,6 +1770,18 @@ the poll command, because the fix is one step earlier:
 > **`capability:bash { run_in_background: true }`** and read it with
 > **`capability:bash_output { bash_id, filter }`**. The `filter` regex means only
 > matching lines enter your context — no `2>&1 | tail -60`.
+>
+> ⚠ **Duration is not the only trigger — LIFETIME is. If a process is what makes
+> an owner-facing deliverable VALID, background it no matter how short it is.**
+> An OAuth/device-code consent flow, a local callback listener, a tunnel, a
+> signing session — anything whose output expires when the process does. A
+> CLI-child process dies with your session, and every carry-respawn, cold-loop
+> wake and `claude --resume` **is** a session death, so the thing you asked the
+> owner to click can be dead before they read the message. Nothing warns you: a
+> dead link looks identical to a live one. Say what the deliverable's lifetime is
+> bound to when you hand it over — the operator-owned scope is not
+> restart-durable either (EI-16611), so "valid while my session lives" is a
+> different promise from "valid for 10 minutes".
 
 ⚠ **Filter background output at READ TIME, never at LAUNCH TIME.** Let the job
 write its stdout/stderr unfiltered to the durable log, then pass `filter` to
@@ -1780,6 +1792,8 @@ the failure. Read-time filtering is repeatable with a different pattern and
 also works on the stranded-job recovery path. If launch-time filtering is
 unavoidable, use a line-buffered consumer such as `grep --line-buffered` or
 `stdbuf -oL`, but prefer keeping the durable log unfiltered.
+A session handed the owner a PKCE-bound OAuth consent URL whose `gcloud` process was a child of its CLI; the carry-respawn killed it ~19s later, so the link was dead on arrival and nothing said so. Only `node scripts/proc-guard.mjs check` revealed it — bare `ps`/`pgrep` self-matches the query string and reports phantom liveness (EI-21442716425230784).
+
 
 ⚠ **A background job still has a wall-clock deadline, and reaching it TERMINATES the
 job** — 4h by default, 12h max, `timeout` to raise it. The launch result now names the
