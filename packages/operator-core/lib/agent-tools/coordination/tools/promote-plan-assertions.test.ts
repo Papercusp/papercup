@@ -296,6 +296,85 @@ describe('persistPlanAssertions — duplicate VAL ids (P-003: "tests for ... dup
   });
 });
 
+/**
+ * A stub that models the UPSERT rather than just resolving: rows are keyed by
+ * valId and a repeat write replaces (ON CONFLICT DO UPDATE = last write wins).
+ * Convergence claims need a store with state — a stub that only resolves cannot
+ * distinguish "re-ran and converged" from "re-ran and wrote three more rows".
+ * Nothing here assumes a parameter POSITION beyond locating the VAL-* token.
+ */
+function makeRowStore(failFor: (valId: string) => unknown = () => null) {
+  const rows = new Map<string, unknown[]>();
+  const calls: string[] = [];
+  const sql = (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    const valId = values.find((v): v is string => typeof v === 'string' && v.startsWith('VAL-')) ?? '<no-val-id>';
+    calls.push(valId);
+    const failure = failFor(valId);
+    if (failure) throw failure;
+    rows.set(valId, values);
+    return [];
+  }) as unknown as Sql;
+  return { sql, rows, calls };
+}
+
+describe('persistPlanAssertions — retries and partial legacy state (P-003)', () => {
+  /**
+   * RETRY CONVERGENCE. promote's refusal message promises the caller that
+   * "the upsert is idempotent — re-run once the store is reachable". That
+   * promise is load-bearing (it is the entire recovery path from a refusal),
+   * so it gets a test rather than a comment: a run that partially failed,
+   * re-run against a healthy store, must end with every row present exactly
+   * once and no errors.
+   */
+  it('a re-run after a partial failure converges — every row present, exactly once', async () => {
+    const assertions = [assertion('VAL-1'), assertion('VAL-2'), assertion('VAL-3')];
+
+    // Attempt 1: the store rejects VAL-2.
+    const attempt1 = makeRowStore((valId) => (valId === 'VAL-2' ? new Error('deadlock detected') : null));
+    const first = await persistPlanAssertions({ ...BASE, sql: attempt1.sql, assertions });
+
+    expect(first.errors).toHaveLength(1);
+    expect([...attempt1.rows.keys()].sort()).toEqual(['VAL-1', 'VAL-3']);
+
+    // Attempt 2: identical input, healthy store. The two rows that already
+    // landed are re-written by the upsert, not duplicated.
+    const attempt2 = makeRowStore();
+    for (const [k, v] of attempt1.rows) attempt2.rows.set(k, v); // carry the surviving rows forward
+    const second = await persistPlanAssertions({ ...BASE, sql: attempt2.sql, assertions });
+
+    expect(second.errors).toEqual([]);
+    expect(second.written).toBe(3);
+    expect(attempt2.rows.size).toBe(3);
+    expect([...attempt2.rows.keys()].sort()).toEqual(['VAL-1', 'VAL-2', 'VAL-3']);
+  });
+
+  /**
+   * PARTIAL LEGACY STATE. Rows left behind by an earlier run are explicitly
+   * documented as benign and self-healing — but "self-healing" means the
+   * re-run must OVERWRITE them with current content, not skip them as already
+   * present. A seam that treated an existing row as done would leave a stale
+   * assertion behind a live claim, which is the same wrong-row failure the
+   * duplicate case produces, just reached from a different direction.
+   */
+  it('overwrites pre-existing rows with current content rather than skipping them', async () => {
+    const store = makeRowStore();
+    // Simulate a row left by an earlier promote, carrying stale text.
+    store.rows.set('VAL-1', ['stale-workspace', 'stale-harness', 'VAL-1', 'stale text']);
+
+    const result = await persistPlanAssertions({
+      ...BASE,
+      sql: store.sql,
+      assertions: [assertion('VAL-1', { verifyText: 'the current claim' })],
+    });
+
+    expect(result.errors).toEqual([]);
+    expect(result.written).toBe(1);
+    expect(store.calls).toEqual(['VAL-1']); // it was actually re-written, not skipped
+    expect(store.rows.get('VAL-1')).toContain('the current claim');
+    expect(store.rows.get('VAL-1')).not.toContain('stale text');
+  });
+});
+
 /** The duplicate-id contract, stated once, for the same subject-vs-control treatment. */
 async function checkDuplicateRefusalContract(persist: PersistFn): Promise<void> {
   const { sql, attempted } = makeSql();
