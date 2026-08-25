@@ -50,6 +50,11 @@ import {
   SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
   SYSTEMD_RUNNER_REDACTIONS_ENV,
 } from '../../systemd-scope-env-runner.mjs';
+import {
+  PIDS_PER_CONCURRENT_TASK,
+  PIDS_RESERVE,
+  resolveTaskBudget,
+} from '../../../../../scripts/lib/budgeted-task-scheduler.mjs';
 
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-'));
 const never = new AbortController().signal;
@@ -1054,8 +1059,29 @@ describe('background job deadlines (WI-6677)', () => {
     expect(BASH_TEST_TASKS_MAX).toBeLessThanOrEqual(8_192);
   });
 
+  // EI-21468591394619357: the two halves of the pids arithmetic are owned by different
+  // modules — capability:bash budgets the cgroup (BASH_TEST_TASKS_MAX), while
+  // scripts/lib/budgeted-task-scheduler.mjs spends it (PIDS_RESERVE +
+  // PIDS_PER_CONCURRENT_TASK) — and the incident was exactly their drift: a 512-task budget
+  // under a 1024+4096 envelope makes resolveTaskBudget's refusal unconditional, so every
+  // test:affected run through capability:bash aborted before launch with tasks=0. Import
+  // both sides so the relationship is CHECKED, not remembered.
+  it('admits at least one affected-tests scheduler envelope inside the test budget', () => {
+    expect(BASH_TEST_TASKS_MAX).toBeGreaterThanOrEqual(PIDS_RESERVE + PIDS_PER_CONCURRENT_TASK);
+    const budget = resolveTaskBudget({
+      workerBudget: 8,
+      memoryBudgetMb: 16_384,
+      workerMemoryMb: 2_048,
+      maxConcurrentTasks: 2,
+      reserveWorkers: 1,
+      taskCgroupPidsMax: BASH_TEST_TASKS_MAX,
+    });
+    expect(budget.pidsMaxConcurrentTasks).toBeGreaterThanOrEqual(1);
+  });
+
   it('classifies only test runners at a shell-segment boundary for the hard test budget', () => {
     expect(isBackgroundTestCommand('npx vitest run')).toBe(true);
+    expect(isBackgroundTestCommand('npm run test:affected -- --changed-paths a.ts,b.ts')).toBe(true);
     expect(isBackgroundTestCommand('cd packages/operator-core && npm run test:file -- x.test.ts')).toBe(true);
     expect(isBackgroundTestCommand('FOO=1 pnpm exec playwright test')).toBe(true);
     expect(isBackgroundTestCommand('rg -n vitest packages/operator-core')).toBe(false);

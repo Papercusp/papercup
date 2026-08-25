@@ -419,10 +419,15 @@ describe('terminalResourceLimitFields — pre-launch budget refusal (EI-21442389
         source: 'pre-launch-budget-refusal',
       },
     });
-    // The advice must say the thing an agent needs to hear first, and name a live remedy.
+    // The advice must say the thing an agent needs to hear first, and name a remedy that is
+    // actually reachable. The old text pointed at processes:limit on THIS taskId — but this
+    // row is terminal by construction, so that call always answers not_live (verified against
+    // real task 0mt9a68dm1ejyc3in6q, EI-21468591394619357). The levers that exist apply at
+    // the next launch.
     expect(result?.resource_advice).toContain('NOTHING RAN');
     expect(result?.resource_advice).toContain('not a red suite verdict');
-    expect(result?.resource_advice).toContain('processes:limit');
+    expect(result?.resource_advice).toContain('already exited');
+    expect(result?.resource_advice).toContain('relaunch');
   });
 
   // CONTROL. Without this the suite would pass on a classifier that returned the verdict for
@@ -496,8 +501,24 @@ describe('terminalResourceLimitFields — pre-launch budget refusal (EI-21442389
     });
   });
 
-  it('still refuses to classify a clean exit or a live task', () => {
-    expect(terminalResourceLimitFields(refusedRow({ exitCode: 0 }), pidsRefusalLog)).toBeNull();
+  // EI-21468591394619357: exit 0 no longer suppresses the refusal verdict. Real row
+  // 0mt9a68dm1ejyc3in6q exited 0 (trailing `; echo "EXIT=$?" >> log` — the shell reports the
+  // echo's status, not the suite's) with workloadClass=test-run and tasks=0: the marker is
+  // the scheduler's own pre-launch statement that nothing ran, so a clean exit beside it is a
+  // masked abort, not a green run. The cgroup-sample branch keeps its clean-exit exclusion
+  // (a sample AT the cap on a clean exit proves pressure, not causality).
+  it('classifies a clean-exit masked abort when the refusal marker is present', () => {
+    const result = terminalResourceLimitFields(refusedRow({ exitCode: 0 }), pidsRefusalLog);
+    expect(result).toMatchObject({
+      failure_class: 'infrastructure-resource-limit',
+      test_verdict: 'undetermined',
+      resource_limit: { source: 'pre-launch-budget-refusal' },
+    });
+    expect(result?.resource_advice).toContain('masked abort');
+  });
+
+  it('still refuses to classify a clean exit without the marker, or a live task', () => {
+    expect(terminalResourceLimitFields(refusedRow({ exitCode: 0 }), 'Test Files 12 passed')).toBeNull();
     expect(
       terminalResourceLimitFields(refusedRow({ state: 'running', exitCode: null }), pidsRefusalLog),
     ).toBeNull();

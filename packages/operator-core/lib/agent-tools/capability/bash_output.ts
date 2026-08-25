@@ -13,6 +13,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
+  BASH_TEST_MEMORY_MAX_BYTES,
+  BASH_TEST_TASKS_MAX,
   JOB_LOG_END_MARKER_PREFIX,
   JOB_LOG_DIED_MARKER_PREFIX,
   detectBufferingLastStage,
@@ -477,14 +479,22 @@ export function terminalResourceLimitFields(
   row: TaskRow | null,
   log = '',
 ): TerminalResourceLimitFields | null {
-  if (!row || !isTerminalState(row.state) || (row.state === 'exited' && row.exitCode === 0)) return null;
+  if (!row || !isTerminalState(row.state)) return null;
   const testRun = row.detail?.workloadClass === 'test-run';
+  const cleanExit = row.state === 'exited' && row.exitCode === 0;
   // Order is deliberate: the cgroup sample is the older, narrower evidence and keeps its exact
-  // prior behaviour, so adding the refusal path below cannot change any outcome it already
-  // decides. The two are mutually exclusive in practice anyway — a run refused before launch
-  // spawns no child, so there is nothing for the ledger to have sampled.
+  // prior behaviour — including never firing on a clean exit, where a sample AT the cap proves
+  // pressure, not causality. The refusal path below deliberately DOES run on a clean exit
+  // (EI-21468591394619357): the marker is the scheduler's own statement that it refused before
+  // launching anything, so a shell that still exited 0 — the trailing-echo idiom
+  // `…; echo "EXIT=$?" >> log` reports the echo's status, not the suite's (real row
+  // 0mt9a68dm1ejyc3in6q: exit 0, workloadClass=test-run, tasks=0) — is a MASKED abort, and
+  // exit 0 is exactly the shape that must not be read as a green run. The two branches remain
+  // mutually exclusive in practice anyway — a run refused before launch spawns no child, so
+  // there is nothing for the ledger to have sampled.
   return (
-    terminalCgroupSampleFields(row, log, testRun) ?? preLaunchBudgetRefusalFields(row, log, testRun)
+    (cleanExit ? null : terminalCgroupSampleFields(row, log, testRun)) ??
+    preLaunchBudgetRefusalFields(row, log, testRun)
   );
 }
 
@@ -543,10 +553,19 @@ function preLaunchBudgetRefusalFields(
   const refusal = parseTaskBudgetRefusal(log);
   if (!refusal) return null;
   const unitLabel = refusal.unit === 'mb' ? 'MB' : 'tasks';
+  const cleanExit = row.state === 'exited' && row.exitCode === 0;
+  // EI-21468591394619357: this row is TERMINAL by construction (the caller gates on
+  // isTerminalState), so the old advice — processes:limit on THIS taskId — was unreachable
+  // every time it was printed: the refused task exits within seconds of launch, and
+  // processes:limit answers not_live/'state is exited' (verified against the real task
+  // 0mt9a68dm1ejyc3in6q). The levers that exist apply at the NEXT launch: a relaunched
+  // capability:bash command classified as a test run receives the test budget at spawn,
+  // which admits the scheduler's reserve+envelope; targeted testing:run sidesteps the outer
+  // scheduler entirely.
   const remedy =
     refusal.kind === 'pids'
-      ? `processes:limit { taskId: '${row.taskId}', tasksMax: <at least ${refusal.reserve + refusal.requiredPerTask}> }`
-      : `processes:limit { taskId: '${row.taskId}', memoryMaxMb: <at least ${refusal.reserve + refusal.requiredPerTask}> }`;
+      ? `relaunching it (test-classified commands are auto-budgeted TasksMax=${BASH_TEST_TASKS_MAX} at spawn, which admits the ${refusal.reserve}+${refusal.requiredPerTask} envelope), or running the specific files via testing:run`
+      : `relaunching it (test-classified commands are auto-budgeted ${Math.floor(BASH_TEST_MEMORY_MAX_BYTES / (1024 * 1024))} MB memoryMaxMb at spawn), or running the specific files via testing:run`;
   return {
     failure_class: 'infrastructure-resource-limit',
     resource_limit: {
@@ -562,8 +581,14 @@ function preLaunchBudgetRefusalFields(
       `NOTHING RAN. The scheduler refused before launch: a ${refusal.kind} allowance of ` +
       `${refusal.limit} ${unitLabel} minus a ${refusal.reserve} ${unitLabel} reserve cannot admit one ` +
       `${refusal.requiredPerTask} ${unitLabel} task. ` +
-      `${testRun ? 'Zero files were measured, so this non-zero exit is an UNDETERMINED test run, not a red suite verdict' : 'This is an infrastructure resource-limit failure, not a workload failure'}. ` +
-      `Raise the live budget with ${remedy}.`,
+      `${
+        testRun
+          ? cleanExit
+            ? "Zero files were measured; this task's exit 0 is a trailing command's status, not a suite verdict — a masked abort, not a red suite verdict and not a green run"
+            : 'Zero files were measured, so this non-zero exit is an UNDETERMINED test run, not a red suite verdict'
+          : 'This is an infrastructure resource-limit failure, not a workload failure'
+      }. ` +
+      `This task has already exited, so processes:limit cannot reach it. Recover by ${remedy}.`,
   };
 }
 
