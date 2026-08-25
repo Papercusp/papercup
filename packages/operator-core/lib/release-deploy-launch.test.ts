@@ -275,6 +275,75 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.recommendation).toMatch(/no gate verdict|FRESH verdict/i);
   });
 
+  it('D-067: a live repair hold is a typed blocker, not a verdict, and suppresses inherited failures', () => {
+    const repairHold: PipelineEventRow = {
+      id: 'repair-in-progress-1',
+      kind: 'green_checkpoint',
+      status: 'repair-in-progress',
+      detail: { candidate: 'dfe7bd9f', failingTests: ['historical-red.test.ts'] },
+      createdAtMs: 2,
+    };
+    const snap = mkSnap(
+      {
+        consecutiveReds: 41,
+        failingTests: ['historical-red.test.ts'],
+        inconclusive: {
+          status: 'repair-in-progress',
+          candidate: 'dfe7bd9f',
+          detail: 'frozen repair queue owns progress',
+          observedAtMs: 1,
+        },
+      },
+      { deployedBehindGreenPin: 0 },
+      [repairHold],
+    );
+    snap.activeRun = { active: false, candidate: null, startedAtMs: null, elapsedSec: null };
+
+    const s = computeDeployStatus(snap);
+
+    expect(s.gate.lastVerdict?.status).toBe('repair-in-progress');
+    expect(s.checkpoint).toMatchObject({
+      state: 'blocked',
+      authority: 'live-probe',
+      blocker: "latest checkpoint ended 'repair-in-progress' without a gate verdict",
+      verdictPending: false,
+    });
+    expect(s.gate.failingTests).toEqual([]);
+    expect(s.state).toBe('gate-wedged');
+  });
+
+  it('D-067: an idle run plus an absent repair queue retires the stale repair hold and historical failures', () => {
+    const staleRepairHold: PipelineEventRow = {
+      id: 'repair-in-progress-terminal-1',
+      kind: 'green_checkpoint',
+      status: 'repair-in-progress',
+      detail: { candidate: 'dfe7bd9f', failingTests: ['historical-red.test.ts'] },
+      createdAtMs: 2,
+    };
+    const snap = mkSnap(
+      {
+        consecutiveReds: 41,
+        failingTests: ['historical-red.test.ts'],
+        // `git-pipeline-stats.currentGateInconclusive` returns null once repair_queue
+        // is authoritatively absent. This is the live dfe7bd9f mismatch D-067 names.
+        inconclusive: null,
+      },
+      { deployedBehindGreenPin: 0 },
+      [staleRepairHold],
+    );
+    snap.activeRun = { active: false, candidate: null, startedAtMs: null, elapsedSec: null };
+
+    const s = computeDeployStatus(snap);
+
+    expect(s.gate.lastVerdict).toBeNull();
+    expect(s.checkpoint).toMatchObject({ state: 'idle', authority: 'live-probe', blocker: null });
+    expect(s.gate.failingTests).toEqual([]);
+    expect(s.gate.verdictStale).toBe(true);
+    expect(s.gate.verdictStaleReason).toMatch(/repair queue is absent.*run-lock is measured idle/i);
+    expect(s.state).toBe('gate-verdict-stale');
+    expect(s.recommendation).not.toContain('historical-red.test.ts');
+  });
+
   it('does not classify a non-verdict tick as wedged while a checkpoint is active', () => {
     const s = computeDeployStatus({
       ...mkSnap(

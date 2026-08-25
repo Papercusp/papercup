@@ -31,6 +31,7 @@ import {
   RELEASE_DEPLOY_UNIT,
   type DeployTerminalMarker,
 } from './release-deploy-terminal';
+import { isRecordedInconclusiveStatus } from './release/gate-abort-status';
 import { isRecordableVerdict } from './release/gate-verdict-target';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 
@@ -280,7 +281,10 @@ export interface DeployStatus {
      *  tick decide, and on what code?" without grepping log files: the candidate sha it tested,
      *  the sha main was at BEFORE this tick (`from`), the verdict, and the exact per-run log
      *  path (WI-4957) to open for detail. Null only when no green_checkpoint event has been
-     *  recorded yet for this install (a fresh/never-ticked gate). */
+     *  recorded yet for this install (a fresh/never-ticked gate), or when the newest
+     *  event is a queue-owned repair hold whose queue is now absent and whose run-lock
+     *  is measured idle. In that case the event remains append-only history, but exposing
+     *  it as the live `lastVerdict` would resurrect a blocker its producer no longer owns. */
     lastVerdict: {
       tickAtMs: number;
       /** The commit this tick actually tested (12-char sha), when the CLI recorded one. */
@@ -376,7 +380,20 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // (candidate/from/failingTests/logPath/runId), already persisted for every tick; this is
   // the first read surface exposing it to an agent instead of a raw log grep.
   const lastCheckpointEvent = (snap.recent ?? []).find((e) => e.kind === 'green_checkpoint');
-  const lastVerdict = lastCheckpointEvent
+  // D-067 / WI-41252: repair-in-progress and repair-staging-mismatch are queue-owned
+  // NO-VERDICT events, not durable truth about the candidate. `git-pipeline-stats`
+  // deliberately clears `gate.inconclusive` once the authoritative repair_queue is absent.
+  // When the independent run-lock probe is also positively idle, keeping that append-only
+  // event in the live `lastVerdict` slot resurrects the dead queue, while the old red's
+  // failingTests beside it send responders at historical failures. Preserve the event in
+  // pipeline history, but remove it from this CURRENT projection.
+  const latestCheckpointIsStaleRepairHold =
+    lastCheckpointEvent !== undefined &&
+    (lastCheckpointEvent.status === 'repair-in-progress' ||
+      lastCheckpointEvent.status === 'repair-staging-mismatch') &&
+    g.inconclusive == null &&
+    checkpointRunInFlight?.active === false;
+  const lastVerdict = lastCheckpointEvent && !latestCheckpointIsStaleRepairHold
     ? {
         tickAtMs: lastCheckpointEvent.createdAtMs,
         candidate: typeof lastCheckpointEvent.detail?.candidate === 'string' ? lastCheckpointEvent.detail.candidate : null,
@@ -392,7 +409,10 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // authoritative when present: a non-verdict tick is expected while that run is still producing
   // the real outcome, so it must not be classified as a wedge yet.
   const latestCheckpointIsNonVerdict =
-    lastCheckpointEvent !== undefined && !isRecordableVerdict(lastCheckpointEvent.status);
+    lastCheckpointEvent !== undefined &&
+    !latestCheckpointIsStaleRepairHold &&
+    (!isRecordableVerdict(lastCheckpointEvent.status) ||
+      isRecordedInconclusiveStatus(lastCheckpointEvent.status));
   const checkpointRoutine = snap.routines.greenCheckpoint;
   const checkpointProbe = checkpointRunInFlight == null
     ? { status: 'unmeasured' as const, detail: null }
@@ -478,6 +498,12 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
                   verdictPending: false,
                   probe: checkpointProbe,
                 };
+  const verdictStale = g.verdictStale || latestCheckpointIsStaleRepairHold;
+  const verdictStaleReason = g.verdictStale
+    ? g.verdictStaleReason
+    : latestCheckpointIsStaleRepairHold
+      ? `the latest ${lastCheckpointEvent!.status} event is historical: its repair queue is absent and the checkpoint run-lock is measured idle`
+      : null;
   // EI-18646778682511611: a partial advance ('advanced-prefix', P-016/D-010) resets
   // `consecutiveReds` to 0 by design (trackGateStall treats it as "main is advancing,
   // not stalled") — but it is EXPLICITLY the case where the CANDIDATE/tip is still red
@@ -508,7 +534,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // list is historical context rather than a current blame list. Suppress it at the shared
   // status writer so every downstream surface gets the same truthful empty list.
   const suppressHistoricalFailingTests =
-    g.verdictStale || checkpoint.state === 'running' || checkpoint.state === 'paused' || checkpoint.state === 'blocked';
+    verdictStale || checkpoint.state === 'running' || checkpoint.state === 'paused' || checkpoint.state === 'blocked';
   const failingTests = suppressHistoricalFailingTests ? [] : (g.failingTests ?? []);
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
@@ -538,7 +564,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // that as `gate-red` sends responders to fix tests that already pass — and (observed 2026-07-12)
   // the fixer's manual suite runs then HOLD the lock that keeps the routine skipping, so the stale
   // red sustains itself. Treat an unverified red as "colour unknown", never as red.
-  const redAuthoritative = g.consecutiveReds > 0 && !g.verdictStale;
+  const redAuthoritative = g.consecutiveReds > 0 && !verdictStale;
 
   let state: DeployStateKind;
   let recommendation: string;
@@ -605,12 +631,12 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
         ? `This verdict names no failing tests — do NOT go hunting for tests. Inspect the checkpoint run log${lastVerdict?.logPath ? ` at ${lastVerdict.logPath}` : ''} or ask the verdict owner for the non-test failure before taking action.`
         : `Your change can't reach the green pin until the reds are fixed. ` +
           `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`);
-  } else if (g.consecutiveReds > 0 && g.verdictStale) {
+  } else if (g.consecutiveReds > 0 && verdictStale) {
     // The blob says red, but that red is provably superseded or simply unverified. Do NOT dress it
     // up as green either — the honest state is "we don't know", with the one action that resolves it.
     state = 'gate-verdict-stale';
     recommendation =
-      `The gate's health blob reports ${g.consecutiveReds} red(s), but that verdict is STALE — ${g.verdictStaleReason ?? 'it has been superseded'}. ` +
+      `The gate's health blob reports ${g.consecutiveReds} red(s), but that verdict is STALE — ${verdictStaleReason ?? 'it has been superseded'}. ` +
       `Do NOT chase the failing tests it names; they may already be green (verify by running them before you touch anything). ` +
       (activeCheckpointRecommendation
         ? `${activeCheckpointRecommendation} If the gate keeps reporting 'skipped-locked' after it finishes, let one routine fire through.`
@@ -642,8 +668,8 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       fireStale,
       fireStaleReason,
       lastGreenAtMs: g.lastGreenAtMs,
-      verdictStale: g.verdictStale,
-      verdictStaleReason: g.verdictStaleReason,
+      verdictStale,
+      verdictStaleReason,
       lastFixerStatus: g.lastFixerStatus,
       lastFixerCandidate: g.lastFixerCandidate,
       flakyWorkspaces: g.flakyWorkspaces,
