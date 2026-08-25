@@ -9,9 +9,16 @@
 import type { Sql } from 'postgres';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 export const SESSION_SOURCE_KINDS = ['claude', 'omp', 'codex', 'agent_chat'] as const;
 export const SESSION_TURN_REF_PREFIX = 'session_turn:';
+/**
+ * Keep read-time freshness below the MCP transport deadline. The ingest work
+ * itself is not cancellable, but a slow refresh must never hold the indexed
+ * read (or its archive fallback) hostage.
+ */
+export const SESSION_TARGET_REFRESH_TIMEOUT_MS = 5_000;
 export type SessionSourceKind = (typeof SESSION_SOURCE_KINDS)[number];
 
 export interface SessionSelector {
@@ -173,8 +180,16 @@ export async function refreshTargetSessionBeforeRead(
   if (!target) return { attempted: 1, refreshed: 0 };
 
   const ingest = deps.ingest ?? (await import('../../search/session-ingest')).ingestFileNow;
-  await ingest(target.filePath, { owner: row.owner, sessionId: target.sessionId });
-  return { attempted: 1, refreshed: 1 };
+  const owner = row.owner;
+  const refresh = await withBoundedTimeout(
+    () => ingest(target.filePath, { owner, sessionId: target.sessionId }),
+    {
+      fallback: undefined,
+      timeoutMs: SESSION_TARGET_REFRESH_TIMEOUT_MS,
+      label: 'sessions:read target refresh',
+    },
+  );
+  return { attempted: 1, refreshed: refresh.degraded ? 0 : 1 };
 }
 
 /**

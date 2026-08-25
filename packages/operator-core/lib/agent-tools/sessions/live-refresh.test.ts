@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { refreshLiveSessionsBeforeRead, refreshTargetSessionBeforeRead } from './_shared';
+import {
+  refreshLiveSessionsBeforeRead,
+  refreshTargetSessionBeforeRead,
+  SESSION_TARGET_REFRESH_TIMEOUT_MS,
+} from './_shared';
 
 describe('refreshLiveSessionsBeforeRead', () => {
   it('refreshes explicitly requested owners concurrently and preserves owner identity', async () => {
@@ -51,6 +55,38 @@ describe('refreshLiveSessionsBeforeRead', () => {
       owner: 'su-owner',
       sessionId: 'target-session',
     });
+  });
+
+  it('degrades a slow active-target ingest so the indexed read can continue', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const sql = vi.fn(async () => [{
+        id: 42,
+        agent: 'codex',
+        owner: 'su-owner',
+        session_id: 'target-session',
+        omp_thread_id: null,
+      }]) as never;
+      const ingest = vi.fn(() => new Promise<never>(() => {}));
+
+      const pending = refreshTargetSessionBeforeRead(sql, 'codex', 'target-session', {
+        resolve: async () => ({ filePath: '/tmp/codex/target-session.jsonl', sessionId: 'target-session' }),
+        ingest,
+      });
+
+      await vi.advanceTimersByTimeAsync(SESSION_TARGET_REFRESH_TIMEOUT_MS);
+
+      await expect(pending).resolves.toEqual({ attempted: 1, refreshed: 0 });
+      expect(ingest).toHaveBeenCalledWith('/tmp/codex/target-session.jsonl', {
+        owner: 'su-owner',
+        sessionId: 'target-session',
+      });
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('sessions:read target refresh'));
+    } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
   });
 
   it('skips inactive targets so indexed and archive reads keep their existing behavior', async () => {
