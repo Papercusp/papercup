@@ -146,9 +146,25 @@
 #   0  the probe reached its expected verdict (default: the mutant was CAUGHT)
 #   1  the probe reached the opposite verdict — your guard is weaker than you think
 #   2  misuse / the probe could not be run soundly (e.g. a no-op or
-#      whitespace-only mutation,
+#      whitespace-only mutation, a mutant that no longer PARSES,
 #      a failing baseline, or a harness error while running the mutant)
 #   3  IN-TREE RESTORE FAILED — the tree may still be dirty; act immediately
+#
+# READING THE VERDICT
+#   MUTATION_PROBE_RESULT carries mutant_parse= alongside the verdict, because
+#   that line is what gets quoted as evidence. 'ok' means the mutant was
+#   confirmed to still be a loadable program, so a caught verdict is about the
+#   ASSERTIONS. 'unchecked*' means no syntax checker applied to this subject
+#   (unsupported extension, or the interpreter was absent), so a caught verdict
+#   has not ruled out a mutant that merely fails to load. A mutant that is
+#   confirmed unparseable never reaches a verdict at all — it exits 2 as misuse.
+#
+#   Two habits this cannot enforce for you: read WHICH tests failed rather than
+#   the verdict line alone (a genuine semantic mutant fails a PROPER SUBSET of
+#   the suite; a mutant that cannot load fails everything), and run BOTH
+#   directions of a conditional guard — forcing a branch always-on and
+#   always-off measure different halves of it, and either alone leaves the
+#   other half unproven.
 #
 # The guard command runs twice: once against the original file with
 # PAPERCUSP_MUTATION_PHASE=baseline, then against the mutant with
@@ -810,6 +826,87 @@ if cmp -s "$MUTANT_NON_WHITESPACE" "$BASE_NON_WHITESPACE"; then
       look weak. Inspect the mutation diff above, then fix the expression so it
       changes the intended non-whitespace token and re-run."
 fi
+# A mutant that no longer PARSES is the same false-verdict class as the two
+# checks above, wearing a far more convincing costume. The guard does fail --
+# but it fails because the subject stopped being a loadable program, not
+# because the assertions detect the behaviour change. The probe then prints
+# "MUTANT CAUGHT ... the guard is falsifiable" about assertions it never
+# exercised, and that verdict line is exactly what gets quoted as evidence.
+#
+# Observed (EI-21430792829614962): mutating a .mjs hook with
+#   s/isTunnelForward\(addrs, port\)/false/
+# also matched the FUNCTION DECLARATION, yielding 'function false {'. Every
+# spawn of the subject died at ESM load, the suite went red, and the probe
+# reported a clean catch. The only tell was a loader trace buried in the
+# captured output; MUTATION_PROBE_RESULT itself read as a genuine catch.
+#
+# This is the inverse of the no-op refusal above and belongs beside it: a
+# mutation that changed NOTHING makes a guard look weak, a mutation that
+# changed the file into a NON-PROGRAM makes a guard look strong. Both are
+# false verdicts from a probe that never tested what it claims to have tested.
+#
+# Only the MUTANT is checked, for two independent reasons:
+#   1. The baseline gate above already ran the guard against the unmutated
+#      $FILE and refused to continue unless it passed, so the original is
+#      established as a valid program. A second check would be redundant.
+#   2. $BASE carries a '.orig' suffix, and extension-dispatched checkers judge
+#      the SAME BYTES differently because of it -- node reads .mjs as a module
+#      and .mjs.orig as a script, so every ESM subject's imports would fail
+#      spuriously. $TARGET always keeps the real basename, so it is the only
+#      sound thing to check.
+#
+# A checker that is absent must NEVER manufacture a refusal, so a missing
+# interpreter degrades to unchecked rather than to broken. Unknown extensions
+# degrade the same way and are stamped mutant_parse=unchecked on
+# MUTATION_PROBE_RESULT, so the evidence line carries its own caveat instead
+# of reading clean.
+MUTANT_PARSE="unchecked"
+MUTANT_PARSE_ERR="$SCRATCH/mutant-parse.err"
+case "$FILE" in
+  *.mjs|*.cjs|*.js)
+    if ! command -v node >/dev/null 2>&1; then
+      MUTANT_PARSE="unchecked-no-node"
+    elif node --check "$TARGET" >/dev/null 2>"$MUTANT_PARSE_ERR"; then
+      MUTANT_PARSE="ok"
+    else
+      MUTANT_PARSE="broken"
+    fi
+    ;;
+  *.sh|*.bash)
+    if bash -n "$TARGET" 2>"$MUTANT_PARSE_ERR"; then
+      MUTANT_PARSE="ok"
+    else
+      MUTANT_PARSE="broken"
+    fi
+    ;;
+esac
+if [ "$MUTANT_PARSE" = "broken" ]; then
+  log "the mutant no longer PARSES as a program. Parser said:"
+  sed -n '1,5p' "$MUTANT_PARSE_ERR" >&2 || true
+  printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1 mutant_parse=broken\n' \
+    "$EXPECT" "$TARGET_MODE" "$BASELINE_RC"
+  die "the --mutate expression produced a mutant that is not a valid program — refusing to score it.
+
+      Your guard would have failed on this mutant no matter what it asserts,
+      so scoring it would report falsifiability the probe never demonstrated.
+      This is a MISUSE of the probe, not a weak guard and not a caught mutant.
+
+      MOST COMMON CAUSE: the pattern matched MORE THAN THE INTENDED SITE —
+      typically a function's DECLARATION as well as its CALL SITE, which turns
+      'function name(...)' into something like 'function false {'. Anchor the
+      pattern on text the declaration cannot match:
+
+          WRONG:  's/isTunnelForward\(addrs, port\)/false/'
+          RIGHT:  's/if \(isTunnelForward/if (false \&\& isTunnelForward/'
+
+      Inspect the mutation diff printed above — it shows every line that
+      changed, which is where an over-broad match becomes obvious.
+
+      RELATED HABIT: read WHICH tests failed, not just the verdict line. A
+      genuine semantic mutant fails a PROPER SUBSET of the suite; a mutant that
+      cannot load fails everything indiscriminately."
+fi
+
 # Keep the DIRTY window free of command substitutions. A SIGTERM that landed
 # inside the old nested hash-object substitutions could make Bash abort trap
 # parsing with an unmatched closing parenthesis; finish() then never ran and
@@ -839,8 +936,12 @@ else
   log "VERDICT: HARNESS ERROR (guard exited $TEST_RC) — no falsifiability verdict is sound"
 fi
 
-printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d\n' \
-  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC"
+# mutant_parse travels WITH the verdict, because this line is what gets quoted
+# as evidence. 'ok' means the mutant was confirmed to still be a loadable
+# program, so a caught verdict is about the assertions; 'unchecked*' means no
+# checker applied to this subject and the caught verdict carries that caveat.
+printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d mutant_parse=%s\n' \
+  "$VERDICT" "$EXPECT" "$TARGET_MODE" "$BASELINE_RC" "$TEST_RC" "$MUTANT_PARSE"
 
 [ "$VERDICT" = "harness-error" ] && exit 2
 [ "$VERDICT" = "$EXPECT" ] || exit 1
