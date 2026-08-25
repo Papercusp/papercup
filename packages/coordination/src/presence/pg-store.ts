@@ -457,6 +457,14 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       ADD COLUMN IF NOT EXISTS intent_declared_at timestamptz
   `;
   await sql`
+    COMMENT ON TABLE harness_shared.coord_presence IS
+      'Live coordination state projection. Rows are TTL-reaped; absence means reaped or never-present, not absence at a historical time. Use append-only event/history records for historical claims.';
+    COMMENT ON COLUMN harness_shared.coord_presence.owner_id IS
+      'Current live-state key. A missing owner row is not evidence that the owner was absent at an earlier time; coord_presence is TTL-reaped.';
+    COMMENT ON COLUMN harness_shared.coord_presence.heartbeat_at IS
+      'Last observed heartbeat for the current live projection. This is not a historical presence record; rows are TTL-reaped after inactivity.';
+  `;
+  await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.power_user_sessions (
       auth_session_id TEXT        NOT NULL PRIMARY KEY,
       workspace_id    TEXT        NOT NULL,
