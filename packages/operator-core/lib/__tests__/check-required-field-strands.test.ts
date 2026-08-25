@@ -515,17 +515,29 @@ describe('formatNoFindings — "examined nothing" must never read as "clean"', (
 
 describe('inferred shared-tree findings — never claim a peer result for the caller', () => {
   it('marks peer findings untrusted and skips typecheck after the caller change is swept into HEAD', () => {
-    const tmp = makeCleanRepo();
+    const tmp = mkdtempSync(join(tmpdir(), 'required-field-strands-attribution-'));
     try {
       const git = (...args: string[]) =>
         execFileSync('git', args, { cwd: tmp, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      const mine = 'packages/operator-core/lib/mine.ts';
+      const peer = 'packages/operator-core/lib/peer.ts';
+      mkdirSync(join(tmp, 'packages/operator-core/lib'), { recursive: true });
+      cpSync(resolve(ROOT, 'scripts'), join(tmp, 'scripts'), { recursive: true });
+      symlinkSync(resolve(ROOT, 'node_modules'), join(tmp, 'node_modules'));
+      writeFileSync(join(tmp, mine), 'export interface Mine { id: string }\n');
+      writeFileSync(join(tmp, peer), 'export interface Peer { id: string }\n');
+      git('init', '-q', '.');
+      git('config', 'user.email', 'required-field-strands@test.invalid');
+      git('config', 'user.name', 'required-field-strands');
+      git('add', '-A');
+      git('commit', '-qm', 'base');
 
       // Simulate the caller's required-field edit being committed by git-sync before the
       // caller runs the guard, then leave a different agent's required-field edit dirty.
-      writeFileSync(join(tmp, FILE_A), 'export interface A { id: string; callerField: number }\n');
-      git('add', FILE_A);
+      writeFileSync(join(tmp, mine), 'export interface Mine { id: string; callerField: number }\n');
+      git('add', mine);
       git('commit', '-qm', 'git-sync caller sweep');
-      writeFileSync(join(tmp, FILE_B), 'export interface B { id: string; peerField: number }\n');
+      writeFileSync(join(tmp, peer), 'export interface Peer { id: string; peerField: number }\n');
 
       // If the guard accidentally forwards the inferred peer finding into lint-tsc, this
       // sentinel makes the regression fail loudly instead of doing real work in the temp repo.
@@ -541,7 +553,7 @@ describe('inferred shared-tree findings — never claim a peer result for the ca
       expect(result.status).toBe(2);
       expect(out).toContain('NOT CHECKED');
       expect(out).toContain('no required-field addition is attributable to this caller');
-      expect(out).toContain('B.peerField');
+      expect(out).toContain('Peer.peerField');
       expect(out).toContain('--typecheck: NOT RUN');
       expect(out).not.toContain('typecheck reported errors ATTRIBUTED');
       expect(out).not.toContain('callerField');
@@ -551,13 +563,14 @@ describe('inferred shared-tree findings — never claim a peer result for the ca
   }, 120_000);
 
   it('exposes the attribution split to JSON consumers', () => {
+    const peer = 'packages/operator-core/lib/peer.ts';
     const msg = formatUnattributedFindings(
-      [{ file: FILE_B, added: [{ path: 'B.peerField', reason: 'added-required' }] }],
+      [{ file: peer, added: [{ path: 'Peer.peerField', reason: 'added-required' }] }],
       'HEAD',
-      [FILE_B],
+      [peer],
     );
     expect(msg).toContain('no required-field addition is attributable to this caller');
-    expect(msg).toContain('B.peerField');
+    expect(msg).toContain('Peer.peerField');
     expect(msg).not.toMatch(/^✓/m);
   });
 });
