@@ -14,7 +14,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { RouteContext, RouteDefinition } from '../define-route';
 
-vi.setConfig({ testTimeout: 15_000, hookTimeout: 15_000 });
+// The first case owns the cold mocked dynamic import/transform for this very
+// large route graph. Keep the OUTER harness budget separate from the behavior
+// detector: every stream assertion still uses drainSse(..., 8_000), so a route
+// that does not close fails in 8s rather than being hidden by this headroom.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 15_000 });
 
 vi.mock('../../agent-chat-lock', () => ({
   AGENT_CHAT_LOCK_TTL_MS: 10 * 60_000,
