@@ -100,9 +100,89 @@ function serviceAccountPath(input?: string): string {
   return path;
 }
 
-async function projectIdFromServiceAccount(path: string): Promise<string> {
-  const parsed = JSON.parse(await fs.readFile(path, 'utf8')) as { project_id?: string };
-  return resourceSegment(parsed.project_id, 'project_id');
+interface ServiceAccountIdentity {
+  projectId: string | null;
+  /** `client_email` from the key file — the principal every 401/403 below is really about. */
+  principal: string | null;
+}
+
+/**
+ * Read project + principal from the key file.
+ *
+ * `required` is true only when the caller supplied no explicit `projectId` and
+ * the file is therefore load-bearing. Otherwise the read is best-effort: the
+ * principal is wanted purely to make a 403 legible, and a caller that passed its
+ * own project must not start failing because a key file is unreadable.
+ */
+async function serviceAccountIdentity(
+  path: string,
+  required: boolean,
+): Promise<ServiceAccountIdentity> {
+  let parsed: { project_id?: string; client_email?: string };
+  try {
+    parsed = JSON.parse(await fs.readFile(path, 'utf8')) as typeof parsed;
+  } catch (error) {
+    if (required) throw error;
+    return { projectId: null, principal: null };
+  }
+  const principal = parsed.client_email?.trim();
+  const projectId = parsed.project_id?.trim();
+  return {
+    projectId: projectId && projectId.length > 0 ? projectId : null,
+    principal: principal && principal.length > 0 ? principal : null,
+  };
+}
+
+/**
+ * The Pub/Sub permission each REST call actually consumes.
+ *
+ * Google answers every one of them with the same opaque "User not authorized to
+ * perform this action." and never names the denied principal, so a 403 here is
+ * indistinguishable from an expired user login unless we say which identity was
+ * used. `set_topic_iam_policy` is the reason the grant must be `roles/pubsub.admin`
+ * rather than `roles/pubsub.editor` — editor confers no `setIamPolicy`.
+ */
+const PUBSUB_OPERATION_PERMISSIONS: Readonly<Record<string, string>> = {
+  get_topic: 'pubsub.topics.get',
+  create_topic: 'pubsub.topics.create',
+  get_topic_iam_policy: 'pubsub.topics.getIamPolicy',
+  set_topic_iam_policy: 'pubsub.topics.setIamPolicy',
+  get_subscription: 'pubsub.subscriptions.get',
+  create_subscription: 'pubsub.subscriptions.create',
+  pull: 'pubsub.subscriptions.consume',
+  acknowledge: 'pubsub.subscriptions.consume',
+};
+
+/** Role that grants every permission in the map above. */
+export const PUBSUB_REQUIRED_ROLE = 'roles/pubsub.admin';
+
+interface PubSubAuthContext {
+  token: string;
+  principal: string | null;
+  projectId: string;
+  credentialPath: string;
+}
+
+/**
+ * Turn an opaque 401/403 into the one line an operator can act on: which
+ * principal was denied, where that principal came from, and the exact grant.
+ */
+export function describePubSubAuthFailure(
+  operation: string,
+  auth: Pick<PubSubAuthContext, 'principal' | 'projectId' | 'credentialPath'>,
+): string {
+  const permission = PUBSUB_OPERATION_PERMISSIONS[operation];
+  const principal = auth.principal ?? `unresolved (no client_email in ${auth.credentialPath})`;
+  return (
+    ` [denied_principal=${principal}` +
+    ` project=${auth.projectId}` +
+    (permission ? ` missing_permission=${permission}` : '') +
+    ` required_role=${PUBSUB_REQUIRED_ROLE}` +
+    ` credential_source=GOOGLE_APPLICATION_CREDENTIALS=${auth.credentialPath}` +
+    ` fix=gcloud projects add-iam-policy-binding ${auth.projectId}` +
+    ` --member=serviceAccount:${auth.principal ?? '<client_email>'}` +
+    ` --role=${PUBSUB_REQUIRED_ROLE}]`
+  );
 }
 
 async function defaultAccessToken(path: string): Promise<string> {
@@ -122,15 +202,13 @@ async function runtimeContext(
 ): Promise<{
   projectId: string;
   subscriptionId: string;
-  token: string;
+  auth: PubSubAuthContext;
   fetchImpl: typeof fetch;
   origin: string;
 }> {
   const credentialPath = serviceAccountPath(input.serviceAccountPath);
-  const projectId = resourceSegment(
-    input.projectId ?? (await projectIdFromServiceAccount(credentialPath)),
-    'project_id',
-  );
+  const identity = await serviceAccountIdentity(credentialPath, !input.projectId?.trim());
+  const projectId = resourceSegment(input.projectId ?? identity.projectId ?? undefined, 'project_id');
   const subscriptionId = resourceSegment(
     input.subscriptionId ?? googleGmailSubscriptionId(input.workspaceId),
     'subscription_id',
@@ -139,13 +217,17 @@ async function runtimeContext(
   return {
     projectId,
     subscriptionId,
-    token,
+    auth: { token, principal: identity.principal, projectId, credentialPath },
     fetchImpl: deps.fetch ?? fetch,
     origin: (deps.apiOrigin ?? PUBSUB_API_ORIGIN).replace(/\/$/, ''),
   };
 }
 
-async function responseJson<T>(response: Response, operation: string): Promise<T> {
+async function responseJson<T>(
+  response: Response,
+  operation: string,
+  auth?: PubSubAuthContext,
+): Promise<T> {
   const text = await response.text();
   let payload: unknown = {};
   if (text) {
@@ -161,7 +243,15 @@ async function responseJson<T>(response: Response, operation: string): Promise<T
         ? ((payload as { error?: { message?: string }; message?: string }).error?.message ??
           (payload as { message?: string }).message)
         : undefined;
-    throw new Error(`google_pubsub_${operation}_${response.status}${providerMessage ? `:${providerMessage}` : ''}`);
+    // The prefix stays byte-identical so existing matchers keep working; the
+    // identity diagnostic is appended only where it is the actual question.
+    const diagnostic =
+      auth && (response.status === 401 || response.status === 403)
+        ? describePubSubAuthFailure(operation, auth)
+        : '';
+    throw new Error(
+      `google_pubsub_${operation}_${response.status}${providerMessage ? `:${providerMessage}` : ''}${diagnostic}`,
+    );
   }
   return payload as T;
 }
@@ -176,7 +266,7 @@ function authHeaders(token: string, body: unknown): HeadersInit {
 
 async function request<T>(
   fetchImpl: typeof fetch,
-  token: string,
+  auth: PubSubAuthContext,
   operation: string,
   url: string,
   method: string,
@@ -184,11 +274,11 @@ async function request<T>(
 ): Promise<{ status: number; value: T | null }> {
   const response = await fetchImpl(url, {
     method,
-    headers: authHeaders(token, body),
+    headers: authHeaders(auth.token, body),
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (response.status === 404) return { status: 404, value: null };
-  return { status: response.status, value: await responseJson<T>(response, operation) };
+  return { status: response.status, value: await responseJson<T>(response, operation, auth) };
 }
 
 function withGmailPublisher(policy: IamPolicy): { policy: IamPolicy; changed: boolean } {
@@ -220,7 +310,7 @@ export async function provisionGoogleGmailPubSub(
   input: GooglePubSubProvisionInput,
   deps: GooglePubSubProvisionDeps = {},
 ): Promise<GooglePubSubProvisionResult> {
-  const { projectId, subscriptionId, token, fetchImpl, origin } = await runtimeContext(input, deps);
+  const { projectId, subscriptionId, auth, fetchImpl, origin } = await runtimeContext(input, deps);
   const topicId = resourceSegment(input.topicId ?? DEFAULT_TOPIC_ID, 'topic_id');
   const ackDeadlineSeconds = input.ackDeadlineSeconds ?? 60;
   if (!Number.isInteger(ackDeadlineSeconds) || ackDeadlineSeconds < 10 || ackDeadlineSeconds > 600) {
@@ -235,16 +325,16 @@ export async function provisionGoogleGmailPubSub(
   const topicUrl = `${origin}/v1/projects/${projectSegment}/topics/${topicSegment}`;
   const subscriptionUrl = `${origin}/v1/projects/${projectSegment}/subscriptions/${subscriptionSegment}`;
 
-  const existingTopic = await request<{ name: string }>(fetchImpl, token, 'get_topic', topicUrl, 'GET');
+  const existingTopic = await request<{ name: string }>(fetchImpl, auth, 'get_topic', topicUrl, 'GET');
   let topic: GooglePubSubProvisionResult['topic'] = 'existing';
   if (existingTopic.status === 404) {
-    await request(fetchImpl, token, 'create_topic', topicUrl, 'PUT', {});
+    await request(fetchImpl, auth, 'create_topic', topicUrl, 'PUT', {});
     topic = 'created';
   }
 
   const policyResult = await request<IamPolicy>(
     fetchImpl,
-    token,
+    auth,
     'get_topic_iam_policy',
     `${topicUrl}:getIamPolicy`,
     'POST',
@@ -254,7 +344,7 @@ export async function provisionGoogleGmailPubSub(
   const merged = withGmailPublisher(policyResult.value);
   let publisherGrant: GooglePubSubProvisionResult['publisherGrant'] = 'existing';
   if (merged.changed) {
-    await request(fetchImpl, token, 'set_topic_iam_policy', `${topicUrl}:setIamPolicy`, 'POST', {
+    await request(fetchImpl, auth, 'set_topic_iam_policy', `${topicUrl}:setIamPolicy`, 'POST', {
       policy: merged.policy,
     });
     publisherGrant = 'added';
@@ -262,14 +352,14 @@ export async function provisionGoogleGmailPubSub(
 
   const existingSubscription = await request<{ name: string; topic?: string }>(
     fetchImpl,
-    token,
+    auth,
     'get_subscription',
     subscriptionUrl,
     'GET',
   );
   let subscription: GooglePubSubProvisionResult['subscription'] = 'existing';
   if (existingSubscription.status === 404) {
-    await request(fetchImpl, token, 'create_subscription', subscriptionUrl, 'PUT', {
+    await request(fetchImpl, auth, 'create_subscription', subscriptionUrl, 'PUT', {
       topic: topicName,
       ackDeadlineSeconds,
     });
@@ -294,7 +384,7 @@ export async function pullGoogleGmailNotifications(
   input: GooglePubSubPullInput,
   deps: GooglePubSubProvisionDeps = {},
 ): Promise<GooglePubSubReceivedMessage[]> {
-  const { projectId, subscriptionId, token, fetchImpl, origin } = await runtimeContext(input, deps);
+  const { projectId, subscriptionId, auth, fetchImpl, origin } = await runtimeContext(input, deps);
   const maxMessages = input.maxMessages ?? 100;
   if (!Number.isInteger(maxMessages) || maxMessages < 1 || maxMessages > 1_000) {
     throw new Error('google_pubsub_invalid_max_messages');
@@ -304,7 +394,7 @@ export async function pullGoogleGmailNotifications(
     `/subscriptions/${encodeURIComponent(subscriptionId)}:pull`;
   const pulled = await request<{ receivedMessages?: GooglePubSubReceivedMessage[] }>(
     fetchImpl,
-    token,
+    auth,
     'pull',
     url,
     'POST',
@@ -326,11 +416,11 @@ export async function acknowledgeGoogleGmailNotifications(
   const uniqueAckIds = [...new Set(ackIds.filter((ackId) => ackId.trim()))];
   if (uniqueAckIds.length === 0) return 0;
   if (uniqueAckIds.length > 1_000) throw new Error('google_pubsub_too_many_ack_ids');
-  const { projectId, subscriptionId, token, fetchImpl, origin } = await runtimeContext(input, deps);
+  const { projectId, subscriptionId, auth, fetchImpl, origin } = await runtimeContext(input, deps);
   const url =
     `${origin}/v1/projects/${encodeURIComponent(projectId)}` +
     `/subscriptions/${encodeURIComponent(subscriptionId)}:acknowledge`;
-  const acknowledged = await request(fetchImpl, token, 'acknowledge', url, 'POST', { ackIds: uniqueAckIds });
+  const acknowledged = await request(fetchImpl, auth, 'acknowledge', url, 'POST', { ackIds: uniqueAckIds });
   if (acknowledged.status === 404) {
     throw new Error(`google_pubsub_subscription_missing:${subscriptionId}`);
   }
