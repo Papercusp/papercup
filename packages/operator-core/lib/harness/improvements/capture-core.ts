@@ -27,6 +27,7 @@
 import {
   createIssue,
   getIssue,
+  releaseIssue,
   searchIssuesForDedup,
   findIssuesByWatchdogKeys,
   updateIssue,
@@ -533,6 +534,8 @@ export interface CaptureDeps {
    * PG-free tests can prove ordering without importing the large work-items module.
    */
   setWorkItemStateWithAliasInfo?: CaptureLifecycleStateWriter;
+  /** Release the submitter claim when the review lifecycle cannot complete. */
+  releaseIssue?: (id: string, opts?: { expectedAssignee?: string }) => Promise<EngineerIssue | null>;
 }
 
 export interface CaptureLifecycleStateResult {
@@ -567,6 +570,7 @@ const defaultDeps: CaptureDeps = {
   searchIssues: searchIssuesForDedup,
   createIssue,
   getIssue,
+  releaseIssue,
   loadRubric: getRubric,
   autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
   recordIssueOccurrence,
@@ -584,6 +588,37 @@ const defaultDeps: CaptureDeps = {
   },
   setWorkItemStateWithAliasInfo: defaultSetWorkItemStateWithAliasInfo,
 };
+
+function reviewFailureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Preserve a committed capture when its review lifecycle fails. The row is already
+ * parked by the caller; release only the submitter's claim and stamp the existing
+ * leader-triage metadata shape so a leader can diagnose and re-open it deliberately.
+ */
+export async function recordCaptureReviewFailure(
+  id: string,
+  failure: AgentReviewFailure,
+  opts: { submittedBy?: string; harness?: string } = {},
+  deps: CaptureDeps = defaultDeps,
+): Promise<{ released: boolean; recorded: boolean }> {
+  let released = false;
+  if (opts.submittedBy) {
+    released = Boolean(
+      await (deps.releaseIssue ?? releaseIssue)(id, { expectedAssignee: opts.submittedBy }).catch(() => null),
+    );
+  }
+  const recorded = Boolean(
+    await (deps.mergeIssuePayload ?? mergeIssuePayload)(id, {
+      blockedReason: `agent-review-${failure.phase}-failed`,
+      blockedAt: failure.at,
+      agentReviewFailure: failure,
+    }).catch(() => null),
+  );
+  return { released, recorded };
+}
 
 function harnessFromScope(scope: string | undefined): string | null {
   return scope?.startsWith('harness:') ? scope.slice('harness:'.length) || null : null;
@@ -1101,6 +1136,10 @@ export async function captureImprovement(
   // origin participate in dedup + decided-recall — a drill row deduping against an
   // organic capture (or vice versa) would let synthetic signals suppress real ones.
   const isObservation = input.lane === 'observation';
+  const reviewRequired = Boolean(
+    input.reviewRequired && !isObservation && (input.kind === 'change' || input.kind === 'feature'),
+  );
+  const reviewHarness = input.reviewHarness ?? harnessFromScope(input.scope);
   const sourceRole = input.sourceRole ?? 'human';
   const identity = admissionIdentity(input.title, input.watchdogKey);
   const skippedDedupCoverage: DedupCoverage = {
@@ -1950,6 +1989,10 @@ export async function captureImprovement(
     source: input.source,
     signalOrigin: origin,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
+    // A review-required row is hidden from every claim/place door from the INSERT
+    // itself. The later blocked-state write is the reviewer-lane marker; this
+    // orthogonal admission fence closes the born-to-park race before it can run.
+    ...(reviewRequired ? { admission: 'pending' as const } : {}),
     // D-002/D-005 (observation-lane-scorecard-classification-2026-08-16): a
     // scorecards:emit verdict files already-terminal; everything else stays 'open'.
     ...(input.initialState ? { state: input.initialState } : {}),
@@ -1983,6 +2026,35 @@ export async function captureImprovement(
       alreadyDecided,
       queueAdmission,
     });
+  }
+  let reviewState: 'blocked' | undefined;
+  let agentReviewFailure: AgentReviewFailure | undefined;
+  if (reviewRequired) {
+    const at = new Date().toISOString();
+    try {
+      const parked = await (deps.setWorkItemStateWithAliasInfo ?? defaultSetWorkItemStateWithAliasInfo)(
+        issue.id,
+        'blocked',
+        {
+          ...(reviewHarness ? { harness: reviewHarness } : {}),
+          ...(input.createdBy ? { by: input.createdBy } : {}),
+          reason: 'agent-review enrollment pending',
+        },
+      );
+      const appliedState = parked.appliedState ?? parked.workItem?.state;
+      if (appliedState !== 'blocked') {
+        throw new Error(`review park did not apply blocked state (appliedState=${appliedState ?? 'null'})`);
+      }
+      reviewState = 'blocked';
+    } catch (error) {
+      agentReviewFailure = { phase: 'block', message: reviewFailureMessage(error), at };
+      await recordCaptureReviewFailure(
+        issue.id,
+        agentReviewFailure,
+        { submittedBy: input.createdBy, harness: reviewHarness ?? undefined },
+        deps,
+      );
+    }
   }
   await appendCaptureOccurrence(
     deps,
@@ -2115,6 +2187,9 @@ export async function captureImprovement(
     possibleDuplicates,
     dedupCoverage,
     admissionIdentity: identity,
+    ...(reviewRequired ? { reviewRequired: true } : {}),
+    ...(reviewState ? { reviewState } : {}),
+    ...(agentReviewFailure ? { agentReviewFailure } : {}),
     ...(linkedTo ? { linkedTo } : {}),
     ...(alreadyDecided.length ? { alreadyDecided } : {}),
   };
