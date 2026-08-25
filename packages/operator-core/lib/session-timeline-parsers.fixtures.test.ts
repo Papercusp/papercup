@@ -1,0 +1,262 @@
+/**
+ * Per-backend parser coverage driven by REAL wire records (WI-41499).
+ *
+ * The sibling `session-timeline-parsers.test.ts` asserts against payloads its
+ * author invented, which is why it stayed green through WI-41498: it had no
+ * `custom_tool_call` case at all (170 of 176 real codex tool calls), and its
+ * output case passed `output:'patched'` — a plain string, a shape no current
+ * Codex build writes. A test that invents its own input can only ever confirm
+ * that the parser agrees with the test author.
+ *
+ * Every record below comes from `transcript-wire-fixtures.ts`, transcribed off
+ * live transcripts on disk. `transcript-wire-live-guard.test.ts` re-checks those
+ * same fixtures against the real files, so a backend that moves a field fails
+ * there by name instead of silently emptying the HUD conversation popup.
+ */
+
+import { describe, expect, it } from 'vitest';
+
+import { createCodexTimelineParser, createOmpTimelineParser } from './session-timeline-parsers';
+import { createAgentTimelineParser } from './endpoint-route/routes/harness/streams';
+import {
+  ALL_WIRE_FIXTURES,
+  CLAUDE_WIRE_FIXTURES,
+  CODEX_WIRE_FIXTURES,
+  OMP_WIRE_FIXTURES,
+  resolveWirePath,
+  wireLine,
+  type WireFixture,
+} from './transcript-wire-fixtures';
+
+const byName = (fixtures: readonly WireFixture[], fragment: string): WireFixture => {
+  const hit = fixtures.find((f) => f.name.includes(fragment));
+  if (!hit) throw new Error(`no fixture matching ${JSON.stringify(fragment)}`);
+  return hit;
+};
+
+const parseCodex = (f: WireFixture) => createCodexTimelineParser().parseLine(wireLine(f));
+const parseOmp = (f: WireFixture) => createOmpTimelineParser().parseLine(wireLine(f));
+const parseClaude = (f: WireFixture) => createAgentTimelineParser().parseLine(wireLine(f));
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('wire fixtures are self-consistent', () => {
+  // A fixture that does not actually carry the fields it claims to would make
+  // the live guard vacuous — it would compare an absent path against an absent
+  // path and pass.
+  it.each(ALL_WIRE_FIXTURES)('$backend: $fixture.name — every readField resolves', ({ fixture }) => {
+    for (const path of fixture.readFields) {
+      expect(resolveWirePath(fixture.record, path), `readField ${path} missing from fixture`).not.toHaveLength(0);
+    }
+  });
+
+  it.each(ALL_WIRE_FIXTURES)('$backend: $fixture.name — its discriminator matches itself', ({ fixture }) => {
+    for (const { path, value } of fixture.discriminator) {
+      expect(resolveWirePath(fixture.record, path)).toContain(value);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// codex
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('createCodexTimelineParser — real rollout records', () => {
+  it('custom_tool_call carries its args in `input`, and they reach the chip', () => {
+    const f = byName(CODEX_WIRE_FIXTURES, 'custom_tool_call (the ~97% case)');
+    const [entry] = parseCodex(f);
+
+    expect(entry).toMatchObject({
+      kind: 'tool_use',
+      toolName: 'exec',
+      toolId: 'call_lX8Fyf79r9o2c2GDpsFyRkm4',
+      ts: '2026-08-25T01:22:44.015Z',
+    });
+    // THE WI-41498 REGRESSION. The record has no `arguments` field at all, so a
+    // parser that reads only `arguments` emits an undefined toolInput — a tool
+    // chip naming `exec` and showing nothing it ran.
+    expect(f.record.payload).not.toHaveProperty('arguments');
+    expect(entry!.toolInput).toBe(
+      'const hits = ALL_TOOLS.filter(x => /plans|work_items/.test(x.name));\ntext(hits);\n',
+    );
+  });
+
+  it('custom_tool_call_output flattens its BLOCK ARRAY instead of dumping JSON', () => {
+    const f = byName(CODEX_WIRE_FIXTURES, 'custom_tool_call_output');
+    const [entry] = parseCodex(f);
+
+    expect(entry).toMatchObject({ kind: 'tool_result', toolId: 'call_lX8Fyf79r9o2c2GDpsFyRkm4' });
+    expect(entry!.text).toBe('Script completed\nWall time 0.2 seconds\nOutput:\nTotal output lines: 1');
+    // The pre-fix rendering, which reached 30 of 31 results in the measured
+    // session: the raw block array stringified into the pane.
+    expect(entry!.text).not.toContain('input_text');
+    expect(entry!.text).not.toMatch(/^\[\{/);
+  });
+
+  it('function_call parses its JSON-string `arguments` into structured input', () => {
+    const f = byName(CODEX_WIRE_FIXTURES, 'function_call —');
+    const [entry] = parseCodex(f);
+
+    expect(entry).toMatchObject({ kind: 'tool_use', toolName: 'wait', toolId: 'call_5HVc1fREEm78u8woS1eTWvW4' });
+    // Both codex tool-call shapes must land in the SAME chip vocabulary even
+    // though one ships a JSON string and the other raw text.
+    expect(entry!.toolInput).toEqual({ cell_id: '19', yield_time_ms: 30000, max_tokens: 12000 });
+  });
+
+  it('function_call_output flattens its block array too', () => {
+    const [entry] = parseCodex(byName(CODEX_WIRE_FIXTURES, 'function_call_output'));
+    expect(entry).toMatchObject({ kind: 'tool_result', text: 'Script completed\nWall time 0.0 seconds' });
+  });
+
+  it('response_item/message maps assistant → text and user → prompt', () => {
+    expect(parseCodex(byName(CODEX_WIRE_FIXTURES, 'message assistant'))).toEqual([
+      { kind: 'text', text: "I'm reading the active plan's `## Now` block first.", ts: '2026-08-25T01:22:43.346Z' },
+    ]);
+    expect(parseCodex(byName(CODEX_WIRE_FIXTURES, 'message user'))).toEqual([
+      { kind: 'prompt', text: 'show the turn history', ts: '2026-08-25T01:22:36.408Z' },
+    ]);
+  });
+
+  it('skips developer messages — 244 of 399 real message records', () => {
+    // These are injected instruction blocks (skills, AGENTS.md). Rendering them
+    // would bury the conversation under its own scaffolding.
+    expect(parseCodex(byName(CODEX_WIRE_FIXTURES, 'message developer'))).toEqual([]);
+  });
+
+  it('skips reasoning whose summary is empty — which is ALL of it on this build', () => {
+    // Every one of the 227 reasoning records in the sampled rollout has
+    // `summary: []` and encrypted content. A parser that emitted a status entry
+    // per reasoning record would add 227 blank rows to the pane.
+    expect(parseCodex(byName(CODEX_WIRE_FIXTURES, 'reasoning'))).toEqual([]);
+  });
+
+  it('does not duplicate a message written as BOTH event_msg and response_item', () => {
+    // Older builds wrote each visible message twice. The fixtures are from a
+    // current build (response_item only); this pins the cross-generation guard.
+    const parser = createCodexTimelineParser();
+    const legacy = JSON.stringify({
+      timestamp: 't1',
+      type: 'event_msg',
+      payload: { type: 'agent_message', message: 'On it.' },
+    });
+    const current = JSON.stringify({
+      timestamp: 't1',
+      type: 'response_item',
+      payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'On it.' }] },
+    });
+    expect(parser.parseLine(legacy)).toHaveLength(1);
+    expect(parser.parseLine(current)).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// omp
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('createOmpTimelineParser — real session records', () => {
+  it('splits an assistant record into its thinking and toolCall blocks', () => {
+    const f = byName(OMP_WIRE_FIXTURES, 'assistant thinking + toolCall');
+    expect(parseOmp(f)).toEqual([
+      {
+        kind: 'status',
+        text: "[thinking] Let me get oriented. I'm a fleet member.",
+        ts: '2026-08-24T10:22:19.407Z',
+      },
+      {
+        kind: 'tool_use',
+        toolName: 'read',
+        // omp ships an OBJECT here where codex ships a JSON string — the chip
+        // must receive it structured either way.
+        toolInput: { i: 'Read the schema before first use', path: 'xd://mcp__papercusp_su_scheduler_get_next' },
+        toolId: '07224da1-9da2-442e-9967-6d0bba3703a4|fc_tmp_4c3fkj9lb5y',
+        ts: '2026-08-24T10:22:19.407Z',
+      },
+    ]);
+  });
+
+  it('maps assistant text → text', () => {
+    expect(parseOmp(byName(OMP_WIRE_FIXTURES, 'assistant text'))).toEqual([
+      { kind: 'text', text: 'Claimed WI-40012; starting on the resolver.', ts: '2026-08-24T10:22:41.900Z' },
+    ]);
+  });
+
+  it('treats toolResult as a message ROLE, not a content-block type', () => {
+    // 216 of 585 real records. Its blocks are ordinary `text` blocks — the role
+    // is the only thing that distinguishes a tool result from assistant prose,
+    // so a parser that dispatched on block type alone would render every tool
+    // result as the agent talking.
+    const f = byName(OMP_WIRE_FIXTURES, 'toolResult role');
+    const entries = parseOmp(f);
+    expect(entries.map((e) => e.kind)).toEqual(['tool_result', 'tool_result']);
+    expect(entries[0]!.text).toContain('scheduler:get_next');
+  });
+
+  it('maps a user record whose content is an ARRAY of text blocks → prompt', () => {
+    expect(parseOmp(byName(OMP_WIRE_FIXTURES, 'user —'))).toEqual([
+      { kind: 'prompt', text: '⟦turn-origin:fleet-kickoff⟧\nDrain the non-p2p bug lane.', ts: '2026-08-24T10:21:50.768Z' },
+    ]);
+  });
+
+  it('skips non-message records', () => {
+    expect(parseOmp(byName(OMP_WIRE_FIXTURES, 'session —'))).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// claude
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('createAgentTimelineParser — real claude transcript records', () => {
+  it('maps assistant tool_use blocks to chips', () => {
+    const [entry] = parseClaude(byName(CLAUDE_WIRE_FIXTURES, 'assistant tool_use'));
+    expect(entry).toEqual({
+      kind: 'tool_use',
+      toolName: 'ToolSearch',
+      toolInput: { query: 'select:work_items_get' },
+      toolId: 'toolu_01XnLShooyEUAJMYYyNzn53c',
+      ts: '2026-08-25T02:56:43.953Z',
+    });
+  });
+
+  it('maps assistant text', () => {
+    expect(parseClaude(byName(CLAUDE_WIRE_FIXTURES, 'assistant text'))).toEqual([
+      { kind: 'text', text: "I'll start by re-orienting and pulling the carry.", ts: '2026-08-25T02:56:43.301Z' },
+    ]);
+  });
+
+  it('maps a user tool_result — and keeps its id even when the blocks carry no text', () => {
+    // Real tool_result content is not always `{type:'text'}`: a ToolSearch
+    // result is `{type:'tool_reference', tool_name}`. The entry must still be
+    // emitted and still carry `toolId`, so the chip pairs with its call.
+    const [entry] = parseClaude(byName(CLAUDE_WIRE_FIXTURES, 'user tool_result'));
+    expect(entry).toMatchObject({ kind: 'tool_result', toolId: 'toolu_01XnLShooyEUAJMYYyNzn53c' });
+    expect(entry!.text).toBe('');
+  });
+
+  it('maps a bare-string user record → prompt (a real turn boundary)', () => {
+    expect(parseClaude(byName(CLAUDE_WIRE_FIXTURES, 'user plain prompt'))).toEqual([
+      { kind: 'prompt', text: '⟦turn-origin:self-compaction⟧\nContinue WI-41499: write the tests.', ts: '2026-08-25T02:56:37.669Z' },
+    ]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('every backend parser survives the others’ wire', () => {
+  // The route picks ONE parser per request off `sessionThinkingKey`. If a key
+  // ever selects the wrong one, the honest outcome is an empty pane — never a
+  // throw that kills the SSE stream for the whole session.
+  it.each(ALL_WIRE_FIXTURES)('$backend: $fixture.name — no parser throws', ({ fixture }) => {
+    const line = wireLine(fixture);
+    for (const make of [createCodexTimelineParser, createOmpTimelineParser, createAgentTimelineParser]) {
+      expect(() => make().parseLine(line)).not.toThrow();
+    }
+  });
+
+  it('every parser tolerates a truncated final line (the tail of a live file)', () => {
+    const partial = wireLine(CODEX_WIRE_FIXTURES[0]!).slice(0, 40);
+    for (const make of [createCodexTimelineParser, createOmpTimelineParser, createAgentTimelineParser]) {
+      expect(make().parseLine(partial)).toEqual([]);
+    }
+  });
+});
