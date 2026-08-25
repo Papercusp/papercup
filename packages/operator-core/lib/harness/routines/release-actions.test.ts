@@ -2242,6 +2242,11 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     await expect(readFrozenCandidateRepairQueue(target)).resolves.toEqual({
       ...queue,
       schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+      // Schema v3 added qualificationAttemptId. The parser deliberately materializes it as an
+      // explicit null for a legacy (v1) row rather than leaving it absent, because retirement
+      // of an unstarted queue matches on the exact predecessor id — a missing key and a null
+      // must both read as "no qualification", keeping a legacy queue fail-closed.
+      qualificationAttemptId: null,
     });
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       1,
