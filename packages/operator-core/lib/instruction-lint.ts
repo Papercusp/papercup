@@ -143,12 +143,17 @@ export function findUnconditionalPostCompactionRecoveryDirectives(
   for (let index = 0; index < lines.length; index += 1) {
     const window = lines.slice(index, index + 6).join(' ').replace(/\s+/g, ' ').trim();
     for (const pattern of UNCONDITIONAL_POST_COMPACTION_PATTERNS) {
-      if (!pattern.re.test(window)) continue;
-      const key = `${index + 1}:${pattern.name}`;
+      const match = pattern.re.exec(window);
+      if (!match) continue;
+      const key = `${pattern.name}:${match[0].toLowerCase()}`;
       if (seen.has(key)) continue;
       seen.add(key);
       findings.push({ line: index + 1, directive: window.slice(0, 500), pattern: pattern.name });
       if (findings.length >= maxFindings) return findings;
+      // Several narrow regexes intentionally overlap (for example a "First
+      // re-run" line is both first-orient and re-run-orient). One source
+      // directive is one blocking finding; the first/most-specific pattern wins.
+      break;
     }
   }
   return findings;

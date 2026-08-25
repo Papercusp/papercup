@@ -2413,17 +2413,26 @@ const post = defineTool({
     });
     let promptText = overlaid.promptText;
     let instructionLint = overlaid.instructionLint;
-    if (instructionLint.conflicts.length > 0 || instructionLint.staleRules.length > 0) {
+    if (
+      instructionLint.conflicts.length > 0 ||
+      instructionLint.staleRules.length > 0 ||
+      instructionLint.unconditionalPostCompactionRecovery.length > 0
+    ) {
       process.stderr.write(
         `[bootstrap-su] instruction lint: ${instructionLint.conflicts.length} conflict(s), ` +
-          `${instructionLint.staleRules.length} stale rule(s)\n`,
+          `${instructionLint.staleRules.length} stale rule(s), ` +
+          `${instructionLint.unconditionalPostCompactionRecovery.length} unconditional post-compaction recovery directive(s)\n`,
       );
     }
-    if (blockingInstructionConflicts(instructionLint).length > 0) {
+    const blockingInstructions = blockingInstructionConflicts(instructionLint);
+    if (blockingInstructions.length > 0) {
+      const onlyFileLocks = blockingInstructions.every((entry) => entry.key === 'file-locking');
       return jsonRes(
         {
           status: 'error',
-          error: 'compiled instructions contain contradictory file-lock modes; launch refused',
+          error: onlyFileLocks
+            ? 'compiled instructions contain contradictory file-lock modes; launch refused'
+            : 'compiled instructions contain a blocking instruction-contract violation; launch refused',
           instructionLint,
         },
         500,
@@ -2467,11 +2476,15 @@ const post = defineTool({
         codexHome = ch.codexHome;
         promptFile = ch.agentsPath; // AGENTS.md — diagnostics
         instructionLint = ch.instructionLint ?? lintInstructionText(promptText, 20, instructionRuntime);
-        if (blockingInstructionConflicts(instructionLint).length > 0) {
+        const codexBlockingInstructions = blockingInstructionConflicts(instructionLint);
+        if (codexBlockingInstructions.length > 0) {
+          const onlyFileLocks = codexBlockingInstructions.every((entry) => entry.key === 'file-locking');
           return jsonRes(
             {
               status: 'error',
-              error: 'runtime-resolved Codex instructions contain contradictory file-lock modes; launch refused',
+              error: onlyFileLocks
+                ? 'runtime-resolved Codex instructions contain contradictory file-lock modes; launch refused'
+                : 'runtime-resolved Codex instructions contain a blocking instruction-contract violation; launch refused',
               instructionLint,
             },
             500,

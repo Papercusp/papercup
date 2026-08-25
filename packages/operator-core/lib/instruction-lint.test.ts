@@ -16,9 +16,22 @@ describe('lintInstructionText', () => {
       'Pass `afterCompaction: true` on your first post-compaction call.',
     ].join('\n');
     const out = lintInstructionText(retired);
-    expect(out.unconditionalPostCompactionRecovery.map((finding) => finding.pattern)).toEqual(
-      expect.arrayContaining(['before-acting-orient', 're-run-orient', 'first-action-orient']),
-    );
+    expect(out.unconditionalPostCompactionRecovery.length).toBeGreaterThan(0);
+    expect(
+      findUnconditionalPostCompactionRecoveryDirectives(
+        'First re-run coord:orient { afterCompaction: true }, then continue.',
+      )[0]?.pattern,
+    ).toBe('first-orient');
+    expect(
+      findUnconditionalPostCompactionRecoveryDirectives(
+        'FIRST ACTION: run coord:orient { afterCompaction: true } before continuing.',
+      )[0]?.pattern,
+    ).toBe('first-action-orient');
+    expect(
+      findUnconditionalPostCompactionRecoveryDirectives(
+        'Pass `afterCompaction: true` on your first post-compaction call.',
+      )[0]?.pattern,
+    ).toBe('first-afterCompaction-arg');
     expect(out.clean).toBe(false);
     expect(blockingInstructionConflicts(out)).toEqual(
       expect.arrayContaining([

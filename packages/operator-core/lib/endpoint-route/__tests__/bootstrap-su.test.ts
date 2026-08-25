@@ -830,6 +830,23 @@ describe('bootstrap-su', () => {
     expect(writeSuCodexHomeMock).not.toHaveBeenCalled();
   });
 
+  it('refuses a compiled prompt that resurrects unconditional post-compaction recovery-orient', async () => {
+    const base = await buildLaunchSpecMock({ harnessSlug: null });
+    buildLaunchSpecMock.mockResolvedValueOnce({
+      ...base,
+      promptText: 'Fresh context. First re-run coord:orient { afterCompaction: true }, then continue.',
+    });
+    const res = await callPost({ agent: 'claude', harness_slug: null, plan_slug: null });
+    expect(res.status).toBe(500);
+    await expect(res.json()).resolves.toMatchObject({
+      status: 'error',
+      error: expect.stringMatching(/blocking instruction-contract violation/i),
+      instructionLint: {
+        unconditionalPostCompactionRecovery: [expect.objectContaining({ pattern: 'first-orient' })],
+      },
+    });
+  });
+
   it('omp: raw-CLI result (no wrapperBin), No-plan row + mode omp', async () => {
     const res = await callPost({ agent: 'omp', harness_slug: 'papercup', plan_slug: null });
     const json = await res.json();
