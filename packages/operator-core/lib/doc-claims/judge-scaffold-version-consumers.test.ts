@@ -69,12 +69,14 @@ const PINNED: Readonly<Record<string, Disposition>> = Object.freeze({
     why: 'persists paid grades to search_judge_grades keyed on rubric_version (WI-41675)',
   },
   'packages/operator-core/lib/memory/bench/judged.ts': {
-    kind: 'owed',
+    kind: 'folds',
     why:
-      'no grade cache, so no stale paid grades — but JUDGED_TIER_RUBRIC_VERSION is a ' +
-      'hand-maintained literal that labels reports and feeds each run identity hash, so ' +
-      'two runs judged under different prompts still claim to be comparable',
-    trackedBy: 'EI-21448289024080765',
+      'JUDGED_TIER_RUBRIC_VERSION is now derived by deriveJudgedTierRubricVersion over ' +
+      'the rubric content, its own instruction contract and JUDGE_PROMPT_SCAFFOLD_VERSION ' +
+      '(via the shared deriveRubricVersion helper), so the version that labels reports and ' +
+      'feeds each run identity hash moves when any prompt layer moves. Reclassified from ' +
+      '`owed` (EI-21448289024080765) when this guard went red on the repair — which is the ' +
+      'bidirectional check doing its job, not a regression.',
   },
   'packages/operator-core/lib/llm-testing/replay.ts': {
     kind: 'owed',
