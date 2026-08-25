@@ -16,6 +16,13 @@ import {
   type CellSpecLike,
   type SenderReadRow,
 } from './stale-quote-stamp';
+import type { CellSpec } from '../../cell-registry';
+
+// Type-level pin: the real registry rows must stay assignable to the structural
+// slice this module consumes — the exact contract the resolve call site's
+// lint:tsc check enforces (`buildCellTokenIndex(registry.listCellsUnchecked())`).
+const _registryAssignable: readonly CellSpecLike[] = [] as CellSpec[];
+void _registryAssignable;
 
 const SPECS: CellSpecLike[] = [
   {
@@ -74,6 +81,20 @@ describe('buildCellTokenIndex (P-011)', () => {
     expect(idx.doorTools).toEqual(
       expect.arrayContaining(['dev:pipeline_position', 'release:deploy', 'routines:list', 'host:memory_pressure']),
     );
+  });
+
+  it('tolerates the registry union: an event-signalled cell yields its id token, no door, no throw', () => {
+    // Mirrors CellSpec's event arm ({ kind:'event', key }) — no tool, no path.
+    // Before the guard this crashed claim() on an undefined path, and the outer
+    // fail-soft catch silently disabled the whole stamp for every registry with
+    // an event cell (TS2345 at the resolve call site was pointing at this).
+    const idx = buildCellTokenIndex([
+      ...SPECS,
+      { cell: 'fleet.drain.progress', changeSignal: { kind: 'event', key: 'fleet:drained:slug' } },
+    ]);
+    expect(idx.tokens.get('fleet.drain.progress')).toBe('fleet.drain.progress');
+    expect(idx.tokens.has('fleet:drained:slug')).toBe(false);
+    expect(idx.doorsByCell.get('fleet.drain.progress')).toEqual([]);
   });
 });
 
