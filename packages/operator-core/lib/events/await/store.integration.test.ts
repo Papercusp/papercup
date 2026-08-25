@@ -319,7 +319,7 @@ describe('await-event store (PG)', () => {
       code: 'await_generation_mismatch',
       currentGeneration: second.causalGeneration,
       currentState: 'declared',
-    } satisfies Partial<AwaitGenerationMismatchError>);
+    } satisfies Partial<InstanceType<typeof AwaitGenerationMismatchError>>);
     expect(await listActiveAwaits('stale-waiter')).toEqual([]);
 
     await stampAnnouncementsFired(eventKey, { firedBy: 'emit' });
@@ -329,7 +329,7 @@ describe('await-event store (PG)', () => {
       code: 'await_generation_mismatch',
       currentGeneration: second.causalGeneration,
       currentState: 'fired',
-    } satisfies Partial<AwaitGenerationMismatchError>);
+    } satisfies Partial<InstanceType<typeof AwaitGenerationMismatchError>>);
     expect(await listActiveAwaits('fired-waiter')).toEqual([]);
   });
 
