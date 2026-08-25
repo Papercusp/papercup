@@ -37,6 +37,44 @@ const PAYLOAD_FLAG_KEYS = {
   needsTwoMachineRig: 'needs_2_machine_rig',
 } as const;
 
+/**
+ * Payload keys the free-form `payload` merge must REFUSE (WI-41509).
+ *
+ * `payload` is not just metadata — it carries ADMISSION IDENTITIES and CLAIM STATE that
+ * the scheduler and the claim floors read as authority: `plan_item` is tested as
+ * `payload ? 'plan_item'` to admit an item into a plan-scoped fleet lane, the
+ * `claim_hold_*` trio holds a row against other agents, and `needs_2_machine_rig` /
+ * `needsOwnerAction` / `lane` gate who may claim it at all. A caller able to merge those
+ * could forge admission into another fleet's lane or wedge a claim floor, which is
+ * exactly the authority the dedicated args above exist to mediate. So each has a
+ * PURPOSE-SHAPED arg (plan_item, needsTwoMachineRig, needsHuman) that applies its
+ * side-effects — the coverage edge, the legacy-key unset — and the general merge refuses
+ * it rather than writing the key without them.
+ *
+ * The `_` PREFIX rule is deliberate and covers the rest by construction: internal and
+ * migration markers (`_ei`, `_assumptions`, `_claimHold`, `_legacyHumanParkMigration`)
+ * are system-written bookkeeping, and enumerating them would rot the moment a new one
+ * ships. A prefix cannot drift the way a hand-maintained list does.
+ */
+const PAYLOAD_MERGE_RESERVED_KEYS: ReadonlySet<string> = new Set([
+  'plan_item',
+  'needs_2_machine_rig',
+  'needsOwnerAction',
+  'needsHuman',
+  'lane',
+  'claim_hold_at',
+  'claim_hold_by',
+  'claim_hold_reason',
+]);
+
+/** The reserved keys present in a caller-supplied payload patch, in input order. */
+export function reservedPayloadKeys(patch: Record<string, unknown> | undefined): string[] {
+  if (!patch) return [];
+  return Object.keys(patch).filter(
+    (k) => k.startsWith('_') || PAYLOAD_MERGE_RESERVED_KEYS.has(k),
+  );
+}
+
 type PayloadFlagArgs = { needsTwoMachineRig?: boolean; needsHuman?: boolean };
 
 type PlanItemArg = { slug: string; item: string };
