@@ -69,10 +69,21 @@ describe('reanchorAdvSessionNativeId (real PG — the 42703 RETURNING-column reg
     expect(row.ended_at).toBeNull();
   });
 
-  it('is idempotent per native id (already-anchored → reanchored: false)', async () => {
+  it('already-anchored → reanchored:false but STILL reports the owner (WI-41555)', async () => {
+    // ⚠ This expectation deliberately CHANGED, and must not be "restored".
+    // It used to assert `owner: null`, which encoded the frozen-gauge defect as
+    // intended behaviour: the respawn route clears the context-usage + anchor
+    // caches only `if (owner)`, so a NO-OP re-anchor — the ordinary case for the
+    // cold-loop recycle cohort, whose spawn path stamps the new native id onto
+    // the row before the report lands — skipped both clears. The anchored gauge
+    // then served the DEAD predecessor's token count forever, so a fresh
+    // successor rendered ~81%, re-cut immediately, and ITS successor inherited
+    // the same number: an unbounded reset loop in which no session does work.
+    // `reanchored` and `owner` answer INDEPENDENT questions — "did I change the
+    // row" vs "whose row is it" — and respawn hygiene keys off the second.
     const id = await seedAdv({ coordOwnerId: OWNER, sessionId: FRESH_ID });
     const res = await reanchorAdvSessionNativeId(id, FRESH_ID);
-    expect(res).toEqual({ reanchored: false, owner: null });
+    expect(res).toEqual({ reanchored: false, owner: OWNER });
   });
 
   it('a missing row touches nothing and reports false', async () => {
@@ -97,11 +108,14 @@ describe('reanchorAdvSessionNativeIdByOwner (the interactive/`psu --resume` coho
     expect(ref?.sessionId).toBe(FRESH_ID);
   });
 
-  it('is idempotent per native id and never touches another owner', async () => {
+  it('already-anchored → reanchored:false, still reports the owner, never touches another owner (WI-41555)', async () => {
+    // Same deliberate change as the by-id sibling above: the no-op path must
+    // still hand the caller an owner, or respawn gauge hygiene never runs for
+    // the interactive / `psu --resume` cohort. Do not restore `owner: null`.
     const other = await seedAdv({ coordOwnerId: 'su-other', sessionId: DEAD_ID });
     await seedAdv({ coordOwnerId: OWNER, sessionId: FRESH_ID });
     const res = await reanchorAdvSessionNativeIdByOwner(OWNER, FRESH_ID);
-    expect(res).toEqual({ reanchored: false, owner: null });
+    expect(res).toEqual({ reanchored: false, owner: OWNER });
     const [row] = await admin<{ session_id: string }[]>`
       SELECT session_id FROM harness_shared.adv_sessions WHERE id = ${other}
     `;

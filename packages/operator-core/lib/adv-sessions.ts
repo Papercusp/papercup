@@ -1274,7 +1274,23 @@ export async function reanchorAdvSessionNativeId(
     // gauge (the successor keeps the coord ownerId, so the in-process usage
     // cache would otherwise serve the DEAD predecessor's near-limit estimate
     // for up to a watchdog cadence — the "89% on a fresh successor" bug).
-    return { reanchored: rows.length > 0, owner: rows[0]?.owner ?? null };
+    if (rows.length > 0) return { reanchored: true, owner: rows[0]?.owner ?? null };
+    // WI-41555: a NO-OP re-anchor is NOT "no owner". The UPDATE above is guarded
+    // by `session_id IS DISTINCT FROM`, so a row that ALREADY names this native
+    // id matches ZERO rows — exactly what happens when the spawn path stamped the
+    // new id onto the row before this report arrived (the cold-loop recycle
+    // cohort), and on any retried or duplicated report. Returning owner:null
+    // there made the caller skip the very context-cache clears the comment above
+    // promises, and the anchored gauge then served the DEAD predecessor's
+    // reading FOREVER — not merely "for up to a watchdog cadence", because
+    // advanceAnchor's fast path never re-resolves whether its cached path is
+    // still the live transcript for this owner.
+    // `reanchored` answers "did I change the row"; `owner` answers "whose row is
+    // it". They are independent facts, and respawn hygiene keys off the second.
+    const existing = await sql<{ owner: string | null }[]>`
+      SELECT coord_owner_id AS owner FROM harness_shared.adv_sessions WHERE id = ${id}
+    `;
+    return { reanchored: false, owner: existing[0]?.owner ?? null };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeId');
     return { reanchored: false, owner: null };
@@ -1310,7 +1326,19 @@ export async function reanchorAdvSessionNativeIdByOwner(
        ) AND session_id IS DISTINCT FROM ${sessionId}
       RETURNING id
     `;
-    return { reanchored: rows.length > 0, owner: rows.length > 0 ? coordOwnerId : null };
+    if (rows.length > 0) return { reanchored: true, owner: coordOwnerId };
+    // WI-41555 (see the sibling above for the full reasoning): a row that ALREADY
+    // names this native id updates zero rows, and the caller's respawn hygiene —
+    // the context-usage + anchor cache clears — must still run for that owner.
+    // Confirm the owner really does have a row, then report it with
+    // reanchored:false so "did I change it" stays honest.
+    const existing = await sql<{ id: number }[]>`
+      SELECT id FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${coordOwnerId}
+       ORDER BY started_at DESC
+       LIMIT 1
+    `;
+    return { reanchored: false, owner: existing.length > 0 ? coordOwnerId : null };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeIdByOwner');
     return { reanchored: false, owner: null };

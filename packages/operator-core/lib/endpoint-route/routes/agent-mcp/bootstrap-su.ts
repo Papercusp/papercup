@@ -3290,10 +3290,25 @@ const sessionRespawned = defineTool({
       // near-limit estimate — a fresh successor rendering "89%" gets nudged
       // into an immediate pointless re-cut. Clear it; the next watchdog pass
       // measures the real successor transcript. Best-effort like the reanchor.
-      if (owner) {
+      // WI-41555: gauge hygiene follows the EVENT (a respawn happened, and here
+      // is the owner it happened to), NEVER "did a DB row change". `owner` used
+      // to come back null on every no-op re-anchor, which is the ORDINARY case
+      // for the cold-loop recycle cohort — the spawn path stamps the new native
+      // id onto the row before this report lands, so both UPDATEs match zero
+      // rows. That silently skipped the two clears below and left the anchored
+      // gauge serving the DEAD predecessor's token count indefinitely: a fresh
+      // successor renders ~81%, obeys its own compaction discipline, re-cuts at
+      // once, and ITS successor inherits the same frozen number — an unbounded
+      // reset loop in which no session ever does any work. The re-anchors now
+      // report the row's owner regardless; this falls back to the owner the
+      // REPORT names so a missing or racing adv row cannot resurrect the bug.
+      // Clearing is idempotent and self-healing (the next read reseeds from the
+      // successor's real transcript), so an extra clear costs nothing.
+      const gaugeOwner = owner ?? coordOwnerId;
+      if (gaugeOwner) {
         try {
           const { clearContextUsage } = await import('../../../system-health/context-usage-cache');
-          clearContextUsage(owner);
+          clearContextUsage(gaugeOwner);
         } catch {
           /* gauge hygiene must never fail the respawn report */
         }
@@ -3310,7 +3325,7 @@ const sessionRespawned = defineTool({
         // real transcript.
         try {
           const { clearContextAnchor } = await import('../../../compaction-usage');
-          clearContextAnchor(owner);
+          clearContextAnchor(gaugeOwner);
         } catch {
           /* gauge hygiene must never fail the respawn report */
         }
