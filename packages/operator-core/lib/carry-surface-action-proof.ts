@@ -122,13 +122,13 @@ export function provesActionClaim(
 
 /** Remove only proven first-person action matches; peer-reported and unmatched findings remain. */
 export function suppressProvenActionClaims(
-  lint: ProvenanceLintResult | undefined,
-  invocations: readonly SuccessfulActionInvocation[] | null | undefined,
-): ProvenanceLintResult | undefined;
-export function suppressProvenActionClaims(
   lint: StampedProvenanceLint | undefined,
   invocations: readonly SuccessfulActionInvocation[] | null | undefined,
 ): StampedProvenanceLint | undefined;
+export function suppressProvenActionClaims(
+  lint: ProvenanceLintResult | undefined,
+  invocations: readonly SuccessfulActionInvocation[] | null | undefined,
+): ProvenanceLintResult | undefined;
 export function suppressProvenActionClaims(
   lint: ProvenanceLintResult | StampedProvenanceLint | undefined,
   invocations: readonly SuccessfulActionInvocation[] | null | undefined,
