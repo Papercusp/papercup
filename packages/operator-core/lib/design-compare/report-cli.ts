@@ -243,11 +243,16 @@ interface Sample {
 
 interface ClassAccumulator {
   readonly cohorts: Set<string>;
+  /** Real capture-to-capture variance. Never fed by the synthetic corpus (D-021). */
   readonly noise: Sample[];
+  /** Real differences between different surfaces, strictly greater than zero. */
   readonly regression: Sample[];
+  /** Different surfaces that captured byte-identically (D-020). */
+  readonly indistinguishable: string[];
+  /** The synthetic leg: engine soundness + comparison runtime, never a threshold input. */
+  readonly fidelity: Sample[];
   readonly captureMs: number[];
   readonly comparisonMs: number[];
-  smallestPixelsTotal: number;
 }
 
 function accumulator(): ClassAccumulator {
@@ -255,19 +260,22 @@ function accumulator(): ClassAccumulator {
     cohorts: new Set<string>(),
     noise: [],
     regression: [],
+    indistinguishable: [],
+    fidelity: [],
     captureMs: [],
     comparisonMs: [],
-    smallestPixelsTotal: Number.POSITIVE_INFINITY,
   };
 }
 
 /**
  * The synthetic corpus leg.
  *
- * Each class's `faithful` pair is a noise sample and its `drifted` pair is a
- * regression sample — that is what the corpus was built to model. The corpus
- * cannot speak for capture noise (nothing is captured), so it contributes
- * comparison runtime and engine soundness, not a capture-time floor.
+ * Contributes ENGINE SOUNDNESS and comparison runtime — never a threshold
+ * input (D-021). The corpus captures nothing, so its `faithful` pair is a
+ * modelled fidelity difference and not capture-to-capture variance. An earlier
+ * revision of this file fed it into the noise leg; the measured consequence was
+ * a noise floor of 0.0025 against a real measured 0.0, which failed the
+ * separation test and made the only genuinely gateable class advisory-only.
  */
 async function measureFixtureCorpus(
   classes: Map<ReferenceClass, ClassAccumulator>,
@@ -291,16 +299,13 @@ async function measureFixtureCorpus(
       candidatePath,
       path.join(workDir, 'diffs', `${pair.id.replace(/\//g, '_')}.png`),
     );
-    const sample: Sample = {
+    bucket.comparisonMs.push(measured.elapsedMs);
+    bucket.fidelity.push({
       caseId: `fixture-corpus:${pair.id}`,
       diffRatio: round6(measured.diffRatio),
       pixelsTotal: measured.pixelsTotal,
       comparisonMs: round6(measured.elapsedMs),
-    };
-    bucket.comparisonMs.push(measured.elapsedMs);
-    bucket.smallestPixelsTotal = Math.min(bucket.smallestPixelsTotal, measured.pixelsTotal);
-    if (pair.id.endsWith('/faithful')) bucket.noise.push(sample);
-    else bucket.regression.push(sample);
+    });
   }
 }
 
@@ -373,7 +378,6 @@ async function measureRealSurface(
         comparisonMs: round6(measured.elapsedMs),
       });
       bucket.comparisonMs.push(measured.elapsedMs);
-      bucket.smallestPixelsTotal = Math.min(bucket.smallestPixelsTotal, measured.pixelsTotal);
     }
 
     // Separation: sibling variants of the same component.
@@ -387,13 +391,19 @@ async function measureRealSurface(
         rightPath,
         path.join(workDir, 'diffs', `regression_${left.id}__${right.id}.png`),
       );
+      bucket.comparisonMs.push(measured.elapsedMs);
+      if (measured.pixelDifference === 0) {
+        // Two DIFFERENT surfaces that captured identically. Recorded as a
+        // finding, never as a regression sample of ratio zero (D-020).
+        bucket.indistinguishable.push(`${left.id}|${right.id}`);
+        continue;
+      }
       bucket.regression.push({
         caseId: `real-surface:regression:${left.id}|${right.id}`,
         diffRatio: round6(measured.diffRatio),
         pixelsTotal: measured.pixelsTotal,
         comparisonMs: round6(measured.elapsedMs),
       });
-      bucket.comparisonMs.push(measured.elapsedMs);
     }
   } finally {
     await browser.close();
@@ -421,6 +431,8 @@ export async function measureCalibration(options: MeasureOptions): Promise<Calib
   for (const [referenceClass, bucket] of [...classes.entries()].sort((a, b) =>
     a[0].localeCompare(b[0]),
   )) {
+    const faithful = bucket.fidelity.filter((s) => s.caseId.endsWith('/faithful'));
+    const drifted = bucket.fidelity.filter((s) => s.caseId.endsWith('/drifted'));
     calibrations.push({
       referenceClass,
       cohorts: [...bucket.cohorts].sort(),
@@ -440,11 +452,22 @@ export async function measureCalibration(options: MeasureOptions): Promise<Calib
             : round6(Math.min(...bucket.regression.map((s) => s.diffRatio))),
         samples: bucket.regression,
       },
+      indistinguishablePairs: bucket.indistinguishable,
+      fidelityCorpus: {
+        faithfulMaxDiffRatio:
+          faithful.length === 0 ? null : round6(Math.max(...faithful.map((s) => s.diffRatio))),
+        driftedMinDiffRatio:
+          drifted.length === 0 ? null : round6(Math.min(...drifted.map((s) => s.diffRatio))),
+        samples: bucket.fidelity,
+      },
       captureRuntime: runtimeStats(bucket.captureMs),
       comparisonRuntime: runtimeStats(bucket.comparisonMs),
-      smallestPixelsTotal: Number.isFinite(bucket.smallestPixelsTotal)
-        ? bucket.smallestPixelsTotal
-        : null,
+      // Scoped to the NOISE leg: this bounds the precision of the noise
+      // measurement, so an image no noise sample was taken on must not set it.
+      smallestPixelsTotal:
+        bucket.noise.length === 0
+          ? null
+          : Math.min(...bucket.noise.map((s) => s.pixelsTotal)),
     });
   }
 
@@ -464,6 +487,12 @@ export async function measureCalibration(options: MeasureOptions): Promise<Calib
     },
     classes: calibrations,
     caveats: [
+      'SAME-HOST ONLY. Every noise sample was captured on one machine, so this measures ' +
+        'capture-to-capture variance and NOT host-to-host variance. Font rasterisation and GPU ' +
+        'differences across machines are entirely unmeasured here, and are plausibly far larger ' +
+        'than the same-host figure. This is the single most important reason the gate stays ' +
+        'report-only (D-006): the CI report run is the instrument that will measure cross-host ' +
+        'noise, and P-011 must not enable enforcement before it has.',
       'Real-surface regression samples are SIBLING STORY VARIANTS of the same component: two ' +
         'real renders that differ by content. They establish that separation exists at this ' +
         'scale; they do NOT establish a minimum detectable change, so no one may quote the ' +
@@ -471,9 +500,13 @@ export async function measureCalibration(options: MeasureOptions): Promise<Calib
       'Noise samples are two independent captures at stabilityRetries: 0. The production ' +
         'capture path defaults to retrying until byte-identical, so this figure is an UPPER ' +
         'bound on the variance a real comparison sees, not the variance it will see.',
-      'Classes measured only on the synthetic fixture corpus carry no capture-time noise ' +
-        'sample at all. `policy.ts` refuses to make such a class gateable rather than ' +
-        'borrowing another class’s floor.',
+      'The synthetic fixture corpus contributes engine soundness and comparison runtime only ' +
+        '(fidelityCorpus). It is NOT a threshold input: it captures nothing, so it cannot ' +
+        'measure capture noise (D-021). A class with only corpus evidence therefore has no ' +
+        'measured noise floor and `policy.ts` refuses to make it gateable rather than ' +
+        'borrowing another class’s.',
+      'indistinguishablePairs, when non-empty, means two DIFFERENT surfaces produced identical ' +
+        'captures — a live bypass (D-020), not a cohort defect to tidy away.',
     ],
   };
 }
@@ -525,6 +558,13 @@ async function main(): Promise<void> {
             `regression n=${cls.regression.n} min=${cls.regression.minDiffRatio} · ` +
             `capture p50=${cls.captureRuntime.p50Ms}ms · compare p50=${cls.comparisonRuntime.p50Ms}ms`,
         );
+        if (cls.indistinguishablePairs.length > 0) {
+          console.log(
+            `      ⚠ ${cls.indistinguishablePairs.length} INDISTINGUISHABLE pair(s) — different ` +
+              'surfaces, identical captures (D-020):',
+          );
+          for (const pair of cls.indistinguishablePairs) console.log(`        ${pair}`);
+        }
       }
       return;
     }
