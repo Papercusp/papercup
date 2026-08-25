@@ -231,6 +231,15 @@ const HEALTHY_PENDING_REGISTRATION_PATTERNS: ReadonlyArray<RegExp> = [
   /\bpending\s+(?:an?\s+)?(?:event[-\s]?await|await|watch|subscription)\b[^\n.!?]{0,120}\b(?:registered|registration|armed|active|live)\b/i,
   /\b(?:event[-\s]?await|await|watch|subscription)\b[^\n.!?]{0,120}\b(?:registered|registration|armed|active|live)\b[^\n.!?]{0,120}\b(?:status|state)\s*[:=]\s*pending\b/i,
   /\b(?:status|state)\s*[:=]\s*pending\b[^\n.!?]{0,120}\b(?:event[-\s]?await|await|watch|subscription)\b[^\n.!?]{0,120}\b(?:registered|registration|armed|active|live)\b/i,
+  // Subject-position form: the await/watch/subscription itself is what remains
+  // pending — "newer await remains pending through 09:21:15Z" is the healthy
+  // liveness state of an active registration, not unresolved work
+  // (EI-21415991464539447). The registration noun must sit DIRECTLY before the
+  // status verb (optionally with an `on`/`for` target), so verb-await prose
+  // about genuinely unresolved work ("we await the verdict, which remains
+  // pending") never matches: there the direct object separates `await` from the
+  // status verb and the pattern refuses the gap.
+  /\b(?:events?[-:\s]?await|await|watch|subscription)s?\b(?:\s+(?:on|for)\s+[^\s.!?;]{1,80})?\s+(?:remain(?:s|ed)?|stay(?:s|ed)?|is|are|was|were|currently|still)\s+(?:still\s+)?pending\b/i,
 ];
 
 /**
