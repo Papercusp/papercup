@@ -240,7 +240,7 @@ function runInput(provider: WorkspaceHostProvider, store: WorkspaceHostDestroySt
 describe('runWorkspaceHostDestroy', () => {
   it('persists matching provider-read receipts and completes only after non-vacuous clean census + cost proof', async () => {
     const { provider, apply, inventoryManagedResources } = providerHarness();
-    const { store, checkpoints, updateHostState } = storeHarness();
+    const { store, checkpoints, updateHostState, updateOperation } = storeHarness();
 
     const result = await runWorkspaceHostDestroy(runInput(provider, store));
 
@@ -266,6 +266,16 @@ describe('runWorkspaceHostDestroy', () => {
       });
     }
     expect(updateHostState).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'absent', discard: true }));
+    const successUpdate = updateOperation.mock.calls.findIndex(([entry]) => entry.status === 'succeeded');
+    const evidenceEvent = vi
+      .mocked(store.appendEvent)
+      .mock.calls.findIndex(([entry]) => entry.phase === 'destroy-evidence');
+    expect(updateHostState.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      updateOperation.mock.invocationCallOrder[successUpdate] ?? 0,
+    );
+    expect(updateHostState.mock.invocationCallOrder.at(-1)).toBeGreaterThan(
+      vi.mocked(store.appendEvent).mock.invocationCallOrder[evidenceEvent] ?? 0,
+    );
   });
 
   it('fails closed when the all-kind provider inventory cannot be read', async () => {
