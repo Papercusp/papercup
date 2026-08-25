@@ -77,6 +77,12 @@ export interface WorkspaceHostBootstrapEntrypoints {
   claude: string;
   codex: string;
   omp: string;
+  /**
+   * The remote initializer the controller spawns per initialization step. A bundle without it
+   * installs and reports healthy, then fails every initialization at the far end — which is
+   * exactly the silent failure the `remote-initializer` check exists to convert into a loud one.
+   */
+  remoteInitializer: string;
 }
 
 export const DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS: Readonly<WorkspaceHostBootstrapEntrypoints> =
@@ -91,6 +97,7 @@ export const DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS: Readonly<WorkspaceHos
     claude: 'bin/claude',
     codex: 'bin/codex',
     omp: 'bin/omp',
+    remoteInitializer: 'bin/papercusp-remote-initializer',
   };
 
 export interface WorkspaceHostBootstrapService {
@@ -450,6 +457,7 @@ export function buildWorkspaceHostBootstrap(
     assignment('CLAUDE_ENTRYPOINT', entrypoints.claude),
     assignment('CODEX_ENTRYPOINT', entrypoints.codex),
     assignment('OMP_ENTRYPOINT', entrypoints.omp),
+    assignment('REMOTE_INITIALIZER_ENTRYPOINT', entrypoints.remoteInitializer),
     '',
     'log() { printf "[workspace-host-bootstrap] %s\\n" "$1"; }',
     'die() { log "ERROR: $1" >&2; exit 1; }',
@@ -547,7 +555,7 @@ export function buildWorkspaceHostBootstrap(
     'chmod -R g-w,o-rwx "$RELEASE_DIR"',
     'find "$RELEASE_DIR" -type d -exec chmod g+rx {} +',
     'find "$RELEASE_DIR" -type f -exec chmod g+r {} +',
-    'for entrypoint in "$INSTALL_ENTRYPOINT" "$ROLLBACK_ENTRYPOINT" "$NODE_ENTRYPOINT" "$MIGRATE_ENTRYPOINT" "$OPERATOR_ENTRYPOINT" "$HEALTH_ENTRYPOINT" "$PSU_ENTRYPOINT" "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"; do',
+    'for entrypoint in "$INSTALL_ENTRYPOINT" "$ROLLBACK_ENTRYPOINT" "$NODE_ENTRYPOINT" "$MIGRATE_ENTRYPOINT" "$OPERATOR_ENTRYPOINT" "$HEALTH_ENTRYPOINT" "$PSU_ENTRYPOINT" "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT" "$REMOTE_INITIALIZER_ENTRYPOINT"; do',
     '  [[ -x "$RELEASE_DIR/$entrypoint" ]] || die "missing executable release entrypoint: $entrypoint"',
     'done',
     '"$RELEASE_DIR/$INSTALL_ENTRYPOINT" --action "$BOOTSTRAP_ACTION" --release-root "$RELEASE_DIR" --state-root "$STATE_ROOT"',
