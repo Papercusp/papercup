@@ -61,6 +61,19 @@ export interface CouplingEdge {
   /** The ownerId that declared this state. May be NEITHER member of the pair. */
   declaredBy: string;
   reason: string | null;
+  /**
+   * The typed relation for this DECLARED edge (migration 954 / P-009), or null when no
+   * member of the vocabulary fits — which is the honest state for most rows today.
+   *
+   * ⚠ OPTIONAL HERE, DELIBERATELY, AND THE CONTRAST WITH D-011 IS THE POINT. D-011 made
+   * `ObligationEdge.counterpartLiveness` REQUIRED because its omission renders as silence,
+   * and silence about liveness reads as "they are fine" — a wrong answer. Omission here
+   * reads as "this edge is untyped", which is ACCURATE: measured across 101 live declared
+   * reasons, ~26% fit only shapes with no vocabulary member and ~30% do not classify at
+   * all (D-017). The test for required-vs-optional is not consistency; it is whether the
+   * absent case renders as a confident wrong answer or as an honest unknown.
+   */
+  relation?: DerivedCouplingRelation | null;
   createdAt: string;
   updatedAt: string;
   expiresAt: string | null;
@@ -358,7 +371,7 @@ export async function listCouplingsFor(ownerId: string, workspaceId?: string): P
          AND s.ended_at IS NULL
          AND s.started_at > clock_timestamp() - make_interval(secs => ${RECORDED_LIVE_MAX_AGE_SEC})
     )
-    SELECT c.agent_a, c.agent_b, c.state, c.declared_by, c.reason,
+    SELECT c.agent_a, c.agent_b, c.state, c.declared_by, c.reason, c.relation,
            created_at::text, updated_at::text, expires_at::text
       FROM harness_shared.agent_couplings c
      WHERE c.workspace_id = ${ws}
@@ -455,7 +468,11 @@ export function resolveCoupledPeers(
     seen.add(peer);
     const d = declared.get(peer);
     const because = signals.join('; ');
-    const rels = derivedRelations.get(peer);
+    // P-009: a DECLARED relation joins the SAME typed list, so a declared edge
+    // participates in the P-008 obligation sort and the P-010 census instead of being
+    // invisible to both — which was the whole point of giving the table a relation column.
+    // Provenance is not lost: `source` already distinguishes declared/derived/both.
+    const rels = mergeDeclaredRelation(derivedRelations.get(peer), d?.relation);
     const derivedWhy = {
       ...(because ? { derivedBecause: because } : {}),
       ...(rels && rels.length > 0 ? { derivedRelations: rels } : {}),
@@ -468,7 +485,16 @@ export function resolveCoupledPeers(
   }
   for (const [peer, e] of declared) {
     if (suppressed.has(peer) || seen.has(peer)) continue;
-    out.push({ ownerId: peer, source: 'declared', reason: e.reason, declaredBy: e.declaredBy });
+    // A declared-ONLY peer (no derived signal at all) still carries its typed relation, so
+    // a declared obligation sorts with the obligations rather than below them.
+    const rels = mergeDeclaredRelation(undefined, e.relation);
+    out.push({
+      ownerId: peer,
+      source: 'declared',
+      reason: e.reason,
+      declaredBy: e.declaredBy,
+      ...(rels ? { derivedRelations: rels } : {}),
+    });
   }
   // P-008: OBLIGATIONS FIRST, then everything else; ownerId only as the tiebreaker.
   //
@@ -497,6 +523,22 @@ export function resolveCoupledPeers(
   });
 }
 
+/**
+ * Fold a DECLARED edge's typed relation into the peer's relation list (P-009).
+ *
+ * Deduped on purpose: a peer can be BOTH declared and derived carrying the same relation,
+ * and listing it twice would double-count it in the P-010 concentration census — inflating
+ * exactly the share that guard measures.
+ */
+function mergeDeclaredRelation(
+  rels: DerivedCouplingRelation[] | undefined,
+  declaredRelation: DerivedCouplingRelation | null | undefined,
+): DerivedCouplingRelation[] | undefined {
+  if (!declaredRelation) return rels;
+  if (!rels || rels.length === 0) return [declaredRelation];
+  return rels.includes(declaredRelation) ? rels : [...rels, declaredRelation];
+}
+
 function clampReason(raw: string | null | undefined): string | null {
   const s = (raw ?? '').trim();
   if (!s) return null;
@@ -509,18 +551,30 @@ interface CouplingRow {
   state: string;
   declared_by: string;
   reason: string | null;
+  relation: string | null;
   created_at: string;
   updated_at: string;
   expires_at: string | null;
 }
 
 function rowToEdge(r: CouplingRow): CouplingEdge {
+  // The column is deliberately unconstrained in SQL (migration 954 / D-017): the
+  // vocabulary lives in `DERIVED_COUPLING_RELATIONS` and a CHECK would be a second
+  // hand-maintained copy that drifts. So the narrowing happens HERE, at the read
+  // boundary — an unrecognised or NULL value becomes null rather than being passed
+  // through as a token no consumer can interpret, exactly as `resolveCoupledPeers`
+  // already does for derived rows.
+  const rel = (r.relation ?? '').trim();
+  const relation = DERIVED_COUPLING_RELATIONS.includes(rel as DerivedCouplingRelation)
+    ? (rel as DerivedCouplingRelation)
+    : null;
   return {
     agentA: r.agent_a,
     agentB: r.agent_b,
     state: (r.state as CouplingState) ?? 'coupled',
     declaredBy: r.declared_by,
     reason: r.reason,
+    relation,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,
