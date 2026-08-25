@@ -1218,9 +1218,16 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
   if (!coordOwnerId) return false;
   try {
     const { sql } = getOrgPg();
+    // EI-21417550055038906: clear the COMPLETE terminal tuple, exactly as
+    // claimAdvSessionResume does. Clearing only ended_at left ended_by/
+    // ended_signal residue on the re-activated row, so the next incarnation's
+    // lost teardown re-created the half-terminal shape (ended_by='signal',
+    // ended_at NULL) that the pre-pinned freshness guard then read as a live
+    // binding — 409-ing the owner's own successor (row 18422, measured twice).
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
-         SET ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
+         SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
+             started_at = now(), shutdown_accepted_at = NULL
        WHERE id = (
          SELECT id FROM harness_shared.adv_sessions
           WHERE coord_owner_id = ${coordOwnerId} AND ended_at IS NOT NULL
@@ -1264,9 +1271,13 @@ export async function reanchorAdvSessionNativeId(
     // statement throw 42703 into the catch below: the re-anchor silently never
     // committed for ANY cohort and only the watchdog's streak breaker masked it
     // (the 2026-07-18 su-57b6247d 3-successor kill loop).
+    // EI-21417550055038906: clear the COMPLETE terminal tuple (ended_by/
+    // ended_signal too, matching claimAdvSessionResume) — leaving them behind
+    // creates a half-live row whose residue later reads as terminal evidence.
     const rows = await sql<{ id: number; owner: string | null }[]>`
       UPDATE harness_shared.adv_sessions
-         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
+         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
+             ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL
        WHERE id = ${id} AND session_id IS DISTINCT FROM ${sessionId}
       RETURNING id, coord_owner_id AS owner
     `;

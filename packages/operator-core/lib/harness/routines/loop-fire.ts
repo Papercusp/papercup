@@ -59,7 +59,10 @@ import {
   readLoopFireCount as defaultReadLoopFireCount,
 } from './loop-dead-man';
 import { recordLoopTransition } from './loop-transition-log';
-import { ensureInboxWakeArmedForActiveSession as defaultEnsureWakeArmed } from '../../events/await/inbox-wake-arm';
+import {
+  armInboxWake as defaultArmInboxWake,
+  ensureInboxWakeArmedForActiveSession as defaultEnsureWakeArmed,
+} from '../../events/await/inbox-wake-arm';
 
 /** The wake-turn text delivered when the loop's row carries no explicit kickoff. Mirrors the
  *  D-006 / B-LOOP-5 convention: each wake, create + SELF-ASSIGN this iteration's work_items
@@ -136,6 +139,10 @@ export interface LoopFireDeps {
    *  defaults to ensureInboxWakeArmedForActiveSession (a live adv_sessions row but no
    *  active standing inbox-wake await ⇒ re-arm it and report true). Injected for tests. */
   ensureWakeArmed?: typeof defaultEnsureWakeArmed;
+  /** EI-21417550055038906 (cold-carry delivery): arm the standing inbox-wake
+   *  DIRECTLY (no live-session gate) so the wake-executor's resume channel can
+   *  cold-respawn a between-fires owner. Injectable for tests. */
+  armWakeForColdRespawn?: typeof defaultArmInboxWake;
 }
 
 export interface LoopFireResult {
@@ -1000,9 +1007,32 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // call is a fast, targeted PG probe, not a new failure surface).
   if (!reached) {
     const ensureWakeArmed = deps.ensureWakeArmed ?? defaultEnsureWakeArmed;
-    const healed = await ensureWakeArmed({ ownerId: input.targetOwnerId, workspaceId: input.workspaceId }).catch(
+    let healed = await ensureWakeArmed({ ownerId: input.targetOwnerId, workspaceId: input.workspaceId }).catch(
       () => false,
     );
+    // EI-21417550055038906 (comment 77440, fix part 4): a COLD-carry loop's owner
+    // is EXPECTED to have no live session between fires — each one-turn cold
+    // session dies, its SessionEnd cancels the standing inbox-wake await, and the
+    // live-session-gated self-heal above then refuses to re-arm (no live
+    // adv_sessions row). Every subsequent fire therefore emitted a warm wake into
+    // the void and black-holed as no-session-now (measured: 0/17 fires delivered,
+    // consecutiveErrors climbing, member idle over a claimable lane) — the only
+    // working lever was an external coord:send wake:'required'. For a cold loop,
+    // arm the standing await DIRECTLY (armInboxWake has no live-session gate; it
+    // captures the freshest resume handle, and the wake-executor's liveness
+    // ladder already handles "exited → resume/respawn"), then retry the emit so
+    // THIS fire takes the resume channel instead of counting an error. A cold
+    // loop being armed IS the owner's standing consent to be re-woken; loop:end
+    // is the opt-out, so bypassing the explicit-cancel check here is correct.
+    if (!healed && carry === 'cold') {
+      const armColdWake = deps.armWakeForColdRespawn ?? defaultArmInboxWake;
+      healed = await armColdWake({
+        ownerId: input.targetOwnerId,
+        note: `cold-loop resume channel (loop:${input.routineId}) — re-armed by loop-fire after a no-watcher miss`,
+      })
+        .then(() => true)
+        .catch(() => false);
+    }
     if (healed) {
       fan2 = await wake([input.targetOwnerId], {
         summary: kickoff,

@@ -124,6 +124,35 @@ export function resolvePrePinnedOwnerLiveness(
 }
 
 /**
+ * EI-21417550055038906: refine ONE row's liveness with the row's own persisted
+ * terminal evidence (`ended_by` written without `ended_at` — the half-terminal
+ * tuple a teardown that died mid-write leaves behind).
+ *
+ * The owner-level witness (`resolvePrePinnedOwnerLiveness`) cannot see this: a
+ * psu fleet member's coord_presence beat carries pid NULL / host '' so its
+ * probe is permanently inconclusive ('unknown'), and 'unknown' keeps the ghost
+ * row blocking — which refused every cold-carry respawn of the owner's OWN
+ * successor with the 409 until a human stamped the row. A row that carries
+ * positive terminal evidence is its own dead-process witness: the teardown
+ * writer already observed the death; only its timestamp write was lost.
+ *
+ * Precedence mirrors the owner-level resolver: POSITIVE live evidence still
+ * wins. A live pty host for this owner means a session is genuinely running,
+ * and until the resume-reactivation paths reliably clear the complete terminal
+ * tuple, a LIVE resumed session can carry stale `ended_by` residue — reclaiming
+ * its binding on that residue would mint the exact split identity this guard
+ * exists to prevent. Terminal evidence therefore upgrades only a non-live
+ * verdict ('unknown'/'dead') to 'dead', never overrides 'live'.
+ */
+export function refinePrePinnedRowLiveness(
+  ownerLiveness: PrePinnedOwnerLiveness,
+  rowHasTerminalEvidence: boolean,
+): PrePinnedOwnerLiveness {
+  if (ownerLiveness === 'live') return 'live';
+  return rowHasTerminalEvidence ? 'dead' : ownerLiveness;
+}
+
+/**
  * The per-row evidence appended to a refusal, e.g.
  * `14746(display=terminal,session=bound)`.
  *

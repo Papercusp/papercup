@@ -28,8 +28,10 @@ import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import {
   NATIVE_SESSION_ID_RE,
+  type AdvSessionEndedBy,
   adoptStartingTerminalLaunch,
   endedRecordedOwnerIds,
+  hasAdvSessionTerminalEvidence,
   markAdvSessionEnded,
   parseKilledBySignalReport,
   claimAdvSessionResume,
@@ -37,6 +39,7 @@ import {
   reanchorAdvSessionNativeIdByOwner,
   recordAdvSession,
   recordSuLaunchSpec,
+  repairStaleAdvSessionTerminalMarkers,
 } from '../../../adv-sessions';
 // stale-prompt-render-in-live-sessions-2026-08-02 P-002/D-001: the prompt-assembly
 // steps this route shares with the carry-respawn persona refresh. Both paths must
@@ -51,6 +54,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   classifyPrePinnedOwnerRows,
   describePrePinnedConflicts,
+  refinePrePinnedRowLiveness,
   resolvePrePinnedOwnerLiveness,
 } from './pre-pinned-owner-rows';
 import { probeProcessLiveness } from '../../../agent-tools/coordination/presence';
@@ -1884,8 +1888,18 @@ const post = defineTool({
         );
       }
       const { sql } = getOrgPg();
-      const live = await sql<Array<{ id: string; display: string | null; has_session: boolean }>>`
-        SELECT id::text, display, (session_id IS NOT NULL) AS has_session
+      // EI-21417550055038906: a teardown that died mid-write leaves a HALF-TERMINAL
+      // tuple (ended_by recorded, ended_at NULL). The freshness query below filters
+      // only `ended_at IS NULL`, so that ghost read as a live binding and 409'd the
+      // owner's OWN cold-carry successor forever (row 18422: ended_by='signal',
+      // ended_at NULL). Stamp the missing timestamp first — the repair is narrow +
+      // idempotent (fills only the missing ended_at, never overwrites a terminal
+      // tuple), so a repaired ghost simply drops out of the query.
+      await repairStaleAdvSessionTerminalMarkers(requestedSid);
+      const live = await sql<
+        Array<{ id: string; display: string | null; has_session: boolean; ended_by: AdvSessionEndedBy | null }>
+      >`
+        SELECT id::text, display, (session_id IS NOT NULL) AS has_session, ended_by
           FROM harness_shared.adv_sessions
          WHERE coord_owner_id = ${requestedSid} AND ended_at IS NULL
          ORDER BY id DESC
@@ -1929,8 +1943,21 @@ const post = defineTool({
         beat: beatRows[0] ?? null,
         probeBeat: probeProcessLiveness,
       });
+      // EI-21417550055038906 belt-and-suspenders: the repair above is best-effort
+      // (returns 0 on a DB error), so a half-terminal row can still surface here.
+      // Its persisted `ended_by` IS positive terminal evidence (the teardown writer
+      // observed the death; only the timestamp write was lost) — refine that row to
+      // 'dead' so it lands in reclaimableConflicts and is stamped ended below,
+      // instead of blocking the owner's own successor. Positive live evidence for
+      // the owner still wins (see refinePrePinnedRowLiveness).
       const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(
-        live.map((row) => ({ ...row, liveness })),
+        live.map((row) => ({
+          ...row,
+          liveness: refinePrePinnedRowLiveness(
+            liveness,
+            hasAdvSessionTerminalEvidence({ endedAt: null, endedBy: row.ended_by }),
+          ),
+        })),
       );
       if (conflicts.length > 0) {
         // Carry WHY each live row failed the precursor test. This refusal is
