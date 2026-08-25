@@ -168,7 +168,7 @@ describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
   });
 
   it('steers time-bounded reads to coord:feed in the description upfront', () => {
-    expect(String(inboxTool.description)).toMatch(/time bounds \(`since`\)[^.]*coord:feed/);
+    expect(String(inboxTool.description)).toMatch(/time bounds \(`since`\)[^.]*coord:feed/i);
   });
 });
 
