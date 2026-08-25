@@ -453,16 +453,6 @@ function declaredTables(name: string): readonly string[] {
   return getRegistryEntryV2(name)?.backingTables ?? [];
 }
 
-/**
- * An explicit empty array is a declaration: it means the resolver is deliberately file-backed
- * (or otherwise independent of Postgres), not that its liveness contract was forgotten. Keep
- * declaration PRESENCE separate from the list used by the invalidation-pair checks above.
- */
-function hasBackingTablesDeclaration(name: string): boolean {
-  const entry = getRegistryEntryV2(name);
-  return entry !== undefined && Object.prototype.hasOwnProperty.call(entry, 'backingTables');
-}
-
 describe('sync resolvers — every declared backing table actually invalidates its query', () => {
   const allNames = [...knownQueryNamesV2()].sort();
 
@@ -528,7 +518,7 @@ describe('sync resolvers — the undeclared baseline is a shrink-only ratchet', 
   const allNames = [...knownQueryNamesV2()].sort();
 
   it('every registry entry either declares backingTables or is in the baseline', () => {
-    const undeclared = allNames.filter((n) => !hasBackingTablesDeclaration(n)).sort();
+    const undeclared = allNames.filter((n) => declaredTables(n).length === 0).sort();
     expect(
       undeclared,
       `The set of registry entries WITHOUT a backingTables declaration has changed.\n` +
