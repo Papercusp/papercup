@@ -2,4 +2,5 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/lib/write-stdout-sync.mjs and regenerate.
 export function writeStdoutSync(s: any): void;
+export function writeStdoutExactSync(s: any): void;
 export function writeStderrSync(s: any): void;
