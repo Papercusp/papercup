@@ -386,15 +386,31 @@ describe('the recurrence guard — residualAfterPass / evaluateReaperFloor (P-00
   const ring = (...counts: number[]): ReaperFloorSample[] =>
     counts.map((scopesDead, i) => ({ atMs: NOW - (counts.length - i) * 5 * 60_000, scopesDead }));
 
-  it('counts deferred candidates and failed stops as residue that survived the pass', () => {
-    expect(residualAfterPass({ deferred: 27 }, [outcome(false), outcome(false), outcome(true)])).toBe(29);
+  it('counts attempted-but-FAILED stops as the residue that survived the pass', () => {
+    expect(residualAfterPass([outcome(false), outcome(false), outcome(true)])).toBe(2);
   });
 
   it('does NOT count spared rows — sparing is the rails working, not a failure', () => {
     // A pass that spared a live successor and cleared everything it selected has
     // left nothing behind. Counting spares here would make correct caution
     // indistinguishable from broken enforcement and alarm forever on a healthy box.
-    expect(residualAfterPass({ deferred: 0 }, [outcome(true), outcome(true)])).toBe(0);
+    expect(residualAfterPass([outcome(true), outcome(true)])).toBe(0);
+  });
+
+  // ── CONTROL: throughput is not inability ───────────────────────────────────
+  // A backlog wider than REAP_MAX_PER_TICK defers its remainder BY DESIGN and the
+  // next pass takes the next batch. The alarm this feeds accuses the reaper of
+  // "selecting scopes it cannot clear" — flatly untrue of a deferred scope, which
+  // was never attempted. The first implementation added `deferred` in here, so any
+  // healthy drain of 13+ scopes would have escalated on its third pass with that
+  // false diagnosis. The signature no longer offers deferral a channel at all;
+  // operators still see it in the pass line and the alarm body.
+  it('CONTROL: a capped pass that cleared everything it ATTEMPTED leaves no residue, however much it deferred', () => {
+    expect(residualAfterPass([outcome(true), outcome(true), outcome(true)])).toBe(0);
+  });
+
+  it('CAUGHT: deferral does not launder a failure — a capped pass whose stops failed is still residue', () => {
+    expect(residualAfterPass([outcome(false), outcome(false)])).toBe(2);
   });
 
   // ── THE REGRESSION CASE ────────────────────────────────────────────────────
