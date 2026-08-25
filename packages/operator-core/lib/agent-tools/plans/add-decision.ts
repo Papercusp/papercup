@@ -316,9 +316,10 @@ type AddDecisionValue =
   | { ok: false; code: 'not_found' | 'legacy_plan'; reason?: LegacyReason };
 
 type WritableSlugScope = ReturnType<typeof requireUnambiguousSlugScope>;
+type WritableSlugScopeFailure = Exclude<WritableSlugScope, { status: 'resolved' }>;
 
 /** Keep exact-slug recovery failures self-describing inside the bulk result. */
-function decisionScopeFailure(slug: string, decision: WritableSlugScope): BulkItemResult {
+function decisionScopeFailure(slug: string, decision: WritableSlugScopeFailure): BulkItemResult {
   if (decision.status === 'missing') {
     return {
       ok: false,
