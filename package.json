@@ -107,6 +107,8 @@
     "audit:dark-flags": "tsx scripts/audit-dark-flags-live-state.ts",
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",
     "tokens:check": "node design-tokens/tokens-check.mjs",
+    "design:evidence-report": "tsx packages/operator-core/lib/design-compare/report-cli.ts --mode=report --work=design-evidence-report/captures",
+    "design:evidence-calibrate": "tsx packages/operator-core/lib/design-compare/report-cli.ts --mode=calibrate",
     "gen:borrowable": "node scripts/gen-borrowable-catalog.mjs",
     "gen:borrowable:check": "node scripts/gen-borrowable-catalog.mjs --check",
     "gen:gitnexus-bridge": "node scripts/gen-gitnexus-bridge-runtime.mjs",

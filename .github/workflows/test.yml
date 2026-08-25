@@ -1094,6 +1094,39 @@ jobs:
         working-directory: apps/operator
         run: npm run lostpixel
 
+      # ─────────────────────────────────────────────────────────────────────
+      # Design evidence (plan ratified-mockup-implementation-validation-2026-08-24,
+      # P-008). REPORT-ONLY per D-006: it publishes evidence and gates nothing.
+      #
+      # Placement is load-bearing and must stay AFTER every `npm run lostpixel`
+      # step above:
+      #   * `if: always()` so it still runs when a Lost Pixel comparison has
+      #     already failed the job. It does not rescue that failure — the job's
+      #     conclusion is still the Lost Pixel step's.
+      #   * `continue-on-error: true` so a fault in this instrument can never
+      #     turn a green build red. The report's own exit code stays honest
+      #     (non-zero on a harness failure) and shows up in the step's
+      #     annotation rather than being swallowed inside the script.
+      # `ci-wiring.test.ts` pins all three of those properties, plus the fact
+      # that the Lost Pixel steps above still gate.
+      - name: Design evidence report (report-only)
+        if: always()
+        continue-on-error: true
+        run: npm run design:evidence-report
+
+      - name: Upload design evidence report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: design-evidence-report
+          path: design-evidence-report
+          # Explicit rather than inherited: an unstated retention is the repo
+          # default silently applied, which is a policy nobody chose and nobody
+          # can see. 14 days outlasts a PR review cycle without accumulating
+          # megabytes of captures indefinitely.
+          retention-days: 14
+          if-no-files-found: warn
+
       - name: Upload diff artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -1108,4 +1141,7 @@ jobs:
             libs/agent-chat/lostpixel-diff
             apps/operator/lostpixel-current
             apps/operator/lostpixel-diff
+          # Was previously unset, inheriting the repo default. Stated so the
+          # retention of regression evidence is a decision on the page.
+          retention-days: 14
           if-no-files-found: ignore
