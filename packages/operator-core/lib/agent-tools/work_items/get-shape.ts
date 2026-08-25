@@ -363,6 +363,11 @@ function compactSingleRow(
     ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
+    // EI-21379898054596220: 12 chars, and it is the ONLY field that stays true when
+    // the line above clips — it digests the STORED note, so it is exactly what a
+    // successor needs when the checkpoint it received is a prefix. Dropping it at a
+    // reduced tier would remove the verification precisely where it is needed.
+    checkpointContentHash: r.checkpointContentHash ?? null,
     ...(r.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
     ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
@@ -633,6 +638,9 @@ function projectRow(
     ...(r.checkpointChecks !== undefined ? { checkpointChecks: r.checkpointChecks } : {}),
     checkpointAgeMs: r.checkpointAgeMs ?? null,
     checkpointUpdatedAtMs: r.checkpointUpdatedAtMs ?? null,
+    // EI-21379898054596220 — see the sibling projection above. Kept at every tier for
+    // the same reason: it is the verification that SURVIVES the clip on the line above.
+    checkpointContentHash: r.checkpointContentHash ?? null,
     ...(r.checkpointReadFailed ? { checkpointReadFailed: r.checkpointReadFailed } : {}),
     ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
     // Verdicts ABOUT the checkpoint — small, and each one changes how the

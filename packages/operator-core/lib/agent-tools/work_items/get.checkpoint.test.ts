@@ -58,7 +58,7 @@ vi.mock('./completion-freshness', () => ({
 }));
 
 import get from './get';
-import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks } from '../../carry-note';
+import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks, shortCarryHash } from '../../carry-note';
 
 const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -428,5 +428,93 @@ describe('work_items:get — checkpointStale (EI-15184 relative staleness)', () 
     const r = await one({ id: 'WI-24' });
     expect(getPresence).not.toHaveBeenCalled();
     expect(r.checkpointStale).toBeUndefined();
+  });
+});
+
+/**
+ * EI-21379898054596220 — the checkpoint's contentHash must be readable through
+ * work_items:get, and it must be the hash of the STORED note.
+ *
+ * THE FAILURE THIS PINS. A self-compaction handoff needed to confirm it was resuming
+ * from checkpoint 81344e6f2817 — the digest `work_items:checkpoint` returned when it
+ * wrote (EI-8987). work_items:get handed back the checkpoint and its write instant but
+ * no hash, so the successor hashed the string it received and got 69adf041332c. That
+ * mismatch is indistinguishable from a corrupted or superseded handoff, and the real
+ * hash was recoverable only by reading harness_shared.carry_notes directly.
+ *
+ * WHY HASHING THE RETURNED STRING CANNOT WORK, AND WHY THAT IS THE INTERESTING CASE.
+ * get-shape clips the checkpoint to a per-tier budget, so on exactly the long notes a
+ * handoff cares about, the reader hashes a PREFIX. The clipped-note test below is
+ * therefore the load-bearing one: it fails if anyone ever "simplifies" this field to a
+ * hash of the projected checkpoint, which would pass every short-note test.
+ *
+ * The sibling loop carry-note has exposed this on its read side since loop/status.ts:78;
+ * work_items:get was the asymmetry.
+ */
+describe('work_items:get — checkpointContentHash (EI-21379898054596220)', () => {
+  const item = (id: string) => ({ id, harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
+
+  it('hashes the STORED note, matching the digest the write returned', async () => {
+    // A checkpoint with structured checks: the report's exact shape, and the one where
+    // stored text and any re-rendering of it are most likely to diverge.
+    const stored = withCarryNoteChecks('work remains', [
+      { claim: 'gate is green', recheck: 'dev:pipeline_position', verified: 'checked 20:41Z' },
+      { claim: 'peer holds the file', recheck: 'locks:queue' },
+    ]);
+    getWorkItem.mockResolvedValue(item('WI-hash-1'));
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: stored, updatedAtMs: Date.now() });
+
+    const r = await one({ id: 'WI-hash-1' });
+
+    // The write side (work_items:checkpoint) returns shortCarryHash(stored); a
+    // successor compares against THAT, so this must be the same function of the same
+    // string, not merely "a" hash.
+    expect(r.checkpointContentHash).toBe(shortCarryHash(stored));
+    expect(r.checkpointContentHash).toMatch(/^[0-9a-f]{12}$/);
+  });
+
+  it('stays the STORED note\'s hash when the returned checkpoint is clipped', async () => {
+    // Long enough to exceed the single-read checkpoint budget, which is the whole
+    // point: this is when a reader most needs to verify a handoff and is least able
+    // to compute the hash themselves.
+    const stored = `${'x'.repeat(40_000)}\nTAIL-MARKER`;
+    getWorkItem.mockResolvedValue(item('WI-hash-2'));
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: stored, updatedAtMs: Date.now() });
+
+    const r = await one({ id: 'WI-hash-2' });
+
+    // Positive control: this case is only meaningful if the projection actually
+    // clipped. If a budget change stops clipping 40k chars, this assertion fails
+    // loudly rather than letting the assertion below pass for the wrong reason.
+    expect(
+      r.checkpoint.length,
+      'checkpoint was not clipped — this case no longer tests what it claims to',
+    ).toBeLessThan(stored.length);
+    expect(r.checkpointContentHash).toBe(shortCarryHash(stored));
+    expect(
+      r.checkpointContentHash,
+      'the hash tracked the CLIPPED string — it must digest the stored note, or it certifies a prefix',
+    ).not.toBe(shortCarryHash(r.checkpoint));
+  });
+
+  it('is null when nothing was ever checkpointed', async () => {
+    getWorkItem.mockResolvedValue(item('WI-hash-3'));
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
+
+    const r = await one({ id: 'WI-hash-3' });
+
+    expect(r.checkpointContentHash).toBeNull();
+  });
+
+  it('is null — alongside checkpointReadFailed — when the lookup throws', async () => {
+    getWorkItem.mockResolvedValue(item('WI-hash-4'));
+    getWorkItemCheckpointWithMeta.mockRejectedValue(new Error('pg down'));
+
+    const r = await one({ id: 'WI-hash-4' });
+
+    // WI-6737's discipline applied to this field: a failed read must not hand back a
+    // hash, and its null must stay distinguishable from "never checkpointed" above.
+    expect(r.checkpointContentHash).toBeNull();
+    expect(r.checkpointReadFailed).toBe(true);
   });
 });
