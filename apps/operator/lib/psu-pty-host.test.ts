@@ -3217,6 +3217,47 @@ describe('detached session-scope cleanup (EI-20349478936631977)', () => {
     });
   });
 
+  it('reaps detached descendants from an enrolled headless pc scope only when managed-scope ownership is explicit', () => {
+    const scope =
+      '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/papercusp.slice/' +
+      'papercusp-agent.slice/papercusp-agent-session.slice/pc-abc123--fleet-member.scope';
+    const files = new Map<string, string>([
+      ['/proc/100/cgroup', `0::${scope.replace('/sys/fs/cgroup', '')}\n`],
+      ['/proc/100/stat', '100 (psu-pty-host) S 50 0 0 0'],
+      ['/proc/50/stat', '50 (headless-launcher) S 1 0 0 0'],
+      ['/proc/1/stat', '1 (systemd) S 0 0 0 0'],
+      [`${scope}/cgroup.procs`, '50\n100\n200\n'],
+    ]);
+    const killed: number[] = [];
+    const readText = (path: string) => {
+      const value = files.get(path);
+      if (value === undefined) throw new Error(`missing fixture ${path}`);
+      return value;
+    };
+
+    expect(
+      reapDetachedPtyScopeResidue({
+        selfPid: 100,
+        platform: 'linux',
+        readText,
+        readDir: () => [],
+        kill: (pid: number) => killed.push(pid),
+      }).skippedReason,
+    ).toBe('not-in-dedicated-session-scope');
+    expect(killed).toEqual([]);
+
+    const result = reapDetachedPtyScopeResidue({
+      selfPid: 100,
+      platform: 'linux',
+      readText,
+      readDir: () => [],
+      allowManagedScope: true,
+      kill: (pid: number) => killed.push(pid),
+    });
+    expect(killed).toEqual([200]);
+    expect(result).toMatchObject({ scopeDir: scope, protectedPids: [1, 50, 100], killedPids: [200] });
+  });
+
   it('refuses to sweep a shared service cgroup', () => {
     const killed: number[] = [];
     const result = reapDetachedPtyScopeResidue({
@@ -3242,6 +3283,7 @@ describe('detached session-scope cleanup (EI-20349478936631977)', () => {
       }),
     ).toBe(true);
     expect(shouldReapDetachedPtyScopeResidue({ bridgeTty: false, launchedBy: 'su-parent' })).toBe(false);
+    expect(shouldReapDetachedPtyScopeResidue({ bridgeTty: false, headless: true, launchedBy: 'su-parent' })).toBe(true);
     expect(shouldReapDetachedPtyScopeResidue({ bridgeTty: true, launchedBy: '' })).toBe(false);
     expect(
       shouldReapDetachedPtyScopeResidue({

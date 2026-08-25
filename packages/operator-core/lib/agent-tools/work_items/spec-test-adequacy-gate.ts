@@ -1,5 +1,5 @@
 /** Current, per-clause test-adequacy gate used before a work-item close is written. */
-import { listScorecards, scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
+import { listScorecards, type ScorecardRow } from '../../scorecards';
 import {
   listSpecEvidence,
   listWorkItemSpecRevisionEdges,
@@ -136,11 +136,21 @@ function acceptedRating(value: unknown): boolean {
   return typeof rating === 'string' && ['pass', 'waived', 'not-applicable'].includes(rating.toLowerCase());
 }
 
-function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): boolean {
-  const expectedFingerprint = scorecardEvidenceFingerprint({
-    rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
-    ratings: result.ratings,
+function ratingVerdictsMatch(card: ScorecardRow, result: SpecTestAdequacyResult): boolean {
+  const expected = Object.entries(result.ratings);
+  if (Object.keys(card.ratings).length !== expected.length) return false;
+  return expected.every(([key, value]) => {
+    const actual = card.ratings[key];
+    return (
+      actual &&
+      typeof actual === 'object' &&
+      !Array.isArray(actual) &&
+      (actual as { rating?: unknown }).rating === value.rating
+    );
   });
+}
+
+function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): boolean {
   return (
     card.subject?.kind === 'plan' &&
     card.subject.ref === result.scorecardDraft.subject.ref &&
@@ -150,7 +160,14 @@ function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): b
     card.provisional === undefined &&
     card.gradingAudit?.state !== 'pending' &&
     card.gradingAudit?.state !== 'failed' &&
-    card.evidenceFingerprint === expectedFingerprint &&
+    // The evaluator owns the criterion verdicts, while the independent grading audit
+    // owns whether each evidence explanation is complete and re-runnable. Requiring the
+    // entire scorecard fingerprint here coupled those two responsibilities: enriching a
+    // terse evaluator explanation with the probe demanded by grading-integrity changed
+    // the fingerprint and made the two gates impossible to satisfy simultaneously.
+    // Match the exact criterion set + verdicts instead. Fresh/current evidence is still
+    // recomputed above, and the independently settled audit remains mandatory below.
+    ratingVerdictsMatch(card, result) &&
     Object.values(card.ratings).every(acceptedRating)
   );
 }
@@ -283,7 +300,7 @@ export async function specTestAdequacyCompletionGate(
       limit: 20,
     });
     if (!cards.some((card) => scorecardMatches(card, result))) {
-      failures.push(`${label}: no current terminal complete scorecard matches the exact evidence fingerprint`);
+      failures.push(`${label}: no current terminal complete scorecard matches the exact evaluator verdicts`);
       continue;
     }
     checked.push(label);

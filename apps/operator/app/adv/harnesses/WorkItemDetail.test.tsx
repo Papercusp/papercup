@@ -126,7 +126,10 @@ describe('WorkItemDetail chat affordance', () => {
       }),
     );
 
-    fireEvent.click(screen.getByTestId('work-item-discussion-close'));
+    const close = screen.getByTestId('work-item-discussion-close');
+    close.focus();
+    fireEvent.click(close);
     await waitFor(() => expect(reopened.lastQuery()).not.toContain('opcid='));
+    expect(document.activeElement).toBe(screen.getByTestId('wi-detail-discuss'));
   });
 });

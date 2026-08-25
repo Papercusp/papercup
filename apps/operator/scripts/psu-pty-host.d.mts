@@ -895,13 +895,14 @@ export function killPtyProcessTree(child: any, signal?: string, kill?: (pid: num
  * All IO is injectable so the inactive/dead-with-live-child regression is
  * reproducible without putting a real process in the test runner's cgroup.
  */
-export function reapDetachedPtyScopeResidue({ selfPid, platform, readText, readDir, kill, maxPasses, }?: {
+export function reapDetachedPtyScopeResidue({ selfPid, platform, readText, readDir, kill, maxPasses, allowManagedScope, }?: {
     selfPid?: number | undefined;
     platform?: NodeJS.Platform | undefined;
     readText?: ((path: any) => string) | undefined;
     readDir?: ((path: any) => import("fs").Dirent<string>[]) | undefined;
     kill?: ((pid: number, signal?: string | number) => true) | undefined;
     maxPasses?: number | undefined;
+    allowManagedScope?: boolean | undefined;
 }): {
     scopeDir: null;
     protectedPids: any[];
@@ -915,8 +916,10 @@ export function reapDetachedPtyScopeResidue({ selfPid, platform, readText, readD
     failedPids: any[];
     skippedReason: null;
 };
-/** Only a genuine end of an agent-launched interactive session owns the scope. */
-export function shouldReapDetachedPtyScopeResidue({ bridgeTty, launchedBy, reexecRequested }?: {}): boolean;
+/** Only a genuine end of an agent-launched session owns the scope. */
+export function shouldReapDetachedPtyScopeResidue({ bridgeTty, headless, launchedBy, reexecRequested, }?: {
+    headless?: boolean | undefined;
+}): boolean;
 /** Status of the /mcp dialog row naming `name`: 'connected' | 'not-connected' |
  *  'unknown' | null (row doesn't name it). Negative markers are checked FIRST;
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary

@@ -29,9 +29,11 @@ import type {
   CouplingDerivationSources,
   ObligationEdge,
   ObligationLiveness,
+  ObligationRelation,
   PlanBlockingEdge,
 } from '../../coord/coupling-derivation';
 import { resolveSessionStates } from './liveness-oracle';
+import { fetchFleetSupervisionRows } from './presence-fleet';
 import { fetchPresencePathInterests } from './presence-snapshot';
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { readPlanBySlug } from '../plans/source';
@@ -317,6 +319,96 @@ async function resolveCounterpartLiveness(
 }
 
 /**
+ * A fleet peer whose presence row is colder than this is membership RESIDUE, not a
+ * supervision relationship (P-007).
+ *
+ * ⚠ THIS CUT IS LOAD-BEARING, AND THE NUMBER SAYING SO IS MEASURED. Of 401 rows in this
+ * workspace carrying a `fleet_slug`, **84 sit beyond this horizon** (83 members and 1
+ * leader). Deriving supervision from the membership label alone would therefore emit ~28%
+ * false obligations — a leader chased about dozens of agents that stopped existing hours
+ * ago, which buries the handful that are real. Same shape as the consult case in D-010:
+ * the lifecycle LABEL and the world disagree, so the label needs a second opinion.
+ */
+export const SUPERVISION_MEMBERSHIP_HORIZON_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * The SUPERVISION obligation: fleet leader ↔ fleet member (P-007, re-scoped by D-012).
+ *
+ * ⚠ SOURCE RE-SCOPED — do not "restore" this to `spawned_agents`. The plan item named
+ * `parent_spawn_id` / `session_owner`, and that table cannot produce a live edge: all
+ * 9,040 rows across all 7 workspaces are terminal, and **0 of 354 live agents appear in
+ * it** (the nursery-cup tier it served is retired). The live supervision relationship
+ * lives on `coord_presence` as `fleet_slug` + `fleet_role` — 275 live members under 8
+ * live leaders at the time of writing. Full evidence and the ruling: D-012.
+ *
+ * ⚠ MEMBER ↔ MEMBER DELIBERATELY EMITS NOTHING. Two agents in one fleet are not coupled
+ * by that fact — D-002 REJECTED bare set membership as a coupling signal precisely
+ * because nobody opted into it, and emitting it would turn a 292-member fleet into a
+ * quadratic wall of meaningless edges. Only the HIERARCHICAL pair is an obligation.
+ *
+ * Direction: a leader OWES supervision to each member (watching, unblocking, relaunching
+ * a dead one), so the leader emits `i-owe` and the member emits `owes-me` for the same
+ * pair. As with consults, direction is read off which side of the stored relationship the
+ * caller occupies — never inferred from activity.
+ *
+ * A DEAD member still emits, on purpose: that is the most actionable supervision
+ * obligation there is, and D-011's `counterpartLiveness` is what carries `ended` onto the
+ * line. The horizon above discharges only rows so cold that the label is residue.
+ */
+export async function fetchFleetSupervision(
+  selfOwnerId: string,
+  rosterOwnerIds: readonly string[],
+  nowMs: number = Date.now(),
+): Promise<ObligationEdge[]> {
+  const self = selfOwnerId.trim();
+  if (!self || !coordHasPgFastPath()) return [];
+  try {
+    const rows = await fetchFleetSupervisionRows([self, ...rosterOwnerIds]);
+    const me = rows.get(self);
+    // No fleet, no role, or my own row is residue ⇒ I am not in a live supervision
+    // relationship and must not claim one.
+    if (!me?.fleetSlug || !me.fleetRole) return [];
+    const withinHorizon = (at: Date): boolean => {
+      const t = at?.getTime?.();
+      return typeof t === 'number' && Number.isFinite(t) && nowMs - t <= SUPERVISION_MEMBERSHIP_HORIZON_MS;
+    };
+    if (!withinHorizon(me.heartbeatAt)) return [];
+    const pending: PendingObligation[] = [];
+    for (const [ownerId, peer] of rows) {
+      if (ownerId === self) continue;
+      if (peer.fleetSlug !== me.fleetSlug) continue;
+      if (!withinHorizon(peer.heartbeatAt)) continue; // residue, not a relationship
+      const direction: ObligationRelation | null =
+        me.fleetRole === 'leader' && peer.fleetRole === 'member'
+          ? 'i-owe'
+          : me.fleetRole === 'member' && peer.fleetRole === 'leader'
+            ? 'owes-me'
+            : null;
+      // null covers member↔member AND leader↔leader AND any unrecognised role — all of
+      // which are co-membership, not supervision.
+      if (!direction) continue;
+      pending.push({
+        ownerId,
+        direction,
+        what: 'supervision of this fleet lane',
+        // The peer's session start: when this supervision lane began to exist.
+        since: peer.startedAt.toISOString(),
+        // The fleet slug is what a reader can ACT on — `fleet:assignments { fleet }`.
+        handle: me.fleetSlug,
+      });
+    }
+    if (pending.length === 0) return [];
+    const liveness = await resolveCounterpartLiveness(pending.map((p) => p.ownerId));
+    return pending.map((p) => ({
+      ...p,
+      counterpartLiveness: liveness.get(p.ownerId) ?? 'unknown',
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Which `coord:presence` reads need the lock COORDINATION DOMAIN resolved.
  *
  * ⚠ THIS PREDICATE IS THE FIX FOR A SIGNAL THAT NEVER FIRED ONCE IN PRODUCTION.
@@ -399,6 +491,20 @@ export function couplingSourcesFor(opts: {
     // Always supplied, never conditional: the census reads `armed: !!sources.obligations`,
     // so an omitted source would report the leg STARVED rather than absent, and a
     // genuinely empty obligation list would be indistinguishable from an unwired one.
-    obligations: () => fetchConsultObligations(opts.selfOwnerId),
+    // ⚠ ONE leg, MANY producers — and that is the design, not a shortcut. `ObligationEdge`
+    // carries `what` as a noun phrase rather than a `kind` enum precisely so a new
+    // producer adds a SOURCE here and never a case in the derivation. P-006 (grading)
+    // joins this list the same way.
+    //
+    // Producers run in PARALLEL and each is INDEPENDENTLY fail-soft (both already return
+    // [] on any error), so a broken consult read cannot suppress supervision edges or
+    // vice versa — the failure mode a naive `await a(); await b();` would introduce.
+    obligations: async () => {
+      const [consults, supervision] = await Promise.all([
+        fetchConsultObligations(opts.selfOwnerId),
+        fetchFleetSupervision(opts.selfOwnerId, opts.rosterOwnerIds),
+      ]);
+      return [...consults, ...supervision];
+    },
   };
 }

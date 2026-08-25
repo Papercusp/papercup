@@ -2247,9 +2247,11 @@ export function killPtyProcessTree(child, signal = 'SIGKILL', kill = process.kil
  * never sweep a `.service` cgroup: operator/checkpoint services host unrelated
  * work and killing their other members would cross the session boundary. VTE
  * allocates one `vte-spawn-*.scope` per terminal; console-spawn's headless and
- * console scopes carry the same one-session invariant.
+ * console scopes carry the same one-session invariant. Enrolled headless launches
+ * use a task-manager `pc-*.scope`; that scope is accepted only when the caller has
+ * explicitly proved the current host is headless.
  */
-const DEDICATED_PSU_SCOPE_RE = /^(?:vte-spawn-[^/]+|papercup-(?:headless|console)-[^/]+)\.scope$/;
+const DEDICATED_PSU_SCOPE_RE = /^(?:vte-spawn-[^/]+|papercup-(?:headless|console)-[^/]+|pc-[0-9a-z]{4,64}(?:--[A-Za-z0-9._-]+)?)\.scope$/;
 const CGROUP_ROOT = '/sys/fs/cgroup';
 
 function procParentPid(pid, readText) {
@@ -2284,7 +2286,7 @@ function protectedAncestorChain(selfPid, readText) {
   return { complete: false, protectedPids };
 }
 
-function dedicatedScopeDirForPid(pid, readText) {
+function dedicatedScopeDirForPid(pid, readText, { allowManagedScope = false } = {}) {
   let raw;
   try {
     raw = String(readText(`/proc/${pid}/cgroup`));
@@ -2299,6 +2301,11 @@ function dedicatedScopeDirForPid(pid, readText) {
   if (scopeIndex < 0) return null;
   const scopeLeaf = parts[scopeIndex];
   if (!DEDICATED_PSU_SCOPE_RE.test(scopeLeaf)) return null;
+  // A `pc-*.scope` is normally an independently-managed task. Only the explicit
+  // headless launch path may sweep it; without this gate, generic PTY cleanup
+  // could kill a sibling task merely because it shares the task-manager naming
+  // convention.
+  if (scopeLeaf.startsWith('pc-') && !allowManagedScope) return null;
   return `${CGROUP_ROOT}/${parts.slice(0, scopeIndex + 1).join('/')}`;
 }
 
@@ -2345,6 +2352,7 @@ export function reapDetachedPtyScopeResidue({
   readDir = (path) => readdirSync(path, { withFileTypes: true }),
   kill = process.kill,
   maxPasses = 3,
+  allowManagedScope = false,
 } = {}) {
   const empty = (skippedReason, scopeDir = null, protectedPids = []) => ({
     scopeDir,
@@ -2355,7 +2363,7 @@ export function reapDetachedPtyScopeResidue({
   });
   if (platform !== 'linux') return empty('non-linux');
 
-  const scopeDir = dedicatedScopeDirForPid(selfPid, readText);
+  const scopeDir = dedicatedScopeDirForPid(selfPid, readText, { allowManagedScope });
   if (!scopeDir) return empty('not-in-dedicated-session-scope');
 
   const ancestors = protectedAncestorChain(selfPid, readText);
@@ -2388,9 +2396,15 @@ export function reapDetachedPtyScopeResidue({
   return { scopeDir, protectedPids, killedPids, failedPids, skippedReason: null };
 }
 
-/** Only a genuine end of an agent-launched interactive session owns the scope. */
-export function shouldReapDetachedPtyScopeResidue({ bridgeTty, launchedBy, reexecRequested } = {}) {
-  return Boolean(bridgeTty && String(launchedBy ?? '').trim() && !reexecRequested);
+/** Only a genuine end of an agent-launched session owns the scope. */
+export function shouldReapDetachedPtyScopeResidue({
+  bridgeTty,
+  headless = false,
+  launchedBy,
+  reexecRequested,
+} = {}) {
+  const ownedLaunch = Boolean(String(launchedBy ?? '').trim() && !reexecRequested);
+  return Boolean(ownedLaunch && (bridgeTty || headless === true));
 }
 
 /** Status of the /mcp dialog row naming `name`: 'connected' | 'not-connected' |
@@ -5026,18 +5040,21 @@ export function hostThroughPty(o) {
       // forkpty pgid is still unambiguous, then remove our signal listeners.
       killPtyProcessTree(child, 'SIGKILL');
       // A descendant can call setsid() and escape that pgid while remaining in
-      // the VTE scope. On a GENUINE end of an agent-launched interactive session,
-      // reap the rest of that exact scope too. Reexec/recycle is continuation,
-      // and a human-started or headless/shared scope is never ours to sweep.
+      // the session scope. On a GENUINE end of an agent-launched session, reap
+      // the rest of that exact scope too. Reexec/recycle is continuation, and
+      // an unmarked non-headless/shared scope is never ours to sweep.
       if (
         shouldReapDetachedPtyScopeResidue({
           bridgeTty,
+          headless: String(env.PAPERCUSP_PSU_HEADLESS ?? '').trim() === '1',
           launchedBy: env.PAPERCUSP_LAUNCHED_BY,
           reexecRequested,
         })
       ) {
         try {
-          const residue = reapScopeResidue();
+          const residue = reapScopeResidue({
+            allowManagedScope: String(env.PAPERCUSP_PSU_HEADLESS ?? '').trim() === '1',
+          });
           if (residue?.killedPids?.length || residue?.failedPids?.length) {
             process.stderr.write(
               `psu-pty-host: session scope cleanup for ${ownerId} killed ` +

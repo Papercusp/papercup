@@ -257,6 +257,42 @@ describe('specTestAdequacyCompletionGate', () => {
     expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
   });
 
+  it('accepts grading-integrity evidence enrichment without coupling prose to the evaluator fingerprint', async () => {
+    const deps = passingDeps();
+    const card = matchingCard();
+    const enrichedRatings = Object.fromEntries(
+      Object.entries(card.ratings).map(([key, value]) => [
+        key,
+        {
+          ...value,
+          evidence: `${value.evidence} Re-run plans:get-spec-evidence with the exact current binding.`,
+        },
+      ]),
+    );
+    deps.listCards.mockResolvedValue([
+      {
+        ...card,
+        ratings: enrichedRatings,
+        evidenceFingerprint: scorecardEvidenceFingerprint({
+          rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
+          ratings: enrichedRatings,
+        }),
+        gradingAudit: {
+          state: 'passed',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+        },
+      },
+    ]);
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result).toEqual({ ok: true, applicable: true, checked: ['SPEC-003-01@1'] });
+  });
+
   it('accepts the exact current cohort without historical unknown bindings vetoing it', async () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([
@@ -286,7 +322,15 @@ describe('specTestAdequacyCompletionGate', () => {
   });
 
   it.each([
-    ['stale evidence fingerprint', { evidenceFingerprint: 'sha256:stale' }],
+    [
+      'divergent evaluator verdict',
+      {
+        ratings: {
+          ...matchingCard().ratings,
+          freshness: { rating: 'fail', evidence: 'The current evidence is stale.' },
+        },
+      },
+    ],
     ['provisional scorecard', { provisional: { violatableKeys: ['freshness'], stampedAt: '2026-08-20T00:02:00.000Z' } }],
     [
       'pending grading audit',

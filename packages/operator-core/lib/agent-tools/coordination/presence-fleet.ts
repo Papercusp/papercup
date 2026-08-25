@@ -40,6 +40,69 @@ export async function fetchPresenceFleet(
   return out;
 }
 
+/** One agent's fleet membership WITH the timing legs a supervision edge needs (P-007). */
+export interface FleetSupervisionRow {
+  ownerId: string;
+  fleetSlug: string;
+  /** 'leader' | 'member' as stored; kept as the raw string so an unrecognised role is
+   *  simply not matched rather than being coerced into one of the two we know. */
+  fleetRole: string | null;
+  /** When this agent's session began — the supervision relationship's `since`. */
+  startedAt: Date;
+  /** Drives the residue cut below; NOT a liveness verdict (see the warning). */
+  heartbeatAt: Date;
+}
+
+/**
+ * Batch-read fleet membership + timing for a set of ownerIds (P-007).
+ *
+ * WHY NOT `fetchPresenceFleet`: that returns only {fleetSlug, fleetRole}, and a
+ * supervision edge additionally needs `started_at` (the obligation's age) and
+ * `heartbeat_at` (the residue cut). Widening `FleetMembership` instead would add
+ * required fields to a type shared by unrelated callers, stranding them — so this is a
+ * sibling read in the module that already owns the query, not a fork of it.
+ *
+ * ⚠ `heartbeatAt` IS NOT LIVENESS and must never be rendered as such — a warm-dead
+ * session heartbeats with `sessionState: 'ended'`. It is used for exactly one thing here:
+ * cutting membership RESIDUE, rows whose fleet label outlived the agent. The liveness a
+ * reader sees comes from the shared oracle (D-011), never from this column.
+ */
+export async function fetchFleetSupervisionRows(
+  ownerIds: readonly string[],
+): Promise<Map<string, FleetSupervisionRow>> {
+  const out = new Map<string, FleetSupervisionRow>();
+  const ids = [...new Set(ownerIds.map((s) => s.trim()).filter(Boolean))];
+  if (ids.length === 0) return out;
+  const { sql } = getOrgPg();
+  const rows = await sql<
+    {
+      owner_id: string;
+      fleet_slug: string | null;
+      fleet_role: string | null;
+      started_at: Date | string;
+      heartbeat_at: Date | string;
+    }[]
+  >`
+    SELECT owner_id, fleet_slug, fleet_role, started_at, heartbeat_at
+      FROM harness_shared.coord_presence
+     WHERE owner_id = ANY(${ids}::text[])
+       AND fleet_slug IS NOT NULL
+  `;
+  for (const r of rows) {
+    if (!r.fleet_slug) continue;
+    // postgres.js can hand back timestamptz as a string under the org-pool type config;
+    // normalize at the read boundary so callers never branch on an invented Date type.
+    out.set(r.owner_id, {
+      ownerId: r.owner_id,
+      fleetSlug: r.fleet_slug,
+      fleetRole: r.fleet_role,
+      startedAt: r.started_at instanceof Date ? r.started_at : new Date(r.started_at),
+      heartbeatAt: r.heartbeat_at instanceof Date ? r.heartbeat_at : new Date(r.heartbeat_at),
+    });
+  }
+  return out;
+}
+
 /** One fleet member's presence row, as the respawn/launch verification reads it. */
 export interface FleetPresenceRow {
   ownerId: string;

@@ -484,9 +484,14 @@ describe('<InboxPane>', () => {
     expect(discussion.getAttribute('data-harness')).toBe('papercusp');
     expect(discussion.getAttribute('data-work-item')).toBe('WI-42');
 
-    fireEvent.click(screen.getByTestId('work-item-discussion-close'));
+    const close = screen.getByTestId('work-item-discussion-close');
+    close.focus();
+    fireEvent.click(close);
     await waitFor(() => expect(lastQuery()).not.toContain('opcid='));
     expect(lastQuery()).toContain('opcis=work-item-needs-human:WI-42');
+    expect(document.activeElement).toBe(
+      screen.getByTestId('inbox-row-work-item-needs-human:WI-42'),
+    );
   });
 
   it('Discuss falls back to the Queue panel when the attention item has no canonical work-item id', async () => {
