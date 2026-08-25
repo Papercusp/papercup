@@ -23,7 +23,11 @@ import {
   countAgentToolCallsInWindow,
   LOOP_WAKE_ACTION,
 } from './loop';
-import { listActiveMonitorOwnersForPredicate, readMonitorOwnerTurnEvidence } from './monitor-policy';
+import {
+  decideMonitorAdmission,
+  listActiveMonitorOwnersForPredicate,
+  readMonitorOwnerTurnEvidence,
+} from './monitor-policy';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -166,6 +170,50 @@ describe('loop surface round-trip (real PG)', () => {
       verdict: 'owner-typed',
       quoteMatch: true,
     });
+  });
+
+  it('anti-babysitting P-003: rejects replayed/non-owner indexed provenance without mutating routine rows', async () => {
+    const sessionId = 'p003-agent-replay-session';
+    const turnIdx = 9;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+         speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'codex', ${sessionId}, ${turnIdx}, now(), 'su-peer', ${HARNESS},
+         'user', 'Keep monitoring fleet alpha until it drains.', 'loop-fire', 'agent-injected', 1)
+      ON CONFLICT (workspace_id, source_kind, session_id, turn_idx) DO UPDATE SET
+        owner = EXCLUDED.owner,
+        speaker = EXCLUDED.speaker,
+        text = EXCLUDED.text,
+        turn_origin = EXCLUDED.turn_origin,
+        turn_origin_verdict = EXCLUDED.turn_origin_verdict
+    `;
+    const before = await sql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count FROM harness_shared.routines
+    `;
+    const turnRef = `session_turn:codex:${sessionId}:${turnIdx}`;
+    const evidence = await readMonitorOwnerTurnEvidence(OWNER, WS, turnRef, 'monitoring fleet alpha until it drains', {
+      sql,
+    });
+    const config = {
+      predicateKey: 'fleet:alpha',
+      stopCondition: 'fleet alpha drains',
+      noDeltaBudget: 1,
+      remainingNoDeltaBudget: 1,
+      authority: {
+        kind: 'owner-turn' as const,
+        turnRef,
+        quote: 'monitoring fleet alpha until it drains',
+      },
+    };
+    expect(
+      decideMonitorAdmission({ ownerId: OWNER, config, evidence: { ownerTurn: evidence }, nowMs: Date.now() }),
+    ).toMatchObject({ allowed: false, code: 'monitor_owner_turn_not_owner' });
+    const after = await sql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count FROM harness_shared.routines
+    `;
+    expect(after).toEqual(before);
   });
 
   it('getLoopStatus reads an armed loop, and null for an unknown owner', async () => {
