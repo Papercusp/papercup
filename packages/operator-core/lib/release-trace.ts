@@ -54,6 +54,12 @@ export interface ReleaseTraceGate {
    *  and on 2026-07-26 it told three agents about a red while saying nothing about the
    *  fixer already dispatched for it. */
   redOwner?: GateRedOwnership | null;
+  /**
+   * EI-21456558908416090: whether a recorded decision currently withholds manual
+   * `release:checkpoint-run` authority. Optional so an unwired/legacy caller renders exactly
+   * as before; when present and `withheld`, no checkpoint-run recommendation is issued.
+   */
+  manualRunAuthority?: ReleaseTraceManualRunAuthority | null;
 }
 
 export interface ReleaseTraceAwait {
@@ -85,10 +91,39 @@ export interface ReleaseTraceConstraint {
 }
 
 export interface ReleaseTraceConsumedAuthority {
-  governingRef: 'stable-candidate-related-gate-2026-08-23#D-053';
+  /**
+   * EI-21456558908416090: this was typed as the D-053 literal, which pinned the whole
+   * suppression concept to one decision id. A governing ref is DATA — the next decision
+   * that withholds this authority carries a different id, and a literal type guarantees
+   * it falls through to the recommendation this field exists to stop.
+   */
+  governingRef: string;
   candidate: string;
   status: 'consumed';
   retryAllowed: false;
+  reason: string;
+}
+
+/**
+ * EI-21456558908416090 — manual `release:checkpoint-run` authority withheld by a recorded
+ * decision, supplied as a typed INPUT so this module stays a pure projection.
+ *
+ * The distinction this exists to represent is one the pre-existing tokens could not draw.
+ * `stable-candidate-related-gate-2026-08-23` D-061 deliberately RE-ARMED ordinary scheduled
+ * gate fires while leaving every manual launch forbidden ("D-042's never-launch-a-duplicate
+ * survives this decision intact, and a scheduled cron fire is not a manual launch"). The
+ * scheduled-side admission token is therefore correctly clear, and the manual prohibition had
+ * nowhere machine-readable to live — so `release:trace` kept recommending the one action the
+ * active plan forbids. green-checkpoint.ts:2566 records that a manual fire inside a re-triage
+ * window DISCARDS the auto-refire rescue and costs a ~55min suite, so the recommendation is
+ * destructive, not merely disallowed.
+ */
+export interface ReleaseTraceManualRunAuthority {
+  withheld: boolean;
+  /** The recorded decision that withholds it, e.g. `<plan-slug>#D-061`. Never a code literal. */
+  governingRef: string;
+  /** Which live authority reported it, for a reader deciding where to go to lift it. */
+  source?: 'manual-run-hold' | 'qualification-hold' | 'serializer-fence' | 'consumed-authority';
   reason: string;
 }
 
@@ -357,6 +392,36 @@ function checkpointAuthorityConsumed(input: Pick<ReleaseTraceInput, 'position' |
 }
 
 /**
+ * EI-21456558908416090 — the ONE predicate for "may this trace recommend a manual
+ * `release:checkpoint-run`?".
+ *
+ * Deliberately a generalization rather than a second special case. The prior code expressed
+ * exactly one way authority can be withheld (the D-053 abnormal-terminal case) and pinned it to
+ * that decision's id, so EVERY later decision fell through and the forbidden recommendation was
+ * re-issued — the same shape as EI-21411776375901170, one decision later. Both the in-module
+ * consumed authority and any live authority the caller measured now answer through here, so a
+ * new source of withholding is a new INPUT, never a new branch at each recommendation site.
+ */
+function manualCheckpointRunWithheld(
+  input: Pick<ReleaseTraceInput, 'position' | 'gate'>,
+): ReleaseTraceManualRunAuthority | null {
+  const consumed = checkpointAuthorityConsumed(input);
+  if (consumed) {
+    return {
+      withheld: true,
+      governingRef: consumed.governingRef,
+      source: 'consumed-authority',
+      reason: consumed.reason,
+    };
+  }
+  const declared = input.gate.manualRunAuthority;
+  if (declared?.withheld === true && typeof declared.governingRef === 'string' && declared.governingRef.trim() !== '') {
+    return declared;
+  }
+  return null;
+}
+
+/**
  * Prefer the canonical gate owner over a historical release-fixer record.
  *
  * `gate.redOwner` comes from `last_fixer`, which is useful lineage for the
@@ -487,6 +552,16 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   }
   if (consumedAuthority) {
     add('checkpoint-authority-consumed', true, consumedAuthority.reason);
+  } else if (gate.manualRunAuthority?.withheld === true && gate.manualRunAuthority.governingRef?.trim()) {
+    // NON-blocking on purpose. `ok` means "this exact SHA is release-complete"; a governance
+    // decision about who may fire the gate by hand says nothing about that, so marking it
+    // blocking would make a green, deployed, parity-matched target report ok:false.
+    add(
+      'manual-checkpoint-authority-withheld',
+      false,
+      `${gate.manualRunAuthority.governingRef} withholds manual release:checkpoint-run authority: ` +
+        `${gate.manualRunAuthority.reason} Scheduled gate fires are unaffected by this constraint.`,
+    );
   }
   if (position.dirtyUncommitted) {
     add('dirty-path', true, 'The path has uncommitted edits; its reported target SHA predates those edits.');
@@ -582,7 +657,12 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   return constraints;
 }
 
-function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
+/**
+ * The unguarded recommendation. Four separate branches below can return
+ * `release:checkpoint-run`; `safeNextVerb` applies the withheld-authority guard once, at the
+ * boundary, rather than repeating a condition at each of them.
+ */
+function unguardedNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   const { position, deploy, gate, pipeline, workItem } = input;
   const targetSha = position.targetSha;
   const targetWasGateTested = gateJudgedTarget(input);
@@ -770,6 +850,33 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
     };
   }
   return null;
+}
+
+/**
+ * EI-21456558908416090 — suppress a manual checkpoint-run recommendation whenever a recorded
+ * decision withholds that authority, whatever the id of the decision.
+ *
+ * Keyed on the RECOMMENDED VERB, not on the branch that produced it: every current and future
+ * path that would tell a reader to fire the gate by hand passes through this one test. The
+ * substitution is deliberate — a bare `null` teaches the reader nothing and invites them to
+ * reach for the forbidden verb from memory, so the reply names the governing decision and hands
+ * back the non-destructive action that IS authorized (await the next scheduled verdict).
+ */
+function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
+  const verb = unguardedNextVerb(input);
+  if (verb?.name !== 'release:checkpoint-run') return verb;
+  const withheld = manualCheckpointRunWithheld(input);
+  if (!withheld) return verb;
+
+  return {
+    name: 'checkpoint:await',
+    args: { pipeline: input.pipeline },
+    reason:
+      `MANUAL CHECKPOINT AUTHORITY WITHHELD by ${withheld.governingRef}: ${withheld.reason} ` +
+      `A release:checkpoint-run recommendation (${verb.reason}) was suppressed — do NOT fire the gate by hand: ` +
+      'a manual fire inside a re-triage window discards the auto-refire rescue and spends a ~55min suite. ' +
+      'Await the next scheduled verdict, or record a newer decision granting manual authority before launching.',
+  };
 }
 
 export function buildReleaseTrace(input: ReleaseTraceInput) {

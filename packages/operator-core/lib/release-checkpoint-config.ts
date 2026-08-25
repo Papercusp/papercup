@@ -95,10 +95,41 @@ export interface QualificationHold {
   placedAtMs?: number;
 }
 
-/** The stored row: thresholds + the optional hold, sharing one jsonb payload. */
+/** The stored row: thresholds + the optional holds, sharing one jsonb payload. */
 type CheckpointConfigRow = Partial<ReleaseCheckpointConfig> & {
   qualificationHold?: QualificationHold | null;
+  manualRunHold?: QualificationHold | null;
 };
+
+/**
+ * EI-21456558908416090 — the MANUAL-RUN hold, sibling of the qualification hold above.
+ *
+ * The two are deliberately separate tokens because a decision can withhold one and not the
+ * other, and the pre-existing single token could not express that. `stable-candidate-related-
+ * gate-2026-08-23` D-061 is the worked example: it discharged D-042's pause premise and
+ * re-armed ORDINARY SCHEDULED gate fires, while leaving every manual launch forbidden ("D-042's
+ * never-launch-a-duplicate survives this decision intact, and a scheduled cron fire is not a
+ * manual launch"). Scheduled-side admission is therefore correctly CLEAR, and before this token
+ * the manual prohibition had nowhere machine-readable to live — so it bound humans and agents
+ * who happened to read the plan, and nothing else. `release:trace` went on recommending
+ * `release:checkpoint-run` as its nextVerb, which is the single action that plan forbids.
+ *
+ * Same shape, same row, same three-state admission semantics as the qualification hold: a
+ * malformed token reads `unknown`, never `clear`, so corruption can never read as permission.
+ */
+export const MANUAL_RUN_HOLD_FIELD = 'manualRunHold' as const;
+
+function classifyHold(
+  hold: QualificationHold | null | undefined,
+  field: 'qualificationHold' | 'manualRunHold',
+): QualificationAdmission {
+  if (hold === undefined || hold === null) return { status: 'clear' };
+  if (typeof hold !== 'object' || typeof hold.governingRef !== 'string' || hold.governingRef.trim() === '') {
+    // Malformed ⇒ unknown, never clear: a corrupted token must not read as permission.
+    return { status: 'unknown', reason: `${field} present but has no governingRef` };
+  }
+  return { status: 'held', hold };
+}
 
 /**
  * Three-state ON PURPOSE. `unknown` is in-band and is NOT `clear`:
@@ -130,21 +161,52 @@ export async function readQualificationAdmission(
   } catch (e) {
     return { status: 'unknown', reason: e instanceof Error ? e.message : String(e) };
   }
-  const hold = row?.qualificationHold;
-  if (hold === undefined || hold === null) return { status: 'clear' };
-  if (typeof hold !== 'object' || typeof hold.governingRef !== 'string' || hold.governingRef.trim() === '') {
-    // Malformed ⇒ unknown, never clear: a corrupted token must not read as permission.
-    return { status: 'unknown', reason: 'qualificationHold present but has no governingRef' };
+  return classifyHold(row?.qualificationHold, 'qualificationHold');
+}
+
+/**
+ * Read manual-run admission FRESH, for the same reason `readQualificationAdmission` does: the
+ * sync config cache cannot see a hold placed by another process.
+ *
+ * Callers differ in what they owe on `unknown`. The EXECUTOR (`release:checkpoint-run`) fails
+ * closed — it is about to spend a ~55min suite and must not do so unable to prove it is
+ * authorized. The RECOMMENDER (`release:trace`) fails open — it takes no action, the executor
+ * remains the fence, and blanking its nextVerb on a transient DB blip would degrade a
+ * diagnostic that agents read precisely when the pipeline is already unhealthy.
+ */
+export async function readManualRunAdmission(
+  opts: { workspaceId?: string } = {},
+): Promise<QualificationAdmission> {
+  let row: CheckpointConfigRow | null;
+  try {
+    row = await readOperatorState<CheckpointConfigRow>(
+      'operator_release_checkpoint_config',
+      opts.workspaceId,
+    );
+  } catch (e) {
+    return { status: 'unknown', reason: e instanceof Error ? e.message : String(e) };
   }
-  return { status: 'held', hold };
+  return classifyHold(row?.manualRunHold, 'manualRunHold');
 }
 
 /** Place (or, with `null`, lift) the hold, preserving the threshold fields in the same row. */
 export async function setQualificationHold(hold: QualificationHold | null): Promise<void> {
+  await setCheckpointHold('qualificationHold', hold);
+}
+
+/** Place (or, with `null`, lift) the manual-run hold, preserving every sibling field. */
+export async function setManualRunHold(hold: QualificationHold | null): Promise<void> {
+  await setCheckpointHold('manualRunHold', hold);
+}
+
+async function setCheckpointHold(
+  field: 'qualificationHold' | 'manualRunHold',
+  hold: QualificationHold | null,
+): Promise<void> {
   const row = (await readOperatorState<CheckpointConfigRow>('operator_release_checkpoint_config')) ?? {};
   const next: CheckpointConfigRow = { ...row };
-  if (hold) next.qualificationHold = hold;
-  else delete next.qualificationHold;
+  if (hold) next[field] = hold;
+  else delete next[field];
   await writeOperatorState<CheckpointConfigRow>('operator_release_checkpoint_config', next);
 }
 
