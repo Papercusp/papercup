@@ -32,12 +32,20 @@ import { hardText } from '../../limits';
 import type { HydratableRef } from '../ref-hydrate';
 import { renderHydratedRefs } from '../ref-hydrate';
 import { hydrateRefs, makePlanItemResolver } from '../ref-hydrate-resolve';
+import {
+  assignActionableWorkItems,
+  type ActionableWorkItemAssignment,
+  type RequiredWakeFailure,
+} from '../actionable-work-item-dispatch';
 
 export interface DispatchArgs {
   to: string;
   note: string;
   planSlug?: string;
   items?: string[];
+  /** Concrete promoted work-items for stable-agent execution. Mutually exclusive
+   *  with `items`; `planSlug` may still be supplied as message provenance. */
+  workItemIds?: string[];
   body?: string;
   harness?: string;
 }
@@ -85,6 +93,9 @@ export interface DispatchResult {
   /** The durable lane assignment outcome (null when no planSlug+items were given —
    *  a pure directed wake). */
   assigned: DispatchAssigned | null;
+  /** Stable-agent work-item assignment outcome. Null on the legacy plan-item
+   *  lane and on a pure directed wake. */
+  workItems: ActionableWorkItemAssignment | null;
   /** The directed note's inbox msg_id (the "delivered" half). */
   delivered: string | null;
   /** WI-4165: count of assigned plan-items whose body was successfully
@@ -107,6 +118,9 @@ export interface DispatchResult {
   /** The subset of targets with NO live session watching their inbox-wake key —
    *  genuinely dead; the dispatch black-holes until they are relaunched. */
   recipient_dead?: string[];
+  /** Required-wake failure is structured and recoverable: assignment remains
+   *  durable, but no execution success is implied. */
+  failure?: RequiredWakeFailure;
   /** EI-2292: requested items the pre-assign guard excluded (live-claimed by
    *  someone else, or needs-human/blocked) — present only when non-empty. The
    *  note still delivers (it may legitimately be about other, kept items), but
@@ -147,6 +161,8 @@ function findPresenceRow(
 export interface ComposeDispatchDeps {
   /** Injectable for tests (default: the real hydrateRefs — DB-backed, fail-soft). */
   hydrateRefs?: typeof hydrateRefs;
+  /** Injectable lower-level stable-agent assignment seam. */
+  assignWorkItems?: typeof assignActionableWorkItems;
 }
 
 export async function composeDispatch(
@@ -173,6 +189,44 @@ export async function composeDispatch(
     }
   } catch {
     /* degrade: sessionState/wakeable stay null */
+  }
+
+  // 1.25. Stable-agent work-item assignment. This is the concrete execution
+  //       counterpart to the plan-item lane below: canonical promotion returns
+  //       workItemIds, this shared composite re-checks every blocker/readiness
+  //       floor and persists only the current frontier. Assignment happens
+  //       BEFORE coord:send's required wake; blocked descendants are neither
+  //       claimed nor included in the wake payload/body.
+  let workItems: ActionableWorkItemAssignment | null = null;
+  if (args.workItemIds && args.workItemIds.length > 0) {
+    const assign = deps.assignWorkItems ?? assignActionableWorkItems;
+    const targetAgent = presenceOwnerId || args.to;
+    try {
+      workItems = await assign(
+        {
+          workItemIds: args.workItemIds,
+          targetAgent,
+          ...(args.harness ? { harness: args.harness } : {}),
+        },
+      );
+    } catch (error) {
+      const requested = [...new Set(args.workItemIds)];
+      workItems = {
+        ok: false,
+        targetAgent,
+        requested,
+        actionable: [],
+        assigned: [],
+        retained: [],
+        skipped: [],
+        failed: requested.map((workItemId) => ({
+          workItemId,
+          code: 'claim_failed',
+          reason: error instanceof Error ? error.message : String(error),
+        })),
+        executionWorkItemIds: [],
+      };
+    }
   }
 
   // 1.5. EI-2292 pre-assign guard: a naive re-dispatch cycle (the su-aede8
@@ -310,6 +364,38 @@ export async function composeDispatch(
     }
   }
 
+  if (workItems && workItems.executionWorkItemIds.length > 0) {
+    const executionBlock =
+      `Actionable work-items assigned to this stable agent: ` +
+      workItems.executionWorkItemIds.map((id) => `\`${id}\``).join(', ') +
+      '. Blocked or otherwise ineligible requested descendants were left unassigned.';
+    hydratedBody = [args.body, executionBlock].filter(Boolean).join('\n\n');
+  }
+
+  // A work-item direct dispatch with no executable frontier MUST NOT wake the
+  // target. This is the blocker-preservation rail: a plan run containing only
+  // blocked descendants is a correct no-op, not a reason to burn a turn and ask
+  // the agent to bypass the DAG. Assignment failures remain loud (`ok:false`).
+  if (workItems && workItems.executionWorkItemIds.length === 0) {
+    const resolvedTo = presenceOwnerId || args.to;
+    return {
+      ok: workItems.ok,
+      to: resolvedTo,
+      sessionState,
+      wakeable,
+      assigned,
+      workItems,
+      delivered: null,
+      woken: 0,
+      queued: 0,
+      pickupConfirmed: false,
+      warning:
+        workItems.failed.length > 0
+          ? `coord:dispatch assigned 0 of ${workItems.requested.length} requested work-item(s) to ${resolvedTo}; target was not woken because no durable execution lane landed.`
+          : `coord:dispatch found no currently actionable work-items among ${workItems.requested.length} requested id(s); blocked/parked descendants remain unassigned and ${resolvedTo} was not woken.`,
+    };
+  }
+
   // 3. Deliver the directed note AND wake the target NOW (coord:send wake:'required').
   //    This is the critical leg: it persists the inbox row (durable) AND fires the
   //    target's own coord:inbox-wake key, returning the authoritative queued-delivery
@@ -382,11 +468,12 @@ export async function composeDispatch(
     assigned.failed === assigned.requested;
 
   const result: DispatchResult = {
-    ok: r0.ok !== false && !allRequestedAssignmentsFailed,
+    ok: r0.ok !== false && !allRequestedAssignmentsFailed && (workItems?.ok ?? true),
     to: resolvedTo,
     sessionState,
     wakeable,
     assigned,
+    workItems,
     delivered: typeof r0.msg_id === 'string' ? r0.msg_id : null,
     woken,
     queued,
@@ -399,6 +486,55 @@ export async function composeDispatch(
       : {}),
     ...(skippedItems.length > 0 ? { skippedItems } : {}),
   };
+
+  const queuePreserved =
+    (assigned?.assigned ?? 0) > 0 || (workItems?.executionWorkItemIds.length ?? 0) > 0;
+  const failureBase = {
+    target: resolvedTo,
+    recoverable: true as const,
+    queuePreserved,
+  };
+  let failure: RequiredWakeFailure | null = null;
+  if (
+    sessionState === 'ended' ||
+    sessionState === 'suspect' ||
+    sessionState === 'draining' ||
+    (Array.isArray(wake.recipient_dead) && wake.recipient_dead.length > 0)
+  ) {
+    failure = {
+      ...failureBase,
+      code: 'target_dead',
+      message: `${resolvedTo} has no healthy required-wake target (sessionState=${sessionState ?? 'unknown'}); durable assignment is preserved for relaunch/replay`,
+    };
+  } else if (staged > 0 && queued === 0) {
+    failure = {
+      ...failureBase,
+      code: 'target_unwakeable',
+      message: `${resolvedTo} is in manual wake mode; the required wake staged instead of delivering`,
+    };
+  } else if (wake.recipient_absent && queued === 0) {
+    failure = {
+      ...failureBase,
+      code: 'target_absent',
+      message: `${resolvedTo} accepted no required wake delivery; durable assignment is preserved for retry`,
+    };
+  } else if (wakeable === false && queued === 0) {
+    failure = {
+      ...failureBase,
+      code: 'target_unwakeable',
+      message: `${resolvedTo} is present but not required-wakeable; durable assignment is preserved for recovery`,
+    };
+  } else if (r0.ok === false) {
+    failure = {
+      ...failureBase,
+      code: 'target_absent',
+      message: `coord:send could not deliver the required dispatch to ${resolvedTo}: ${r0.error ?? 'unknown delivery failure'}`,
+    };
+  }
+  if (failure) {
+    result.ok = false;
+    result.failure = failure;
+  }
 
   // 3b. EI-2292: surface the guard's own skips as a loud warning too (in addition to
   //     the structured `skippedItems` field) — don't silently let a caller miss that
@@ -459,7 +595,7 @@ export async function composeDispatch(
 export default defineTool({
   name: 'coord:dispatch',
   description:
-    'One call assigns plan items to `to`, inlines their bodies, delivers `note`, queues a wake, and reports ({ assigned, queued, pickupConfirmed:false, delivered, sessionState, itemsHydrated }). Queueing is not proof a turn executed: verify a fresh checkpoint/activity timestamp. All-refused assignment is `ok:false`; ended/dead targets are loud misses requiring relaunch.',
+    'One call assigns either plan items (`items`) or concrete promoted work-items (`workItemIds`) to `to`, delivers `note`, and issues a required wake. The work-item path re-checks canonical blockers and assigns/wakes only the current actionable frontier; blocked descendants stay unassigned. Dead/absent/unwakeable targets return `ok:false` plus structured `failure` while durable assignment remains recoverable. Queueing is not proof a turn executed.',
   guidance: {
     when: 'You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + delivers + queues a wake; verify pickup separately. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
     notWhen: 'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never "*". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.',
@@ -470,7 +606,7 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   // Composite marker (tool-call-batching-wrappers P-010): the primitives this bundles.
-  replaces: ['coord:presence', 'plan_items:assign', 'coord:send', 'events:emit'],
+  replaces: ['coord:presence', 'plan_items:assign', 'work_items:claim', 'coord:send', 'events:emit'],
   args: z.object({
     to: z
       .string()
@@ -486,8 +622,24 @@ export default defineTool({
       .max(40)
       .optional()
       .describe('Plan-item ids (P-NNN) to push-assign to `to` as its durable lane. Omit for a pure directed wake.'),
+    workItemIds: z
+      .array(z.string().min(1).max(120))
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'Concrete promoted work-item ids to assign to the stable target. Re-read through canonical readiness; only actionable ids are claimed and included in the required wake. Mutually exclusive with `items`.',
+      ),
     body: hardText(8000).optional().describe('Optional longer body for the inbox note.'),
     harness: z.string().max(120).optional().describe('Harness scope for the lane assignment (default: the plan\'s harness).'),
+  }).superRefine((args, ctx) => {
+    if ((args.items?.length ?? 0) > 0 && (args.workItemIds?.length ?? 0) > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['workItemIds'],
+        message: 'pass either plan-item `items` or concrete `workItemIds`, never both in one dispatch',
+      });
+    }
   }),
   async handler(args, ctx) {
     const result = await composeDispatch(args as DispatchArgs, inProcessCall(ctx));

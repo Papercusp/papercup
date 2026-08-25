@@ -1,0 +1,506 @@
+/**
+ * Stable-agent direct dispatch for promoted work-items.
+ *
+ * This is deliberately a small composite over the existing work-item claim and
+ * inbox-wake primitives. It is not a scheduler: callers hand it the concrete ids
+ * returned by canonical plan promotion, it re-checks the current execution
+ * frontier, persists assignment first, then issues one required wake.
+ */
+import {
+  claimWorkItem,
+  isClaimHoldParked,
+  observeWorkItem,
+  readUnresolvedDepBlockers,
+  type WorkItem,
+} from '../../work-items';
+import {
+  planItemLaneBlockReason,
+  planItemLiveClaimReason,
+  type PlanItemLaneBlock,
+  type PlanItemLiveClaimBlock,
+} from '../../scheduler/plan-item-lane-guard';
+import {
+  wakeRecipients,
+  type WakeRecipientsResult,
+} from './inbox-wake';
+import {
+  assemblePresenceSnapshot,
+  resolvePresenceScope,
+} from './presence-snapshot';
+
+const UNASSIGNED_FRONTIER_STATES = new Set(['open', 'failing', 'todo']);
+const RETAINED_EXECUTION_STATES = new Set([
+  ...UNASSIGNED_FRONTIER_STATES,
+  'wip',
+  'in_progress',
+  'validating',
+]);
+
+export type WorkItemDispatchSkipCode =
+  | 'not_found'
+  | 'read_failed'
+  | 'state_not_actionable'
+  | 'dependency_blocked'
+  | 'plan_lane_blocked'
+  | 'plan_lane_claimed'
+  | 'claim_hold'
+  | 'admission_gated'
+  | 'held_by_other';
+
+export interface WorkItemDispatchSkip {
+  workItemId: string;
+  code: WorkItemDispatchSkipCode;
+  reason: string;
+  holder?: string;
+  blockers?: string[];
+}
+
+export interface WorkItemDispatchClaimFailure {
+  workItemId: string;
+  code: 'claim_refused' | 'claim_failed';
+  reason: string;
+}
+
+export interface ActionableWorkItemAssignment {
+  ok: boolean;
+  targetAgent: string;
+  requested: string[];
+  actionable: string[];
+  assigned: string[];
+  /** Idempotent replay: already held by the same stable target and still runnable. */
+  retained: string[];
+  skipped: WorkItemDispatchSkip[];
+  failed: WorkItemDispatchClaimFailure[];
+  /** The exact assigned/retained frontier the target may execute after waking. */
+  executionWorkItemIds: string[];
+}
+
+export interface StableAgentTargetState {
+  requested: string;
+  ownerId: string;
+  present: boolean;
+  sessionState: string | null;
+  wakeable: boolean | null;
+}
+
+export type RequiredWakeFailureCode =
+  | 'target_dead'
+  | 'target_absent'
+  | 'target_unwakeable'
+  | 'wake_delivery_unknown';
+
+export interface RequiredWakeFailure {
+  code: RequiredWakeFailureCode;
+  target: string;
+  recoverable: true;
+  queuePreserved: boolean;
+  message: string;
+}
+
+export interface ActionableWorkItemDispatchResult {
+  ok: boolean;
+  target: StableAgentTargetState;
+  assignment: ActionableWorkItemAssignment;
+  wake: WakeRecipientsResult | null;
+  failure?: RequiredWakeFailure;
+  warning?: string;
+}
+
+interface EligibilityRead {
+  workItem: WorkItem | null;
+  available: boolean;
+  claimedBy: string | null;
+  gated?: boolean;
+  claimHoldParked?: boolean;
+  planItemBlocked?: PlanItemLaneBlock;
+  planItemLiveClaimed?: PlanItemLiveClaimBlock;
+}
+
+export interface ActionableWorkItemDispatchDeps {
+  observe: (id: string, opts: { harness?: string }) => Promise<EligibilityRead | null>;
+  claim: (id: string, assignee: string, opts: { harness?: string }) => Promise<WorkItem | null>;
+  blockers: (id: string, harness?: string) => Promise<Array<{ id?: string }>>;
+  planBlock: (workItem: WorkItem) => Promise<PlanItemLaneBlock | null>;
+  planClaim: (workItem: WorkItem) => Promise<PlanItemLiveClaimBlock | null>;
+  resolveTarget: (args: {
+    targetAgent: string;
+    workspaceId?: string;
+    harness?: string;
+  }) => Promise<StableAgentTargetState>;
+  wake: typeof wakeRecipients;
+}
+
+const defaultDeps: ActionableWorkItemDispatchDeps = {
+  observe: (id, opts) => observeWorkItem(id, opts),
+  claim: (id, assignee, opts) => claimWorkItem(id, assignee, opts),
+  blockers: (id, harness) => readUnresolvedDepBlockers(id, harness),
+  planBlock: (workItem) => planItemLaneBlockReason(workItem),
+  planClaim: (workItem) => planItemLiveClaimReason(workItem),
+  resolveTarget: resolveStableAgentTarget,
+  wake: wakeRecipients,
+};
+
+function sameAgent(holder: string | null | undefined, target: string): boolean {
+  return Boolean(holder) && holder === target;
+}
+
+function blockerIds(rows: Array<{ id?: string }>): string[] {
+  return rows.map((row) => row.id).filter((id): id is string => Boolean(id));
+}
+
+async function classifyOne(
+  workItemId: string,
+  targetAgent: string,
+  harness: string | undefined,
+  deps: ActionableWorkItemDispatchDeps,
+): Promise<
+  | { kind: 'claim'; workItemId: string }
+  | { kind: 'retained'; workItemId: string }
+  | { kind: 'skip'; skipped: WorkItemDispatchSkip }
+> {
+  let observed: EligibilityRead | null;
+  try {
+    observed = await deps.observe(workItemId, { ...(harness ? { harness } : {}) });
+  } catch (error) {
+    return {
+      kind: 'skip',
+      skipped: {
+        workItemId,
+        code: 'read_failed',
+        reason: `work-item readiness read failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    };
+  }
+  if (!observed?.workItem) {
+    return {
+      kind: 'skip',
+      skipped: { workItemId, code: 'not_found', reason: 'work-item was not found' },
+    };
+  }
+
+  const workItem = observed.workItem;
+  const holder = observed.claimedBy ?? workItem.assignee;
+  const retainedByTarget = sameAgent(holder, targetAgent);
+  const allowedStates = retainedByTarget ? RETAINED_EXECUTION_STATES : UNASSIGNED_FRONTIER_STATES;
+  if (!allowedStates.has(workItem.state)) {
+    return {
+      kind: 'skip',
+      skipped: {
+        workItemId,
+        code: 'state_not_actionable',
+        reason: `state '${workItem.state}' is outside the ${retainedByTarget ? 'runnable' : 'claimable'} frontier`,
+      },
+    };
+  }
+
+  let unresolved: Array<{ id?: string }>;
+  try {
+    unresolved = await deps.blockers(workItemId, harness);
+  } catch (error) {
+    return {
+      kind: 'skip',
+      skipped: {
+        workItemId,
+        code: 'read_failed',
+        reason: `dependency readiness read failed: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    };
+  }
+  if (unresolved.length > 0) {
+    const ids = blockerIds(unresolved);
+    return {
+      kind: 'skip',
+      skipped: {
+        workItemId,
+        code: 'dependency_blocked',
+        reason: `unresolved work-item blocker${unresolved.length === 1 ? '' : 's'}${ids.length ? `: ${ids.join(', ')}` : ''}`,
+        ...(ids.length ? { blockers: ids } : {}),
+      },
+    };
+  }
+
+  // observeWorkItem already resolves these for an unassigned row. A retained
+  // row needs the same fresh checks because idempotent replay must not wake work
+  // whose plan was edited back behind a blocker after the original assignment.
+  let planBlocked = observed.planItemBlocked ?? null;
+  let planClaimed = observed.planItemLiveClaimed ?? null;
+  if (retainedByTarget) {
+    try {
+      [planBlocked, planClaimed] = await Promise.all([
+        deps.planBlock(workItem),
+        deps.planClaim(workItem),
+      ]);
+    } catch (error) {
+      return {
+        kind: 'skip',
+        skipped: {
+          workItemId,
+          code: 'read_failed',
+          reason: `plan-lane readiness read failed: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      };
+    }
+  }
+  if (planBlocked) {
+    return {
+      kind: 'skip',
+      skipped: { workItemId, code: 'plan_lane_blocked', reason: planBlocked.reason },
+    };
+  }
+  if (planClaimed && planClaimed.claimedBy !== targetAgent) {
+    return {
+      kind: 'skip',
+      skipped: {
+        workItemId,
+        code: 'plan_lane_claimed',
+        reason: planClaimed.reason,
+        holder: planClaimed.claimedBy,
+      },
+    };
+  }
+  if (isClaimHoldParked(workItem.payload) || observed.claimHoldParked) {
+    return {
+      kind: 'skip',
+      skipped: { workItemId, code: 'claim_hold', reason: 'work-item carries a durable claim hold' },
+    };
+  }
+  if (holder && !retainedByTarget) {
+    return {
+      kind: 'skip',
+      skipped: {
+        workItemId,
+        code: 'held_by_other',
+        reason: `already assigned to ${holder}; stable-agent dispatch never force-claims`,
+        holder,
+      },
+    };
+  }
+  if (retainedByTarget) return { kind: 'retained', workItemId };
+  if (!observed.available) {
+    return {
+      kind: 'skip',
+      skipped: {
+        workItemId,
+        code: observed.gated ? 'admission_gated' : 'read_failed',
+        reason: observed.gated
+          ? 'work-item is outside the canonical admission frontier'
+          : 'work-item is not currently available for assignment',
+      },
+    };
+  }
+  return { kind: 'claim', workItemId };
+}
+
+/** Assign only the current execution frontier. No wake occurs in this function. */
+export async function assignActionableWorkItems(
+  args: { workItemIds: readonly string[]; targetAgent: string; harness?: string },
+  deps: ActionableWorkItemDispatchDeps = defaultDeps,
+): Promise<ActionableWorkItemAssignment> {
+  const requested = [...new Set(args.workItemIds.map((id) => id.trim()).filter(Boolean))];
+  const classified = await Promise.all(
+    requested.map((id) => classifyOne(id, args.targetAgent, args.harness, deps)),
+  );
+  const toClaim = classified.filter((r): r is { kind: 'claim'; workItemId: string } => r.kind === 'claim');
+  const retained = classified
+    .filter((r): r is { kind: 'retained'; workItemId: string } => r.kind === 'retained')
+    .map((r) => r.workItemId);
+  const skipped = classified
+    .filter((r): r is { kind: 'skip'; skipped: WorkItemDispatchSkip } => r.kind === 'skip')
+    .map((r) => r.skipped);
+
+  const claimResults = await Promise.all(
+    toClaim.map(async ({ workItemId }) => {
+      try {
+        const claimed = await deps.claim(workItemId, args.targetAgent, {
+          ...(args.harness ? { harness: args.harness } : {}),
+        });
+        return claimed
+          ? ({ ok: true as const, workItemId })
+          : ({
+              ok: false as const,
+              workItemId,
+              code: 'claim_refused' as const,
+              reason: 'atomic assignment was refused (claim conflict or admission changed)',
+            });
+      } catch (error) {
+        return {
+          ok: false as const,
+          workItemId,
+          code: 'claim_failed' as const,
+          reason: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }),
+  );
+  const assigned = claimResults.filter((r) => r.ok).map((r) => r.workItemId);
+  const failed = claimResults
+    .filter((r): r is Extract<(typeof claimResults)[number], { ok: false }> => !r.ok)
+    .map(({ workItemId, code, reason }) => ({ workItemId, code, reason }));
+  const executable = new Set([...assigned, ...retained]);
+  const executionWorkItemIds = requested.filter((id) => executable.has(id));
+  return {
+    ok: failed.length === 0,
+    targetAgent: args.targetAgent,
+    requested,
+    actionable: [...toClaim.map((r) => r.workItemId), ...retained],
+    assigned,
+    retained,
+    skipped,
+    failed,
+    executionWorkItemIds,
+  };
+}
+
+/** Resolve the exact stable identity plus the live wakeability state. */
+export async function resolveStableAgentTarget(args: {
+  targetAgent: string;
+  workspaceId?: string;
+  harness?: string;
+}): Promise<StableAgentTargetState> {
+  try {
+    const scope = await resolvePresenceScope(
+      { workspaceId: args.workspaceId, harnessSlug: args.harness },
+      {
+        scope: 'workspace',
+        targetedOwner: true,
+        ...(args.workspaceId ? { workspace: args.workspaceId } : {}),
+      },
+    );
+    const snapshot = await assemblePresenceSnapshot(scope, { owner: args.targetAgent });
+    const rows = snapshot.active as Array<Record<string, unknown>>;
+    const exact = rows.find((row) => row.ownerId === args.targetAgent);
+    const row = exact ?? rows[0];
+    if (!row) {
+      return {
+        requested: args.targetAgent,
+        ownerId: args.targetAgent,
+        present: false,
+        sessionState: null,
+        wakeable: false,
+      };
+    }
+    return {
+      requested: args.targetAgent,
+      ownerId: typeof row.ownerId === 'string' ? row.ownerId : args.targetAgent,
+      present: true,
+      sessionState: typeof row.sessionState === 'string' ? row.sessionState : null,
+      wakeable: typeof row.wakeable === 'boolean' ? row.wakeable : null,
+    };
+  } catch {
+    return {
+      requested: args.targetAgent,
+      ownerId: args.targetAgent,
+      present: false,
+      sessionState: null,
+      wakeable: null,
+    };
+  }
+}
+
+export function classifyRequiredWakeFailure(args: {
+  target: StableAgentTargetState;
+  wake: Pick<WakeRecipientsResult, 'queued' | 'woken' | 'staged' | 'timedOutTargets'>;
+  queuePreserved: boolean;
+}): RequiredWakeFailure | null {
+  const queued = args.wake.queued ?? args.wake.woken ?? 0;
+  const target = args.target.ownerId;
+  const base = { target, recoverable: true as const, queuePreserved: args.queuePreserved };
+  if (args.wake.timedOutTargets.length > 0) {
+    return {
+      ...base,
+      code: 'wake_delivery_unknown',
+      message: `required wake delivery for ${target} timed out; assignment is durable but pickup is unknown`,
+    };
+  }
+  if (args.target.sessionState === 'ended' || args.target.sessionState === 'suspect') {
+    return {
+      ...base,
+      code: 'target_dead',
+      message: `${target} has sessionState=${args.target.sessionState}; assignment is durable but the target must be relaunched`,
+    };
+  }
+  if (!args.target.present) {
+    return {
+      ...base,
+      code: 'target_absent',
+      message: `${target} has no resolvable session; assignment is durable but no live target accepted the wake`,
+    };
+  }
+  if (args.wake.staged > 0 || args.target.wakeable === false || args.target.sessionState === 'draining') {
+    return {
+      ...base,
+      code: 'target_unwakeable',
+      message: `${target} is present but not required-wakeable (sessionState=${args.target.sessionState ?? 'unknown'}, wakeable=${String(args.target.wakeable)})`,
+    };
+  }
+  if (queued === 0) {
+    return {
+      ...base,
+      code: 'target_absent',
+      message: `required wake queued 0 deliveries for ${target}; assignment remains durable for recovery`,
+    };
+  }
+  return null;
+}
+
+/**
+ * The plan-run callable composite: resolve stable identity, assign only the
+ * actionable frontier, then issue one required inbox wake. A zero-frontier
+ * result intentionally does not wake the agent.
+ */
+export async function assignAndWakeActionableWorkItems(
+  args: {
+    workItemIds: readonly string[];
+    targetAgent: string;
+    workspaceId?: string;
+    harness?: string;
+    summary?: string;
+    source?: string;
+  },
+  deps: ActionableWorkItemDispatchDeps = defaultDeps,
+): Promise<ActionableWorkItemDispatchResult> {
+  const target = await deps.resolveTarget(args);
+  const assignment = await assignActionableWorkItems(
+    {
+      workItemIds: args.workItemIds,
+      targetAgent: target.ownerId,
+      ...(args.harness ? { harness: args.harness } : {}),
+    },
+    deps,
+  );
+  if (assignment.executionWorkItemIds.length === 0) {
+    return {
+      ok: assignment.ok,
+      target,
+      assignment,
+      wake: null,
+      warning:
+        assignment.failed.length > 0
+          ? 'no work-item assignment landed; target was not woken'
+          : 'no currently actionable work-items; blocked/parked descendants remain unassigned and target was not woken',
+    };
+  }
+  const wake = await deps.wake([target.ownerId], {
+    summary:
+      args.summary ??
+      `Assigned ${assignment.executionWorkItemIds.length} actionable plan-run work-item(s)`,
+    payload: {
+      kind: 'actionable-work-item-dispatch',
+      workItemIds: assignment.executionWorkItemIds,
+    },
+    source: args.source ?? 'system:plan-run-direct-dispatch',
+    ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
+  });
+  const failure = classifyRequiredWakeFailure({
+    target,
+    wake,
+    queuePreserved: assignment.executionWorkItemIds.length > 0,
+  });
+  return {
+    ok: assignment.ok && failure === null,
+    target,
+    assignment,
+    wake,
+    ...(failure ? { failure, warning: failure.message } : {}),
+  };
+}
