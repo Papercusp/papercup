@@ -79,12 +79,13 @@ const PINNED: Readonly<Record<string, Disposition>> = Object.freeze({
       'bidirectional check doing its job, not a regression.',
   },
   'packages/operator-core/lib/llm-testing/replay.ts': {
-    kind: 'owed',
+    kind: 'folds',
     why:
-      'takes its rubric version from the scenario author and folds it into ' +
-      'computeIdentityHash, which is what declares two runs comparable — so the ' +
-      'comparability claim is scaffold-blind even though this file stores nothing itself',
-    trackedBy: 'EI-21448289024080765',
+      'passes JUDGE_PROMPT_SCAFFOLD_VERSION to computeIdentityHash, which since ' +
+      'WI-41685 REQUIRES it. This file stores nothing itself, but the identity it ' +
+      'computes is what declares two runs comparable, so a scaffold-blind identity ' +
+      'here would make a replay claim comparability it cannot support. Closed the ' +
+      'last `owed` row of EI-21448289024080765.',
   },
 });
 
