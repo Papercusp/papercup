@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const resolveFleetMemberTarget = vi.fn();
 const killHandler = vi.fn();
 const launchHandler = vi.fn();
+const getPresence = vi.fn();
 const listFleetPresence = vi.fn();
 const sendMessage = vi.fn();
 const wakeRecipients = vi.fn();
@@ -28,6 +29,9 @@ vi.mock('./member-target', () => ({
 }));
 vi.mock('../fleet/kill', () => ({ default: { handler: (...a: unknown[]) => killHandler(...a) } }));
 vi.mock('../capability/launch-agent', () => ({ default: { handler: (...a: unknown[]) => launchHandler(...a) } }));
+vi.mock('../coordination/presence', () => ({
+  getPresence: (...a: unknown[]) => getPresence(...a),
+}));
 vi.mock('../coordination/presence-fleet', () => ({
   listFleetPresence: (...a: unknown[]) => listFleetPresence(...a),
 }));
@@ -78,6 +82,7 @@ describe('fleet:respawn-member — ambient workspace transaction safety (EI-2021
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getPresence.mockResolvedValue({ potSlug: 'papercusp' });
   resolveFleetMemberTarget.mockResolvedValue({
     ok: true,
     callerId: LEADER,

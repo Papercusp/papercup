@@ -20,6 +20,7 @@ import type { MemberSpec } from '../../agent-launch-core';
 import killTool from '../fleet/kill';
 import launchTool from '../capability/launch-agent';
 import { resolveFleetMemberTarget } from './member-target';
+import { getPresence } from '../coordination/presence';
 import { listFleetPresence, type FleetPresenceRow } from '../coordination/presence-fleet';
 import { sendMessage } from '../coordination/messages';
 import { wakeRecipients } from '../coordination/inbox-wake';
@@ -339,6 +340,15 @@ export default defineTool({
     }
     const { slug, memberOwnerId, invokedAs, workspaceId, identity } = target;
 
+    // Legacy launch rows predate the canonical fleet target and may omit the
+    // harness/agent fields. Only use trusted recovery context to fill those
+    // gaps: the target member's own pot context, the concrete caller harness,
+    // and an explicit respawn agent override. Never default either field.
+    const memberPresence = await getPresence(memberOwnerId).catch(() => null);
+    const callerHarness = typeof ctx.harnessSlug === 'string' ? ctx.harnessSlug.trim() : '';
+    const legacyHarness = memberPresence?.potSlug?.trim() ||
+      (callerHarness && callerHarness !== '*' && callerHarness !== 'all' ? callerHarness : undefined);
+
     // D-004/P-044: a respawn is a recovery, never a fresh reconstruction. Read
     // the canonical saved fleet profile BEFORE killing the old member, merge
     // only the explicit audited boot-setting delta, and preserve every omitted
@@ -360,6 +370,10 @@ export default defineTool({
       reusePath: 'fleet:respawn-member -> capability:launch-agent',
       requireSaved: true,
       memberOwnerId,
+      legacyFallbacks: {
+        agent: args.agent,
+        harness: legacyHarness,
+      },
     });
     if (!savedLaunchSpec.ok) {
       return json(
@@ -508,8 +522,8 @@ export default defineTool({
         {
           fleet: slug,
           count: 1,
-          plan: savedLaunchSpec.effective.plan,
           harness: savedLaunchSpec.effective.harness,
+          ...(savedLaunchSpec.effective.plan ? { plan: savedLaunchSpec.effective.plan } : {}),
           members: [spec],
           __savedLaunchCarry: savedLaunchSpec.effective.member.carry,
           __respawnOwnerId: replacementOwner,
