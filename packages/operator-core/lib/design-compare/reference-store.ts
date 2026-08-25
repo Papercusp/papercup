@@ -262,7 +262,28 @@ export interface ReferenceScope {
   readonly referenceId: string;
 }
 
+/** A feature-wide scope: every reference belonging to one accepted spec/feature. */
+export interface FeatureScope {
+  readonly harnessSlug: string;
+  readonly featureId: string;
+}
+
 export interface ReferenceStorePort {
+  /**
+   * Every reference id ever ratified under one feature, ascending.
+   *
+   * Exists for the completion gate (P-007), and the reason it is DISCOVERY
+   * rather than an argument is the whole security property: a gate that asks
+   * the caller which references to check is bypassed by naming none. Under
+   * D-019 a feature's viewports and states are separate references, so this is
+   * also how the gate sees a feature's full obligation rather than one slice.
+   *
+   * Returns ids that have ever been ratified, including retracted and
+   * superseded ones — applicability is decided per reference by the gate, not
+   * filtered away here, so "ratified then retracted" stays distinguishable from
+   * "never ratified".
+   */
+  listFeatureReferenceIds(scope: FeatureScope): Promise<readonly string[]>;
   /** Every revision of one reference, ascending. Empty when never ratified. */
   listRevisions(scope: ReferenceScope): Promise<readonly StoredReferenceRow[]>;
   /**
@@ -542,6 +563,15 @@ export function createInMemoryReferenceStore(): ReferenceStorePort & {
     rows,
     evidence,
     evidenceRows,
+    async listFeatureReferenceIds(scope) {
+      const ids = new Set<string>();
+      for (const r of rows.values()) {
+        if (r.harnessSlug === scope.harnessSlug && r.featureId === scope.featureId) {
+          ids.add(r.reference.identity.referenceId);
+        }
+      }
+      return [...ids].sort();
+    },
     async listRevisions(scope) {
       return [...rows.values()]
         .filter((r) => inScope(r, scope))
