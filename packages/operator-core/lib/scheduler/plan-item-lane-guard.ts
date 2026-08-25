@@ -18,9 +18,10 @@
  * `plan-workitem-promotion-run.ts` path. The path that ACTUALLY promotes plan
  * items in production — `promote.ts` / `POST /features/import`, the tool behind
  * every real `plans:start` / feature-import call — writes a DIFFERENT, DB-column
- * linkage instead: `source_plan_slug` + `source_plan_item_ids` on
- * `harness_features_consolidated`, with NO `payload.plan_item` stamp. Relying on
- * the payload back-pointer alone therefore left every REAL plan-promoted feature
+ * linkage instead: `source_plan_slug` + `source_plan_item_ids` on the
+ * family-specific work-item views (`harness_features_consolidated` for features
+ * and `engineer_issues` for issues), with NO `payload.plan_item` stamp. Relying
+ * on the payload back-pointer alone therefore left every REAL plan-promoted item
  * invisible to this guard — confirmed by the live incidents this guard's own
  * regression tests reproduce (EI-9107/EI-9108, P-401/P-308 — WI-3503/WI-3502),
  * which in production carried the DB-column linkage, not a payload stamp; two
@@ -294,11 +295,13 @@ function extractPlanItemStampFromPayload(payload: unknown): PlanItemStamp | null
 
 /**
  * EI-13738: resolve via the `source_plan_slug` / `source_plan_item_ids` columns
- * on `harness_features_consolidated` — the linkage the LIVE promotion path
- * (promote.ts / POST /features/import) actually writes. Feature-family only;
- * issue-family rows (engineer_issues) carry no such columns. A missing/partial
- * column pair (no source_plan_slug, or an empty source_plan_item_ids) resolves
- * to null — unplanned/standalone work, not an error.
+ * on the family-specific work-item view — the linkage the LIVE promotion path
+ * (promote.ts / POST /features/import) actually writes. Feature-family rows are
+ * read from `harness_features_consolidated`; issue-family rows are read from
+ * `engineer_issues`, whose `base_harness_slug` column preserves the physical
+ * harness filter. A missing/partial column pair (no source_plan_slug, or an
+ * empty source_plan_item_ids) resolves to null — unplanned/standalone work, not
+ * an error.
  */
 async function resolvePlanItemStampFromColumns(
   workItem: Partial<Pick<WorkItem, 'id' | 'harness' | 'family'>>,
@@ -307,19 +310,30 @@ async function resolvePlanItemStampFromColumns(
   // every existing test in this file predating EI-13738 — construct a bare
   // `{ payload, harness }` object with no id/family; those legitimately have
   // no DB row to look up, so bail rather than query with an undefined id).
-  if (workItem.family !== 'feature' || !workItem.id) return null;
-  const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
-    import('@papercusp/db-org'),
-    import('../workspace-registry'),
-  ]);
+  if ((workItem.family !== 'feature' && workItem.family !== 'issue') || !workItem.id) return null;
+  const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  const rows = await sql<Array<{ source_plan_slug: string | null; source_plan_item_ids: string[] | null }>>`
-    SELECT source_plan_slug, source_plan_item_ids
-      FROM harness_shared.harness_features_consolidated
-     WHERE feature_id = ${workItem.id}
-       AND workspace_id = ${activeWorkspaceId()}
-       AND ${workItem.harness ? sql`harness_slug = ${workItem.harness}` : sql`TRUE`}
-     LIMIT 1`;
+  const rows = workItem.family === 'issue'
+    ? await (async () => {
+        const { issuesScopeWorkspace } = await import('../issues-engineer');
+        return sql<Array<{ source_plan_slug: string | null; source_plan_item_ids: string[] | null }>>`
+          SELECT source_plan_slug, source_plan_item_ids
+            FROM harness_shared.engineer_issues
+           WHERE issue_id = ${workItem.id}
+             AND workspace_id = ${issuesScopeWorkspace()}
+             AND ${workItem.harness ? sql`base_harness_slug = ${workItem.harness}` : sql`TRUE`}
+           LIMIT 1`;
+      })()
+    : await (async () => {
+        const { activeWorkspaceId } = await import('../workspace-registry');
+        return sql<Array<{ source_plan_slug: string | null; source_plan_item_ids: string[] | null }>>`
+          SELECT source_plan_slug, source_plan_item_ids
+            FROM harness_shared.harness_features_consolidated
+           WHERE feature_id = ${workItem.id}
+             AND workspace_id = ${activeWorkspaceId()}
+             AND ${workItem.harness ? sql`harness_slug = ${workItem.harness}` : sql`TRUE`}
+           LIMIT 1`;
+      })();
   const row = rows[0];
   if (!row?.source_plan_slug || !row.source_plan_item_ids || row.source_plan_item_ids.length === 0) return null;
   return { plan_slug: row.source_plan_slug, item_ids: row.source_plan_item_ids };

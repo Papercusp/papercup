@@ -48,6 +48,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: fakeSql }),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../issues-engineer', () => ({ issuesScopeWorkspace: () => 'ws-issue-test' }));
 
 import { planItemLaneBlockReason, planItemNeedsHumanContradiction } from './plan-item-lane-guard';
 
@@ -339,12 +340,13 @@ describe('planItemLaneBlockReason', () => {
   });
 
   // EI-13738: the DB-column linkage half. The LIVE promotion path (promote.ts /
-  // POST /features/import) writes source_plan_slug/source_plan_item_ids on
-  // harness_features_consolidated with NO payload.plan_item stamp — so a work-item
-  // exactly like the real WI-3503/WI-3502 incidents (P-401/P-308, no payload back-
-  // pointer) must still resolve via the DB columns.
+  // POST /features/import) writes source_plan_slug/source_plan_item_ids on the
+  // family-specific work-item view with NO payload.plan_item stamp — so a
+  // work-item exactly like the real WI-3503/WI-3502 incidents (P-401/P-308, no
+  // payload back-pointer) must still resolve via the DB columns.
   describe('DB-column linkage (source_plan_slug/source_plan_item_ids, EI-13738)', () => {
-    it('does not query the DB for an issue-family item (no such columns exist)', async () => {
+    it('returns null for an issue-family item with no source_plan_slug', async () => {
+      fakeSourcePlanRow = { source_plan_slug: null, source_plan_item_ids: null };
       const got = await planItemLaneBlockReason({
         payload: {},
         harness: 'papercusp',
@@ -352,7 +354,8 @@ describe('planItemLaneBlockReason', () => {
         family: 'issue',
       });
       expect(got).toBeNull();
-      expect(fakeSql).not.toHaveBeenCalled();
+      expect(fakeSql).toHaveBeenCalled();
+      expect(getPlanRowMock).not.toHaveBeenCalled();
     });
 
     it('returns null when the feature carries no source_plan_slug (unplanned/standalone work)', async () => {
@@ -392,6 +395,27 @@ describe('planItemLaneBlockReason', () => {
         'p2p-git-live-activation-2026-07-09',
         expect.objectContaining({ harnessSlug: 'papercusp' }),
       );
+    });
+
+    it('reports blocked for issue-family linkage from engineer_issues (EI-21412238917469513)', async () => {
+      fakeSourcePlanRow = {
+        source_plan_slug: 'handoff-release-plan',
+        source_plan_item_ids: ['P-001'],
+      };
+      getPlanRowMock.mockResolvedValue({
+        items: [planItem({ id: 'P-001', storedStatus: 'blocked' })],
+      });
+      const got = await planItemLaneBlockReason({
+        payload: {},
+        harness: 'papercup',
+        id: 'EI-21412238917469513',
+        family: 'issue',
+      });
+      expect(got).not.toBeNull();
+      expect(got?.effectiveStatus).toBe('blocked');
+      expect(got?.planSlug).toBe('handoff-release-plan');
+      expect(got?.itemId).toBe('P-001');
+      expect(fakeSql).toHaveBeenCalled();
     });
 
     it('prefers the payload back-pointer over the DB columns when both are present (cheap path first, no I/O)', async () => {
