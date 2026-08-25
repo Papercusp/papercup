@@ -13,6 +13,7 @@ import {
   annotateFleetsWithCounts,
   isBeeRole,
   isLaunchLiveSessionState,
+  occupiesLaunchMemberSeat,
   livePsuFleetMemberIds,
   splitFleetRosterCounts,
   type FederatedSessionFoldRow,
@@ -457,5 +458,22 @@ describe('isBeeRole / splitFleetRosterCounts (WI-1764 #4 member-vs-bee split)', 
     expect(isLaunchLiveSessionState('ended')).toBe(false);
     expect(isLaunchLiveSessionState('suspect')).toBe(false);
     expect(isLaunchLiveSessionState(null)).toBe(false);
+  });
+
+  // EI-21428116455038454: a non-caller LEADER (leader:'spawn' / delegator top-up)
+  // occupied a member seat in the launch deficit, so a drained 1-executor fleet
+  // could never be topped back up with count:1 (relaunchSuppressed forever). The
+  // call-site `id !== ownerId` filter only removes the CALLER; the role filter is
+  // what removes every non-caller supervisor.
+  it('a leader or delegator never occupies a launch member seat', () => {
+    expect(occupiesLaunchMemberSeat('leader')).toBe(false);
+    expect(occupiesLaunchMemberSeat('delegator')).toBe(false);
+    expect(occupiesLaunchMemberSeat('member')).toBe(true);
+  });
+
+  it('an unknown/absent fleet role still counts (fail toward suppression, never extra terminals)', () => {
+    expect(occupiesLaunchMemberSeat(null)).toBe(true);
+    expect(occupiesLaunchMemberSeat(undefined)).toBe(true);
+    expect(occupiesLaunchMemberSeat('')).toBe(true);
   });
 });
