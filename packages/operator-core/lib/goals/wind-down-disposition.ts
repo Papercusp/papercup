@@ -293,7 +293,11 @@ export interface GoalAcceptanceCard {
   rubricResolved: boolean;
   missingKeys: string[];
   synthesized?: boolean;
-  vetting?: { consultId?: string | null; rubricRevision?: number | null } | null;
+  vetting?: {
+    consultId?: string | null;
+    workItemId?: string | null;
+    rubricRevision?: number | null;
+  } | null;
 }
 
 export interface GoalAcceptanceGateDeps {
