@@ -299,3 +299,143 @@ describe('evidence bound to a superseded revision', () => {
     expect(await store.listEvidence(scope)).toEqual([]);
   });
 });
+
+/**
+ * P-006 — the evidence WRITER, against the real schema.
+ *
+ * `listEvidence` existed before any writer did, and its filter
+ * (`payload->'reference'->>'referenceId'`) encoded an assumption about a shape
+ * nothing produced yet. A writer that stored a differently-shaped payload would
+ * have left that filter matching nothing — and "no evidence for this reference"
+ * is indistinguishable from "this reference has never been compared". These
+ * tests exist because the two halves can only be checked against each other by
+ * actually round-tripping through Postgres.
+ */
+describe('storing comparison evidence', () => {
+  function result(
+    scope: ReferenceScope,
+    revision: number,
+    overrides: Record<string, unknown> = {},
+  ): import('./contract').CompareResult {
+    return {
+      schemaVersion: 1,
+      verdict: 'pass',
+      reference: {
+        referenceId: scope.referenceId,
+        revision,
+        referenceClass: 'figma-export',
+        contentSha256: 'a'.repeat(64),
+      },
+      target: {
+        targetId: 'story--default',
+        targetKind: 'storybook-story',
+        implementationRevision: 'impl-1',
+      },
+      environment: ENVIRONMENT,
+      engine: { engine: 'lost-pixel/pixelmatch', engineVersion: '3.22.0' },
+      policy: {
+        policyVersion: 'p-1',
+        referenceClass: 'figma-export',
+        eligibility: 'gateable',
+        maxDiffRatio: 0.01,
+        derivedFrom: 'calibration-1',
+      },
+      counts: { pixelDifference: 3, pixelsTotal: 1_000_000 },
+      diffRatio: 0.000003,
+      capturedAt: '2026-08-25T02:00:00.000Z',
+      ...overrides,
+    } as import('./contract').CompareResult;
+  }
+
+  it('round-trips a whole result, and the staleness projection sees the same row', async () => {
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+
+    await store.insertEvidence({
+      artifactId: 'ev-roundtrip',
+      result: result(scope, 1),
+      featureId: scope.featureId,
+      harnessSlug: scope.harnessSlug,
+    });
+
+    const full = await store.listEvidenceResults(scope);
+    expect(full).toHaveLength(1);
+    expect(full[0]!.result).toEqual(result(scope, 1));
+    expect(full[0]!.harnessSlug).toBe(scope.harnessSlug);
+
+    // The cheap projection and the full read must agree about WHICH evidence
+    // exists. They are different queries over the same rows, so a shape change
+    // that broke one while leaving the other working is precisely the drift
+    // this asserts against.
+    const refs = await store.listEvidence(scope);
+    expect(refs.map((r) => r.artifactId)).toEqual(['ev-roundtrip']);
+    expect(refs[0]!.referenceRevision).toBe(1);
+    expect(staleEvidence(1, refs)).toEqual([]);
+    expect(staleEvidence(2, refs).map((r) => r.artifactId)).toEqual(['ev-roundtrip']);
+  });
+
+  it('replaces a re-run of the same comparison instead of adding a rival row', async () => {
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+
+    const row = {
+      artifactId: 'ev-upsert',
+      featureId: scope.featureId,
+      harnessSlug: scope.harnessSlug,
+    };
+    await store.insertEvidence({ ...row, result: result(scope, 1) });
+    await store.insertEvidence({
+      ...row,
+      result: result(scope, 1, { verdict: 'fail', diffRatio: 0.4 }),
+    });
+
+    // The insert path for a REFERENCE refuses a duplicate id; this one must
+    // not, or a second comparison run would fail instead of superseding.
+    const full = await store.listEvidenceResults(scope);
+    expect(full).toHaveLength(1);
+    expect(full[0]!.result.verdict).toBe('fail');
+  });
+
+  it('projects queryable metadata that agrees with the payload it describes', async () => {
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+    await store.insertEvidence({
+      artifactId: 'ev-meta',
+      result: result(scope, 1, { verdict: 'fail' }),
+      featureId: scope.featureId,
+      harnessSlug: scope.harnessSlug,
+    });
+
+    const [meta] = await sql<{ metadata: Record<string, unknown> }>`
+      SELECT metadata FROM harness_shared.harness_design_artifacts
+       WHERE harness_slug = ${scope.harnessSlug} AND id = 'ev-meta'
+    `;
+    // A metadata filter is what a review surface actually queries on. If it
+    // could disagree with the payload, "show me the failing evidence" would
+    // return a set that does not match the evidence itself.
+    expect(meta!.metadata).toMatchObject({
+      verdict: 'fail',
+      referenceId: scope.referenceId,
+      revision: 1,
+      policyVersion: 'p-1',
+      engineVersion: '3.22.0',
+    });
+  });
+
+  it('does not return another reference\'s evidence from the same feature', async () => {
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+    await store.insertEvidence({
+      artifactId: 'ev-foreign',
+      result: result({ ...scope, referenceId: 'a-different-reference' }, 1),
+      featureId: scope.featureId,
+      harnessSlug: scope.harnessSlug,
+    });
+
+    expect(await store.listEvidenceResults(scope)).toEqual([]);
+  });
+});
