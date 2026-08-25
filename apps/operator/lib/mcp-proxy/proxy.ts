@@ -215,6 +215,13 @@ export interface McpProxyOptions {
    */
   watchdogAgent?: http.Agent;
   /**
+   * Injectable continuation agent for checkpoint/compaction writes. These calls must not queue
+   * behind ordinary reserved-control-plane traffic: they persist the state needed to recover
+   * from the very overload that can fill the ordinary pool. Caller owns an injected agent's
+   * lifecycle.
+   */
+  criticalContinuationAgent?: http.Agent;
+  /**
    * EI-19305299022434394 — the absolute ceiling (ms) on how long a NON-idempotent forward
    * (a real tools/call: 'keyed' or 'opaque') may hold its upstream socket waiting for response
    * headers, distinct from `handshakeTimeoutMs` (which bounds only the write-free control-plane
@@ -874,6 +881,17 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'work_items:release',
 ].map(normalizeMcpName));
 
+// Continuation writes are a narrower, higher-priority slice of the reserved plane. Keep this
+// separate from RESERVED_CONTROL_PLANE_TOOLS: the ordinary reserved pool is allowed to queue
+// behind a slow upstream, while these writes are the durable boundary that lets a session recover
+// from that exact condition.
+const CRITICAL_CONTINUATION_TOOLS = new Set([
+  'loop:checkpoint',
+  'session:request-compaction',
+  'work_items:checkpoint',
+  'work_items:complete',
+].map(normalizeMcpName));
+
 // EI-21266423740643882 — the watchdog's session-plane probe is a plain JSON-RPC
 // `tools/list`, not a tools/call named by RESERVED_CONTROL_PLANE_TOOLS. The admission reserve
 // is useless to the probe that diagnoses a saturated proxy unless the MCP handshake itself is
@@ -931,6 +949,32 @@ export function isReservedControlPlanePath(requestPath: unknown): boolean {
   if (typeof requestPath !== 'string') return false;
   const path = requestPath.split('?')[0]?.replace(/\/+$/, '') || '/';
   return RESERVED_CONTROL_PLANE_PATHS.has(path);
+}
+
+/**
+ * Whether a complete JSON-RPC batch contains only continuation-boundary writes. A mixed batch
+ * stays on the ordinary route so an unrelated call cannot inherit the critical socket.
+ * `tools:invoke` is recognized because some clients reach deferred tools through that wrapper.
+ */
+export function isCriticalContinuationCall(rawBody: Buffer): boolean {
+  try {
+    const parsed = JSON.parse(rawBody.toString('utf8')) as unknown;
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    return messages.length > 0 && messages.every((message) => {
+      if (!message || typeof message !== 'object') return false;
+      const call = message as { method?: unknown; params?: { name?: unknown; arguments?: unknown } };
+      if (call.method !== 'tools/call' || typeof call.params?.name !== 'string') return false;
+      const calledTool = normalizeMcpName(call.params.name);
+      if (CRITICAL_CONTINUATION_TOOLS.has(calledTool)) return true;
+      if (calledTool !== TOOLS_INVOKE_NAME) return false;
+      const invokeArgs = call.params.arguments;
+      if (!invokeArgs || typeof invokeArgs !== 'object' || Array.isArray(invokeArgs)) return false;
+      const target = (invokeArgs as { name?: unknown }).name;
+      return typeof target === 'string' && CRITICAL_CONTINUATION_TOOLS.has(normalizeMcpName(target));
+    });
+  } catch {
+    return false;
+  }
 }
 
 /** Fleet bootstrap, direct coordination delivery, continuation checkpoints, scheduler claims,
@@ -1024,6 +1068,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     keepAlive: false,
     maxSockets: 1,
   });
+  const ownsCriticalContinuationAgent =
+    opts.criticalContinuationAgent === undefined;
+  // A single independent socket is intentional: continuation writes are infrequent, and
+  // isolation from the ordinary reserved pool matters more than parallelism at this boundary.
+  const criticalContinuationAgent =
+    opts.criticalContinuationAgent ??
+    new http.Agent({
+      keepAlive: false,
+      maxSockets: 1,
+    });
   const maxHandshakeInFlight = opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
   const configuredHandshakeQueue = opts.maxHandshakeQueue ?? DEFAULT_MAX_HANDSHAKE_QUEUE;
   const maxHandshakeQueue = Number.isFinite(configuredHandshakeQueue)
@@ -1259,6 +1313,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
         const reservedControlPlane = isReservedControlPlaneCall(rawBody, req.url);
+        const criticalContinuation = isCriticalContinuationCall(rawBody);
         const sessionHandshake = isMcpSessionHandshakeCall(rawBody);
         const watchdogSessionProbe = sessionHandshake && isMcpProxyWatchdogProbePath(req.url);
         const admissionCeiling = reservedControlPlane
@@ -1404,16 +1459,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             try {
               outcome = await forwardOnce(
                 opts,
-                req.method ?? 'GET',
-                req.url ?? '/',
+                req.method ?? "GET",
+                req.url ?? "/",
                 fwd.headers,
                 fwd.body,
                 watchdogSessionProbe
                   ? watchdogAgent
-                  : reservedControlPlane && controlPlaneReserve > 0
-                    ? controlPlaneAgent
-                    : upstreamAgent,
-                fwd.klass === 'idempotent'
+                  : criticalContinuation
+                    ? criticalContinuationAgent
+                    : reservedControlPlane && controlPlaneReserve > 0
+                      ? controlPlaneAgent
+                      : upstreamAgent,
+                fwd.klass === "idempotent"
                   ? (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS)
                   : maxHoldMs > 0
                     ? maxHoldMs
@@ -1608,6 +1665,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     stallTimers.clear();
     if (ownsControlPlaneAgent) controlPlaneAgent.destroy();
     if (ownsWatchdogAgent) watchdogAgent.destroy();
+    if (ownsCriticalContinuationAgent) criticalContinuationAgent.destroy();
   });
   return server;
 }

@@ -30,6 +30,7 @@ import {
   DEFAULT_MAX_HANDSHAKE_QUEUE,
   isMcpSessionHandshakeCall,
   isMcpProxyWatchdogProbePath,
+  isCriticalContinuationCall,
   isReservedControlPlaneCall,
   isReservedControlPlanePath,
   shouldSkipDefaultFailureLog,
@@ -37,7 +38,7 @@ import {
   injectCurrentSuperuserBearer,
   stripClientConnectionHeader,
   type McpProxyTarget,
-} from './proxy';
+} from "./proxy";
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
 import { DEFAULT_KEEPALIVE_TIMEOUT_MS } from '../../bin/host-request-deadline';
 
@@ -1325,6 +1326,54 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isMcpProxyWatchdogProbePath(undefined)).toBe(false);
   });
 
+  it("recognizes only complete continuation-boundary batches for the critical socket", () => {
+    const call = (name: string) =>
+      Buffer.from(JSON.stringify({ method: "tools/call", params: { name } }));
+    expect(isCriticalContinuationCall(call("loop:checkpoint"))).toBe(true);
+    expect(isCriticalContinuationCall(call("session:request-compaction"))).toBe(
+      true,
+    );
+    expect(isCriticalContinuationCall(call("work_items:checkpoint"))).toBe(
+      true,
+    );
+    expect(isCriticalContinuationCall(call("work_items:complete"))).toBe(true);
+    expect(
+      isCriticalContinuationCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: { name: "loop:checkpoint", args: {} },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isCriticalContinuationCall(
+        Buffer.from(
+          JSON.stringify([
+            { method: "tools/call", params: { name: "loop:checkpoint" } },
+            { method: "tools/call", params: { name: "work_items:complete" } },
+          ]),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isCriticalContinuationCall(
+        Buffer.from(
+          JSON.stringify([
+            { method: "tools/call", params: { name: "loop:checkpoint" } },
+            { method: "tools/call", params: { name: "coord:orient" } },
+          ]),
+        ),
+      ),
+    ).toBe(false);
+    expect(isCriticalContinuationCall(call("work_items:get"))).toBe(false);
+    expect(isCriticalContinuationCall(Buffer.from("{bad json"))).toBe(false);
+  });
+
   it('recognizes psu launch/resume REST preflight paths and leaves the repeating heartbeat unreserved', () => {
     const ordinaryBody = Buffer.from(JSON.stringify({ ownerId: 'su-test' }));
     expect(isReservedControlPlanePath('/api/adv/sessions/resumable')).toBe(true);
@@ -1703,6 +1752,95 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     releaseOrdinary();
     expect((await ordinary).status).toBe(200);
     watchdogAgent.destroy();
+    controlPlaneAgent.destroy();
+  });
+
+  it("EI-21329733885767129: critical continuation writes bypass a saturated reserved socket pool", async () => {
+    let releaseOrdinary: () => void = () => {};
+    const ordinaryGate = new Promise<void>((resolve) => {
+      releaseOrdinary = resolve;
+    });
+    let ordinaryStarted: () => void = () => {};
+    const ordinaryStartedGate = new Promise<void>((resolve) => {
+      ordinaryStarted = resolve;
+    });
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client = new URL(
+          req.url ?? "/",
+          "http://127.0.0.1",
+        ).searchParams.get("client");
+        if (client === "critical-continuation") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end('{"result":{"critical":true}}');
+          return;
+        }
+        ordinaryStarted();
+        void ordinaryGate.then(() => {
+          if (res.destroyed) return;
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end('{"result":{"ordinary":true}}');
+        });
+      }),
+    );
+    await listen(upstream);
+
+    const controlPlaneAgent = new http.Agent({
+      keepAlive: false,
+      maxSockets: 1,
+    });
+    const criticalContinuationAgent = new http.Agent({
+      keepAlive: false,
+      maxSockets: 1,
+    });
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        retryBackoffMs: 10,
+        handshakeTimeoutMs: 100,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        controlPlaneAgent,
+        criticalContinuationAgent,
+        log: () => {},
+      }),
+    );
+    await listen(proxy);
+
+    const ordinary = request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "coord:orient", arguments: {} },
+      }),
+      "/api/mcp?client=ordinary-control-plane",
+    );
+    await ordinaryStartedGate;
+
+    const critical = request(
+      port(proxy),
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "loop:checkpoint", arguments: {} },
+      }),
+      "/api/mcp?client=critical-continuation",
+    );
+    const criticalBeforeOrdinaryRelease = await Promise.race([
+      critical,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+    ]);
+
+    expect(criticalBeforeOrdinaryRelease?.status).toBe(200);
+    releaseOrdinary();
+    expect((await ordinary).status).toBe(200);
+    criticalContinuationAgent.destroy();
     controlPlaneAgent.destroy();
   });
 
