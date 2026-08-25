@@ -1498,6 +1498,91 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(ordinaryResults.every((result) => result.status === 200)).toBe(true);
   });
 
+  it('EI-21391963810159383: a fresh-proxy reconnect herd is class-bounded and leaves the watchdog a diagnostic socket', async () => {
+    const reconnects = 60;
+    const handshakeLimit = 3;
+    let releaseSilentUpstream: () => void = () => {};
+    const silentUpstreamGate = new Promise<void>((resolve) => {
+      releaseSilentUpstream = resolve;
+    });
+    let ordinaryHits = 0;
+    let ordinaryActive = 0;
+    let maxOrdinaryActive = 0;
+    let ordinaryHitsAtWatchdog = -1;
+
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('client');
+      if (client === 'mcp-proxy-watchdog') {
+        ordinaryHitsAtWatchdog = ordinaryHits;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":{"tools":[{"name":"coord:orient"}]}}');
+        return;
+      }
+
+      ordinaryHits++;
+      ordinaryActive++;
+      maxOrdinaryActive = Math.max(maxOrdinaryActive, ordinaryActive);
+      res.once('close', () => {
+        ordinaryActive--;
+      });
+      void silentUpstreamGate.then(() => {
+        if (res.destroyed) return;
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"result":{"tools":[{"name":"coord:orient"}]}}');
+      });
+    }));
+    await listen(upstream);
+
+    const controlPlaneAgent = new http.Agent({ keepAlive: false, maxSockets: handshakeLimit + 1 });
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: '127.0.0.1',
+      targetPort: port(upstream),
+      retryWindowMs: 2_000,
+      retryBackoffMs: 10,
+      handshakeTimeoutMs: 250,
+      maxInFlight: 100,
+      controlPlaneReserve: handshakeLimit + 1,
+      controlPlaneAgent,
+      // Red-first: current code ignores this injected class cap, so all 60 reconnects
+      // enter the shared control-plane queue and the assertions below fail.
+      maxHandshakeInFlight: handshakeLimit,
+      log: () => {},
+    } as Parameters<typeof createMcpProxy>[0] & { maxHandshakeInFlight: number }));
+    await listen(proxy);
+
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    const herd = Array.from({ length: reconnects }, (_, i) =>
+      request(port(proxy), body, `/api/mcp?client=reconnect-${i}`),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    // The proxy's own route stays responsive while the upstream-facing class is saturated.
+    expect((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).status).toBe(200);
+
+    // The watchdog's specifically named probe bypasses only the class cap and uses the one
+    // socket deliberately left outside it. It must reach upstream before a fourth reconnect.
+    const watchdog = await request(
+      port(proxy),
+      body,
+      '/api/mcp?superuser=1&client=mcp-proxy-watchdog&tools=coord%3Aorient',
+    );
+    expect(watchdog.status).toBe(200);
+    expect(ordinaryHitsAtWatchdog).toBe(handshakeLimit);
+
+    releaseSilentUpstream();
+    const results = await Promise.all(herd);
+    controlPlaneAgent.destroy();
+
+    const shed = results.filter((result) => result.status === 429);
+    const admitted = results.filter((result) => result.status === 200);
+    expect(shed).toHaveLength(reconnects - handshakeLimit);
+    expect(admitted).toHaveLength(handshakeLimit);
+    expect(shed.every((result) => JSON.parse(result.body).error === 'mcp_proxy_handshake_overloaded')).toBe(true);
+    expect(maxOrdinaryActive).toBeLessThanOrEqual(handshakeLimit);
+    expect(ordinaryHits).toBeLessThanOrEqual(handshakeLimit * (MAX_HANDSHAKE_TIMEOUT_RETRIES + 1));
+  }, 10_000);
+
   it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {
     expect(shouldShedForInFlight(4, 5)).toBe(false);
     expect(shouldShedForInFlight(5, 5)).toBe(true);
