@@ -1003,6 +1003,8 @@ export async function createOneWorkItem(
       parent: args.parent,
       topics: args.topics,
       payload: payloadForCreate,
+      sourcePlanSlug: args.targetPlanItem?.slug,
+      sourcePlanItemIds: args.targetPlanItem?.itemId ? [args.targetPlanItem.itemId] : undefined,
       createdBy: ctx.ownerId,
       urgent: args.urgent,
       // B-LOOP-4 (loop-routines P-007 / D-008): atomic create+claim. `assign_to`

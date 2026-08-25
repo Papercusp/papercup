@@ -90,6 +90,8 @@ describe('createOneWorkItem × plan-item finish stamp (EI-19390496242545842)', (
       item_id: 'P-413',
       harness_slug: 'papercusp',
     });
+    expect((createWorkItemMock.mock.calls[0][0] as { sourcePlanSlug?: string }).sourcePlanSlug).toBe('some-plan');
+    expect((createWorkItemMock.mock.calls[0][0] as { sourcePlanItemIds?: string[] }).sourcePlanItemIds).toEqual(['P-413']);
     expect(call.admission).toBe('auto');
     expect(call.admittedBy).toBe('bypass:plan-item');
     // The coverage edge is STILL written too — this fix is additive, not a replacement.
