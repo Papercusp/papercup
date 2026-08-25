@@ -38,6 +38,7 @@ function mkDeps(
     | 'listBlockingAwaits'
     | 'rescheduleSuppressedWake'
     | 'ensureWakeArmed'
+    | 'armWakeForColdRespawn'
   >
 > {
   return {
@@ -60,6 +61,14 @@ function mkDeps(
     listBlockingAwaits: vi.fn(async () => []) as never,
     rescheduleSuppressedWake: vi.fn(async () => true) as never,
     ensureWakeArmed: vi.fn(async () => false) as never,
+    // EI-21417550055038906: mirrors the production default (armInboxWake succeeds);
+    // hermetic so a cold-path unit test can never reach the real PG-backed arm.
+    armWakeForColdRespawn: vi.fn(async () => ({
+      awaitId: 1,
+      eventKey: 'coord:inbox-wake:su-pinned',
+      handleNote: 'resumable',
+      minSleepSec: 60,
+    })) as never,
     ...over,
   };
 }
@@ -577,6 +586,96 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       const deps = mkDeps({ ensureWakeArmed: ensureWakeArmed as never }); // default wake ⇒ woken:1
       await fireLoopWake(baseInput, deps);
       expect(ensureWakeArmed).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('EI-21417550055038906: a COLD fire with no watcher takes the resume channel, not the void', () => {
+    const coldInput = { ...baseInput, payloadTemplate: { carry: 'cold' } as Record<string, unknown> };
+
+    it('cold + no live session (ensure refuses) → arms the await DIRECTLY and the retried wake counts as fired', async () => {
+      // The measured black-hole: each one-turn cold session dies, SessionEnd cancels
+      // the standing await, the live-session-gated self-heal refuses (no live adv
+      // row), and every fire emitted into the void (0/17 delivered). The direct arm
+      // gives the emit a matching await whose executor ladder resumes the exited
+      // session — the external coord:send wake:'required' babysitting, automated.
+      const wake = vi
+        .fn()
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 1, staged: 0 });
+      const ensureWakeArmed = vi.fn(async () => false);
+      const armWakeForColdRespawn = vi.fn(async () => ({
+        awaitId: 42,
+        eventKey: 'coord:inbox-wake:su-pinned',
+        handleNote: 'resumable',
+        minSleepSec: 60,
+      }));
+      const deps = mkDeps({
+        wake: wake as never,
+        ensureWakeArmed: ensureWakeArmed as never,
+        armWakeForColdRespawn: armWakeForColdRespawn as never,
+      });
+
+      const res = await fireLoopWake(coldInput, deps);
+
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(armWakeForColdRespawn).toHaveBeenCalledTimes(1);
+      expect(armWakeForColdRespawn.mock.calls[0][0]).toMatchObject({ ownerId: 'su-pinned' });
+      expect(wake).toHaveBeenCalledTimes(2); // original miss + the post-arm retry
+      expect(deps.recordFire).not.toHaveBeenCalledWith('papercusp', 'loop-su-pinned', 'no-session-now', 'error');
+    });
+
+    it('a WARM loop never takes the direct-arm fallback (unchanged no-session-now behavior)', async () => {
+      const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
+      const armWakeForColdRespawn = vi.fn(async () => ({
+        awaitId: 1,
+        eventKey: 'k',
+        handleNote: '',
+        minSleepSec: 60,
+      }));
+      const deps = mkDeps({ wake: wake as never, armWakeForColdRespawn: armWakeForColdRespawn as never });
+
+      const res = await fireLoopWake(baseInput, deps); // warm (no carry)
+
+      expect(armWakeForColdRespawn).not.toHaveBeenCalled();
+      expect(wake).toHaveBeenCalledTimes(1);
+      expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
+    });
+
+    it('the direct arm THROWING degrades fail-soft to no-session-now (never breaks the fire)', async () => {
+      const wake = vi.fn(async () => ({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 }));
+      const armWakeForColdRespawn = vi.fn(async () => {
+        throw new Error('pg unreachable');
+      });
+      const deps = mkDeps({ wake: wake as never, armWakeForColdRespawn: armWakeForColdRespawn as never });
+
+      const res = await fireLoopWake(coldInput, deps);
+
+      expect(wake).toHaveBeenCalledTimes(1); // no retry without a successful arm
+      expect(res).toMatchObject({ fired: false, reason: 'no-session-now' });
+    });
+
+    it('when ensureWakeArmed ALREADY healed (live session, lost arm), the cold direct-arm is not consulted', async () => {
+      const wake = vi
+        .fn()
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 0, staged: 0 })
+        .mockResolvedValueOnce({ targets: ['su-pinned'], keys: [], woken: 1, staged: 0 });
+      const ensureWakeArmed = vi.fn(async () => true);
+      const armWakeForColdRespawn = vi.fn(async () => ({
+        awaitId: 1,
+        eventKey: 'k',
+        handleNote: '',
+        minSleepSec: 60,
+      }));
+      const deps = mkDeps({
+        wake: wake as never,
+        ensureWakeArmed: ensureWakeArmed as never,
+        armWakeForColdRespawn: armWakeForColdRespawn as never,
+      });
+
+      const res = await fireLoopWake(coldInput, deps);
+
+      expect(res).toMatchObject({ fired: true });
+      expect(armWakeForColdRespawn).not.toHaveBeenCalled();
     });
   });
 
