@@ -796,6 +796,36 @@ function stableName(prefix: string, hostId: string): string {
   return `${prefix}-${body}-${suffix}`;
 }
 
+/**
+ * The three fields that identify the REAL GCP instance behind a desired spec.
+ *
+ * Extracted from `readSettings` and shared with the workspace-host INITIALIZATION path
+ * (`initialization-operations-resolver.ts`), which has to SSH to the instance this provider
+ * provisions. Those two deriving the instance name independently would be a silent, expensive
+ * bug — initialization would tunnel to a name that does not exist, and only at runtime. One
+ * exported derivation makes that divergence impossible rather than merely unlikely, which is
+ * why `readSettings` below now calls this instead of keeping its own copy.
+ */
+export function resolveGcpWorkspaceHostInstanceIdentity(
+  desired: WorkspaceHostDesiredSpec,
+): { projectId: string; zone: string; instanceName: string } {
+  if (desired.target !== GCP_WORKSPACE_HOST_TARGET)
+    throw new Error(`GCP provider cannot plan target '${desired.target}'`);
+  if (desired.scope.kind !== 'project') throw new Error("GCP workspace hosts require scope.kind 'project'");
+  const provider = desired.provider ?? {};
+  assertWorkspaceHostSecretIsolation(provider, 'gcp.desired.provider');
+  const projectId =
+    optionalString(provider.projectId, 'gcp.desired.provider.projectId') ??
+    requireString(desired.scope.id, 'desired.scope.id');
+  if (projectId !== desired.scope.id) throw new Error('GCP provider projectId must match desired.scope.id');
+  const zone = requireString(desired.zone, 'desired.zone');
+  if (!zone.startsWith(`${desired.region}-`)) throw new Error('GCP desired.zone must belong to desired.region');
+  const instanceName =
+    optionalString(provider.instanceName, 'gcp.desired.provider.instanceName') ??
+    `${stableName('pc', desired.hostId)}-vm`;
+  return { projectId, zone, instanceName };
+}
+
 /** Compute Engine requestId: deterministic, non-zero RFC-4122 UUID. */
 export function gcpWorkspaceHostRequestUuid(idempotencyKey: string): string {
   const hex = createHash('sha256')
@@ -815,13 +845,9 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
   if (!desired.data.encrypted) throw new Error('GCP workspace-host data disks must be encrypted');
   const provider = desired.provider ?? {};
   assertWorkspaceHostSecretIsolation(provider, 'gcp.desired.provider');
-  const projectId =
-    optionalString(provider.projectId, 'gcp.desired.provider.projectId') ??
-    requireString(desired.scope.id, 'desired.scope.id');
-  if (projectId !== desired.scope.id) throw new Error('GCP provider projectId must match desired.scope.id');
+  // Single source of truth, shared with the initialization path — see the helper's comment.
+  const { projectId, zone, instanceName } = resolveGcpWorkspaceHostInstanceIdentity(desired);
   const imageId = assertGcpImmutableImageId(desired.image.id, 'gcp.desired.image.id');
-  const zone = requireString(desired.zone, 'desired.zone');
-  if (!zone.startsWith(`${desired.region}-`)) throw new Error('GCP desired.zone must belong to desired.region');
   const rawNetwork = provider.network;
   if (!rawNetwork || typeof rawNetwork !== 'object' || Array.isArray(rawNetwork)) {
     throw new Error('gcp.desired.provider.network must select managed or existing mode');
@@ -873,7 +899,7 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     serviceAccountScopes: stringArray(provider.serviceAccountScopes, 'gcp.desired.provider.serviceAccountScopes', [
       GCP_CLOUD_PLATFORM_SCOPE,
     ]),
-    instanceName: optionalString(provider.instanceName, 'gcp.desired.provider.instanceName') ?? `${base}-vm`,
+    instanceName,
     dataDiskName: optionalString(provider.dataDiskName, 'gcp.desired.provider.dataDiskName') ?? `${base}-data`,
     dataDeviceName: dataDeviceName(provider.dataDeviceName),
     bootDiskGiB:
