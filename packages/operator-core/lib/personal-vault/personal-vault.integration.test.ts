@@ -68,6 +68,78 @@ beforeEach(async () => {
 });
 
 describe('Personal Vault core', () => {
+  it('reimports Gmail and Facebook archives idempotently and hybrid-searches both sources', async () => {
+    const archive = new AdmZip();
+    archive.addFile('Takeout/Mail/All mail.mbox', Buffer.from(
+      'From sender@example.com Tue Jan 1 00:00:00 2026\n'
+      + 'Message-ID: <archive-mail-1@example.com>\n'
+      + 'Date: Tue, 01 Jan 2026 00:00:00 +0000\n'
+      + 'From: Ada <ada@example.com>\n'
+      + 'To: Owner <owner@example.com>\n'
+      + 'Subject: Archive readiness proof\n\n'
+      + 'The cobalt notebook contains the launch checklist.',
+    ));
+    archive.addFile('facebook/messages/inbox/readiness/message_1.json', Buffer.from(JSON.stringify({
+      participants: [{ name: 'Ada' }, { name: 'Owner' }],
+      messages: [{
+        id: 'facebook-archive-message-1',
+        sender_name: 'Ada',
+        timestamp_ms: 1_787_000_000_000,
+        content: 'The amber folder contains the follow-up notes.',
+      }],
+    })));
+
+    const parsed = parsePersonalArchive('owner-history.zip', archive.toBuffer());
+    expect(parsed).toMatchObject({ sources: ['facebook', 'gmail'], warnings: [] });
+    expect(parsed.documents.map((document) => document.dedupeKey).sort()).toEqual([
+      'facebook:facebook-archive-message-1',
+      'gmail:archive-mail-1@example.com',
+    ]);
+
+    const first = await upsertPersonalDocuments(org.adminSql, WS, userId, parsed.documents);
+    const reimport = await upsertPersonalDocuments(org.adminSql, WS, userId, parsed.documents);
+    expect(reimport.ids).toEqual(first.ids);
+    const rows = await org.adminSql<Array<{ source: string; n: number }>>`
+      SELECT source, count(*)::int AS n
+        FROM harness_shared.personal_documents
+       WHERE workspace_id = ${WS} AND user_id = ${userId}
+       GROUP BY source ORDER BY source`;
+    expect(rows).toEqual([
+      { source: 'facebook', n: 1 },
+      { source: 'gmail', n: 1 },
+    ]);
+
+    const lexical = await searchPersonalDocuments(org.adminSql, WS, userId, {
+      query: 'cobalt notebook', scopes: ['gmail'],
+    });
+    expect(lexical).toHaveLength(1);
+    expect(lexical[0]).toMatchObject({
+      source: 'gmail',
+      externalId: 'archive-mail-1@example.com',
+      lexicalRank: 1,
+    });
+
+    const localEmbedding = new Array(768).fill(0);
+    localEmbedding[0] = 1;
+    await org.adminSql`
+      UPDATE harness_shared.personal_documents
+         SET embedding = ${JSON.stringify(localEmbedding)}::vector,
+             embedding_mode = 'gemma'
+       WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'facebook'`;
+    const semantic = await searchPersonalDocuments(org.adminSql, WS, userId, {
+      query: 'lexically absent query',
+      queryEmbedding: localEmbedding,
+      scopes: ['facebook'],
+    });
+    expect(semantic).toHaveLength(1);
+    expect(semantic[0]).toMatchObject({
+      source: 'facebook',
+      externalId: 'facebook-archive-message-1',
+      lexicalRank: null,
+      vectorRank: 1,
+    });
+  });
+
   it('upserts/dedupes and hybrid-searches with scope, participant, time, and bounded snippets', async () => {
     await upsertPersonalDocuments(org.adminSql, WS, userId, [
       { source: 'gmail', kind: 'message', externalId: 'm1', occurredAt: '2026-08-21T12:00:00Z', participants: ['ada@example.com'], title: 'Launch notes', text: 'The launch checklist includes privacy verification. '.repeat(30), dedupeKey: 'm1' },
