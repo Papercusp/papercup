@@ -278,6 +278,27 @@ export interface ReferenceStorePort {
   ): Promise<void>;
   /** Evidence rows bound to this reference, any revision. */
   listEvidence(scope: ReferenceScope): Promise<readonly StoredEvidenceRef[]>;
+  /**
+   * Write one comparison result, REPLACING any existing row with the same
+   * derived id (see `evidenceArtifactId`). The replacement is the point: an
+   * identical comparison re-run supersedes its own previous answer rather than
+   * adding a second, equally-authoritative one beside it.
+   *
+   * Deliberately NOT the `insert` refusal-on-duplicate that references get.
+   * A reference revision is a claim about what a human approved and a duplicate
+   * is a lost update; a comparison result is a derived measurement and a
+   * duplicate is just the same measurement taken again.
+   */
+  insertEvidence(row: StoredEvidence & { readonly artifactId: string }): Promise<void>;
+  /**
+   * Whole evidence records for this reference, any revision, oldest first.
+   *
+   * Separate from `listEvidence` on purpose: that one is the deliberately-thin
+   * projection staleness needs, and answering "is this evidence current" must
+   * not require decoding every stored `CompareResult`. This one is what a
+   * reader wants, and it is only called when someone actually wants to read.
+   */
+  listEvidenceResults(scope: ReferenceScope): Promise<readonly StoredEvidenceRow[]>;
 }
 
 /** Thrown for a refusal a caller is expected to handle, not a bug. */
@@ -498,10 +519,18 @@ export function staleEvidence(
  */
 export function createInMemoryReferenceStore(): ReferenceStorePort & {
   readonly rows: Map<string, StoredReferenceRow>;
+  /**
+   * The evidence PROJECTION, which a staleness test can push into directly
+   * without constructing a whole `CompareResult`. `insertEvidence` keeps this
+   * in step with `evidenceRows` so the two can never disagree about which
+   * evidence exists.
+   */
   readonly evidence: StoredEvidenceRef[];
+  readonly evidenceRows: Map<string, StoredEvidenceRow>;
 } {
   const rows = new Map<string, StoredReferenceRow>();
   const evidence: StoredEvidenceRef[] = [];
+  const evidenceRows = new Map<string, StoredEvidenceRow>();
   let clock = 0;
 
   const inScope = (row: StoredReferenceRow, scope: ReferenceScope): boolean =>
@@ -512,6 +541,7 @@ export function createInMemoryReferenceStore(): ReferenceStorePort & {
   return {
     rows,
     evidence,
+    evidenceRows,
     async listRevisions(scope) {
       return [...rows.values()]
         .filter((r) => inScope(r, scope))
@@ -543,6 +573,36 @@ export function createInMemoryReferenceStore(): ReferenceStorePort & {
     },
     async listEvidence(scope) {
       return evidence.filter((e) => e.referenceId === scope.referenceId);
+    },
+    async insertEvidence(row) {
+      clock += 1;
+      const existing = evidenceRows.get(row.artifactId);
+      evidenceRows.set(row.artifactId, {
+        ...row,
+        // Preserve the ORIGINAL creation stamp on a replacement. The row's
+        // identity is the comparison, not this particular run of it, and a
+        // re-run that reset the stamp would reorder history for no reason.
+        createdTs: existing?.createdTs ?? clock,
+      });
+      const ref: StoredEvidenceRef = {
+        artifactId: row.artifactId,
+        referenceId: row.result.reference.referenceId,
+        referenceRevision: row.result.reference.revision,
+        capturedAt: row.result.capturedAt,
+      };
+      const at = evidence.findIndex((e) => e.artifactId === row.artifactId);
+      if (at >= 0) evidence[at] = ref;
+      else evidence.push(ref);
+    },
+    async listEvidenceResults(scope) {
+      return [...evidenceRows.values()]
+        .filter(
+          (r) =>
+            r.harnessSlug === scope.harnessSlug &&
+            r.featureId === scope.featureId &&
+            r.result.reference.referenceId === scope.referenceId,
+        )
+        .sort((a, b) => a.createdTs - b.createdTs);
     },
   };
 }

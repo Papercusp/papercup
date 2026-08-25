@@ -25,7 +25,9 @@
 import type {
   ReferenceScope,
   ReferenceStorePort,
+  StoredEvidence,
   StoredEvidenceRef,
+  StoredEvidenceRow,
   StoredReference,
   StoredReferenceRow,
 } from './reference-store';
@@ -33,8 +35,10 @@ import {
   COMPARE_RESULT_ARTIFACT_KIND,
   RATIFIED_REFERENCE_ARTIFACT_KIND,
   ReferenceStoreError,
+  environmentCaseKey,
   projectMetadata,
 } from './reference-store';
+import type { CompareResult } from './contract';
 import type { RatifiedReference } from './ratification';
 
 /**
@@ -64,6 +68,20 @@ interface ArtifactRow {
 interface EvidenceRow {
   id: string;
   payload: Record<string, unknown> | string;
+}
+
+interface EvidenceResultRow {
+  id: string;
+  harness_slug: string;
+  feature_id: string;
+  /**
+   * The `CompareResult` itself, at the payload ROOT — not wrapped. That is the
+   * shape `listEvidence`'s `payload->'reference'->>'referenceId'` filter has
+   * always assumed, and `harness_slug` / `feature_id` are already columns, so a
+   * wrapper would store them twice and put the reader's filter one hop wrong.
+   */
+  payload: CompareResult | string;
+  created_ts: string | number;
 }
 
 function readJson<T>(value: T | string): T {
@@ -201,6 +219,77 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
       `;
       return rows.map(toEvidenceRef);
     },
+
+    async insertEvidence(row: StoredEvidence & { readonly artifactId: string }): Promise<void> {
+      const metadata = projectEvidenceMetadata(row.result);
+      // Upsert, NOT the insert-or-conflict that `insert` uses. The id is derived
+      // from the comparison's inputs (`evidenceArtifactId`), so a collision here
+      // means the same comparison was run again — which supersedes its own
+      // previous answer rather than racing another writer for a slot.
+      //
+      // `created_ts` is deliberately absent from the UPDATE: the row's identity
+      // is the comparison, and a re-run must not reorder it against its peers.
+      await sql`
+        INSERT INTO harness_shared.harness_design_artifacts
+               (id, harness_slug, feature_id, kind, payload, metadata, created_ts)
+        VALUES (${row.artifactId}, ${row.harnessSlug}, ${row.featureId},
+                ${COMPARE_RESULT_ARTIFACT_KIND},
+                ${JSON.stringify(row.result)}::jsonb, ${JSON.stringify(metadata)}::jsonb,
+                ${now()})
+        ON CONFLICT (harness_slug, id) DO UPDATE
+           SET payload  = EXCLUDED.payload,
+               metadata = EXCLUDED.metadata
+      `;
+    },
+
+    async listEvidenceResults(scope: ReferenceScope): Promise<readonly StoredEvidenceRow[]> {
+      const rows = await sql<EvidenceResultRow>`
+        SELECT id, harness_slug, feature_id, payload, created_ts
+          FROM harness_shared.harness_design_artifacts
+         WHERE harness_slug = ${scope.harnessSlug}
+           AND feature_id   = ${scope.featureId}
+           AND kind         = ${COMPARE_RESULT_ARTIFACT_KIND}
+           AND payload->'reference'->>'referenceId' = ${scope.referenceId}
+         ORDER BY created_ts ASC
+      `;
+      return rows.map((r) => ({
+        result: readJson<CompareResult>(r.payload),
+        harnessSlug: r.harness_slug,
+        featureId: r.feature_id,
+        artifactId: r.id,
+        createdTs: Number(r.created_ts),
+      }));
+    },
+  };
+}
+
+/**
+ * The queryable projection for one evidence row.
+ *
+ * Same discipline as `projectMetadata`: every field is DERIVED from the payload
+ * in exactly one place, so a filter on verdict or revision can never disagree
+ * with the result it filtered to. `verdict` and `invalidReason` are projected
+ * because "show me the failing evidence for this feature" is the query a review
+ * surface actually runs, and making it decode every jsonb payload to answer
+ * would be the drift-prone alternative.
+ */
+function projectEvidenceMetadata(result: CompareResult): Record<string, unknown> {
+  return {
+    schemaVersion: result.schemaVersion,
+    referenceId: result.reference.referenceId,
+    revision: result.reference.revision,
+    referenceClass: result.reference.referenceClass,
+    verdict: result.verdict,
+    invalidReason: result.invalidReason ?? null,
+    targetId: result.target.targetId,
+    targetKind: result.target.targetKind,
+    implementationRevision: result.target.implementationRevision,
+    engine: result.engine.engine,
+    engineVersion: result.engine.engineVersion,
+    policyVersion: result.policy.policyVersion,
+    diffRatio: result.diffRatio ?? null,
+    capturedAt: result.capturedAt,
+    environmentCaseKey: environmentCaseKey(result.environment),
   };
 }
 
