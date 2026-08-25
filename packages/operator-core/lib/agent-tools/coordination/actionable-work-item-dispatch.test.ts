@@ -44,7 +44,7 @@ function deps(
 ): ActionableWorkItemDispatchDeps {
   return {
     observe: vi.fn(async (id) => ({
-      workItem: workItem(id),
+      item: workItem(id),
       available: true,
       claimedBy: null,
     })),
@@ -53,7 +53,7 @@ function deps(
     planBlock: vi.fn(async () => null),
     planClaim: vi.fn(async () => null),
     resolveTarget: vi.fn(async ({ targetAgent }) => target(targetAgent)),
-    wake: vi.fn(async (owners) => ({
+    wake: vi.fn(async (owners: readonly string[]) => ({
       targets: [...owners],
       keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
       queued: 1,
@@ -73,7 +73,9 @@ describe('assignActionableWorkItems', () => {
     const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
     const d = deps({
       claim,
-      blockers: vi.fn(async (id) => (id === 'WI-BLOCKED' ? [{ id: 'WI-ROOT' }] : [])),
+      blockers: vi.fn(async (id) =>
+        id === 'WI-BLOCKED' ? [{ ref: 'WI-ROOT', kind: 'feature' }] : [],
+      ),
     });
 
     const result = await assignActionableWorkItems(
@@ -103,7 +105,7 @@ describe('assignActionableWorkItems', () => {
     const d = deps({
       claim,
       observe: vi.fn(async (id) => ({
-        workItem: workItem(id, 'open', 'agent-other'),
+        item: workItem(id, 'open', 'agent-other'),
         available: false,
         claimedBy: 'agent-other',
       })),
@@ -130,7 +132,7 @@ describe('assignAndWakeActionableWorkItems', () => {
     const d = deps({
       wake,
       observe: vi.fn(async (id) => ({
-        workItem: workItem(id),
+        item: workItem(id),
         available: false,
         claimedBy: null,
         planItemBlocked: {
@@ -171,7 +173,7 @@ describe('assignAndWakeActionableWorkItems', () => {
       claim,
       wake,
       observe: vi.fn(async (id) => ({
-        workItem: workItem(id, 'wip', 'agent-email-stable'),
+        item: workItem(id, 'wip', 'agent-email-stable'),
         available: false,
         claimedBy: 'agent-email-stable',
       })),
@@ -195,7 +197,7 @@ describe('assignAndWakeActionableWorkItems', () => {
       resolveTarget: vi.fn(async ({ targetAgent }) =>
         target(targetAgent, { sessionState: 'ended', wakeable: false }),
       ),
-      wake: vi.fn(async (owners) => ({
+      wake: vi.fn(async (owners: readonly string[]) => ({
         targets: [...owners],
         keys: owners.map((owner) => `coord:inbox-wake:${owner}`),
         queued: 0,
@@ -222,5 +224,23 @@ describe('assignAndWakeActionableWorkItems', () => {
       queuePreserved: true,
     });
     expect(result.warning).toMatch(/must be relaunched/i);
+  });
+
+  it('trusts an authoritative queued wake when the best-effort presence read missed the target', async () => {
+    const d = deps({
+      resolveTarget: vi.fn(async ({ targetAgent }) =>
+        target(targetAgent, { present: false, sessionState: null, wakeable: null }),
+      ),
+    });
+
+    const result = await assignAndWakeActionableWorkItems(
+      { workItemIds: ['WI-READY'], targetAgent: 'agent-email-stable' },
+      d,
+    );
+
+    expect(result.assignment.assigned).toEqual(['WI-READY']);
+    expect(result.wake?.queued).toBe(1);
+    expect(result.ok).toBe(true);
+    expect(result.failure).toBeUndefined();
   });
 });

@@ -11,7 +11,9 @@ import {
   isClaimHoldParked,
   observeWorkItem,
   readUnresolvedDepBlockers,
+  type UnresolvedDepBlocker,
   type WorkItem,
+  type WorkItemObservation,
 } from '../../work-items';
 import {
   planItemLaneBlockReason,
@@ -106,20 +108,10 @@ export interface ActionableWorkItemDispatchResult {
   warning?: string;
 }
 
-interface EligibilityRead {
-  workItem: WorkItem | null;
-  available: boolean;
-  claimedBy: string | null;
-  gated?: boolean;
-  claimHoldParked?: boolean;
-  planItemBlocked?: PlanItemLaneBlock;
-  planItemLiveClaimed?: PlanItemLiveClaimBlock;
-}
-
 export interface ActionableWorkItemDispatchDeps {
-  observe: (id: string, opts: { harness?: string }) => Promise<EligibilityRead | null>;
+  observe: (id: string, opts: { harness?: string }) => Promise<WorkItemObservation | null>;
   claim: (id: string, assignee: string, opts: { harness?: string }) => Promise<WorkItem | null>;
-  blockers: (id: string, harness?: string) => Promise<Array<{ id?: string }>>;
+  blockers: (id: string, harness?: string) => Promise<UnresolvedDepBlocker[]>;
   planBlock: (workItem: WorkItem) => Promise<PlanItemLaneBlock | null>;
   planClaim: (workItem: WorkItem) => Promise<PlanItemLiveClaimBlock | null>;
   resolveTarget: (args: {
@@ -144,8 +136,8 @@ function sameAgent(holder: string | null | undefined, target: string): boolean {
   return Boolean(holder) && holder === target;
 }
 
-function blockerIds(rows: Array<{ id?: string }>): string[] {
-  return rows.map((row) => row.id).filter((id): id is string => Boolean(id));
+function blockerIds(rows: UnresolvedDepBlocker[]): string[] {
+  return rows.map((row) => row.ref).filter(Boolean);
 }
 
 async function classifyOne(
@@ -158,7 +150,7 @@ async function classifyOne(
   | { kind: 'retained'; workItemId: string }
   | { kind: 'skip'; skipped: WorkItemDispatchSkip }
 > {
-  let observed: EligibilityRead | null;
+  let observed: WorkItemObservation | null;
   try {
     observed = await deps.observe(workItemId, { ...(harness ? { harness } : {}) });
   } catch (error) {
@@ -171,14 +163,14 @@ async function classifyOne(
       },
     };
   }
-  if (!observed?.workItem) {
+  if (!observed?.item) {
     return {
       kind: 'skip',
       skipped: { workItemId, code: 'not_found', reason: 'work-item was not found' },
     };
   }
 
-  const workItem = observed.workItem;
+  const workItem = observed.item;
   const holder = observed.claimedBy ?? workItem.assignee;
   const retainedByTarget = sameAgent(holder, targetAgent);
   const allowedStates = retainedByTarget ? RETAINED_EXECUTION_STATES : UNASSIGNED_FRONTIER_STATES;
@@ -193,7 +185,7 @@ async function classifyOne(
     };
   }
 
-  let unresolved: Array<{ id?: string }>;
+  let unresolved: UnresolvedDepBlocker[];
   try {
     unresolved = await deps.blockers(workItemId, harness);
   } catch (error) {
@@ -419,14 +411,17 @@ export function classifyRequiredWakeFailure(args: {
       message: `${target} has sessionState=${args.target.sessionState}; assignment is durable but the target must be relaunched`,
     };
   }
-  if (!args.target.present) {
+  if (!args.target.present && queued === 0) {
     return {
       ...base,
       code: 'target_absent',
       message: `${target} has no resolvable session; assignment is durable but no live target accepted the wake`,
     };
   }
-  if (args.wake.staged > 0 || args.target.wakeable === false || args.target.sessionState === 'draining') {
+  if (
+    queued === 0 &&
+    (args.wake.staged > 0 || args.target.wakeable === false || args.target.sessionState === 'draining')
+  ) {
     return {
       ...base,
       code: 'target_unwakeable',
