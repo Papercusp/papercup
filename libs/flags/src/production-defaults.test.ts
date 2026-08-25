@@ -324,6 +324,19 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   "papercusp-improvement-auto-implement",
   "papercusp-lazy-substrate-boot",
   "papercusp-capability-envelope-overrides",
+  // 2026-08-25 (ratified-mockup-implementation-validation-2026-08-24 P-007, su-884f6):
+  // papercusp-design-evidence-gate-enforcing — the ENFORCING half of the design-evidence
+  // completion gate. A `cutover` case, so it does not count toward the parking watermark.
+  // D-006 is the unmet precondition and it is explicit: the contract runs REPORT-ONLY
+  // against committed fixtures and a cohort of real ratified designs first, and the
+  // measured repeatability/noise/runtime (P-008) determines the first versioned policy;
+  // P-009 verifies independently and P-011 owns the flip. Turning it on before that
+  // blocks completions on an uncalibrated threshold — the specific harm D-006 exists to
+  // prevent. This is NOT finished-work-parked-dark: the gate itself ships ENABLED as
+  // papercusp-design-evidence-gate and reports on every terminal completion from day one;
+  // what is withheld is only the refusal. GRADUATES when P-011 completes the rollout.
+  // Count 35 → 36.
+  "papercusp-design-evidence-gate-enforcing",
   // (papercusp-task-manager was added here 2026-07-27 by WI-6499 and REMOVED 2026-08-02
   // by WI-6844 — it graduated to default-ON on an explicit owner directive: "we put it
   // behind a testing flag. Remove that flag, we'll make it part of our standard
@@ -706,7 +719,12 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // papercusp-standing-goal-boot-arm, the owner-armed operator-boot holder
     // respawn for standing goals. case: 'owner-authority', so the parking
     // subset and DARK_FLAGS_HIGH_WATERMARK both stay 14. Count 34 → 35.
-    expect(offCount).toBe(35);
+    // 2026-08-25 (ratified-mockup-implementation-validation-2026-08-24 P-007) —
+    // papercusp-design-evidence-gate-enforcing, the refusal half of the design-evidence
+    // completion gate, withheld until P-008 calibrates the threshold and P-011 flips it
+    // (D-006). case: 'cutover', so the parking subset and DARK_FLAGS_HIGH_WATERMARK both
+    // stay 14 and no graduation trade is owed. Count 35 → 36.
+    expect(offCount).toBe(36);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
