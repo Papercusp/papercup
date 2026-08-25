@@ -20,11 +20,7 @@ import { resolveSelfRef, markSelfRows } from '../self-marker';
 import { shapeCoordPresence } from './presence-shape';
 import { COORD_ROLES } from '../roles';
 import { getModesForOwners } from '../../../modes/store';
-import {
-  classifyCoordDeafness,
-  coordDeafBudgetMs,
-  lastInboxReadAtBatch,
-} from '../inbox-read-freshness';
+import { classifyCoordDeafness, coordDeafBudgetMs, lastInboxReadAtBatch } from '../inbox-read-freshness';
 import { listParkedAwaitsForSubscribers } from '../../../events/await/store';
 import { buildParkedOnMap } from '../../fleet/assignments';
 import { overlayPresenceCursors } from '../presence-cursor-overlay';
@@ -38,12 +34,12 @@ import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle'
 export default defineTool({
   name: 'coord:presence',
   description:
-    'List the live coordination roster and who can take work. Read summary.wakeable and each row\'s sessionState/wakeable; ended rows appear only for owner lookups. Default scope is your Hive; use scope/pot to widen it, owner for one row, or coord:roster { view:\'live\', project:\'ids\' } for bounded IDs. `owner` is singular. Legacy harness/ownerId/ownerIds/plan/includeStale keys are invalid. For plan-scoped claims use coord:roster { view:\'claims\', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.',
+    "List the live coordination roster and who can take work. Read summary.wakeable and each row's sessionState/wakeable; ended rows appear only for owner lookups. Default scope is your Hive; use scope/pot for explicit scope when widening it, owner for one row, or coord:roster { view:'live', project:'ids' } for bounded IDs. `owner` is singular. Do not pass legacy harness, ownerId, ownerIds, plan, includeStale, or include_stale keys. For plan-scoped claims use coord:roster { view:'claims', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.",
   guidance: {
-    when: 'Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, set confirmLiveness:true, send a required coord:send wake, and inspect its result; ended rows need relaunch. Use owner:<id> for one agent and coord:roster { view:\'live\', project:\'ids\' } for several.',
-    notWhen: 'Not for file ownership (locks:queue), historical ended-agent dumps, or every-turn polling when coord deltas suffice. Presence reports liveness, not file activity; use locks:queue plus git status/file mtimes to see who edits files.',
-    chaining:
-      'Read once and follow coord deltas; if repolling, pass since:<etag> for a tiny unchanged stub.',
+    when: "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, set confirmLiveness:true, send a required coord:send wake, and inspect its result; ended rows need relaunch. Use owner:<id> for one agent and coord:roster { view:'live', project:'ids' } for several.",
+    notWhen:
+      'Not for file ownership (locks:queue), historical ended-agent dumps, or every-turn polling when coord deltas suffice. Presence reports liveness, not file activity; use locks:queue plus git status/file mtimes to see who edits files.',
+    chaining: 'Read once and follow coord deltas; if repolling, pass since:<etag> for a tiny unchanged stub.',
     // EI-13298: the roster array lives at the TOP-LEVEL key `active` — an agent guessing
     // `p?.agents || p?.presence || (Array.isArray(p) ? p : [])` in a code:run script misses
     // it entirely and silently gets `[]` (a live incident: 35 active agents read back as
@@ -51,7 +47,7 @@ export default defineTool({
     // coordination-layer bug). `summary.active` is a COUNT, not the roster — do not confuse
     // the two `active` keys at different nesting levels.
     returns:
-      '{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), activeTruncated?: { shown, censusCount, truncatedByLimit:true, limit, reason?: response_budget, more } (present when a payload tier or the result budget caps active[]; absence means the roster is complete for that tier), self?: { ownerId, ownerLabel } (you, only when resolvable), etag, as_of, scope }. Never infer that an owner is absent from a capped `active[]`; use `coord:presence { owner }` for a targeted liveness lookup. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }. Unless include_coupling:false — an APPENDED expanded[] ({ ownerId, expandedBecause, source: derived|declared|both, reason?, declaredBy?, inRoster, ownerLabel, sessionState, intent, intentStale, lastActiveSecAgo }) + expandedTotal — `active` is unchanged by it. `intent` there is the peer\'s DECLARED INTENT, not a goal; goal + assumptions arrive with P-016/P-008. expanded[] is reader-relative and NOT etag-tracked, so a `since:` stub can lag a coupling change.',
+      "{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), activeTruncated?: { shown, censusCount, truncatedByLimit:true, limit, reason?: response_budget, more } (present when a payload tier or the result budget caps active[]; absence means the roster is complete for that tier), self?: { ownerId, ownerLabel } (you, only when resolvable), etag, as_of, scope }. Never infer that an owner is absent from a capped `active[]`; use `coord:presence { owner }` for a targeted liveness lookup. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }. Unless include_coupling:false — an APPENDED expanded[] ({ ownerId, expandedBecause, source: derived|declared|both, reason?, declaredBy?, inRoster, ownerLabel, sessionState, intent, intentStale, lastActiveSecAgo }) + expandedTotal — `active` is unchanged by it. `intent` there is the peer's DECLARED INTENT, not a goal; goal + assumptions arrive with P-016/P-008. expanded[] is reader-relative and NOT etag-tracked, so a `since:` stub can lag a coupling change.",
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always
@@ -63,9 +59,7 @@ export default defineTool({
       // scalars as `ended: N` lines, so a cheap regex keeps the conditional
       // pointer alive on compact responses too (fail-open to 0).
       const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
-      const ended =
-        j?.summary?.byState?.ended ??
-        Number(/\bended\b["']?\s*:\s*(\d+)/.exec(text)?.[1] ?? 0);
+      const ended = j?.summary?.byState?.ended ?? Number(/\bended\b["']?\s*:\s*(\d+)/.exec(text)?.[1] ?? 0);
       // NB coord:dispatch is deliberately NOT listed here any more (P-012): this
       // read now returns a ready `dispatch` CALL in its payload when one is
       // resolvable. Re-adding the mention would restore the 1.7% mechanism the
@@ -92,35 +86,44 @@ export default defineTool({
     scope: z
       .enum(['hive', 'workspace', 'all'])
       .optional()
-      .describe('hive (DEFAULT) = your Hive\'s agents + federated peers for it; workspace = the whole workspace; all = every workspace (admin/Mug). A caller with no Hive (SU/operator) falls back to workspace.'),
+      .describe(
+        "hive (DEFAULT) = your Hive's agents + federated peers for it; workspace = the whole workspace; all = every workspace (admin/Mug). A caller with no Hive (SU/operator) falls back to workspace.",
+      ),
     pot: z
       .string()
       .optional()
       .describe('Explicit Hive slug to scope to (overrides caller-hive resolution; implies scope=hive).'),
-    workspace: z
-      .string()
-      .optional()
-      .describe('Workspace id for workspace/hive scope; omit to use the caller\'s.'),
+    workspace: z.string().optional().describe("Workspace id for workspace/hive scope; omit to use the caller's."),
     owner: z
       .string()
       .optional()
-      .describe('TARGETED lookup: return ONLY the row(s) matching this agent id/label (exact, else a substring either-way) — and INCLUDE it even if `ended`. The replacement for the removed `include_stale` full dump: use it to inspect/wake ONE specific dead agent, never to expand the whole stale roster.'),
+      .describe(
+        'TARGETED lookup: return ONLY the row(s) matching this agent id/label (exact, else a substring either-way) — and INCLUDE it even if `ended`. The replacement for the removed `include_stale` full dump: use it to inspect/wake ONE specific dead agent, never to expand the whole stale roster.',
+      ),
     include_detail: z
       .boolean()
       .optional()
-      .describe('P-011 Tier-2/3 detail: add each agent\'s `heldFiles` (its live file-lock nodes, read from the separate papercusp_su lock DB — opt-in + fail-soft). Off by default; the lean roster already carries the Tier-1 scalars.'),
+      .describe(
+        "P-011 Tier-2/3 detail: add each agent's `heldFiles` (its live file-lock nodes, read from the separate papercusp_su lock DB — opt-in + fail-soft). Off by default; the lean roster already carries the Tier-1 scalars.",
+      ),
     include_cursor: z
       .boolean()
       .optional()
-      .describe('ambient-semantic-push P-002: add each active agent\'s `cursor` — the top terms of its current lexical cursor (what it is working on, mined from its own journal), data-not-directive. Opt-in + fail-soft + snapshot-only (never a [coord+N] delta). DEFAULT-OFF and additionally gated by the PAPERCUSP_AMBIENT_CURSOR feature flag; absent unless both are on.'),
+      .describe(
+        "ambient-semantic-push P-002: add each active agent's `cursor` — the top terms of its current lexical cursor (what it is working on, mined from its own journal), data-not-directive. Opt-in + fail-soft + snapshot-only (never a [coord+N] delta). DEFAULT-OFF and additionally gated by the PAPERCUSP_AMBIENT_CURSOR feature flag; absent unless both are on.",
+      ),
     include_coupling: z
       .boolean()
       .optional()
-      .describe('ON BY DEFAULT — pass false to suppress. Appends `expanded[]`: the peers YOU are coupled to (coord:couple + signals derived from the roster you are already being sent), each with `expandedBecause`, their declared intent and staleness. Fail-soft. The base roster is byte-identical either way (D-053): coupling decides only who appears in the appended block, never what the base rows contain. A coupled peer outside this read\'s scope appears with inRoster:false and null state — coupling re-ranks what you can already see, it never widens it. Passing TRUE explicitly also arms the QUERYING signals (lock holds), which need the coordination domain.'),
+      .describe(
+        "ON BY DEFAULT — pass false to suppress. Appends `expanded[]`: the peers YOU are coupled to (coord:couple + signals derived from the roster you are already being sent), each with `expandedBecause`, their declared intent and staleness. Fail-soft. The base roster is byte-identical either way (D-053): coupling decides only who appears in the appended block, never what the base rows contain. A coupled peer outside this read's scope appears with inRoster:false and null state — coupling re-ranks what you can already see, it never widens it. Passing TRUE explicitly also arms the QUERYING signals (lock holds), which need the coordination domain.",
+      ),
     since: z
       .string()
       .optional()
-      .describe('CHEAP UNCHANGED-READ (poll-storm guard): pass the `etag` from your PRIOR coord:presence read. If the roster\'s identity+state (intent / plan / claimed lane / await / fleet membership — NOT liveness) is unchanged, you get back a ~100B `{ unchanged:true, etag, as_of }` instead of the full 20KB roster. Read once, then re-read with `since:<etag>` and only pay the full payload when it actually changed. Liveness (live↔parked, lastActiveSecAgo) is deliberately NOT tracked by the etag — re-read WITHOUT `since:` right before you actually dispatch.'),
+      .describe(
+        "CHEAP UNCHANGED-READ (poll-storm guard): pass the `etag` from your PRIOR coord:presence read. If the roster's identity+state (intent / plan / claimed lane / await / fleet membership — NOT liveness) is unchanged, you get back a ~100B `{ unchanged:true, etag, as_of }` instead of the full 20KB roster. Read once, then re-read with `since:<etag>` and only pay the full payload when it actually changed. Liveness (live↔parked, lastActiveSecAgo) is deliberately NOT tracked by the etag — re-read WITHOUT `since:` right before you actually dispatch.",
+      ),
   }),
   // context-trimming-tiers P-022: trimmed/standard sessions get projected roster
   // rows (dispatch core only — see presence-shape.ts); summary stays verbatim.
@@ -174,8 +177,7 @@ export default defineTool({
     // `detail` still gates the ROSTER lane on include_detail — widening the lock
     // read must not widen the base rows (D-053: the base roster is byte-identical
     // whether coupling is on or off).
-    const detail =
-      args.include_detail && coordinationDomain ? { coordinationDomain } : undefined;
+    const detail = args.include_detail && coordinationDomain ? { coordinationDomain } : undefined;
     const snapshot = await assemblePresenceSnapshot(resolved, {
       ...(args.owner ? { owner: args.owner } : {}),
       ...(detail ? { detail } : {}),
@@ -266,23 +268,19 @@ export default defineTool({
         // is no longer the only one wired — `coord:send` and `topics:feed` carry the
         // same sink, which is what makes the census observable at volume.
         const observeCensus = censusObserverFor(c);
-        const derived = await deriveCouplings(
-          self.ownerId,
-          snapshot.active,
-          {
-            ...couplingSourcesFor({
-              selfOwnerId: self.ownerId,
-              rosterOwnerIds: snapshot.active
-                .map((r) => (r as { ownerId?: unknown }).ownerId)
-                .filter((v): v is string => typeof v === 'string' && v.length > 0),
-              // NOT `detail?.coordinationDomain` — that is the bug this replaced.
-              ...(coordinationDomain ? { coordinationDomain } : {}),
-              ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
-              ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
-            }),
-            ...(observeCensus ? { observe: observeCensus } : {}),
-          },
-        );
+        const derived = await deriveCouplings(self.ownerId, snapshot.active, {
+          ...couplingSourcesFor({
+            selfOwnerId: self.ownerId,
+            rosterOwnerIds: snapshot.active
+              .map((r) => (r as { ownerId?: unknown }).ownerId)
+              .filter((v): v is string => typeof v === 'string' && v.length > 0),
+            // NOT `detail?.coordinationDomain` — that is the bug this replaced.
+            ...(coordinationDomain ? { coordinationDomain } : {}),
+            ...(c.harnessSlug ? { harnessSlug: c.harnessSlug } : {}),
+            ...(c.workspaceId ? { workspaceId: c.workspaceId } : {}),
+          }),
+          ...(observeCensus ? { observe: observeCensus } : {}),
+        });
         const peers = resolveCoupledPeers(self.ownerId, derived, edges);
         const expansion = buildCoupledExpansion(peers, snapshot.active);
         coupling = {
@@ -334,7 +332,9 @@ export default defineTool({
           });
         }
       }
-    } catch { /* fail-soft */ }
+    } catch {
+      /* fail-soft */
+    }
     // WI-3715 (fleet-leader-frictions-six-improvements-2026-07-10, P-001): stamp
     // `parkedOn` — same derived-from-events:await, non-etag-tracked overlay
     // pattern as the `modes` block above (fleet:assignments already carries this
@@ -355,7 +355,9 @@ export default defineTool({
           });
         }
       }
-    } catch { /* fail-soft */ }
+    } catch {
+      /* fail-soft */
+    }
     // coord-delivery-residual-gaps-2026-07-11 P-001: coord-DEAFNESS overlay —
     // stamp `coordHook: 'stale' | 'missing'` (+ `coordLastReadAgoSec`) on LIVE
     // rows whose inbox-read freshness is over budget. Every delivery leg's
@@ -366,12 +368,8 @@ export default defineTool({
     // foreground exec). Same batched, best-effort, non-etag-tracked overlay
     // pattern as `modes`/`parkedOn` above; unknowns fail toward unflagged.
     try {
-      const liveRows = active.filter(
-        (r) => (r as { sessionState?: string | null }).sessionState === 'live',
-      );
-      const liveIds = liveRows
-        .map((r) => String((r as { ownerId?: unknown }).ownerId ?? ''))
-        .filter(Boolean);
+      const liveRows = active.filter((r) => (r as { sessionState?: string | null }).sessionState === 'live');
+      const liveIds = liveRows.map((r) => String((r as { ownerId?: unknown }).ownerId ?? '')).filter(Boolean);
       if (liveIds.length) {
         const reads = await lastInboxReadAtBatch(liveIds);
         const budget = coordDeafBudgetMs();
@@ -394,12 +392,12 @@ export default defineTool({
             nowMs,
             budget,
           );
-          return verdict
-            ? { ...r, coordHook: verdict.state, coordLastReadAgoSec: verdict.lastReadAgoSec }
-            : r;
+          return verdict ? { ...r, coordHook: verdict.state, coordLastReadAgoSec: verdict.lastReadAgoSec } : r;
         });
       }
-    } catch { /* fail-soft — deafness detection must never degrade the roster */ }
+    } catch {
+      /* fail-soft — deafness detection must never degrade the roster */
+    }
     // ambient-semantic-push P-002: opt-in cursor overlay — stamp each active
     // row with its owner's current lexical cursor (top terms, data-not-directive)
     // so a peer/leader can read what a session is working on. Same best-effort,
@@ -409,8 +407,7 @@ export default defineTool({
     // ambient feature flag must be on; the flag is read inline so the default
     // path adds no import/query and stays byte-identical.
     const cursorFlag = process.env.PAPERCUSP_AMBIENT_CURSOR;
-    const cursorEnabled =
-      args.include_cursor === true && (cursorFlag === '1' || cursorFlag === 'true');
+    const cursorEnabled = args.include_cursor === true && (cursorFlag === '1' || cursorFlag === 'true');
     active = await overlayPresenceCursors(active, { enabled: cursorEnabled });
 
     // ── P-012: a ready coord:dispatch CALL, not a mention ────────────────────
