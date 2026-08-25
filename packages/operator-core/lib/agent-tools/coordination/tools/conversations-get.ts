@@ -77,6 +77,10 @@ export default defineTool({
             accepted_post_id: c.accepted_post_id,
             capture_target: c.capture_target,
             promoted_issue_id: c.promoted_issue_id,
+            /** Which tool opened this. Readable on an ANSWERED conversation, not
+             *  just an open one (EI-21462599108204160). null = opened before the
+             *  column existed, or federated from a pre-attribution peer. */
+            producer: c.producer,
             created_ts: c.created_ts,
             resolved_ts: c.resolved_ts,
           },
