@@ -176,8 +176,18 @@ describe("selection + apply", () => {
 
   it("unchecking a row removes it from the apply set", () => {
     const { onApply } = renderShell();
+    const status = screen.getByTestId("review-report-status");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(status.getAttribute("aria-atomic")).toBe("true");
+    expect(status.textContent).toBe(
+      "3 of 3 selectable recommendations selected.",
+    );
     fireEvent.click(rowCheck("f2"));
     expect(applyBtn().textContent).toContain("(2)");
+    expect(status.textContent).toBe(
+      "2 of 3 selectable recommendations selected.",
+    );
     expect(
       screen.getByTestId("review-report-selection-total").textContent,
     ).toContain("2 / 3");
@@ -233,6 +243,13 @@ describe("selection + apply", () => {
     expect(onDismiss).toHaveBeenCalledTimes(1);
     cleanup();
     renderShell({ busy: true });
+    expect(
+      screen.getByTestId("review-report").getAttribute("aria-busy"),
+    ).toBe("true");
+    expect(screen.getByTestId("review-report-status").textContent).toBe(
+      "Updating report. Please wait.",
+    );
+    expect(screen.getByText("Updating report")).toBeTruthy();
     expect(applyBtn().disabled).toBe(true);
     expect(
       (screen.getByTestId("review-report-dismiss") as HTMLButtonElement)
