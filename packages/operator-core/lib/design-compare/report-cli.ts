@@ -319,7 +319,7 @@ async function measureRealSurface(
   classes: Map<ReferenceClass, ClassAccumulator>,
   workDir: string,
   storybookStaticDir: string,
-): Promise<{ storiesCaptured: number; refusals: string[] }> {
+): Promise<{ storiesCaptured: number; refusals: string[]; renderHosts: string[] }> {
   const bucket = classes.get('artifact-capture') ?? accumulator();
   classes.set('artifact-capture', bucket);
   bucket.cohorts.add('real-surface');
@@ -332,6 +332,11 @@ async function measureRealSurface(
   mkdirSync(shotDir, { recursive: true });
   const refusals: string[] = [];
   const capturedPaths = new Map<string, string>();
+  // P-011/D-023: the machine every noise sample below was measured on, read
+  // back from the captures themselves rather than assumed from the process.
+  // A SET, not a single value, because "all the captures agreed about the host"
+  // is a fact this measurement can establish and should not take on faith.
+  const renderHosts = new Set<string>();
 
   /** One raw capture: no stability retries, so variance is measured not hidden. */
   async function captureOnce(storyId: string, attempt: number): Promise<string | null> {
@@ -355,6 +360,7 @@ async function measureRealSurface(
       return null;
     }
     bucket.captureMs.push(elapsedMs);
+    if (outcome.observed.renderHost) renderHosts.add(outcome.observed.renderHost);
     return outcome.imagePath;
   }
 
@@ -410,7 +416,7 @@ async function measureRealSurface(
     await site.close();
   }
 
-  return { storiesCaptured: capturedPaths.size, refusals };
+  return { storiesCaptured: capturedPaths.size, refusals, renderHosts: [...renderHosts].sort() };
 }
 
 // ─── artifact assembly ───────────────────────────────────────────────────────
@@ -486,7 +492,22 @@ export async function measureCalibration(options: MeasureOptions): Promise<Calib
       refusals: real.refusals,
     },
     classes: calibrations,
+    // P-011/D-023. Stamped ONLY when every capture in the noise leg agreed
+    // about which machine it ran on. Zero hosts (nothing captured) or more than
+    // one (samples pooled across machines) both mean this artifact cannot name
+    // the domain its numbers describe — and `enforceability.ts` reads the
+    // absence as "enforce nowhere", which is the correct reading of a
+    // calibration that cannot say where it was taken.
+    ...(real.renderHosts.length === 1 ? { measuredOnRenderHost: real.renderHosts[0] } : {}),
     caveats: [
+      ...(real.renderHosts.length === 1
+        ? []
+        : [
+            `RENDER HOST NOT ESTABLISHED: the noise leg reported ${real.renderHosts.length} ` +
+              'distinct rendering hosts, so this calibration cannot name the machine its ' +
+              'threshold describes and nothing derived from it may be enforced anywhere ' +
+              '(P-011/D-023).',
+          ]),
       'SAME-HOST ONLY. Every noise sample was captured on one machine, so this measures ' +
         'capture-to-capture variance and NOT host-to-host variance. Font rasterisation and GPU ' +
         'differences across machines are entirely unmeasured here, and are plausibly far larger ' +
