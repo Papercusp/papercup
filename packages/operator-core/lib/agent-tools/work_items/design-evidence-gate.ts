@@ -115,42 +115,50 @@ export async function designEvidenceCompletionGate(
   );
 
   for (const featureId of candidates) {
-    let result: FeatureDesignGateResult;
     try {
-      result = await deps.evaluate(featureId);
+      const result = await deps.evaluate(featureId);
+
+      if (!result.applicable) continue;
+
+      if (result.satisfied) {
+        return { status: 'satisfied', report: renderFeatureDesignGate(result) ?? '' };
+      }
+      // P-011/D-023: the flag says enforcement is ON; it does not say this
+      // particular comparison was measured on a machine the threshold speaks for.
+      // Both must hold. `enforceableBlocking` is the subset of failing references
+      // whose ratification host matches the calibration host — for anything else,
+      // the derived tolerance (about 34 pixels of a 1280x800 render) was never
+      // measured against that machine's fonts, and refusing on it would fail
+      // correct work, which is precisely what D-021 forbade.
+      //
+      // The refusal is driven by that subset rather than by `blocking` so an
+      // unenforceable reference can never suppress a calibrated failure beside it.
+      return {
+        status: 'unsatisfied',
+        enforced: enforced && result.enforceableBlocking.length > 0,
+        featureId,
+        blockingReferenceIds: result.blocking.map((b) => b.referenceId),
+        report: renderFeatureDesignGate(result) ?? '',
+      };
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       if (error instanceof DesignGateUnavailableError) {
         return {
           status: 'unavailable',
           enforced,
-          report: `design-evidence gate could not establish an obligation for '${featureId}': ${error.message}`,
+          report: `design-evidence gate could not establish an obligation for '${featureId}': ${message}`,
         };
       }
-      throw error;
+      // Keep D-006's rollout contract and the enforcement flip on one policy
+      // value. The completion caller must not guess here: this adapter has
+      // already read the real flag, so an unexpected evaluator/renderer fault
+      // reports while rollout is report-only and refuses once enforcement is on.
+      return {
+        status: 'unavailable',
+        enforced,
+        report: `design-evidence gate failed unexpectedly for '${featureId}': ${message}`,
+      };
     }
-
-    if (!result.applicable) continue;
-
-    if (result.satisfied) {
-      return { status: 'satisfied', report: renderFeatureDesignGate(result) ?? '' };
-    }
-    // P-011/D-023: the flag says enforcement is ON; it does not say this
-    // particular comparison was measured on a machine the threshold speaks for.
-    // Both must hold. `enforceableBlocking` is the subset of failing references
-    // whose ratification host matches the calibration host — for anything else,
-    // the derived tolerance (about 34 pixels of a 1280x800 render) was never
-    // measured against that machine's fonts, and refusing on it would fail
-    // correct work, which is precisely what D-021 forbade.
-    //
-    // The refusal is driven by that subset rather than by `blocking` so an
-    // unenforceable reference can never suppress a calibrated failure beside it.
-    return {
-      status: 'unsatisfied',
-      enforced: enforced && result.enforceableBlocking.length > 0,
-      featureId,
-      blockingReferenceIds: result.blocking.map((b) => b.referenceId),
-      report: renderFeatureDesignGate(result) ?? '',
-    };
   }
 
   return { status: 'not-applicable' };

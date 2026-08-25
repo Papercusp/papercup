@@ -334,16 +334,36 @@ describe('unavailability', () => {
     expect(outcome.report).toContain('connection reset');
   });
 
-  it('lets an unexpected error propagate rather than swallowing it as a pass', async () => {
-    await expect(
-      designEvidenceCompletionGate(['f'], {
-        evaluate: async () => {
-          throw new TypeError('programming error');
-        },
-        isEnabled: on,
-        isEnforcing: off,
-      }),
-    ).rejects.toBeInstanceOf(TypeError);
+  it('reports an unexpected error without refusing during report-only rollout', async () => {
+    const outcome = await designEvidenceCompletionGate(['f'], {
+      evaluate: async () => {
+        throw new TypeError('programming error');
+      },
+      isEnabled: on,
+      isEnforcing: off,
+    });
+    expect(outcome).toMatchObject({
+      status: 'unavailable',
+      enforced: false,
+    });
+    if (outcome.status !== 'unavailable') return;
+    expect(outcome.report).toContain("failed unexpectedly for 'f': programming error");
+  });
+
+  it('preserves enforcement for an unexpected error instead of silently passing', async () => {
+    const outcome = await designEvidenceCompletionGate(['f'], {
+      evaluate: async () => {
+        throw new TypeError('programming error');
+      },
+      isEnabled: on,
+      isEnforcing: on,
+    });
+    expect(outcome).toMatchObject({
+      status: 'unavailable',
+      enforced: true,
+    });
+    if (outcome.status !== 'unavailable') return;
+    expect(outcome.report).toContain("failed unexpectedly for 'f': programming error");
   });
 
   /**
@@ -667,6 +687,17 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
   });
 
+  it('REFUSES an unexpected gate fault while enforcing, and writes no terminal state', async () => {
+    designCompareDepsFor.mockRejectedValue(new TypeError('programming error'));
+
+    const result = await closeItem();
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("design-evidence gate failed unexpectedly for 'ratified-surface-plan'");
+    expect(result.error).toContain('programming error');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
   it('reports but does NOT refuse while enforcement is off (D-006 report-only rollout)', async () => {
     // The gate ships report-only until P-011 flips it. This pins that the
     // ENFORCING flag is what separates a refusal from a notice — so flipping it
@@ -680,6 +711,16 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     const result = await closeItem();
 
     expect(result.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+  });
+
+  it('CONTROL: an unexpected gate fault still reports without refusing while enforcement is off', async () => {
+    getFlag.mockImplementation(async (flag: string) => flag === FLAGS.DESIGN_EVIDENCE_GATE);
+    designCompareDepsFor.mockRejectedValue(new TypeError('programming error'));
+
+    const result = await closeItem();
+
+    expect(result.ok, result.error).toBe(true);
     expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
   });
 

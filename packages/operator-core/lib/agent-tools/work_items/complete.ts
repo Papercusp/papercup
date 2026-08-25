@@ -1928,6 +1928,10 @@ async function completeOne(
   let designEvidenceReport: string | undefined;
   if (closeIntentRequested && existing.harness) {
     const harnessSlug = existing.harness;
+    // The adapter owns fault classification because it has already read the
+    // enforcement flag. In particular, callers must not replace an unexpected
+    // fault with a hardcoded `enforced` value: that would make the rollout flag
+    // incapable of turning the same unavailable outcome into a refusal.
     const outcome = await designEvidenceCompletionGate(
       designFeatureCandidates({ id: it.id, sourcePlanSlug: existing.sourcePlanSlug }),
       {
@@ -1946,17 +1950,7 @@ async function completeOne(
           );
         },
       },
-    ).catch((error: unknown) => {
-      // Deliberately an OUTCOME, not a throw: an unexpected fault in this gate is
-      // reported and, when enforcing, refuses — it never silently passes and it never
-      // destroys a completion record while the gate is still in report-only rollout.
-      const message = error instanceof Error ? error.message : String(error);
-      return {
-        status: 'unavailable' as const,
-        enforced: false,
-        report: `design-evidence gate failed unexpectedly: ${message}`,
-      };
-    });
+    );
 
     if (outcome.status === 'unsatisfied' && outcome.enforced) {
       return { ok: false, id: it.id, error: renderDesignEvidenceRefusal(it.id, outcome) };
