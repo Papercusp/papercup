@@ -198,7 +198,11 @@ export function resolveLaunchOptions(input: LaunchOptionInput): ResolvedLaunchOp
 
   const directors = pickRole(input.directors);
   const implementers = pickRole(input.implementers);
-  if (Object.keys(directors).length === 0 && Object.keys(implementers).length === 0) {
+  // PRESENCE, not emptiness. `directors:{}` is a deliberate "this role runs on
+  // the defaults" — refusing it would contradict the very repair this refusal
+  // recommends. Only a launch that mentions neither group is the half-finished
+  // call worth stopping.
+  if (input.directors === undefined && input.implementers === undefined) {
     return {
       ok: false,
       error: 'invalid_args',
