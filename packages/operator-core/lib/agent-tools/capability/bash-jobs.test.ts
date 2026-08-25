@@ -982,8 +982,8 @@ describe('background job deadlines (WI-6677)', () => {
     // independently of beginSyncEnrolment's argument assertion: merely asserting
     // that the writer receives its exported constant would still pass if the
     // constant regressed to the ceiling a legitimate workload already exhausted.
-    expect(BASH_TEST_TASKS_MAX).toBeGreaterThan(2_048);
-    expect(BASH_TEST_TASKS_MAX).toBeLessThanOrEqual(4_096);
+    expect(BASH_TEST_TASKS_MAX).toBeGreaterThan(4_096);
+    expect(BASH_TEST_TASKS_MAX).toBeLessThanOrEqual(8_192);
   });
 
   it('classifies only test runners at a shell-segment boundary for the hard test budget', () => {

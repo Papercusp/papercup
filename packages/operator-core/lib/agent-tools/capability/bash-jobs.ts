@@ -108,10 +108,14 @@ export const BASH_TEST_MEMORY_MAX_BYTES = 16 * 1024 ** 3;
 // pidsCurrent=2,048 exactly while systemd recorded only 10.9 GiB peak RSS under
 // this door's 16 GiB cap. The affected runner then surfaced `fork: Resource
 // temporarily unavailable`, bash lost the child's `wait_for` record, and no
-// suite verdict existed. 4,096 is the largest envelope this policy's regression
-// guard has ever allowed; it remains a finite task-local blast radius while the
-// affected scheduler's PID budget keeps one high-fanout suite at a time inside it.
-export const BASH_TEST_TASKS_MAX = 4_096;
+// suite verdict existed. A follow-up operator-core lane then reached 4,096 and
+// STILL produced a complete 2,840-file verdict: that count is legitimate workload,
+// not spare capacity. An outer pc-heavy/affected scheduler sharing the same scope
+// must retain enough tasks to poll, wait, and write its result marker while the
+// child sits at that measured peak. 8,192 keeps a finite task-local blast radius
+// under the existing 16 GiB memory cap; the affected scheduler's 4,096-task
+// envelope keeps one high-fanout suite at a time inside it.
+export const BASH_TEST_TASKS_MAX = 8_192;
 
 const TEST_SEGMENT_PREFIX = String.raw`(?:^|(?:&&|\|\||;|\n)\s*)(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*`;
 const DIRECT_TEST_RUNNER_RE = new RegExp(

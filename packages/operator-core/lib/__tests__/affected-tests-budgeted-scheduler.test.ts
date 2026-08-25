@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parseTaskBudgetRefusal } from '../../../../scripts/lib/task-exit-class.mjs';
 import {
   classifyAffectedBlastRadius,
   durationEstimate,
@@ -487,8 +488,8 @@ describe('resolveMemoryBudgetMb', () => {
     expect(readTaskCgroupPidsMax({ readFile })).toBeNull();
   });
 
-  it('serializes a 4096-pid task scope instead of admitting two peak-sized test tasks', () => {
-    const resolved = resolveTaskBudget({ ...config, taskCgroupPidsMax: 4096 });
+  it('serializes an 8192-pid task scope instead of admitting two peak-sized test tasks', () => {
+    const resolved = resolveTaskBudget({ ...config, taskCgroupPidsMax: 8192 });
     expect(resolved).toMatchObject({
       mode: 'serial',
       maxConcurrentTasks: 1,
@@ -500,20 +501,70 @@ describe('resolveMemoryBudgetMb', () => {
     expect(marker).toContain('effectiveWorkers=4 maxTasks=1 reserveWorkers=1');
     expect(marker).toContain(
       'configuredMaxTasks=2 pidsMaxTasks=1 taskBoundBy=pids ' +
-        'taskCgroupPidsMax=4096 pidsPerTask=3072 pidsReserve=1024',
+        'taskCgroupPidsMax=8192 pidsPerTask=4096 pidsReserve=1024',
     );
   });
 
-  it('keeps two-task scheduling only in an 8192-pid scope and refuses an undersized scope', () => {
-    expect(resolveTaskBudget({ ...config, taskCgroupPidsMax: 8192 })).toMatchObject({
+  it('keeps two-task scheduling only when both 4096-task envelopes plus reserve fit', () => {
+    expect(resolveTaskBudget({ ...config, taskCgroupPidsMax: 9216 })).toMatchObject({
       mode: 'parallel',
       maxConcurrentTasks: 2,
       pidsMaxConcurrentTasks: 2,
       taskBoundBy: 'ceiling',
     });
-    expect(() => resolveTaskBudget({ ...config, taskCgroupPidsMax: 2048 })).toThrow(
-      /below one pidsPerConcurrentTask=3072 envelope; refusing before launch/,
+    expect(() => resolveTaskBudget({ ...config, taskCgroupPidsMax: 4096 })).toThrow(
+      /below one pidsPerConcurrentTask=4096 envelope; refusing before launch/,
     );
+  });
+
+  // EI-21442389733525112. These refusals are the ONLY evidence that a pre-launch refusal
+  // happened: nothing is spawned, so the task ledger never samples pids and every downstream
+  // caller sees a bare non-zero exit. Round-tripping the REAL thrown message through the REAL
+  // parser is what keeps the emitter and the reader on one grammar — a hand-copied literal on
+  // either side would let them drift apart silently, and the symptom of that drift is a
+  // resource refusal being read as a red test suite.
+  it('emits a machine-readable refusal marker the shared parser recovers, on both refusal sites', () => {
+    const pidsMessage = (() => {
+      try {
+        resolveTaskBudget({ ...config, taskCgroupPidsMax: 512 });
+        return null;
+      } catch (err) {
+        return (err as Error).message;
+      }
+    })();
+    expect(pidsMessage).not.toBeNull();
+    expect(parseTaskBudgetRefusal(pidsMessage!)).toEqual({
+      kind: 'pids',
+      unit: 'tasks',
+      limit: 512,
+      reserve: 1_024,
+      requiredPerTask: 4_096,
+    });
+
+    const memoryMessage = (() => {
+      try {
+        resolveMemoryBudgetMb({ ...base, taskCgroupMemoryMaxMb: 1024 });
+        return null;
+      } catch (err) {
+        return (err as Error).message;
+      }
+    })();
+    expect(memoryMessage).not.toBeNull();
+    expect(parseTaskBudgetRefusal(memoryMessage!)).toMatchObject({
+      kind: 'memory',
+      unit: 'mb',
+      limit: 1_024,
+    });
+
+    // The human sentence must survive alongside the marker — the marker is added evidence,
+    // not a replacement for a message a person has to read at 3am.
+    expect(pidsMessage).toContain('refusing before launch');
+    expect(pidsMessage).toContain('remedy=processes:limit');
+  });
+
+  it('does not emit a refusal marker on a budget that resolves', () => {
+    const marker = formatTaskBudgetMarker(resolveTaskBudget({ ...config, taskCgroupPidsMax: 8192 }));
+    expect(parseTaskBudgetRefusal(marker)).toBeNull();
   });
 
   it('falls back to the ceiling when the host reading is unavailable, never to zero', () => {
