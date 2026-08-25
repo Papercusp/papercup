@@ -696,7 +696,7 @@ describe('engineer-issues projection — EI-21467654382027859 federated columns 
     });
     // Strictly newer op, so it wins the LWW guard and the ON CONFLICT SET really runs.
     const legacy = issueRow({ issue_id: 'EI-mix', title: 'edited by an older peer' });
-    delete (legacy as Record<string, unknown>).admission;
+    delete (legacy as unknown as Record<string, unknown>).admission;
     await proj().writeToPg(legacy, { ts: 900, fedHlc: '900:00001:b', origin: 'remote', authorPubkey: 'peer' });
     const after = await admissionOf('EI-mix');
     expect((await getIssue('EI-mix'))?.title).toBe('edited by an older peer'); // the op DID apply
@@ -741,7 +741,7 @@ describe('engineer-issues projection — EI-21467654382027859 federated columns 
     });
     expect((await admissionOf('EI-age'))?.state_changed_at?.getTime()).toBe(50_000);
     const legacy = issueRow({ issue_id: 'EI-age', state: 'done', title: 'older peer closes it' });
-    delete (legacy as Record<string, unknown>).state_changed_at;
+    delete (legacy as unknown as Record<string, unknown>).state_changed_at;
     await proj().writeToPg(legacy, { ts: 900, fedHlc: '900:00001:b', origin: 'remote', authorPubkey: 'peer' });
     expect((await getIssue('EI-age'))?.state).toBe('done'); // the op applied
     expect((await admissionOf('EI-age'))?.state_changed_at?.getTime()).toBe(50_000); // age preserved
@@ -764,7 +764,7 @@ describe('engineer-issues projection — EI-21467654382027859 federated columns 
       'source_plan_item_ids',
       'expected_cost_cents',
     ])
-      delete (legacy as Record<string, unknown>)[k];
+      delete (legacy as unknown as Record<string, unknown>)[k];
     expect(_testing.decodeValue(legacy)).not.toBeNull();
   });
 });
