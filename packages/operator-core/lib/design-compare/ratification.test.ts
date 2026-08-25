@@ -9,6 +9,10 @@ import {
   superseded,
   validateRatification,
 } from './ratification';
+// R3(b): the gate itself, so this file can assert AUTHORITY and not only state.
+import { createInMemoryReferenceStore, retractReference } from './reference-store';
+import { type VerbCaller, type VerbDeps, compareRenderVerb, ratifyReferenceVerb } from './verbs';
+import { evaluateFeatureDesignGate } from './feature-gate';
 
 const env = (over: Partial<CaptureEnvironment> = {}): CaptureEnvironment => ({
   viewport: { width: 1280, height: 800 },
@@ -248,4 +252,234 @@ describe('defaultEligibilityFor', () => {
       expect(defaultEligibilityFor(cls)).toBe('gateable');
     },
   );
+});
+
+/**
+ * R3(b) — the GATE, run at each lifecycle state.
+ *
+ * ─── WHY THIS BLOCK EXISTS IN A STATE-MACHINE FILE ───────────────────────────
+ *
+ * Everything above this line tests the state machine: which transitions are
+ * legal, what `superseded()` returns, when evidence goes stale. None of it runs
+ * the gate. That is the BINDING drift this criterion names explicitly — the
+ * bound files "partitioning into 'lifecycle states' and 'persistence' with
+ * NEITHER exercising the gate's behaviour at those states, i.e. the whole
+ * criterion resting on state transitions while the claim is about AUTHORITY".
+ *
+ * A state machine can be perfectly correct while the gate consults it wrongly,
+ * or not at all. `state === 'retracted'` is a fact about a row; "a retracted
+ * surface no longer constrains completion" is a fact about the gate, and only
+ * the second one is what this criterion claims. So each case below drives the
+ * REAL `evaluateFeatureDesignGate` over a REAL store and asserts what the gate
+ * concluded — never what the row says.
+ *
+ * The window is asserted from BOTH sides, because either alone is satisfied by
+ * a broken gate: a gate hardwired to impose nothing passes the unratified and
+ * retracted cases, and a gate hardwired to always constrain passes the ratified
+ * one. Only the transitions between them pin the actual window.
+ */
+describe('R3(b): the gate binds exactly the ratified window', () => {
+  const GATE_HARNESS = 'test-harness';
+  const GATE_FEATURE = 'F-window';
+  const GATE_REF = 'ref-window';
+  const GATE_ENV: CaptureEnvironment = env();
+  const CALLER: VerbCaller = { actorId: 'su-window', role: 'reviewer' };
+
+  function gateCtx() {
+    const store = createInMemoryReferenceStore();
+    let tick = 0;
+    const verbDeps: VerbDeps = {
+      harnessSlug: GATE_HARNESS,
+      store,
+      now: () => 1_000,
+      clock: () => `2026-08-25T00:00:${String(tick++).padStart(2, '0')}.000Z`,
+      materializeReferenceImage: async () => ({ path: '/tmp/reference.png' }),
+      comparison: {
+        provider: {
+          engine: { engine: 'fake/pixelmatch', engineVersion: '9.9.9' },
+          async compare() {
+            return { pixelDifference: 0, diffArtifactWritten: true };
+          },
+        },
+        probe: () => ({ exists: true, dimensions: { ...GATE_ENV.viewport } }),
+      },
+    };
+    return { store, verbDeps };
+  }
+
+  const scope = { harnessSlug: GATE_HARNESS, featureId: GATE_FEATURE, referenceId: GATE_REF };
+
+  const ratifyInput = {
+    featureId: GATE_FEATURE,
+    referenceId: GATE_REF,
+    revision: 1,
+    referenceClass: 'artifact-capture' as const,
+    contentSha256: 'c'.repeat(64),
+    image: {
+      mediaType: 'image/png' as const,
+      locator: `/refs/${GATE_REF}.png`,
+      byteLength: 4096,
+      width: GATE_ENV.viewport.width,
+      height: GATE_ENV.viewport.height,
+    },
+    referenceEnvironment: GATE_ENV,
+    requiredCases: [
+      {
+        caseId: `${GATE_REF}-case`,
+        environment: GATE_ENV,
+        target: {
+          targetId: `components-window--${GATE_REF}`,
+          targetKind: 'storybook-story' as const,
+        },
+        rationale: 'primary breakpoint',
+      },
+    ],
+    provenance: { source: 'artifact-capture' as const, sourceRef: 'artifact://window' },
+  };
+
+  const RETRACTION = {
+    actor: 'su-window',
+    reason: 'the surface was redesigned and this reference no longer describes it',
+    at: '2026-08-25T01:00:00.000Z',
+  };
+
+  const runGate = (c: ReturnType<typeof gateCtx>) =>
+    evaluateFeatureDesignGate(
+      { harnessSlug: GATE_HARNESS, featureId: GATE_FEATURE },
+      { store: c.store, verbDeps: c.verbDeps, caller: CALLER },
+    );
+
+  it('imposes NOTHING on a surface that was never ratified', async () => {
+    // The unratified end of the window. Exploration is unrestricted (D-001):
+    // a gate that constrained here would make ratifying a design strictly worse
+    // than never touching the system.
+    const result = await runGate(gateCtx());
+    expect(result.applicable).toBe(false);
+  });
+
+  it('constrains once ratified, and STOPS constraining once retracted', async () => {
+    // The whole criterion in one case: the same feature, the same gate, three
+    // readings — and the transitions between them are what pin the window.
+    const c = gateCtx();
+
+    await ratifyReferenceVerb(ratifyInput, CALLER, c.verbDeps);
+
+    // (1) RATIFIED, no evidence yet → the obligation is live and unmet.
+    const ratified = await runGate(c);
+    expect(ratified.applicable).toBe(true);
+    expect(ratified.applicable && ratified.satisfied).toBe(false);
+    expect(ratified.applicable && ratified.blocking.map((b) => b.referenceId)).toEqual([GATE_REF]);
+
+    // (2) RETRACTED → the surface returns to unconstrained. This is the
+    //     assertion that the state-machine tests above cannot make: it is about
+    //     what the GATE concluded, not about what the row now says.
+    await retractReference(c.store, scope, RETRACTION);
+    const retracted = await runGate(c);
+    expect(retracted.applicable).toBe(false);
+  });
+
+  it('lifts the constraint WITHOUT destroying the evidence trail', async () => {
+    // PROPERTY drift marker: "retraction implemented as a hard delete that
+    // destroys the evidence trail". The constraint must lift while the history
+    // of what was ratified, and what was measured against it, survives — a
+    // retraction that erased its own subject would be unauditable.
+    const c = gateCtx();
+    await ratifyReferenceVerb(ratifyInput, CALLER, c.verbDeps);
+    await compareRenderVerb(
+      {
+        featureId: GATE_FEATURE,
+        referenceId: GATE_REF,
+        target: {
+          targetId: `components-window--${GATE_REF}`,
+          targetKind: 'storybook-story',
+          implementationRevision: 'impl-1',
+        },
+        environment: GATE_ENV,
+        policy: {
+          policyVersion: 'p-2026-08-25',
+          referenceClass: 'artifact-capture',
+          eligibility: 'gateable',
+          maxDiffRatio: 0.001,
+          derivedFrom: 'calibration-run-1',
+        },
+        actualImagePath: '/tmp/actual.png',
+        diffImagePath: '/tmp/diff.png',
+      },
+      CALLER,
+      c.verbDeps,
+    );
+    expect((await runGate(c)).applicable).toBe(true);
+
+    const outcome = await retractReference(c.store, scope, RETRACTION);
+
+    // The gate has released the surface …
+    expect((await runGate(c)).applicable).toBe(false);
+
+    // … and the record of it survives: the revision is still there, marked
+    // retracted and attributed, and the evidence rows are reported invalidated
+    // rather than deleted.
+    const rows = await c.store.listRevisions(scope);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.reference.state).toBe('retracted');
+    expect(rows[0]!.reference.retraction).toMatchObject({ actor: RETRACTION.actor });
+    expect(outcome.invalidatedEvidence.length).toBeGreaterThan(0);
+    expect(await c.store.listEvidence(scope)).toHaveLength(outcome.invalidatedEvidence.length);
+  });
+
+  it('still DISTINGUISHES a retracted surface from one that was never ratified', async () => {
+    // Both read `applicable: false` at the gate, and that is correct — neither
+    // constrains. But they must not become the same fact underneath, or
+    // "withdrawn after review" silently becomes "never reviewed" and the
+    // difference is unrecoverable.
+    const c = gateCtx();
+    await ratifyReferenceVerb(ratifyInput, CALLER, c.verbDeps);
+    await retractReference(c.store, scope, RETRACTION);
+
+    expect(
+      await c.store.listFeatureReferenceIds({
+        harnessSlug: GATE_HARNESS,
+        featureId: GATE_FEATURE,
+      }),
+    ).toEqual([GATE_REF]);
+
+    const never = gateCtx();
+    expect(
+      await never.store.listFeatureReferenceIds({
+        harnessSlug: GATE_HARNESS,
+        featureId: GATE_FEATURE,
+      }),
+    ).toEqual([]);
+  });
+
+  it('FALSIFIABILITY CONTROL: a gate that ignored lifecycle would pass the ratified case and fail these', async () => {
+    // The deliberately-wrong implementation, kept permanently in the file
+    // (CLAUDE.md's prescribed tier for an imported module).
+    //
+    // `ignoresLifecycle` is the drift this criterion is written against: a gate
+    // that decides applicability from "does a reference row exist" rather than
+    // "is a revision ACTIVE". It agrees with the real gate on the ratified case
+    // — which is exactly why the ratified assertion alone proves nothing — and
+    // disagrees on the retracted one, keeping a withdrawn surface constrained
+    // forever.
+    const ignoresLifecycle = async (c: ReturnType<typeof gateCtx>) =>
+      (
+        await c.store.listFeatureReferenceIds({
+          harnessSlug: GATE_HARNESS,
+          featureId: GATE_FEATURE,
+        })
+      ).length > 0;
+
+    const c = gateCtx();
+    await ratifyReferenceVerb(ratifyInput, CALLER, c.verbDeps);
+
+    // Indistinguishable while ratified: both say "constrained".
+    expect((await runGate(c)).applicable).toBe(true);
+    expect(await ignoresLifecycle(c)).toBe(true);
+
+    await retractReference(c.store, scope, RETRACTION);
+
+    // Now they part company, and the real gate is the one that releases.
+    expect((await runGate(c)).applicable).toBe(false);
+    expect(await ignoresLifecycle(c)).toBe(true);
+  });
 });

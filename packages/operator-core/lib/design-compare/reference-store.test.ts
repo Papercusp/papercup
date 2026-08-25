@@ -95,6 +95,16 @@ function evidenceAt(revision: number, artifactId = `ev-${revision}`): StoredEvid
 const clock = () => 1_756_000_000_000;
 
 /**
+ * Attribution for a retraction. Every call below must supply one — that is the
+ * point of the argument, and the compiler is the thing enforcing it.
+ */
+const RETRACTION = {
+  actor: 'su-reviewer-1',
+  reason: 'checkout redesign supersedes this surface entirely',
+  at: '2026-08-25T00:00:00.000Z',
+} as const;
+
+/**
  * Await a call that MUST be refused, and hand back the typed refusal.
  *
  * Deliberately fails the test when the call SUCCEEDS. A bare
@@ -264,7 +274,7 @@ describe('revising a reference', () => {
     // number would make that evidence read as current for different bytes.
     const store = createInMemoryReferenceStore();
     await ratifyReference(store, { scope: SCOPE, candidate: candidate(3), image: IMAGE, now: clock });
-    await retractReference(store, SCOPE);
+    await retractReference(store, SCOPE, RETRACTION);
     expect(activeRevision(await store.listRevisions(SCOPE))).toBeUndefined();
 
     const sameNumber = await refusalOf(
@@ -364,7 +374,7 @@ describe('retracting a reference', () => {
     await ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock });
     store.evidence.push(evidenceAt(1));
 
-    const outcome = await retractReference(store, SCOPE);
+    const outcome = await retractReference(store, SCOPE, RETRACTION);
     expect(outcome.retractedRevision).toBe(1);
     expect(outcome.invalidatedEvidence).toHaveLength(1);
 
@@ -375,12 +385,12 @@ describe('retracting a reference', () => {
 
   it('refuses to retract what was never ratified, distinctly from an already-retracted one', async () => {
     const store = createInMemoryReferenceStore();
-    const never = await refusalOf(retractReference(store, SCOPE));
+    const never = await refusalOf(retractReference(store, SCOPE, RETRACTION));
     expect(never.code).toBe('not-ratified');
 
     await ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock });
-    await retractReference(store, SCOPE);
-    const again = await refusalOf(retractReference(store, SCOPE));
+    await retractReference(store, SCOPE, RETRACTION);
+    const again = await refusalOf(retractReference(store, SCOPE, RETRACTION));
     expect(again.code).toBe('already-retracted');
   });
 
@@ -390,11 +400,121 @@ describe('retracting a reference', () => {
     const store = createInMemoryReferenceStore();
     await ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock });
     await ratifyReference(store, { scope: SCOPE, candidate: candidate(2), image: IMAGE, now: clock });
-    await retractReference(store, SCOPE);
+    await retractReference(store, SCOPE, RETRACTION);
 
     const rows = await store.listRevisions(SCOPE);
     expect(rows[rows.length - 1]!.reference.identity.revision).toBe(2);
     expect(activeRevision(rows)).toBeUndefined();
+  });
+});
+
+/**
+ * R3(a) — retraction is ATTRIBUTED, and the attribution is written as part of
+ * the lifecycle transition itself.
+ *
+ * ─── WHAT THIS CRITERION IS ACTUALLY ABOUT ───────────────────────────────────
+ *
+ * Retraction is the only operation that turns a constrained surface back into an
+ * unconstrained one. Every other way of making a design gate stop failing
+ * requires producing the evidence it asked for; this one does not. So an
+ * unattributed retraction is not a missing audit field — it is a universal
+ * bypass with no trace, which is this criterion's stated PROPERTY drift marker:
+ * "retraction available without any record of who retracted or why".
+ *
+ * The tests below pin three separate things, because satisfying one of them is
+ * easy and satisfying all three is what closes the bypass:
+ *   1. it is IMPOSSIBLE to retract without attribution (a required argument,
+ *      not an optional field that is omitted exactly when it matters);
+ *   2. an attribution that RECORDS NOTHING is refused, so typing a space is not
+ *      a way to satisfy the requirement;
+ *   3. the record is DURABLE on the retracted revision and reaches the queryable
+ *      projection, so "who lifted this obligation" survives the call.
+ */
+describe('R3(a): a retraction cannot be anonymous', () => {
+  it('records actor, reason and instant on the retracted revision itself', async () => {
+    const store = createInMemoryReferenceStore();
+    await ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock });
+
+    const outcome = await retractReference(store, SCOPE, RETRACTION);
+    expect(outcome.retraction).toEqual(RETRACTION);
+
+    // The durable half: the attribution is on the STORED row, not merely in the
+    // return value. A caller-only receipt would vanish the moment the call
+    // returned, which is precisely when an audit trail needs to exist.
+    const [row] = await store.listRevisions(SCOPE);
+    expect(row!.reference.state).toBe('retracted');
+    expect(row!.reference.retraction).toEqual(RETRACTION);
+  });
+
+  it('projects the attribution into the queryable metadata, not only the payload', async () => {
+    // An audit trail reachable only by decoding every jsonb payload is one
+    // nobody runs. "Which surfaces were retracted, by whom" has to be a query.
+    const store = createInMemoryReferenceStore();
+    await ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock });
+    await retractReference(store, SCOPE, RETRACTION);
+
+    const [row] = await store.listRevisions(SCOPE);
+    expect(projectMetadata(row!)).toMatchObject({
+      state: 'retracted',
+      retractedBy: RETRACTION.actor,
+      retractedReason: RETRACTION.reason,
+      retractedAt: RETRACTION.at,
+    });
+  });
+
+  it('refuses a retraction whose attribution records nothing', async () => {
+    // Whitespace passes a bare presence check while carrying exactly as much
+    // accountability as an omitted field. Each field is checked independently
+    // so a caller cannot satisfy the rule by filling in the easy one.
+    const store = createInMemoryReferenceStore();
+    await ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock });
+
+    for (const [label, bad] of [
+      ['no actor', { ...RETRACTION, actor: '   ' }],
+      ['no reason', { ...RETRACTION, reason: '' }],
+      ['no instant', { ...RETRACTION, at: '' }],
+    ] as const) {
+      const refusal = await refusalOf(retractReference(store, SCOPE, bad));
+      expect(refusal.code, label).toBe('validation-failed');
+      expect(refusal.message, label).toMatch(/silent bypass/);
+    }
+
+    // And the refusal left the reference ALONE. A validation failure that had
+    // already half-applied the transition would be worse than accepting it:
+    // the surface would be unconstrained AND unattributed.
+    const rows = await store.listRevisions(SCOPE);
+    expect(rows[0]!.reference.state).toBe('active');
+    expect(activeRevision(rows)).toBeDefined();
+  });
+
+  it('FALSIFIABILITY CONTROL: a store that drops the attribution fails these assertions', async () => {
+    // The deliberately-wrong implementation, kept permanently in the test file
+    // (CLAUDE.md's prescribed tier for an imported module — no tree mutation, no
+    // sweep race, and it re-proves itself on every CI run).
+    //
+    // This is a port that applies the STATE but discards the retraction — the
+    // exact regression an implementer would introduce by "simplifying"
+    // setLifecycle back to its pre-R3 signature. Without this control, the
+    // assertions above pass equally against a store that never had to carry
+    // attribution at all, and green would not distinguish the two.
+    const store = createInMemoryReferenceStore();
+    const forgetful = {
+      ...store,
+      setLifecycle: async (
+        scope: ReferenceScope,
+        artifactId: string,
+        lifecycle: { readonly state: 'active' | 'superseded' | 'retracted' },
+      ) => store.setLifecycle(scope, artifactId, { state: lifecycle.state }),
+    };
+    await ratifyReference(forgetful, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock });
+    await retractReference(forgetful, SCOPE, RETRACTION);
+
+    const [row] = await forgetful.listRevisions(SCOPE);
+    // It still retracts — which is why a state-only assertion cannot catch this.
+    expect(row!.reference.state).toBe('retracted');
+    // But the audit trail is gone, and THAT is what the real assertions detect.
+    expect(row!.reference.retraction).toBeUndefined();
+    expect(projectMetadata(row!)).toMatchObject({ retractedBy: null, retractedReason: null });
   });
 });
 
@@ -425,6 +545,12 @@ describe('the metadata projection is derived, never hand-maintained', () => {
       interactionState: 'hover',
       requiredCaseCount: 1,
       supersededByRevision: null,
+      // An un-retracted reference projects all three as null rather than
+      // omitting them, so "never retracted" and "retracted by someone we failed
+      // to record" stay distinguishable in a query.
+      retractedBy: null,
+      retractedReason: null,
+      retractedAt: null,
     });
   });
 

@@ -44,6 +44,7 @@ import type { CaptureEnvironment, CompareResult, ReferenceClass } from './contra
 import {
   type RatificationError,
   type RatifiedReference,
+  type ReferenceRetraction,
   superseded,
   validateRatification,
 } from './ratification';
@@ -209,6 +210,14 @@ export interface ReferenceMetadataProjection {
   readonly interactionState: string | null;
   readonly requiredCaseCount: number;
   readonly supersededByRevision: number | null;
+  /**
+   * Retraction attribution, projected so "who lifted this obligation, and why"
+   * is answerable by a QUERY. An audit trail reachable only by decoding every
+   * payload is one nobody runs.
+   */
+  readonly retractedBy: string | null;
+  readonly retractedReason: string | null;
+  readonly retractedAt: string | null;
 }
 
 /**
@@ -241,6 +250,9 @@ export function projectMetadata(stored: StoredReference): ReferenceMetadataProje
     interactionState: env.state ?? null,
     requiredCaseCount: stored.reference.requiredCases.length,
     supersededByRevision: stored.reference.supersededByRevision ?? null,
+    retractedBy: stored.reference.retraction?.actor ?? null,
+    retractedReason: stored.reference.retraction?.reason ?? null,
+    retractedAt: stored.reference.retraction?.at ?? null,
   };
 }
 
@@ -295,7 +307,12 @@ export interface ReferenceStorePort {
   setLifecycle(
     scope: ReferenceScope,
     artifactId: string,
-    lifecycle: { readonly state: RatifiedReference['state']; readonly supersededByRevision?: number },
+    lifecycle: {
+      readonly state: RatifiedReference['state'];
+      readonly supersededByRevision?: number;
+      /** Required in practice for 'retracted'; `retractReference` is what enforces it. */
+      readonly retraction?: ReferenceRetraction;
+    },
   ): Promise<void>;
   /** Evidence rows bound to this reference, any revision. */
   listEvidence(scope: ReferenceScope): Promise<readonly StoredEvidenceRef[]>;
@@ -487,11 +504,31 @@ export async function ratifyReference(
  * Retract the active revision. The surface becomes unratified (D-001): no
  * active revision means nothing to gate against, and every piece of evidence is
  * stale because there is no current revision for it to match.
+ *
+ * ─── WHY ATTRIBUTION IS A REQUIRED ARGUMENT ──────────────────────────────────
+ *
+ * This is the only call that turns a constrained surface back into an
+ * unconstrained one — i.e. the only supported way to make a failing design gate
+ * stop failing without producing the evidence it asked for. An OPTIONAL actor
+ * and reason would be omitted exactly when they matter most, so they are
+ * positional and validated here rather than defaulted: a caller that cannot say
+ * who is retracting and why does not get to retract. The record is written as
+ * part of the lifecycle transition itself, so a retracted revision cannot exist
+ * in the store without it.
  */
 export async function retractReference(
   port: ReferenceStorePort,
   scope: ReferenceScope,
-): Promise<{ readonly retractedRevision: number; readonly invalidatedEvidence: readonly StoredEvidenceRef[] }> {
+  retraction: { readonly actor: string; readonly reason: string; readonly at: string },
+): Promise<{
+  readonly retractedRevision: number;
+  readonly retraction: ReferenceRetraction;
+  readonly invalidatedEvidence: readonly StoredEvidenceRef[];
+}> {
+  // Validated BEFORE the state is read, so a malformed retraction cannot leave a
+  // half-applied transition behind it.
+  const attribution = validRetraction(retraction);
+
   const rows = await port.listRevisions(scope);
   const active = activeRevision(rows);
   if (!active) {
@@ -502,14 +539,48 @@ export async function retractReference(
       rows.length === 0 ? 'not-ratified' : 'already-retracted',
     );
   }
-  await port.setLifecycle(scope, active.artifactId, { state: 'retracted' });
+  await port.setLifecycle(scope, active.artifactId, {
+    state: 'retracted',
+    retraction: attribution,
+  });
   const evidence = await port.listEvidence(scope);
   return {
     retractedRevision: active.reference.identity.revision,
+    retraction: attribution,
     // No active revision: EVERY piece of evidence is stale, including evidence
     // for the revision just retracted.
     invalidatedEvidence: evidence,
   };
+}
+
+/**
+ * Reject a retraction that records nothing.
+ *
+ * Whitespace is trimmed and then required to be non-empty, because `' '` passes
+ * a bare presence check while carrying exactly as much accountability as an
+ * omitted field — and a bypass that satisfies the audit trail by typing a space
+ * is the one this argument exists to prevent.
+ */
+function validRetraction(input: {
+  readonly actor: string;
+  readonly reason: string;
+  readonly at: string;
+}): ReferenceRetraction {
+  const actor = input.actor?.trim() ?? '';
+  const reason = input.reason?.trim() ?? '';
+  const at = input.at?.trim() ?? '';
+  const missing: string[] = [];
+  if (!actor) missing.push('actor');
+  if (!reason) missing.push('reason');
+  if (!at) missing.push('at');
+  if (missing.length > 0) {
+    throw new ReferenceStoreError(
+      `a retraction must record ${missing.join(' and ')}: retraction lifts a ratified obligation, ` +
+        'so an unattributed one is indistinguishable from a silent bypass',
+      'validation-failed',
+    );
+  }
+  return { actor, reason, at };
 }
 
 /**
@@ -598,6 +669,7 @@ export function createInMemoryReferenceStore(): ReferenceStorePort & {
           ...(lifecycle.supersededByRevision !== undefined
             ? { supersededByRevision: lifecycle.supersededByRevision }
             : {}),
+          ...(lifecycle.retraction !== undefined ? { retraction: lifecycle.retraction } : {}),
         },
       });
     },
