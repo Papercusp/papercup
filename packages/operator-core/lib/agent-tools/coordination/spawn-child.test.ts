@@ -489,10 +489,9 @@ describe('executeSpawnChild — D-004 failure model (warnings, never throws)', (
   // write and then proceed — the guard refuses the import, it does not latch.
   it('a retry after a failed assertion store completes normally', async () => {
     let attempt = 0;
-    const { deps, calls } = stubDeps({
+    const { deps } = stubDeps({
       writeAssertions: vi.fn(async (_s, _p, assertions) => {
         attempt++;
-        calls.push('writeAssertions');
         return attempt === 1
           ? { written: 0, errors: ['VAL-x: deadlock detected'] }
           : { written: assertions.length, errors: [] };
