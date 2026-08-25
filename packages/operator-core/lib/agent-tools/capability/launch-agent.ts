@@ -78,6 +78,7 @@ import type { ColorScheme } from '../../console-color-schemes';
 import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discovery';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { isPidInLiveWindowScope } from '../../task-manager/terminal-residue-census';
+import { PSU_LAUNCH_LOG_TAIL_CHARS, readPsuLaunchLogTail } from '../../psu-launch-log.mjs';
 import {
   resolveSavedFleetLaunchSpec,
   type SavedFleetLaunchSpecProvenance,
@@ -92,6 +93,26 @@ const MAX_AGENTS = 12;
  *  within a few seconds (verifyResumeStarted returns early), so only a silent
  *  no-op pays this full window — comfortably under the ~55s MCP foreground cap. */
 const RESUME_VERIFY_TIMEOUT_MS = 30_000;
+
+/**
+ * Read the bounded, per-owner psu boot log without allowing this diagnostic
+ * side-channel to change the resume verdict. The launcher writes this file
+ * before it can register a live host, so it is the only evidence available for
+ * an archived/no-op resume that leaves no psu-pty host behind.
+ */
+function readResumeBootLogTail(ownerId: string): string | null {
+  try {
+    return readPsuLaunchLogTail(ownerId, { chars: PSU_LAUNCH_LOG_TAIL_CHARS });
+  } catch {
+    return null;
+  }
+}
+
+function resumeBootLogNote(tail: string | null): string {
+  if (tail == null) return ' No per-owner psu boot log was available.';
+  if (tail.length === 0) return ' The per-owner psu boot log was present but empty.';
+  return ` Per-owner psu boot log tail (bounded to ${PSU_LAUNCH_LOG_TAIL_CHARS} chars):\n${tail}`;
+}
 
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
@@ -1015,6 +1036,7 @@ export default defineTool({
       actualSessionId: string | null;
       mismatch: boolean;
       rollback: string | null;
+      bootLogTail?: string | null;
     } | null = null;
     if (isResume && !fork && !args.headless && resumeOwnerId && opened.length > 0) {
       const verify = await verifyResumeStarted(resumeOwnerId, {
@@ -1040,18 +1062,21 @@ export default defineTool({
               `Rollback result for the newly launched wrong session: ${rollback}.`,
           );
         } else {
+          const bootLogTail = readResumeBootLogTail(resumeOwnerId);
           resumeVerification = {
             expectedSessionId: verify.expectedSessionId,
             actualSessionId: verify.actualSessionId,
             mismatch: false,
             rollback: null,
+            bootLogTail,
           };
           notes.push(
             `✗ RESUME UNVERIFIED — a window opened but NO live agent registered for ${resumeOwnerId} within ` +
               `${Math.round(RESUME_VERIFY_TIMEOUT_MS / 1000)}s, so the resume almost certainly NO-OP'd (its transcript may be ` +
               `archived off-disk, or \`claude --resume\` found nothing and the terminal exited). Do NOT assume it is running: ` +
               `check the terminal window; if it exited, rematerialize the archived transcript ` +
-              `(POST /api/adv/sessions/rematerialize) or relaunch FRESH with a context-seeded brief.`,
+              `(POST /api/adv/sessions/rematerialize) or relaunch FRESH with a context-seeded brief.` +
+              resumeBootLogNote(bootLogTail),
           );
         }
       } else {

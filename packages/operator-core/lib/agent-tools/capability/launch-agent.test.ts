@@ -12,6 +12,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnConsoleResult } from '../../console-spawn';
+import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -19,6 +20,12 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
+
+const readPsuLaunchLogTailMock = vi.hoisted(() => vi.fn());
+vi.mock('../../psu-launch-log.mjs', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  readPsuLaunchLogTail: (...args: unknown[]) => readPsuLaunchLogTailMock(...args),
+}));
 
 const shutdownViaPtyMock = vi.hoisted(() =>
   vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'),
@@ -212,6 +219,7 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  readPsuLaunchLogTailMock.mockReturnValue(null);
   codexPreflightHomeMock.mockResolvedValue(null);
   codexPreflightModelMock.mockReset();
   claimAgentLaunchMock.mockResolvedValue({
@@ -873,6 +881,32 @@ describe('resume + fork (D-004/D-007)', () => {
         summary: expect.objectContaining({ mode: 'resume', resumeVerified: false }),
       }),
     );
+  });
+
+  it('includes the bounded per-owner psu boot-log tail when a resume is unverified', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    verifyResumeStartedMock.mockResolvedValue({
+      started: false,
+      waitedMs: 30_000,
+      expectedSessionId: 'sid-dead',
+      actualSessionId: null,
+      mismatch: false,
+    });
+    readPsuLaunchLogTailMock.mockReturnValue('psu: resume transcript was not found');
+
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+
+    expect(readPsuLaunchLogTailMock).toHaveBeenCalledWith(
+      'su-a1a71',
+      { chars: PSU_LAUNCH_LOG_TAIL_CHARS },
+    );
+    expect(textOf(res)).toContain('Per-owner psu boot log tail');
+    expect(textOf(res)).toContain('psu: resume transcript was not found');
+    expect(dataOf(res)?.launch).toMatchObject({
+      resumeVerification: {
+        bootLogTail: 'psu: resume transcript was not found',
+      },
+    });
   });
 
   it('rolls back a newly launched resume whose backend UUID differs from the exact request', async () => {
