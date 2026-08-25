@@ -35,8 +35,7 @@ vi.mock('@papercusp/flags/server', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/flags/server')>('@papercusp/flags/server');
   return {
     ...actual,
-    getFlag: async (flag: string) =>
-      flag === 'papercusp-spec-triad-required' ? false : true,
+    getFlag: async (flag: string) => (flag === 'papercusp-spec-triad-required' ? false : true),
   };
 });
 vi.mock('../../workspace-registry', async () => {
@@ -160,7 +159,9 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(run[0].workspace_id).toBe(WS);
 
     // Run-scoped frontier work_items: source_plan_slug = TEMPLATE, payload.plan_run = the run.
-    const wis = await sql<Array<{ feature_id: string; source_plan_slug: string; status: string; payload: Record<string, unknown> }>>`
+    const wis = await sql<
+      Array<{ feature_id: string; source_plan_slug: string; status: string; payload: Record<string, unknown> }>
+    >`
       SELECT feature_id, source_plan_slug, status, payload FROM harness_shared.harness_features_consolidated
        WHERE harness_slug = ${HARNESS} AND workspace_id = ${WS} AND source_plan_slug = ${TEMPLATE}`;
     expect(wis).toHaveLength(2);
@@ -280,13 +281,15 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       FOR EACH ROW EXECUTE FUNCTION harness_shared.fail_plan_run_insert_once();
     `);
     try {
-      await expect(runScheduledPlanFire(sql, {
-        installSlug: HARNESS,
-        workspaceId: WS,
-        templateSlug: TEMPLATE,
-        trigger: 'event',
-        runToken,
-      })).rejects.toThrow(/injected plan_runs failure/);
+      await expect(
+        runScheduledPlanFire(sql, {
+          installSlug: HARNESS,
+          workspaceId: WS,
+          templateSlug: TEMPLATE,
+          trigger: 'event',
+          runToken,
+        }),
+      ).rejects.toThrow(/injected plan_runs failure/);
     } finally {
       await sql.unsafe(`
         DROP TRIGGER IF EXISTS fail_plan_run_insert_once ON harness_shared.plan_runs;
@@ -358,9 +361,12 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     // Re-materialize this template with an EXPLICIT 'queue' policy (overrides beforeEach's
     // app-layer 'skip' default).
     await materializePlanSchedule({
-      workspaceId: WS, harnessSlug: HARNESS, templateSlug: TEMPLATE,
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      templateSlug: TEMPLATE,
       schedule: { kind: 'rrule', rrule: 'FREQ=DAILY', dtstart: '2026-01-01T09:00:00.000Z' },
-      concurrency: 'queue', sql,
+      concurrency: 'queue',
+      sql,
     });
 
     await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
@@ -393,7 +399,10 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     // A MANUAL run-now must NOT reuse last_fired_at's token (that would recompute sched's slug and
     // replay-no-op). It mints a fresh run instead — even though last_fired_at is still set.
     const m1 = await runScheduledPlanFire(sql, {
-      installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE, trigger: 'manual',
+      installSlug: HARNESS,
+      workspaceId: WS,
+      templateSlug: TEMPLATE,
+      trigger: 'manual',
     });
     expect(m1!.replayed).toBe(false);
     expect(m1!.instanceSlug).not.toBe(sched!.instanceSlug);
@@ -403,7 +412,10 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     // A SECOND manual run-now (potentially the same millisecond) still mints a distinct run —
     // the module-monotonic manual token guarantees uniqueness.
     const m2 = await runScheduledPlanFire(sql, {
-      installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE, trigger: 'manual',
+      installSlug: HARNESS,
+      workspaceId: WS,
+      templateSlug: TEMPLATE,
+      trigger: 'manual',
     });
     expect(m2!.replayed).toBe(false);
     expect(m2!.instanceSlug).not.toBe(m1!.instanceSlug);
@@ -441,7 +453,11 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
 
   it('returns null for an unknown template', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: 'does-not-exist' });
+    const res = await runScheduledPlanFire(sql, {
+      installSlug: HARNESS,
+      workspaceId: WS,
+      templateSlug: 'does-not-exist',
+    });
     expect(res).toBeNull();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("template 'does-not-exist' not found"));
     warn.mockRestore();
