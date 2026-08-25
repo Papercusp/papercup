@@ -29,6 +29,13 @@ export type SavedFleetLaunchSpecSource =
   | typeof SAVED_FLEET_LAUNCH_SPEC_SOURCE
   | typeof LEGACY_FLEET_LAUNCH_SPEC_SOURCE;
 
+/**
+ * Canonical headcount rows require a plan, while a legacy member may have
+ * been launched through the planless capability:launch-agent door. Keep that
+ * distinction local to recovery rather than weakening FleetHeadcountConfig.
+ */
+export type SavedFleetLaunchConfig = Omit<FleetHeadcountConfig, 'plan'> & { plan?: string };
+
 export type SavedFleetLaunchField =
   | 'plan'
   | 'harness'
@@ -74,7 +81,8 @@ export interface SavedFleetLaunchSpecRequest {
 }
 
 export interface SavedFleetLaunchSpec {
-  plan: string;
+  /** Optional only for legacy planless recovery; canonical targets always set it. */
+  plan?: string;
   harness: string;
   member: MemberSpec;
 }
@@ -105,7 +113,7 @@ export type SavedFleetLaunchSpecResolution =
       ok: true;
       found: true;
       target: number;
-      config: FleetHeadcountConfig;
+      config: SavedFleetLaunchConfig;
       saved: SavedFleetLaunchSpec;
       effective: SavedFleetLaunchSpec;
       preservedFields: SavedFleetLaunchField[];
@@ -155,7 +163,7 @@ function provenanceFor(
 /** Convert the validated headcount recipe to the command-neutral member spec. */
 export function savedFleetLaunchSpecFromConfig(config: FleetHeadcountConfig): SavedFleetLaunchSpec {
   return {
-    plan: config.plan,
+    ...(config.plan !== undefined ? { plan: config.plan } : {}),
     harness: config.harness,
     member: {
       agent: config.agent,
@@ -175,8 +183,16 @@ export function savedFleetLaunchSpecFromConfig(config: FleetHeadcountConfig): Sa
 }
 
 export type LegacyLaunchParseResult =
-  | { ok: true; config: FleetHeadcountConfig; saved: SavedFleetLaunchSpec }
+  | { ok: true; config: SavedFleetLaunchConfig; saved: SavedFleetLaunchSpec }
   | { ok: false; message: string };
+
+/** Trusted values a recovery caller may supply only to fill absent legacy fields. */
+export interface LegacyLaunchSpecFallbacks {
+  /** Explicit respawn agent override, used when both legacy sources omit the agent. */
+  agent?: string;
+  /** Target-member pot/harness context or a concrete caller harness. */
+  harness?: string;
+}
 
 const LEGACY_AGENTS = new Set<FleetHeadcountConfig['agent']>(['claude', 'omp', 'codex']);
 const LEGACY_CARRY = new Set<NonNullable<FleetHeadcountConfig['carry']>>(['warm', 'cold']);
@@ -204,15 +220,17 @@ function matchingValue(
 
 /**
  * Convert one legacy adv_sessions record into the same command-neutral recipe
- * used by the canonical fleet target.  This is deliberately strict: a legacy
+ * used by the canonical fleet target. This is deliberately strict: a legacy
  * row is useful only when its owner, workspace, fleet membership, and recorded
- * argv all attest to the same launch.  Missing data stays an error rather than
- * becoming a fresh launch with guessed defaults.
+ * argv all attest to the same launch. Missing data stays an error rather than
+ * becoming a fresh launch with guessed defaults. The only exceptions are
+ * explicit, trusted recovery fallbacks for fields older records never stored.
  */
 export function savedFleetLaunchSpecFromLegacyRecord(
   record: AdvSessionLaunchRecord,
   workspaceId: string,
   fleetSlug: string,
+  fallbacks: LegacyLaunchSpecFallbacks = {},
 ): LegacyLaunchParseResult {
   if (!record || record.workspaceId !== workspaceId) {
     return {
@@ -220,14 +238,11 @@ export function savedFleetLaunchSpecFromLegacyRecord(
       message: `Legacy adv_sessions launch record workspace does not match requested workspace \`${workspaceId}\`.`,
     };
   }
-  const launch = parseSuLaunchSpecRecord(record.launchSpec);
-  if (!launch) return { ok: false, message: 'Legacy adv_sessions launch_spec is missing or malformed.' };
-  if (launch.workspaceId !== workspaceId) {
-    return { ok: false, message: `Legacy launch_spec workspace \`${launch.workspaceId}\` does not match \`${workspaceId}\`.` };
-  }
-  if (launch.fleet?.slug !== fleetSlug) {
-    return { ok: false, message: `Legacy launch_spec fleet does not match requested fleet \`${fleetSlug}\`.` };
-  }
+  const rawLaunchSpec =
+    record.launchSpec && typeof record.launchSpec === 'object' && !Array.isArray(record.launchSpec)
+      ? record.launchSpec as Record<string, unknown>
+      : null;
+  if (!rawLaunchSpec) return { ok: false, message: 'Legacy adv_sessions launch_spec is missing or malformed.' };
   if (!Array.isArray(record.launchArgv) || !record.launchArgv.every((item) => typeof item === 'string')) {
     return { ok: false, message: 'Legacy adv_sessions launch_argv is missing or malformed.' };
   }
@@ -237,14 +252,37 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     return { ok: false, message: `Legacy launch_argv fleet does not match requested fleet \`${fleetSlug}\`.` };
   }
 
+  // Older launch_spec rows can omit agent while launch_argv may still attest it.
+  // If both legacy sources omitted it, only an explicit recovery fallback may
+  // fill it; no system/default agent is guessed here.
+  const recordedAgent = argFlag(argv, 'agent');
+  const storedAgent = typeof rawLaunchSpec.agent === 'string' && rawLaunchSpec.agent.trim()
+    ? rawLaunchSpec.agent
+    : null;
+  const launch = parseSuLaunchSpecRecord({
+    ...rawLaunchSpec,
+    ...(storedAgent || recordedAgent || fallbacks.agent
+      ? { agent: storedAgent ?? recordedAgent ?? fallbacks.agent }
+      : {}),
+  });
+  if (!launch) return { ok: false, message: 'Legacy adv_sessions launch_spec is missing or malformed.' };
+  if (launch.workspaceId !== workspaceId) {
+    return { ok: false, message: `Legacy launch_spec workspace \`${launch.workspaceId}\` does not match \`${workspaceId}\`.` };
+  }
+  if (launch.fleet?.slug !== fleetSlug) {
+    return { ok: false, message: `Legacy launch_spec fleet does not match requested fleet \`${fleetSlug}\`.` };
+  }
+
   const plan = matchingValue('plan', launch.planSlug, argFlag(argv, 'plan'));
   const harness = matchingValue('harness', launch.harnessSlug, argFlag(argv, 'harness'));
   const agent = matchingValue('agent', launch.agent, argFlag(argv, 'agent'));
   if (plan.error || harness.error || agent.error) {
     return { ok: false, message: plan.error ?? harness.error ?? agent.error! };
   }
-  if (!plan.value || !harness.value || !agent.value || !LEGACY_AGENTS.has(agent.value as FleetHeadcountConfig['agent'])) {
-    return { ok: false, message: 'Legacy launch record lacks a valid plan, harness, or agent.' };
+  const fallbackHarness = fallbacks.harness?.trim() || null;
+  const effectiveHarness = harness.value ?? fallbackHarness;
+  if (!effectiveHarness || !agent.value || !LEGACY_AGENTS.has(agent.value as FleetHeadcountConfig['agent'])) {
+    return { ok: false, message: 'Legacy launch record lacks a valid harness or agent.' };
   }
 
   const recordedModel = modelSpecFromArgv(argv);
@@ -286,9 +324,9 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     item === '--brain' || item === '--allow-subagents' || item === '--no-subagents' ||
     item.startsWith('--feature=') || item.startsWith('--profile=') || item.startsWith('--add-dir='),
   );
-  const config: FleetHeadcountConfig = {
-    plan: plan.value,
-    harness: harness.value,
+  const config: SavedFleetLaunchConfig = {
+    ...(plan.value ? { plan: plan.value } : {}),
+    harness: effectiveHarness,
     agent: agent.value as FleetHeadcountConfig['agent'],
     ...(model.model ? { model: model.model } : {}),
     ...(model.effort ? { effort: model.effort } : {}),
@@ -433,7 +471,7 @@ function reconstructionConflicts(
 export function resolveLoadedSavedFleetLaunchSpec(opts: {
   target: FleetHeadcountTarget | null;
   saved?: SavedFleetLaunchSpec | null;
-  config?: FleetHeadcountConfig | null;
+  config?: SavedFleetLaunchConfig | null;
   source?: SavedFleetLaunchSpecSource;
   syntheticTarget?: number;
   workspaceId: string;
@@ -546,6 +584,7 @@ export async function resolveSavedFleetLaunchSpec(opts: {
   readTarget?: typeof getFleetHeadcountTarget;
   memberOwnerId?: string;
   readLegacy?: typeof readAdvSessionLaunchRecordByOwner;
+  legacyFallbacks?: LegacyLaunchSpecFallbacks;
 }): Promise<SavedFleetLaunchSpecResolution> {
   const readTarget = opts.readTarget ?? getFleetHeadcountTarget;
   let target: FleetHeadcountTarget | null;
@@ -580,7 +619,12 @@ export async function resolveSavedFleetLaunchSpec(opts: {
       };
     }
     if (legacy) {
-      const parsed = savedFleetLaunchSpecFromLegacyRecord(legacy, opts.workspaceId, opts.fleetSlug);
+      const parsed = savedFleetLaunchSpecFromLegacyRecord(
+        legacy,
+        opts.workspaceId,
+        opts.fleetSlug,
+        opts.legacyFallbacks,
+      );
       if (!parsed.ok) {
         const provenance = provenanceFor(opts.workspaceId, opts.fleetSlug, null, LEGACY_FLEET_LAUNCH_SPEC_SOURCE);
         return {

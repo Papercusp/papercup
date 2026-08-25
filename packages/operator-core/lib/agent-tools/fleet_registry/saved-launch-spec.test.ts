@@ -80,6 +80,32 @@ const legacyRecord: AdvSessionLaunchRecord = {
   ],
 };
 
+const incompleteLegacyRecord: AdvSessionLaunchRecord = {
+  workspaceId: 'ws-test',
+  launchSpec: {
+    ...(legacyRecord.launchSpec as Record<string, unknown>),
+    agent: undefined,
+    harnessSlug: null,
+    planSlug: null,
+  },
+  launchArgv: [
+    'psu',
+    '--no-picker',
+    '--fleet=byoc',
+    '--headless',
+    '--carry=warm',
+    '--account=default',
+    '--model=gpt-5.6-sol:xhigh',
+    '--compaction-limit=400000',
+    '--role=su',
+    '--launch-context=/tmp/byoc.md',
+    '--context-size=trimmed',
+    '--profile=engineer',
+    '--brain',
+    '--add-dir=/tmp/shared',
+  ],
+};
+
 describe('saved fleet launch spec resolver (agent-launch-unification P-043)', () => {
   it('materializes the canonical command-neutral spec and defaults saved visibility to headless', () => {
     expect(savedFleetLaunchSpecFromConfig({ ...target.config, headless: undefined })).toMatchObject({
@@ -276,6 +302,64 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
         harness: 'papercusp',
         member: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh', headless: true },
       },
+    });
+  });
+
+  it('recovers a planless legacy record only with trusted agent and harness fallbacks', () => {
+    expect(savedFleetLaunchSpecFromLegacyRecord(incompleteLegacyRecord, 'ws-test', 'byoc')).toMatchObject({
+      ok: false,
+      message: expect.stringMatching(/malformed|harness|agent/i),
+    });
+
+    const result = savedFleetLaunchSpecFromLegacyRecord(
+      incompleteLegacyRecord,
+      'ws-test',
+      'byoc',
+      { agent: 'codex', harness: 'papercusp' },
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      config: {
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+        contextSize: 'trimmed',
+        compactionLimit: 400_000,
+        extraArgs: ['--profile=engineer', '--brain', '--add-dir=/tmp/shared'],
+      },
+      saved: {
+        harness: 'papercusp',
+        member: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'xhigh', headless: true },
+      },
+    });
+    if (!result.ok) throw new Error('expected legacy recovery');
+    expect(result.config).not.toHaveProperty('plan');
+    expect(result.saved).not.toHaveProperty('plan');
+  });
+
+  it('threads trusted legacy fallbacks through the resolver without changing canonical behavior', async () => {
+    const result = await resolveSavedFleetLaunchSpec({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      memberOwnerId: 'su-legacy-member',
+      requireSaved: true,
+      readTarget: vi.fn().mockResolvedValue(null),
+      readLegacy: vi.fn().mockResolvedValue(incompleteLegacyRecord),
+      legacyFallbacks: { agent: 'codex', harness: 'papercusp' },
+      requested: { headless: false },
+      allowDeltas: ['headless'],
+      reusePath: base.reusePath,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      found: true,
+      target: 1,
+      effective: { plan: undefined, harness: 'papercusp', member: { agent: 'codex', headless: false } },
+      provenance: { source: LEGACY_FLEET_LAUNCH_SPEC_SOURCE, target: null },
     });
   });
 

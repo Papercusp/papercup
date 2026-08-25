@@ -310,6 +310,73 @@ describe('fleet:respawn-member (P-008)', () => {
     });
   });
 
+  it('threads trusted legacy fallbacks and omits plan when respawning a planless member', async () => {
+    resolveSavedFleetLaunchSpec.mockResolvedValueOnce({
+      ok: true,
+      found: true,
+      target: 1,
+      config: {
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+        contextSize: 'trimmed',
+        role: 'su',
+      },
+      saved: {
+        harness: 'papercusp',
+        member: {
+          agent: 'codex',
+          model: 'gpt-5.6-sol',
+          effort: 'xhigh',
+          account: 'default',
+          headless: true,
+          carry: 'warm',
+          contextSize: 'trimmed',
+          role: 'su',
+        },
+      },
+      effective: {
+        harness: 'papercusp',
+        member: {
+          agent: 'codex',
+          model: 'gpt-5.6-sol',
+          effort: 'xhigh',
+          account: 'default',
+          headless: true,
+          carry: 'warm',
+          contextSize: 'trimmed',
+          role: 'su',
+        },
+      },
+      preservedFields: ['harness', 'agent', 'model', 'account', 'headless', 'carry', 'contextSize', 'role'],
+      overrides: [],
+      provenance: { source: 'adv_sessions.launch_spec', workspaceId: 'ws', fleetSlug: SLUG, target: null },
+      reusePath: 'fleet:respawn-member -> capability:launch-agent',
+    });
+
+    const res = await tool.handler(
+      { member: MEMBER, agent: 'codex', model: 'gpt-5.6-sol', headless: true } as never,
+      { harnessSlug: 'papercusp' } as never,
+    );
+    const p = parse(res);
+    const launchArgs = launchHandler.mock.calls[0][0] as Record<string, unknown> & {
+      members: Array<Record<string, unknown>>;
+    };
+
+    expect(p).toMatchObject({ ok: true, launchSpec: { provenance: { source: 'adv_sessions.launch_spec' } } });
+    expect(resolveSavedFleetLaunchSpec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        legacyFallbacks: { agent: 'codex', harness: 'papercusp' },
+      }),
+    );
+    expect(launchArgs).toMatchObject({ fleet: SLUG, count: 1, harness: 'papercusp', members: [{ agent: 'codex' }] });
+    expect(launchArgs).not.toHaveProperty('plan');
+  });
+
   it('ABORTS (no relaunch) when the kill fails — never double-runs the lane', async () => {
     killHandler.mockResolvedValue({ data: { ok: true, results: [{ ok: false, target: MEMBER, error: 'no host' }], counts: { ok: 0, failed: 1 } } });
     const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
