@@ -5,7 +5,9 @@ import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   buildWorkspaceHostBuildManifest,
+  deriveWorkspaceHostCanonicalArtifactUrls,
 } from "./workspace-host-build-manifest";
 import {
   WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX,
@@ -25,6 +27,7 @@ import {
 } from "./workspace-host-image";
 
 const RELEASE_DIGEST = "a".repeat(64);
+const CANONICAL_URLS = deriveWorkspaceHostCanonicalArtifactUrls(RELEASE_DIGEST);
 const SIGNING_PUBLIC_KEY =
   "untrusted comment: Papercusp release key\nRWQpublickey";
 const KEY_DIGEST = createHash("sha256")
@@ -66,6 +69,14 @@ function artifact(
         sha256: RELEASE_DIGEST,
         sizeBytes: 42_000,
       },
+      // A shippable bundle must carry the remote initializer as an executable. Without it the
+      // image installs and reports healthy, then fails every initialization at the far end.
+      {
+        path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+        sha256: "e".repeat(64),
+        sizeBytes: 2_048,
+        executable: true,
+      },
     ],
     parameters: [{ name: "distribution_profile", value: "vm-release" }],
     targets: [
@@ -80,9 +91,11 @@ function artifact(
     buildManifest,
     release: {
       version,
-      bundleUrl: `https://releases.papercusp.com/server/${version}.tgz`,
+      // Derived from the digest rather than hand-authored, so the fixture exercises the same
+      // canonical content-addressing a real release must use instead of an aspirational host.
+      bundleUrl: CANONICAL_URLS.bundleUrl,
       bundleSha256: RELEASE_DIGEST,
-      signatureUrl: `https://releases.papercusp.com/server/${version}.tgz.minisig`,
+      signatureUrl: CANONICAL_URLS.signatureUrl,
       signingPublicKey: SIGNING_PUBLIC_KEY,
       signingKeySha256: KEY_DIGEST,
     },
@@ -307,8 +320,8 @@ describe("workspace-host image compatibility", () => {
       release: { ...candidate.release, bundleSha256: "f".repeat(64) },
     });
 
-    expect(errors).toContain(
-      "release.bundleSha256 must equal buildManifest.releaseArtifact.sha256",
+    expect(errors.join("\n")).toContain(
+      `release provenance: release.bundleSha256 ${"f".repeat(64)} does not match the built artifact ${RELEASE_DIGEST}`,
     );
   });
 

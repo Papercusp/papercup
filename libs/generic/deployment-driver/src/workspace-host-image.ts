@@ -1,7 +1,10 @@
 import { createHash } from "node:crypto";
 
 import type { WorkspaceHostBuildManifest } from "./workspace-host-build-manifest";
-import { verifyWorkspaceHostBuildManifest } from "./workspace-host-build-manifest";
+import {
+  verifyWorkspaceHostBuildManifest,
+  verifyWorkspaceHostReleaseProvenance,
+} from "./workspace-host-build-manifest";
 import {
   DEFAULT_WORKSPACE_HOST_SERVICE_USER,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
@@ -216,17 +219,26 @@ export function validateWorkspaceHostImageArtifact(
   if (artifact.release.version !== artifact.image.version) {
     errors.push("release.version must equal image.version");
   }
-  if (
-    artifact.release.bundleSha256 !==
-    artifact.buildManifest.releaseArtifact.sha256
-  ) {
+
+  // The release pins must be provenance-bound to the manifest above: same digest, same version,
+  // an immutably addressed bundle, a matching detached signature, and a packaged executable
+  // initializer. This is delegated rather than restated so the two surfaces cannot drift — the
+  // digest and version equalities used to be duplicated here, which is exactly the second copy
+  // that goes stale. The manifest's own self-consistency errors are dropped because they are
+  // already reported above under the `buildManifest:` prefix; re-reporting them here would show
+  // one defect twice and invite fixing it in the wrong place.
+  const provenance = verifyWorkspaceHostReleaseProvenance(
+    artifact.buildManifest,
+    artifact.release,
+  );
+  if (!provenance.ok) {
     errors.push(
-      "release.bundleSha256 must equal buildManifest.releaseArtifact.sha256",
+      ...provenance.errors
+        .filter((error) => !error.startsWith("manifest is not self-consistent:"))
+        .map((error) => `release provenance: ${error}`),
     );
   }
-  if (!SHA256.test(artifact.release.bundleSha256)) {
-    errors.push("release.bundleSha256 must be a lowercase SHA-256 digest");
-  }
+
   if (!SHA256.test(artifact.release.signingKeySha256)) {
     errors.push("release.signingKeySha256 must be a lowercase SHA-256 digest");
   }
