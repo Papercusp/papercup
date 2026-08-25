@@ -28,10 +28,8 @@ import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import {
   NATIVE_SESSION_ID_RE,
-  type AdvSessionEndedBy,
   adoptStartingTerminalLaunch,
   endedRecordedOwnerIds,
-  hasAdvSessionTerminalEvidence,
   markAdvSessionEnded,
   parseKilledBySignalReport,
   claimAdvSessionResume,
@@ -54,10 +52,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   classifyPrePinnedOwnerRows,
   describePrePinnedConflicts,
-  refinePrePinnedRowLiveness,
-  resolvePrePinnedOwnerLiveness,
+  mapPrePinnedOwnerSessionState,
 } from './pre-pinned-owner-rows';
-import { probeProcessLiveness } from '../../../agent-tools/coordination/presence';
+import { resolveSessionStates } from '../../../agent-tools/coordination/liveness-oracle';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -1897,9 +1894,9 @@ const post = defineTool({
       // tuple), so a repaired ghost simply drops out of the query.
       await repairStaleAdvSessionTerminalMarkers(requestedSid);
       const live = await sql<
-        Array<{ id: string; display: string | null; has_session: boolean; ended_by: AdvSessionEndedBy | null }>
+        Array<{ id: string; display: string | null; has_session: boolean }>
       >`
-        SELECT id::text, display, (session_id IS NOT NULL) AS has_session, ended_by
+        SELECT id::text, display, (session_id IS NOT NULL) AS has_session
           FROM harness_shared.adv_sessions
          WHERE coord_owner_id = ${requestedSid} AND ended_at IS NULL
          ORDER BY id DESC
@@ -1924,40 +1921,23 @@ const post = defineTool({
       // than by re-identifying rows across two traversals of the query result — see
       // that module for why the previous filter/includes shape was a latent
       // reclassify-every-precursor-as-a-conflict bug rather than a style question.
-      // EI-21365235532676472: a FAILED resume can strand an un-ended adv_sessions row
-      // whose process is gone — coord presence already reports the owner ended, yet
-      // this binding keeps refusing every fresh-successor launch with the 409 below.
-      // Resolve THREE-WAY process evidence once for this owner (both witnesses are
-      // owner-keyed) and attach it to every candidate row: findLiveHost is positive
-      // live evidence; ONLY an authoritative ESRCH on this machine's supervisor-beat
-      // pid may put a row in the reclaimable bucket. Live/unknown rows stay blocking,
-      // because absence of evidence is not proof of death.
-      const beatRows = await sql<Array<{ pid: number | null; host: string | null }>>`
-        SELECT pid, host
-          FROM harness_shared.coord_presence
-         WHERE owner_id = ${requestedSid}
-         LIMIT 1
-      `;
-      const liveness = resolvePrePinnedOwnerLiveness(requestedSid, {
-        findHost: findLiveHost,
-        beat: beatRows[0] ?? null,
-        probeBeat: probeProcessLiveness,
-      });
-      // EI-21417550055038906 belt-and-suspenders: the repair above is best-effort
-      // (returns 0 on a DB error), so a half-terminal row can still surface here.
-      // Its persisted `ended_by` IS positive terminal evidence (the teardown writer
-      // observed the death; only the timestamp write was lost) — refine that row to
-      // 'dead' so it lands in reclaimableConflicts and is stamped ended below,
-      // instead of blocking the owner's own successor. Positive live evidence for
-      // the owner still wins (see refinePrePinnedRowLiveness).
+      // EI-21442511412659661: use the shared liveness oracle rather than a
+      // bootstrap-local pid/pty interpretation. Hydration is per-owner because
+      // this route starts one pre-pinned owner at a time. The read is fail-soft:
+      // an oracle failure is indistinguishable from an unknown verdict here and
+      // must keep the binding blocking, never authorise a reclaim.
+      const oracleSessionState = await resolveSessionStates(
+        [{ ownerId: requestedSid }],
+        { hydratePerId: true },
+      )
+        .then((verdicts) => verdicts.get(requestedSid)?.sessionState)
+        .catch(() => undefined);
+      // Only the oracle's confirmed terminal states may reclaim. In particular,
+      // recorded/live/unknown (and every other non-terminal state) remain a
+      // blocking conflict; missing oracle evidence is not proof of death.
+      const liveness = mapPrePinnedOwnerSessionState(oracleSessionState);
       const { precursors, reclaimableConflicts, conflicts } = classifyPrePinnedOwnerRows(
-        live.map((row) => ({
-          ...row,
-          liveness: refinePrePinnedRowLiveness(
-            liveness,
-            hasAdvSessionTerminalEvidence({ endedAt: null, endedBy: row.ended_by }),
-          ),
-        })),
+        live.map((row) => ({ ...row, liveness })),
       );
       if (conflicts.length > 0) {
         // Carry WHY each live row failed the precursor test. This refusal is
