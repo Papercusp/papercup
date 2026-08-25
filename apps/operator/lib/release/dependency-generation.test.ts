@@ -138,6 +138,15 @@ describe('immutable dependency generation', () => {
     expect(first.status, first.stderr).toBe(0);
     expect(first.stdout).toContain('DEPENDENCY_GENERATION_RESULT schema=1');
     expect(first.stdout).toContain('reused=false');
+    expect(first.stderr).toContain(
+      'capturing live dependency manifest (before copy)',
+    );
+    expect(first.stderr).toContain(
+      'captured live dependency manifest (after copy)',
+    );
+    expect(first.stderr).toContain(
+      'fingerprinted immutable copied dependency snapshot',
+    );
 
     const generation = publishedPath(first.stdout);
     expect(

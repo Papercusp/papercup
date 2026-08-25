@@ -42,6 +42,8 @@ import {
   ISOLATION_RUN_TIMEOUT_MS,
   RESCUE_TEST_TIMEOUT_MS,
   WORKSPACE_RERUN_TIMEOUT_MS,
+  DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
+  DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
   GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
   GREEN_CHECKPOINT_RESERVED_MAX_FORKS,
   GATE_ESCALATION_SOURCE,
@@ -2178,6 +2180,13 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       "/int",
     ]);
     expect(calls[0].opts?.timeoutMs).toBeTypeOf("number");
+    expect(calls[0].opts).toMatchObject({
+      timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
+      timeoutResetsOnProgress: true,
+      hardTimeoutMs: DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
+      killProcessGroupOnTimeout: true,
+    });
+    expect(calls[0].opts?.onOutput).toBeTypeOf("function");
     expect(calls[0].opts?.killProcessGroupOnTimeout).toBe(true);
     expect(calls[1].cmd).toBe("bash");
     expect(

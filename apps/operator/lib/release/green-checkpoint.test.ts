@@ -2905,6 +2905,42 @@ describe("runGreenCheckpoint", () => {
     );
   });
 
+  it("EI-214116: child output resets the idle timeout while the hard ceiling stays independent", async () => {
+    const completed = await runCmd(
+      "bash",
+      [
+        "-c",
+        "printf 'stage=before\\n'; sleep 0.7; printf 'stage=copy\\n'; sleep 0.7; printf 'stage=after\\n'; sleep 0.7; printf 'stage=done\\n'",
+      ],
+      {
+        timeoutMs: 1_500,
+        timeoutResetsOnProgress: true,
+        hardTimeoutMs: 8_000,
+        killProcessGroupOnTimeout: true,
+      },
+    );
+    expect(completed.stdout).toContain("stage=done");
+
+    const hardTimeout = await runCmd(
+      "bash",
+      ["-c", "while true; do printf 'still-alive\\n'; sleep 0.1; done"],
+      {
+        timeoutMs: 2_000,
+        timeoutResetsOnProgress: true,
+        hardTimeoutMs: 1_200,
+        killProcessGroupOnTimeout: true,
+      },
+    ).then(
+      () => null,
+      (caught: unknown) => caught,
+    );
+    expect(hardTimeout).toBeInstanceOf(Error);
+    expect(String(hardTimeout)).toContain(
+      "exceeded hard timeout after 1200ms",
+    );
+    expect(String(hardTimeout)).toContain("still-alive");
+  });
+
   it("reports child output progress while retaining stdout and stderr", async () => {
     const onProgress = vi.fn();
     const result = await runCmd(
