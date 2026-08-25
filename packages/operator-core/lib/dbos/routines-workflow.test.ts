@@ -77,6 +77,12 @@ vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 
 import { fireLoopWake } from '../harness/routines/loop-fire';
 import { ROUTINE_FIRE_QUEUES, routineFireWorkflow } from './routines-workflow';
+import {
+  LOOP_WAKE_TARGET_ROLE,
+  CRITICAL_ROUTINE_ACTIONS,
+  TRIGGER_POLL_ACTIONS,
+  queueForRoutine,
+} from './routines-queue-classification';
 
 beforeEach(() => {
   state.stepOutputs.length = 0;
@@ -84,8 +90,10 @@ beforeEach(() => {
 });
 
 describe('routineFireWorkflow — durable loop:wake output', () => {
-  it('registers the shared, critical, and deadline-sensitive loop queues at boot', () => {
-    expect(ROUTINE_FIRE_QUEUES).toEqual(['routines', 'routines-critical', 'routines-loop']);
+  it('registers the shared, critical, deadline-sensitive loop, and external-poll queues at boot', () => {
+    // Every lane queueForRoutine can return MUST be registered here, or a fire enqueued
+    // onto it is never consumed (WI-41662 added routines-triggers).
+    expect(ROUTINE_FIRE_QUEUES).toEqual(['routines', 'routines-critical', 'routines-loop', 'routines-triggers']);
   });
 
   it('checkpoints and returns the complete LoopFireResult from the DBOS step', async () => {

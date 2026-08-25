@@ -3,8 +3,10 @@ import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
   ROUTINES_LOOP_QUEUE,
+  ROUTINES_TRIGGERS_QUEUE,
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
+  TRIGGER_POLL_ACTIONS,
   queueForRoutine,
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
@@ -60,6 +62,49 @@ describe('queueForRoutine — the latency-isolated loop lane', () => {
     expect(queueForRoutine('system:loop-wake-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:pre-loop-wake')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('loop-wake')).toBe(ROUTINES_QUEUE);
+  });
+});
+
+/**
+ * WI-41662: external-source polls starved 4–18min EVERY HOUR behind green-checkpoint's ~25m
+ * hourly fire on the shared queue (13 stalls in one measured day, onset clock-locked to :14–:16
+ * past the hour, both Google polls freezing and resuming together while git-sync's dedicated
+ * lane ran through). These polls are quick and per-minute, and their latency IS the product
+ * behaviour, so they get a bounded lane on the same principle as routines-loop.
+ */
+describe('queueForRoutine — the external-source poll lane (WI-41662)', () => {
+  it('routes EVERY trigger-poll action to the dedicated lane', () => {
+    for (const action of TRIGGER_POLL_ACTIONS) {
+      expect(queueForRoutine(`system:${action}`)).toBe(ROUTINES_TRIGGERS_QUEUE);
+    }
+  });
+
+  it('routes the measured-starved polls specifically (the regression this lane exists for)', () => {
+    expect(queueForRoutine('system:google-gmail-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
+    expect(queueForRoutine('system:google-calendar-poll')).toBe(ROUTINES_TRIGGERS_QUEUE);
+  });
+
+  it('keeps the LONG routine that starved them OFF this lane — else the starvation returns inside it', () => {
+    expect(queueForRoutine('system:green-checkpoint')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:gym-cycle')).toBe(ROUTINES_QUEUE);
+  });
+
+  it('keeps near-miss names on the shared queue (exact match)', () => {
+    expect(queueForRoutine('system:google-gmail-poll-status')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:pre-pr-poll')).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('google-gmail-poll')).toBe(ROUTINES_QUEUE);
+  });
+
+  it('does NOT widen the critical floor — a poll still sheds under PG-pool pressure', () => {
+    for (const action of TRIGGER_POLL_ACTIONS) {
+      expect(shouldFireUnderPoolShed(`system:${action}`)).toBe(false);
+    }
+  });
+
+  it('the poll lane and the critical lane are disjoint sets', () => {
+    for (const action of TRIGGER_POLL_ACTIONS) {
+      expect(CRITICAL_ROUTINE_ACTIONS.has(action)).toBe(false);
+    }
   });
 });
 
