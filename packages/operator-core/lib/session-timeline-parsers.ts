@@ -199,7 +199,14 @@ export function createOmpTimelineParser(): TimelineLineParser {
       let rec: {
         type?: string;
         timestamp?: string;
-        message?: { role?: string; content?: unknown };
+        message?: {
+          role?: string;
+          content?: unknown;
+          // A failed turn carries its whole payload here, with `content` empty.
+          stopReason?: string;
+          errorMessage?: unknown;
+          errorStatus?: unknown;
+        };
       };
       try {
         rec = JSON.parse(line);
@@ -233,6 +240,17 @@ export function createOmpTimelineParser(): TimelineLineParser {
             ts,
           });
         }
+      }
+
+      // A failed turn writes `content: []`, so the loop above emits nothing and the
+      // session renders BLANK — the operator sees an agent that simply stopped, with
+      // the provider's reason sitting unread on the wire. Surface it. Emitted whenever
+      // the turn errored, not only when `out` is empty: a turn that produced some text
+      // and THEN failed must not look like it succeeded.
+      const { stopReason, errorMessage, errorStatus } = rec.message;
+      if (stopReason === 'error' && typeof errorMessage === 'string' && errorMessage.trim()) {
+        const status = typeof errorStatus === 'number' ? ` (${errorStatus})` : '';
+        out.push({ kind: 'status', text: `[error]${status} ${errorMessage}`, ts });
       }
       return out;
     },

@@ -385,6 +385,52 @@ export const OMP_WIRE_FIXTURES: readonly WireFixture[] = [
     },
   },
   {
+    /**
+     * A turn that FAILED. The provider error is the whole record: `content` is an
+     * empty array, so every content-block fixture above matches nothing and the
+     * parser's block loop emits no entry at all — a rate-limited session renders
+     * as a blank timeline unless something reads `errorMessage`.
+     *
+     * This is not an exotic variant. When the box's agents are rate-limited it is
+     * the DOMINANT one (measured 2026-08-25: 68 of 68 sampled omp assistant
+     * records, 53% of the wire), which is what makes it gate-relevant — without a
+     * fixture the live guard reds the shared release gate as a function of agent
+     * health rather than of any code change (WI-41660).
+     */
+    name: 'assistant ERROR turn — `content` is EMPTY; the failure lives in `errorMessage`',
+    discriminator: [
+      { path: 'type', value: 'message' },
+      { path: 'message.role', value: 'assistant' },
+      { path: 'message.stopReason', value: 'error' },
+    ],
+    /**
+     * `errorStatus` is deliberately NOT read here: only 59 of those 68 records
+     * carried one (a retry-budget exhaustion has no HTTP status), so requiring it
+     * would fail the variant group on precisely the records it exists to cover.
+     * `errorMessage` was present on all 68, always a string.
+     */
+    readFields: ['message.errorMessage'],
+    record: {
+      type: 'message',
+      id: 'evt_9c71',
+      parentId: 'evt_5430',
+      timestamp: '2026-08-25T14:28:46.064Z',
+      message: {
+        role: 'assistant',
+        content: [],
+        api: 'openrouter',
+        provider: 'openrouter',
+        model: 'openai/gpt-5.6-luna',
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
+        stopReason: 'error',
+        timestamp: 1787668124835,
+        errorStatus: 402,
+        errorId: 402,
+        errorMessage: '402 Insufficient credits. This account never purchased credits.',
+      },
+    },
+  },
+  {
     name: 'toolResult role — a MESSAGE role, not a content-block type',
     discriminator: [
       { path: 'type', value: 'message' },
