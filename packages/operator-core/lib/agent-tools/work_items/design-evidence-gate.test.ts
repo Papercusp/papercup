@@ -8,7 +8,70 @@
  * cannot be established. The deciding logic has its own suites in
  * design-compare/{gate,feature-gate}.test.ts and is not re-tested here.
  */
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+// ─── R1: the mocks that let this file drive the REAL work_items:complete ─────
+// Mirrors complete.test.ts's wholesale engine mock. The point of the block at
+// the bottom of this file is to traverse the completion path for real, so the
+// ONLY things replaced here are the durable substrate (Postgres) and the
+// unrelated sibling gates — never the design-evidence gate itself.
+const getWorkItem = vi.fn();
+const setWorkItemStateWithAliasInfo = vi.fn();
+const setWorkItemClaimHold = vi.fn();
+const mergeWorkItemOutputPayload = vi.fn();
+const resolveWorkItemRef = vi.fn();
+const linkWorkItem = vi.fn();
+const subscribeWorkItem = vi.fn();
+const attachCompletionEvidenceToSettledItem = vi.fn();
+vi.mock('../../work-items', () => ({
+  getWorkItem: (...a: unknown[]) => getWorkItem(...a),
+  setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
+  attachCompletionEvidenceToSettledItem: (...a: unknown[]) =>
+    attachCompletionEvidenceToSettledItem(...a),
+  setWorkItemClaimHold: (...a: unknown[]) => setWorkItemClaimHold(...a),
+  workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
+  mergeWorkItemOutputPayload: (...a: unknown[]) => mergeWorkItemOutputPayload(...a),
+  resolveWorkItemRef: (...a: unknown[]) => resolveWorkItemRef(...a),
+  linkWorkItem: (...a: unknown[]) => linkWorkItem(...a),
+  subscribeWorkItem: (...a: unknown[]) => subscribeWorkItem(...a),
+  SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
+}));
+
+const setWorkItemCheckpoint = vi.fn();
+vi.mock('../../work-item-checkpoint', () => ({
+  setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
+}));
+const fireReactionInProcess = vi.fn();
+vi.mock('../../events', () => ({
+  fireReactionInProcess: (...a: unknown[]) => fireReactionInProcess(...a),
+}));
+const getFlag = vi.fn();
+// `onFlagChange` is required even though nothing here exercises it: a module in
+// this import graph calls it at MODULE SCOPE, and a mock omitting it fails the
+// whole file at COLLECTION (0 tests run) rather than in a test.
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: (...a: unknown[]) => getFlag(...a),
+  onFlagChange: () => {},
+}));
+const itemTestGate = vi.fn();
+vi.mock('../../harness-test-gate', () => ({
+  itemTestGate: (...a: unknown[]) => itemTestGate(...a),
+}));
+const specTestAdequacyCompletionGate = vi.fn();
+vi.mock('./spec-test-adequacy-gate', () => ({
+  specTestAdequacyCompletionGate: (...a: unknown[]) => specTestAdequacyCompletionGate(...a),
+}));
+
+// The ONE design-side substitution: the production dependency bundle is
+// Postgres + lost-pixel, so it is replaced with the in-memory store. Everything
+// that DECIDES — designEvidenceCompletionGate and evaluateFeatureDesignGate —
+// is left real, because that consultation is precisely what R1 binds.
+const designCompareDepsFor = vi.fn();
+vi.mock('../../design-compare/host-install', () => ({
+  designCompareDepsFor: (...a: unknown[]) => designCompareDepsFor(...a),
+  filesystemReferenceMaterializer: async () => ({ path: '/tmp/reference.png' }),
+}));
+
 import {
   DesignGateUnavailableError,
   type FeatureDesignGateResult,
@@ -19,6 +82,18 @@ import {
   designFeatureCandidates,
   renderDesignEvidenceRefusal,
 } from './design-evidence-gate';
+
+import { FLAGS } from '@papercusp/flags';
+import type { CaptureEnvironment, ThresholdPolicy } from '../../design-compare/contract';
+import { createInMemoryReferenceStore } from '../../design-compare/reference-store';
+import {
+  type VerbCaller,
+  type VerbDeps,
+  compareRenderVerb,
+  ratifyReferenceVerb,
+} from '../../design-compare/verbs';
+import { calibrationRenderHost } from '../../design-compare/enforceability';
+import complete from './complete';
 
 /**
  * P-011/D-023: a reference whose ratification host matches the calibration
@@ -300,5 +375,311 @@ describe('refusal rendering', () => {
     expect(text).toContain('WI-9');
     expect(text).toContain('No completion record or state transition was written');
     expect(text).toContain('compare_render');
+  });
+});
+
+/**
+ * R1 — a completion that ACTUALLY TRAVERSES the gate.
+ *
+ * ─── WHY EVERYTHING ABOVE THIS LINE IS NOT ENOUGH ────────────────────────────
+ *
+ * Every case above calls `designEvidenceCompletionGate` directly and hands it a
+ * hand-built `FeatureDesignGateResult`. That proves the POLICY — when the gate
+ * refuses rather than reports, what the refusal says. It cannot prove that
+ * anything CONSULTS it, because the caller in those tests is the test.
+ *
+ * This criterion's stated BINDING drift is exactly that: the bound files
+ * "partitioning into 'gate logic' and 'completion wiring' with nothing
+ * exercising a completion that actually traverses the gate". Before this block,
+ * the consultation at complete.ts:1891 and the refusal at :1922 were verified by
+ * CODE-READ ONLY — a suite-wide grep found no test driving them. Delete both
+ * lines and every design-compare suite stays green while ratified work closes
+ * with no evidence at all.
+ *
+ * So these cases drive the REAL `work_items:complete` handler. The engine is
+ * mocked (as it is in complete.test.ts) and the design dependency bundle is the
+ * in-memory store instead of Postgres — but `designEvidenceCompletionGate` and
+ * `evaluateFeatureDesignGate` are the real ones, and the gate is reached the way
+ * production reaches it rather than by being called directly.
+ *
+ * BOTH halves of the claim are asserted, because the first without the second is
+ * the dangerous shape: an error string is easy to return from a path that has
+ * ALREADY written the terminal state, leaving an item closed AND reported
+ * refused. `setWorkItemStateWithAliasInfo` is the real writer, so
+ * `not.toHaveBeenCalled()` is what "no terminal state was written" means here.
+ */
+describe('R1: work_items:complete actually consults the design-evidence gate', () => {
+  const HARNESS = 'papercup';
+  const PLAN_SLUG = 'ratified-surface-plan';
+  const REF = 'ref-checkout-desktop';
+  const ITEM = 'WI-design-1';
+
+  const ENV: CaptureEnvironment = {
+    viewport: { width: 1280, height: 800 },
+    deviceScaleFactor: 2,
+    browser: 'chromium',
+    theme: 'dark',
+    fontSet: 'papercusp-default',
+  };
+
+  const POLICY: ThresholdPolicy = {
+    policyVersion: 'p-2026-08-25',
+    referenceClass: 'artifact-capture',
+    eligibility: 'gateable',
+    maxDiffRatio: 0.001,
+    derivedFrom: 'calibration-run-1',
+  };
+
+  const CALLER: VerbCaller = { actorId: 'su-ratifier', role: 'reviewer' };
+
+  // DESKTOP 1280x800 = 1_024_000 px; at maxDiffRatio 0.001 the failing threshold
+  // is >1024 changed pixels, so this is comfortably over.
+  const FAILING_PIXELS = 50_000;
+
+  function deps(pixelDifference: number): VerbDeps & { store: ReturnType<typeof createInMemoryReferenceStore> } {
+    const store = createInMemoryReferenceStore();
+    let tick = 0;
+    return {
+      harnessSlug: HARNESS,
+      store,
+      now: () => 1_000,
+      clock: () => `2026-08-25T00:00:${String(tick++).padStart(2, '0')}.000Z`,
+      materializeReferenceImage: async () => ({ path: '/tmp/reference.png' }),
+      comparison: {
+        provider: {
+          engine: { engine: 'fake/pixelmatch', engineVersion: '9.9.9' },
+          async compare() {
+            return { pixelDifference, diffArtifactWritten: true };
+          },
+        },
+        probe: () => ({ exists: true, dimensions: { ...ENV.viewport } }),
+      },
+    };
+  }
+
+  /**
+   * Ratify under the PLAN SLUG, on the calibration host.
+   *
+   * Both details are load-bearing. The feature id is the plan slug because that
+   * is the convention `designFeatureCandidates` resolves against, and the render
+   * host must match `calibrationRenderHost()` or the failure is reportable but
+   * NOT enforceable (D-023) — in which case the completion succeeds and this
+   * test would be asserting the wrong thing for the wrong reason.
+   */
+  async function ratifyOnCalibrationHost(d: VerbDeps): Promise<void> {
+    await ratifyReferenceVerb(
+      {
+        featureId: PLAN_SLUG,
+        referenceId: REF,
+        revision: 1,
+        referenceClass: 'artifact-capture',
+        contentSha256: 'a'.repeat(64),
+        image: {
+          mediaType: 'image/png',
+          locator: `/refs/${REF}.png`,
+          byteLength: 4096,
+          width: ENV.viewport.width,
+          height: ENV.viewport.height,
+        },
+        referenceEnvironment: ENV,
+        requiredCases: [
+          {
+            caseId: `${REF}-case`,
+            environment: ENV,
+            target: { targetId: `components-checkout--${REF}`, targetKind: 'storybook-story' },
+            rationale: 'primary breakpoint',
+          },
+        ],
+        provenance: {
+          source: 'artifact-capture',
+          sourceRef: 'artifact://abc',
+          capturedOnRenderHost: calibrationRenderHost() ?? undefined,
+        },
+      },
+      CALLER,
+      d,
+    );
+  }
+
+  async function compareAgainst(d: VerbDeps): Promise<void> {
+    await compareRenderVerb(
+      {
+        featureId: PLAN_SLUG,
+        referenceId: REF,
+        target: {
+          targetId: `components-checkout--${REF}`,
+          targetKind: 'storybook-story',
+          implementationRevision: 'impl-1',
+        },
+        environment: ENV,
+        policy: POLICY,
+        actualImagePath: '/tmp/actual.png',
+        diffImagePath: '/tmp/diff.png',
+      },
+      CALLER,
+      d,
+    );
+  }
+
+  /** Drive the REAL tool handler for a terminal close. */
+  async function closeItem() {
+    const args = (complete.args as { parse: (x: unknown) => unknown }).parse({
+      id: ITEM,
+      state: 'resolved',
+      assumptions: 'none',
+      completion: { summary: 'implemented the ratified surface', tests: '5 green' },
+    });
+    const res = (await complete.handler(args as never, {
+      uiClientId: 'su-tester',
+      isSuperuser: true,
+      workspaceId: 'default',
+    } as never)) as { data: { results: { ok: boolean; id: string; error?: string }[] } };
+    return res.data.results[0]!;
+  }
+
+  beforeEach(() => {
+    getWorkItem.mockReset();
+    getWorkItem.mockResolvedValue({
+      id: ITEM,
+      kind: 'change',
+      family: 'issue',
+      state: 'in_progress',
+      harness: HARNESS,
+      sourcePlanSlug: PLAN_SLUG,
+    });
+    setWorkItemStateWithAliasInfo.mockReset();
+    setWorkItemStateWithAliasInfo.mockImplementation(async () => ({
+      workItem: { id: ITEM, state: 'resolved', harness: HARNESS },
+      aliased: false,
+      requestedState: 'resolved',
+      appliedState: 'resolved',
+    }));
+    setWorkItemClaimHold.mockReset();
+    setWorkItemClaimHold.mockResolvedValue({ id: ITEM, harness: HARNESS, hold: true, applicable: true });
+    mergeWorkItemOutputPayload.mockReset();
+    resolveWorkItemRef.mockReset();
+    linkWorkItem.mockReset();
+    linkWorkItem.mockResolvedValue({ ok: true });
+    subscribeWorkItem.mockReset();
+    subscribeWorkItem.mockResolvedValue({ ok: true });
+    setWorkItemCheckpoint.mockReset();
+    setWorkItemCheckpoint.mockResolvedValue(null);
+    fireReactionInProcess.mockReset();
+    fireReactionInProcess.mockResolvedValue({ ok: true });
+    attachCompletionEvidenceToSettledItem.mockReset();
+    attachCompletionEvidenceToSettledItem.mockResolvedValue({ outcome: 'recorded', workItem: null });
+    itemTestGate.mockReset();
+    itemTestGate.mockResolvedValue({ ok: true });
+    specTestAdequacyCompletionGate.mockReset();
+    specTestAdequacyCompletionGate.mockResolvedValue({ ok: true, applicable: false, checked: [] });
+
+    // Only the two design-evidence flags are on. Every OTHER flag stays off, so
+    // an unrelated gate cannot be the thing refusing and be mistaken for this one.
+    getFlag.mockReset();
+    getFlag.mockImplementation(async (flag: string) =>
+      flag === FLAGS.DESIGN_EVIDENCE_GATE || flag === FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING,
+    );
+    designCompareDepsFor.mockReset();
+  });
+
+  it('REFUSES the close when a ratified reference has no evidence, and writes NO terminal state', async () => {
+    const d = deps(0); // ratified, never compared
+    await ratifyOnCalibrationHost(d);
+    designCompareDepsFor.mockResolvedValue(d);
+
+    const result = await closeItem();
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/refusing terminal completion for 'WI-design-1'/);
+    expect(result.error).toContain(REF);
+    // The half that matters most: the refusal is not a message attached to a
+    // close that already happened.
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('REFUSES when the evidence exists but FAILS, and still writes no terminal state', async () => {
+    // Distinct from the case above: here the implementer did run the comparison.
+    // "Evidence was produced" must not be mistakable for "evidence passed".
+    const d = deps(FAILING_PIXELS);
+    await ratifyOnCalibrationHost(d);
+    await compareAgainst(d);
+    designCompareDepsFor.mockResolvedValue(d);
+
+    const result = await closeItem();
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/refusing terminal completion/);
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: the same close SUCCEEDS once the evidence passes', async () => {
+    // Without this control, both refusals above are equally consistent with a
+    // completion path that refuses everything — which is the failure mode that
+    // would make the whole gate look shipped while blocking all work.
+    const d = deps(0);
+    await ratifyOnCalibrationHost(d);
+    await compareAgainst(d);
+    designCompareDepsFor.mockResolvedValue(d);
+
+    const result = await closeItem();
+
+    // The error rides the assertion message: a control that fails for an
+    // UNRELATED reason would otherwise read as "the gate refused", which is the
+    // one conclusion this case exists to rule out.
+    expect(result.ok, result.error).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+  });
+
+  it('CONTROL: an UNRATIFIED surface imposes nothing, so exploration still closes', async () => {
+    // The other side of the window (D-001). A gate that refused here would make
+    // ratifying strictly worse than never ratifying at all.
+    const d = deps(0); // nothing ratified
+    designCompareDepsFor.mockResolvedValue(d);
+
+    const result = await closeItem();
+
+    expect(result.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+  });
+
+  it('reports but does NOT refuse while enforcement is off (D-006 report-only rollout)', async () => {
+    // The gate ships report-only until P-011 flips it. This pins that the
+    // ENFORCING flag is what separates a refusal from a notice — so flipping it
+    // is a real change and not a no-op over an already-refusing path.
+    getFlag.mockImplementation(async (flag: string) => flag === FLAGS.DESIGN_EVIDENCE_GATE);
+    const d = deps(FAILING_PIXELS);
+    await ratifyOnCalibrationHost(d);
+    await compareAgainst(d);
+    designCompareDepsFor.mockResolvedValue(d);
+
+    const result = await closeItem();
+
+    expect(result.ok).toBe(true);
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+  });
+
+  it('FALSIFIABILITY CONTROL: a completion path that never consulted the gate would pass every negative test', async () => {
+    // The deliberately-wrong implementation, kept permanently in the file
+    // (CLAUDE.md's prescribed tier for an imported module — no tree mutation, no
+    // sweep race, and it re-proves itself on every CI run).
+    //
+    // `neverConsults` is the drift this criterion is written against: a
+    // completion path with the gate call deleted. Note what it does to the suite
+    // — it agrees with the real path on BOTH controls above (it closes), and
+    // differs only on the two refusals. That is the whole reason the refusals
+    // have to exist as distinct cases: a suite of controls alone cannot tell a
+    // shipped gate from a deleted one.
+    const neverConsults = async () => ({ ok: true, id: ITEM });
+
+    const d = deps(0);
+    await ratifyOnCalibrationHost(d);
+    designCompareDepsFor.mockResolvedValue(d);
+
+    const real = await closeItem();
+    const stubbed = await neverConsults();
+
+    expect(stubbed.ok).toBe(true);
+    expect(real.ok).toBe(false);
+    expect(real.ok).not.toBe(stubbed.ok);
   });
 });
