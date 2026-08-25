@@ -29,6 +29,7 @@ import { fanoutForObject } from '../../sync/hyperbee/fanout-projection';
 import type { AgentIdentity } from './identity';
 import type {
   ConversationKind,
+  ConversationProducer,
   ConversationRow,
   ConversationScope,
   ConversationState,
@@ -37,6 +38,7 @@ import type {
   SupersedeStoreError,
   SupersedeStoreResult,
 } from './conversations-store';
+import { isConversationProducer } from './conversations-store';
 import type { CaptureResult, CaptureTarget } from './answer-capture';
 
 /** The conversation table surface the core needs (PgConversationStore satisfies it). */
@@ -163,6 +165,13 @@ async function selfSubscribe(deps: ConversationDeps, conversationId: string, sub
 export interface OpenConversationInput {
   kind: ConversationKind;
   body: string;
+  /**
+   * Which tool is opening this (EI-21462599108204160). REQUIRED so a new
+   * caller cannot silently land an unattributed row: the previous attribution
+   * — the Decision-tier escalation twin — is closed when the question is
+   * answered, so it could only ever describe UNANSWERED asks.
+   */
+  producer: ConversationProducer;
   title?: string;
   topics?: string[];
   scope?: ConversationScope;
