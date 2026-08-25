@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // The production entrypoint deliberately stays executable by plain Node.
@@ -21,6 +23,7 @@ import {
   parseTransformFailure,
   transformFailureMarker,
   perGroupVitestArgs,
+  runCapturedTestProcess,
   vitestRunFailed,
   warnIfInstallInFlight,
   withoutOutputFileArg,
@@ -69,11 +72,11 @@ describe('test-files router', () => {
     );
   });
 
-  it('does not route source modules into Vitest collection attribution', () => {
+  it('does not route source modules into Vitest collection attribution', async () => {
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     try {
-      const code = main([
+      const code = await main([
         '--dry',
         'packages/operator-core/lib/agent-tools/capability/inspect.ts',
         'packages/operator-core/lib/__tests__/test-file-router.test.ts',
@@ -350,6 +353,87 @@ describe('vitestRunFailed — exit code and summary must agree (EI-2112468250477
       output: ' Test Files  5 passed (5)\n      Tests  24 passed (24)\n',
     })).toBe(false);
     expect(vitestRunFailed({ status: 1, output: 'worker crashed before summary\n' })).toBe(true);
+  });
+});
+
+describe('bounded observable Vitest child execution (EI-21400813289605169)', () => {
+  it('keeps the parent timer live, attributes completed/pending files, and reaps only its owned group', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = new EventEmitter() as EventEmitter & {
+        pid: number;
+        stdout: PassThrough;
+        stderr: PassThrough;
+        kill: ReturnType<typeof vi.fn>;
+      };
+      child.pid = 4242;
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.kill = vi.fn();
+      const spawnImpl = vi.fn(() => child);
+      const killProcessImpl = vi.fn(() => 'group');
+      const onProgress = vi.fn();
+
+      const resultPromise = runCapturedTestProcess(
+        'npx',
+        ['vitest', 'run', 'a.test.ts', 'b.test.ts'],
+        {
+          cwd: '/repo',
+          cwdLabel: 'packages/operator-core',
+          files: ['a.test.ts', 'b.test.ts'],
+          timeoutMs: 100,
+          progressIntervalMs: 10,
+          killGraceMs: 20,
+          maxBuffer: 1024,
+          setsidPath: '/usr/bin/setsid',
+          spawnImpl,
+          killProcessImpl,
+          onProgress,
+        },
+      );
+
+      expect(spawnImpl).toHaveBeenCalledWith(
+        '/usr/bin/setsid',
+        ['--wait', 'npx', 'vitest', 'run', 'a.test.ts', 'b.test.ts'],
+        expect.objectContaining({ stdio: ['ignore', 'pipe', 'pipe'] }),
+      );
+      expect(spawnImpl.mock.calls[0]?.[2]).not.toHaveProperty('detached');
+
+      child.stdout.write('✓ a.test.ts (1 test) 2ms\n');
+      await vi.advanceTimersByTimeAsync(10);
+      const progress = () => onProgress.mock.calls.map(([line]) => String(line)).join('\n');
+      expect(progress()).toContain('state=file-completed');
+      expect(progress()).toContain('completedFiles=["a.test.ts"]');
+      expect(progress()).toContain('pendingFiles=["b.test.ts"]');
+
+      await vi.advanceTimersByTimeAsync(90);
+      expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGTERM', true);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(killProcessImpl).toHaveBeenCalledWith(child, 'SIGKILL', true);
+      child.emit('close', null, 'SIGKILL');
+
+      await expect(resultPromise).resolves.toMatchObject({
+        status: null,
+        signal: 'SIGKILL',
+        timedOut: true,
+      });
+      expect(progress()).toContain('state=timeout');
+      expect(progress()).toContain('state=reaping');
+      expect(progress()).toContain('state=finished');
+      expect(progress()).toContain('state=finished cwd="packages/operator-core"');
+      expect(progress()).toContain('exitStatus=none signal=SIGKILL');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('wires the real Vitest run through the async seam rather than a blocking spawnSync', () => {
+    const source = readFileSync(new URL('../../../../scripts/test-files.mjs', import.meta.url), 'utf8');
+    const runStart = source.indexOf("const result = await runCapturedTestProcess(\n      'npx'");
+    const runEnd = source.indexOf('const runOutput =', runStart);
+    expect(runStart).toBeGreaterThan(0);
+    expect(runEnd).toBeGreaterThan(runStart);
+    expect(source.slice(runStart, runEnd)).not.toContain('spawnSync');
   });
 });
 
@@ -635,14 +719,14 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
   const linesFrom = (spy: ReturnType<typeof vi.spyOn>) =>
     spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
 
-  it('a dry run does NOT print TEST_FILE_RESULT', () => {
-    const code = main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+  it('a dry run does NOT print TEST_FILE_RESULT', async () => {
+    const code = await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
     expect(code).toBe(0);
     expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
   });
 
-  it('a dry run still reports machine-readably, under its own marker', () => {
-    main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+  it('a dry run still reports machine-readably, under its own marker', async () => {
+    await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
     const out = linesFrom(logSpy);
     expect(out).toContain('TEST_FILE_DRYRUN');
     expect(out).toMatch(/TEST_FILE_DRYRUN .*executed=0 .*status=dry-run/);
@@ -651,8 +735,8 @@ describe('TEST_FILE_RESULT presence is a verdict, so a run that executed nothing
   // Non-vacuousness: the assertions above would also pass if main() silently printed nothing at
   // all, or if the file never matched. Pin that the run genuinely resolved a real test file —
   // otherwise this suite would keep passing after a regression that breaks routing entirely.
-  it('the dry run really matched the requested file (guards against a vacuous pass)', () => {
-    main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
+  it('the dry run really matched the requested file (guards against a vacuous pass)', async () => {
+    await main(['--dry', 'packages/operator-core/lib/__tests__/test-file-router.test.ts']);
     const out = linesFrom(logSpy);
     expect(out).toMatch(/TEST_FILE_DRYRUN requested=1 .*matched=1/);
     expect(out).toContain('matched lib/__tests__/test-file-router.test.ts');

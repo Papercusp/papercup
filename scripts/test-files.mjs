@@ -15,7 +15,7 @@
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
@@ -25,6 +25,8 @@ import {
   parseTransformFailure,
   stripVitestAnsi,
 } from './lib/vitest-summary.mjs';
+import { killSpawnedProcessTree, parseBatchProgress } from './lib/batch-watchdog.mjs';
+import { formatTaskOutcomeFields } from './lib/task-progress-line.mjs';
 
 // Re-exported so this module's own callers and tests (packages/operator-core/lib/__tests__/
 // test-file-router.test.ts) keep importing it from here unchanged. The IMPLEMENTATION moved to
@@ -1365,6 +1367,199 @@ function run(command, args, options) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
 }
 
+// The supported testing:run surface uses the same five-minute whole-run budget. Keep the direct
+// test:file CLI bounded too: unlike Vitest's per-test timeout, this parent timer can still fire when
+// a fork worker is synchronously spinning and its own event loop cannot run timers.
+export const TEST_FILE_RUN_TIMEOUT_MS = 300_000;
+export const TEST_FILE_PROGRESS_INTERVAL_MS = 10_000;
+const TEST_FILE_KILL_GRACE_MS = 2_000;
+const TEST_FILE_MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
+const SETSID_PATH = process.platform === 'linux'
+  ? ['/usr/bin/setsid', '/bin/setsid'].find((candidate) => existsSync(candidate)) ?? null
+  : null;
+
+function defaultKillOwnedProcess(child, signal, ownsProcessGroup) {
+  if (ownsProcessGroup) return killSpawnedProcessTree(child, signal);
+  try {
+    child.kill(signal);
+    return 'child';
+  } catch {
+    return 'gone';
+  }
+}
+
+/**
+ * Run one captured test child without blocking this router's event loop.
+ *
+ * On Linux, `setsid --wait` gives the short-lived child tree its own process group without using
+ * Node's `detached:true` (which is reserved for task-manager-enrolled lifetimes). The watchdog can
+ * therefore reap npx -> Vitest -> fork workers by the owned group id, never by a name/pattern. Other
+ * platforms retain ordinary inherited-cgroup spawning and fall back to signaling the owned direct
+ * child only.
+ *
+ * `spawnImpl`/`killProcessImpl` are narrow test seams. Production callers omit them.
+ */
+export function runCapturedTestProcess(command, args, options = {}) {
+  const {
+    cwd,
+    env,
+    files = [],
+    cwdLabel = cwd ?? '.',
+    timeoutMs = TEST_FILE_RUN_TIMEOUT_MS,
+    progressIntervalMs = TEST_FILE_PROGRESS_INTERVAL_MS,
+    killGraceMs = TEST_FILE_KILL_GRACE_MS,
+    maxBuffer = TEST_FILE_MAX_CAPTURE_BYTES,
+    setsidPath = SETSID_PATH,
+    spawnImpl = spawn,
+    killProcessImpl = defaultKillOwnedProcess,
+    onProgress = (line) => console.error(line),
+  } = options;
+  const ownsProcessGroup = Boolean(setsidPath);
+  const spawnCommand = setsidPath ?? command;
+  const spawnArgs = setsidPath ? ['--wait', command, ...args] : args;
+  const startedAt = Date.now();
+
+  return new Promise((resolveRun) => {
+    const child = spawnImpl(spawnCommand, spawnArgs, {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdout = [];
+    const stderr = [];
+    const completedFiles = new Set();
+    const progressRemainders = { stdout: '', stderr: '' };
+    let capturedBytes = 0;
+    let spawnError = null;
+    let captureError = null;
+    let timedOut = false;
+    let settled = false;
+    let terminationStarted = false;
+    let forceTimer = null;
+    const signalForwarders = new Map();
+
+    const normalized = (file) => String(file).replaceAll('\\', '/');
+    const requestedFiles = files.map(normalized);
+    const emitProgress = (state, status = null, signal = null, isSettled = false) => {
+      const pendingFiles = requestedFiles.filter((file) => !completedFiles.has(file));
+      const outcome = formatTaskOutcomeFields({ status, signal, settled: isSettled });
+      onProgress(
+        `TEST_FILE_PROGRESS state=${state} cwd=${JSON.stringify(cwdLabel)} ` +
+          `elapsedMs=${Date.now() - startedAt} capturedBytes=${capturedBytes} ` +
+          `completedFiles=${JSON.stringify([...completedFiles])} ` +
+          `pendingFiles=${JSON.stringify(pendingFiles)} timeoutMs=${timeoutMs} ` +
+          `exitStatus=${outcome.exitStatus} signal=${outcome.signal}`,
+      );
+    };
+    const killOwned = (signal) => {
+      try {
+        return killProcessImpl(child, signal, ownsProcessGroup);
+      } catch {
+        return 'gone';
+      }
+    };
+    const terminate = (state) => {
+      if (terminationStarted || settled) return;
+      terminationStarted = true;
+      if (state === 'timeout') timedOut = true;
+      emitProgress(state);
+      killOwned('SIGTERM');
+      forceTimer = setTimeout(() => {
+        if (settled) return;
+        emitProgress('reaping');
+        killOwned('SIGKILL');
+      }, killGraceMs);
+      forceTimer.unref?.();
+    };
+    const removeSignalForwarders = () => {
+      for (const [signal, handler] of signalForwarders) process.removeListener(signal, handler);
+      signalForwarders.clear();
+    };
+    // `setsid` deliberately makes the Vitest tree a nested process group so this watchdog can
+    // target it without touching a caller's shell/agent group. Preserve pc-heavy/testing:run's
+    // no-escape contract too: if THEY terminate this router, synchronously reap the nested group
+    // before restoring the signal's default disposition on the router itself. SIGKILL is used for
+    // this cleanup-only path because the parent is already terminating and cannot stay alive for a
+    // grace timer; the normal watchdog path above still performs TERM -> bounded grace -> KILL.
+    if (ownsProcessGroup) {
+      for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP']) {
+        const handler = () => {
+          if (settled) return;
+          emitProgress(`parent-${signal.toLowerCase()}`);
+          killOwned('SIGKILL');
+          removeSignalForwarders();
+          process.kill(process.pid, signal);
+        };
+        signalForwarders.set(signal, handler);
+        process.once(signal, handler);
+      }
+    }
+    const noteCompletedFiles = (channel, chunk) => {
+      const combined = progressRemainders[channel] + chunk.toString('utf8');
+      const lastNewline = combined.lastIndexOf('\n');
+      if (lastNewline < 0) {
+        progressRemainders[channel] = combined.slice(-16_384);
+        return false;
+      }
+      const completeLines = combined.slice(0, lastNewline + 1);
+      progressRemainders[channel] = combined.slice(lastNewline + 1);
+      const before = completedFiles.size;
+      const progress = parseBatchProgress(completeLines, { totalFiles: requestedFiles.length });
+      for (const file of progress.completedFilePaths) completedFiles.add(normalized(file));
+      return completedFiles.size > before;
+    };
+    const capture = (channel, chunks) => (value) => {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
+      capturedBytes += chunk.length;
+      if (capturedBytes <= maxBuffer) {
+        chunks.push(chunk);
+      } else if (!captureError) {
+        captureError = Object.assign(
+          new Error(`test child exceeded the ${maxBuffer}-byte capture ceiling`),
+          { code: 'ENOBUFS' },
+        );
+        terminate('output-limit');
+      }
+      if (noteCompletedFiles(channel, chunk)) emitProgress('file-completed');
+    };
+
+    child.stdout?.on('data', capture('stdout', stdout));
+    child.stderr?.on('data', capture('stderr', stderr));
+    child.once('error', (error) => { spawnError = error; });
+
+    let progressTimer = null;
+    const scheduleProgress = () => {
+      progressTimer = setTimeout(() => {
+        if (settled) return;
+        emitProgress('running');
+        scheduleProgress();
+      }, progressIntervalMs);
+      progressTimer.unref?.();
+    };
+    scheduleProgress();
+    const timeoutTimer = setTimeout(() => terminate('timeout'), timeoutMs);
+    timeoutTimer.unref?.();
+    emitProgress('started');
+
+    child.once('close', (status, signal) => {
+      settled = true;
+      removeSignalForwarders();
+      if (progressTimer) clearTimeout(progressTimer);
+      clearTimeout(timeoutTimer);
+      if (forceTimer) clearTimeout(forceTimer);
+      emitProgress('finished', status, signal, true);
+      resolveRun({
+        status,
+        signal,
+        stdout: Buffer.concat(stdout).toString('utf8'),
+        stderr: Buffer.concat(stderr).toString('utf8'),
+        error: spawnError ?? captureError,
+        timedOut,
+      });
+    });
+  });
+}
+
 // `testing:run` is the supported routed surface for focused tests. Keep every
 // CLI refusal actionable: a bare TEST_FILE_ROUTE_ERROR leaves agents guessing
 // whether to retry the same command, hand-pick a Vitest config, or use the tool
@@ -1375,7 +1570,7 @@ export function formatRouteError(detail) {
   return `TEST_FILE_ROUTE_ERROR ${detail}; ${TESTING_RUN_GUIDANCE}`;
 }
 
-export function main(argv = process.argv.slice(2)) {
+export async function main(argv = process.argv.slice(2)) {
   const { dry, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
@@ -1571,18 +1766,23 @@ export function main(argv = process.argv.slice(2)) {
     }
 
     const exact = matched.map((file) => relative(group.cwd, file));
-    // Captured (not `stdio:'inherit'`) so the EI-18099113673609528 silent-collection-failure
-    // signature can be detected below; forwarded verbatim so nothing is lost for a live TTY.
-    // 256MB matches scripts/affected-tests.mjs's captured-output maxBuffer — spawnSync's 1MB
-    // default would read a large suite's output as an ENOBUFS-killed-child failure.
+    // Captured so the EI-18099113673609528 silent-collection-failure signature can be detected
+    // below; forwarded verbatim on completion so nothing is lost for a live TTY. The ASYNC seam
+    // emits bounded progress separately while retaining the existing 256MB capture ceiling.
     warnIfInstallInFlight(`\`vitest run\` (group cwd=${cwdLabel})`);
-    const result = spawnSync(
+    const result = await runCapturedTestProcess(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
-      { cwd: group.cwd, env: process.env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 },
+      { cwd: group.cwd, env: process.env, files: exact, cwdLabel },
     );
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
+    if (result.timedOut) {
+      console.error(
+        `TEST_FILE_WATCHDOG cwd=${cwdLabel} files=${JSON.stringify(exact)} ` +
+          `timeoutMs=${TEST_FILE_RUN_TIMEOUT_MS} status=timed-out — owned child tree reaped`,
+      );
+    }
     if (result.error) {
       console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`));
       if (looksLikeMidInstallCorruption(result.error.message)) {
@@ -1623,11 +1823,24 @@ export function main(argv = process.argv.slice(2)) {
         );
         for (const file of exact) {
           console.error(`\n>>> re-running ${file} alone for detail`);
-          spawnSync('npx', ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)], {
-            cwd: group.cwd,
-            env: process.env,
-            stdio: 'inherit',
-          });
+          const detailResult = await runCapturedTestProcess(
+            'npx',
+            ['vitest', 'run', ...configArgs, file, ...withoutOutputFileArg(vitestArgs)],
+            {
+              cwd: group.cwd,
+              env: process.env,
+              files: [file],
+              cwdLabel,
+            },
+          );
+          if (detailResult.stdout) process.stdout.write(detailResult.stdout);
+          if (detailResult.stderr) process.stderr.write(detailResult.stderr);
+          if (detailResult.timedOut) {
+            console.error(
+              `TEST_FILE_DETAIL_RECOVERY_TIMEOUT cwd=${cwdLabel} file=${JSON.stringify(file)} ` +
+                `timeoutMs=${TEST_FILE_RUN_TIMEOUT_MS} status=timed-out — owned child tree reaped`,
+            );
+          }
         }
       }
     }
@@ -1756,5 +1969,5 @@ export function main(argv = process.argv.slice(2)) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = main();
+  process.exitCode = await main();
 }
