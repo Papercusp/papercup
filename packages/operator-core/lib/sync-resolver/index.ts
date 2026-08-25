@@ -635,6 +635,35 @@ async function resolveDesignRegressions(): Promise<unknown[]> {
   ];
 }
 
+/**
+ * The report-only design evidence report, for the design review UI.
+ *
+ * Plan: ratified-mockup-implementation-validation-2026-08-24 (P-008).
+ *
+ * Reads the artifact `npm run design:evidence-report` writes, the same one CI
+ * uploads. Deliberately a FILE read and not a Postgres read: this report is the
+ * output of a comparison RUN, not durable operator state, and every consumer —
+ * a CI artifact download, this pane — should be looking at the same bytes.
+ *
+ * `present: false` rather than an empty report when the file is absent, so the
+ * pane can say "not run here yet" instead of rendering a confident zero. An
+ * empty report and a missing report mean opposite things and must not share a
+ * rendering.
+ */
+async function resolveDesignEvidence(): Promise<unknown[]> {
+  const { promises: fs } = await import('node:fs');
+  const { join } = await import('node:path');
+  const reportPath = join(process.cwd(), 'design-evidence-report', 'report.json');
+  try {
+    const raw = await fs.readFile(reportPath, 'utf8');
+    const stat = await fs.stat(reportPath);
+    const report = JSON.parse(raw) as Record<string, unknown>;
+    return [{ present: true, generatedMtime: stat.mtimeMs, reportPath, report }];
+  } catch {
+    return [{ present: false, generatedMtime: null, reportPath, report: null }];
+  }
+}
+
 async function resolveDesignMemos(args: { status?: string }): Promise<unknown[]> {
   const { promises: fs } = await import('node:fs');
   const { join, resolve } = await import('node:path');
@@ -1342,6 +1371,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
   'designRegressions.list': {
     resolve: async () => resolveDesignRegressions(),
+  },
+  'designEvidence.report': {
+    resolve: async () => resolveDesignEvidence(),
   },
   'designMemos.list': {
     argsSchema: z.object({ status: z.string().optional() }).optional(),

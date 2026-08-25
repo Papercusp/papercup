@@ -63,7 +63,8 @@ export interface ReportedClass {
   readonly referenceClass: ReferenceClass;
   readonly eligibility: 'gateable' | 'advisory-only';
   readonly maxDiffRatio: number;
-  readonly effectiveNoise: number;
+  /** null when the class has no noise measurement — never a placeholder number. */
+  readonly effectiveNoise: number | null;
   readonly regressionFloor: number | null;
   readonly separation: number | null;
   readonly explainUngateable?: string;
@@ -157,7 +158,7 @@ export function buildReport(measurement: CalibrationArtifact): DesignEvidenceRep
         referenceClass: measured.referenceClass,
         eligibility: 'advisory-only',
         maxDiffRatio: 0,
-        effectiveNoise: Number.NaN,
+        effectiveNoise: null,
         regressionFloor: measured.regression.minDiffRatio,
         separation: null,
         explainUngateable:
@@ -234,7 +235,7 @@ export function formatReportSummary(report: DesignEvidenceReport): string {
   for (const cls of report.classes) {
     lines.push(
       `  · ${cls.referenceClass} [${cls.eligibility}] maxDiffRatio=${cls.maxDiffRatio} ` +
-        `noise=${Number.isFinite(cls.effectiveNoise) ? cls.effectiveNoise : 'n/a'} ` +
+        `noise=${cls.effectiveNoise ?? 'unmeasured'} ` +
         `regression=${cls.regressionFloor ?? 'n/a'} ` +
         `separation=${cls.separation === null ? 'n/a' : `${cls.separation.toFixed(1)}x`}` +
         (cls.captureRuntimeP50Ms === null ? '' : ` capture-p50=${cls.captureRuntimeP50Ms}ms`),

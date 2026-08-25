@@ -71,19 +71,33 @@ export const GATEABLE_COHORT = 'real-surface';
 
 export interface PolicyDerivation {
   readonly policy: ThresholdPolicy;
-  /** The numbers the threshold came from, so a reader never has to re-derive them. */
-  readonly effectiveNoise: number;
+  /**
+   * The numbers the threshold came from, so a reader never has to re-derive them.
+   *
+   * `effectiveNoise` is null when the class has no noise measurement at all.
+   * Deliberately not a placeholder: an unmeasured quantity rendered as a number
+   * reads as a measurement, and a fallback of 1 in particular reads as "noise is
+   * 100% of pixels" — a false statement about the world, in the same family as
+   * the ones D-020 and D-021 exist to stop.
+   */
+  readonly effectiveNoise: number | null;
   readonly regressionFloor: number | null;
   readonly separation: number | null;
   /** Present exactly when eligibility is 'advisory-only'. */
   readonly explainUngateable?: string;
 }
 
-function onePixelOf(measurement: ClassCalibration): number {
+/**
+ * The finest distinction the noise measurement could have made: one pixel of
+ * the smallest image a noise sample was taken on.
+ *
+ * `null` when no noise sample exists, because there is then no measurement
+ * whose precision this could be bounding.
+ */
+function onePixelOf(measurement: ClassCalibration): number | null {
   const pixels = measurement.smallestPixelsTotal;
-  // No measured image means no measured resolution; fall back to the coarsest
-  // honest assumption rather than to zero, which would claim infinite precision.
-  return pixels === null || pixels <= 0 ? 1 : 1 / pixels;
+  if (pixels === null || pixels <= 0) return null;
+  return 1 / pixels;
 }
 
 /**
@@ -98,10 +112,16 @@ export function derivePolicyFor(
   policyVersion: string,
 ): PolicyDerivation {
   const observedNoise = measurement.noise.maxDiffRatio;
-  const effectiveNoise = Math.max(observedNoise ?? 0, onePixelOf(measurement));
+  const precisionFloor = onePixelOf(measurement);
+  const effectiveNoise =
+    measurement.noise.n === 0 || observedNoise === null || precisionFloor === null
+      ? null
+      : Math.max(observedNoise, precisionFloor);
   const regressionFloor = measurement.regression.minDiffRatio;
   const separation =
-    regressionFloor === null || effectiveNoise <= 0 ? null : regressionFloor / effectiveNoise;
+    regressionFloor === null || effectiveNoise === null || effectiveNoise <= 0
+      ? null
+      : regressionFloor / effectiveNoise;
 
   const derivedFrom =
     `calibration ${measurement.referenceClass} @ ${policyVersion}: ` +
@@ -135,7 +155,7 @@ export function derivePolicyFor(
         'production threshold. Capture a real cohort for this class to promote it.',
     );
   }
-  if (measurement.noise.n === 0) {
+  if (measurement.noise.n === 0 || effectiveNoise === null) {
     return advisory(
       `class '${measurement.referenceClass}' has no capture-to-capture noise samples, so its ` +
         'threshold floor is unmeasured.',

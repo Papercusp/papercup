@@ -24,6 +24,7 @@ import { filterCountLabel, type CountEvidence } from "@/app/harness/filters";
 import { useWorkspaceId } from "@/lib/use-workspace-id";
 import SketchPane from "./SketchPane";
 import RegressionPane from "./RegressionPane";
+import DesignEvidencePane from "./DesignEvidencePane";
 
 /** The LIST row (WI-7232) — exactly the three fields the queue renders.
  *  `summary` and the other detail-card-only fields moved to
@@ -80,7 +81,8 @@ type Pane =
   | "registry"
   | "tokens"
   | "sketch"
-  | "regressions";
+  | "regressions"
+  | "evidence";
 
 type Bucket = "all" | "pending" | "accepted" | "ignored";
 
@@ -91,6 +93,10 @@ const PANES: Pane[] = [
   "tokens",
   "sketch",
   "regressions",
+  // Sibling of "regressions", not a replacement: that pane asks whether a
+  // surface changed since its baseline, this one whether it matches the design
+  // ratified for it (P-008).
+  "evidence",
 ];
 const BUCKETS: Bucket[] = ["all", "pending", "accepted", "ignored"];
 const DESIGN_FEATURES_PAGE = 100;
@@ -488,6 +494,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
             <SketchPane slug={slug} featureId={selectedFeatureId} />
           )}
           {activePane === "regressions" && <RegressionPane />}
+          {activePane === "evidence" && <DesignEvidencePane />}
         </main>
       </div>
     </div>

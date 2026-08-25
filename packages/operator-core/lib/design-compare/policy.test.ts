@@ -63,7 +63,7 @@ describe('threshold derivation', () => {
       // The property that makes a threshold meaningful at all: above it, correct
       // work passes; below it, a real change is caught.
       const { policy, effectiveNoise, regressionFloor } = derivePolicyFor(measurement(), 'test-1');
-      expect(policy.maxDiffRatio).toBeGreaterThan(effectiveNoise);
+      expect(policy.maxDiffRatio).toBeGreaterThan(effectiveNoise as number);
       expect(policy.maxDiffRatio).toBeLessThan(regressionFloor as number);
     });
 
@@ -91,7 +91,18 @@ describe('threshold derivation', () => {
         measurement({ noise: { n: 4, maxDiffRatio: 0, samples: [] }, smallestPixelsTotal: 1_024_000 }),
         'test-1',
       );
-      expect(small.effectiveNoise).toBeGreaterThan(large.effectiveNoise);
+      expect(small.effectiveNoise as number).toBeGreaterThan(large.effectiveNoise as number);
+    });
+
+    it('reports an unmeasured noise floor as null, never as a placeholder number', () => {
+      // A fallback of 1 here would render as "noise is 100% of pixels" in the
+      // report and the UI — an unmeasured quantity wearing the costume of a
+      // measurement.
+      const { effectiveNoise } = derivePolicyFor(
+        measurement({ cohorts: ['fixture-corpus'], noise: { n: 0, maxDiffRatio: null, samples: [] } }),
+        'test-1',
+      );
+      expect(effectiveNoise).toBeNull();
     });
   });
 
