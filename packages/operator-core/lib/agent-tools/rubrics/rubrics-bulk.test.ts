@@ -8,6 +8,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/rubrics/rubrics-bulk.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { dispatchProjectedTool, lookupByMcpName, readJsonResult } from '@papercusp/agent-mcp';
+import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
 // rubricCompleteness is mocked shape-only here (WI-4287: ratify surfaces it per result);
@@ -56,6 +58,62 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     getM.mockImplementation(async (id: string) => ({ id } as never));
     const b = await body(getTool, { rubricRef: 'r-1', rubricRefs: ['r-1', 'r-2'] });
     expect(b.results.map((r: { rubricId: string }) => r.rubricId)).toEqual(['r-1', 'r-2']);
+  });
+
+  it('keeps every criterion through an ambient trimmed dispatch', async () => {
+    const criteria = Array.from({ length: 26 }, (_, i) => ({
+      key: `criterion-${i + 1}`,
+      title: `Criterion ${i + 1} ${'t'.repeat(120)}`,
+      model: 'm',
+      method: `method-${i + 1} ${'m'.repeat(120)}`,
+      driftMarkers: `drift-${i + 1} ${'d'.repeat(120)}`,
+      replication: `replication-${i + 1} ${'r'.repeat(120)}`,
+      instrumentKey: `instrument-${i + 1}`,
+    }));
+    getM.mockResolvedValue({ rubricId: 'large-rubric', criteria } as never);
+
+    const raw = await body(getTool, { rubricRef: 'large-rubric' });
+    const rawChars = JSON.stringify(raw).length;
+    expect(rawChars).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
+    expect(rawChars).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+
+    const projected = lookupByMcpName('rubrics:get');
+    expect(projected).toBeDefined();
+    expect(projected?.ignoreSessionPayloadTier).toBe(true);
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'rubrics:get',
+      { rubricRef: 'large-rubric' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'rubrics-get-completeness-test',
+        isSuperuser: true,
+        uiClientId: 'su-rubrics-get-test',
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        contextTier: 'trimmed',
+        tx: {},
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{
+      results: Array<{ rubric?: { criteria: Array<{ key: string; method: string }> } }>;
+      _projection?: unknown;
+    }>(dispatched.result!);
+    expect(payload?._projection).toBeUndefined();
+    expect(payload?.results[0]?.rubric?.criteria).toHaveLength(26);
+    expect(payload?.results[0]?.rubric?.criteria.map((criterion) => criterion.key)).toEqual(
+      criteria.map((criterion) => criterion.key),
+    );
+    expect(payload?.results[0]?.rubric?.criteria.every((criterion) => criterion.method.length > 120)).toBe(true);
   });
 });
 
