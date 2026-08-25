@@ -45,6 +45,7 @@ import {
   type GateVerdictTarget,
 } from './release/gate-verdict-target';
 import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
 import {
   callerEditsInCandidate,
   containingSubmodulePath,
@@ -1522,6 +1523,8 @@ export function buildCheckpointSystemdArgv(
   capacityMode?: string | null,
   /** Exact, request-side resolved launch target. Invalid values are never forwarded. */
   candidateSha?: string | null,
+  /** Logical qualification identity transported to the producer-side verdict recorder. */
+  logicalAttemptId?: string | null,
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -1583,6 +1586,10 @@ export function buildCheckpointSystemdArgv(
   const verdictEnv = verdictTarget
     ? Object.entries(gateVerdictEnv(verdictTarget)).map(([k, v]) => `--setenv=${k}=${v}`)
     : [];
+  const qualificationEnv =
+    logicalAttemptId && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/.test(logicalAttemptId)
+      ? [`--setenv=${CHECKPOINT_QUALIFICATION_ATTEMPT_ENV}=${logicalAttemptId}`]
+      : [];
   return [
     '--user',
     '--no-block',
@@ -1602,6 +1609,7 @@ export function buildCheckpointSystemdArgv(
     ...greenCheckpointDbPoolSetenvArgs(),
     `--setenv=${MANUAL_CHECKPOINT_WATCHDOG_ENV}=${MANUAL_CHECKPOINT_WATCHDOG_MS}`,
     ...verdictEnv,
+    ...qualificationEnv,
     'bash',
     '-c',
     inner,
@@ -1621,6 +1629,8 @@ export interface CheckpointEligibilityWaitRequest {
   replaceStale?: boolean;
   /** Re-check this lineage after the quiet-cut delay before the deferred launch. */
   requiredAncestorSha?: string;
+  /** Resume the same logical attempt after the durable quiet-cut wait. */
+  logicalAttemptId?: string;
 }
 
 /** The immediate receipt returned while the durable waiter sleeps/rechecks. */
@@ -1628,6 +1638,7 @@ export interface CheckpointEligibilityWaitReceipt {
   pendingId: string;
   workflowId: string;
   completionEvents: string[];
+  logicalAttemptId?: string;
 }
 
 type CheckpointEligibilityWaitRunner = (
@@ -1710,6 +1721,8 @@ export interface LaunchCheckpointOpts {
    *  harness's gate_health + pipeline history instead of discarding it. Omitted ⇒ the operator-home
    *  gate (this launcher's scope). Pass `null` to explicitly launch a NON-recording run. */
   target?: GateVerdictTarget | null;
+  /** Bind the detached producer's verdict to one durable logical qualification attempt. */
+  logicalAttemptId?: string;
 }
 
 /**
@@ -2410,6 +2423,7 @@ export function launchDetachedCheckpoint(
     // budget as the scheduled gate instead of silently falling back to `shared`.
     process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? null,
     candidateSha,
+    opts.logicalAttemptId,
   );
 
   // WI-5124: resolve — right before launch, so it's as fresh as possible — which commit this

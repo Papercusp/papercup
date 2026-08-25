@@ -66,12 +66,26 @@ import { wakeRecipients } from '../coordination/inbox-wake';
 import { assessCriticalClaimProgressLease } from '../work_items/release-force-guard';
 import { clampText, LIMITS, softText } from '../limits';
 import { GATE_VERDICT_CELL } from '../../cell-registrations';
+import { activeWorkspaceId } from '../../workspace-registry';
 import {
   armPausedCheckpointTransition,
   readCheckpointSerializerAuthority,
 } from '../../release/checkpoint-serializer-authority';
+import {
+  beginStoredQualification,
+  qualificationIntentMatches,
+  readStoredQualification,
+  reserveStoredQualificationRunner,
+  waitStoredQualification,
+  type PreSuiteNoVerdictReason,
+  type StoredQualificationMutation,
+} from '../../release/checkpoint-qualification-transaction';
 
 type SeeAlsoContext = { harnessSlug?: unknown };
+
+function qualificationMutationContinues(mutation: StoredQualificationMutation): boolean {
+  return mutation.status === 'updated' || mutation.status === 'idempotent';
+}
 
 /**
  * `release:checkpoint-run` is workspace-global, but the state-plane handles it
@@ -869,6 +883,133 @@ export default defineTool({
       !preflight.refuse && args.requiredAncestorSha
         ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate)
         : null;
+    const root = integrationRoot();
+    const launchCandidate =
+      requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
+    const qualificationTarget = {
+      workspaceId: activeWorkspaceId(),
+      installSlug: operatorHomeHarnessSlug(),
+    };
+    const beginInput = {
+      attemptId: checkpointEligibilityPendingId({
+        root,
+        candidate: launchCandidate,
+        tip: preflight.tip ?? launchCandidate,
+        paths: args.paths ?? [],
+        requiredAncestorSha: args.requiredAncestorSha,
+      }),
+      requiredAncestorSha: args.requiredAncestorSha,
+      declaredPaths: args.paths ?? [],
+      candidate: launchCandidate,
+      evidenceRefs: ['tool:release:checkpoint-run'],
+    };
+    const storedQualification = await readStoredQualification(qualificationTarget);
+    if (storedQualification.status === 'unreadable') {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: false,
+            launched: false,
+            reason: 'qualification_transaction_unreadable',
+            error: storedQualification.error,
+            note:
+              'NOT launched: the durable logical qualification transaction could not be read. ' +
+              'Unknown transaction state fails closed because a second physical runner cannot be proven safe.',
+          }),
+        }],
+      };
+    }
+    const logicalAttemptId =
+      storedQualification.status === 'present' &&
+      qualificationIntentMatches(storedQualification.transaction, beginInput)
+        ? storedQualification.transaction.attemptId
+        : beginInput.attemptId;
+    const qualificationBegin = await beginStoredQualification(qualificationTarget, {
+      ...beginInput,
+      attemptId: logicalAttemptId,
+    });
+    if (!qualificationMutationContinues(qualificationBegin)) {
+      const transaction = 'transaction' in qualificationBegin ? qualificationBegin.transaction : null;
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: false,
+            launched: false,
+            reason:
+              qualificationBegin.status === 'terminal'
+                ? 'qualification_transaction_terminal'
+                : qualificationBegin.status === 'conflict'
+                  ? 'qualification_transaction_conflict'
+                  : 'qualification_transaction_unavailable',
+            logical_attempt_id: transaction?.attemptId ?? logicalAttemptId,
+            phase: transaction?.phase ?? null,
+            outcome: transaction?.outcome ?? null,
+            error: 'error' in qualificationBegin ? qualificationBegin.error : undefined,
+            note:
+              qualificationBegin.status === 'terminal'
+                ? 'NOT launched: this exact candidate/request already produced a terminal logical outcome. A real red or code-inconclusive verdict is never auto-retried; a newer candidate starts a new attempt.'
+                : 'NOT launched: another non-terminal logical qualification owns the singleton transaction, or its store is unavailable.',
+          }),
+        }],
+      };
+    }
+
+    const recordLogicalWait = async (
+      reason: PreSuiteNoVerdictReason,
+      code: string,
+      detail: string,
+      clearEvents: string[] = [],
+    ): Promise<StoredQualificationMutation> =>
+      waitStoredQualification(qualificationTarget, {
+        attemptId: logicalAttemptId,
+        reason,
+        blockers: [{ code, detail, clearEvents }],
+        evidenceRefs: [
+          'tool:release:checkpoint-run',
+          ...(launchCandidate ? [`candidate:${launchCandidate}`] : []),
+        ],
+      });
+
+    let qualificationWait: StoredQualificationMutation | null = null;
+    if (preflight.refuse) {
+      qualificationWait = await recordLogicalWait(
+        'would-exclude-declared-paths',
+        'quiet-cut',
+        `declared paths are excluded for ~${preflight.waitSec ?? 0}s`,
+      );
+    } else if (frozenRepairQueuePreflight && !frozenRepairQueuePreflight.proceed) {
+      qualificationWait = await recordLogicalWait(
+        frozenRepairQueuePreflight.reason === 'queue-unreadable'
+          ? 'repair-queue-unreadable'
+          : 'repair-in-progress',
+        'frozen-repair-queue',
+        frozenRepairQueuePreflight.detail ?? frozenRepairQueuePreflight.reason,
+      );
+    } else if (requiredAncestorPreflight && !requiredAncestorPreflight.ok) {
+      qualificationWait = await recordLogicalWait(
+        requiredAncestorPreflight.reason === 'not-ancestor'
+          ? 'required-ancestor-missing'
+          : 'required-ancestor-unverifiable',
+        'required-ancestor',
+        requiredAncestorPreflight.detail ?? requiredAncestorPreflight.reason,
+      );
+    }
+    if (qualificationWait && !qualificationMutationContinues(qualificationWait)) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: false,
+            launched: false,
+            reason: `qualification_wait_${qualificationWait.status}`,
+            logical_attempt_id: logicalAttemptId,
+            error: 'error' in qualificationWait ? qualificationWait.error : undefined,
+          }),
+        }],
+      };
+    }
     // WI-37618: the refusal below is returned to the CALLER and recorded NOWHERE else.
     // `tool_invocations` keeps only transport metadata and `output_ref` is a reference, not a
     // body, so a refusal was indistinguishable in the ledger from a call that spent a ~55min
@@ -894,20 +1035,14 @@ export default defineTool({
     let waitReceipt: CheckpointEligibilityWaitReceipt | null = null;
     if (preflight.refuse && args.waitForEligibility) {
       try {
-        const root = integrationRoot();
         waitReceipt = await scheduleCheckpointEligibilityWait({
           paths: args.paths ?? [],
           waitSec: preflight.waitSec ?? 0,
-          pendingId: checkpointEligibilityPendingId({
-            root,
-            candidate: preflight.candidate,
-            tip: preflight.tip,
-            paths: args.paths ?? [],
-            requiredAncestorSha: args.requiredAncestorSha,
-          }),
+          pendingId: logicalAttemptId,
           root,
           force: args.force,
           replaceStale: args.replaceStale,
+          logicalAttemptId,
           ...(args.requiredAncestorSha ? { requiredAncestorSha: args.requiredAncestorSha } : {}),
         });
       } catch (error) {
@@ -918,6 +1053,11 @@ export default defineTool({
           `[release:checkpoint-run] durable eligibility wait unavailable: ${
             error instanceof Error ? error.message : String(error)
           }`,
+        );
+        await recordLogicalWait(
+          'wait-for-eligibility-unavailable',
+          'dbos-eligibility-waiter',
+          error instanceof Error ? error.message : String(error),
         );
       }
     }
@@ -962,6 +1102,7 @@ export default defineTool({
           }
         : {}),
       ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+      logicalQualificationAttemptId: logicalAttemptId,
       ...(preflight.refuse
         ? {
             preLaunchCandidate: preflight.candidate,
@@ -990,6 +1131,7 @@ export default defineTool({
                 ok: false,
                 launched: false,
                 reason: 'would_exclude_declared_paths',
+                logical_attempt_id: logicalAttemptId,
                 candidate: preflight.candidate,
                 tip: preflight.tip,
                 quiet_cut_sec: preflight.quietCutSec,
@@ -1010,6 +1152,7 @@ export default defineTool({
                 ok: false,
                 launched: false,
                 reason: 'wait_for_eligibility_unavailable',
+                logical_attempt_id: logicalAttemptId,
                 candidate: preflight.candidate,
                 tip: preflight.tip,
                 quiet_cut_sec: preflight.quietCutSec,
@@ -1032,6 +1175,7 @@ export default defineTool({
               launched: false,
               pending: true,
               reason: 'waiting_for_eligibility',
+              logical_attempt_id: logicalAttemptId,
               pending_id: waitReceipt.pendingId,
               workflow_id: waitReceipt.workflowId,
               completion_events: waitReceipt.completionEvents,
@@ -1059,6 +1203,7 @@ export default defineTool({
               ok: false,
               launched: false,
               reason: queueReadFailed ? 'repair_queue_unreadable' : 'repair-in-progress',
+              logical_attempt_id: logicalAttemptId,
               candidate: frozenRepairQueuePreflight.candidate,
               repair_candidate: frozenRepairQueuePreflight.candidate,
               repair_queue: frozenRepairQueuePreflight.repairQueue,
@@ -1083,6 +1228,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               launched: false,
+              logical_attempt_id: logicalAttemptId,
               reason:
                 requiredAncestorPreflight.reason === 'not-ancestor'
                   ? 'required_ancestor_missing'
@@ -1105,13 +1251,65 @@ export default defineTool({
         ],
       };
     }
-    const launchCandidate =
-      requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
+    const physicalRunnerId = `manual:${logicalAttemptId}`;
+    const qualificationReservation = await reserveStoredQualificationRunner(qualificationTarget, {
+      attemptId: logicalAttemptId,
+      runnerId: physicalRunnerId,
+      candidate: launchCandidate,
+      evidenceRefs: ['tool:release:checkpoint-run'],
+    });
+    if (!qualificationMutationContinues(qualificationReservation)) {
+      const transaction = 'transaction' in qualificationReservation ? qualificationReservation.transaction : null;
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: false,
+            launched: false,
+            reason: `qualification_reservation_${qualificationReservation.status}`,
+            logical_attempt_id: logicalAttemptId,
+            active_runner: transaction?.currentPhysicalRunner ?? null,
+            outcome: transaction?.outcome ?? null,
+            error: 'error' in qualificationReservation ? qualificationReservation.error : undefined,
+          }),
+        }],
+      };
+    }
     const result = await launchDetachedCheckpoint({
       force: args.force,
       replaceStale: args.replaceStale,
       ...(launchCandidate ? { candidate: launchCandidate } : {}),
+      logicalAttemptId,
     });
+    if (!result.launched && !(result.reason === 'already_running' && qualificationReservation.status === 'idempotent')) {
+      const normalizedReason = (result.reason ?? '').trim().replaceAll('_', '-');
+      const typedReason: PreSuiteNoVerdictReason = [
+        'probe-failed',
+        'already-running',
+        'cancelled',
+        'deadline-exceeded',
+      ].includes(normalizedReason)
+        ? normalizedReason as PreSuiteNoVerdictReason
+        : 'launch-refused';
+      const launchWait = await recordLogicalWait(
+        typedReason,
+        'detached-launch',
+        result.reason ?? 'unknown launch refusal',
+      );
+      if (!qualificationMutationContinues(launchWait)) {
+        return {
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: `qualification_wait_${launchWait.status}`,
+              logical_attempt_id: logicalAttemptId,
+            }),
+          }],
+        };
+      }
+    }
     // WI-6962: the host could not be asked whether a run is in flight, so we refused rather
     // than gambled. This is a DIFFERENT answer from already_running and needs a different
     // response: retry in a moment (the probe is a fork, and it fails under host pressure),
@@ -1125,6 +1323,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               probe_failed: true,
+              logical_attempt_id: logicalAttemptId,
               unit: a?.unit ?? null,
               probe_detail: a?.probe_detail ?? null,
               held_externally: a?.held_externally ?? false,
@@ -1261,6 +1460,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               already_running: true,
+              logical_attempt_id: logicalAttemptId,
               unit: a.unit,
               // EI-21044758600216699: prefer the run's OWN published candidate marker over the
               // checkout-HEAD inference — same precedence as the containment check above, so this
@@ -1509,6 +1709,7 @@ export default defineTool({
           type: 'text',
           text: JSON.stringify({
             ok: result.launched,
+            logical_attempt_id: logicalAttemptId,
             ...result,
             ...(reportedWillJudge ? { willJudge: reportedWillJudge } : {}),
             ...(requiredAncestorPreflight

@@ -13,6 +13,8 @@ import { boundedOrgTxn } from '../pg-bounded-txn';
 
 export const CHECKPOINT_QUALIFICATION_METADATA_KEY = 'qualificationTransaction';
 export const CHECKPOINT_QUALIFICATION_SCHEMA_VERSION = 1 as const;
+/** Transported into a detached checkpoint so its verdict settles the exact logical attempt. */
+export const CHECKPOINT_QUALIFICATION_ATTEMPT_ENV = 'PAPERCUSP_CHECKPOINT_QUALIFICATION_ATTEMPT_ID';
 
 export const PRE_SUITE_NO_VERDICT_REASONS = [
   'authority-unreadable',
@@ -98,8 +100,29 @@ export type QualificationTransition =
 const uniqueStrings = (values: readonly string[], cap = 64): string[] =>
   [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, cap);
 
-const isTerminalOutcome = (outcome: QualificationOutcome): boolean =>
+export const isTerminalQualificationOutcome = (outcome: QualificationOutcome): boolean =>
   outcome.kind === 'green' || outcome.kind === 'red' || outcome.kind === 'code-inconclusive';
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  const a = uniqueStrings(left).sort();
+  const b = uniqueStrings(right).sort();
+  return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/**
+ * A waiting/running logical attempt survives candidate movement. The caller intent is the
+ * required ancestor plus the declared-path policy; the candidate is a physical-run snapshot.
+ */
+export function qualificationIntentMatches(
+  current: CheckpointQualificationTransaction,
+  input: Pick<BeginQualificationInput, 'requiredAncestorSha' | 'declaredPaths'>,
+): boolean {
+  if (isTerminalQualificationOutcome(current.outcome)) return false;
+  return (
+    current.requiredAncestorSha === (input.requiredAncestorSha?.trim() || null) &&
+    sameStrings(current.candidatePolicy.declaredPaths, input.declaredPaths ?? [])
+  );
+}
 
 export function parseCheckpointQualificationTransaction(
   value: unknown,
@@ -123,6 +146,41 @@ export function parseCheckpointQualificationTransaction(
     !Array.isArray(row.blockers) ||
     !Array.isArray(row.evidenceRefs)
   ) return null;
+  const outcome = row.outcome as Partial<QualificationOutcome>;
+  if (!['pending', 'pre-suite-no-verdict', 'green', 'red', 'code-inconclusive'].includes(String(outcome.kind))) {
+    return null;
+  }
+  if (
+    outcome.kind === 'pre-suite-no-verdict' &&
+    !(PRE_SUITE_NO_VERDICT_REASONS as readonly string[]).includes(String((outcome as { reason?: unknown }).reason))
+  ) return null;
+  if (
+    (outcome.kind === 'green' || outcome.kind === 'red' || outcome.kind === 'code-inconclusive') &&
+    typeof (outcome as { reason?: unknown }).reason !== 'string'
+  ) return null;
+  if (
+    row.blockers.some((blocker) =>
+      !blocker ||
+      typeof blocker !== 'object' ||
+      typeof blocker.code !== 'string' ||
+      !Array.isArray(blocker.clearEvents) ||
+      blocker.clearEvents.some((event) => typeof event !== 'string') ||
+      !Number.isFinite(blocker.observedAtMs),
+    ) ||
+    row.evidenceRefs.some((ref) => typeof ref !== 'string') ||
+    row.candidatePolicy.declaredPaths.some((declaredPath) => typeof declaredPath !== 'string')
+  ) return null;
+  if (
+    row.currentPhysicalRunner != null &&
+    (
+      typeof row.currentPhysicalRunner !== 'object' ||
+      typeof row.currentPhysicalRunner.id !== 'string' ||
+      !row.currentPhysicalRunner.id ||
+      !Number.isFinite(row.currentPhysicalRunner.reservedAtMs) ||
+      !Array.isArray(row.currentPhysicalRunner.evidenceRefs) ||
+      row.currentPhysicalRunner.evidenceRefs.some((ref) => typeof ref !== 'string')
+    )
+  ) return null;
   return row as CheckpointQualificationTransaction;
 }
 
@@ -132,9 +190,14 @@ export function beginQualificationTransaction(
 ): QualificationTransition {
   const nowMs = input.nowMs ?? Date.now();
   if (current?.attemptId === input.attemptId) {
-    return { status: isTerminalOutcome(current.outcome) ? 'terminal' : 'idempotent', transaction: current };
+    return {
+      status: isTerminalQualificationOutcome(current.outcome) ? 'terminal' : 'idempotent',
+      transaction: current,
+    };
   }
-  if (current && !isTerminalOutcome(current.outcome)) return { status: 'conflict', transaction: current };
+  if (current && !isTerminalQualificationOutcome(current.outcome)) {
+    return { status: 'conflict', transaction: current };
+  }
   const transaction: CheckpointQualificationTransaction = {
     schemaVersion: CHECKPOINT_QUALIFICATION_SCHEMA_VERSION,
     attemptId: input.attemptId,
@@ -168,7 +231,24 @@ export function waitQualificationTransaction(
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
-  if (isTerminalOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (
+    current.phase === 'waiting' &&
+    current.outcome.kind === 'pre-suite-no-verdict' &&
+    current.outcome.reason === input.reason &&
+    (input.blockers ?? []).length === current.blockers.length &&
+    (input.blockers ?? []).every((blocker, index) => {
+      const existing = current.blockers[index];
+      return (
+        existing?.code === blocker.code &&
+        existing.detail === blocker.detail &&
+        sameStrings(existing.clearEvents, blocker.clearEvents)
+      );
+    }) &&
+    (input.evidenceRefs ?? []).every((ref) => current.evidenceRefs.includes(ref))
+  ) {
+    return { status: 'idempotent', transaction: current };
+  }
   const nowMs = input.nowMs ?? Date.now();
   return {
     status: 'updated',
@@ -196,7 +276,7 @@ export function reserveQualificationRunner(
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
-  if (isTerminalOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   if (current.currentPhysicalRunner && current.currentPhysicalRunner.id !== input.runnerId) {
     return { status: 'conflict', transaction: current };
   }
@@ -243,7 +323,7 @@ export function settleQualificationTransaction(
   input: { attemptId: string; reason: string; green?: boolean | null; evidenceRefs?: readonly string[]; nowMs?: number },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
-  if (isTerminalOutcome(current.outcome)) return { status: 'terminal', transaction: current };
+  if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
   const outcome = classifyQualificationVerdict(input);
   if (outcome.kind === 'pre-suite-no-verdict') {
     return waitQualificationTransaction(current, {
@@ -268,12 +348,14 @@ export function settleQualificationTransaction(
   };
 }
 
-type StoredMutation = QualificationTransition | { status: 'missing' | 'unreadable'; error?: string };
+export type StoredQualificationMutation =
+  | QualificationTransition
+  | { status: 'missing' | 'unreadable'; error?: string };
 
 async function mutateStoredQualification(
   target: GateVerdictTarget,
-  change: (current: CheckpointQualificationTransaction | null) => QualificationTransition,
-): Promise<StoredMutation> {
+  change: (current: CheckpointQualificationTransaction | null) => StoredQualificationMutation,
+): Promise<StoredQualificationMutation> {
   try {
     return await boundedOrgTxn(async (tx) => {
       const rows = await tx<{ metadata: Record<string, unknown> | null }[]>`
@@ -281,8 +363,6 @@ async function mutateStoredQualification(
           FROM harness_shared.routines
          WHERE workspace_id = ${target.workspaceId}
            AND install_slug = ${target.installSlug}
-           AND name = 'green-checkpoint'
-           AND group_slug = 'release'
            AND target_role = 'system:green-checkpoint'
          FOR UPDATE`;
       if (!rows[0]) return { status: 'missing' as const };
@@ -305,8 +385,6 @@ async function mutateStoredQualification(
                updated_at = now()
          WHERE workspace_id = ${target.workspaceId}
            AND install_slug = ${target.installSlug}
-           AND name = 'green-checkpoint'
-           AND group_slug = 'release'
            AND target_role = 'system:green-checkpoint'`;
       return transition;
     });
@@ -318,24 +396,24 @@ async function mutateStoredQualification(
 export function beginStoredQualification(
   target: GateVerdictTarget,
   input: BeginQualificationInput,
-): Promise<StoredMutation> {
+): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) => beginQualificationTransaction(current, input));
 }
 
 export function waitStoredQualification(
   target: GateVerdictTarget,
   input: Parameters<typeof waitQualificationTransaction>[1],
-): Promise<StoredMutation> {
+): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) =>
-    current ? waitQualificationTransaction(current, input) : { status: 'unreadable', error: 'missing attempt' } as never);
+    current ? waitQualificationTransaction(current, input) : { status: 'unreadable', error: 'missing attempt' });
 }
 
 export function reserveStoredQualificationRunner(
   target: GateVerdictTarget,
   input: Parameters<typeof reserveQualificationRunner>[1],
-): Promise<StoredMutation> {
+): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) =>
-    current ? reserveQualificationRunner(current, input) : { status: 'unreadable', error: 'missing attempt' } as never);
+    current ? reserveQualificationRunner(current, input) : { status: 'unreadable', error: 'missing attempt' });
 }
 
 export async function readStoredQualification(
@@ -348,8 +426,6 @@ export async function readStoredQualification(
         FROM harness_shared.routines
        WHERE workspace_id = ${target.workspaceId}
          AND install_slug = ${target.installSlug}
-         AND name = 'green-checkpoint'
-         AND group_slug = 'release'
          AND target_role = 'system:green-checkpoint'
        LIMIT 1`;
     if (!rows[0]?.transaction) return { status: 'none' };
@@ -364,10 +440,19 @@ export async function readStoredQualification(
 
 export function recordStoredQualificationVerdict(
   target: GateVerdictTarget,
-  input: { reason: string; green?: boolean | null; evidenceRefs?: readonly string[]; nowMs?: number },
-): Promise<StoredMutation> {
+  input: {
+    attemptId?: string;
+    reason: string;
+    green?: boolean | null;
+    evidenceRefs?: readonly string[];
+    nowMs?: number;
+  },
+): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) => {
-    if (!current) return { status: 'unreadable', error: 'missing attempt' } as never;
-    return settleQualificationTransaction(current, { attemptId: current.attemptId, ...input });
+    if (!current) return { status: 'unreadable', error: 'missing attempt' };
+    return settleQualificationTransaction(current, {
+      ...input,
+      attemptId: input.attemptId ?? current.attemptId,
+    });
   });
 }

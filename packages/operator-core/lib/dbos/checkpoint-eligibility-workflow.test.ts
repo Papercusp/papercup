@@ -202,4 +202,100 @@ describe('checkpoint eligibility waiter', () => {
     expect(launch).toHaveBeenCalledWith({ root: '/tmp/papercusp', force: undefined, replaceStale: undefined });
     expect(result).toMatchObject({ status: 'launched', result: { unit: 'checkpoint-unit' } });
   });
+
+  it('reserves one physical runner for the same logical attempt and records a launch no-verdict', async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    const assess = vi.fn(async () => ({
+      ...REFUSAL,
+      refuse: false,
+      proceedReason: 'declared-paths-in-candidate' as const,
+      blockedPaths: [],
+      waitSec: null,
+    }));
+    const reserveQualification = vi.fn(async () => ({
+      status: 'updated' as const,
+      transaction: {} as never,
+    }));
+    const waitQualification = vi.fn(async () => ({
+      status: 'updated' as const,
+      transaction: {} as never,
+    }));
+    const launch = vi.fn(async () => ({
+      launched: false,
+      unit: 'checkpoint-unit',
+      argv: [],
+      logPath: '/tmp/checkpoint.log',
+      reason: 'already_running',
+    }));
+    const emit = vi.fn(async () => ({ ok: true }));
+
+    const result = await runCheckpointEligibilityWait(
+      {
+        pendingId: 'pending-logical',
+        logicalAttemptId: 'attempt-logical',
+        paths: ['mine.ts'],
+        waitSec: 0,
+        root: '/tmp/papercusp',
+      },
+      { sleep, assess, reserveQualification, waitQualification, launch, emit },
+    );
+
+    expect(reserveQualification).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: 'attempt-logical',
+      runnerId: 'eligibility:pending-logical',
+      candidate: 'aaaaaaaaaaaa',
+    }));
+    expect(launch).toHaveBeenCalledWith(expect.objectContaining({ logicalAttemptId: 'attempt-logical' }));
+    expect(waitQualification).toHaveBeenCalledWith(expect.objectContaining({
+      attemptId: 'attempt-logical',
+      reason: 'already-running',
+      blockers: [expect.objectContaining({ code: 'detached-launch' })],
+    }));
+    expect(result).toMatchObject({ status: 'not-launched', reason: 'already_running' });
+  });
+
+  it('emits a completion event when transaction reservation refuses, so a durable receipt never hangs', async () => {
+    const emit = vi.fn(async () => ({ ok: true }));
+    const launch = vi.fn(async () => ({
+      launched: true,
+      unit: 'must-not-launch',
+      argv: [],
+      logPath: '/tmp/checkpoint.log',
+    }));
+    const result = await runCheckpointEligibilityWait(
+      {
+        pendingId: 'pending-conflict',
+        logicalAttemptId: 'attempt-conflict',
+        paths: ['mine.ts'],
+        waitSec: 0,
+        root: '/tmp/papercusp',
+      },
+      {
+        sleep: async () => {},
+        assess: async () => ({
+          ...REFUSAL,
+          refuse: false,
+          proceedReason: 'declared-paths-in-candidate',
+          blockedPaths: [],
+          waitSec: null,
+        }),
+        reserveQualification: async () => ({
+          status: 'conflict',
+          transaction: {} as never,
+        }),
+        launch,
+        emit,
+      },
+    );
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: 'not-launched', reason: 'qualification-reservation-conflict' });
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      key: 'green-checkpoint:inconclusive:papercusp',
+      payload: expect.objectContaining({
+        logicalAttemptId: 'attempt-conflict',
+        reason: 'qualification-reservation-conflict',
+      }),
+    }));
+  });
 });

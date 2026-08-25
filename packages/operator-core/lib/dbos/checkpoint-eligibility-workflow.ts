@@ -24,6 +24,15 @@ import {
 } from '../release/checkpoint-required-ancestor';
 import { integrationRoot } from '../release-deploy-launch';
 import { emitAwaitedEvent, type EmitAwaitedEventOpts } from '../events/await/engine';
+import { activeWorkspaceId } from '../workspace-registry';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
+import {
+  PRE_SUITE_NO_VERDICT_REASONS,
+  reserveStoredQualificationRunner,
+  waitStoredQualification,
+  type PreSuiteNoVerdictReason,
+  type StoredQualificationMutation,
+} from '../release/checkpoint-qualification-transaction';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 
@@ -41,8 +50,26 @@ export interface CheckpointEligibilityWaitDeps {
     predictedCandidate: string | null;
     root?: string;
   }) => Promise<RequiredAncestorPreflight>;
-  launch: (opts: { force?: boolean; replaceStale?: boolean; root?: string }) => Promise<LaunchCheckpointResult>;
+  launch: (opts: {
+    force?: boolean;
+    replaceStale?: boolean;
+    root?: string;
+    logicalAttemptId?: string;
+  }) => Promise<LaunchCheckpointResult>;
   emit: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
+  reserveQualification?: (input: Parameters<typeof reserveStoredQualificationRunner>[1]) => Promise<StoredQualificationMutation>;
+  waitQualification?: (input: Parameters<typeof waitStoredQualification>[1]) => Promise<StoredQualificationMutation>;
+}
+
+function noVerdictReason(reason: string | undefined): PreSuiteNoVerdictReason {
+  const normalized = (reason ?? '').trim().replaceAll('_', '-');
+  return (PRE_SUITE_NO_VERDICT_REASONS as readonly string[]).includes(normalized)
+    ? normalized as PreSuiteNoVerdictReason
+    : 'launch-refused';
+}
+
+function mutationAllowsContinuation(mutation: StoredQualificationMutation): boolean {
+  return mutation.status === 'updated' || mutation.status === 'idempotent';
 }
 
 /**
@@ -53,6 +80,33 @@ export async function runCheckpointEligibilityWait(
   input: CheckpointEligibilityWaitRequest,
   deps: CheckpointEligibilityWaitDeps,
 ): Promise<CheckpointEligibilityWaitOutcome> {
+  const emitQualificationFailure = async (reason: string): Promise<void> => {
+    await deps.emit({
+      key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
+      summary: `checkpoint eligibility wait ${input.pendingId} did not launch: ${reason}`,
+      payload: {
+        pendingId: input.pendingId,
+        logicalAttemptId: input.logicalAttemptId ?? null,
+        reason,
+      },
+      source: 'checkpoint-eligibility-wait',
+    });
+  };
+  const recordWait = async (
+    reason: PreSuiteNoVerdictReason,
+    code: string,
+    detail: string,
+  ): Promise<StoredQualificationMutation | null> => {
+    if (!input.logicalAttemptId) return null;
+    if (!deps.waitQualification) return { status: 'unreadable', error: 'qualification waiter is not wired' };
+    return deps.waitQualification({
+      attemptId: input.logicalAttemptId,
+      reason,
+      blockers: [{ code, detail, clearEvents: [] }],
+      evidenceRefs: [`checkpoint-eligibility:${input.pendingId}`],
+    });
+  };
+
   // +2s crosses the quiet-window boundary rather than landing exactly on it. The cut is an age
   // test at second granularity, so an exact-boundary wake can still round the wrong way.
   await deps.sleep((Math.max(0, Math.ceil(input.waitSec)) + 2) * 1000);
@@ -69,6 +123,12 @@ export async function runCheckpointEligibilityWait(
   // preflight instead.
   if (recheck.refuse || recheck.proceedReason === 'wait-exceeds-cap') {
     const reason = recheck.refuse ? 'still-would-exclude-declared-paths' : 'eligibility-wait-exceeds-cap';
+    const waitMutation = await recordWait('would-exclude-declared-paths', 'quiet-cut', reason);
+    if (waitMutation && !mutationAllowsContinuation(waitMutation)) {
+      const mutationReason = `qualification-wait-${waitMutation.status}`;
+      await emitQualificationFailure(mutationReason);
+      return { status: 'not-launched', reason: mutationReason };
+    }
     await deps.emit({
       key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
       summary: `checkpoint eligibility wait ${input.pendingId} did not launch: ${reason}`,
@@ -97,6 +157,12 @@ export async function runCheckpointEligibilityWait(
         requiredAncestor.reason === 'not-ancestor'
           ? 'required-ancestor-missing'
           : 'required-ancestor-unverifiable';
+      const waitMutation = await recordWait(reason, 'required-ancestor', requiredAncestor.reason);
+      if (waitMutation && !mutationAllowsContinuation(waitMutation)) {
+        const mutationReason = `qualification-wait-${waitMutation.status}`;
+        await emitQualificationFailure(mutationReason);
+        return { status: 'not-launched', reason: mutationReason };
+      }
       await deps.emit({
         key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
         summary: `checkpoint eligibility wait ${input.pendingId} did not launch: ${reason}`,
@@ -115,12 +181,42 @@ export async function runCheckpointEligibilityWait(
     }
   }
 
+  if (input.logicalAttemptId) {
+    if (!deps.reserveQualification) {
+      await emitQualificationFailure('qualification-reservation-unavailable');
+      return { status: 'not-launched', reason: 'qualification-reservation-unavailable' };
+    }
+    const reservation = await deps.reserveQualification({
+      attemptId: input.logicalAttemptId,
+      runnerId: `eligibility:${input.pendingId}`,
+      candidate: recheck.candidate,
+      evidenceRefs: [`checkpoint-eligibility:${input.pendingId}`],
+    });
+    if (!mutationAllowsContinuation(reservation)) {
+      const reservationReason = `qualification-reservation-${reservation.status}`;
+      await emitQualificationFailure(reservationReason);
+      return { status: 'not-launched', reason: reservationReason };
+    }
+  }
+
   const result = await deps.launch({
     force: input.force,
     replaceStale: input.replaceStale,
     root: input.root,
+    ...(input.logicalAttemptId ? { logicalAttemptId: input.logicalAttemptId } : {}),
   });
   if (result.launched) return { status: 'launched', result };
+
+  const waitMutation = await recordWait(
+    noVerdictReason(result.reason),
+    'detached-launch',
+    result.reason ?? 'not-launched',
+  );
+  if (waitMutation && !mutationAllowsContinuation(waitMutation)) {
+    const mutationReason = `qualification-wait-${waitMutation.status}`;
+    await emitQualificationFailure(mutationReason);
+    return { status: 'not-launched', reason: mutationReason, result };
+  }
 
   // The standard checkpoint verdict events cover a successful detached run. If the launch
   // itself is refused (probe failure, an already-running run, etc.), surface an inconclusive
@@ -141,6 +237,7 @@ export async function runCheckpointEligibilityWait(
 async function checkpointEligibilityWaitImpl(
   input: CheckpointEligibilityWaitRequest,
 ): Promise<CheckpointEligibilityWaitOutcome> {
+  const target = { workspaceId: activeWorkspaceId(), installSlug: operatorHomeHarnessSlug() };
   return runCheckpointEligibilityWait(input, {
     sleep: (ms) => DBOS.sleep(ms),
     assess: (args) =>
@@ -154,6 +251,14 @@ async function checkpointEligibilityWaitImpl(
     emit: (opts) =>
       DBOS.runStep(() => emitAwaitedEvent(opts), {
         name: 'checkpoint-eligibility-inconclusive',
+      }),
+    reserveQualification: (reservation) =>
+      DBOS.runStep(() => reserveStoredQualificationRunner(target, reservation), {
+        name: 'checkpoint-eligibility-reserve-qualification',
+      }),
+    waitQualification: (wait) =>
+      DBOS.runStep(() => waitStoredQualification(target, wait), {
+        name: 'checkpoint-eligibility-wait-qualification',
       }),
   });
 }
@@ -188,6 +293,7 @@ export async function enqueueCheckpointEligibilityWait(
     pendingId: input.pendingId,
     workflowId,
     completionEvents: checkpointEligibilityCompletionEvents(root),
+    ...(input.logicalAttemptId ? { logicalAttemptId: input.logicalAttemptId } : {}),
   };
 }
 

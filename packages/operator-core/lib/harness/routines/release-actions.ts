@@ -67,6 +67,10 @@ import {
 } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
 import { buildDeployTerminalShell, RELEASE_DEPLOY_UNIT } from '../../release-deploy-terminal';
+import {
+  CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
+  recordStoredQualificationVerdict,
+} from '../../release/checkpoint-qualification-transaction';
 
 // Kept as exports from this historical module for callers/tests that already
 // use the release-actions config surface. The implementation is shared with
@@ -931,6 +935,36 @@ export function __resetSelfHealPrebindForTest(): void {
 }
 
 export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict: CheckpointVerdict): Promise<boolean> {
+  // P-003: settle the logical qualification BEFORE filtering non-recordable pipeline outcomes.
+  // `skipped-locked`, migrations-pending, and the other typed pre-suite no-verdicts are not gate
+  // verdicts, but they are exactly the outcomes that return the same logical attempt to waiting.
+  // The detached launcher transports the attempt id in its unit environment; scheduled/version-
+  // skew paths omit it and best-effort settle the current global attempt instead.
+  const transportedAttemptId = process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined;
+  const qualificationSettlement = isPinnedCheckpointVerdict(verdict)
+    ? null
+    : await recordStoredQualificationVerdict(target, {
+        ...(transportedAttemptId ? { attemptId: transportedAttemptId } : {}),
+        reason: verdict.reason,
+        green: verdict.green,
+        evidenceRefs: [
+          ...(verdict.runId ? [`checkpoint-run:${verdict.runId}`] : []),
+          ...(verdict.candidate ? [`candidate:${verdict.candidate}`] : []),
+        ],
+      }).catch((error) => ({
+        status: 'unreadable' as const,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+  if (
+    transportedAttemptId &&
+    qualificationSettlement &&
+    (qualificationSettlement.status === 'conflict' || qualificationSettlement.status === 'unreadable')
+  ) {
+    console.warn(
+      `${orchestratorStdoutTag()} logical qualification ${transportedAttemptId} could not settle ` +
+        `(${qualificationSettlement.status}${'error' in qualificationSettlement && qualificationSettlement.error ? `: ${qualificationSettlement.error}` : ''})`,
+    );
+  }
   if (!isRecordableVerdict(verdict.reason)) return false;
   await appendPipelineEvent({
     workspaceId: target.workspaceId,
@@ -2898,6 +2932,40 @@ export async function reserveFrozenCandidateRepairFixer(
         )
       RETURNING metadata->'repair_queue' AS repair_queue`,
     [target.workspaceId, target.installSlug, JSON.stringify(reservedQueue), JSON.stringify(expectedQueue), nowMs],
+  )) as Array<{ repair_queue: unknown }>;
+  return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
+}
+
+/**
+ * Extend the dispatch lease while the SAME owner is still preparing the frozen worktree or
+ * launching its fixer. The exact token-bearing queue is the CAS authority: a caller that lost
+ * the lease to a replacement can never renew over the winner.
+ */
+export async function renewFrozenCandidateRepairFixerReservation(
+  target: GateVerdictTarget,
+  queue: FrozenCandidateRepairQueue,
+  nowMs = Date.now(),
+): Promise<FrozenCandidateRepairQueue | null> {
+  if (!queue.dispatchReservation || queue.phase !== 'awaiting-fixer') return null;
+  const renewedQueue: FrozenCandidateRepairQueue = {
+    ...queue,
+    dispatchReservation: {
+      ...queue.dispatchReservation,
+      expiresAtMs: nowMs + FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
+    },
+  };
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `UPDATE harness_shared.routines
+        SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{repair_queue}', $3::jsonb, true),
+            updated_at = now()
+      WHERE workspace_id = $1
+        AND install_slug = $2
+        AND target_role = 'system:green-checkpoint'
+        AND metadata->'repair_queue' = $4::jsonb
+      RETURNING metadata->'repair_queue' AS repair_queue`,
+    [target.workspaceId, target.installSlug, JSON.stringify(renewedQueue), JSON.stringify(queue)],
   )) as Array<{ repair_queue: unknown }>;
   return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
 }

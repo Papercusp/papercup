@@ -40,6 +40,14 @@ vi.mock('../../events/await/engine', () => ({
   emitAwaitedEvent: (...a: unknown[]) => emitAwaitedEvent(...a),
 }));
 
+const recordStoredQualificationVerdict = vi.hoisted(() =>
+  vi.fn(async (..._a: unknown[]) => ({ status: 'missing' as const })),
+);
+vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
+  ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
+  recordStoredQualificationVerdict: (...a: unknown[]) => recordStoredQualificationVerdict(...a),
+}));
+
 // EI-21363817573800034: drive the scheduled gate's ADMISSION check. Only the reader is
 // replaced — releaseCheckpointConfig() and the rest of the module stay REAL, so this cannot
 // mask a regression in the thresholds the same module owns.
@@ -154,6 +162,7 @@ import {
   checkpointRunLogPaths,
   readFrozenCandidateRepairQueue,
   reserveFrozenCandidateRepairFixer,
+  renewFrozenCandidateRepairFixerReservation,
   writeFrozenCandidateRepairQueue,
   type AutoServePlan,
   type DeployEventRow,
@@ -167,6 +176,7 @@ import {
   FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
   type FrozenCandidateRepairQueue,
 } from '../../release/frozen-candidate-repair-queue';
+import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from '../../release/checkpoint-qualification-transaction';
 
 describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
   it('builds a green-checkpoint-stall body with streak, age, capped candidate + failing tests', () => {
@@ -739,6 +749,8 @@ beforeEach(() => {
   appendPipelineEvent.mockClear();
   emitAwaitedEvent.mockClear();
   fakeSql.unsafe.mockClear();
+  recordStoredQualificationVerdict.mockClear();
+  recordStoredQualificationVerdict.mockResolvedValue({ status: 'missing' });
   // EI-21363817573800034: admission defaults to CLEAR for every test, so the guard is invisible
   // to the ~136 cases that predate it. Reset globally (not just in the admission describe): a
   // held/unknown value leaking forward silently stops the suite from spawning, which surfaces as
@@ -1595,6 +1607,30 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     });
   });
 
+  it('P-003: a non-recordable pre-suite outcome still returns the exact logical attempt to waiting', async () => {
+    process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV] = 'attempt-1';
+    try {
+      const recorded = await recordCheckpointVerdict(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        { reason: 'skipped-locked', candidate: 'abc123', runId: 'run-1' },
+      );
+
+      expect(recorded).toBe(false);
+      expect(recordStoredQualificationVerdict).toHaveBeenCalledWith(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        {
+          attemptId: 'attempt-1',
+          reason: 'skipped-locked',
+          green: undefined,
+          evidenceRefs: ['checkpoint-run:run-1', 'candidate:abc123'],
+        },
+      );
+      expect(appendPipelineEvent).not.toHaveBeenCalled();
+    } finally {
+      delete process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV];
+    }
+  });
+
   it('⭐ a RED from ANY runner lands in gate_health + the pipeline history', async () => {
     const recorded = await recordCheckpointVerdict(
       { workspaceId: 'ws-42', installSlug: 'my-harness' },
@@ -1652,6 +1688,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
           }),
         }),
       );
+      expect(recordStoredQualificationVerdict).not.toHaveBeenCalled();
       expect(fakeSql.unsafe).not.toHaveBeenCalled();
     },
   );
@@ -2197,6 +2234,37 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     });
     const [statement] = fakeSql.unsafe.mock.calls.at(-1)!;
     expect(statement).toContain("(metadata->'repair_queue') - 'dispatchReservation'");
+  });
+
+  it('renews only the exact token-bearing reservation', async () => {
+    const reservedQueue: FrozenCandidateRepairQueue = {
+      ...queue,
+      schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
+      phase: 'awaiting-fixer',
+      repairHead: queue.candidate,
+      attempts: 0,
+      fixerSpawnId: null,
+      dispatchReservation: {
+        token: 'owner-token',
+        claimedAtMs: 100,
+        expiresAtMs: 300_100,
+      },
+    };
+    fakeSql.unsafe.mockImplementationOnce(async (_query: unknown, params: unknown) => {
+      const renewedQueue = JSON.parse((params as unknown[])[2] as string) as FrozenCandidateRepairQueue;
+      return [{ repair_queue: renewedQueue }] as never;
+    });
+
+    const renewed = await renewFrozenCandidateRepairFixerReservation(target, reservedQueue, 250_000);
+
+    expect(renewed?.dispatchReservation).toEqual({
+      token: 'owner-token',
+      claimedAtMs: 100,
+      expiresAtMs: 550_000,
+    });
+    const [statement, params] = fakeSql.unsafe.mock.calls.at(-1)!;
+    expect(statement).toContain("metadata->'repair_queue' = $4::jsonb");
+    expect((params as unknown[])[3]).toBe(JSON.stringify(reservedQueue));
   });
 });
 

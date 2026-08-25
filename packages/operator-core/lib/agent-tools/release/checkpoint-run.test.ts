@@ -23,6 +23,39 @@ vi.mock('../../release/checkpoint-serializer-authority', () => ({
   armPausedCheckpointTransition: vi.fn(async () => ({ status: 'unreadable', error: 'not configured in this test' })),
 }));
 
+const qualificationMocks = vi.hoisted(() => ({
+  read: vi.fn(),
+  begin: vi.fn(),
+  wait: vi.fn(),
+  reserve: vi.fn(),
+}));
+vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
+  ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
+  readStoredQualification: (...a: unknown[]) => qualificationMocks.read(...a),
+  beginStoredQualification: (...a: unknown[]) => qualificationMocks.begin(...a),
+  waitStoredQualification: (...a: unknown[]) => qualificationMocks.wait(...a),
+  reserveStoredQualificationRunner: (...a: unknown[]) => qualificationMocks.reserve(...a),
+}));
+
+function qualificationTransaction(input: Record<string, unknown>, phase = 'ready') {
+  return {
+    schemaVersion: 1 as const,
+    attemptId: String(input.attemptId),
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    requiredAncestorSha: input.requiredAncestorSha ?? null,
+    candidatePolicy: { kind: 'quiet-cut' as const, declaredPaths: input.declaredPaths ?? [] },
+    candidate: input.candidate ?? null,
+    phase,
+    outcome: { kind: 'pending' as const },
+    blockers: [],
+    waitGeneration: 0,
+    currentPhysicalRunner: null,
+    evidenceRefs: [],
+    previousAttemptId: null,
+  };
+}
+
 const MAKE_CTX = (role = 'operator', overrides: Record<string, unknown> = {}) =>
   ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides } as never);
 
@@ -71,6 +104,23 @@ const NO_CONTAINMENT = vi.fn(async () => ({
 beforeEach(() => {
   vi.resetModules();
   NO_CONTAINMENT.mockClear();
+  qualificationMocks.read.mockReset();
+  qualificationMocks.begin.mockReset();
+  qualificationMocks.wait.mockReset();
+  qualificationMocks.reserve.mockReset();
+  qualificationMocks.read.mockResolvedValue({ status: 'none' });
+  qualificationMocks.begin.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
+    status: 'updated',
+    transaction: qualificationTransaction(input),
+  }));
+  qualificationMocks.wait.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
+    status: 'updated',
+    transaction: qualificationTransaction(input, 'waiting'),
+  }));
+  qualificationMocks.reserve.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
+    status: 'updated',
+    transaction: qualificationTransaction(input, 'running'),
+  }));
   // afterEach removes per-case migration overrides. Reinstall the hermetic
   // default after every reset so test 2 onward never falls through to the live
   // dev PG and turns pending hosted-schema migrations into unrelated failures.
@@ -650,7 +700,10 @@ describe('release:checkpoint-run', () => {
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
 
-    expect(launchSpy).toHaveBeenCalledWith({ force: undefined });
+    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
+      force: undefined,
+      logicalAttemptId: expect.any(String),
+    }));
     expect(b).toMatchObject({
       ok: false,
       already_running: true,
@@ -888,7 +941,10 @@ describe('release:checkpoint-run', () => {
     const { default: tool } = await import('./checkpoint-run');
     await tool.handler({ force: true }, MAKE_CTX());
 
-    expect(launchSpy).toHaveBeenCalledWith({ force: true });
+    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
+      force: true,
+      logicalAttemptId: expect.any(String),
+    }));
   });
 
   /* ----------------------------------------------------------------------- *
@@ -1261,7 +1317,10 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({}, MAKE_CTX())) as never);
 
-    expect(launchSpy).toHaveBeenCalledWith({ candidate: QUEUE_HEAD });
+    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
+      candidate: QUEUE_HEAD,
+      logicalAttemptId: expect.any(String),
+    }));
     expect(b).toMatchObject({
       ok: true,
       willJudge: {
@@ -1530,7 +1589,10 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       paths: ['packages/operator-core/lib/mine.ts'],
     }, MAKE_CTX())) as never);
 
-    expect(launchSpy).toHaveBeenCalledWith({ candidate: CURRENT });
+    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({
+      candidate: CURRENT,
+      logicalAttemptId: expect.any(String),
+    }));
     expect(b).toMatchObject({
       ok: true,
       candidateBinding: {
@@ -1794,7 +1856,17 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({ paths: [MINE] }, MAKE_CTX())) as never);
     expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect(qualificationMocks.reserve).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        attemptId: expect.any(String),
+        runnerId: expect.stringMatching(/^manual:/),
+        candidate: 'aaaaaaaaaaaa',
+      }),
+    );
+    expect(launchSpy).toHaveBeenCalledWith(expect.objectContaining({ logicalAttemptId: expect.any(String) }));
     expect(b.ok).toBe(true);
+    expect(b.logical_attempt_id).toEqual(expect.any(String));
   });
 
   it('force:true bypasses the gate and launches', async () => {
@@ -2161,7 +2233,16 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
         paths: [MINE],
         waitSec: 120,
         pendingId: expect.any(String),
+        logicalAttemptId: expect.any(String),
         requiredAncestorSha,
+      }),
+    );
+    expect(qualificationMocks.wait).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        attemptId: expect.any(String),
+        reason: 'would-exclude-declared-paths',
+        blockers: [expect.objectContaining({ code: 'quiet-cut' })],
       }),
     );
     expect(launchSpy).not.toHaveBeenCalled();
@@ -2170,11 +2251,42 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       launched: false,
       pending: true,
       reason: 'waiting_for_eligibility',
+      logical_attempt_id: expect.any(String),
       pending_id: 'pending-1',
       workflow_id: 'checkpoint-eligibility:pending-1',
       completion_events: ['release:green:papercusp', 'green-checkpoint:red:papercusp', 'green-checkpoint:inconclusive:papercusp'],
     });
     expect(String(b.note)).toMatch(/durable eligibility waiter/);
+  });
+
+  it('P-003: an exact terminal attempt never auto-retries a real verdict', async () => {
+    const launchSpy = mockLaunch({
+      assessPreLaunchExclusion: vi.fn(async () => ({
+        ...REFUSAL,
+        refuse: false,
+        proceedReason: 'declared-paths-in-candidate',
+      })),
+    });
+    qualificationMocks.begin.mockImplementationOnce(async (_target: unknown, input: Record<string, unknown>) => ({
+      status: 'terminal',
+      transaction: {
+        ...qualificationTransaction(input, 'terminal'),
+        outcome: { kind: 'red', reason: 'not-green' },
+      },
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: [MINE] }, MAKE_CTX())) as never);
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(qualificationMocks.reserve).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'qualification_transaction_terminal',
+      logical_attempt_id: expect.any(String),
+      outcome: { kind: 'red', reason: 'not-green' },
+    });
   });
 
   it('waitForEligibility fails closed when the durable runner is unavailable, without a request-side sleep', async () => {

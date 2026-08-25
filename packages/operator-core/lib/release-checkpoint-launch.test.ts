@@ -57,6 +57,7 @@ import {
 // WI-38356: the control + calibration cases below call the underlying reads directly, to prove
 // the submodule fixture is exercising the blind spot rather than a broken fake.
 import { containingSubmodulePath, excludedCommitsTouchingPath, gitReadFromExecSync } from './candidate-contains';
+import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
 
 describe('currentCheckpointCandidate default executor (EI-21367123002341200)', () => {
   it('supports the exported read helper without an explicit execFn', () => {
@@ -296,6 +297,35 @@ describe('buildCheckpointSystemdArgv', () => {
   it('stamps nothing without a target — the run then does not record and its caller does (pre-WI-4494 behaviour)', () => {
     const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin', false, undefined, null);
     expect(argv.some((a) => a.includes('GATE_VERDICT'))).toBe(false);
+  });
+
+  it('P-003: transports the logical attempt id so the producer settles the exact transaction', () => {
+    const argv = buildCheckpointSystemdArgv(
+      '/tree',
+      '/tmp/cp.log',
+      '/usr/bin',
+      false,
+      undefined,
+      { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' },
+      'shared',
+      undefined,
+      'attempt-123',
+    );
+    expect(argv).toContain(`--setenv=${CHECKPOINT_QUALIFICATION_ATTEMPT_ENV}=attempt-123`);
+
+    const rejected = buildCheckpointSystemdArgv(
+      '/tree',
+      '/tmp/cp.log',
+      '/usr/bin',
+      false,
+      undefined,
+      null,
+      'shared',
+      undefined,
+      "bad'; touch /tmp/pwned; '",
+    );
+    expect(rejected.some((arg) => arg.includes(CHECKPOINT_QUALIFICATION_ATTEMPT_ENV))).toBe(false);
+    expect(rejected.join(' ')).not.toContain('touch /tmp/pwned');
   });
 });
 

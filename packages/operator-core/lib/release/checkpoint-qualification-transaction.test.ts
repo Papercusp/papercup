@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   beginQualificationTransaction,
   classifyQualificationVerdict,
+  parseCheckpointQualificationTransaction,
+  qualificationIntentMatches,
   reserveQualificationRunner,
   settleQualificationTransaction,
   waitQualificationTransaction,
@@ -28,6 +30,14 @@ describe('logical checkpoint qualification transaction', () => {
     });
     expect(beginQualificationTransaction(current, { attemptId: 'attempt-1', nowMs: 200 }).status).toBe('idempotent');
     expect(beginQualificationTransaction(current, { attemptId: 'attempt-2', nowMs: 200 }).status).toBe('conflict');
+    expect(qualificationIntentMatches(current, {
+      requiredAncestorSha: 'abc123',
+      declaredPaths: ['a.ts', 'b.ts'],
+    })).toBe(true);
+    expect(qualificationIntentMatches(current, {
+      requiredAncestorSha: 'different',
+      declaredPaths: ['a.ts', 'b.ts'],
+    })).toBe(false);
   });
 
   it('persists retryable no-verdict waits and allows at most one physical runner', () => {
@@ -38,6 +48,12 @@ describe('logical checkpoint qualification transaction', () => {
       nowMs: 200,
     }).transaction;
     expect(waiting).toMatchObject({ phase: 'waiting', waitGeneration: 1, currentPhysicalRunner: null });
+    expect(waitQualificationTransaction(waiting, {
+      attemptId: 'attempt-1',
+      reason: 'eligibility-wait',
+      blockers: [{ code: 'quiet-cut', clearEvents: ['checkpoint:eligible:attempt-1'] }],
+      nowMs: 250,
+    }).status).toBe('idempotent');
 
     const running = reserveQualificationRunner(waiting, {
       attemptId: 'attempt-1',
@@ -65,5 +81,23 @@ describe('logical checkpoint qualification transaction', () => {
     expect(waitQualificationTransaction(red, {
       attemptId: 'attempt-1', reason: 'eligibility-wait', nowMs: 500,
     }).status).toBe('terminal');
+  });
+
+  it('fails closed on malformed nested metadata instead of trusting a shallow record cast', () => {
+    const current = begin();
+    expect(parseCheckpointQualificationTransaction(current)).toEqual(current);
+    expect(parseCheckpointQualificationTransaction({
+      ...current,
+      currentPhysicalRunner: {
+        id: 'physical-1',
+        candidate: null,
+        reservedAtMs: 'not-a-number',
+        evidenceRefs: [],
+      },
+    })).toBeNull();
+    expect(parseCheckpointQualificationTransaction({
+      ...current,
+      outcome: { kind: 'pre-suite-no-verdict', reason: 'invented-retry' },
+    })).toBeNull();
   });
 });
