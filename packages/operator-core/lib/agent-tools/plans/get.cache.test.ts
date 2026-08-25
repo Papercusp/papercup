@@ -247,6 +247,30 @@ describe("plans:get — cache wiring", () => {
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
   });
 
+  it("discloses an ambient-harness mismatch for an exact slug instead of a bare not_found", async () => {
+    M.planHarnessesForSlugs.mockResolvedValueOnce(
+      new Map([["foreign-plan", ["papercusp"]]]),
+    );
+
+    const body = await run({ slug: "foreign-plan" }, "ws-get", "sb-devboard-hive");
+
+    expect(body.results[0]).toMatchObject({
+      ok: false,
+      slug: "foreign-plan",
+      error: "not_found",
+      harness: "sb-devboard-hive",
+      harnessMismatch: {
+        callerHarness: "sb-devboard-hive",
+        reportedHarness: "papercusp",
+        availableHarnesses: ["papercusp"],
+      },
+    });
+    expect((body.results[0]?.harnessMismatch as { warning: string }).warning).toContain(
+      "Pass harness:'papercusp'",
+    );
+    expect(M.readPlanBySlug).not.toHaveBeenCalled();
+  });
+
   it("a harness_plans write BUSTS the entry (tag invalidation rebuilds)", async () => {
     await run({ slug: "alpha" });
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
