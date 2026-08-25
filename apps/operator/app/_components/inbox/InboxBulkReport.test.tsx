@@ -305,4 +305,38 @@ describe("<InboxBulkReport>", () => {
     );
     expect(document.activeElement).toBe(toggle);
   });
+
+  it("keeps focus in the report when live props remove the active desk and then its row", () => {
+    const onClose = vi.fn();
+    const report = (runItems: BulkRunItem[], attentionItems: AttentionItem[]) => (
+      <InboxBulkReport
+        run={run}
+        runItems={runItems}
+        attentionItems={attentionItems}
+        onClose={onClose}
+      />
+    );
+    const item = runItem();
+    const { rerender } = render(report([item], [attention("a")]));
+
+    fireEvent.click(screen.getByTestId("inbox-bulk-drill-a"));
+    const recommendation = screen.getByTestId("recommendation-a");
+    recommendation.focus();
+
+    // The attention feed is live: resolving the item elsewhere removes the
+    // desk/toggle while its persisted run row can still remain in the report.
+    rerender(report([item], []));
+    const survivingRow = screen.getByTestId("review-row-a");
+    expect(screen.queryByTestId("inbox-bulk-drill-a")).toBeNull();
+    expect(document.activeElement).toBe(survivingRow);
+
+    // A later run refresh may remove the row too. Dismiss is the nearest
+    // stable report action after both the row and its group disappear.
+    rerender(report([], []));
+    expect(screen.queryByTestId("review-row-a")).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByTestId("review-report-dismiss"),
+    );
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
