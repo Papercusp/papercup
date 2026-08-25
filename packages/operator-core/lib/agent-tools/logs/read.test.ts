@@ -159,4 +159,12 @@ describe('logs:read — arguments reach journalctl unchanged', () => {
     expect(payloadOf(await call({ unit: 'systemd-oomd', scope: 'all' })).ok).toBe(true);
     expect(readJournalMock.mock.calls[0][0].scope).toBe('all');
   });
+
+  it('documents the bare absolute timestamp timezone boundary', () => {
+    const shape = (logsReadTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
+    expect(shape.since.description).toMatch(/LOCAL timezone/i);
+    expect(shape.since.description).toMatch(/returned entry timestamps are UTC/i);
+    expect(shape.until.description).toMatch(/LOCAL-time rule/i);
+    expect(shape.until.description).toMatch(/explicit @epoch/i);
+  });
 });

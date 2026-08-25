@@ -73,8 +73,8 @@ export default defineTool({
     identifier: z.string().min(1).max(200).optional()
       .describe('Syslog identifier (`journalctl -t`), for entries logged without a unit.'),
     since: z.string().min(1).max(100).optional()
-      .describe(`Window start, in journalctl's own grammar: '-30 min', '2 hours ago', '09:40:00', '2026-07-26 00:00'; compact lookbacks such as '40m' and '-2h' are also accepted. Default '${JOURNAL_READ_DEFAULT_SINCE}'. REQUIRED when neither unit nor identifier is given, because an unscoped scan walks every unit in the journal (measured 25.97s versus 7.58s scoped, on the same host).`),
-    until: z.string().min(1).max(100).optional().describe('Window end, same grammar. Omit for "up to now".'),
+      .describe(`Window start, in journalctl's own grammar: '-30 min', '2 hours ago', '09:40:00', '2026-07-26 00:00'; compact lookbacks such as '40m' and '-2h' are also accepted. Bare absolute date/time values are parsed in the host's LOCAL timezone, while returned entry timestamps are UTC — use a relative window or an explicit @epoch value when UTC precision matters. Default '${JOURNAL_READ_DEFAULT_SINCE}'. REQUIRED when neither unit nor identifier is given, because an unscoped scan walks every unit in the journal (measured 25.97s versus 7.58s scoped, on the same host).`),
+    until: z.string().min(1).max(100).optional().describe("Window end, same grammar and LOCAL-time rule for bare absolute values; returned timestamps are UTC. Use a relative window or explicit @epoch value for an unambiguous UTC boundary. Omit for 'up to now'."),
     grep: z.string().min(1).max(500).optional()
       .describe('Case-insensitive PCRE pushed down to `journalctl --grep`, so non-matching lines are never read. Pass the needle you would otherwise have piped to grep — alternation works: "oom|killed process".'),
     level: z.enum(JOURNAL_LEVELS).optional()
