@@ -39,10 +39,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { getPresence } from '../coordination/presence';
 import type { FleetControlState } from '../../agent-fleets-store';
-import {
-  MONITOR_NO_DELTA_BUDGET_MAX,
-  type PersistedMonitorConfig,
-} from '../../harness/routines/monitor-policy';
+import { MONITOR_NO_DELTA_BUDGET_MAX, type PersistedMonitorConfig } from '../../harness/routines/monitor-policy';
 
 export const LEADER_MONITOR_INTERVAL_SEC = 60;
 /** One leader/profile may never manufacture an unbounded interrupt fan-out. */
@@ -84,11 +81,15 @@ export interface LeaderAutoArmResolution {
 }
 
 /** Pure, reusable bound used by the resolver and directly falsifiable in tests. */
-export function capLeaderProfileTargets<T>(targets: readonly T[], cap = LEADER_PROFILE_AUTO_ARM_CAP): {
+export function capLeaderProfileTargets<T>(
+  targets: readonly T[],
+  cap = LEADER_PROFILE_AUTO_ARM_CAP,
+): {
   selected: T[];
   omitted: T[];
 } {
-  if (!Number.isSafeInteger(cap) || cap < 1) throw new Error(`leader profile auto-arm cap must be a positive integer, got ${cap}`);
+  if (!Number.isSafeInteger(cap) || cap < 1)
+    throw new Error(`leader profile auto-arm cap must be a positive integer, got ${cap}`);
   return { selected: targets.slice(0, cap), omitted: targets.slice(cap) };
 }
 
@@ -154,9 +155,7 @@ export function resolveFleetLeaderAutoArmTargets(input: {
     // but keep this resolver exhaustively narrowed too: a malformed injected
     // row must fail closed instead of being treated as a cell by fallthrough.
     if (row.watch.kind !== 'cell') {
-      throw new Error(
-        `fleet-leader auto-arm cannot arm owner-attention source '${row.watch.source}'`,
-      );
+      throw new Error(`fleet-leader auto-arm cannot arm owner-attention source '${row.watch.source}'`);
     }
 
     const spec = getCell(row.watch.cell, input.reader);
@@ -389,24 +388,25 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
       const mode = priorLoop?.mode ?? priorLoopFacts?.mode ?? 'monitor';
       const monitor: PersistedMonitorConfig | undefined =
         mode === 'monitor'
-          ? priorLoopFacts?.monitor ?? {
+          ? (priorLoopFacts?.monitor ?? {
               predicateKey: `fleet:${input.fleetSlug}`,
-              stopCondition:
-                `Fleet ${input.fleetSlug} is drained, enters winding-down, or ${input.ownerId} no longer holds durable leadership.`,
+              stopCondition: `Fleet ${input.fleetSlug} is drained, enters winding-down, or ${input.ownerId} no longer holds durable leadership.`,
               noDeltaBudget: MONITOR_NO_DELTA_BUDGET_MAX,
               remainingNoDeltaBudget: MONITOR_NO_DELTA_BUDGET_MAX,
               authority: { kind: 'fleet-leader', fleet: input.fleetSlug },
-            }
+            })
           : undefined;
-      const kickoff = priorLoopFacts?.kickoff?.trim() || buildLoopWakePrompt({
-        ownerId: input.ownerId,
-        intervalSec,
-        harness,
-        goal,
-        carry,
-        continuation,
-        mode,
-      });
+      const kickoff =
+        priorLoopFacts?.kickoff?.trim() ||
+        buildLoopWakePrompt({
+          ownerId: input.ownerId,
+          intervalSec,
+          harness,
+          goal,
+          carry,
+          continuation,
+          mode,
+        });
       const materialized = await materializeLoop({
         workspaceId: input.workspaceId,
         harnessSlug: harness,
@@ -417,7 +417,7 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
         carry,
         continuation,
         mode,
-        monitor,
+        ...(monitor ? { monitor } : {}),
         // This is a repair of a stale/inactive loop read. The row-level guard
         // must yield to an explicit loop:arm that wins the race after our read.
         onlyIfInactive: true,
@@ -659,9 +659,7 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
     }
     repaired ||= watches.removed > 0;
     watches.cancel =
-      watches.awaitIds.length > 0
-        ? { tool: 'events:cancel', args: { await_ids: [...watches.awaitIds] } }
-        : null;
+      watches.awaitIds.length > 0 ? { tool: 'events:cancel', args: { await_ids: [...watches.awaitIds] } } : null;
     const profileSatisfied = watches.active.length + watches.suppressed.length === watches.expected.length;
     watches.healthy = profileSatisfied && (watches.suppressed.length > 0 || watches.wakeReachable);
     if (!watches.wakeReachable && watches.suppressed.length < watches.expected.length) {

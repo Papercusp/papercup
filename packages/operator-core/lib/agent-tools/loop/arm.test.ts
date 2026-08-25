@@ -129,7 +129,12 @@ import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { resolveHomePotSlug } from '../pot/_resolve';
 import { admitMonitorArm, prepareMonitorConfig } from '../../harness/routines/monitor-policy';
 import { decideDefaultCarry, computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
-import { mockResolvedOnceTyped, mockResolvedTyped, mockReturnOnceTyped, mockReturnTyped } from '../../testing/typed-mock';
+import {
+  mockResolvedOnceTyped,
+  mockResolvedTyped,
+  mockReturnOnceTyped,
+  mockReturnTyped,
+} from '../../testing/typed-mock';
 
 const materializeM = vi.mocked(materializeLoop);
 const buildPromptM = vi.mocked(buildLoopWakePrompt);
@@ -160,7 +165,10 @@ describe('loop:arm — ambient workspace transaction safety (EI-2022433480303864
 
 type Out = { content: { text: string }[] };
 const call = (args: Record<string, unknown>) =>
-  tool.handler({ intervalSec: 120, goal: 'g', ...args } as never, { harnessSlug: 'papercusp' } as never) as Promise<Out>;
+  tool.handler(
+    { intervalSec: 120, goal: 'g', ...args } as never,
+    { harnessSlug: 'papercusp' } as never,
+  ) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 const monitorConfig = (overrides: Record<string, unknown> = {}) => ({
   predicateKey: 'release:green:papercusp',
@@ -197,7 +205,7 @@ beforeEach(() => {
 });
 
 describe('loop:arm — WI-1471 ownerId override', () => {
-  it('defaults to the caller\'s own resolved identity when ownerId is omitted', async () => {
+  it("defaults to the caller's own resolved identity when ownerId is omitted", async () => {
     const b = body(await call({}));
     expect(b).toMatchObject({ ok: true, loop: { ownerId: 'su-caller-own-id', ownerLabel: 'su · caller' } });
     expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ ownerId: 'su-caller-own-id' }));
@@ -296,11 +304,11 @@ describe('loop:arm — anti-babysitting P-003 typed monitor admission', () => {
 
   it('keeps ordinary work loops byte-compatible and never invokes monitor admission', async () => {
     const b = body(await call({ mode: 'work' }));
-    expect(b.loop).toMatchObject({ mode: 'work', monitor: null });
+    expect(b.loop).toMatchObject({ mode: 'work' });
+    expect(b.loop).not.toHaveProperty('monitor');
     expect(monitorAdmissionM).not.toHaveBeenCalled();
-    expect(materializeM).toHaveBeenCalledWith(
-      expect.objectContaining({ mode: 'work', monitor: undefined }),
-    );
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ mode: 'work' }));
+    expect(materializeM.mock.calls[0]![0]).not.toHaveProperty('monitor');
   });
 });
 
@@ -322,7 +330,9 @@ describe('loop:arm — EI-20034001963934568: reject unverified owner tags in rep
   });
 
   it('allows a same-line [turn:…] anchor for a real owner tag', async () => {
-    const b = body(await call({ goal: '[turn:abc123@2026-08-10T03:27:00Z] [owner:Jane 2026-08-10] continue the drain' }));
+    const b = body(
+      await call({ goal: '[turn:abc123@2026-08-10T03:27:00Z] [owner:Jane 2026-08-10] continue the drain' }),
+    );
 
     expect(b.ok).toBe(true);
     expect(materializeM).toHaveBeenCalled();
@@ -332,19 +342,24 @@ describe('loop:arm — EI-20034001963934568: reject unverified owner tags in rep
 describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm time', () => {
   const claimedRow = { id: 'X', assignee: 'su-caller-own-id' };
 
-  it('EI-21302411209364135: infers an explicit item\'s harness before workspace-home fallback', async () => {
+  it("EI-21302411209364135: infers an explicit item's harness before workspace-home fallback", async () => {
     // A workspace-scoped SU session carries the wildcard harness sentinel. Its home
     // pot is deliberately unrelated; the unscoped item lookup is the only valid scope
     // hint for this explicit cross-harness pin.
     homePotM.mockResolvedValue('sb-devboard-hive');
     potHomeM.mockImplementation((value) => (value === 'papercusp' ? 'papercusp' : null));
-    getWiM.mockResolvedValue({ id: 'WI-41214', state: 'open', harness: 'papercusp', assignee: 'su-caller-own-id' } as never);
+    getWiM.mockResolvedValue({
+      id: 'WI-41214',
+      state: 'open',
+      harness: 'papercusp',
+      assignee: 'su-caller-own-id',
+    } as never);
     claimM.mockResolvedValue(claimedRow as never);
 
-    const out = await tool.handler(
+    const out = (await tool.handler(
       { intervalSec: 120, goal: 'g', workItem: 'wi-41214' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
-    ) as Out;
+    )) as Out;
     const b = body(out);
 
     expect(getWiM).toHaveBeenCalledWith('WI-41214');
@@ -352,26 +367,26 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
     expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp', workItem: 'WI-41214' } });
   });
 
-  it('EI-21358731971685285: infers an auto-detected cold goal item\'s harness before workspace-home fallback', async () => {
+  it("EI-21358731971685285: infers an auto-detected cold goal item's harness before workspace-home fallback", async () => {
     const id = 'EI-21358731971685285';
     homePotM.mockResolvedValue('sb-devboard-hive');
     potHomeM.mockImplementation((value) => value ?? null);
     detectM.mockReturnValue(id as never);
-    getWiM.mockImplementation(async (_id, harness) =>
-      (harness === 'sb-devboard-hive'
-        ? null
-        : { id, state: 'open', harness: 'papercusp', assignee: null }) as never,
+    getWiM.mockImplementation(
+      async (_id, harness) =>
+        (harness === 'sb-devboard-hive' ? null : { id, state: 'open', harness: 'papercusp', assignee: null }) as never,
     );
-    claimM.mockImplementation(async (_id, _owner, options) =>
-      ((options as { harness?: string }).harness === 'papercusp' ? claimedRow : null) as never,
+    claimM.mockImplementation(
+      async (_id, _owner, options) =>
+        ((options as { harness?: string }).harness === 'papercusp' ? claimedRow : null) as never,
     );
     classifyM.mockReturnValue({ reason: 'not_found', holder: null } as never);
 
     const b = body(
-      await tool.handler(
+      (await tool.handler(
         { intervalSec: 120, goal: `continue ${id}`, carry: 'cold' } as never,
         { harnessSlug: '*', workspaceId: 'ws-1' } as never,
-      ) as Out,
+      )) as Out,
     );
 
     expect(b).toMatchObject({
@@ -532,7 +547,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     const { resolvePotHomeSlug } = await import('../../pot/wake');
     vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null as never);
     homePotM.mockResolvedValueOnce(null);
-    const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, {} as never) as Out;
+    const out = (await tool.handler({ intervalSec: 120, goal: 'g' } as never, {} as never)) as Out;
     const b = body(out);
     expect(b).toMatchObject({ ok: false, error: 'no_harness' });
   });
@@ -540,10 +555,10 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   it('EI-21355404648960524: treats an explicitly empty harness as omitted and resolves the workspace home', async () => {
     homePotM.mockResolvedValueOnce('workspace-home');
     mockReturnOnceTyped(potHomeM, 'workspace-home');
-    const out = await tool.handler(
+    const out = (await tool.handler(
       { intervalSec: 120, goal: 'g', harness: '' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
-    ) as Out;
+    )) as Out;
     const b = body(out);
 
     expect(b).toMatchObject({ ok: true, loop: { harness: 'workspace-home' } });
@@ -556,10 +571,10 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     const { resolvePotHomeSlug } = await import('../../pot/wake');
     homePotM.mockResolvedValueOnce('workspace-home');
     mockReturnOnceTyped(potHomeM, 'workspace-home');
-    const out = await tool.handler(
+    const out = (await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
-    ) as Out;
+    )) as Out;
     const b = body(out);
     expect(homePotM).toHaveBeenCalledWith('ws-1');
     expect(b).toMatchObject({ ok: true, loop: { harness: 'workspace-home' } });
@@ -587,10 +602,10 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     // A workspace with no formal home still uses the durable coord:orient scope.
     homePotM.mockResolvedValueOnce(null);
     mockReturnOnceTyped(potHomeM, 'oriented-harness');
-    const out = await tool.handler(
+    const out = (await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
-    ) as Out;
+    )) as Out;
     const b = body(out);
     expect(briefM).toHaveBeenCalledWith({ ownerId: 'su-caller-own-id' });
     expect(homePotM).toHaveBeenCalledWith('ws-1');
@@ -619,10 +634,10 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     homePotM.mockResolvedValueOnce('papercusp');
     mockReturnOnceTyped(potHomeM, 'papercusp');
 
-    const out = await tool.handler(
+    const out = (await tool.handler(
       { intervalSec: 120, goal: 'continue the papercusp fleet lane' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
-    ) as Out;
+    )) as Out;
     const b = body(out);
 
     expect(homePotM).toHaveBeenCalledWith('ws-1');
@@ -641,10 +656,10 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     homePotM.mockResolvedValueOnce(null);
     potHomeM.mockReturnValueOnce('papercusp').mockReturnValue(null as never);
 
-    const out = await tool.handler(
+    const out = (await tool.handler(
       { intervalSec: 120, goal: 're-arm the existing loop' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
-    ) as Out;
+    )) as Out;
     const b = body(out);
 
     expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
@@ -660,13 +675,13 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   // work_items:create's harness resolution rejects (harnessScope throws on the wildcard).
   // The fix routes BOTH args.harness and ctx.harnessSlug THROUGH resolvePotHomeSlug
   // (which skips '*' at each level) rather than `??`-chaining ctx.harnessSlug in first.
-  it('EI-7734: routes ctx.harnessSlug through resolvePotHomeSlug\'s \'*\'-skip instead of short-circuiting a raw ?? chain on it', async () => {
+  it("EI-7734: routes ctx.harnessSlug through resolvePotHomeSlug's '*'-skip instead of short-circuiting a raw ?? chain on it", async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
     // Exercise the synchronous fallback path explicitly; normal workspace-scoped
     // calls resolve the formal home pot first (EI-20185529721601434).
     homePotM.mockResolvedValueOnce(null);
     vi.mocked(resolvePotHomeSlug).mockReturnValueOnce('papercusp' as never);
-    const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, { harnessSlug: '*' } as never) as Out;
+    const out = (await tool.handler({ intervalSec: 120, goal: 'g' } as never, { harnessSlug: '*' } as never)) as Out;
     const b = body(out);
     // resolvePotHomeSlug must be CALLED with the raw '*' so its own skip logic runs —
     // a pre-fix raw `??` chain would never call it at all (ctx.harnessSlug='*' wins first).
@@ -713,7 +728,7 @@ describe('loop:arm — EI-19966210024116714: refuse a cross-workspace arm the se
     expect(b.message).toContain('reaped as dead');
   });
 
-  it('ARMS NORMALLY when the harness resolves to the session\'s own workspace', async () => {
+  it("ARMS NORMALLY when the harness resolves to the session's own workspace", async () => {
     resolveWsM.mockResolvedValueOnce('ws-1' as never);
     const b = body(await callAs(scopedCtx));
     expect(b).toMatchObject({ ok: true });
@@ -734,7 +749,7 @@ describe('loop:arm — EI-19966210024116714: refuse a cross-workspace arm the se
     expect(materializeM).toHaveBeenCalled();
   });
 
-  it('does NOT check an UNSCOPED (\'*\') superuser — spanning workspaces is legitimate there', async () => {
+  it("does NOT check an UNSCOPED ('*') superuser — spanning workspaces is legitimate there", async () => {
     const b = body(await callAs({ harnessSlug: 'papercusp', isSuperuser: true, workspaceId: '*' }));
     expect(b).toMatchObject({ ok: true });
     expect(resolveWsM).not.toHaveBeenCalled();
@@ -913,9 +928,7 @@ describe('computeLoopOverwriteNote (pure EI-18221784742583615 decision)', () => 
 describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler)', () => {
   it('preserves an active marked custom kickoff when wakePrompt is omitted', async () => {
     const customKickoff = 'custom mission-specific wake instruction';
-    priorLoopM.mockResolvedValue(
-      priorLoop({ goal: 'g', kickoff: customKickoff, customWakePrompt: true }) as never,
-    );
+    priorLoopM.mockResolvedValue(priorLoop({ goal: 'g', kickoff: customKickoff, customWakePrompt: true }) as never);
 
     const b = body(await call({}));
 
@@ -963,9 +976,7 @@ describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler
   });
 
   it('re-arming with the SAME goal (goal present in the prior kickoff) ⇒ no overwrite note', async () => {
-    priorLoopM.mockResolvedValue(
-      priorLoop({ kickoff: 'toward: drain the generic bug backlog now' }) as never,
-    );
+    priorLoopM.mockResolvedValue(priorLoop({ kickoff: 'toward: drain the generic bug backlog now' }) as never);
     const b = body(await call({ intervalSec: 120, goal: 'drain the generic bug backlog' }));
     expect(b.priorLoopOverwrite).toBeNull();
     expect(b.note).not.toContain('OVERWRITES an already-ACTIVE loop');
@@ -1307,9 +1318,7 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
     });
 
     it('honours the long interval end-to-end when a clearing event is named', async () => {
-      const b = body(
-        await call({ intervalSec: 7200, blockedOn: { reason: 'gate red', event: 'green-gate-verdict' } }),
-      );
+      const b = body(await call({ intervalSec: 7200, blockedOn: { reason: 'gate red', event: 'green-gate-verdict' } }));
       expect(b.loop.intervalSec).toBe(7200);
       expect(b.loop.blockedOn).toEqual({
         reason: 'gate red',

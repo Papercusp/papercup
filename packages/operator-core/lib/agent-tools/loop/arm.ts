@@ -42,10 +42,7 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { listWakeAwaitsForSubscriber } from '../../events/await/store';
 import { findLiveHost, sessionClassForHost } from '../../events/await/psu-pty-discovery';
-import {
-  probeWakeReachability,
-  type WakeReachabilityVerdict,
-} from '../../events/await/wake-reachability';
+import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getSessionBrief } from '../../session-brief';
@@ -271,10 +268,7 @@ function shortOwnerLabel(id: string): string {
  *  owner's live host, the arm-time carry default. 'cold' ONLY when the flag is on
  *  AND the host classifies headless (sessionClassForHost 'claude-headless',
  *  i.e. bridgeTty===false); 'warm' otherwise (flag off, interactive, or no host). */
-export function decideDefaultCarry(
-  flagOn: boolean,
-  host: Parameters<typeof sessionClassForHost>[0],
-): 'warm' | 'cold' {
+export function decideDefaultCarry(flagOn: boolean, host: Parameters<typeof sessionClassForHost>[0]): 'warm' | 'cold' {
   if (!flagOn) return 'warm';
   return host && sessionClassForHost(host) === 'claude-headless' ? 'cold' : 'warm';
 }
@@ -416,7 +410,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        'Arm the loop for this owner id instead of the caller\'s own resolved identity (default: yourself). Mirrors loop:end/loop:status\'s ownerId — the same "or another owner\'s" override, previously missing here (WI-1471).',
+        "Arm the loop for this owner id instead of the caller's own resolved identity (default: yourself). Mirrors loop:end/loop:status's ownerId — the same \"or another owner's\" override, previously missing here (WI-1471).",
       ),
     intervalSec: z
       .number()
@@ -445,8 +439,9 @@ export default defineTool({
       .describe(
         'Pass this WHENEVER you are lengthening the interval because you are BLOCKED (rather than because the work is genuinely slow-moving) — EI-19395290807657827. It records WHY the interval was widened so the premise is re-checked on the next wake instead of silently inherited, caps a blocker-motivated interval that has no push channel, and lets a fleet leader see "N members backed off for X, which cleared M minutes ago".',
       ),
-    goal: softText(4000, { min: 1 })
-      .describe('One line: what this loop is working toward — echoed into every wake. Auto-truncated to 4000 chars if longer.'),
+    goal: softText(4000, { min: 1 }).describe(
+      'One line: what this loop is working toward — echoed into every wake. Auto-truncated to 4000 chars if longer.',
+    ),
     harness: z
       .string()
       .max(120)
@@ -464,7 +459,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        'The WI-/EI-/F- work-item this loop is DRIVING. The loop attempts to auto-CLAIM it for the loop owner at arm time (WI-2429), subject to the same fleet-scope admission as work_items:claim; an out-of-scope binding is refused while the loop itself remains armed. When admitted, the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer\'s item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and attempted the same way.',
+        "The WI-/EI-/F- work-item this loop is DRIVING. The loop attempts to auto-CLAIM it for the loop owner at arm time (WI-2429), subject to the same fleet-scope admission as work_items:claim; an out-of-scope binding is refused while the loop itself remains armed. When admitted, the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer's item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and attempted the same way.",
       ),
     carry: z
       .enum(['warm', 'cold'])
@@ -508,7 +503,9 @@ export default defineTool({
       .int()
       .positive()
       .optional()
-      .describe('Dead-man guard: auto-pause the loop this many seconds after it was armed (a bound on a forgotten / permanently-dead loop).'),
+      .describe(
+        'Dead-man guard: auto-pause the loop this many seconds after it was armed (a bound on a forgotten / permanently-dead loop).',
+      ),
   }),
   async handler(args, ctx) {
     // Feature gate (papercusp-loops). Default OFF until the full loop engine
@@ -591,7 +588,9 @@ export default defineTool({
     try {
       prior = await readActiveLoopFacts(ownerId);
     } catch (e) {
-      console.warn(`[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`);
+      console.warn(
+        `[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`,
+      );
     }
     const isConcreteHarness = (value?: string | null): boolean => {
       const trimmed = value?.trim().toLowerCase();
@@ -599,9 +598,7 @@ export default defineTool({
     };
     const explicitWorkItem = args.workItem?.trim();
     const monitorAuthorityWorkItem =
-      preparedMonitorConfig?.authority.kind === 'work-item'
-        ? preparedMonitorConfig.authority.workItem
-        : undefined;
+      preparedMonitorConfig?.authority.kind === 'work-item' ? preparedMonitorConfig.authority.workItem : undefined;
     // Resolve the effective carry before choosing the harness so a COLD loop's
     // goal-detected work-item can contribute its canonical harness scope. Without
     // this, a workspace-scoped caller falls through to the workspace home first
@@ -617,7 +614,7 @@ export default defineTool({
           ? await resolveDefaultCarry(ownerId)
           : undefined);
     const autoDetectedWorkItemForScope =
-      !explicitWorkItem && carryForScope === 'cold' ? detectDrivenWorkItemId(goal) ?? undefined : undefined;
+      !explicitWorkItem && carryForScope === 'cold' ? (detectDrivenWorkItemId(goal) ?? undefined) : undefined;
     const scopeWorkItem = explicitWorkItem ?? monitorAuthorityWorkItem ?? autoDetectedWorkItemForScope;
     const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
@@ -713,9 +710,7 @@ export default defineTool({
     // workspaces), and we fail OPEN on a resolver throw/miss — fail CLOSED only on a
     // CONFIRMED foreign resolution.
     const scopedClamp =
-      ctx.isSuperuser === true &&
-      workspaceId !== '*' &&
-      (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
+      ctx.isSuperuser === true && workspaceId !== '*' && (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system'));
     if (scopedClamp) {
       let harnessWs: string | null = null;
       try {
@@ -796,10 +791,7 @@ export default defineTool({
         return monitorRefusal(admission.code, admission.message, admission.details);
       }
       admittedMonitorConfig = admission.config;
-      if (
-        explicitWorkItem &&
-        admission.config.authority.kind !== 'work-item'
-      ) {
+      if (explicitWorkItem && admission.config.authority.kind !== 'work-item') {
         return monitorRefusal(
           'monitor_work_item_authority_mismatch',
           'A monitor may pass workItem only when its authority is that same already-held work-item; fleet/owner-turn monitors must not claim an unrelated item.',
@@ -857,7 +849,7 @@ export default defineTool({
     // explicit args.carry always wins either way. `carry` from here on is the
     // RESOLVED value, threaded into materializeLoop + the kickoff + response.
     const carryPreservedFromPrior = args.carry == null && Boolean(prior?.active);
-    const carry = args.carry ?? (prior?.active ? prior.carry : carryForScope ?? await resolveDefaultCarry(ownerId));
+    const carry = args.carry ?? (prior?.active ? prior.carry : (carryForScope ?? (await resolveDefaultCarry(ownerId))));
     const resolvedMode = requestedMode;
 
     // WI-5557 TIER 1 — an unattended warm-carry WORK loop with neither dead-man guard set
@@ -897,9 +889,7 @@ export default defineTool({
     // Work-item monitor authority is already held (admission proved it), so
     // bind it to the wake prompt without re-running the claim mutation.
     let claimedWorkItem: string | null =
-      admittedMonitorConfig?.authority.kind === 'work-item'
-        ? admittedMonitorConfig.authority.workItem
-        : null;
+      admittedMonitorConfig?.authority.kind === 'work-item' ? admittedMonitorConfig.authority.workItem : null;
     let workItemClaim:
       | { id: string; claimed: true }
       | { id: string; claimed: false; reason: string; holder?: string; hint?: string }
@@ -940,8 +930,8 @@ export default defineTool({
               claimedWorkItem = drivenCandidate;
               workItemClaim = { id: drivenCandidate, claimed: true };
             } else {
-            // claimWorkItem returns a bare null for three outcomes — re-read + classify
-            // for an accurate, actionable note (mirrors work_items:claim's claimOne).
+              // claimWorkItem returns a bare null for three outcomes — re-read + classify
+              // for an accurate, actionable note (mirrors work_items:claim's claimOne).
               const current = await getWorkItem(drivenCandidate, harness);
               const failure = classifyClaimFailure(current, ownerId);
               workItemClaim =
@@ -1029,7 +1019,7 @@ export default defineTool({
       carry,
       continuation: args.continuation ?? 'settle',
       mode: resolvedMode,
-      monitor: admittedMonitorConfig ?? undefined,
+      ...(admittedMonitorConfig ? { monitor: admittedMonitorConfig } : {}),
       customWakePrompt: hasCustomWakePrompt,
     });
     const control = await refreshControlAnchorAfterMutation({
@@ -1053,7 +1043,9 @@ export default defineTool({
       await armInboxWake({ ownerId, workspaceId, note: `loop-armed inbox-wake (${loop.name})` });
       reachability = await probeWakeReachability(ownerId);
     } catch (e) {
-      console.warn(`[loop:arm] reachability arm/probe failed (loop still armed): ${e instanceof Error ? e.message : e}`);
+      console.warn(
+        `[loop:arm] reachability arm/probe failed (loop still armed): ${e instanceof Error ? e.message : e}`,
+      );
     }
 
     const reachabilityOut = reachability
@@ -1082,7 +1074,7 @@ export default defineTool({
           ? ` ⚠ Did NOT auto-claim ${workItemClaim.id} — already held by ${workItemClaim.holder}. Coordinate with them (coord:send); the loop is armed regardless.`
           : workItemClaim.reason.startsWith('fleet_')
             ? ` ⚠ Did NOT auto-claim ${workItemClaim.id} — the fleet admission gate refused this loop binding (${workItemClaim.reason}). ${workItemClaim.hint ?? 'Coordinate with the fleet leader before changing scope.'} The loop is armed regardless.`
-          : ` ⚠ Did NOT auto-claim ${workItemClaim.id} (${workItemClaim.reason}); the loop is armed regardless — claim it yourself if this loop drives it.`
+            : ` ⚠ Did NOT auto-claim ${workItemClaim.id} (${workItemClaim.reason}); the loop is armed regardless — claim it yourself if this loop drives it.`
       : '';
     // EI-18221784742583615: put the overwrite comparison right after the base note so it
     // is the FIRST thing the arming agent reads — ahead of the claim/warm/cold tails.
@@ -1101,12 +1093,11 @@ export default defineTool({
     // distinct disclosure — "defaulted" would misstate what happened, and this is
     // exactly the surfacing the filed bug's "minimum viable" fix asked for (carry
     // shown prominently on re-arm so an omission is never silent).
-    const coldDefaultNote =
-      carryPreservedFromPrior
-        ? ` (carry '${carry}' PRESERVED from the loop's prior config — pass carry explicitly to change it.)`
-        : args.carry == null && carry === 'cold'
-          ? ' ❄️ Defaulted to COLD carry (headless/unattended): each wake RESETS this session to its carry-note instead of re-waking warm, so keep loop:checkpoint { did, left, insight, next } fresh every wake. Pass carry:"warm" to override.'
-          : '';
+    const coldDefaultNote = carryPreservedFromPrior
+      ? ` (carry '${carry}' PRESERVED from the loop's prior config — pass carry explicitly to change it.)`
+      : args.carry == null && carry === 'cold'
+        ? ' ❄️ Defaulted to COLD carry (headless/unattended): each wake RESETS this session to its carry-note instead of re-waking warm, so keep loop:checkpoint { did, left, insight, next } fresh every wake. Pass carry:"warm" to override.'
+        : '';
     // EI-19326580626849271 — invert the monitor-loop default toward PUSH.
     //
     // P-009 shipped fleet-transition events so a leader could react to pushes
@@ -1158,7 +1149,7 @@ export default defineTool({
               carry,
               continuation: args.continuation ?? 'settle',
               mode: resolvedMode,
-              monitor: admittedMonitorConfig,
+              ...(admittedMonitorConfig ? { monitor: admittedMonitorConfig } : {}),
               costCapCents: args.costCapCents ?? null,
               // EI-6878: a re-arm of an ALREADY-armed loop called from WITHIN its own
               // in-flight turn returns the loop's row PARKED at the 'infinity' sentinel
