@@ -67,6 +67,16 @@ export interface WorkspaceHostInitializationRunInput {
   /** Stable controller identity for lease re-entrancy; defaults to this operation. */
   leaseOwner?: string;
   leaseTtlMs?: number;
+  /**
+   * Called once the request has been VALIDATED (planning succeeded) and before any row exists.
+   *
+   * This exposes the one boundary a caller cannot otherwise observe: a throw from this function
+   * either means the request was rejected by the contract, or means execution against a real host
+   * failed — and those deserve opposite answers at an API edge (the first is the caller's fault
+   * and retrying it unchanged is pointless; the second is not). Without this seam a surface has to
+   * guess from the error's shape, which is exactly the kind of inference that silently rots.
+   */
+  onPlanned?: (plan: WorkspaceHostInitializationPlan) => void;
   /** Test seam. */
   now?: () => Date;
 }
@@ -105,6 +115,7 @@ export async function runWorkspaceHostInitialization(
   // (1) Validate by planning, before any row exists. See module header.
   const plan = planWorkspaceHostInitialization(request);
   const totalSteps = plan.steps.length;
+  input.onPlanned?.(plan);
 
   // (2) Only the plan is persisted — it is the secret-isolated artifact. See module header.
   await beginWorkspaceHostOperation({
