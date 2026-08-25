@@ -238,6 +238,7 @@ export async function draftResponseToGmailTriggerPlanRun(
              s.id::text AS "sourceId",
              s.owner_user_id::text AS "ownerUserId",
              s.credential_ref AS "credentialRef",
+             s.provider_account_id::text AS "providerAccountId",
              s.status AS "sourceStatus",
              s.config AS "sourceConfig",
              s.cursor AS "sourceCursor"
@@ -281,6 +282,7 @@ export async function draftResponseToGmailTriggerPlanRun(
       kind: 'gmail',
       ownerUserId: row.ownerUserId,
       credentialRef: row.credentialRef,
+      providerAccountId: row.providerAccountId,
       status: row.sourceStatus,
       config: row.sourceConfig,
       cursor: row.sourceCursor,
