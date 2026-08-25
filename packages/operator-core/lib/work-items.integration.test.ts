@@ -2194,6 +2194,8 @@ describe('unified work_items surface (real PG)', () => {
     expect(second.items.some((w) => w.title === 'warmup singleflight work item')).toBe(true);
     expect(first.legs.semantic.blocked).toMatch(/warming up/);
     expect(second.legs.semantic.blocked).toMatch(/warming up/);
+    expect(first.retry).toMatchObject({ afterMs: 1_000, reason: 'query_embedder_warming' });
+    expect(second.retry?.token).toBe(first.retry?.token);
     expect(resolver).toHaveBeenCalledTimes(1);
 
     releaseResolver();

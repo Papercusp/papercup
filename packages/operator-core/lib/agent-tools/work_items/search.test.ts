@@ -110,4 +110,22 @@ describe('work_items:search bounded result projection', () => {
     };
     expect(result.data).toMatchObject({ ok: true, count: 0, items: [], retryable: true });
   });
+
+  it('preserves the stable warmup retry receipt for degraded dedup searches', async () => {
+    mockResolvedOnceTyped(searchMock, {
+      items: [],
+      legs: { ...emptyLegs(), degraded: true, warning: 'semantic leg blocked: query embedder warming up' },
+      applied: { minScore: null, recency: false, policyRegistered: false },
+      retry: { token: 'work-items-embedder-warmup:0:1', afterMs: 1_000, reason: 'query_embedder_warming' },
+    });
+
+    const result = (await search.handler({ query: 'same blocker' } as never, {} as never)) as {
+      data: { retry?: { token: string; afterMs: number; reason: string } };
+    };
+    expect(result.data.retry).toEqual({
+      token: 'work-items-embedder-warmup:0:1',
+      afterMs: 1_000,
+      reason: 'query_embedder_warming',
+    });
+  });
 });
