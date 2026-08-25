@@ -381,8 +381,8 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     const claim = 'the review verdict is settled';
     const unresolved = [
       'the verdict remains pending',
-      'we await the verdict, which remains pending',
-      'approval remains pending while we await sign-off',
+      'we await the verdict which remains pending',
+      'the verdict remains pending while we await sign-off',
     ];
     for (const evidence of unresolved) {
       expect(findVerificationConflict(evidence, claim), evidence).not.toBeNull();

@@ -239,7 +239,7 @@ const HEALTHY_PENDING_REGISTRATION_PATTERNS: ReadonlyArray<RegExp> = [
   // about genuinely unresolved work ("we await the verdict, which remains
   // pending") never matches: there the direct object separates `await` from the
   // status verb and the pattern refuses the gap.
-  /\b(?:events?[-:\s]?await|await|watch|subscription)s?\b(?:\s+(?:on|for)\s+[^\s.!?;]{1,80})?\s+(?:remain(?:s|ed)?|stay(?:s|ed)?|is|are|was|were|currently|still)\s+(?:still\s+)?pending\b/i,
+  /\b(?:events?[-:\s]?await|await|watch|subscription)s?\b(?:\s+(?:on|for)\s+(?:[^\s.!?;,]+\s+){0,3}[^\s.!?;,]+)?\s+(?:remain(?:s|ed)?|stay(?:s|ed)?|is|are|was|were|currently|still)\s+(?:still\s+)?pending\b/i,
 ];
 
 /**
