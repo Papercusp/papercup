@@ -197,6 +197,69 @@ describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
     }
   });
 
+  // EI-21467670625776948 — the FOURTH exit-1 shape: the gen:declarations preflight aborted on a
+  // file the caller never touched (routinely a peer's in-flight edit — the preflight compiles the
+  // whole declarations project), so ZERO of the caller's files were measured. That run printed
+  // `status=regressed`, which is a verdict about the caller's work. These pin the distinct token.
+  describe('distinguishes "the preflight aborted" from a real regression', () => {
+    it('reports preflight-failed, NOT regressed, when the preflight aborted before any measurement', () => {
+      const marker = formatLintTscResultMarker({
+        label: 'operator-core',
+        scope: 'all',
+        code: 1,
+        preflightFailed: true,
+      });
+      expect(marker).toBe(
+        'LINT_TSC_RESULT label=operator-core scope=all exit=1 status=preflight-failed',
+      );
+      // The failure contract is deliberately UNCHANGED — non-zero still means "did not pass".
+      expect(marker).toContain('exit=1');
+      expect(marker).not.toContain('status=regressed');
+    });
+
+    it('still reports a real regression as regressed when the preflight succeeded', () => {
+      expect(
+        formatLintTscResultMarker({
+          label: 'operator-core',
+          scope: 'all',
+          code: 1,
+          preflightFailed: false,
+        }),
+      ).toContain('status=regressed');
+    });
+
+    it('cannot make a failing run look clean, nor a clean run look failed', () => {
+      expect(
+        formatLintTscResultMarker({ label: 'x', scope: 'all', code: 0, preflightFailed: true }),
+      ).toBe('LINT_TSC_RESULT label=x scope=all exit=0 status=clean');
+      for (const code of [1, 2, 124, 137, 143]) {
+        expect(
+          formatLintTscResultMarker({ label: 'x', scope: 'all', code, preflightFailed: true }),
+        ).not.toContain('status=clean');
+      }
+    });
+
+    it('leaves an abnormal-termination code reading as an error, not preflight-failed', () => {
+      for (const code of [2, 124, 137, 143]) {
+        expect(
+          formatLintTscResultMarker({ label: 'x', scope: 'all', code, preflightFailed: true }),
+        ).toContain(`status=error(${code})`);
+      }
+    });
+
+    it('wins over nothingTypechecked — the more specific claim about why nothing was measured', () => {
+      expect(
+        formatLintTscResultMarker({
+          label: 'x',
+          scope: 'all',
+          code: 1,
+          preflightFailed: true,
+          nothingTypechecked: true,
+        }),
+      ).toContain('status=preflight-failed');
+    });
+  });
+
   // EI-20072775668558359 — the gate exits 1 for TWO different reasons, and the machine-readable
   // field is the one callers grep. Calling "nothing was typechecked" a REGRESSION is a false
   // alarm: read literally it sends someone hunting a type error that does not exist, and once
