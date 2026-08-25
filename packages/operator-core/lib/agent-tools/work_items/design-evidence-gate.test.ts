@@ -501,6 +501,17 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     );
   }
 
+  /**
+   * Record a comparison ON THE CALIBRATION HOST.
+   *
+   * `renderHost` is not optional dressing here. D-023 judges a case INVALID when
+   * the evidence was captured on a host the reference was not ratified on —
+   * "the stored evidence passed, but it was produced on a capture that reported
+   * no rendering host". Omitting it makes every case fail for a cross-host
+   * reason, which would let the over-threshold cases below pass while proving
+   * nothing about the threshold. (This is not hypothetical: the passing CONTROL
+   * is what caught it.)
+   */
   async function compareAgainst(d: VerbDeps): Promise<void> {
     await compareRenderVerb(
       {
@@ -515,6 +526,7 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
         policy: POLICY,
         actualImagePath: '/tmp/actual.png',
         diffImagePath: '/tmp/diff.png',
+        renderHost: calibrationRenderHost() ?? undefined,
       },
       CALLER,
       d,
@@ -592,6 +604,10 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/refusing terminal completion for 'WI-design-1'/);
     expect(result.error).toContain(REF);
+    // The reason is ABSENCE of evidence — distinct from the failing-evidence
+    // case below, whose remedy is the opposite instruction.
+    expect(result.error).toMatch(/design-phase\.compare_render/);
+    expect(result.error).not.toMatch(/fix the implementation for case/);
     // The half that matters most: the refusal is not a message attached to a
     // close that already happened.
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
@@ -609,6 +625,15 @@ describe('R1: work_items:complete actually consults the design-evidence gate', (
 
     expect(result.ok).toBe(false);
     expect(result.error).toMatch(/refusing terminal completion/);
+    // Pin the REASON, not just the refusal. This case and the one above must
+    // refuse for genuinely different causes — an over-threshold diff here, an
+    // absence there — or a single catch-all failure would satisfy both while
+    // proving the gate distinguishes nothing.
+    expect(result.error).toMatch(/fix the implementation for case/);
+    // And specifically NOT the cross-host reason: if `renderHost` ever stops
+    // being recorded, this case would still "refuse" while silently no longer
+    // testing the threshold at all.
+    expect(result.error).not.toMatch(/no rendering host|different machine/);
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
