@@ -2316,11 +2316,17 @@ export const FLAGS = {
   // does when on is MEASURE and REPORT — D-006 mandates a report-only rollout, so the refusal is
   // a separate flag below. OFF ⇒ completion is byte-identical to today. FAIL-OPEN when reporting.
   DESIGN_EVIDENCE_GATE: "papercusp-design-evidence-gate",
-  // ratified-mockup-implementation-validation-2026-08-24 P-007 / D-006: the ENFORCING half of the
-  // gate above — turns the report into a refusal. DEFAULT OFF and registered as a `cutover` dark
-  // case: D-006 requires calibration (P-008) and independent verification (P-009) BEFORE the
-  // contract blocks any completion, and P-011 owns the controlled flip. This is a staged-cutover
-  // switch, not finished-work-parked-dark: the reporting half ships enabled on the flag above.
+  // ratified-mockup-implementation-validation-2026-08-24 P-011 / D-023: the ENFORCING half of the
+  // gate above — turns the report into a refusal. DEFAULT ON since P-011 completed the rollout.
+  //
+  // Read this before assuming ON means "refuses everywhere": it does not, and that is deliberate.
+  // The threshold it enforces (3.3816e-5, about 34 pixels of a 1280x800 render) was derived from
+  // SAME-HOST noise only (D-021), so enforcement is scoped IN CODE to references ratified on the
+  // machine the calibration was measured on. Everything else — a reference with no recorded host,
+  // one ratified elsewhere, or a calibration that cannot say where it was taken — is REPORTED and
+  // never refused. The scope is a property of the evidence rather than a switch someone can
+  // forget to flip, and every non-enforcing outcome says so in words so that "could not enforce"
+  // never renders the same as "passed". See design-compare/enforceability.ts.
   DESIGN_EVIDENCE_GATE_ENFORCING: "papercusp-design-evidence-gate-enforcing",
   // DEFAULT ON (enforce-system-on-generic-work-2026-06-29 P-019): the per-turn VERIFY-not-CREATE
   // work-item BACKSTOP behind the prompt directive (P-015). When a psu session ENDS A TURN having
@@ -2953,14 +2959,6 @@ export const DARK_FLAGS: ReadonlyMap<
       case: "parked",
       reason:
         "WI-37561, owner directive 2026-08-09 verbatim: \"Put the 'convos' tab in the middle pane behind a testing flag\". The owner CHOSE hidden-until-flipped over a visible kill-switch when asked directly, so this is a requested park, not finished work hidden from its own author. It parks the RAIL TAB only: /adv keeps its own Conversations tab on the same four SSE-cached queries, so no conversation content is unreachable while this is dark — the cheapness of hiding it is the reason the park is honest. ON ⇒ the 💬 Convos tab returns to the middle rail in its owner-set last position (nothing else moves; the id never left TAB_IDS). GRADUATES when the owner says the tab is part of the standard release — the same sentence that graduated papercusp-task-manager on 2026-08-02.",
-    },
-  ],
-  [
-    FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING,
-    {
-      case: "cutover",
-      reason:
-        "ratified-mockup-implementation-validation-2026-08-24 D-006 (P-007 built it, P-011 flips it): the design-evidence contract must run REPORT-ONLY against committed fixtures and a small cohort of real ratified designs before it blocks any completion — measured repeatability, noise, runtime and bypass behaviour (P-008) determine the first versioned policy, and P-009 supplies independent verification. This is the staged-cutover half ONLY: the gate itself ships ENABLED as papercusp-design-evidence-gate and reports on every terminal completion from day one, so nothing here is finished work hidden from its own author — what is withheld is the refusal, deliberately, until calibration says the threshold is trustworthy. Flipping it early would block completions on an uncalibrated threshold, which is the specific harm D-006 exists to prevent. GRADUATES when P-011 completes the controlled enforcement rollout.",
     },
   ],
   // TEST_COMPLETION_GATE graduated 2026-07-04 (dark-flag-age review, EI-7280):
