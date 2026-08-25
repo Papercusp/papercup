@@ -532,7 +532,7 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       continue;
     }
     if (SOURCE_TAG_RE.test(line)) continue; // [self-imposed]/[peer:]/[inferred] — not owner-authority
-    if (OWNER_ATTRIBUTION_RE.test(line)) {
+    if (OWNER_ATTRIBUTION_RE.test(line) || isPassiveOwnerAttribution(line)) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-attribution' });
       continue;
     }
