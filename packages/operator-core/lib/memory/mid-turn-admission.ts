@@ -1,5 +1,6 @@
 /**
- * Host-wide admission for optional MCP memory injection.
+ * Host-wide admission shared by optional mid-turn and initialize memory
+ * injection.
  *
  * This seam originated on `mid-turn-context`, which is served by several
  * SO_REUSEPORT workers. Its original rolling limiter and degraded latch were
@@ -231,9 +232,9 @@ async function ensureProductionResource(): Promise<boolean> {
   productionState.registrationPromise = inWorkspaceTxn(domain, registrationOwner, (tx) =>
     registerResource(tx, {
       resource: MID_TURN_MEMORY_RESOURCE,
-      description: 'Host-wide concurrency budget for optional MCP memory injection across operator workers.',
+      description: 'Host-wide concurrency budget for optional initialize and mid-turn MCP memory injection across operator workers.',
       rule_text:
-        'Each optional MCP memory-recall port acquires a shared, no-wait hold. It releases only after caller-visible and timed-out underlying work settle, heartbeating the crash-safe lease while needed. Full or unavailable capacity sheds recall; callers must never wait for this resource.',
+        'The initialize and mid-turn optional-memory ports acquire a shared, no-wait hold. They release only after caller-visible and timed-out underlying work settle, heartbeating the crash-safe lease while needed. Full or unavailable capacity sheds recall; callers must never wait for this resource.',
       enforcement: 'enforced',
       max_holders: MID_TURN_MEMORY_MAX_HOLDERS,
     }),
@@ -273,7 +274,7 @@ const productionStore: MidTurnAdmissionStore = {
         mode: 'shared',
         owner: ownerId,
         ownerLabel: `operator-worker:${process.pid}`,
-        reason: 'optional MCP memory recall',
+        reason: 'optional initialize or mid-turn MCP memory recall',
         ttlSec: MID_TURN_MEMORY_LOCK_TTL_SEC,
       }),
     );
@@ -302,7 +303,7 @@ const productionStore: MidTurnAdmissionStore = {
   },
 };
 
-/** Production entry point shared by every optional MCP memory-recall port. */
+/** Production entry point shared by initialize and mid-turn optional recall. */
 export function withOptionalMemoryAdmission<T>(run: () => Promise<T>): Promise<MidTurnAdmissionOutcome<T>> {
   return guardMidTurnMemoryAdmission(
     {
@@ -310,7 +311,7 @@ export function withOptionalMemoryAdmission<T>(run: () => Promise<T>): Promise<M
       state: productionState,
       store: productionStore,
       trackRun: runWithTrackedMemoryTimeouts,
-      onShed: (reason) => warnOnce(`host-wide mid-turn admission shed optional recall (${reason})`),
+      onShed: (reason) => warnOnce(`host-wide optional-memory admission shed recall (${reason})`),
       onDiagnostic: (message, error) => warnOnce(message, error),
     },
     run,
