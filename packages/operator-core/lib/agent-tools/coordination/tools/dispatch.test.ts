@@ -47,10 +47,7 @@ const baseArgs: DispatchArgs = {
   items: ['P-001', 'P-002'],
 };
 
-function expectQueuedWake(
-  result: { queued?: number; woken: number; pickupConfirmed?: boolean },
-  queued = 1,
-) {
+function expectQueuedWake(result: { queued?: number; woken: number; pickupConfirmed?: boolean }, queued = 1) {
   expect(result.queued).toBe(queued);
   expect(result.woken).toBe(0);
   expect(result.pickupConfirmed).toBe(false);
@@ -59,9 +56,7 @@ function expectQueuedWake(
 describe('composeDispatch', () => {
   it('full dispatch to a PARKED target: assigns lane + delivers note + queues wake without pickup', async () => {
     const { call, calls } = mockCall({
-      'coord:presence': presence([
-        { ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true },
-      ]),
+      'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
       'plan_items:status': { items: [] },
       'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
       'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
@@ -126,10 +121,7 @@ describe('composeDispatch', () => {
       'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
       'coord:send': sendEnv('su-7a2aFULL', { mode: 'required', targets: ['su-7a2aFULL'], woken: 1 }),
     });
-    const res = await composeDispatch(
-      { to: 'su-7a2a', note: 'resume what I sent you' },
-      call,
-    );
+    const res = await composeDispatch({ to: 'su-7a2a', note: 'resume what I sent you' }, call);
     expect(calls.map((c) => c.name)).toEqual(['coord:presence', 'coord:send']); // NO assign
     expect(res.assigned).toBeNull();
     expectQueuedWake(res);
@@ -277,7 +269,7 @@ describe('composeDispatch', () => {
       snippet,
     });
 
-    it('inlines each assigned item\'s hydrated body into the delivered note', async () => {
+    it("inlines each assigned item's hydrated body into the delivered note", async () => {
       const { call, calls } = mockCall({
         'coord:presence': presence([{ ownerId: 'su-7a2aFULL', sessionState: 'parked', wakeable: true }]),
         'plan_items:assign': { ok: true, results: [{ ok: true }, { ok: true }] },
@@ -379,9 +371,7 @@ describe('composeDispatch', () => {
       const assignCall = calls.find((c) => c.name === 'plan_items:assign');
       expect(assignCall?.args).toMatchObject({ itemIds: ['P-002'] });
       expect(res.assigned?.items).toEqual(['P-002']);
-      expect(res.skippedItems).toEqual([
-        { item: 'P-001', reason: expect.stringMatching(/live-claimed by su-holder/) },
-      ]);
+      expect(res.skippedItems).toEqual([{ item: 'P-001', reason: expect.stringMatching(/live-claimed by su-holder/) }]);
       expect(res.warning).toMatch(/skipped 1 of 2 requested item/);
       // the directed note still delivers — dispatch is not aborted by a partial skip
       expectQueuedWake(res);
@@ -420,9 +410,7 @@ describe('composeDispatch', () => {
       const res = await composeDispatch(baseArgs, call);
       const assignCall = calls.find((c) => c.name === 'plan_items:assign');
       expect(assignCall?.args).toMatchObject({ itemIds: ['P-002'] });
-      expect(res.skippedItems).toEqual([
-        { item: 'P-001', reason: expect.stringMatching(/needs-human.*owner-gated/) },
-      ]);
+      expect(res.skippedItems).toEqual([{ item: 'P-001', reason: expect.stringMatching(/needs-human.*owner-gated/) }]);
     });
 
     it('drops a blocked item the same way as needs-human', async () => {
@@ -503,9 +491,7 @@ describe('composeDispatch — promoted workItemIds', () => {
   it('assigns and wakes only the filtered actionable work-item frontier', async () => {
     const assignWorkItems = vi.fn(async () => assignment());
     const { call, calls } = mockCall({
-      'coord:presence': presence([
-        { ownerId: 'agent-email-full', sessionState: 'parked', wakeable: true },
-      ]),
+      'coord:presence': presence([{ ownerId: 'agent-email-full', sessionState: 'parked', wakeable: true }]),
       'coord:send': sendEnv('agent-email-full', {
         mode: 'required',
         targets: ['agent-email-full'],
@@ -556,9 +542,7 @@ describe('composeDispatch — promoted workItemIds', () => {
       executionWorkItemIds: [],
     });
     const { call, calls } = mockCall({
-      'coord:presence': presence([
-        { ownerId: 'agent-email-full', sessionState: 'parked', wakeable: true },
-      ]),
+      'coord:presence': presence([{ ownerId: 'agent-email-full', sessionState: 'parked', wakeable: true }]),
     });
 
     const result = await composeDispatch(

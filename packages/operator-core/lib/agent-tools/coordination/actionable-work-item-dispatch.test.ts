@@ -7,11 +7,7 @@ import {
   type StableAgentTargetState,
 } from './actionable-work-item-dispatch';
 
-function workItem(
-  id: string,
-  state = 'open',
-  assignee: string | null = null,
-): WorkItem {
+function workItem(id: string, state = 'open', assignee: string | null = null): WorkItem {
   return {
     id,
     kind: 'feature',
@@ -25,10 +21,7 @@ function workItem(
   } as WorkItem;
 }
 
-function target(
-  ownerId = 'agent-email-stable',
-  patch: Partial<StableAgentTargetState> = {},
-): StableAgentTargetState {
+function target(ownerId = 'agent-email-stable', patch: Partial<StableAgentTargetState> = {}): StableAgentTargetState {
   return {
     requested: ownerId,
     ownerId,
@@ -39,9 +32,7 @@ function target(
   };
 }
 
-function deps(
-  patch: Partial<ActionableWorkItemDispatchDeps> = {},
-): ActionableWorkItemDispatchDeps {
+function deps(patch: Partial<ActionableWorkItemDispatchDeps> = {}): ActionableWorkItemDispatchDeps {
   return {
     observe: vi.fn(async (id) => ({
       item: workItem(id),
@@ -73,9 +64,7 @@ describe('assignActionableWorkItems', () => {
     const claim = vi.fn(async (id: string, assignee: string) => workItem(id, 'open', assignee));
     const d = deps({
       claim,
-      blockers: vi.fn(async (id) =>
-        id === 'WI-BLOCKED' ? [{ ref: 'WI-ROOT', kind: 'feature' }] : [],
-      ),
+      blockers: vi.fn(async (id) => (id === 'WI-BLOCKED' ? [{ ref: 'WI-ROOT', kind: 'feature' }] : [])),
     });
 
     const result = await assignActionableWorkItems(
@@ -111,10 +100,7 @@ describe('assignActionableWorkItems', () => {
       })),
     });
 
-    const result = await assignActionableWorkItems(
-      { workItemIds: ['WI-HELD'], targetAgent: 'agent-email-stable' },
-      d,
-    );
+    const result = await assignActionableWorkItems({ workItemIds: ['WI-HELD'], targetAgent: 'agent-email-stable' }, d);
 
     expect(claim).not.toHaveBeenCalled();
     expect(result.executionWorkItemIds).toEqual([]);
@@ -194,9 +180,7 @@ describe('assignAndWakeActionableWorkItems', () => {
 
   it('keeps a landed assignment recoverable and fails loudly when the stable target is dead', async () => {
     const d = deps({
-      resolveTarget: vi.fn(async ({ targetAgent }) =>
-        target(targetAgent, { sessionState: 'ended', wakeable: false }),
-      ),
+      resolveTarget: vi.fn(async ({ targetAgent }) => target(targetAgent, { sessionState: 'ended', wakeable: false })),
       wake: vi.fn(async (owners: readonly string[]) => ({
         targets: [...owners],
         keys: owners.map((owner) => `coord:inbox-wake:${owner}`),

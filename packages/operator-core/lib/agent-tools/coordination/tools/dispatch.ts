@@ -141,8 +141,7 @@ function findPresenceRow(
   const rows = [...(snap?.active ?? []), ...(snap?.stale ?? [])];
   const idOf = (r: Record<string, unknown>) => (typeof r.ownerId === 'string' ? r.ownerId : '');
   const exact = rows.find((r) => idOf(r) === to);
-  const fuzzy =
-    exact ?? rows.find((r) => idOf(r) && (idOf(r).includes(to) || to.includes(idOf(r))));
+  const fuzzy = exact ?? rows.find((r) => idOf(r) && (idOf(r).includes(to) || to.includes(idOf(r))));
   if (!fuzzy) return null;
   return {
     ownerId: idOf(fuzzy),
@@ -202,13 +201,11 @@ export async function composeDispatch(
     const assign = deps.assignWorkItems ?? assignActionableWorkItems;
     const targetAgent = presenceOwnerId || args.to;
     try {
-      workItems = await assign(
-        {
-          workItemIds: args.workItemIds,
-          targetAgent,
-          ...(args.harness ? { harness: args.harness } : {}),
-        },
-      );
+      workItems = await assign({
+        workItemIds: args.workItemIds,
+        targetAgent,
+        ...(args.harness ? { harness: args.harness } : {}),
+      });
     } catch (error) {
       const requested = [...new Set(args.workItemIds)];
       workItems = {
@@ -246,13 +243,15 @@ export async function composeDispatch(
       const statusEnv = (await call('plan_items:status', {
         plan: args.planSlug,
         ...(args.harness ? { harness: args.harness } : {}),
-      })) as {
-        items?: Array<{
-          itemId: string;
-          itemStatus: string | null;
-          claim: { owner?: string; ownerName?: string | null } | null;
-        }>;
-      } | undefined;
+      })) as
+        | {
+            items?: Array<{
+              itemId: string;
+              itemStatus: string | null;
+              claim: { owner?: string; ownerName?: string | null } | null;
+            }>;
+          }
+        | undefined;
       const byId = new Map((statusEnv?.items ?? []).map((it) => [it.itemId, it]));
       const targetOwnerId = presenceOwnerId || args.to;
       const kept: string[] = [];
@@ -288,26 +287,24 @@ export async function composeDispatch(
         itemIds: itemsToAssign,
         assignee: args.to,
         ...(args.harness ? { harness: args.harness } : {}),
-      })) as {
-        ok?: boolean;
-        results?: unknown[];
-        counts?: { ok?: number; failed?: number };
-      } | undefined;
+      })) as
+        | {
+            ok?: boolean;
+            results?: unknown[];
+            counts?: { ok?: number; failed?: number };
+          }
+        | undefined;
       const requested = itemsToAssign.length;
       const results = Array.isArray(env?.results) ? env.results : [];
       const resultAssigned = results.filter(
-        (result) =>
-          typeof result === 'object' &&
-          result !== null &&
-          (result as { ok?: unknown }).ok === true,
+        (result) => typeof result === 'object' && result !== null && (result as { ok?: unknown }).ok === true,
       ).length;
       const resultFailed = results.length - resultAssigned;
       // plan_items:assign uses the shared bulk contract: its top-level ok means
       // only that the batch ran. The per-item counts are the assignment truth.
       // Keep a result-derived fallback for older/partial envelopes so dispatch
       // never reconstructs success from the execution-level `ok` alone.
-      const assignedCount =
-        typeof env?.counts?.ok === 'number' ? env.counts.ok : resultAssigned;
+      const assignedCount = typeof env?.counts?.ok === 'number' ? env.counts.ok : resultAssigned;
       const failedCount =
         typeof env?.counts?.failed === 'number'
           ? env.counts.failed
@@ -443,9 +440,7 @@ export async function composeDispatch(
   // coord:send resolves a short handle/prefix to the full ownerId — prefer that as
   // the authoritative resolved target; fall back to the presence row, then the input.
   const resolvedTo =
-    (Array.isArray(r0.to) ? r0.to.find((t) => t !== '*' && t !== 'human') : undefined) ||
-    presenceOwnerId ||
-    args.to;
+    (Array.isArray(r0.to) ? r0.to.find((t) => t !== '*' && t !== 'human') : undefined) || presenceOwnerId || args.to;
 
   const wake = r0.wake ?? {};
   // coord:send's wake.queued is the event engine's matched/queued count; the
@@ -462,10 +457,7 @@ export async function composeDispatch(
   // evidence remains authoritative, but the dispatch disposition must not read as
   // a successful assignment.
   const allRequestedAssignmentsFailed =
-    assigned !== null &&
-    assigned.requested > 0 &&
-    assigned.assigned === 0 &&
-    assigned.failed === assigned.requested;
+    assigned !== null && assigned.requested > 0 && assigned.assigned === 0 && assigned.failed === assigned.requested;
 
   const result: DispatchResult = {
     ok: r0.ok !== false && !allRequestedAssignmentsFailed && (workItems?.ok ?? true),
@@ -487,8 +479,7 @@ export async function composeDispatch(
     ...(skippedItems.length > 0 ? { skippedItems } : {}),
   };
 
-  const queuePreserved =
-    (assigned?.assigned ?? 0) > 0 || (workItems?.executionWorkItemIds.length ?? 0) > 0;
+  const queuePreserved = (assigned?.assigned ?? 0) > 0 || (workItems?.executionWorkItemIds.length ?? 0) > 0;
   const failureBase = {
     target: resolvedTo,
     recoverable: true as const,
@@ -598,7 +589,8 @@ export default defineTool({
     'One call assigns either plan items (`items`) or concrete promoted work-items (`workItemIds`) to `to`, delivers `note`, and issues a required wake. The work-item path re-checks canonical blockers and assigns/wakes only the current actionable frontier; blocked descendants stay unassigned. Dead/absent/unwakeable targets return `ok:false` plus structured `failure` while durable assignment remains recoverable. Queueing is not proof a turn executed.',
   guidance: {
     when: 'You are a coordinator/Mug handing a specific lane to ANOTHER agent and want it picked up NOW — "su-7a2a, take fleet-dispatch P-001..P-004". One call assigns + delivers + queues a wake; verify pickup separately. Target a `parked` agent (coord:presence → sessionState:parked is the ideal); a `live` agent already running sees the note mid-turn.',
-    notWhen: 'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never "*". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.',
+    notWhen:
+      'Just sharing context / asking a question (coord:send). Claiming work for YOURSELF (plan_items:claim). A broadcast — dispatch is single-target, never "*". The target is `ended` — a wake cannot land on it; bring it back with capability:launch-agent { resume: { agentId } }, then dispatch.',
     chaining:
       'coord:presence (find a `parked`/wakeable target) → coord:dispatch { to, planSlug, items, note } → check `assigned` plus `queued`/`warning`, then verify pickup from a fresh checkpoint/activity timestamp. An all-refused lane is `ok:false` even when the note/wake queued.',
   },
@@ -607,40 +599,54 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   // Composite marker (tool-call-batching-wrappers P-010): the primitives this bundles.
   replaces: ['coord:presence', 'plan_items:assign', 'work_items:claim', 'coord:send', 'events:emit'],
-  args: z.object({
-    to: z
-      .string()
-      .min(1)
-      .describe('The target agent — its ownerId or the short handle from [coord+N]/coord:presence. Single-target only (never "*").'),
-    note: z
-      .string()
-      .min(1)
-      .describe('The directed instruction the target reads in its inbox on waking — what to pick up and do. Name the plan + items explicitly.'),
-    planSlug: z.string().max(120).optional().describe('Plan slug whose items form the lane to assign (with `items`).'),
-    items: z
-      .array(z.string().max(20))
-      .max(40)
-      .optional()
-      .describe('Plan-item ids (P-NNN) to push-assign to `to` as its durable lane. Omit for a pure directed wake.'),
-    workItemIds: z
-      .array(z.string().min(1).max(120))
-      .min(1)
-      .max(200)
-      .optional()
-      .describe(
-        'Concrete promoted work-item ids to assign to the stable target. Re-read through canonical readiness; only actionable ids are claimed and included in the required wake. Mutually exclusive with `items`.',
-      ),
-    body: hardText(8000).optional().describe('Optional longer body for the inbox note.'),
-    harness: z.string().max(120).optional().describe('Harness scope for the lane assignment (default: the plan\'s harness).'),
-  }).superRefine((args, ctx) => {
-    if ((args.items?.length ?? 0) > 0 && (args.workItemIds?.length ?? 0) > 0) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['workItemIds'],
-        message: 'pass either plan-item `items` or concrete `workItemIds`, never both in one dispatch',
-      });
-    }
-  }),
+  args: z
+    .object({
+      to: z
+        .string()
+        .min(1)
+        .describe(
+          'The target agent — its ownerId or the short handle from [coord+N]/coord:presence. Single-target only (never "*").',
+        ),
+      note: z
+        .string()
+        .min(1)
+        .describe(
+          'The directed instruction the target reads in its inbox on waking — what to pick up and do. Name the plan + items explicitly.',
+        ),
+      planSlug: z
+        .string()
+        .max(120)
+        .optional()
+        .describe('Plan slug whose items form the lane to assign (with `items`).'),
+      items: z
+        .array(z.string().max(20))
+        .max(40)
+        .optional()
+        .describe('Plan-item ids (P-NNN) to push-assign to `to` as its durable lane. Omit for a pure directed wake.'),
+      workItemIds: z
+        .array(z.string().min(1).max(120))
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          'Concrete promoted work-item ids to assign to the stable target. Re-read through canonical readiness; only actionable ids are claimed and included in the required wake. Mutually exclusive with `items`.',
+        ),
+      body: hardText(8000).optional().describe('Optional longer body for the inbox note.'),
+      harness: z
+        .string()
+        .max(120)
+        .optional()
+        .describe("Harness scope for the lane assignment (default: the plan's harness)."),
+    })
+    .superRefine((args, ctx) => {
+      if ((args.items?.length ?? 0) > 0 && (args.workItemIds?.length ?? 0) > 0) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['workItemIds'],
+          message: 'pass either plan-item `items` or concrete `workItemIds`, never both in one dispatch',
+        });
+      }
+    }),
   async handler(args, ctx) {
     const result = await composeDispatch(args as DispatchArgs, inProcessCall(ctx));
     return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
