@@ -160,6 +160,36 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(r.staged).toBe(1);
   });
 
+  it('EI-21420024752195459: an owner-verified relay FIRES in manual mode instead of staging the resume for owner review', async () => {
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'manual');
+    const r = await wakeRecipients(['s-paused'], {
+      source: 'su-relaying-agent',
+      summary: 'OWNER-VERIFIED SYSTEM-WIDE RESUME',
+      relayProvenance: {
+        tier: 'owner-verified-turn',
+        quote: 'tell all agents system-wide to resume their work',
+        origin: 'owner',
+      },
+    });
+    expect(stagePendingWake).not.toHaveBeenCalled();
+    expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({ woken: 1, staged: 0, stagedTargets: [] });
+  });
+
+  it('an unverified or agent-origin relay still STAGES in manual mode', async () => {
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'manual');
+    await wakeRecipients(['s-paused'], {
+      source: 'su-relaying-agent',
+      relayProvenance: { tier: 'unverified', quote: 'the owner said resume', origin: 'owner' },
+    });
+    await wakeRecipients(['s-paused'], {
+      source: 'su-relaying-agent',
+      relayProvenance: { tier: 'coord-origin', quote: 'resume', origin: 'agent' },
+    });
+    expect(stagePendingWake).toHaveBeenCalledTimes(2);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+  });
+
   it('isOwnerGuiWakeSource is exact-match (a missing source never bypasses)', () => {
     expect(isOwnerGuiWakeSource(ADMIN_COORD_UI_OWNER)).toBe(true);
     expect(isOwnerGuiWakeSource(undefined)).toBe(false);

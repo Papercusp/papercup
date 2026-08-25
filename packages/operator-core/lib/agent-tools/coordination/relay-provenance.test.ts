@@ -19,6 +19,7 @@ import {
   renderRelayQuoteSuffix,
   detectAuthorityClaim,
   isRelayVerified,
+  isOwnerVerifiedRelay,
   RELAY_PROVENANCE_FIELD,
   RELAY_QUOTE_CHARS,
   OWNER_TURN_SENTINEL,
@@ -197,6 +198,26 @@ describe('isRelayVerified — an unverified tier is a FAILED check, not a weak p
     // divergence above is specific to the failed check and not a blanket flip.
     const verified: RelayProvenanceStamp = { tier: 'owner-verified-turn', quote: 'q' };
     expect(preFixSuppression(verified)).toBe(isRelayVerified(verified));
+  });
+});
+
+describe('isOwnerVerifiedRelay — only verified OWNER origin crosses control gates', () => {
+  it('accepts both direct owner-verification tiers and an owner-rooted coord chain', () => {
+    expect(isOwnerVerifiedRelay({ tier: 'owner-verified-turn', quote: 'resume', origin: 'owner' })).toBe(true);
+    expect(
+      isOwnerVerifiedRelay({ tier: 'owner-verified-transcript', quote: 'resume', origin: 'owner' }),
+    ).toBe(true);
+    expect(
+      isOwnerVerifiedRelay({ tier: 'coord-origin', quote: 'resume', origin: 'owner', chain: ['msg-root'] }),
+    ).toBe(true);
+  });
+
+  it('rejects missing/failed provenance and a verified AGENT-origin coord message', () => {
+    expect(isOwnerVerifiedRelay(null)).toBe(false);
+    expect(isOwnerVerifiedRelay({ tier: 'unverified', quote: 'the owner said resume', origin: 'owner' })).toBe(false);
+    expect(
+      isOwnerVerifiedRelay({ tier: 'coord-origin', quote: 'resume', origin: 'agent', chain: ['msg-agent'] }),
+    ).toBe(false);
   });
 });
 

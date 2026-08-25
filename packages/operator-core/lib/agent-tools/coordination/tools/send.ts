@@ -1351,6 +1351,11 @@ async function sendOne(
     const fan = await wakeRecipients(env.to, {
       summary: msg.summary,
       source: identity.ownerId,
+      // EI-21420024752195459: the platform-resolved stamp (never caller-authored
+      // prose) lets an authenticated owner relay cross a target's manual pause
+      // gate. Omit for ordinary/unverified sends so their wake behavior stays
+      // byte-for-byte unchanged.
+      ...(relayStamp ? { relayProvenance: relayStamp } : {}),
       // EI-18663224517726594 (fix option 1, preferred): a wake-pump payload
       // previously carried the message's summary/body but NOT its msg_id, so
       // answering straight from the wake — the natural, intended path — could

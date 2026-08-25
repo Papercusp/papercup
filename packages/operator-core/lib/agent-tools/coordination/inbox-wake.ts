@@ -33,6 +33,7 @@ import { listPresence } from './presence';
 import { resolveBestEffortAgainstRoster, isSelectorOrWildcard, knownOwnerIdSet } from './recipient-resolve';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { isOwnerVerifiedRelay, type RelayProvenanceStamp } from './relay-provenance';
 
 /** Prefix for the per-agent inbox-wake key. A bee watches `inboxWakeKey(self)`;
  *  a `{wake:true}` send to that bee fires exactly this key. */
@@ -170,7 +171,16 @@ export interface WakeRecipientsResult {
  */
 export async function wakeRecipients(
   recipients: readonly string[],
-  opts: { summary?: string; payload?: unknown; source?: string; workspaceId?: string } = {},
+  opts: {
+    summary?: string;
+    payload?: unknown;
+    source?: string;
+    workspaceId?: string;
+    /** Server-verified relay provenance from the message envelope. A verified
+     * OWNER origin bypasses manual staging: the owner has already reviewed and
+     * authorized this wake. Missing/unverified/agent-origin stamps never bypass. */
+    relayProvenance?: RelayProvenanceStamp | null;
+  } = {},
 ): Promise<WakeRecipientsResult> {
   // owner-2026-06-17: resolve a short ownerId PREFIX to the full id before firing
   // the wake key — the key is exact (`coord:inbox-wake:<full-ownerId>`), so a short
@@ -229,12 +239,18 @@ export async function wakeRecipients(
   // message for the owner's own review — see isOwnerGuiWakeSource, WI-37858). The
   // delivery-ladder rescue also bypasses it: staging the alarm behind the manual gate
   // would mute the detector whose job is to surface unread directed mail (EI-201236...).
-  // All three are exact/narrow source checks; everything else still honors the per-agent
-  // manual pause/edit gate exactly as before (default-preserving).
+  // An owner-verified relay is the fourth narrow bypass: staging an authenticated
+  // owner resume behind the manual PAUSE gate asks the owner to approve a command
+  // they already issued and strands the paused target indefinitely
+  // (EI-21420024752195459). The provenance was resolved server-side by coord:send;
+  // an unverified or merely agent-origin coord chain does NOT cross the gate.
+  // Everything else still honors the per-agent manual pause/edit gate exactly as
+  // before (default-preserving).
   const bypassManualGate =
     isLoopWakeSource(opts.source) ||
     isOwnerGuiWakeSource(opts.source) ||
-    isDeliveryLadderWakeSource(opts.source);
+    isDeliveryLadderWakeSource(opts.source) ||
+    isOwnerVerifiedRelay(opts.relayProvenance);
   type TargetOutcome =
     | { kind: 'staged'; ownerId: string }
     | { kind: 'fired'; key: string; woken: number }

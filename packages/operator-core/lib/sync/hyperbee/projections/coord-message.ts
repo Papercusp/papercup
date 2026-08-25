@@ -35,6 +35,7 @@ import { quarantineCoordMessage, type QuarantineReason } from '../coord-quaranti
 import { tryConsumeMemberMessageRate } from '../member-rate-gate';
 import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../../trust/comms-trust';
 import { readExpectedLifecycleAck } from '../../../agent-tools/coordination/cue-authority';
+import { readRelayProvenance } from '../../../agent-tools/coordination/relay-provenance';
 
 /** The coord_event_log surfaces that federate (plan-events stay local — plans
  *  federate via harness_plans). */
@@ -412,9 +413,11 @@ async function writeToPg(
     ) {
       try {
         const { wakeRecipients } = await import('../../../agent-tools/coordination/inbox-wake');
+        const relayProvenance = readRelayProvenance(row.body);
         const fan = await wakeRecipients(to, {
           ...(typeof b.summary === 'string' ? { summary: b.summary } : {}),
           ...(typeof b.from === 'string' ? { source: b.from } : {}),
+          ...(relayProvenance ? { relayProvenance } : {}),
           workspaceId: opts.workspaceId,
         });
         fanWoken = typeof (fan as { woken?: unknown })?.woken === 'number' ? (fan as { woken: number }).woken : 0;

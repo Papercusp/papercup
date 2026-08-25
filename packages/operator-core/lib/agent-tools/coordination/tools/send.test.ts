@@ -2117,7 +2117,7 @@ describe('WI-41323 — unverified authority claim is reported back to the sender
 
   it('a VERIFIED relay tier answers the claim — no warning', async () => {
     mockResolvedTyped(relayM, {
-      stamp: { tier: 'owner-verified-turn', quote: 'pause all agent work' },
+      stamp: { tier: 'owner-verified-turn', quote: 'pause all agent work', origin: 'owner' },
     });
     const b = await body({
       to: ['bee-1'],
@@ -2127,6 +2127,35 @@ describe('WI-41323 — unverified authority claim is reported back to the sender
     });
     expect(b.results[0].ok).toBe(true);
     expect(b.results[0]).not.toHaveProperty('unverifiedAuthorityClaim');
+  });
+
+  it('threads the server-verified owner stamp into the directed wake fan', async () => {
+    const stamp = {
+      tier: 'owner-verified-turn' as const,
+      quote: 'tell all agents system-wide to resume their work',
+      origin: 'owner' as const,
+    };
+    mockResolvedTyped(relayM, { stamp });
+    wakeM.mockResolvedValueOnce({
+      targets: ['bee-1'],
+      keys: [],
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+    } as never);
+
+    await body({
+      to: ['bee-1'],
+      summary: 'OWNER-VERIFIED SYSTEM-WIDE RESUME',
+      relayOf: 'owner-turn',
+      expects: 'action',
+      wake: 'required',
+    });
+
+    expect(wakeM).toHaveBeenCalledWith(
+      ['bee-1'],
+      expect.objectContaining({ source: 'me', relayProvenance: stamp }),
+    );
   });
 
   it('an UNVERIFIED tier is a failed check, so it still warns — with the right remedy', async () => {

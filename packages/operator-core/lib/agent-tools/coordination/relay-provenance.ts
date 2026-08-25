@@ -123,6 +123,27 @@ export function isRelayVerified(stamp: RelayProvenanceStamp | null | undefined):
   return stamp != null && stamp.tier !== 'unverified';
 }
 
+/**
+ * Did the platform verify that this relay ultimately came from the human owner?
+ *
+ * This is intentionally stricter than `isRelayVerified`: a `coord-origin` stamp
+ * can prove a real AGENT message exists, which is useful provenance but does not
+ * grant that agent permission to cross the manual wake-mode pause gate. Only a
+ * verified stamp whose captured origin is `owner` carries that authority.
+ *
+ * The distinction is load-bearing for resume directives. A paused agent is in
+ * manual wake mode, so staging an already owner-verified resume "for owner
+ * review" deadlocks the one message meant to lift the pause. Conversely, treating
+ * every verified coord origin as owner authority would let an ordinary peer relay
+ * bypass the gate. Keep the rule centralized here so local and federated wake
+ * paths cannot drift.
+ */
+export function isOwnerVerifiedRelay(
+  stamp: RelayProvenanceStamp | null | undefined,
+): boolean {
+  return isRelayVerified(stamp) && stamp?.origin === 'owner';
+}
+
 /** The short trust tag a reader scans: `owner-verified(turn)` /
  *  `owner-verified(transcript-match)` / `coord-origin(<root msg_id>)` /
  *  `UNVERIFIED relay`. */

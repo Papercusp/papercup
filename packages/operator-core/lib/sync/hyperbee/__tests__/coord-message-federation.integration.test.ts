@@ -398,6 +398,31 @@ describe('coord_event_log federation (real PG)', () => {
       expect(wakeRecipients).toHaveBeenCalledTimes(1);
     });
 
+    it('preserves verified owner provenance on the remote wake fan so a paused target can resume', async () => {
+      vi.mocked(wakeRecipients).mockClear();
+      const relayProvenance = {
+        tier: 'owner-verified-turn',
+        quote: 'tell all agents system-wide to resume their work',
+        origin: 'owner',
+      };
+      const row = remoteWakeRow('wake-owner-relay');
+      row.body = envelope('wake-owner-relay', {
+        wake: true,
+        summary: 'OWNER-VERIFIED SYSTEM-WIDE RESUME',
+        to: ['su-B'],
+        relayProvenance,
+      });
+
+      await proj().writeToPg(row, { authorPubkey: 'peerPubA', origin: 'remote' });
+
+      expect(wakeRecipients).toHaveBeenCalledExactlyOnceWith(['su-B'], {
+        summary: 'OWNER-VERIFIED SYSTEM-WIDE RESUME',
+        source: 'su-A',
+        relayProvenance,
+        workspaceId: WS,
+      });
+    });
+
     it('no wake intent → no fan; local origin → no fan (defensive)', async () => {
       vi.mocked(wakeRecipients).mockClear();
       const p = proj();
