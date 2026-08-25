@@ -283,7 +283,8 @@ export function activeTurnHolderFragment(sql: Db, graceSec: number) {
  * The mig-225 alias-aware "live holder" set as an embeddable postgres fragment —
  * owners with a FRESH coord_presence heartbeat, UNION every alias (spawn_id /
  * session_owner / run_id) of a RUNNING/RESTARTING nursery row with a fresh
- * heartbeat, UNION every owner with a recent unified-oracle `liveTurn`
+ * heartbeat, UNION every owner with a recent unified-oracle `liveTurn`, UNION
+ * every owner with an armed engine loop
  * (EI-18674157526367861 — see {@link activeTurnHolderFragment}). Shared by BOTH
  * the feature reaper and the issue reaper (P-005) so their liveness rule can
  * NEVER diverge — embed it in a `WITH live_holder AS (…)`.
@@ -308,7 +309,18 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
       -- …plus every owner with a recent unified-oracle liveTurn (EI-18674157526367861):
       -- the SAME source leader-brief/fleet:assignments/coord:presence already trust,
       -- so a holder they call alive can never be reaped here as dead.
-      ${activeTurnHolderFragment(sql, graceSec)}`;
+      ${activeTurnHolderFragment(sql, graceSec)}
+      UNION
+      -- EI-21431501901242395: an armed loop is durable continuation authority.
+      -- Its owner is intentionally quiet between wakes (and can remain so past
+      -- the heartbeat/parked grace while a delivery is delayed), but the loop
+      -- will re-invoke that SAME owner. Reaping its driving claim in that gap
+      -- creates the exact release-before-warm-wake race this set must prevent.
+      SELECT DISTINCT target_owner_id AS alias
+        FROM harness_shared.routines
+       WHERE active = true
+         AND reschedule_interval_sec IS NOT NULL
+         AND target_owner_id IS NOT NULL AND target_owner_id <> ''`;
 }
 
 /**

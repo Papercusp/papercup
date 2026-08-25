@@ -11,7 +11,8 @@
  * the old process ended while a successor starts under the SAME owner id. We
  * release only when the recorded row is still ended, no newer/open adv session
  * exists for the owner, and the shared liveness oracle does not see a live
- * heartbeat, host, wake delivery, or process. Claims are deliberately excluded
+ * heartbeat, host, wake delivery, armed engine loop, or process. Claims are
+ * deliberately excluded
  * from that oracle: a dead owner's own lease cannot prove the owner alive.
  */
 import { getOrgPg } from '@papercusp/db-org';

@@ -301,7 +301,16 @@ export default defineTool({
         // fail-open on a read error (fall through to the release = today's
         // behavior) so neither guard can strand a claim by failing.
         //
-        // Both are now cross-PROCESS reads, and deliberately so: the operator is
+        // EI-21431501901242395: an ARMED engine loop is a third same-owner
+        // continuation authority. A warm loop can outlive the current native CLI
+        // incarnation and resume the SAME coordination owner on its next fire. If
+        // that incarnation's SessionEnd lands while the loop remains active, this
+        // fast path must not erase the loop's driving work-item claim before the
+        // successor turn arrives. The ordinary P-001 liveness reaper remains the
+        // backstop if an armed loop's owner is genuinely gone; once the loop is
+        // inactive, the normal terminal release below applies unchanged.
+        //
+        // All three are now cross-PROCESS reads, and deliberately so: the operator is
         // clustered (N round-robin :3070 workers), so the process that marked a
         // respawn is usually not the one handling this report — that mismatch is
         // exactly what made the original in-memory marker fail intermittently
@@ -315,6 +324,17 @@ export default defineTool({
               );
               return null;
             });
+        const activeLoopOwner = respawnExpected || resetWake
+          ? false
+          : await import('../../adv-roster')
+              .then(({ activeLoopOwners }) => activeLoopOwners())
+              .then((owners) => owners.has(owner))
+              .catch((e) => {
+                console.warn(
+                  `[activity:report] active-loop continuation check for ${owner} failed, treating as a real session end: ${e instanceof Error ? e.message : e}`,
+                );
+                return false;
+              });
         if (respawnExpected) {
           result.session_end_disposition = 'continuation';
           console.log(
@@ -325,6 +345,12 @@ export default defineTool({
           console.log(
             `[activity:report] session-end lease release SKIPPED for ${owner}: a ${resetWake.channel} wake landed ${resetWake.ageMs}ms ago ` +
               `(context reset, same-owner continuation, not a death) — claims stay held; a reset that never lands is freed by the scheduled lease reap`,
+          );
+        } else if (activeLoopOwner) {
+          result.session_end_disposition = 'continuation';
+          console.log(
+            `[activity:report] session-end lease release SKIPPED for ${owner}: an engine loop remains armed ` +
+              `(same-owner warm continuation) — claims stay held; a genuinely dead owner is freed by the scheduled lease reap`,
           );
         } else {
           result.session_end_disposition = 'terminal';
