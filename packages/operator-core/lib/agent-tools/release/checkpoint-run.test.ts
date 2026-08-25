@@ -23,6 +23,15 @@ vi.mock('../../release/checkpoint-serializer-authority', () => ({
   armPausedCheckpointTransition: vi.fn(async () => ({ status: 'unreadable', error: 'not configured in this test' })),
 }));
 
+// EI-21456558908416090: the manual-run authority read fails CLOSED (it is about to spend a
+// ~55min suite), so without a hermetic default every handler case here refuses on the absent
+// test DB. Spread the real module so only this one read is stubbed. Cases that exercise the
+// withheld branch override `manualRunAdmission` per-test.
+vi.mock('../../release-checkpoint-config', async (importActual) => ({
+  ...(await importActual<typeof import('../../release-checkpoint-config')>()),
+  readManualRunAdmission: vi.fn(async () => ({ status: 'clear' })),
+}));
+
 const qualificationMocks = vi.hoisted(() => ({
   read: vi.fn(),
   begin: vi.fn(),

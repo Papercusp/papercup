@@ -9,6 +9,7 @@ const DEFAULTS = vi.hoisted(() => ({ stallReds: 3, stallAgeMs: 21_600_000, chron
 // writing it, so a stub that always answers 'clear' would make a successful write look like a
 // failed one — the mock has to actually round-trip.
 const holdBox = vi.hoisted(() => ({ current: null as null | { governingRef: string } }));
+const manualHoldBox = vi.hoisted(() => ({ current: null as null | { governingRef: string } }));
 vi.mock('../../release-checkpoint-config', () => ({
   readReleaseCheckpointOverride: vi.fn(),
   writeReleaseCheckpointConfig: vi.fn(),
@@ -20,6 +21,15 @@ vi.mock('../../release-checkpoint-config', () => ({
   ),
   setQualificationHold: vi.fn(async (h: null | { governingRef: string }) => {
     holdBox.current = h;
+  }),
+  // EI-21456558908416090: the manual-run hold is a SEPARATE token on the same row, so it needs
+  // its own box — a shared one would let a qualification hold read as a manual-run hold and
+  // hide the very distinction these two tokens exist to draw.
+  readManualRunAdmission: vi.fn(async () =>
+    manualHoldBox.current ? { status: 'held', hold: manualHoldBox.current } : { status: 'clear' },
+  ),
+  setManualRunHold: vi.fn(async (h: null | { governingRef: string }) => {
+    manualHoldBox.current = h;
   }),
 }));
 vi.mock('../../gateway-control/control-harness', () => ({
@@ -44,6 +54,7 @@ beforeEach(() => {
   readM.mockResolvedValue({});
   writeM.mockImplementation(async (patch) => ({ ...patch }) as never);
   holdBox.current = null;
+  manualHoldBox.current = null;
 });
 
 describe('release:checkpoint-config', () => {
