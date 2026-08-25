@@ -239,7 +239,7 @@ describe('transcript wire fixtures still match the live wire', () => {
           'event_msg/item_completed', 'event_msg/thread_settings_applied', 'event_msg/error',
           'turn_context', 'session_meta', 'world_state', 'compacted',
           'custom', 'custom_message', 'branch_summary', 'ttsr_injection',
-          'summary', 'system', 'file-history-snapshot',
+          'summary', 'system', 'file-history-snapshot', 'queue-operation',
         ]);
 
         /**
