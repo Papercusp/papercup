@@ -55,6 +55,76 @@ const sync = vi.hoisted(() => {
       status: "active",
       proposedBy: "su-f69a7079-b041-49de-8468-b012df5abb2e",
       ratifiedBy: "su-eb9b7ae3-d528-4584-8379-e69f2b8fe7b9",
+      definition: {
+        rubricId: "rubric-quality",
+        kind: "acceptance",
+        subjectPlan: "quality-release-2026-08-24",
+        classRef: "plan-class-feature-ship",
+        characteristic: "release-quality",
+        title: "Rubric quality",
+        description:
+          "The complete quality contract, including criteria that have never been graded.",
+        criteria: [
+          {
+            key: "never-graded-durability",
+            title: "Never graded durability",
+            model: "The result remains correct after a cold restart.",
+            method: "Run the restart-focused component suite.",
+            driftMarkers: "State disappears or changes after restart.",
+            replication:
+              "Create the fixture, restart the service, then compare the restored state.",
+            ratingScale: ["exemplary", "pass", "fail", "unknown"],
+            instrumentKey: "restart-durability",
+            window: { kind: "rolling", ms: 172_800_000 },
+            criterionClass: "violatable",
+            check: {
+              kind: "tests",
+              files: ["apps/operator/app/restart-durability.test.tsx"],
+            },
+          },
+          {
+            key: "instrumented-health",
+            title: "Instrumented health",
+            model: "The health instrument remains green.",
+            method: "Read the canonical health instrument.",
+            driftMarkers: "The instrument returns fail or unknown.",
+            check: {
+              kind: "instrument",
+              instrumentKey: "quality-health-check",
+            },
+          },
+          {
+            key: "coverage-depth",
+            title: "Coverage depth",
+            model: "Every relevant sync query has intent-level coverage.",
+            method: "Read the deterministic coverage census.",
+            driftMarkers: "Any relevant sync query falls below L3.",
+            window: {
+              kind: "post-watermark",
+              watermarkRef: "latest-release",
+            },
+            check: {
+              kind: "coverage",
+              scope: {
+                surfaceKind: "sync-query",
+                sourceFiles: ["packages/operator-core/lib/sync-resolver"],
+              },
+              floor: "l3",
+            },
+          },
+        ],
+        ratingScale: ["healthy", "degraded", "broken", "unknown"],
+        methodRef: "rubric-quality-runbook",
+        releaseGating: true,
+        stalenessWatched: true,
+        historyResetAt: "2026-07-01T00:00:00.000Z",
+        status: "active",
+        createdBy: "su-creator",
+        proposedBy: "su-f69a7079-b041-49de-8468-b012df5abb2e",
+        ratifiedBy: "su-eb9b7ae3-d528-4584-8379-e69f2b8fe7b9",
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-07-01T00:00:00.000Z",
+      },
     },
   ];
   const firstPage = [
@@ -204,6 +274,59 @@ describe("RubricDetailPanel focused evidence", () => {
     expect(gov?.textContent).toContain("su-eb9b7ae3");
     // author ≠ ratifier ⇒ split badge (the D-012 governance point)
     expect(gov?.querySelector(".pc-rubric-detail__gov-split")).not.toBeNull();
+  });
+
+  it("shows the full rubric definition, testing criteria, and ungraded criteria", () => {
+    render(<RubricDetailPanel rubricId="rubric-quality" />);
+
+    expect(screen.getByTestId("rubric-definition")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The complete quality contract, including criteria that have never been graded.",
+      ),
+    ).toBeTruthy();
+
+    const properties = screen.getByLabelText("Rubric properties");
+    expect(within(properties).getByText("acceptance")).toBeTruthy();
+    expect(
+      within(properties).getByText("quality-release-2026-08-24"),
+    ).toBeTruthy();
+    expect(
+      within(properties).getByText("plan-class-feature-ship"),
+    ).toBeTruthy();
+    expect(within(properties).getByText("rubric-quality-runbook")).toBeTruthy();
+    expect(within(properties).getAllByText("yes")).toHaveLength(2);
+
+    // This criterion has no trend row or scorecard. It still comes from the
+    // definition and is open by default so the testing contract is immediately visible.
+    expect(screen.getByText("Never graded durability")).toBeTruthy();
+    expect(
+      screen.getByText("The result remains correct after a cold restart."),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("Run the restart-focused component suite."),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Create the fixture, restart the service, then compare the restored state.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.getByText("apps/operator/app/restart-durability.test.tsx"),
+    ).toBeTruthy();
+    expect(screen.getByText("2d rolling")).toBeTruthy();
+    expect(screen.getByText("violatable")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Instrumented health/ }),
+    );
+    expect(screen.getByText("quality-health-check")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Coverage depth/ }));
+    expect(screen.getByText("Since latest-release")).toBeTruthy();
+    expect(screen.getByLabelText("Coverage check").textContent).toMatch(
+      /Every surface: sync-query.*must meet L3/,
+    );
   });
 
   it("shows the per-criterion instrument binding badge (WI-4607)", () => {

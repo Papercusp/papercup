@@ -8,7 +8,13 @@
  * opens the full ScorecardDetail (P-003) — no extra fetch, the list rows
  * already carry the complete ratings map.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import { useSyncQuery } from "@papercusp/sync";
 import type { CompanionListSummary } from "@papercusp/facets";
 import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
@@ -35,6 +41,62 @@ interface CriterionTrend {
   instrumentKey?: string | null;
 }
 
+interface RubricCriterionWindow {
+  kind: "rolling" | "post-watermark";
+  ms?: number;
+  watermarkRef?: string;
+}
+
+type RubricCriterionCheck =
+  | { kind: "tests"; files: string[] }
+  | { kind: "instrument"; instrumentKey: string }
+  | {
+      kind: "coverage";
+      scope: {
+        surfaceKind?: string;
+        sourceFiles?: string[];
+        planTouched?: true;
+      };
+      floor: "l1" | "l2" | "l3" | "l4";
+    };
+
+interface RubricCriterionDefinition {
+  key: string;
+  title: string;
+  model: string;
+  method: string;
+  ratingScale?: string[];
+  driftMarkers: string;
+  replication?: string;
+  instrumentKey?: string;
+  window?: RubricCriterionWindow;
+  criterionClass?: "settle-once" | "violatable";
+  check?: RubricCriterionCheck;
+}
+
+interface RubricDefinition {
+  rubricId: string;
+  kind: "standard" | "acceptance";
+  subjectPlan?: string | null;
+  subjectGoal?: string | null;
+  classRef?: string | null;
+  characteristic: string;
+  title: string;
+  description: string;
+  criteria: RubricCriterionDefinition[];
+  ratingScale: string[];
+  methodRef: string | null;
+  releaseGating?: boolean;
+  stalenessWatched?: boolean;
+  historyResetAt?: string | null;
+  status: string;
+  createdBy: string | null;
+  proposedBy: string | null;
+  ratifiedBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 interface RubricTrend {
   rubricRef: string;
   scorecardCount: number;
@@ -46,6 +108,7 @@ interface RubricTrend {
   status?: string;
   proposedBy?: string | null;
   ratifiedBy?: string | null;
+  definition?: RubricDefinition;
 }
 
 const SCORECARD_HISTORY_PAGE = 100;
@@ -133,6 +196,236 @@ function distributionTone(rating: string): string {
   if (/broken|bad|fail|regress/.test(normalized)) return "bad";
   if (/unknown|unrated|idle/.test(normalized)) return "neutral";
   return "accent";
+}
+
+function formatDefinitionTimestamp(iso: string): string {
+  const date = new Date(iso);
+  return Number.isFinite(date.getTime()) ? date.toLocaleString() : iso;
+}
+
+function formatWindow(window: RubricCriterionWindow): string {
+  if (window.kind === "post-watermark") {
+    return `Since ${window.watermarkRef ?? "watermark"}`;
+  }
+  const ms = window.ms;
+  if (!ms || !Number.isFinite(ms)) return "Rolling window";
+  if (ms % 86_400_000 === 0) return `${ms / 86_400_000}d rolling`;
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000}h rolling`;
+  if (ms % 60_000 === 0) return `${ms / 60_000}m rolling`;
+  return `${ms.toLocaleString()}ms rolling`;
+}
+
+function MetadataRow({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{children}</dd>
+    </div>
+  );
+}
+
+function CriterionCheck({ check }: { check: RubricCriterionCheck }) {
+  if (check.kind === "tests") {
+    return (
+      <section
+        className="pc-rubric-definition__check"
+        aria-label="Must-pass tests"
+      >
+        <h5>Must-pass tests</h5>
+        <ul>
+          {check.files.map((file) => (
+            <li key={file}>
+              <code>{file}</code>
+            </li>
+          ))}
+        </ul>
+      </section>
+    );
+  }
+  if (check.kind === "instrument") {
+    return (
+      <section
+        className="pc-rubric-definition__check"
+        aria-label="Instrument check"
+      >
+        <h5>Instrument check</h5>
+        <code>{check.instrumentKey}</code>
+      </section>
+    );
+  }
+  const scope = [
+    check.scope.surfaceKind ? `surface: ${check.scope.surfaceKind}` : null,
+    check.scope.sourceFiles?.length
+      ? `files: ${check.scope.sourceFiles.join(", ")}`
+      : null,
+    check.scope.planTouched ? "surfaces touched by the subject plan" : null,
+  ].filter((entry): entry is string => Boolean(entry));
+  return (
+    <section
+      className="pc-rubric-definition__check"
+      aria-label="Coverage check"
+    >
+      <h5>Coverage check</h5>
+      <p>
+        Every {scope.length > 0 ? scope.join(" · ") : "harness surface"} must
+        meet <strong>{check.floor.toUpperCase()}</strong>.
+      </p>
+    </section>
+  );
+}
+
+function RubricDefinitionView({
+  definition,
+}: {
+  definition: RubricDefinition;
+}) {
+  const subject = definition.subjectPlan
+    ? ["Subject plan", definition.subjectPlan]
+    : definition.subjectGoal
+      ? ["Subject goal", definition.subjectGoal]
+      : null;
+  return (
+    <Collapsible.Root
+      className="pc-rubric-definition"
+      defaultOpen
+      data-testid="rubric-definition"
+    >
+      <Collapsible.Trigger className="pc-rubric-detail__disclosure pc-rubric-definition__trigger">
+        <ChevronDown size={13} aria-hidden />
+        <span>Rubric definition</span>
+        <strong>{definition.criteria.length}</strong>
+        <small>criteria</small>
+      </Collapsible.Trigger>
+      <Collapsible.Content className="pc-rubric-definition__content">
+        {definition.description ? (
+          <p className="pc-rubric-definition__description">
+            {definition.description}
+          </p>
+        ) : null}
+        <dl
+          className="pc-rubric-definition__metadata"
+          aria-label="Rubric properties"
+        >
+          <MetadataRow label="Kind">{definition.kind}</MetadataRow>
+          <MetadataRow label="Domain">{definition.characteristic}</MetadataRow>
+          {subject ? (
+            <MetadataRow label={subject[0]}>
+              <code>{subject[1]}</code>
+            </MetadataRow>
+          ) : null}
+          {definition.classRef ? (
+            <MetadataRow label="Class rubric">
+              <code>{definition.classRef}</code>
+            </MetadataRow>
+          ) : null}
+          <MetadataRow label="Default scale">
+            <span className="pc-rubric-definition__chips">
+              {definition.ratingScale.map((rating) => (
+                <code key={rating}>{rating}</code>
+              ))}
+            </span>
+          </MetadataRow>
+          {definition.methodRef ? (
+            <MetadataRow label="Method runbook">
+              <code>{definition.methodRef}</code>
+            </MetadataRow>
+          ) : null}
+          <MetadataRow label="Release gating">
+            {definition.releaseGating ? "yes" : "no"}
+          </MetadataRow>
+          <MetadataRow label="Staleness watched">
+            {definition.stalenessWatched ? "yes" : "no"}
+          </MetadataRow>
+          {definition.historyResetAt ? (
+            <MetadataRow label="History reset">
+              {formatDefinitionTimestamp(definition.historyResetAt)}
+            </MetadataRow>
+          ) : null}
+          {definition.createdBy ? (
+            <MetadataRow label="Created by">
+              <code>{definition.createdBy}</code>
+            </MetadataRow>
+          ) : null}
+          <MetadataRow label="Created">
+            {formatDefinitionTimestamp(definition.createdAt)}
+          </MetadataRow>
+          <MetadataRow label="Updated">
+            {formatDefinitionTimestamp(definition.updatedAt)}
+          </MetadataRow>
+        </dl>
+
+        <div
+          className="pc-rubric-definition__criteria"
+          aria-label={`${definition.criteria.length} declared rubric criteria`}
+        >
+          {definition.criteria.map((criterion, index) => (
+            <Collapsible.Root
+              key={criterion.key}
+              className="pc-rubric-definition__criterion"
+              defaultOpen={index === 0}
+            >
+              <Collapsible.Trigger className="pc-rubric-definition__criterion-trigger">
+                <ChevronDown size={13} aria-hidden />
+                <span>
+                  <strong>{criterion.title}</strong>
+                  <code>{criterion.key}</code>
+                </span>
+                <span className="pc-rubric-definition__criterion-tags">
+                  <em>{criterion.criterionClass ?? "settle-once"}</em>
+                  {criterion.window ? (
+                    <em>{formatWindow(criterion.window)}</em>
+                  ) : null}
+                  {criterion.instrumentKey ? (
+                    <em>instrument: {criterion.instrumentKey}</em>
+                  ) : null}
+                  {criterion.ratingScale ? <em>custom scale</em> : null}
+                </span>
+              </Collapsible.Trigger>
+              <Collapsible.Content className="pc-rubric-definition__criterion-content">
+                <section>
+                  <h5>Expected behavior</h5>
+                  <p>{criterion.model}</p>
+                </section>
+                <section>
+                  <h5>How to test</h5>
+                  <p>{criterion.method}</p>
+                </section>
+                <section>
+                  <h5>Drift markers</h5>
+                  <p>{criterion.driftMarkers}</p>
+                </section>
+                {criterion.replication ? (
+                  <section>
+                    <h5>Replication drill</h5>
+                    <p>{criterion.replication}</p>
+                  </section>
+                ) : null}
+                {criterion.ratingScale ? (
+                  <section>
+                    <h5>Criterion rating scale</h5>
+                    <p className="pc-rubric-definition__chips">
+                      {criterion.ratingScale.map((rating) => (
+                        <code key={rating}>{rating}</code>
+                      ))}
+                    </p>
+                  </section>
+                ) : null}
+                {criterion.check ? (
+                  <CriterionCheck check={criterion.check} />
+                ) : null}
+              </Collapsible.Content>
+            </Collapsible.Root>
+          ))}
+        </div>
+      </Collapsible.Content>
+    </Collapsible.Root>
+  );
 }
 
 function DistributionBar({
@@ -497,6 +790,10 @@ export default function RubricDetailPanel({
         </div>
       </div>
 
+      {trendRow?.definition ? (
+        <RubricDefinitionView definition={trendRow.definition} />
+      ) : null}
+
       <h3>Criterion trend</h3>
       <p
         className="pc-rubric-detail__scope"
@@ -611,6 +908,34 @@ export default function RubricDetailPanel({
         .pc-rubric-detail__gov-chain { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 3px; color: var(--fg-mute); font-family: var(--font-mono, ui-monospace, monospace); font-size: 9px; }
         .pc-rubric-detail__gov-chain em { color: color-mix(in srgb, var(--fg-mute) 75%, transparent); font-style: normal; }
         .pc-rubric-detail__gov-split { display: inline-flex; align-items: center; margin-left: 3px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, #34d399 16%, transparent); color: #34d399; font-size: 8.5px; font-weight: 700; }
+        .pc-rubric-definition { display: flex; flex-direction: column; gap: 7px; }
+        .pc-rubric-definition__trigger > span { color: var(--fg); }
+        .pc-rubric-definition__trigger > small { color: var(--fg-mute); font-size: 9px; font-weight: 500; }
+        .pc-rubric-definition__content { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--border); border-top: 0; border-radius: 0 0 8px 8px; background: color-mix(in srgb, var(--bg-2) 70%, transparent); }
+        .pc-rubric-definition__description { margin: 0; color: var(--fg); font-size: 10.5px; line-height: 1.5; white-space: pre-wrap; }
+        .pc-rubric-definition__metadata { display: grid; grid-template-columns: repeat(auto-fit, minmax(145px, 1fr)); gap: 5px; margin: 0; }
+        .pc-rubric-definition__metadata > div { min-width: 0; padding: 6px 7px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-1); }
+        .pc-rubric-definition__metadata dt { margin: 0 0 3px; color: var(--fg-mute); font-size: 8px; font-weight: 750; text-transform: uppercase; }
+        .pc-rubric-definition__metadata dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--fg); font-size: 9.5px; line-height: 1.35; }
+        .pc-rubric-definition code { font-family: var(--font-mono, ui-monospace, monospace); font-size: .94em; overflow-wrap: anywhere; }
+        .pc-rubric-definition__chips { display: flex; flex-wrap: wrap; gap: 3px; margin: 0; }
+        .pc-rubric-definition__chips code { padding: 1px 5px; border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 8%, transparent); color: var(--accent); }
+        .pc-rubric-definition__criteria { display: flex; flex-direction: column; gap: 6px; }
+        .pc-rubric-definition__criterion { overflow: hidden; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-1); }
+        .pc-rubric-definition__criterion-trigger { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; min-height: 38px; padding: 6px 8px; border: 0; background: transparent; color: var(--fg); font: inherit; text-align: left; cursor: pointer; }
+        .pc-rubric-definition__criterion-trigger > svg { color: var(--fg-mute); transition: transform 140ms ease; }
+        .pc-rubric-definition__criterion-trigger[data-state="open"] > svg { transform: rotate(180deg); }
+        .pc-rubric-definition__criterion-trigger > span:nth-child(2) { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+        .pc-rubric-definition__criterion-trigger strong { overflow: hidden; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+        .pc-rubric-definition__criterion-trigger code { color: var(--fg-mute); font-size: 8.5px; }
+        .pc-rubric-definition__criterion-tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 3px; }
+        .pc-rubric-definition__criterion-tags em { padding: 1px 5px; border: 1px solid var(--border); border-radius: 999px; color: var(--fg-mute); font-size: 8px; font-style: normal; white-space: nowrap; }
+        .pc-rubric-definition__criterion-content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; padding: 0 8px 8px 28px; }
+        .pc-rubric-definition__criterion-content > section { min-width: 0; padding: 7px 8px; border: 1px solid color-mix(in srgb, var(--border) 80%, transparent); border-radius: 7px; background: var(--bg-2); }
+        .pc-rubric-definition__criterion-content h5 { margin: 0 0 4px; color: var(--fg-mute); font-size: 8.5px; font-weight: 750; text-transform: uppercase; }
+        .pc-rubric-definition__criterion-content p { margin: 0; color: var(--fg); font-size: 9.5px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
+        .pc-rubric-definition__check ul { display: flex; flex-direction: column; gap: 3px; margin: 0; padding-left: 15px; }
+        .pc-rubric-definition__check li { color: var(--fg); font-size: 9px; overflow-wrap: anywhere; }
         .pc-rubric-trend__crit { display: inline-flex; align-items: baseline; gap: 6px; }
         .pc-rubric-trend__dir { display: inline-flex; align-items: center; justify-content: center; }
         .pc-rubric-trend__dir svg { display: block; }
@@ -641,7 +966,7 @@ export default function RubricDetailPanel({
         .pc-rubric-distribution__track i[data-tone="bad"] { background: #fb7185; }
         .pc-rubric-distribution__track i[data-tone="neutral"] { background: #64748b; }
         .pc-rubric-distribution > strong { color: var(--fg-mute); font-size: 9.5px; font-weight: 650; font-variant-numeric: tabular-nums; }
-        @container learning (max-width: 720px) { .pc-rubric-detail__overview { grid-template-columns: repeat(2, 1fr); } .pc-rubric-detail__overview > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .pc-rubric-detail__overview > div:nth-child(4) { border-top: 1px solid var(--border); } }
+        @container learning (max-width: 720px) { .pc-rubric-detail__overview { grid-template-columns: repeat(2, 1fr); } .pc-rubric-detail__overview > div:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .pc-rubric-detail__overview > div:nth-child(4) { border-top: 1px solid var(--border); } .pc-rubric-definition__criterion-content { grid-template-columns: 1fr; padding-left: 8px; } .pc-rubric-definition__criterion-trigger { grid-template-columns: auto minmax(0, 1fr); } .pc-rubric-definition__criterion-tags { grid-column: 2; justify-content: flex-start; } }
       `}</style>
     </div>
   );
