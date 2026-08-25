@@ -301,6 +301,95 @@ describe('evidence bound to a superseded revision', () => {
 });
 
 /**
+ * P-007 — feature-level DISCOVERY, against the real schema.
+ *
+ * This query is what makes the completion gate un-bypassable: it finds a
+ * feature's ratified references instead of asking the caller to name them. It
+ * reads `metadata->>'referenceId'`, a projection written by `projectMetadata`,
+ * so reader and writer are only genuinely checked against each other by
+ * round-tripping through Postgres — the same reader/writer gap that made the
+ * P-006 evidence filter worth pinning here.
+ *
+ * The dangerous failure is silent in BOTH directions: a query that matches
+ * nothing reports a feature as unratified (the gate never fires), and one that
+ * counts revisions instead of references reports obligations that do not exist.
+ */
+describe('discovering every reference under a feature', () => {
+  it('returns each reference ONCE regardless of how many revisions it has', async () => {
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    const second: ReferenceScope = { ...scope, referenceId: `${scope.referenceId}-mobile` };
+
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 2), image: IMAGE, now: clock });
+    await ratifyReference(store, {
+      scope: second,
+      candidate: candidate(second, 1),
+      image: IMAGE,
+      now: clock,
+    });
+
+    const ids = await store.listFeatureReferenceIds({
+      harnessSlug: scope.harnessSlug,
+      featureId: scope.featureId,
+    });
+    // Two references, three revisions. Counting rows would report three.
+    expect([...ids].sort()).toEqual([second.referenceId, scope.referenceId].sort());
+  });
+
+  it('does not leak references belonging to another feature or harness', async () => {
+    const mine = freshScope();
+    const otherFeature = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+
+    await ratifyReference(store, { scope: mine, candidate: candidate(mine, 1), image: IMAGE, now: clock });
+    await ratifyReference(store, {
+      scope: otherFeature,
+      candidate: candidate(otherFeature, 1),
+      image: IMAGE,
+      now: clock,
+    });
+
+    expect(
+      await store.listFeatureReferenceIds({
+        harnessSlug: mine.harnessSlug,
+        featureId: mine.featureId,
+      }),
+    ).toEqual([mine.referenceId]);
+  });
+
+  it('reports a feature with no references as empty, not as an error', async () => {
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    expect(
+      await store.listFeatureReferenceIds({
+        harnessSlug: scope.harnessSlug,
+        featureId: scope.featureId,
+      }),
+    ).toEqual([]);
+  });
+
+  it('still lists a reference whose only revision has been RETRACTED', async () => {
+    // Applicability is the gate's decision, not this query's. Filtering retracted
+    // references away here would erase the difference between "ratified then
+    // withdrawn" and "never ratified" before anyone could see it.
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+    await store.setLifecycle(scope, referenceArtifactId(scope.referenceId, 1), {
+      state: 'retracted',
+    });
+
+    expect(
+      await store.listFeatureReferenceIds({
+        harnessSlug: scope.harnessSlug,
+        featureId: scope.featureId,
+      }),
+    ).toEqual([scope.referenceId]);
+  });
+});
+
+/**
  * P-006 — the evidence WRITER, against the real schema.
  *
  * `listEvidence` existed before any writer did, and its filter
