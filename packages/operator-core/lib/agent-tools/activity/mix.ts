@@ -60,6 +60,15 @@ export interface ActivityMixResult {
 
 const AUTO_TOOL_NAMES = new Set(['activity:report', 'coord:glance', 'coord:inbox']);
 const OWNER_REPORTING = new Set(['coord:escalate', 'notifications:send_owner', 'notifications:send-owner']);
+const COORDINATION_READS = new Set([
+  'coord:inbox',
+  'coord:presence',
+  'coord:read',
+  'coord:feed',
+  'coord:orient',
+  'coord:whoami',
+  'coord:plan-events',
+]);
 const MODE_PRIORITY: ActivityMixMode[] = [
   'owner-comms',
   'supervise',
@@ -165,6 +174,7 @@ export function activityMode(call: ActivityCall): ActivityMixMode {
     (typeof call.args === 'string' && /(?:to|recipients?)\s*[:=].{0,80}["']human["']/.test(args));
 
   if (OWNER_REPORTING.has(tool) || (tool === 'coord:send' && explicitlyTargetsHuman)) return 'owner-comms';
+  if (COORDINATION_READS.has(tool)) return 'investigate';
   if (
     tool.startsWith('coord:') ||
     tool.startsWith('fleet:') ||
@@ -176,13 +186,17 @@ export function activityMode(call: ActivityCall): ActivityMixMode {
     tool.startsWith('workitems:') ||
     tool.startsWith('plans:') ||
     tool.startsWith('issues:') ||
-    tool.startsWith('improvements:')
+    tool.startsWith('improvements:') ||
+    tool.startsWith('facts:') ||
+    tool === 'memory:remember'
   ) return 'record-durably';
   if (
-    tool === 'locks:check_command' ||
-    tool.startsWith('capability:') ||
-    tool.startsWith('testing:') ||
-    tool.startsWith('build:')
+    tool === 'capability:edit' ||
+    tool === 'capability:write' ||
+    tool === 'capability:apply_patch' ||
+    tool === 'capability:apply-patch' ||
+    tool === 'capability:delete' ||
+    tool === 'capability:move'
   ) return 'implement';
   if (
     tool.startsWith('dev:') ||
@@ -197,7 +211,11 @@ export function activityMode(call: ActivityCall): ActivityMixMode {
     tool.startsWith('activity:')
   ) return 'investigate';
   if (tool.startsWith('loop:') || tool.startsWith('mode:') || tool.startsWith('journal:')) return 'self-admin';
-  if (tool.startsWith('git-sync:') || tool.startsWith('goals:')) return 'supervise';
+  if (tool.startsWith('goals:')) return 'self-admin';
+  if (tool.startsWith('git-sync:')) return 'supervise';
+  if (tool.startsWith('testing:') || tool.startsWith('build:') || tool.startsWith('locks:') || tool.startsWith('capability:')) {
+    return 'investigate';
+  }
   return `other: ${tool}`;
 }
 
