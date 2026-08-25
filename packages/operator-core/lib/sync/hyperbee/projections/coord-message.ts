@@ -370,6 +370,15 @@ async function writeToPg(
       writer_key    = EXCLUDED.writer_key,
       body          = EXCLUDED.body,
       ts            = EXCLUDED.ts,
+      -- COALESCE, matching markSuperseded's OWN first-wins rule (messages.ts:1419,
+      -- WHERE superseded_by_msg_id IS NULL -- idempotent and race-safe, and the
+      -- marker is never cleared once set). So the local value must survive a peer
+      -- that omits the key or has not seen the correction yet: taking EXCLUDED
+      -- blindly would UN-correct an already-corrected message, telling readers the
+      -- original is current again. Deliberately NOT the state-gated CASE used for
+      -- coord_conversations.superseded_by, which legitimately clears; this one does not.
+      superseded_by_msg_id = COALESCE(EXCLUDED.superseded_by_msg_id, coord_event_log.superseded_by_msg_id),
+      superseded_at        = COALESCE(EXCLUDED.superseded_at, coord_event_log.superseded_at),
       origin        = EXCLUDED.origin,
       author_pubkey = EXCLUDED.author_pubkey,
       fed_ts        = EXCLUDED.fed_ts,
