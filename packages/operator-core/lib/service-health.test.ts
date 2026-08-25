@@ -26,6 +26,9 @@ import {
   classifyListenerWedge,
   localProbePort,
   detectWedgedListener,
+  parseMcpHandshakePayload,
+  probeMcpHandshake,
+  MCP_HEALTH_PROBE_CLIENT,
   type ProbeResult,
 } from './service-health';
 import type { ListeningSocket } from './listening-sockets';
@@ -36,6 +39,91 @@ const r = (name: string, up: boolean): ProbeResult => ({
   up,
   status: up ? 200 : null,
   latencyMs: 1,
+});
+
+describe('probeMcpHandshake — bounded control-plane health verdict (EI-21392098254217280)', () => {
+  it('parses both direct JSON and streamable-HTTP SSE data envelopes', () => {
+    const payload = { jsonrpc: '2.0', id: 'mcp-health', result: { protocolVersion: '2025-06-18' } };
+    expect(parseMcpHandshakePayload(JSON.stringify(payload))).toEqual(payload);
+    expect(
+      parseMcpHandshakePayload(`event: message\ndata: ${JSON.stringify(payload)}\n\n`),
+    ).toEqual(payload);
+    expect(parseMcpHandshakePayload('not-json')).toBeNull();
+  });
+
+  it('reports a valid initialize round-trip and sends the named diagnostic client marker', async () => {
+    const calls: Array<{ input: string; init?: RequestInit }> = [];
+    const result = await probeMcpHandshake(
+      'http://127.0.0.1:3170/',
+      100,
+      async (input, init) => {
+        calls.push({ input, init });
+        return new Response(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 'mcp-health',
+          result: { protocolVersion: '2025-06-18' },
+        }), { status: 200 });
+      },
+      (() => {
+        const ticks = [1000, 1007];
+        return () => ticks.shift() ?? 1007;
+      })(),
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 200,
+      protocolVersion: '2025-06-18',
+      latencyMs: 7,
+      url: `http://127.0.0.1:3170/api/mcp?client=${MCP_HEALTH_PROBE_CLIENT}`,
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init?.method).toBe('POST');
+    expect(calls[0].init?.headers).toMatchObject({ 'content-type': 'application/json' });
+    expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({ method: 'initialize', id: 'mcp-health' });
+  });
+
+  it('fails closed when HTTP succeeds but MCP initialize is malformed or returns an error', async () => {
+    const malformed = await probeMcpHandshake(
+      'http://127.0.0.1:3170',
+      100,
+      async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 'mcp-health', result: {} }), { status: 200 }),
+    );
+    expect(malformed).toMatchObject({ ok: false, status: 200 });
+    expect(malformed.note).toMatch(/protocolVersion/);
+
+    const error = await probeMcpHandshake(
+      'http://127.0.0.1:3170',
+      100,
+      async () => new Response(JSON.stringify({
+        jsonrpc: '2.0',
+        id: 'mcp-health',
+        error: { code: -32000, message: 'busy' },
+      }), { status: 200 }),
+    );
+    expect(error).toMatchObject({ ok: false, status: 200 });
+    expect(error.note).toMatch(/JSON-RPC error.*busy/);
+  });
+
+  it('reports an HTTP failure and a timeout as distinct, bounded verdicts', async () => {
+    const httpFailure = await probeMcpHandshake(
+      'http://127.0.0.1:3170',
+      100,
+      async () => new Response('overloaded', { status: 503 }),
+    );
+    expect(httpFailure).toMatchObject({ ok: false, status: 503 });
+    expect(httpFailure.note).toBe('MCP initialize returned HTTP 503');
+
+    const timeout = await probeMcpHandshake(
+      'http://127.0.0.1:3170',
+      5,
+      async (_input, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+      }),
+    );
+    expect(timeout.ok).toBe(false);
+    expect(timeout.note).toMatch(/MCP initialize timed out after 5ms/);
+  });
 });
 
 describe('diffHealth', () => {
