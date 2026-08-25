@@ -1096,6 +1096,20 @@ export async function lspQuery(
       JSON.stringify(sites),
     );
 
+    const answerHealth = healthForAnswer(client, readinessIntent, sites.length);
+    // `isTrustworthyEmpty` accepts an error as an honest degraded answer, while
+    // `error:null` plus degraded health would be an untrustworthy silent empty.
+    // A readiness canary may still support useful non-empty results, but an
+    // empty result needs a loud refusal until the server has certified the
+    // intent as settled.
+    if (sites.length === 0 && answerHealth !== 'healthy') {
+      return fail(
+        `the language server returned no sites for intent '${intent}', but readiness ` +
+          `is not certified; an empty result is not a clean bill of health`,
+        answerHealth,
+      );
+    }
+
     return {
       backend: 'lsp-adapter',
       intent,
@@ -1107,7 +1121,7 @@ export async function lspQuery(
         // that has never reported itself quiescent must not be certifiable as
         // absence — "no results", "file is clean" and "nothing to rename" are
         // all read as facts by callers via isTrustworthyEmpty().
-        health: healthForAnswer(client, readinessIntent, sites.length),
+        health: answerHealth,
         indexedAt: new Date(client.startedAt).toISOString(),
         // The server reads from disk on didOpen, so an opened document is
         // never stale against disk. We do NOT claim to know about files the
