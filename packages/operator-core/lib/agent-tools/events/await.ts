@@ -34,6 +34,7 @@ import {
   FLEET_BENCH_NOTE_PREFIX,
   probeKeyFireEvidence,
   probePatternMatchScope,
+  type AwaitGenerationState,
   type KeyFireEvidence,
 } from '../../events/await/store';
 import { registerComposedAwait } from '../../events/await/compose';
@@ -63,6 +64,62 @@ import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './stat
 // Aliased to the local names so every usage/describe below is unchanged.
 import { AWAIT_DEFAULT_TIMEOUT_SEC as DEFAULT_TIMEOUT_SEC, AWAIT_MAX_TIMEOUT_SEC as MAX_TIMEOUT_SEC } from '../../events/await/types';
 
+type GenerationPinDetails = {
+  eventKey: string;
+  expectedGeneration: number;
+  currentGeneration: number | null;
+  currentState: AwaitGenerationState;
+  firedAt?: string | null;
+};
+
+function announcementGenerationState(row: {
+  firedAt?: string | null;
+  firedReason?: string | null;
+  cancelledAt?: string | null;
+  supersededAt?: string | null;
+} | null): AwaitGenerationState {
+  if (!row) return 'undeclared';
+  if (row.firedAt) return row.firedReason === 'expired' ? 'expired' : 'fired';
+  if (row.cancelledAt) return 'cancelled';
+  if (row.supersededAt) return 'superseded';
+  return 'declared';
+}
+
+function generationResyncReason(details: GenerationPinDetails): string {
+  if (details.currentGeneration == null) return 'no_current_declaration';
+  if (details.expectedGeneration < details.currentGeneration) return 'consumer_behind';
+  if (details.expectedGeneration > details.currentGeneration) return 'consumer_ahead';
+  return 'current_not_waitable';
+}
+
+function generationMismatchResponse(details: GenerationPinDetails) {
+  const nextStatus = details.currentGeneration == null
+    ? `events:status { event: "${details.eventKey}" }`
+    : `events:status { event: "${details.eventKey}", after_generation: ${details.currentGeneration} }`;
+  return {
+    ok: false,
+    error: 'await_generation_mismatch',
+    event: details.eventKey,
+    expected_generation: details.expectedGeneration,
+    current_generation: details.currentGeneration,
+    current_state: details.currentState,
+    ...(details.firedAt ? { fired_at: details.firedAt } : {}),
+    resync: {
+      required: true,
+      reason: generationResyncReason(details),
+      consumer_generation: details.expectedGeneration,
+      authoritative_generation: details.currentGeneration,
+      rule: 'Replace the cached exact-key declaration with events:status before retrying events:await; never register against a generation that is no longer current and unfired.',
+      next_verb: nextStatus,
+    },
+    advice: `The exact declaration for "${details.eventKey}" changed before this await could be registered. Re-read it with ${nextStatus}, then retry events:await using the returned current generation.`,
+  };
+}
+
+function isAwaitGenerationMismatchError(error: unknown): error is GenerationPinDetails & { code: 'await_generation_mismatch' } {
+  return typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'await_generation_mismatch';
+}
+
 export default defineTool({
   name: 'events:await',
   description:
@@ -90,6 +147,12 @@ export default defineTool({
       .describe(
         'Event key to wait on (mutually exclusive with `spec`). An EXACT key (`lock:grant:t1`) matches that one key. A PATTERN — a glob with `*` (`work-item:done:*`), or a macro `@plan:<slug>` (→ any plan item done) / `@fleet:<slug>` (→ any fleet event) — wakes on the FIRST key that matches. `*` matches any run of characters.',
       ),
+    after_generation: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe('Pin this await to the exact announced declaration generation returned by events:status; stale pins return a structured resync response.'),
     spec: z
       .record(z.string(), z.unknown())
       .optional()
@@ -135,6 +198,10 @@ export default defineTool({
     .refine(
       (a) => [a.event, a.spec, a.fromMsg].filter((x) => x != null).length === 1,
       { message: 'pass exactly one of `event`, `spec`, or `fromMsg`' },
+    )
+    .refine(
+      (a) => a.after_generation == null || (a.event != null && !isPattern(a.event)),
+      { message: 'after_generation requires an exact `event` key (not a pattern, spec, or fromMsg)' },
     ),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -312,6 +379,34 @@ export default defineTool({
     if (!patternAwait) {
       try {
         const anns = await findAnnouncementsForKey(eventKey);
+        if (args.after_generation != null) {
+          const current = anns.find((announcement) => !announcement.supersededAt) ?? anns[0] ?? null;
+          const currentGeneration = current?.causalGeneration ?? null;
+          const currentState = announcementGenerationState(current);
+          const isExpectedFire =
+            currentGeneration === args.after_generation && currentState === 'fired' && current?.firedReason === 'event';
+          if (
+            (currentGeneration !== args.after_generation || currentState !== 'declared') &&
+            !isExpectedFire
+          ) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify(
+                    generationMismatchResponse({
+                      eventKey,
+                      expectedGeneration: args.after_generation,
+                      currentGeneration,
+                      currentState,
+                      firedAt: current?.firedAt,
+                    }),
+                  ),
+                },
+              ],
+            };
+          }
+        }
         const latched = anns.find((a) => a.firedAt && a.firedReason === 'event');
         if (latched) {
           return {
