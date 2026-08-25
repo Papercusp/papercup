@@ -2338,7 +2338,7 @@ describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268
 
     const result = await one(
       { id: 'WI-ACTION-PROOF', checkpoint: stored },
-      { ...baseCtx, spawnId: 'spawn-action-proof' },
+      { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup', spawnId: 'spawn-action-proof' },
     );
 
     expect(result.ok).toBe(true);
@@ -2358,7 +2358,7 @@ describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268
 
     const result = await one(
       { id: 'WI-ACTION-PROOF-FAIL', checkpoint: stored },
-      { ...baseCtx, spawnId: 'spawn-action-proof-fail' },
+      { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup', spawnId: 'spawn-action-proof-fail' },
     );
 
     expect(result.ok).toBe(true);

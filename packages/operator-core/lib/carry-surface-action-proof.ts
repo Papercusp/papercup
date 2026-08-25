@@ -22,6 +22,12 @@ export interface SuccessfulActionInvocation {
   args: unknown;
 }
 
+type StampedProvenanceLint = {
+  flagged: true;
+  note: string;
+  matches: ProvenanceLintMatch[];
+};
+
 export interface ActionProofReadOptions {
   workspaceId?: string | null;
   spawnId?: string | null;
@@ -118,13 +124,21 @@ export function provesActionClaim(
 export function suppressProvenActionClaims(
   lint: ProvenanceLintResult | undefined,
   invocations: readonly SuccessfulActionInvocation[] | null | undefined,
-): ProvenanceLintResult | undefined {
+): ProvenanceLintResult | undefined;
+export function suppressProvenActionClaims(
+  lint: StampedProvenanceLint | undefined,
+  invocations: readonly SuccessfulActionInvocation[] | null | undefined,
+): StampedProvenanceLint | undefined;
+export function suppressProvenActionClaims(
+  lint: ProvenanceLintResult | StampedProvenanceLint | undefined,
+  invocations: readonly SuccessfulActionInvocation[] | null | undefined,
+): ProvenanceLintResult | StampedProvenanceLint | undefined {
   if (!lint?.flagged || !invocations?.length) return lint;
   const matches = lint.matches.filter(
     (match: ProvenanceLintMatch) =>
       match.kind !== 'unverified-action-claim' || !invocations.some((invocation) => provesActionClaim(match.line, invocation)),
   );
-  return matches.length ? { ...lint, matches, flagged: true } : undefined;
+  return matches.length ? ({ ...lint, matches, flagged: true } as typeof lint) : undefined;
 }
 
 /**
