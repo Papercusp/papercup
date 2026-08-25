@@ -7,7 +7,10 @@ import {
   buildWorkspaceHostBuildManifest,
   canonicalWorkspaceHostBuildManifestPayload,
   verifyWorkspaceHostBuildManifest,
+  verifyWorkspaceHostReleaseProvenance,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   type WorkspaceHostBuildManifestInput,
+  type WorkspaceHostReleasePins,
 } from "./index";
 
 const SHA_A = "a".repeat(64);
@@ -185,5 +188,159 @@ describe("workspace-host build manifest", () => {
         targets: [input().targets[0]!, input().targets[0]!],
       }),
     ).toThrow("targets contains duplicate 'gcp'");
+  });
+});
+
+describe("workspace-host release provenance", () => {
+  const BASE = "https://releases.papercusp.example-host.net/server/1.2.3.tgz";
+
+  /** A manifest whose materials DO carry the initializer, as a shippable release must. */
+  function shippable(): WorkspaceHostBuildManifestInput {
+    const base = input();
+    return {
+      ...base,
+      materials: [
+        ...base.materials,
+        {
+          path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+          sha256: SHA_C,
+          sizeBytes: 512,
+          executable: true,
+        },
+      ],
+    };
+  }
+
+  function pins(
+    overrides: Partial<WorkspaceHostReleasePins> = {},
+  ): WorkspaceHostReleasePins {
+    return {
+      version: "1.2.3",
+      bundleUrl: BASE,
+      bundleSha256: SHA_A,
+      signatureUrl: `${BASE}.minisig`,
+      ...overrides,
+    };
+  }
+
+  // POSITIVE CONTROL. Without it, every refusal below could be passing because the fixture is
+  // malformed for some unrelated reason rather than because the guard under test fired.
+  it("accepts an immutable, digest-pinned release that carries the initializer", () => {
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins(),
+    );
+    expect(verdict).toEqual({ ok: true, errors: [] });
+  });
+
+  it("refuses a bundle digest that matches no built artifact", () => {
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({ bundleSha256: SHA_D }),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain(
+      "does not match the built artifact",
+    );
+  });
+
+  it("refuses a signature that is not the detached companion of the bundle", () => {
+    // A valid signature over a DIFFERENT artifact must not satisfy the check.
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({
+        signatureUrl:
+          "https://releases.papercusp.example-host.net/server/other-1.2.3.tgz.minisig",
+      }),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain(
+      "must be release.bundleUrl suffixed with .minisig",
+    );
+  });
+
+  it.each([
+    ["latest", "https://releases.papercusp.example-host.net/server/latest.tgz"],
+    ["stable", "https://releases.papercusp.example-host.net/stable/1.2.3.tgz"],
+    ["main", "https://releases.papercusp.example-host.net/main/1.2.3.tgz"],
+  ])("refuses the mutable release channel %s", (_name, bundleUrl) => {
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain("mutable release channel");
+  });
+
+  it.each([
+    ["reserved .invalid", "https://releases.papercusp.invalid/server/1.2.3.tgz"],
+    ["reserved .test", "https://releases.papercusp.test/server/1.2.3.tgz"],
+    ["localhost", "https://localhost/server/1.2.3.tgz"],
+  ])("refuses fixture provenance: %s", (_name, bundleUrl) => {
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain("reserved non-resolvable name");
+  });
+
+  it("refuses a bundle URL that does not embed the release version", () => {
+    const bundleUrl =
+      "https://releases.papercusp.example-host.net/server/server.tgz";
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(shippable()),
+      pins({ bundleUrl, signatureUrl: `${bundleUrl}.minisig` }),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain("must embed the release version");
+  });
+
+  it("refuses a bundle whose materials omit the remote initializer", () => {
+    // The regression this exists to prevent: a bundle that installs, reports healthy, and then
+    // fails every initialization at the far end because the executable was never packaged.
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(input()),
+      pins(),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain(
+      WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+    );
+  });
+
+  it("refuses an initializer that is packaged without the executable bit", () => {
+    const base = input();
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest({
+        ...base,
+        materials: [
+          ...base.materials,
+          {
+            path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+            sha256: SHA_C,
+            sizeBytes: 512,
+            executable: false,
+          },
+        ],
+      }),
+      pins(),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.join("\n")).toContain("must be marked executable");
+  });
+
+  it("reports every provenance failure at once rather than only the first", () => {
+    const bundleUrl = "https://releases.papercusp.invalid/server/latest.tgz";
+    const verdict = verifyWorkspaceHostReleaseProvenance(
+      buildWorkspaceHostBuildManifest(input()),
+      pins({
+        bundleUrl,
+        signatureUrl: `${bundleUrl}.minisig`,
+        bundleSha256: SHA_D,
+      }),
+    );
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors.length).toBeGreaterThan(3);
   });
 });
