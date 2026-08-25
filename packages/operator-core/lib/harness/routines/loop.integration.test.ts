@@ -162,7 +162,9 @@ describe('loop surface round-trip (real PG)', () => {
       carry: 'cold',
       goal: 'finish the source objective',
     });
-    const notes = await sql<Array<{ scope: string; note: string; journal: unknown; deps: unknown; updated_ts: number }>>`
+    const notes = await sql<
+      Array<{ scope: string; note: string; journal: unknown; deps: unknown; updated_ts: number }>
+    >`
       SELECT scope, note, journal, deps, updated_ts
         FROM harness_shared.carry_notes
        WHERE scope IN (${sourceCarry}, ${targetCarry}, ${sourceNag}, ${targetNag})
@@ -299,7 +301,7 @@ describe('loop surface round-trip (real PG)', () => {
     expect(afterDeath!.lastTurnAt).toBe(new Date('2026-06-20T00:35:00.000Z').toISOString()); // union INCLUDES it
   });
 
-  it('WI-6639 regression: a continuously-WARM loop (no lifecycle marker, no journal note) must NOT read turnsStalled — caught LIVE by dry-running stalled-loops-guard against this session\'s own real loop before it shipped', async () => {
+  it("WI-6639 regression: a continuously-WARM loop (no lifecycle marker, no journal note) must NOT read turnsStalled — caught LIVE by dry-running stalled-loops-guard against this session's own real loop before it shipped", async () => {
     // The exact live shape this closes: `carry:'warm'` never restarts, so the lifecycle
     // 'ended' marker never fires for it; `journal:record-turn` covers only ~2.3% of turns
     // (EI-19316779460752535), so the journal leg is also silent. Before this fix, BOTH legs
@@ -308,7 +310,14 @@ describe('loop surface round-trip (real PG)', () => {
     await sql`TRUNCATE harness_shared.session_turns CASCADE`;
     await sql`TRUNCATE harness_shared.session_turn_journal`;
     await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
-    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k', sql });
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
 
     // Relative to REAL now (computeTurnsStalled defaults its nowMs to Date.now() when fed
     // from a live row) so this test is not fragile to when it happens to run: many fires,
@@ -352,7 +361,14 @@ describe('loop surface round-trip (real PG)', () => {
     await sql`TRUNCATE harness_shared.session_turns CASCADE`;
     await sql`TRUNCATE harness_shared.session_turn_journal`;
     await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
-    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k', sql });
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
 
     const lastFired = new Date(Date.now() - 2 * 60_000);
     const manualTurn = new Date(lastFired.getTime() + 30_000);
@@ -453,7 +469,15 @@ describe('loop surface round-trip (real PG)', () => {
 
   it('EI-16202: armedAt advances on every re-arm even while fireCount/lastFiredAt/parked legitimately stay unchanged (distinguishes a real re-arm from a no-op)', async () => {
     const t0 = new Date('2026-06-20T00:00:00.000Z');
-    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k', now: t0, sql });
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      now: t0,
+      sql,
+    });
 
     const first = await getLoopStatus(OWNER, { sql });
     expect(first!.armedAt).not.toBeNull();
@@ -475,7 +499,15 @@ describe('loop surface round-trip (real PG)', () => {
     // here — EI-6878 — so parked/fireCount/lastFiredAt are UNCHANGED, which is the
     // exact observation the bug report couldn't distinguish from "the arm no-op'd").
     const t1 = new Date(t0.getTime() + 5 * 60_000);
-    await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k2', now: t1, sql });
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k2',
+      now: t1,
+      sql,
+    });
 
     const second = await getLoopStatus(OWNER, { sql });
     expect(second!.parked).toBe(true); // legitimately unchanged (EI-6878)
@@ -485,6 +517,48 @@ describe('loop surface round-trip (real PG)', () => {
     expect(second!.armedAt).not.toBeNull();
     expect(new Date(second!.armedAt!).getTime()).toBeGreaterThan(new Date(first!.armedAt!).getTime());
     expect(new Date(second!.armedAt!).getTime()).toBe(t1.getTime());
+  });
+
+  it('P-011: re-arming an INACTIVE parked row schedules a fresh finite first fire', async () => {
+    const t0 = new Date('2026-06-20T00:00:00.000Z');
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'first lifecycle',
+      now: t0,
+      sql,
+    });
+    // Reproduce the exact live residue: an older fire parked the row, then
+    // loop:end deactivated it without rewriting next_fire_at.
+    await sql`
+      UPDATE harness_shared.routines
+         SET next_fire_at = 'infinity'::timestamptz,
+             active = FALSE
+       WHERE name = ${loopRoutineName(OWNER)}
+    `;
+    expect((await getLoopStatus(OWNER, { sql }))!).toMatchObject({
+      active: false,
+      parked: true,
+      nextFireAt: null,
+    });
+
+    const rearmedAt = new Date(t0.getTime() + 10 * 60_000);
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 120,
+      kickoff: 'new lifecycle',
+      now: rearmedAt,
+      sql,
+    });
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status).toMatchObject({ active: true, parked: false });
+    expect(status!.nextFireAt).toBe(new Date(rearmedAt.getTime() + 120_000).toISOString());
+    expect((await rawRow(OWNER))!.payload_template).toMatchObject({ kickoff: 'new lifecycle' });
   });
 
   it('EI-21207093794475760: an inactive-only repair cannot clobber an explicit active 1200-second arm', async () => {
@@ -962,8 +1036,7 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
     expect(res.armed).toBe(true);
     expect((await getLoopStatus(OTHER, { sql }))!.active).toBe(true);
 
-    const expectedGoal =
-      `Drive plan \`${PLAN_SLUG}\` per your member role in fleet \`${FLEET_SLUG}\` (coord:orient to pull your lane).`;
+    const expectedGoal = `Drive plan \`${PLAN_SLUG}\` per your member role in fleet \`${FLEET_SLUG}\` (coord:orient to pull your lane).`;
     expect((await rawRow(OTHER))!.payload_template!.goal).toBe(expectedGoal);
 
     // A member retune/reset can omit goal while changing cadence and kickoff. The
@@ -1058,11 +1131,7 @@ describe('countAgentToolCallsInWindow — carry-note bookkeeping exclusion (EI-2
   const SINCE = Date.parse('2026-08-15T18:20:06.840Z');
   const UNTIL = Date.parse('2026-08-15T18:35:00.000Z');
 
-  async function seedCall(
-    toolName: string,
-    atIso: string,
-    callOrigin: string | null = 'agent',
-  ) {
+  async function seedCall(toolName: string, atIso: string, callOrigin: string | null = 'agent') {
     await sql`
       INSERT INTO harness_shared.tool_invocations
         (workspace_id, harness_slug, plugin_name, tool_name, role,
