@@ -24,6 +24,7 @@
  */
 import type {
   FeatureScope,
+  ReferenceMetadataProjection,
   ReferenceScope,
   ReferenceStorePort,
   StoredEvidence,
@@ -40,7 +41,7 @@ import {
   projectMetadata,
 } from './reference-store';
 import type { CompareResult } from './contract';
-import type { RatifiedReference } from './ratification';
+import type { RatifiedReference, ReferenceRetraction } from './ratification';
 
 /**
  * The minimum surface this store needs from a `postgres` client — a tagged
@@ -63,6 +64,11 @@ interface ArtifactRow {
   harness_slug: string;
   feature_id: string;
   payload: StoredReference | string;
+  /**
+   * The lifecycle projection. REQUIRED for a correct read-back, not an
+   * optimisation — see `toRow`.
+   */
+  metadata: ReferenceMetadataProjection | string | null;
   created_ts: string | number;
 }
 
@@ -89,12 +95,58 @@ function readJson<T>(value: T | string): T {
   return typeof value === 'string' ? (JSON.parse(value) as T) : value;
 }
 
+/**
+ * Rebuild a stored row from its two halves.
+ *
+ * ─── WHY LIFECYCLE COMES FROM `metadata` AND NOT FROM `payload` ──────────────
+ *
+ * `payload` is written once by `insert` and never updated — that immutability is
+ * the audit trail, and `setLifecycle` deliberately does not touch it. So the
+ * payload's `state` is frozen at whatever it was AT RATIFICATION, which is
+ * always `'active'`. Reconstructing the reference from the payload alone
+ * therefore discards every lifecycle transition that has ever been applied: a
+ * retracted reference reads back active and keeps constraining completion, and a
+ * superseded revision reads back active alongside its successor.
+ *
+ * `metadata` is the mutable half — the projection `setLifecycle` rewrites — so
+ * the lifecycle fields are overlaid from there. Provenance still comes from the
+ * payload, which is the split working as designed rather than in spite of it.
+ *
+ * A row with no metadata falls back to the payload rather than inventing a
+ * state: pre-projection rows exist, and "we could not read the lifecycle"
+ * must not silently become "it was retracted".
+ */
 function toRow(row: ArtifactRow): StoredReferenceRow {
   const payload = readJson<StoredReference>(row.payload);
+  const metadata = row.metadata === null ? null : readJson<ReferenceMetadataProjection>(row.metadata);
   return {
     ...payload,
+    reference: metadata ? applyLifecycle(payload.reference, metadata) : payload.reference,
     artifactId: row.id,
     createdTs: Number(row.created_ts),
+  };
+}
+
+/** Overlay the mutable lifecycle projection onto the immutable provenance record. */
+function applyLifecycle(
+  reference: RatifiedReference,
+  metadata: ReferenceMetadataProjection,
+): RatifiedReference {
+  return {
+    ...reference,
+    state: metadata.state ?? reference.state,
+    ...(metadata.supersededByRevision !== null && metadata.supersededByRevision !== undefined
+      ? { supersededByRevision: metadata.supersededByRevision }
+      : {}),
+    ...(metadata.retractedBy && metadata.retractedReason && metadata.retractedAt
+      ? {
+          retraction: {
+            actor: metadata.retractedBy,
+            reason: metadata.retractedReason,
+            at: metadata.retractedAt,
+          },
+        }
+      : {}),
   };
 }
 
@@ -143,7 +195,7 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
 
     async listRevisions(scope: ReferenceScope): Promise<readonly StoredReferenceRow[]> {
       const rows = await sql<ArtifactRow>`
-        SELECT id, harness_slug, feature_id, payload, created_ts
+        SELECT id, harness_slug, feature_id, payload, metadata, created_ts
           FROM harness_shared.harness_design_artifacts
          WHERE harness_slug = ${scope.harnessSlug}
            AND feature_id   = ${scope.featureId}
@@ -185,10 +237,11 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
       lifecycle: {
         readonly state: RatifiedReference['state'];
         readonly supersededByRevision?: number;
+        readonly retraction?: ReferenceRetraction;
       },
     ): Promise<void> {
       const rows = await sql<ArtifactRow>`
-        SELECT id, harness_slug, feature_id, payload, created_ts
+        SELECT id, harness_slug, feature_id, payload, metadata, created_ts
           FROM harness_shared.harness_design_artifacts
          WHERE harness_slug = ${scope.harnessSlug}
            AND id           = ${artifactId}
@@ -203,14 +256,17 @@ export function createPgReferenceStore(options: PgReferenceStoreOptions): Refere
       }
 
       const stored = toRow(existing);
-      // Re-derive the WHOLE projection from the untouched payload, so metadata
-      // cannot drift from what it describes.
+      // Re-derive the WHOLE projection from the record, so metadata cannot drift
+      // from what it describes. `stored` already carries the CURRENT lifecycle
+      // (toRow overlays it from metadata), so a transition that sets only some
+      // fields cannot silently reset the others.
       const nextReference: RatifiedReference = {
         ...stored.reference,
         state: lifecycle.state,
         ...(lifecycle.supersededByRevision !== undefined
           ? { supersededByRevision: lifecycle.supersededByRevision }
           : {}),
+        ...(lifecycle.retraction !== undefined ? { retraction: lifecycle.retraction } : {}),
       };
       const metadata = projectMetadata({ ...stored, reference: nextReference });
 
