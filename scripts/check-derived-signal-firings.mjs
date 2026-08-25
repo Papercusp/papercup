@@ -104,6 +104,22 @@ export const CENSUS_VERSION = 2;
 export const WINDOW_DAYS = 14;
 
 /**
+ * The telemetry ledger is shared by every workspace and harness.  A standalone
+ * probe has no MCP context to resolve for itself, so it follows the same explicit
+ * environment contract as the other scripts/* database readers.
+ */
+export const DEFAULT_WORKSPACE_ID = 'papercusp-workspace';
+export const DEFAULT_HARNESS_SLUG = 'papercusp';
+export const WORKSPACE_GLOBAL_HARNESS_SLUG = '*';
+
+export function resolveTelemetryScope(env = process.env) {
+  return {
+    workspaceId: String(env.PAPERCUSP_WORKSPACE_ID ?? DEFAULT_WORKSPACE_ID).trim() || DEFAULT_WORKSPACE_ID,
+    harnessSlug: String(env.PAPERCUSP_HARNESS_SLUG ?? DEFAULT_HARNESS_SLUG).trim() || DEFAULT_HARNESS_SLUG,
+  };
+}
+
+/**
  * The date a bad verdict starts FAILING rather than reporting.
  *
  * Chosen, not inherited: the census only wrote on the opt-in `include_coupling`
@@ -279,6 +295,12 @@ const MEANING = {
 
 export function formatReport(rows, roll, now, ctx = {}) {
   const out = [`\nDERIVED-SIGNAL FIRING PROBE — is each derived relation alive in production? (P-007 / D-088)\n`];
+  if (ctx.workspaceId || ctx.harnessSlug) {
+    out.push(
+      `  scope: workspace=${ctx.workspaceId ?? DEFAULT_WORKSPACE_ID} · ` +
+        `harness=${ctx.harnessSlug ?? DEFAULT_HARNESS_SLUG} + ${WORKSPACE_GLOBAL_HARNESS_SLUG}\n`,
+    );
+  }
   out.push(`  window: ${WINDOW_DAYS}d · census rows: ${ctx.censusRows ?? 0} (v${CENSUS_VERSION}) · source: ${RELATIONS_SOURCE}\n`);
   if (ctx.staleVersionRows) {
     // Say this out loud rather than reporting a quietly smaller number: during the
@@ -333,6 +355,72 @@ export function formatReport(rows, roll, now, ctx = {}) {
   return out.join('\n');
 }
 
+/**
+ * Read the scoped census population used by the CLI.  Keep both aggregate
+ * queries in this helper so a future edit cannot scope the evidence floor but
+ * accidentally leave relation counts cross-tenant (or vice versa).
+ *
+ * `harness_slug='*'` is a legitimate workspace-global superuser context.  It
+ * carries valid coupling firings for the workspace and is intentionally included
+ * alongside the concrete harness, while rows from every other workspace or
+ * harness are excluded.
+ */
+export async function readCensusRows(sql, { workspaceId, harnessSlug, windowDays = WINDOW_DAYS } = {}) {
+  const scope = {
+    workspaceId: workspaceId ?? resolveTelemetryScope().workspaceId,
+    harnessSlug: harnessSlug ?? resolveTelemetryScope().harnessSlug,
+  };
+  const params = [
+    String(windowDays),
+    CENSUS_KEY,
+    String(CENSUS_VERSION),
+    scope.workspaceId,
+    scope.harnessSlug,
+    WORKSPACE_GLOBAL_HARNESS_SLUG,
+  ];
+  // Compared as TEXT, deliberately: an ::int cast would ERROR on a malformed
+  // `v` and take the whole probe down, where a text mismatch simply excludes the
+  // row — which is the correct handling for a census this probe cannot interpret.
+  const [t] = await sql.unsafe(
+    `SELECT count(*)::int AS total,
+            count(*) FILTER (WHERE metadata_json -> $2 ->> 'v' = $3)::int AS at_version
+       FROM harness_shared.tool_invocations
+      WHERE invoked_at > now() - ($1 || ' days')::interval
+        AND metadata_json ? $2
+        AND workspace_id = $4
+        AND harness_slug IN ($5, $6)`,
+    params,
+  );
+  // The evidence floor counts only rows this probe can INTERPRET. Counting all of
+  // them would let stale-instrument rows satisfy MIN_CENSUS_ROWS_TO_FAIL and let
+  // a verdict fail on evidence it never actually read.
+  const censusRows = Number(t?.at_version ?? 0);
+  const staleVersionRows = Math.max(0, Number(t?.total ?? 0) - censusRows);
+
+  const agg = await sql.unsafe(
+    `SELECT rel.key AS relation,
+            count(*)::int AS runs,
+            count(*) FILTER (WHERE rel.value->>'armed' = 'true')::int AS armed_runs,
+            count(*) FILTER (WHERE COALESCE((rel.value->>'inputs')::int, 0) > 0)::int AS input_runs,
+            COALESCE(sum(COALESCE((rel.value->>'edges')::int, 0)), 0)::int AS edges
+       FROM harness_shared.tool_invocations ti,
+            LATERAL jsonb_each(ti.metadata_json -> $2 -> 'relations') AS rel
+      WHERE ti.invoked_at > now() - ($1 || ' days')::interval
+        AND ti.metadata_json ? $2
+        AND ti.metadata_json -> $2 ->> 'v' = $3
+        AND ti.workspace_id = $4
+        AND ti.harness_slug IN ($5, $6)
+      GROUP BY 1`,
+    params,
+  );
+  return {
+    observed: new Map(agg.map((r) => [r.relation, r])),
+    censusRows,
+    staleVersionRows,
+    scope,
+  };
+}
+
 async function main() {
   const relSource = readFileSync(path.join(HERE, '..', RELATIONS_SOURCE), 'utf8');
   const declared = parseDeclaredRelations(relSource);
@@ -350,42 +438,15 @@ async function main() {
   const postgres = (await import('postgres')).default;
   const sql = postgres(resolveScriptPgUrl().url, { max: 1, connect_timeout: 5, idle_timeout: 1, onnotice: () => {} });
   const now = new Date();
+  const scope = resolveTelemetryScope();
   let observed = new Map();
   let censusRows = 0;
   let staleVersionRows = 0;
   try {
-    // Compared as TEXT, deliberately: an ::int cast would ERROR on a malformed `v`
-    // and take the whole probe down, where a text mismatch simply excludes the row —
-    // which is the correct handling for a census this probe cannot interpret.
-    const [t] = await sql.unsafe(
-      `SELECT count(*)::int AS total,
-              count(*) FILTER (WHERE metadata_json -> $2 ->> 'v' = $3)::int AS at_version
-         FROM harness_shared.tool_invocations
-        WHERE invoked_at > now() - ($1 || ' days')::interval
-          AND metadata_json ? $2`,
-      [String(WINDOW_DAYS), CENSUS_KEY, String(CENSUS_VERSION)],
-    );
-    // The evidence floor counts only rows this probe can INTERPRET. Counting all of
-    // them would let stale-instrument rows satisfy MIN_CENSUS_ROWS_TO_FAIL and let a
-    // verdict fail on evidence it never actually read.
-    censusRows = t?.at_version ?? 0;
-    staleVersionRows = Math.max(0, (t?.total ?? 0) - censusRows);
-
-    const agg = await sql.unsafe(
-      `SELECT rel.key AS relation,
-              count(*)::int AS runs,
-              count(*) FILTER (WHERE rel.value->>'armed' = 'true')::int AS armed_runs,
-              count(*) FILTER (WHERE COALESCE((rel.value->>'inputs')::int, 0) > 0)::int AS input_runs,
-              COALESCE(sum(COALESCE((rel.value->>'edges')::int, 0)), 0)::int AS edges
-         FROM harness_shared.tool_invocations ti,
-              LATERAL jsonb_each(ti.metadata_json -> $2 -> 'relations') AS rel
-        WHERE ti.invoked_at > now() - ($1 || ' days')::interval
-          AND ti.metadata_json ? $2
-          AND ti.metadata_json -> $2 ->> 'v' = $3
-        GROUP BY 1`,
-      [String(WINDOW_DAYS), CENSUS_KEY, String(CENSUS_VERSION)],
-    );
-    observed = new Map(agg.map((r) => [r.relation, r]));
+    const census = await readCensusRows(sql, scope);
+    observed = census.observed;
+    censusRows = census.censusRows;
+    staleVersionRows = census.staleVersionRows;
   } finally {
     await sql.end({ timeout: 2 }).catch(() => {});
   }
@@ -408,7 +469,7 @@ async function main() {
   });
 
   const roll = rollupFirings(rows, now, censusRows);
-  console.log(formatReport(rows, roll, now, { censusRows, staleVersionRows }));
+  console.log(formatReport(rows, roll, now, { ...scope, censusRows, staleVersionRows }));
   if (roll.failing.length > 0) process.exitCode = 1;
 }
 
