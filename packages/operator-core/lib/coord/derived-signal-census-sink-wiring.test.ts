@@ -37,6 +37,7 @@ function sampleCensus(): DerivedSignalCensus {
       heldFiles: { armed: true, inputs: 2 },
       planEdges: { armed: false, inputs: 0 },
       recentPartners: { armed: false, inputs: 0 },
+      obligations: { armed: false, inputs: 0 },
     },
     [],
   );

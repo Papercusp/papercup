@@ -43,6 +43,7 @@ import { hardText, LIMITS } from '../../limits';
 import { withBoundedTimeout } from '../../../bounded-timeout';
 import { FOREGROUND_TIMEOUT_CEILING_MS } from '../../capability/foreground-transport-cap';
 import { getHostSnapshot, type HostSnapshot } from '../../../host-snapshot';
+import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../compaction-recovery';
 import { shapeOrient } from './orient-shape';
 import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
 // Type-only: the runtime half (interestFold) is dynamically imported at its use site,
@@ -2587,8 +2588,7 @@ export default defineTool({
     when:
       'At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ' +
       "ticks, pass `mode:'monitor'` to skip heavy backlog/facts/events/catch-up/recipes/recall folds " +
-      'while keeping assignments, inbox, and declaration. Pass `afterCompaction:true` on the first ' +
-      'post-compaction call.',
+      `while keeping assignments, inbox, and declaration. ${MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION}`,
     notWhen:
       'A human status display or full presence roster; use coord:glance or coord:presence. Do not ' +
       'immediately re-call folds returned here.',
@@ -2639,7 +2639,9 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Optional compatibility hint from older launch/checkpoint callers; membership remains session-inferred.'),
+      .describe(
+        'Optional compatibility hint from older launch/checkpoint callers; membership remains session-inferred.',
+      ),
     claimableState: z
       .string()
       .max(40)
@@ -2672,7 +2674,9 @@ export default defineTool({
     includeAssignments: z
       .boolean()
       .optional()
-      .describe('Deprecated no-op accepted for compatibility; assignments are a core orient fold and are always retained.'),
+      .describe(
+        'Deprecated no-op accepted for compatibility; assignments are a core orient fold and are always retained.',
+      ),
     mode: z
       .enum(['full', 'monitor'])
       .optional()
@@ -2689,7 +2693,9 @@ export default defineTool({
       .min(1)
       .max(40)
       .optional()
-      .describe('Optional typed work-item refs explicitly covered by the declared intent; omission preserves the untyped path.'),
+      .describe(
+        'Optional typed work-item refs explicitly covered by the declared intent; omission preserves the untyped path.',
+      ),
     memoryQuery: z
       .string()
       .max(500)

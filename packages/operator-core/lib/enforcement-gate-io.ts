@@ -20,6 +20,7 @@ import {
   type GateBoundary,
 } from './enforcement-gate';
 import type { CarryBrief } from './carry-brief';
+import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
 import {
   REFUSAL_MARKER_TTL_MS,
   wasRecentlyRefused,
@@ -119,7 +120,7 @@ export async function writeFlushFallback(input: {
       const atIso = new Date(nowMs).toISOString();
       const note = input.journalNote?.trim()
         ? `## Next action\n${input.journalNote.trim()}`
-        : '## Next action\nResume the armed loop; reconstruct working state via coord:orient { afterCompaction: true }.';
+        : `## Next action\n${MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION} Resume the armed loop.`;
       await setLoopCarryNote(
         { harness: input.brief.loop.harness, ownerId: input.ownerId },
         `⟦auto-checkpoint mechanical @${atIso}⟧ — the system wrote this because the loop was armed with no carry-note at a flush boundary; replace it with a real loop:checkpoint.\n\n${note}`,

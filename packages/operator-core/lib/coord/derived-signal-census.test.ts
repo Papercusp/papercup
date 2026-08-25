@@ -25,6 +25,7 @@ const LEGS_ALL_ARMED: Record<DerivedSignalLeg, DerivedSignalLegState> = {
   heldFiles: { armed: true, inputs: 2 },
   planEdges: { armed: true, inputs: 1 },
   recentPartners: { armed: true, inputs: 4 },
+  obligations: { armed: true, inputs: 5 },
 };
 
 const edge = (relation: string, ownerId = 'peer-1'): DerivedCoupling =>

@@ -99,6 +99,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { reconcileClaudeCredentials } from './claude-credential-sync';
+import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
 
 export interface InteractiveClaudeConfig {
   /** Absolute path to set as the interactive session's `CLAUDE_CONFIG_DIR`. */
@@ -208,8 +209,8 @@ export const RECOVER_INTENT = 'launch-intent.json';
  *
  * The SAME hook also delivers the POST-COMPACTION CONTINUITY ANCHOR
  * (compaction-continuity-hardening-2026-07-07 P-004, implements WI-2537): on
- * `SessionStart[source=compact]` it injects (a) a mandate to run
- * `coord:orient { afterCompaction: true }` first, (b) a volatile-claims
+ * `SessionStart[source=compact]` it injects (a) the marker-aware recovery
+ * contract, (b) a volatile-claims
  * checklist — liveness/fleet counts, service states, and quantities in the
  * compaction summary are HYPOTHESES to re-verify, never facts — and (c) the
  * session's carry brief fetched LIVE from the operator
@@ -233,6 +234,7 @@ const dir = dirname(fileURLToPath(import.meta.url));
 const PLAYBOOK = join(dir, ${JSON.stringify(RECOVER_PLAYBOOK)});
 const INTENT = join(dir, ${JSON.stringify(RECOVER_INTENT)});
 const FLAGS = ['--system-prompt-file', '--append-system-prompt-file'];
+const MARKER_AWARE_RECOVERY = ${JSON.stringify(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION)};
 // EI-13477: same layout psu-pty-host.mjs's appendHostEvent / sanitizeKey use —
 // MUST match byte-for-byte so latestRespawnNativeId (psu-pty-discovery.ts)
 // finds this event under the same per-owner log it already reads.
@@ -485,8 +487,8 @@ async function compactAnchor(intent) {
     // Deliberately the SHORT post-compaction-resume subset (not the full ~40-tool OMP
     // spine) — enough to orient, resume held items, reply, file, and batch, without
     // burning anchor context on tools this turn is unlikely to touch.
-    'TOOL PRELOAD (do this FIRST — deferred MCP schemas were dropped by the compaction; re-load the core su set in ONE ToolSearch instead of rediscovering them call-by-call): ToolSearch { query: "select:mcp__papercusp-su__coord_orient,mcp__papercusp-su__work_items_get,mcp__papercusp-su__work_items_checkpoint,mcp__papercusp-su__work_items_complete,mcp__papercusp-su__improvements_capture,mcp__papercusp-su__coord_send,mcp__papercusp-su__code_run" }',
-    'FIRST ACTION (after the preload): run coord:orient { afterCompaction: true } — its recovery block re-delivers your held work-items\\u2019 checkpoints, armed-loop status, staleness warnings (what changed AFTER your summary was written), and the self-recall pointer.',
+    'TOOL PRELOAD (do this FIRST — deferred MCP schemas were dropped by the compaction; re-load the core su set in ONE ToolSearch instead of rediscovering them call-by-call): ToolSearch { query: "select:mcp__papercusp-su__coord_orient,mcp__papercusp-su__coord_declare_intent,mcp__papercusp-su__work_items_get,mcp__papercusp-su__work_items_checkpoint,mcp__papercusp-su__work_items_complete,mcp__papercusp-su__improvements_capture,mcp__papercusp-su__coord_send,mcp__papercusp-su__code_run" }',
+    'FIRST ACTION (after the preload): ' + MARKER_AWARE_RECOVERY,
     'VOLATILE-CLAIMS CHECKLIST — your compaction summary is a STALE SNAPSHOT of a live system. Treat these summary statements as HYPOTHESES to re-verify, never facts:',
     '- liveness / fleet counts ("N members alive/working") — re-read via coord:presence + fleet:status;',
     '- service up/down states (deploys, ports, restarts, wedged/fixed) — re-probe before acting on them;',

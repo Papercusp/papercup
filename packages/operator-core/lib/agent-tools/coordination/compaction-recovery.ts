@@ -6,6 +6,19 @@ import { workItemFetchHint } from '../../work-item-fetch-hint';
 import type { CarryBriefHeldItem } from '../../carry-brief';
 
 export const AUTOMATIC_COMPACTION_RECOVERY_SCHEMA = 'post-compaction-recovery-v1' as const;
+export const AUTOMATIC_COMPACTION_RECOVERY_MARKER = '⟦post-compaction-recovery⟧' as const;
+
+/** D-017/P-018: one canonical successor instruction for every deterministic
+ * context-wipe producer. Keeping this beside the marker schema prevents the
+ * carry-respawn, watchdog, loop-overflow, drill, and tool-guidance paths from
+ * drifting back to an unconditional recovery-orient round-trip. */
+export const MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION =
+  `Inspect the ${AUTOMATIC_COMPACTION_RECOVERY_MARKER} marker already delivered in the carry context. ` +
+  'If it is complete and its controlGeneration matches the latest ⟦CTRL:…⟧ generation, recovery ' +
+  'already arrived: do not call coord:orient; declare your actual lane with ' +
+  'coord:declare-intent { intent, current_plan_slug, items }. Call ' +
+  'coord:orient { afterCompaction: true } exactly once only when the marker is absent, incomplete, ' +
+  'generation-mismatched, or you deliberately need live data excluded from the injected block.';
 
 /**
  * Post-compaction recovery fold for coord:orient

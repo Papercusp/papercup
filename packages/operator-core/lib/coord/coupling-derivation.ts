@@ -41,7 +41,8 @@
  * derivation that throws would take down `coord:presence`, which is a far worse
  * outcome than a missing `expanded[]` entry.
  */
-import type { DerivedCoupling } from './couplings';
+import { formatElapsedSince } from '../format/relative-time';
+import type { DerivedCoupling, DerivedCouplingRelation } from './couplings';
 import { censusDerivedSignals, type DerivedSignalCensus } from './derived-signal-census';
 
 /**
@@ -487,6 +488,112 @@ export function deriveCouplingsFromCoordExchange(
   return out;
 }
 
+/**
+ * The two DIRECTIONAL members of the obligation family, tied to the vocabulary by
+ * `Extract` rather than restated. A rename in `DERIVED_COUPLING_RELATIONS` then breaks
+ * HERE at compile time instead of leaving a second literal union quietly describing a
+ * relation that no longer exists.
+ */
+export type ObligationRelation = Extract<DerivedCouplingRelation, 'owes-me' | 'i-owe'>;
+
+/**
+ * ONE outstanding obligation between the caller and a peer, as a source hands it over.
+ *
+ * Deliberately NOT consult-shaped. The plan feeds three producers into this one relation
+ * family — consults (P-004), grading (P-006) and supervision (P-007) — so the edge carries
+ * `what` as a noun phrase rather than a `kind` enum this module would have to branch on.
+ * A new producer then adds a source, never a case here.
+ */
+export interface ObligationEdge {
+  /** The COUNTERPART — never the caller. */
+  ownerId: string;
+  /** Which way the debt runs. This IS the emitted relation (see below). */
+  direction: ObligationRelation;
+  /** WHAT is owed, as a short noun phrase: "a consult reply", "a grade". */
+  what: string;
+  /** When the obligation was ENTERED — ISO string or epoch ms. Renders as its age. */
+  since: string | number;
+  /** The id the reader can ACT on without having to go find one: a conversation id, a
+   *  rubric ref, a work-item id. */
+  handle: string;
+}
+
+/**
+ * Render an obligation's `because` — direction + age + handle — or `null` when it cannot
+ * be rendered in full.
+ *
+ * ⚠ THE `null` IS THE POINT, AND IT IS WHY THIS IS A FUNCTION RATHER THAN A TEMPLATE AT
+ * THE EMIT SITE. Every other signal here degrades gracefully when a part is missing,
+ * because its parts are decorative: "you are both working in x" loses a path and still
+ * says the true thing. An obligation does not degrade — it INVERTS. Drop the age and
+ * "they owe you a consult reply" reads as routine when it may be 58 hours old; drop the
+ * handle and the reader is told they are owed something with no way to act on it and no
+ * way to find out what. Both render as a confident sentence, which is worse than silence:
+ * a reader cannot tell a rendered-thin obligation from a genuinely minor one.
+ *
+ * So the three parts are a CONJUNCTION, not a best-effort concatenation. A source that
+ * cannot supply all three has not established an obligation worth surfacing, and the
+ * derivation skips the edge rather than emitting a bare string. This is the same contract
+ * `formatElapsedSince` already keeps for its own value — `''` rather than `"0s"` for a
+ * duration it never measured, because "0s" is a number a reader would act on.
+ *
+ * `nowMs` is injectable so a test asserts an exact string without freezing the clock.
+ */
+export function obligationPhrase(
+  edge: ObligationEdge,
+  nowMs: number = Date.now(),
+): string | null {
+  if (edge?.direction !== 'owes-me' && edge?.direction !== 'i-owe') return null;
+  const what = cleanId(edge.what);
+  const handle = cleanId(edge.handle);
+  // '' whenever `since` is absent or unparseable — the age half of the conjunction.
+  const age = formatElapsedSince(edge.since, nowMs);
+  if (!what || !handle || !age) return null;
+  const lead = edge.direction === 'owes-me' ? `they owe you ${what}` : `you owe them ${what}`;
+  return `${lead}, open ${age} (${handle})`;
+}
+
+/**
+ * The OBLIGATION signal: edges a source has already established as pairwise facts.
+ *
+ * Pure over an injected list, like every other querying leg, so it unit-tests with no PG
+ * and no consult table. The producers land in P-004/P-006/P-007.
+ *
+ * `relation` and `because` come from the SAME field (`direction`) — the strongest form of
+ * D-087's "both from the same branch": there is no branch that could set one and forget
+ * the other, because the discriminant IS the input.
+ *
+ * ⚠ SOURCE ORDER IS PRESERVED, unlike the lock and coord-exchange legs which sort by
+ * ownerId. Those sort because their input is a Map whose iteration order carries no
+ * meaning. An obligation list DOES carry meaning in its order — oldest-first is the
+ * reading a source should supply and the one P-008 renders — and sorting by ownerId
+ * would destroy it for no determinism gain, since an ordered query is already
+ * deterministic. A source that returns rows in an arbitrary order must impose its own.
+ */
+export function deriveCouplingsFromObligations(
+  selfOwnerId: string,
+  obligations: readonly ObligationEdge[],
+  nowMs: number = Date.now(),
+): DerivedCoupling[] {
+  const self = cleanId(selfOwnerId);
+  if (!self) return [];
+  const out: DerivedCoupling[] = [];
+  for (const raw of obligations) {
+    const edge = (raw ?? {}) as ObligationEdge;
+    const ownerId = cleanId(edge.ownerId);
+    // A self-obligation is not a relation (couplings.ts `normalizePair` refuses the same
+    // pair), and an unrenderable one is skipped rather than emitted thin — see above.
+    if (!ownerId || ownerId === self) continue;
+    const because = obligationPhrase(edge, nowMs);
+    if (!because) continue;
+    // NOT deduped by peer: two open consults with the same agent are two real debts, and
+    // the union joins them into one `derivedBecause`. Collapsing them would under-report
+    // exactly the agent who owes you most.
+    out.push({ ownerId, relation: edge.direction, because });
+  }
+  return out;
+}
+
 /** Normalize a claimed-items / blocked-by list to clean ids. */
 function itemList(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
@@ -507,6 +614,17 @@ export interface CouplingDerivationSources {
   planEdges?: (planSlug: string) => Promise<readonly PlanBlockingEdge[]>;
   /** Concrete peers the caller exchanged DIRECTED messages with recently. */
   recentPartners?: () => Promise<readonly string[]>;
+  /**
+   * Outstanding OBLIGATIONS in both directions, already established as pairwise facts by
+   * the producer (consults P-004, grading P-006, supervision P-007).
+   *
+   * Absent until a producer lands, and that is a REPORTED state rather than a silent one:
+   * the census reads `armed: !!sources.obligations`, so the relations census as
+   * wired-but-unsupplied instead of looking like honest scarcity. That distinction is the
+   * whole reason the census exists (D-088), and it is why the relation is allowed to enter
+   * the vocabulary ahead of its producer instead of being born unobservable.
+   */
+  obligations?: () => Promise<readonly ObligationEdge[]>;
   /**
    * P-007 — the DEAD-SIGNAL CENSUS sink. Optional and fail-soft: a caller that
    * wires it gets one `DerivedSignalCensus` per run (see derived-signal-census.ts
@@ -590,12 +708,13 @@ export async function deriveCouplings(
     }
   }
 
-  const [held, partners, edges] = await Promise.all([
+  const [held, partners, edges, obligations] = await Promise.all([
     settle(sources.heldFiles, new Map<string, readonly string[]>() as ReadonlyMap<string, readonly string[]>),
     settle(sources.recentPartners, [] as readonly string[]),
     planSignalPossible && myPlan && sources.planEdges
       ? settle(() => sources.planEdges!(myPlan), [] as readonly PlanBlockingEdge[])
       : Promise.resolve([] as readonly PlanBlockingEdge[]),
+    settle(sources.obligations, [] as readonly ObligationEdge[]),
   ]);
 
   const all = [
@@ -603,7 +722,16 @@ export async function deriveCouplings(
     ...deriveCouplingsFromHeldFiles(self, held),
     ...deriveCouplingsFromPlanBlocking(self, rows, edges),
     ...deriveCouplingsFromCoordExchange(self, partners),
+    ...deriveCouplingsFromObligations(self, obligations),
   ];
+  // ⚠ OBLIGATIONS PASS THROUGH THIS BOUNDARY LIKE EVERY OTHER EDGE, and that has a
+  // consequence P-004/P-011 must design around rather than discover: an obligation whose
+  // COUNTERPART is not in the caller's roster is not emitted. A debt owed to an agent that
+  // has since ended is exactly the case P-011 wants to surface ("responder dead"), so the
+  // fix is to widen what the ROSTER contains (couplings.ts already carries a recorded-live
+  // leg for this), never to let this leg bypass the boundary. Widening here would break the
+  // never-widens guarantee (D-044 / D-078 (c)) for the one relation most likely to point at
+  // an agent the reader cannot otherwise see.
   const delivered = all.filter((d) => d.ownerId !== self && inRoster.has(d.ownerId));
 
   // P-007: census the run for the dead-signal detector. Censused from `delivered`,
@@ -631,6 +759,11 @@ export async function deriveCouplings(
             heldFiles: { armed: !!sources.heldFiles, inputs: heldFilesBindingInputs(self, held) },
             planEdges: { armed: !!sources.planEdges, inputs: edges.length },
             recentPartners: { armed: !!sources.recentPartners, inputs: partners.length },
+            // The obligation list IS its own binding input — an obligation is already a
+            // pairwise fact, so there is no self-side precondition that could short-
+            // circuit the leg the way `myAwait` does for the roster. Same shape as
+            // `planEdges`/`recentPartners` above, which is why neither needs a helper.
+            obligations: { armed: !!sources.obligations, inputs: obligations.length },
           },
           delivered,
         ),

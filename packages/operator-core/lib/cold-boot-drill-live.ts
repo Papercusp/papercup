@@ -42,6 +42,7 @@ import { modelWindowForSpec } from './agent-config-constants';
 import { findSessionTranscript, newestTranscriptUnderOwner } from './claude-sessions';
 import { parseTranscriptJsonl } from './replay/transcript';
 import type { ReplayTranscript } from './replay/types';
+import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from './agent-tools/coordination/compaction-recovery';
 
 export const DEFAULT_COLD_BOOT_DRILL_INTERVAL_MS = 30 * 60_000;
 export const DEFAULT_COLD_BOOT_DRILL_WINDOW_TOKENS = 200_000;
@@ -381,7 +382,8 @@ export async function startColdBootDrill(
   const firstPrompt = [
     `⟦carry-drill:${drillId}⟧`,
     'This is an opt-in P-020 cold-boot carry-sufficiency drill on a fresh process.',
-    'First run coord:orient { afterCompaction: true }, then continue the carried work.',
+    MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION,
+    'Continue the carried work.',
     'Do not search/read your prior self session unless the carry is actually insufficient; ordinary source reads are fine.',
     `At the next clean boundary call session:carry-drill { op: "grade", drillId: "${drillId}" } exactly once.`,
   ].join('\n');

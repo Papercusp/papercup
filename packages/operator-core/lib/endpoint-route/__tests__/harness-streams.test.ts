@@ -54,16 +54,12 @@ vi.mock('@papercusp/sse', () => ({
 vi.mock('@papercusp/scheduled-registry', () => ({
   managedSetInterval: () => ({ stop: vi.fn() }),
 }));
-console.error('[harness-streams probe] before db-org spy registration');
-vi.mock('@papercusp/db-org', { spy: true });
-console.error('[harness-streams probe] after db-org spy registration');
-console.error('[harness-streams probe] before db-org import');
-const dbOrg = await import('@papercusp/db-org');
-console.error('[harness-streams probe] after db-org import');
-vi.mocked(dbOrg.getOrgPg).mockReturnValue({
-  sql: dbSql,
-} as ReturnType<typeof dbOrg.getOrgPg>);
-console.error('[harness-streams probe] after db-org stub');
+const dbOrgHandle = { sql: dbSql };
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: vi.fn(() => dbOrgHandle),
+  getLegacyClient: vi.fn(() => dbOrgHandle),
+  generated: {},
+}));
 vi.mock('../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => null),
   SESSION_THINKING_ACTIVE_MS: 30_000,
@@ -102,7 +98,6 @@ const {
   HARNESS_STREAM_FEATURE_TEXT_CAP,
   HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES,
 } = await import('../routes/harness/streams');
-console.error('[harness-streams probe] after streams import');
 
 beforeEach(() => {
   routeProbe.events = [];

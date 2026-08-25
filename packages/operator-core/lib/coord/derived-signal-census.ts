@@ -111,6 +111,13 @@ export const DERIVED_SIGNAL_LEGS = {
   'blocks-me': 'planEdges',
   'blocked-by-me': 'planEdges',
   'coord-exchange': 'recentPartners',
+  // Both directions read the SAME leg: an obligation is one stored pairwise fact, and
+  // which side of it you are on is a property of that fact, not a separate input. Same
+  // shape as `blocks-me`/`blocked-by-me` over `planEdges` — and it matters for the
+  // verdict, because a starved `obligations` leg must report BOTH directions as starved
+  // rather than leaving one looking independently healthy.
+  'owes-me': 'obligations',
+  'i-owe': 'obligations',
 } as const satisfies Record<DerivedCouplingRelation, DerivedSignalLeg>;
 
 /** What one input leg did on one run. */

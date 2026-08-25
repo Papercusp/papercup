@@ -44,7 +44,11 @@ import {
 import { CHARS_PER_TOKEN_ESTIMATE } from './context-doors';
 import { modeImpliesAutonomy } from './modes/registry';
 import type { RecordedTurnClass } from './turn-provenance/turn-ref';
-import type { AutomaticCompactionRecovery } from './agent-tools/coordination/compaction-recovery';
+import {
+  AUTOMATIC_COMPACTION_RECOVERY_MARKER,
+  MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION,
+  type AutomaticCompactionRecovery,
+} from './agent-tools/coordination/compaction-recovery';
 
 // ── Shape ─────────────────────────────────────────────────────────────────────
 
@@ -736,9 +740,9 @@ export function renderAutomaticCompactionRecovery(
   }
   const { marker, recovery } = delivery;
   const lines = [
-    `⟦post-compaction-recovery⟧ ${JSON.stringify(marker)}`,
+    `${AUTOMATIC_COMPACTION_RECOVERY_MARKER} ${JSON.stringify(marker)}`,
     marker.complete
-      ? 'Automatic recovery is complete for the stamped control generation. Do NOT call coord:orient to re-fetch it; declare your actual lane with `coord:declare-intent { intent, planItems }`.'
+      ? 'Automatic recovery is complete for the stamped control generation. Do NOT call coord:orient to re-fetch it; declare your actual lane with `coord:declare-intent { intent, current_plan_slug, items }`.'
       : 'Automatic recovery is incomplete. Call `coord:orient { afterCompaction: true }` exactly once, then continue.',
     `- recovery coverage: selfSession=${recovery.coverage.selfSession} control=${recovery.coverage.control} heldItems=${recovery.coverage.heldItems} staleness=${recovery.coverage.staleness ?? 'not-applicable'}`,
     `- held checkpoints automatically delivered below: ${recovery.checkpoints?.length ?? 0}`,
@@ -752,9 +756,9 @@ export function renderAutomaticCompactionRecovery(
       `- changes after the prior summary (${recovery.staleness_warnings.summaryAt}): ${recovery.staleness_warnings.warnings.join(' · ')}`,
     );
   }
-  lines.push(
-    'If a later ⟦CTRL:…⟧ block carries a different generation than the marker above, use the fallback orient exactly once; otherwise the recovery already arrived.',
-  );
+  if (marker.complete) {
+    lines.push(MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION);
+  }
   return `## Post-compaction recovery (automatically delivered)\n${lines.join('\n')}`;
 }
 

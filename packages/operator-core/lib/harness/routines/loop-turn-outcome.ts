@@ -53,6 +53,7 @@ import {
 } from '../../events/await/psu-pty-discovery';
 import { bumpSessionEpoch as defaultBumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
+import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../../agent-tools/coordination/compaction-recovery';
 import { autoPauseLoopRoutine as defaultAutoPauseLoopRoutine } from './loop-cost-cap';
 import { detectOwnerAsk, stashLoopWallNag as defaultStashLoopWallNag } from './loop-wall-nag';
 import { buildLoopWakePrompt, materializeLoop as defaultMaterializeLoop, type MaterializeLoopInput } from './loop';
@@ -80,7 +81,9 @@ const FALLBACK_EFFECTIVE_WINDOW_TOKENS = 200_000;
 const CARRY_RESPAWN_SOCKET_TIMEOUT_MS = 15 * 60_000;
 
 const CONTEXT_OVERFLOW_RECOVERY_PROMPT =
-  'Context-overflow recovery queued. Re-run coord:orient { afterCompaction: true }, reconcile live state, and resume the loop goal from the carried checkpoints.';
+  'Context-overflow recovery queued. ' +
+  MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION +
+  ' Resume the loop goal from the carried checkpoints.';
 
 /** Recover the loop routine id from a delivery's source (`loop:<routineId>`), else null
  *  (a non-loop wake — we never attribute its turn death to a loop). */

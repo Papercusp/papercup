@@ -42,6 +42,7 @@ import {
 import { listActiveClaimFreshnessForOwner } from '../work-item-claims';
 import { classifyStaleClaims, type StaleClaim } from '../agent-tools/coordination/tools/inbox-flush-gate';
 import { recordContextUsage, setContextGaugeEnabled } from './context-usage-cache';
+import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../agent-tools/coordination/compaction-recovery';
 
 /** How often the watchdog sweeps. Off the hot path, so a relaxed cadence. */
 const DEFAULT_INTERVAL_MS = 2 * 60_000; // 2 min
@@ -518,9 +519,10 @@ async function healPresenceGap(sql: Sql, gap: PresencelessLoopOwner): Promise<bo
 function softThresholdContinueNote(): string {
   return (
     'The compaction watchdog moved this session onto fresh context at its configured soft ' +
-    'threshold. First re-run coord:orient { afterCompaction: true } to reconcile live ' +
-    'fleet/claim/inbox state and recover held-item checkpoints, then resume your current unit ' +
-    "of work from the carry document. Anything the carry dropped remains searchable with " +
+    'threshold. ' +
+    MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION +
+    ' Then resume your current unit ' +
+    'of work from the carry document. Anything the carry dropped remains searchable with ' +
     "sessions:search { session:'self', mode:'verbatim' }."
   );
 }
@@ -571,8 +573,8 @@ function forceCompactContinueNote(est: number, limit: number, forceAt: number, b
   return (
     `The compaction watchdog force-compacted you: your context (~${k(est)} tokens) crossed the ` +
     `FORCE threshold (${threshold}). ${advice} This is a fresh turn on the ` +
-    `compacted context: first re-run coord:orient to reconcile live fleet/claim/inbox state, then ` +
-    `resume your current unit of work.`
+    `compacted context. ${MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION} ` +
+    `Then resume your current unit of work.`
   );
 }
 

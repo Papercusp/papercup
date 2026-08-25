@@ -45,6 +45,7 @@ import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
+import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../coordination/compaction-recovery';
 import {
   readLiveNativeBgTasks,
   renderNativeBgTaskWarning,
@@ -131,15 +132,15 @@ async function carryBriefFocus(brief: import('../../carry-brief').CarryBrief | n
 /**
  * The successor's first prompt when no owner message is open (WI-1804 lineage):
  * derived from `focus` so the fresh context resumes THIS unit of work.
- * Re-orient first — a respawn is a stale-snapshot boundary, so the successor must
- * reconcile live fleet/claim state before acting (the classic post-boundary error).
+ * Recovery is already boundary-pushed. The successor inspects the stamped marker
+ * and falls back to a full recovery-orient only when the marker contract says so.
  */
 function defaultContinueNote(focus: string): string {
   return (
     'Continue where you left off — this is your fresh successor process right after a ' +
     'deterministic carry-respawn; your carry document is in the system prompt. ' +
-    'First re-run coord:orient { afterCompaction: true } to reconcile live state AND get your ' +
-    'recovery block (held-item checkpoints, armed-loop status, self-recall pointer). Anything ' +
+    MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION +
+    ' Anything ' +
     "the carry dropped is still searchable: sessions:search { session:'self', mode:'verbatim' }. " +
     'DISTRUST a near-limit context gauge on your first turns — it can lag the respawn by up to ' +
     'a watchdog pass (~2 min) and describe your DEAD predecessor; never re-compact on it alone. ' +

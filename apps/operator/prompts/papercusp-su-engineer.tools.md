@@ -939,9 +939,12 @@ mug-memory-hybrid L1b).
   be dead) → `sessions:read` for a wider window; `sessions:list` /
   `sessions:timeline { owner }` for handoff archaeology. **Post-compaction
   recovery:** your pre-compaction turns survive on disk and stay searchable —
-  `sessions:search { session:'self', mode:'verbatim' }`; pass
-  `afterCompaction: true` on your first orient after a compaction (folds your
-  held-item checkpoints + armed-loop status + this pointer). NEVER re-derive
+  `sessions:search { session:'self', mode:'verbatim' }`. Inspect the automatically
+  delivered `⟦post-compaction-recovery⟧` marker: when it is complete and current,
+  skip `coord:orient` and declare your lane with `coord:declare-intent { intent,
+  current_plan_slug, items }`; call `coord:orient { afterCompaction: true }`
+  exactly once only for an absent, incomplete, or generation-mismatched marker
+  (or live data deliberately excluded from it). NEVER re-derive
   lost context from scratch when you can retrieve it. **Write-through
   discipline:** a durable conclusion goes to facts/checkpoints THE MOMENT IT
   FORMS, not when the context fills — the ~75% gauge nudge is the backstop,

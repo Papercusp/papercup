@@ -11,12 +11,16 @@ compaction. **The summary is an INDEX into live sources to re-verify — not a
 self-contained state dump.** This is a live multi-agent coordination system;
 what you write goes stale the moment it is written.
 
-## Open with the re-orient banner
+## Open with the automatic-recovery marker contract
 Begin the summary with a one-line instruction to the successor, stated
-explicitly: **"This is a stale snapshot of a live system. Before acting on any
-fleet / claim / liveness statement below, re-run `coord:orient
-{ afterCompaction: true }` and reconcile — the recovery block re-delivers your
-held work-items' checkpoints, armed-loop status, and the self-recall pointer."**
+explicitly: **"This is a stale snapshot of a live system. Inspect the
+`⟦post-compaction-recovery⟧` marker already delivered in the carry context. If
+it is complete and its `controlGeneration` matches the latest `⟦CTRL:…⟧`
+generation, recovery already arrived: do not call `coord:orient`; declare your
+actual lane with `coord:declare-intent { intent, current_plan_slug, items }`.
+Call `coord:orient { afterCompaction: true }` exactly once only when the marker
+is absent, incomplete, generation-mismatched, or you deliberately need live
+data excluded from the injected block."**
 
 ## The verbatim record SURVIVES — say so, so the successor retrieves instead of re-deriving
 Compaction loses context, NOT data: every pre-compaction turn survives on disk
