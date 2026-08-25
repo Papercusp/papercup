@@ -1027,6 +1027,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // deadline; preserve the typed receipt instead of surfacing a transport
   // timeout that invites an unsafe replay.
   ['coord:send', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21417837903888552: coord:read is a bounded indexed read, but it still
+  // traverses the same proxy/dispatch path as the compound coordination reads
+  // above. Under operator pressure the valid server call can outlive the flat
+  // 30s client budget while remaining inside the dispatcher's 60s default.
+  // Keep the client outside that server budget so callers receive the message
+  // envelope (or the server's typed timeout) instead of an opaque -32001.
+  ['coord:read', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `coord:orient` is the wake-bootstrap compound read. Its individual legs
   // are bounded, but the full reconciliation can legitimately outlive the
   // ordinary 30s ptool liveness deadline when several legs degrade together.
