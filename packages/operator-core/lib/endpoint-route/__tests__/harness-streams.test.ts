@@ -51,7 +51,12 @@ vi.mock('@papercusp/sse', () => ({
 vi.mock('@papercusp/scheduled-registry', () => ({
   managedSetInterval: () => ({ stop: vi.fn() }),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: dbSql }) }));
+const dbOrgActual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+vi.doMock('@papercusp/db-org', () => ({
+  ...dbOrgActual,
+  getOrgPg: () => ({ sql: dbSql }),
+}));
+await import('@papercusp/db-org');
 vi.mock('../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => null),
   SESSION_THINKING_ACTIVE_MS: 30_000,
@@ -66,8 +71,8 @@ vi.mock('../../session-timeline-parsers', () => ({
   createOmpTimelineParser: vi.fn(() => ({ parseLine: () => [], flush: () => [] })),
 }));
 
-import {
-  default as streamRoutes,
+const {
+  default: streamRoutes,
   parseAgentTimelineChunks,
   capEntryText,
   THINKING_ENTRY_TEXT_CAP,
@@ -89,7 +94,7 @@ import {
   HARNESS_STREAM_LOG_BATCH_LINES,
   HARNESS_STREAM_FEATURE_TEXT_CAP,
   HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES,
-} from '../routes/harness/streams';
+} = await import('../routes/harness/streams');
 
 beforeEach(() => {
   routeProbe.events = [];
