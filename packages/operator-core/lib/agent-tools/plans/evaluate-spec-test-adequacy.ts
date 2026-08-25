@@ -86,7 +86,7 @@ export default defineTool({
     );
     const now = args.now ? new Date(args.now) : new Date();
     const rows = eligible.map((clause) =>
-      evaluateSpecTestAdequacy({ clause, evidence: allEvidence, classRef: args.classRef, now }),
+      evaluateSpecTestAdequacy({ clause, evidence: allEvidence, classRef: args.classRef, current: args.current, now }),
     );
     return {
       data: {

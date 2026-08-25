@@ -1,6 +1,10 @@
 /** Per-clause spec-test-adequacy evaluator (P-006 / D-004..D-006, D-009). */
 import type { SpecBehaviorClass, SpecClauseRevision } from './spec-clauses-store';
-import type { EvidenceCurrentness, SpecEvidenceKind } from './spec-evidence-store';
+import type { EvidenceCurrentInput, EvidenceCurrentness, SpecEvidenceKind } from './spec-evidence-store';
+import type {
+  SpecTestAdequacyCurrentFingerprint,
+  SpecTestAdequacyRerunRecipe,
+} from '../../harness/improvements/observation-types';
 
 export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
 
@@ -91,6 +95,7 @@ export interface SpecTestAdequacyResult {
     title: string;
     body: string;
     ratings: Record<AdequacyCriterion, AdequacyRatingEntry>;
+    rerunRecipe: SpecTestAdequacyRerunRecipe;
     terminal: true;
   };
 }
@@ -252,11 +257,63 @@ function compactSubjectRef(planSlug: string, specId: string, revision: number): 
   return exact.length <= 200 ? exact : `${planSlug.slice(0, 120)}#${specId.slice(0, 60)}@${revision}`;
 }
 
+function rerunRecipeFor(
+  clause: SpecClauseRevision,
+  evidence: SpecEvidenceForAdequacy[],
+  current: EvidenceCurrentInput[] | undefined,
+): SpecTestAdequacyRerunRecipe {
+  const selectedEvidence = [...new Map(
+    evidence.map((row) => [`${row.evidenceKind}\0${row.evidenceRef}`, {
+      evidenceKind: row.evidenceKind,
+      evidenceRef: row.evidenceRef,
+    }]),
+  ).values()].sort((a, b) =>
+    `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`),
+  );
+  const selectedKeys = new Set(selectedEvidence.map((row) => `${row.evidenceKind}\0${row.evidenceRef}`));
+  const fingerprints: SpecTestAdequacyCurrentFingerprint[] = (current ?? [])
+    .filter((row) => selectedKeys.has(`${row.evidenceKind}\0${row.evidenceRef}`))
+    .map((row) => ({
+      evidenceKind: row.evidenceKind,
+      evidenceRef: row.evidenceRef,
+      sourceFingerprint: row.sourceFingerprint,
+      testFingerprint: row.testFingerprint ?? null,
+      fixtureFingerprint: row.fixtureFingerprint ?? null,
+      rubricFingerprint: row.rubricFingerprint ?? null,
+      environmentFingerprint: row.environmentFingerprint ?? null,
+    }))
+    .sort((a, b) =>
+      `${a.evidenceKind}\0${a.evidenceRef}`.localeCompare(`${b.evidenceKind}\0${b.evidenceRef}`),
+    );
+  return {
+    schemaVersion: 1,
+    evaluator: 'plans:evaluate-spec-test-adequacy',
+    selection: {
+      planSlug: clause.planSlug,
+      specId: clause.specId,
+      specRevision: clause.revision,
+      specFingerprint: clause.contentHash,
+      evidence: selectedEvidence,
+    },
+    current: {
+      supplied: current !== undefined,
+      fingerprints,
+    },
+    derivation: {
+      kind: 'listSpecEvidence.currentness',
+      classifier: 'classifySpecEvidenceCurrentness',
+      unknownWhenMissing: true,
+    },
+  };
+}
+
 /** Grade one clause/evidence row into the exact ratings map accepted by scorecards:emit. */
 export function evaluateSpecTestAdequacy(input: {
   clause: SpecClauseRevision;
   evidence: SpecEvidenceForAdequacy[];
   classRef: PlanClassRubricRef;
+  /** The caller-attested current fingerprints used by listSpecEvidence. */
+  current?: EvidenceCurrentInput[];
   now?: Date;
 }): SpecTestAdequacyResult {
   const { clause, classRef } = input;
@@ -422,6 +479,7 @@ export function evaluateSpecTestAdequacy(input: {
       : 'pass';
   const evidenceRefs = [...new Set(evidence.map((row) => row.evidenceRef))].sort();
   const subjectRef = compactSubjectRef(clause.planSlug, clause.specId, clause.revision);
+  const rerunRecipe = rerunRecipeFor(clause, evidence, input.current);
   const rawRefs = evidenceRefs.join(', ') || '(none)';
   const bodyRefs = rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
   return {
@@ -443,6 +501,7 @@ export function evaluateSpecTestAdequacy(input: {
       title: `${clause.specId}@${clause.revision} test adequacy`,
       body: `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.`,
       ratings,
+      rerunRecipe,
       terminal: true,
     },
   };
