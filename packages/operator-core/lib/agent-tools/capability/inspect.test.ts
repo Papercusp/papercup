@@ -240,6 +240,20 @@ describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
     });
   });
 
+  it('test with a package + repo-relative path → normalizes to the package-relative file', () => {
+    expect(
+      resolveInspectCommand({
+        check: 'test',
+        package: 'packages/operator-core',
+        path: 'packages/operator-core/lib/foo.test.ts',
+      }, BASE),
+    ).toEqual({
+      ok: true,
+      command: 'npx vitest run lib/foo.test.ts',
+      cwd: '/repo/packages/operator-core',
+    });
+  });
+
   it('test with a package + integration path → uses the repository test router', () => {
     expect(
       resolveInspectCommand({
@@ -381,6 +395,40 @@ describe('capability:inspect — background launch response', () => {
       expect.objectContaining({
         command: 'npm run test:file -- pkg/src/foo.integration.test.ts',
         cwd: INSPECT_STATE,
+      }),
+      expect.any(Number),
+    );
+  });
+
+  it('normalizes a background repo-relative test path supplied with a package', async () => {
+    vi.mocked(startBackground).mockReturnValue({
+      id: 'bash-package-repo-relative-test',
+      taskId: 'task-package-repo-relative-test',
+      logPath: '/tmp/bash-package-repo-relative-test.log',
+    } as never);
+
+    const result = await inspect.handler(
+      {
+        check: 'test',
+        package: 'pkg',
+        path: 'pkg/src/foo.test.ts',
+        run_in_background: true,
+      },
+      inspectCtx(),
+    );
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(payload).toMatchObject({
+      ok: true,
+      bash_id: 'bash-package-repo-relative-test',
+      status: 'running',
+      command: 'npx vitest run src/foo.test.ts',
+      cwd: INSPECT_PACKAGE,
+    });
+    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'npx vitest run src/foo.test.ts',
+        cwd: INSPECT_PACKAGE,
       }),
       expect.any(Number),
     );

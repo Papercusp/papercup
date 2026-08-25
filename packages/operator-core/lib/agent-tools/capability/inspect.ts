@@ -178,9 +178,19 @@ export function resolveInspectCommand(
   let pathArg = '';
   if (args.path !== undefined) {
     if (args.check !== 'test') return { ok: false, reason: 'bad_args', message: '`path` is only valid for check:"test".' };
-    const v = validateRelPath(args.path, cwd);
+    // Callers frequently copy a repository-relative path from testing:run's
+    // diagnostics while also supplying `package`. Interpret that spelling
+    // against the repository root, then convert it to the package-relative
+    // token the package-local Vitest command expects. Without this branch,
+    // `packages/foo` is appended to an already package-local cwd and Vitest
+    // reports "No test files found" for an otherwise valid file.
+    const packageRel = args.package === undefined ? '' : relative(baseDir, cwd);
+    const isRepoRelative =
+      Boolean(packageRel) &&
+      (args.path === packageRel || args.path.startsWith(`${packageRel}/`));
+    const v = validateRelPath(args.path, isRepoRelative ? baseDir : cwd);
     if (!v.ok) return { ok: false, reason: 'bad_path', message: v.reason };
-    pathArg = v.rel;
+    pathArg = isRepoRelative ? relative(cwd, v.abs) : v.rel;
   }
 
   if (args.check === 'test' && args.onlyPaths && args.onlyPaths.length > 0) {
