@@ -32,6 +32,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getTestPg } from '@papercusp/test-config/pg';
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
+import { BACKUP_MIGRATION_ADVISORY_LOCK_KEY } from '@papercusp/backup/application-names';
 
 // ── shared test-DB + mock holders ────────────────────────────────────────────
 const h = vi.hoisted(() => ({
@@ -299,6 +300,85 @@ describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
       SELECT filename FROM harness_shared.schema_migrations
        WHERE filename IN ('950-good.sql','951-bad.sql','952-good.sql') ORDER BY filename`;
     expect(rows.map((r) => r.filename)).toEqual(['950-good.sql', '952-good.sql']);
+  });
+});
+
+describe('native boot migration/backup rendezvous (EI-21443484375613585)', () => {
+  it('waits behind a held backup advisory lock before applying an armed migration', async () => {
+    const filename = '955-native-boot-backup-lock.sql';
+    const dir = makeSqlDir({
+      [filename]: 'CREATE TABLE harness_shared.boot_native_backup_lock (id int);',
+    });
+    await seedMigrationReservations([filename]);
+    await rootSql.unsafe(`
+      CREATE TABLE IF NOT EXISTS harness_shared.schema_migrations (
+        filename text PRIMARY KEY,
+        applied_at timestamptz NOT NULL DEFAULT now(),
+        sha256 text NOT NULL
+      )`);
+
+    const holder = postgres(dbUrl, {
+      max: 1,
+      prepare: false,
+      onnotice: () => {},
+      connection: { application_name: 'pcbackup-workspace' },
+    });
+    let boot: Promise<Awaited<ReturnType<typeof applyPendingMigrationsNow>>> | undefined;
+    let lockReleased = false;
+    try {
+      await holder`SELECT pg_advisory_lock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      h.bootSqlDir = dir;
+      boot = applyPendingMigrationsNow();
+
+      // Do not use a timing-only assertion: observe the native boot session
+      // itself waiting on the advisory lock. This proves the rendezvous is
+      // acquired before the migration runner can reach the DDL.
+      const deadline = Date.now() + 10_000;
+      let waiting = false;
+      while (Date.now() < deadline) {
+        const activity = await rootSql<{
+          wait_event_type: string | null;
+          wait_event: string | null;
+          query: string;
+        }[]>`
+          SELECT wait_event_type, wait_event, query
+            FROM pg_stat_activity
+           WHERE datname = current_database()
+             AND application_name = 'papercusp-boot-migrate'
+             AND state = 'active'
+             AND query ILIKE '%pg_advisory_lock%'
+           ORDER BY query_start DESC`;
+        waiting = activity.some(
+          (row) => row.wait_event_type === 'Lock' && row.wait_event === 'advisory',
+        );
+        if (waiting) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(waiting).toBe(true);
+
+      const beforeRelease = await rootSql<{ filename: string }[]>`
+        SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`;
+      expect(beforeRelease).toEqual([]);
+
+      await holder`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`;
+      lockReleased = true;
+      const result = await boot;
+      expect(result).not.toBeNull();
+      expect(result!.applied).toBe(1);
+      expect(result!.failed).toEqual([]);
+
+      const afterRelease = await rootSql<{ filename: string }[]>`
+        SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`;
+      expect(afterRelease).toEqual([{ filename }]);
+    } finally {
+      if (!lockReleased) {
+        await holder`SELECT pg_advisory_unlock(hashtext(${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}))`.catch(() => {});
+      }
+      // If an assertion fails while boot is blocked, release the holder and
+      // settle the boot promise before closing the test connection.
+      await boot?.catch(() => {});
+      await holder.end({ timeout: 5 });
+    }
   });
 });
 
