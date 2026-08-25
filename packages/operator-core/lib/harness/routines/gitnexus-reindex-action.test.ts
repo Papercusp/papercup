@@ -254,6 +254,10 @@ describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', (
   });
 
   it('uses the managed build scope with provenance, resource cap, and a real deadline', async () => {
+    // Fails in ONE legible line if the scrub above is ever removed. Without it the same
+    // regression surfaces as a 70-property env diff with the heap buried in the middle, which
+    // is exactly what the dfe7bd9f red looked like and why it read as a product bug.
+    expect(process.env.NODE_OPTIONS, 'the runner-env scrub is not in effect').toBeUndefined();
     const child = fakeManagedChild();
     taskManager.managedSpawn.mockResolvedValue({ child, taskId: 'task-gitnexus' });
     const root = '/repo';
