@@ -69,8 +69,9 @@
  *   node scripts/check-vimock-export-strands.mjs --self-test
  *
  * Exit codes:
- *   0 — always, unless --self-test fails. Advisory by design (see above).
+ *   0 — advisory verdict after at least one meaningful comparison (see above).
  *   1 — --self-test only: the detector itself is broken.
+ *   2 — NOT CHECKED: the requested scope produced no meaningful comparison.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -86,12 +87,21 @@ import { analyzeMockCalls, resolveSpec } from './check-full-replacement-mocks.mj
 // it was ported, but not its exit STATUS — so it printed "This is NOT a clean bill" and
 // exited 0, which is what `&& echo PASS` and a CI step actually read.
 import { EXIT_NOT_CHECKED, exitForNoFindings, provedNothing } from './lib/not-checked.mjs';
+import { parseExplicitFiles } from './lib/tsc-baseline-gate.mjs';
+// Reuse the required-field guard's proven gitlink translation and candidate expansion.
+// The two guards are launched from the same affected-tests registry and must interpret a
+// forwarded submodule root identically; separate implementations already drifted once.
+import {
+  showAtBase,
+  submodulePrefixes,
+  typeScriptCandidatesAtBase,
+} from './check-required-field-strands.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-function git(args, { allowFail = false } = {}) {
+function git(args, { allowFail = false, cwd = ROOT } = {}) {
   try {
-    return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   } catch (err) {
     if (allowFail) return null;
     throw err;
@@ -415,8 +425,27 @@ export function formatFindings(findings) {
 }
 
 function gitTestFiles() {
-  const out = git(['ls-files', '*.test.ts', '*.test.tsx', '*.spec.ts', '*.spec.tsx'], { allowFail: true });
-  return (out ?? '').split('\n').filter(Boolean);
+  const patterns = ['*.test.ts', '*.test.tsx', '*.spec.ts', '*.spec.tsx'];
+  const files = (git(['ls-files', ...patterns], { allowFail: true }) ?? '')
+    .split('\n')
+    .filter(Boolean);
+  // Root `git ls-files` sees only a submodule's gitlink, never its internal tests. A runtime
+  // export added inside a submodule can strand an enumerating mock in that same submodule, so
+  // ask each owning repository for its tracked test corpus and restore the superproject prefix.
+  for (const prefix of submodulePrefixes()) {
+    const submoduleFiles = git(['ls-files', ...patterns], {
+      allowFail: true,
+      cwd: resolve(ROOT, prefix),
+    });
+    if (submoduleFiles === null) continue;
+    files.push(
+      ...submoduleFiles
+        .split('\n')
+        .filter(Boolean)
+        .map((file) => `${prefix}/${file}`),
+    );
+  }
+  return [...new Set(files)];
 }
 
 function main() {
@@ -427,32 +456,20 @@ function main() {
   const baseIdx = argv.indexOf('--base');
   const base = baseIdx >= 0 ? argv[baseIdx + 1] : 'HEAD';
 
-  // `--files=a,b` DECLARES the set instead of inferring it. Mirrors lint:tsc, which learned
-  // the same lesson: on a tree the whole fleet edits, an inferred "changed set" is
-  // everyone's, so only a declared one carries trustworthy attribution.
-  const filesArg = argv.find((a) => a.startsWith('--files='));
-  const declaredFiles = filesArg
-    ? filesArg.slice('--files='.length).split(',').map((s) => s.trim()).filter(Boolean)
-    : null;
+  // `--files=` or `--files-from=` DECLARES the set instead of inferring it. Large gate
+  // populations already use the shared JSON response-file contract to avoid Linux E2BIG.
+  const explicitFiles = parseExplicitFiles(argv);
+  const declaredFiles = explicitFiles === null ? null : [...explicitFiles];
 
-  let candidates;
-  if (declaredFiles) {
-    candidates = declaredFiles.map((file) => ({ status: 'M', file }));
-  } else {
-    const nameStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], { allowFail: true });
-    if (nameStatus === null) {
-      console.error(`check-vimock-export-strands: cannot diff against '${base}'`);
-      // WI-37806: a base we cannot diff against means we examined nothing — the one thing
-      // this must never report as a clean bill.
-      process.exit(EXIT_NOT_CHECKED);
-    }
-    candidates = nameStatus
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const [status, ...rest] = line.split('\t');
-        return { status, file: rest[rest.length - 1] };
-      });
+  // Includes root files plus submodule-internal files. A declared submodule root is expanded
+  // against the gitlink at `base`, which is the only way to recover the real changed files
+  // from the path shape affected-tests receives from a superproject diff.
+  const candidates = typeScriptCandidatesAtBase(base, declaredFiles);
+  if (candidates === null) {
+    console.error(`check-vimock-export-strands: cannot diff against '${base}'`);
+    // WI-37806: a base we cannot diff against means we examined nothing — the one thing
+    // this must never report as a clean bill.
+    process.exit(EXIT_NOT_CHECKED);
   }
 
   const examinedFiles = [];
@@ -467,7 +484,7 @@ function main() {
     // production modules.
     if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file)) continue;
 
-    const beforeText = git(['show', `${base}:${file}`], { allowFail: true });
+    const beforeText = showAtBase(file, base);
     if (beforeText === null) continue;
     const abs = resolve(ROOT, file);
     if (!existsSync(abs)) continue;
@@ -520,6 +537,12 @@ function main() {
     }
   }
 
+  const noFindingsExit = exitForNoFindings({
+    examinedFiles,
+    identicalFiles,
+    declared: Boolean(declaredFiles),
+  });
+
   if (json) {
     console.log(
       JSON.stringify(
@@ -530,7 +553,7 @@ function main() {
     );
     // NOT process.exit(): it does not drain an async pipe write, so a piped run would
     // report FEWER findings than were found. See scripts/check-undrained-stdout-exit.mjs.
-    process.exitCode = 0;
+    process.exitCode = findings.length ? 0 : noFindingsExit;
     return;
   }
 
@@ -560,7 +583,7 @@ function main() {
     // WI-37806: 0 only when something was genuinely compared. This used to be a hardcoded
     // 0, so a run that examined ZERO files printed the "NOT CHECKED / This is NOT a clean
     // bill" text above and then reported success to every caller that reads a status.
-    process.exit(exitForNoFindings({ examinedFiles, identicalFiles, declared: Boolean(declaredFiles) }));
+    process.exit(noFindingsExit);
   }
 
   console.log(formatFindings(findings));
