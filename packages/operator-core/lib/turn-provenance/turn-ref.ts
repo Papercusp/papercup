@@ -126,6 +126,8 @@ export function quoteMatchesTurn(quote: string, turnText: string): boolean {
 
 export type RecordedTurnVerdict =
   | 'owner-typed'
+  /** A clean user turn proven from the cross-session index. */
+  | 'owner-turn'
   | 'owner-dialog'
   | 'agent-injected'
   | 'machine-surface'
@@ -212,6 +214,28 @@ export interface RecordedUserTurn {
   ts: string;
   text: string;
 }
+
+/** Where a turn ref was proven. Cross-session proofs come from the bounded
+ * session_turns index rather than a transcript file owned by this caller. */
+export type TurnRefScope = 'current-session' | 'owner-chain' | 'cross-session';
+
+/** The small, redacted row shape needed for a cross-session proof. */
+export interface IndexedRecordedTurn {
+  sessionId: string;
+  ts: string | null;
+  speaker: string;
+  text: string;
+  turnOrigin?: string | null;
+  turnOriginVerdict?: string | null;
+}
+
+/** Injectable for tests and alternate hosted stores. The scope is explicit at
+ * the call boundary so a future caller cannot accidentally widen an
+ * owner-scoped lookup into a cross-session read. */
+export type IndexedTurnLoader = (
+  sessionPrefix: string,
+  scope: Extract<TurnRefScope, 'cross-session'>,
+) => Promise<IndexedRecordedTurn[] | null>;
 
 /** Ref verification and the current-turn stamp scan this much transcript tail
  *  (refs usually point at recent turns; older ones fall back to
@@ -301,6 +325,9 @@ export interface TurnRefVerdict {
    *  the same never-let-a-failed-lookup-report-a-confident-negative shape
    *  that let a real owner directive read as refuted. */
   checked: boolean;
+  /** The proof boundary used for this verdict. Optional for backwards-
+   * compatible hand-built fixtures; verifier results populate it. */
+  scope?: TurnRefScope;
 }
 
 export interface VerifyTurnRefsOptions {
@@ -315,9 +342,87 @@ export interface VerifyTurnRefsOptions {
   /** Testability hook: threaded through to resolveSelfSession, so a test can
    *  avoid the real DB-backed active-sessions lookup. Production callers omit it. */
   loadActiveSessions?: ResolveSelfSessionOptions['loadActiveSessions'];
+  /** Enable the deliberately broader, index-backed predecessor lookup. The
+   * default remains owner-chain-only so callers must opt into cross-session
+   * reads explicitly. */
+  scope?: Extract<TurnRefScope, 'owner-chain' | 'cross-session'>;
+  /** Test seam for the cross-session session_turns lookup. Production uses the
+   * fail-soft loader below. */
+  loadIndexedTurns?: IndexedTurnLoader;
 }
 
 const SNIPPET_CHARS = 160;
+const INDEXED_TURN_LIMIT = 2_000;
+
+/**
+ * Read the bounded transcript index for a native-session prefix. This is
+ * intentionally dynamic and fail-soft: a carry write must not become
+ * dependent on PG discovery, and a missing/unavailable index must remain an
+ * unverifiable ref rather than a confident negative.
+ */
+async function loadIndexedTurnsByPrefix(
+  sessionPrefix: string,
+  _scope: Extract<TurnRefScope, 'cross-session'>,
+): Promise<IndexedRecordedTurn[] | null> {
+  if (!sessionPrefix) return null;
+  try {
+    const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+    ]);
+    const workspaceId = activeWorkspaceId();
+    const prefix = `${sessionPrefix.toLowerCase()}%`;
+    const rows = await getOrgPg().sql<IndexedRecordedTurn[]>`
+      SELECT session_id AS "sessionId",
+             ts::text AS ts,
+             speaker,
+             text,
+             turn_origin AS "turnOrigin",
+             turn_origin_verdict AS "turnOriginVerdict"
+        FROM harness_shared.session_turns
+       WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
+         AND lower(session_id) LIKE ${prefix}
+         AND source_kind IN ('claude', 'omp', 'codex')
+         AND speaker = 'user'
+       ORDER BY session_id, turn_idx
+       LIMIT ${INDEXED_TURN_LIMIT}
+    `;
+    return rows;
+  } catch {
+    return null;
+  }
+}
+
+/** Apply persisted provenance fields when available, then fall back to the
+ * recorded text classifier. A clean indexed user turn is deliberately named
+ * `owner-turn`: it was proven from the cross-session store, not merely assumed
+ * to be the current caller's owner-typed transcript turn. */
+function classifyIndexedTurn(turn: IndexedRecordedTurn): RecordedTurnClass {
+  const recorded = classifyRecordedTurn(turn.text);
+  const persisted = turn.turnOriginVerdict?.toLowerCase() ?? null;
+
+  if (persisted === 'agent-injected') {
+    return { verdict: 'agent-injected', origin: turn.turnOrigin ?? recorded.origin };
+  }
+  if (persisted === 'machine-surface') return { verdict: 'machine-surface', origin: null };
+  if (persisted === 'synthetic') return { verdict: 'synthetic', origin: null };
+
+  // The index records `unenrolled-origin` for a clean file-backed row. It is
+  // still the affirmative clean-user shape for this verifier: the row was
+  // located by the exact session+timestamp anchor, and no machine marker was
+  // present in its recorded text.
+  if (
+    turn.speaker.toLowerCase() === 'user' &&
+    (recorded.verdict === 'owner-typed' || recorded.verdict === 'owner-dialog') &&
+    (persisted === null ||
+      persisted === 'owner-typed' ||
+      persisted === 'owner-dialog' ||
+      persisted === 'unenrolled-origin')
+  ) {
+    return { verdict: 'owner-turn', origin: null };
+  }
+  return recorded;
+}
 
 /** Second-resolution prefix match: an exact ts match, or either side is a
  *  prefix of the other down to seconds (refs may carry truncated timestamps). */
@@ -362,7 +467,7 @@ export async function verifyTurnRefs(
   opts: VerifyTurnRefsOptions = {},
 ): Promise<TurnRefVerdict[]> {
   if (refs.length === 0) return [];
-  const miss = (r: TurnRef, checked: boolean): TurnRefVerdict => ({
+  const miss = (r: TurnRef, checked: boolean, scope?: TurnRefScope): TurnRefVerdict => ({
     ref: r.raw,
     found: false,
     verdict: null,
@@ -371,6 +476,7 @@ export async function verifyTurnRefs(
     quote: r.quote ?? null,
     quoteMatch: null,
     checked,
+    ...(scope ? { scope } : {}),
   });
 
   let filePath = opts.filePath;
@@ -380,24 +486,33 @@ export async function verifyTurnRefs(
       home: opts.home,
       loadActiveSessions: opts.loadActiveSessions,
     }).catch(() => null);
-    if (!self) return refs.map((r) => miss(r, false));
-    filePath = self.filePath;
-    sessionId = sessionId ?? self.sessionId;
+    if (self) {
+      filePath = self.filePath;
+      sessionId = sessionId ?? self.sessionId;
+    }
   }
-  const currentFilePath = filePath;
+  const currentFilePath = filePath ?? null;
   const currentSidLower = (sessionId ?? '').toLowerCase();
   // Once a caller pins an explicit transcript (tests), no owner-chain
   // fallback — a ref for a different session stays unresolvable against it.
   const allowOwnerChainFallback = !opts.filePath;
+  const allowCrossSessionFallback = opts.scope === 'cross-session';
+  const indexedTurnLoader = opts.loadIndexedTurns ?? loadIndexedTurnsByPrefix;
 
   // Cache of sessionPrefix -> resolved turns (or null when unresolvable), so
   // refs sharing a prefix — the common case, everything anchored to the
   // current session — only pay the IO once.
-  const turnsByPrefix = new Map<string, RecordedUserTurn[] | null>();
-  async function turnsFor(sessionPrefix: string): Promise<RecordedUserTurn[] | null> {
+  const turnsByPrefix = new Map<
+    string,
+    { turns: RecordedUserTurn[]; scope: Extract<TurnRefScope, 'current-session' | 'owner-chain'> } | null
+  >();
+  async function turnsFor(
+    sessionPrefix: string,
+  ): Promise<{ turns: RecordedUserTurn[]; scope: Extract<TurnRefScope, 'current-session' | 'owner-chain'> } | null> {
     if (turnsByPrefix.has(sessionPrefix)) return turnsByPrefix.get(sessionPrefix) ?? null;
     let path: string | null = null;
-    if (!currentSidLower || currentSidLower.startsWith(sessionPrefix)) {
+    let scope: Extract<TurnRefScope, 'current-session' | 'owner-chain'> = 'current-session';
+    if (currentFilePath && (!currentSidLower || currentSidLower.startsWith(sessionPrefix))) {
       // No pinned sessionId to compare (rare) — fall back to the current
       // transcript, same as pre-fix behavior; or the prefix matches it.
       path = currentFilePath;
@@ -406,6 +521,7 @@ export async function verifyTurnRefs(
         () => null,
       );
       path = resolved?.filePath ?? null;
+      scope = 'owner-chain';
     }
     if (!path) {
       turnsByPrefix.set(sessionPrefix, null);
@@ -413,24 +529,60 @@ export async function verifyTurnRefs(
     }
     try {
       const parsed = parseUserTurns(await readTail(path, opts.scanBytes ?? SCAN_BYTES));
-      turnsByPrefix.set(sessionPrefix, parsed);
-      return parsed;
+      const resolved = { turns: parsed, scope };
+      turnsByPrefix.set(sessionPrefix, resolved);
+      return resolved;
     } catch {
       turnsByPrefix.set(sessionPrefix, null);
       return null;
     }
   }
 
+  const indexedTurnsByPrefix = new Map<string, IndexedRecordedTurn[] | null>();
+  async function indexedTurnsFor(sessionPrefix: string): Promise<IndexedRecordedTurn[] | null> {
+    if (indexedTurnsByPrefix.has(sessionPrefix)) return indexedTurnsByPrefix.get(sessionPrefix) ?? null;
+    const rows = await indexedTurnLoader(sessionPrefix, 'cross-session').catch(() => null);
+    indexedTurnsByPrefix.set(sessionPrefix, rows);
+    return rows;
+  }
+
   const out: TurnRefVerdict[] = [];
   for (const r of refs) {
-    const turns = await turnsFor(r.sessionPrefix);
-    if (!turns) {
-      out.push(miss(r, false));
+    const resolved = await turnsFor(r.sessionPrefix);
+    if (!resolved) {
+      if (allowCrossSessionFallback) {
+        const indexed = await indexedTurnsFor(r.sessionPrefix);
+        const turn = indexed?.find(
+          (candidate) =>
+            candidate.sessionId.toLowerCase().startsWith(r.sessionPrefix) &&
+            typeof candidate.ts === 'string' &&
+            tsMatches(r.ts, candidate.ts),
+        );
+        if (turn) {
+          const cls = classifyIndexedTurn(turn);
+          out.push({
+            ref: r.raw,
+            found: true,
+            verdict: cls.verdict,
+            origin: cls.origin,
+            snippet: turn.text.replace(/\s+/g, ' ').trim().slice(0, SNIPPET_CHARS),
+            quote: r.quote ?? null,
+            quoteMatch: r.quote ? quoteMatchesTurn(r.quote, turn.text) : null,
+            checked: true,
+            scope: 'cross-session',
+          });
+          continue;
+        }
+      }
+      // A missing raw transcript and a missing/failed index lookup are both
+      // unresolvable. Keep checked:false: the verifier did not establish an
+      // authoritative absence.
+      out.push(miss(r, false, allowCrossSessionFallback ? 'cross-session' : undefined));
       continue;
     }
-    const turn = turns.find((t) => tsMatches(r.ts, t.ts));
+    const turn = resolved.turns.find((t) => tsMatches(r.ts, t.ts));
     if (!turn) {
-      out.push(miss(r, true));
+      out.push(miss(r, true, resolved.scope));
       continue;
     }
     const cls = classifyRecordedTurn(turn.text);
@@ -445,6 +597,7 @@ export async function verifyTurnRefs(
       // a match sitting past SNIPPET_CHARS must still count as a match.
       quoteMatch: r.quote ? quoteMatchesTurn(r.quote, turn.text) : null,
       checked: true,
+      scope: resolved.scope,
     });
   }
   return out;
