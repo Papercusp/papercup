@@ -14,6 +14,7 @@ import {
   resolveTokenPaths,
   formatToolCallFailure,
   isLoopPressureShed,
+  isReadOnlyTool,
   isTransportFailure,
   printResult,
   stdoutDeliveryError,
@@ -27,6 +28,7 @@ import {
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
+  PTOOL_READ_ONLY_POST_CONNECT_RETRIES,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
   PTOOL_TRUNCATED_RESULT_MESSAGE,
@@ -315,6 +317,12 @@ describe('ptool tools/call failure diagnostics', () => {
 });
 
 describe('ptool keyed result recovery without concurrent replay', () => {
+  it('allows replay only for an explicitly read-only listed tool', () => {
+    expect(isReadOnlyTool({ name: 'work_items:get', annotations: { readOnlyHint: true } })).toBe(true);
+    expect(isReadOnlyTool({ name: 'work_items:complete', annotations: { readOnlyHint: false } })).toBe(false);
+    expect(isReadOnlyTool({ name: 'work_items:get' })).toBe(false);
+  });
+
   it('puts one caller-supplied idempotency key beside the format metadata', () => {
     expect(buildCallToolParams('work_items:complete', { id: 'EI-1' }, {
       idempotencyKey: 'ptool-key-1',
@@ -387,6 +395,34 @@ describe('ptool keyed result recovery without concurrent replay', () => {
     expect(reconnect).not.toHaveBeenCalled();
     expect(first.close).not.toHaveBeenCalled();
     expect(first.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
+  });
+
+  it('reconnects and replays one time after a post-connect close for a read-only tool', async () => {
+    const params = buildCallToolParams('work_items:get', { id: 'WI-41554' }, {
+      idempotencyKey: 'ptool-read-key-1',
+    });
+    const failure = Object.assign(new Error('fetch failed'), { code: 'UND_ERR_SOCKET' });
+    const first = {
+      callTool: vi.fn().mockRejectedValue(failure),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    const second = {
+      callTool: vi.fn().mockResolvedValue({ content: [{ type: 'text', text: '{"ok":true}' }] }),
+      close: vi.fn(),
+    };
+    const reconnect = vi.fn().mockResolvedValue(second);
+
+    const recovered = await callToolWithReplayRecovery(first, params, {
+      reconnect,
+      readOnly: true,
+      timeoutMs: 1,
+    });
+
+    expect(PTOOL_READ_ONLY_POST_CONNECT_RETRIES).toBe(1);
+    expect(recovered).toEqual({ client: second, result: { content: [{ type: 'text', text: '{"ok":true}' }] } });
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(second.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
   });
 
   it('cannot re-enable automatic replay with a larger per-call retry budget', async () => {
