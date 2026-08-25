@@ -109,6 +109,23 @@ export interface SearchSessionResult {
   idMatch?: 'ownerId' | 'sessionId' | 'ompThreadId' | null;
 }
 
+/**
+ * The `&ompSessionKey=` fragment for an omp stream URL, or '' when this row
+ * carries no adv-session id (WI-41496).
+ *
+ * An omp thread id names the transcript FILE; the adv-session id names the HOME
+ * it lives under (`su-omp-homes/session-<id>/agent/sessions`). A psu-launched
+ * omp agent never writes to the shared `~/.omp` home the route otherwise
+ * searches, so without this every omp transcript opened here was empty. The
+ * server sweeps the per-session homes when the key is absent, which is what
+ * keeps an id-less row working — slower, not broken. Pure — exported for tests.
+ */
+export function ompSessionKeyParam(sessionKey: number | string | null | undefined): string {
+  return sessionKey == null || sessionKey === ''
+    ? ''
+    : `&ompSessionKey=${encodeURIComponent(String(sessionKey))}`;
+}
+
 /** Card label for an id match — mirrors the server's `sessionIdMatchLabel`
  *  wording. Pure — exported for tests. */
 export function idMatchLabel(field: NonNullable<SearchSessionResult['idMatch']>): string {
@@ -144,7 +161,7 @@ export function idMatchStreamUrl(
       return `/api/adv/session/thinking?sessionId=${encodeURIComponent(s.sessionId)}${owner ? `&owner=${encodeURIComponent(owner)}` : ''}`;
     }
     if (s.sourceKind === 'omp') {
-      return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(s.sessionId)}`;
+      return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(s.sessionId)}${ompSessionKeyParam(s.active.advSessionId ?? s.session?.id)}`;
     }
     // No transcript handle (a presence-only row): fall through to the recorded
     // row, which may still know how to open it.
@@ -176,7 +193,7 @@ export function searchHitStreamUrl(
     return `/api/adv/session/thinking?sessionId=${encodeURIComponent(s.sessionId)}${owner ? `&owner=${encodeURIComponent(owner)}` : ''}${anchor}${ended}`;
   }
   if (s.sourceKind === 'omp') {
-    return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(s.sessionId)}${anchor}${ended}`;
+    return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(s.sessionId)}${ompSessionKeyParam(s.active?.advSessionId ?? s.session?.id)}${anchor}${ended}`;
   }
   if (s.sourceKind === 'codex') {
     return `/api/adv/session/thinking?codexRolloutId=${encodeURIComponent(s.sessionId)}${anchor}${ended}`;
@@ -200,7 +217,7 @@ export function endedSessionStreamUrl(
   if (r.sessionId) {
     return `/api/adv/session/thinking?sessionId=${encodeURIComponent(r.sessionId)}${r.coordOwnerId ? `&owner=${encodeURIComponent(r.coordOwnerId)}` : ''}&ended=1`;
   }
-  if (r.ompThreadId) return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(r.ompThreadId)}&ended=1`;
+  if (r.ompThreadId) return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(r.ompThreadId)}${ompSessionKeyParam(r.id)}&ended=1`;
   if (r.agent === 'codex') return `/api/adv/session/thinking?codexSessionKey=${encodeURIComponent(String(r.id))}&ended=1`;
   return null;
 }

@@ -222,16 +222,28 @@ export function thinkingStreamUrl(
   if (a.runId && a.harnessSlug) {
     return `/api/harness/${encodeURIComponent(a.harnessSlug)}/agents/${encodeURIComponent(a.runId)}/stream?phase=staging`;
   }
-  if (a.sessionId) {
-    const owner = a.ownerId ? `&owner=${encodeURIComponent(a.ownerId)}` : '';
-    const ended = a.thinkingResolvable === false ? '&ended=1' : '';
-    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(a.sessionId)}${owner}${ended}`;
-  }
+  /* WI-41497: the BACKEND legs come first, because `sessionId` is not a claude
+     tell. A codex adv row carries its rollout/thread uuid in `session_id` (237
+     of 257 live codex rows did when this was measured), so a sessionId-first
+     order sent every one of them to the claude leg — `sessionId=<codex uuid>`,
+     which the claude resolver cannot resolve, for a guaranteed empty pane. Same
+     misread as adv-roster's freshness probe had; the two surfaces build the
+     same URL and must not disagree about which backend a row is. */
   if (a.agent === 'codex' && a.advSessionId != null) {
     return `/api/adv/session/thinking?codexSessionKey=${encodeURIComponent(String(a.advSessionId))}`;
   }
   if (a.ompThreadId) {
-    return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(a.ompThreadId)}`;
+    // WI-41496: the adv-session id names the per-session omp home the
+    // transcript actually lives in (see ompSessionKeyParam in
+    // AgentsPillSessions); without it the route searches the shared ~/.omp home
+    // a psu-launched omp agent never writes to.
+    const key = a.advSessionId != null ? `&ompSessionKey=${encodeURIComponent(String(a.advSessionId))}` : '';
+    return `/api/adv/session/thinking?ompThreadId=${encodeURIComponent(a.ompThreadId)}${key}`;
+  }
+  if (a.sessionId) {
+    const owner = a.ownerId ? `&owner=${encodeURIComponent(a.ownerId)}` : '';
+    const ended = a.thinkingResolvable === false ? '&ended=1' : '';
+    return `/api/adv/session/thinking?sessionId=${encodeURIComponent(a.sessionId)}${owner}${ended}`;
   }
   return null;
 }

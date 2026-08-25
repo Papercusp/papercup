@@ -318,6 +318,17 @@ export function buildSessionStreamUrl(
     : (resolved.stream_key ?? streamKeyForSource(resolved.source_kind));
   const p = new URLSearchParams({ [streamKey]: streamSessionId });
   if (streamKey === 'sessionId') p.set('owner', ownerId);
+  /* WI-41496: an omp thread id names the transcript FILE; the adv-session id
+     names the HOME it lives in (`su-omp-homes/session-<id>/agent/sessions`).
+     Send it whenever we have it — the route's per-session-home sweep is the
+     fallback for when we do not, not the intended path. Skipped for an EARLIER
+     session in a respawn chain: the key belongs to the row we resolved, and
+     pointing a different session's home at this thread id would search the
+     wrong tree (harmlessly, but it would also skip the sweep that would have
+     found it). */
+  if (streamKey === 'ompThreadId' && !isEarlierSession && resolved.omp_session_key != null) {
+    p.set('ompSessionKey', String(resolved.omp_session_key));
+  }
   // EI-16982: an ended session's on-disk transcript is routinely GC'd within
   // ~2h of archiving (session-dir-gc.ts); the backend already has a
   // rematerialize-from-archive fallback (WI-3990) gated on `ended=1`, but it
