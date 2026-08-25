@@ -579,6 +579,19 @@ function closestKnownFlag(flag) {
   // Only suggest something plausibly a typo of — a wild guess is worse than none.
   return bestDist <= 4 ? best : null;
 }
+function exactFileCommand(paths) {
+  const rendered = paths.length > 0 ? paths.join(" ") : "<path/to/test-file>";
+  return `npm run test:file -- ${rendered}`;
+}
+function printExactFileRecovery(paths) {
+  errSync(
+    "Root `npm test` runs affected workspaces; it does not forward Vitest flags or accept exact test-file operands.",
+  );
+  errSync(`For exact files use: ${exactFileCommand(paths)}`);
+  errSync(
+    "Put any additional Vitest arguments after a second `--` (for example: npm run test:file -- path/to/a.test.ts -- -t \"case name\").",
+  );
+}
 const unknownFlags = args.filter(
   (a) => a.startsWith("--") && !KNOWN_FLAGS.includes(a),
 );
@@ -587,8 +600,18 @@ if (unknownFlags.length > 0) {
     `affected-tests.mjs: unrecognized flag(s): ${unknownFlags.join(", ")}`,
   );
   for (const flag of unknownFlags) {
+    // `--run <files>` is the conventional shape callers reach for when they
+    // mistake this affected-workspace runner for Vitest. Edit-distance used to
+    // suggest `--all`, which is valid but means the opposite (run MORE work).
+    // Route that recognizable intent to the repository's existing exact-file
+    // router instead of offering a syntactically-near, semantically-wrong flag.
+    if (flag === "--run") continue;
     const suggestion = closestKnownFlag(flag);
     if (suggestion) errSync(`  did you mean ${suggestion}?`);
+  }
+  if (unknownFlags.includes("--run")) {
+    errSync("");
+    printExactFileRecovery(positionalArgs);
   }
   errSync("");
   errSync(`Known flags: ${KNOWN_FLAGS.join(" ")}`);
@@ -605,9 +628,14 @@ if (positionalArgs.length > 0) {
   errSync(
     `affected-tests.mjs: unexpected positional argument(s): ${positionalArgs.join(", ")}`,
   );
-  errSync(
-    "This command accepts flags only; pass --changed-paths as one comma-delimited value rather than separate positional paths.",
+  const allLookLikeTests = positionalArgs.every((value) =>
+    /(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(value),
   );
+  if (allLookLikeTests) printExactFileRecovery(positionalArgs);
+  else
+    errSync(
+      "This command accepts flags only; pass --changed-paths as one comma-delimited value rather than separate positional paths.",
+    );
   process.exit(1);
 }
 
