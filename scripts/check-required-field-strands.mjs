@@ -33,6 +33,8 @@
  *       labelled by lint:tsc's --files attribution and never trip this exit)
  *   1 — --typecheck confirmed type errors attributed to the caller's files or to files
  *       referencing their exported types (the stranded-site population)
+ *   2 — --typecheck was requested, but findings came only from an inferred shared-tree
+ *       file set, so they cannot be attributed to this caller; re-run with --files
  */
 
 import { execFileSync } from 'node:child_process';
@@ -424,6 +426,39 @@ export function formatNoFindings(examinedFiles, base, { declared = false, identi
   ].join('\n');
 }
 
+/**
+ * An inferred candidate set is useful context, but it is not a caller-owned change set
+ * on the shared checkout. It can contain a peer's dirty edit while omitting the caller's
+ * change after git-sync commits it. A finding from that set must therefore never be
+ * presented as evidence about this caller or forwarded into the caller's typecheck.
+ */
+export function formatUnattributedFindings(findings, base, examinedFiles = []) {
+  const files = Array.isArray(examinedFiles) ? examinedFiles : [];
+  const rows = Array.isArray(findings) ? findings : [];
+  const lines = [
+    '⚠ NOT CHECKED — no required-field addition is attributable to this caller.',
+    `  This run inferred ${files.length} file(s) from git diff ${base}; on this shared checkout`,
+    '  that set can contain peer edits and can omit your change after git-sync commits it.',
+    `  ${rows.length} required-field addition(s) below are untrusted shared-tree context only.`,
+    '  Do not fix or typecheck these findings as yours without a caller-scoped file set.',
+    '',
+  ];
+  for (const finding of rows) {
+    if (!finding?.file) continue;
+    lines.push(`  ${finding.file}`);
+    for (const added of finding.added ?? []) {
+      const how = added.reason === 'optional-to-required' ? 'optional → required' : 'new required field';
+      lines.push(`    • ${added.path}  (${how})`);
+    }
+  }
+  lines.push(
+    '',
+    '  Re-run against the pre-edit base and the files you actually changed:',
+    '    node scripts/check-required-field-strands.mjs --typecheck --base <pre-edit-commit> --files=<your,files>',
+  );
+  return lines.join('\n');
+}
+
 // EXIT_NOT_CHECKED / exitForNoFindings / provedNothing now live in ./lib/not-checked.mjs
 // (imported + re-exported at the top of this file). They were extracted in WI-37806 after
 // the two guards ported from this one inherited this file's NOT-CHECKED prose but not its
@@ -556,24 +591,54 @@ function main() {
     identicalFiles,
     declared: Boolean(declaredFiles),
   });
+  const inferredSharedTree = declaredFiles === null;
+  const unattributedFindings = inferredSharedTree && findings.length > 0;
   // Reported in JSON too: a machine reader has even less to go on than a human, and
   // `findings: []` alongside a requested-but-unrun typecheck reads as a pass.
   const typecheck = findings.length
-    ? { requested: runTypecheck, ran: runTypecheck, reason: null }
+    ? unattributedFindings
+      ? { requested: runTypecheck, ran: false, reason: 'unattributed' }
+      : { requested: runTypecheck, ran: runTypecheck, reason: null }
     : {
         requested: runTypecheck,
         ran: false,
         reason: noFindingsExit === EXIT_NOT_CHECKED ? 'not-checked' : 'no-findings',
       };
+  const attribution = inferredSharedTree
+    ? {
+        mode: 'inferred-shared-tree',
+        callerFiles: [],
+        attributedFindings: [],
+        untrustedFindings: findings,
+      }
+    : {
+        mode: 'declared-files',
+        callerFiles: declaredFiles,
+        attributedFindings: findings,
+        untrustedFindings: [],
+      };
 
   if (json) {
     console.log(
       JSON.stringify(
-        { base, examined: examinedFiles, identical: identicalFiles, findings, typecheck },
+        { base, examined: examinedFiles, identical: identicalFiles, findings, attribution, typecheck },
         null,
         2,
       ),
     );
+  }
+
+  if (unattributedFindings) {
+    if (!json) {
+      console.log(formatUnattributedFindings(findings, base, examinedFiles));
+      if (runTypecheck) {
+        console.log('\n--typecheck: NOT RUN — inferred shared-tree findings are not attributable to this caller.');
+      }
+    }
+    // Advisory mode still reports the context without turning a peer's finding into a
+    // failure. A requested typecheck is different: returning success or running it would
+    // make an unscoped peer result look like the caller's verification, so fail closed.
+    process.exit(runTypecheck ? EXIT_NOT_CHECKED : 0);
   }
 
   if (!findings.length) {

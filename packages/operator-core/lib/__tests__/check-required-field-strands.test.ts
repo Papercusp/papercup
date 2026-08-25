@@ -13,7 +13,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFil
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
+import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
 
 const ROOT = resolve(__dirname, '../../../..');
 
@@ -510,6 +510,55 @@ describe('formatNoFindings — "examined nothing" must never read as "clean"', (
     const code = exitForNoFindings({ examinedFiles: files, identicalFiles: identical, declared });
     expect(msg.startsWith('⚠ NOT CHECKED')).toBe(code !== 0);
     expect(msg.startsWith('✓')).toBe(code === 0);
+  });
+});
+
+describe('inferred shared-tree findings — never claim a peer result for the caller', () => {
+  it('marks peer findings untrusted and skips typecheck after the caller change is swept into HEAD', () => {
+    const tmp = makeCleanRepo();
+    try {
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: tmp, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+
+      // Simulate the caller's required-field edit being committed by git-sync before the
+      // caller runs the guard, then leave a different agent's required-field edit dirty.
+      writeFileSync(join(tmp, FILE_A), 'export interface A { id: string; callerField: number }\n');
+      git('add', FILE_A);
+      git('commit', '-qm', 'git-sync caller sweep');
+      writeFileSync(join(tmp, FILE_B), 'export interface B { id: string; peerField: number }\n');
+
+      // If the guard accidentally forwards the inferred peer finding into lint-tsc, this
+      // sentinel makes the regression fail loudly instead of doing real work in the temp repo.
+      writeFileSync(join(tmp, 'scripts/lint-tsc.mjs'), 'process.exit(99);\n');
+      const result = spawnSync('node', ['scripts/check-required-field-strands.mjs', '--typecheck'], {
+        cwd: tmp,
+        encoding: 'utf8',
+        timeout: 60_000,
+        killSignal: 'SIGKILL',
+      });
+      const out = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+      expect(result.status).toBe(2);
+      expect(out).toContain('NOT CHECKED');
+      expect(out).toContain('no required-field addition is attributable to this caller');
+      expect(out).toContain('B.peerField');
+      expect(out).toContain('--typecheck: NOT RUN');
+      expect(out).not.toContain('typecheck reported errors ATTRIBUTED');
+      expect(out).not.toContain('callerField');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  it('exposes the attribution split to JSON consumers', () => {
+    const msg = formatUnattributedFindings(
+      [{ file: FILE_B, added: [{ path: 'B.peerField', reason: 'added-required' }] }],
+      'HEAD',
+      [FILE_B],
+    );
+    expect(msg).toContain('no required-field addition is attributable to this caller');
+    expect(msg).toContain('B.peerField');
+    expect(msg).not.toMatch(/^✓/m);
   });
 });
 
