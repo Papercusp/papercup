@@ -30,7 +30,12 @@ import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver
 import { GCP_CLOUD_PLATFORM_SCOPE, createGcpWorkspaceHostAcquireAuth } from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
 import { assertGcpImmutableImageId } from './gcp-image-family';
-import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, gcpWorkspaceHostLabelValue } from './gcp-safety';
+import {
+  GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS,
+  gcpWorkspaceHostLabelValue,
+  type GcpManagedWorkspaceHostResourceObservation,
+  type GcpWorkspaceHostInventoryEvidence,
+} from './gcp-safety';
 
 export { createGcpWorkspaceHostApiClient, GoogleComputeWorkspaceHostApiClient } from './gcp-api-client';
 export type { GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
@@ -118,6 +123,58 @@ export interface GcpSubnetworkInsertInput {
   region: string;
   privateIpGoogleAccess: true;
   stackType: 'IPV4_ONLY';
+}
+
+export interface GcpRouterInsertInput {
+  name: string;
+  network: string;
+  region: string;
+}
+
+export interface GcpNatInsertInput {
+  name: string;
+  routerName: string;
+  network: string;
+  subnetwork: string;
+  region: string;
+  natIpAllocateOption: 'AUTO_ONLY';
+  sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS';
+  minPortsPerVm: 64;
+  enableEndpointIndependentMapping: false;
+}
+
+export interface GcpNatObservation extends GcpResourceObservation {
+  routerName: string;
+  network: string;
+  subnetwork: string;
+  region: string;
+  natIpAllocateOption: 'AUTO_ONLY';
+  sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS';
+}
+
+export interface GcpRouterObservation extends GcpResourceObservation {
+  network: string;
+  region: string;
+  natNames: readonly string[];
+}
+
+export interface GcpWorkspaceHostInventoryRequest {
+  projectId: string;
+  region: string;
+  workspaceId: string;
+  deterministicNames: {
+    networks: readonly string[];
+    subnetworks: readonly string[];
+    firewalls: readonly string[];
+    routers: readonly string[];
+    nats: readonly { routerName: string; name: string }[];
+  };
+}
+
+export interface GcpWorkspaceHostInventorySnapshot {
+  complete: true;
+  observed: readonly GcpManagedWorkspaceHostResourceObservation[];
+  inventoryEvidence: readonly GcpWorkspaceHostInventoryEvidence[];
 }
 
 export interface GcpFirewallInsertInput {
@@ -208,10 +265,13 @@ export interface GcpWorkspaceHostApiClient {
     desired: WorkspaceHostDesiredSpec,
     connection: WorkspaceHostProviderConnection,
   ): Promise<WorkspaceHostPriceEstimate>;
+  inventoryManagedResources(request: GcpWorkspaceHostInventoryRequest): Promise<GcpWorkspaceHostInventorySnapshot>;
 
   getNetwork(projectId: string, name: string): Promise<GcpResourceObservation | undefined>;
   getSubnetwork(projectId: string, region: string, name: string): Promise<GcpResourceObservation | undefined>;
   getFirewall(projectId: string, name: string): Promise<GcpFirewallObservation | undefined>;
+  getRouter(projectId: string, region: string, name: string): Promise<GcpRouterObservation | undefined>;
+  getNat(projectId: string, region: string, routerName: string, name: string): Promise<GcpNatObservation | undefined>;
   getDisk(projectId: string, zone: string, name: string): Promise<GcpDiskObservation | undefined>;
   getInstance(projectId: string, zone: string, name: string): Promise<GcpInstanceObservation | undefined>;
   getSnapshot(projectId: string, name: string): Promise<GcpSnapshotObservation | undefined>;
@@ -224,6 +284,13 @@ export interface GcpWorkspaceHostApiClient {
     requestId: string,
   ): Promise<GcpOperationRef>;
   insertFirewall(projectId: string, input: GcpFirewallInsertInput, requestId: string): Promise<GcpOperationRef>;
+  insertRouter(
+    projectId: string,
+    region: string,
+    input: GcpRouterInsertInput,
+    requestId: string,
+  ): Promise<GcpOperationRef>;
+  insertNat(projectId: string, region: string, input: GcpNatInsertInput, requestId: string): Promise<GcpOperationRef>;
   insertDisk(projectId: string, zone: string, input: GcpDiskInsertInput, requestId: string): Promise<GcpOperationRef>;
   insertInstance(
     projectId: string,
@@ -244,6 +311,14 @@ export interface GcpWorkspaceHostApiClient {
   deleteInstance(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
   deleteDisk(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
   deleteFirewall(projectId: string, name: string, requestId: string): Promise<GcpOperationRef>;
+  deleteNat(
+    projectId: string,
+    region: string,
+    routerName: string,
+    name: string,
+    requestId: string,
+  ): Promise<GcpOperationRef>;
+  deleteRouter(projectId: string, region: string, name: string, requestId: string): Promise<GcpOperationRef>;
   deleteSubnetwork(projectId: string, region: string, name: string, requestId: string): Promise<GcpOperationRef>;
   deleteNetwork(projectId: string, name: string, requestId: string): Promise<GcpOperationRef>;
   waitForOperation(operation: GcpOperationRef, signal?: AbortSignal): Promise<GcpOperationObservation>;
@@ -259,6 +334,8 @@ interface ManagedNetworkSettings {
   networkName: string;
   subnetworkName: string;
   firewallName: string;
+  routerName: string;
+  natName: string;
   ipCidrRange: string;
 }
 
@@ -349,6 +426,22 @@ type GcpStepInput =
       managed: true;
     }
   | {
+      op: 'insert-router';
+      projectId: string;
+      region: string;
+      requestId: string;
+      request: GcpRouterInsertInput;
+      hostId: string;
+    }
+  | {
+      op: 'insert-nat';
+      projectId: string;
+      region: string;
+      requestId: string;
+      request: GcpNatInsertInput;
+      hostId: string;
+    }
+  | {
       op: 'use-existing-firewall';
       projectId: string;
       firewallName: string;
@@ -372,6 +465,7 @@ type GcpStepInput =
       request: GcpInstanceInsertInput;
       hostId: string;
       requiresFirewall: boolean;
+      requiresNat: boolean;
     }
   | {
       op: 'start-instance' | 'stop-instance' | 'reset-instance' | 'repair-instance';
@@ -390,10 +484,18 @@ type GcpStepInput =
       hostId: string;
     }
   | {
-      op: 'delete-instance' | 'delete-disk' | 'delete-firewall' | 'delete-subnetwork' | 'delete-network';
+      op:
+        | 'delete-instance'
+        | 'delete-disk'
+        | 'delete-firewall'
+        | 'delete-nat'
+        | 'delete-router'
+        | 'delete-subnetwork'
+        | 'delete-network';
       projectId: string;
       requestId: string;
       resourceName: string;
+      routerName?: string;
       region?: string;
       zone?: string;
       hostId: string;
@@ -406,6 +508,8 @@ const DISK_KIND = 'disk';
 const NETWORK_KIND = 'network';
 const SUBNETWORK_KIND = 'subnetwork';
 const FIREWALL_KIND = 'firewall';
+const ROUTER_KIND = 'router';
+const NAT_KIND = 'nat';
 const EXISTING_NETWORK_KIND = 'existing-network';
 const EXISTING_SUBNETWORK_KIND = 'existing-subnetwork';
 const EXISTING_FIREWALL_KIND = 'existing-firewall';
@@ -874,6 +978,9 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
       firewallName:
         optionalString(networkRecord.firewallName, 'gcp.desired.provider.network.firewallName') ??
         `${base}-${access.kind === 'gcp-iap-ssh' ? 'iap' : 'ssh'}`,
+      routerName:
+        optionalString(networkRecord.routerName, 'gcp.desired.provider.network.routerName') ?? `${base}-router`,
+      natName: optionalString(networkRecord.natName, 'gcp.desired.provider.network.natName') ?? `${base}-nat`,
       ipCidrRange:
         optionalString(networkRecord.ipCidrRange, 'gcp.desired.provider.network.ipCidrRange') ?? '10.132.0.0/24',
     };
@@ -1191,6 +1298,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             requiresFirewall: request.host.resources.some((item) =>
               [FIREWALL_KIND, EXISTING_FIREWALL_KIND].includes(item.kind),
             ),
+            requiresNat: request.host.resources.some((item) => item.kind === NAT_KIND),
             request: {
               ...observed.recreateInput,
               disks: [
@@ -1315,6 +1423,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     const steps: WorkspaceHostPlanStep[] = [];
     let subnetworkStepId: string;
     let firewallStepId: string | undefined;
+    let natStepId: string | undefined;
     if (settings.network.mode === 'managed') {
       steps.push(
         {
@@ -1387,6 +1496,57 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             },
           } satisfies GcpStepInput,
         });
+      }
+      if (!settings.access.externalIp) {
+        steps.push(
+          {
+            id: 'create-router',
+            action: request.action,
+            resourceKind: ROUTER_KIND,
+            dependsOn: ['create-network'],
+            destructive: false,
+            idempotencyKey: `${request.idempotencyKey}:router`,
+            input: {
+              op: 'insert-router',
+              projectId: settings.projectId,
+              region: desired.region,
+              requestId: gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:router`),
+              hostId: desired.hostId,
+              request: {
+                name: settings.network.routerName,
+                network: settings.network.networkName,
+                region: desired.region,
+              },
+            } satisfies GcpStepInput,
+          },
+          {
+            id: 'create-nat',
+            action: request.action,
+            resourceKind: NAT_KIND,
+            dependsOn: ['create-router', 'create-subnetwork'],
+            destructive: false,
+            idempotencyKey: `${request.idempotencyKey}:nat`,
+            input: {
+              op: 'insert-nat',
+              projectId: settings.projectId,
+              region: desired.region,
+              requestId: gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:nat`),
+              hostId: desired.hostId,
+              request: {
+                name: settings.network.natName,
+                routerName: settings.network.routerName,
+                network: settings.network.networkName,
+                subnetwork: settings.network.subnetworkName,
+                region: desired.region,
+                natIpAllocateOption: 'AUTO_ONLY',
+                sourceSubnetworkIpRangesToNat: 'LIST_OF_SUBNETWORKS',
+                minPortsPerVm: 64,
+                enableEndpointIndependentMapping: false,
+              },
+            } satisfies GcpStepInput,
+          },
+        );
+        natStepId = 'create-nat';
       }
     } else {
       steps.push(
@@ -1483,7 +1643,12 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       id: 'create-instance',
       action: request.action,
       resourceKind: VM_KIND,
-      dependsOn: [subnetworkStepId, ...(firewallStepId ? [firewallStepId] : []), 'create-data-disk'],
+      dependsOn: [
+        subnetworkStepId,
+        ...(firewallStepId ? [firewallStepId] : []),
+        ...(natStepId ? [natStepId] : []),
+        'create-data-disk',
+      ],
       destructive: false,
       idempotencyKey: instanceKey,
       input: {
@@ -1493,6 +1658,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         requestId: gcpWorkspaceHostRequestUuid(instanceKey),
         hostId: desired.hostId,
         requiresFirewall: settings.access.firewallRequired,
+        requiresNat: natStepId !== undefined,
         request: {
           name: settings.instanceName,
           zone: settings.zone,
@@ -1547,7 +1713,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     const managed = request.host.resources.filter(
       (item) =>
         item.target === GCP_WORKSPACE_HOST_TARGET &&
-        [VM_KIND, DISK_KIND, FIREWALL_KIND, SUBNETWORK_KIND, NETWORK_KIND].includes(item.kind),
+        [VM_KIND, DISK_KIND, FIREWALL_KIND, NAT_KIND, ROUTER_KIND, SUBNETWORK_KIND, NETWORK_KIND].includes(item.kind),
     );
     if (managed.length === 0) throw new Error('GCP destroy requires known managed resources');
     const projectId = requireString(managed[0]?.parentProviderId ?? ctx.connection.scope?.id, 'GCP projectId');
@@ -1589,6 +1755,8 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       [VM_KIND, 'delete-instance'],
       [DISK_KIND, 'delete-disk'],
       [FIREWALL_KIND, 'delete-firewall'],
+      [NAT_KIND, 'delete-nat'],
+      [ROUTER_KIND, 'delete-router'],
       [SUBNETWORK_KIND, 'delete-subnetwork'],
       [NETWORK_KIND, 'delete-network'],
     ];
@@ -1618,6 +1786,14 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             projectId,
             requestId: gcpWorkspaceHostRequestUuid(key),
             resourceName: item.providerId,
+            ...(kind === NAT_KIND
+              ? {
+                  routerName: requireString(
+                    managed.find((candidate) => candidate.kind === ROUTER_KIND)?.providerId,
+                    'GCP destroy NAT router identity',
+                  ),
+                }
+              : {}),
             region: item.region,
             zone: item.zone,
             hostId: request.host.hostId,
@@ -1705,6 +1881,38 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
             )
           : this.inProgress(request, operation.name);
       }
+      case 'insert-router': {
+        requireKnownResource(request.knownResources, [NETWORK_KIND], request.step.id);
+        const operation = await this.client.insertRouter(input.projectId, input.region, input.request, input.requestId);
+        if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
+        const found = await this.client.getRouter(input.projectId, input.region, input.request.name);
+        return found
+          ? this.applied(
+              request,
+              resource(ROUTER_KIND, found.name, { parentProviderId: input.projectId, region: input.region }),
+              operation.name,
+            )
+          : this.inProgress(request, operation.name);
+      }
+      case 'insert-nat': {
+        requireKnownResource(request.knownResources, [ROUTER_KIND], request.step.id);
+        requireKnownResource(request.knownResources, [SUBNETWORK_KIND], request.step.id);
+        const operation = await this.client.insertNat(input.projectId, input.region, input.request, input.requestId);
+        if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
+        const found = await this.client.getNat(
+          input.projectId,
+          input.region,
+          input.request.routerName,
+          input.request.name,
+        );
+        return found
+          ? this.applied(
+              request,
+              resource(NAT_KIND, found.name, { parentProviderId: input.projectId, region: input.region }),
+              operation.name,
+            )
+          : this.inProgress(request, operation.name);
+      }
       case 'insert-disk': {
         const operation = await this.client.insertDisk(input.projectId, input.zone, input.request, input.requestId);
         if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
@@ -1726,6 +1934,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         if (input.requiresFirewall) {
           requireKnownResource(request.knownResources, [FIREWALL_KIND, EXISTING_FIREWALL_KIND], request.step.id);
         }
+        if (input.requiresNat) requireKnownResource(request.knownResources, [NAT_KIND], request.step.id);
         requireKnownResource(request.knownResources, [DISK_KIND], request.step.id);
         const operation = await this.client.insertInstance(input.projectId, input.zone, input.request, input.requestId);
         if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
@@ -1796,6 +2005,8 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       case 'delete-instance':
       case 'delete-disk':
       case 'delete-firewall':
+      case 'delete-nat':
+      case 'delete-router':
       case 'delete-subnetwork':
       case 'delete-network':
         return this.deleteResource(request, input, ctx.signal);
@@ -1831,7 +2042,16 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     request: WorkspaceHostApplyRequest,
     input: Extract<
       GcpStepInput,
-      { op: 'delete-instance' | 'delete-disk' | 'delete-firewall' | 'delete-subnetwork' | 'delete-network' }
+      {
+        op:
+          | 'delete-instance'
+          | 'delete-disk'
+          | 'delete-firewall'
+          | 'delete-nat'
+          | 'delete-router'
+          | 'delete-subnetwork'
+          | 'delete-network';
+      }
     >,
     signal?: AbortSignal,
   ): Promise<WorkspaceHostApplyResult> {
@@ -1844,6 +2064,14 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       if (disk.attachedInstanceNames.length > 0) {
         throw new Error(
           `GCP data disk '${disk.name}' is still attached to ${disk.attachedInstanceNames.join(', ')}; refusing deletion`,
+        );
+      }
+    }
+    if (input.op === 'delete-router') {
+      const router = before as GcpRouterObservation;
+      if (router.natNames.length > 0) {
+        throw new Error(
+          `GCP router '${router.name}' still contains NAT configuration(s): ${router.natNames.join(', ')}; refusing deletion`,
         );
       }
     }
@@ -1864,6 +2092,21 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       );
     else if (input.op === 'delete-firewall')
       operation = await this.client.deleteFirewall(input.projectId, input.resourceName, input.requestId);
+    else if (input.op === 'delete-nat')
+      operation = await this.client.deleteNat(
+        input.projectId,
+        requireString(input.region, 'delete NAT region'),
+        requireString(input.routerName, 'delete NAT router'),
+        input.resourceName,
+        input.requestId,
+      );
+    else if (input.op === 'delete-router')
+      operation = await this.client.deleteRouter(
+        input.projectId,
+        requireString(input.region, 'delete router region'),
+        input.resourceName,
+        input.requestId,
+      );
     else if (input.op === 'delete-subnetwork')
       operation = await this.client.deleteSubnetwork(
         input.projectId,
@@ -1881,7 +2124,16 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
   private describeDeleteTarget(
     input: Extract<
       GcpStepInput,
-      { op: 'delete-instance' | 'delete-disk' | 'delete-firewall' | 'delete-subnetwork' | 'delete-network' }
+      {
+        op:
+          | 'delete-instance'
+          | 'delete-disk'
+          | 'delete-firewall'
+          | 'delete-nat'
+          | 'delete-router'
+          | 'delete-subnetwork'
+          | 'delete-network';
+      }
     >,
   ): Promise<GcpResourceObservation | undefined> {
     if (input.op === 'delete-instance')
@@ -1893,6 +2145,19 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     if (input.op === 'delete-disk')
       return this.client.getDisk(input.projectId, requireString(input.zone, 'delete disk zone'), input.resourceName);
     if (input.op === 'delete-firewall') return this.client.getFirewall(input.projectId, input.resourceName);
+    if (input.op === 'delete-nat')
+      return this.client.getNat(
+        input.projectId,
+        requireString(input.region, 'delete NAT region'),
+        requireString(input.routerName, 'delete NAT router'),
+        input.resourceName,
+      );
+    if (input.op === 'delete-router')
+      return this.client.getRouter(
+        input.projectId,
+        requireString(input.region, 'delete router region'),
+        input.resourceName,
+      );
     if (input.op === 'delete-subnetwork')
       return this.client.getSubnetwork(
         input.projectId,
@@ -1934,13 +2199,17 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
                 ? SUBNETWORK_KIND
                 : input.op === 'insert-firewall'
                   ? FIREWALL_KIND
-                  : input.op === 'use-existing-network'
-                    ? EXISTING_NETWORK_KIND
-                    : input.op === 'use-existing-subnetwork'
-                      ? EXISTING_SUBNETWORK_KIND
-                      : input.op === 'use-existing-firewall'
-                        ? EXISTING_FIREWALL_KIND
-                        : undefined;
+                  : input.op === 'insert-router'
+                    ? ROUTER_KIND
+                    : input.op === 'insert-nat'
+                      ? NAT_KIND
+                      : input.op === 'use-existing-network'
+                        ? EXISTING_NETWORK_KIND
+                        : input.op === 'use-existing-subnetwork'
+                          ? EXISTING_SUBNETWORK_KIND
+                          : input.op === 'use-existing-firewall'
+                            ? EXISTING_FIREWALL_KIND
+                            : undefined;
       if (kind)
         return this.unchanged(
           request,
@@ -1977,6 +2246,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
     if (input.op === 'use-existing-subnetwork')
       return this.client.getSubnetwork(input.projectId, input.region, input.subnetworkName);
     if (input.op === 'insert-firewall') return this.client.getFirewall(input.projectId, input.request.name);
+    if (input.op === 'insert-router') return this.client.getRouter(input.projectId, input.region, input.request.name);
+    if (input.op === 'insert-nat')
+      return this.client.getNat(input.projectId, input.region, input.request.routerName, input.request.name);
     if (input.op === 'use-existing-firewall') return this.client.getFirewall(input.projectId, input.firewallName);
     if (input.op === 'insert-disk') return this.client.getDisk(input.projectId, input.zone, input.request.name);
     if (input.op === 'insert-instance') return this.client.getInstance(input.projectId, input.zone, input.request.name);
