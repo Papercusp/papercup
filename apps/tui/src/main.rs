@@ -3163,16 +3163,25 @@ async fn agent_chat_load(
     };
     match client.get_agent_chat(&harness, &summary.id).await {
         Ok(chat) => {
-            let approvals = client
-                .list_agent_chat_approvals(&harness, &chat.id)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|approval| models::PendingApproval {
-                    call_id: approval.call_id,
-                    tool_name: approval.tool_name,
-                })
-                .collect();
+            let approvals = match client.list_agent_chat_approvals(&harness, &chat.id).await {
+                Ok(pending) => pending
+                    .into_iter()
+                    .map(|approval| models::PendingApproval {
+                        call_id: approval.call_id,
+                        tool_name: approval.tool_name,
+                    })
+                    .collect(),
+                Err(error) => {
+                    // Keep the transcript usable, but never turn an unreadable
+                    // parked-approval set into a confident empty set. The status
+                    // error remains visible after the chat itself loads.
+                    let _ = tx.send(Event::Error(format!(
+                        "native agent chat approval hydration ({}): {error}",
+                        chat.id
+                    )));
+                    Vec::new()
+                }
+            };
             let _ = tx.send(Event::AgentChatLoaded {
                 harness,
                 chat_id: Some(chat.id),
@@ -3259,17 +3268,25 @@ async fn stream_agent_chat_turn(
     // A call parked by an earlier turn — or before this pane ever attached — is
     // otherwise invisible here, so the pane would render no way to answer it and
     // the loop would stay blocked forever. Best-effort: a failure to read the
-    // pending set must not abort the turn the user just sent.
-    if let Ok(pending) = client.list_agent_chat_approvals(&harness, &chat_id).await {
-        let _ = tx.send(Event::AgentChatApprovalsHydrated(
-            pending
-                .into_iter()
-                .map(|p| models::PendingApproval {
-                    call_id: p.call_id,
-                    tool_name: p.tool_name,
-                })
-                .collect(),
-        ));
+    // pending set must not abort the turn the user just sent, but the failure is
+    // still surfaced — otherwise a parked reconnect state looks confidently empty.
+    match client.list_agent_chat_approvals(&harness, &chat_id).await {
+        Ok(pending) => {
+            let _ = tx.send(Event::AgentChatApprovalsHydrated(
+                pending
+                    .into_iter()
+                    .map(|p| models::PendingApproval {
+                        call_id: p.call_id,
+                        tool_name: p.tool_name,
+                    })
+                    .collect(),
+            ));
+        }
+        Err(error) => {
+            let _ = tx.send(Event::Error(format!(
+                "native agent chat approval hydration ({chat_id}): {error}"
+            )));
+        }
     }
 
     let request = AgentChatTurnRequest {
