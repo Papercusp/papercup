@@ -1407,7 +1407,7 @@ export function gateRedStreakBroadcast(opts: {
  * 'record-only' writes every field exactly as a red does, and changes ONE thing: it does not
  * advance the streak.
  */
-export type GateStallClass = 'reset' | 'noop' | 'red' | 'record-only';
+export type GateStallClass = 'reset' | 'noop' | 'red' | 'record-only' | 'no-verdict';
 
 /**
  * Classify a tick's `status` (+ whether the release pin moved since the last
