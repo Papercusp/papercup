@@ -205,6 +205,20 @@ export function ompModelCompatibilityNotice(model: any): null;
  * launches remain byte-identical. Pure + exported for argv regression tests.
  */
 export function ompTitleMitigationArgs(model: any): string[];
+/**
+ * TEMPORARY compatibility guard for EI-21439300345381616.
+ *
+ * OMP 18.0.3's OpenRouter Responses route persists a failed ox-alpha request as
+ * an empty assistant turn (429 / zero usage). `PI_OPENROUTER_RESPONSES=0` keeps
+ * this exact model on the stable OpenRouter route until OMP fixes that behavior.
+ * An explicit environment override wins; unrelated models and backends remain
+ * byte-identical. Pure + exported for fresh role, fresh SU, and resume tests.
+ */
+export function ompResponsesCompatibilityEnv(agent: any, model: any, env?: NodeJS.ProcessEnv): {
+    PI_OPENROUTER_RESPONSES?: undefined;
+} | {
+    PI_OPENROUTER_RESPONSES: string;
+};
 export function modelArgsFor(agent: any, model: any): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
@@ -2164,6 +2178,107 @@ export function classifyLiveHostActivity(meta: any, { now, idleThresholdMs }?: {
     idleMs: number | null;
 };
 /**
+ * WI-41663 — the SECOND liveness oracle, and the only one that sees a HEADLESS
+ * codex session.
+ *
+ * WHY THIS EXISTS. `classifyLiveHostActivity` above reads the psu PTY-HOST
+ * registry (`findLiveHostFor` → `~/.papercusp/psu-pty/<sid>.json`), which is
+ * written only by a psu pty host. A headless session — the common shape here,
+ * driven by the operator's wake executor as a cold-loop `codex exec … resume` —
+ * registers no such file, so the WI-3455 double-host guard sees nothing, lets
+ * the resume through, and the owner gets codex's own opaque refusal instead:
+ *
+ *   Error: thread/resume: thread/resume failed: thread <id> already has an
+ *          active writer (code -32600)
+ *
+ * …which names no route, so the reasonable read is "my session is broken". It is
+ * not. It is working. That is precisely why it cannot be resumed.
+ *
+ * Codex enforces ONE WRITER PER THREAD with an flock on
+ * `<CODEX_HOME>/thread-writer-locks/<uuid>.lock`. That lock is the authority
+ * codex itself consults, so reading it is not a second opinion — it is the same
+ * verdict, obtained early enough for psu to explain it and name a real route.
+ * `/proc/locks` yields the holder PID with no subprocess and without an flock
+ * attempt of our own (which would itself contend).
+ *
+ * FAIL-OPEN, EVERY PATH. An unreadable `/proc/locks`, a non-Linux host, a missing
+ * lock file all report "not held" — the exact pre-WI-41663 behavior. This guard
+ * may only ever turn an error that WAS going to happen into a better message; it
+ * must never block a resume that would have worked.
+ */
+/** Decode a Linux `dev_t` into major/minor, the glibc way. `/proc/locks` prints
+ *  them as `%02x:%02x`, so callers compare numerically rather than by string —
+ *  zero-padding is not something to depend on. Pure — exported for tests. */
+export function devMajorMinor(dev: any): {
+    major: number;
+    minor: number;
+};
+/**
+ * The PID holding a WRITE flock on the given device+inode per `/proc/locks` text,
+ * else null. Pure — exported for tests.
+ *
+ * A row whose second token is `->` is a BLOCKED WAITER, not a holder. Counting
+ * one would report a live writer for a thread whose real writer had already
+ * exited — i.e. refuse a resume that is now perfectly legal.
+ * Rows read: `<n>: FLOCK ADVISORY WRITE <pid> <maj>:<min>:<ino> <start> <end>`.
+ */
+export function findFlockWriteHolderPid(procLocksText: any, { major, minor, inode }: {
+    major: any;
+    minor: any;
+    inode: any;
+}): number | null;
+/** `<CODEX_HOME>/thread-writer-locks/<uuid>.lock`. Pure — exported for tests. */
+export function codexThreadWriterLockPath(codexHome: any, sessionId: any): string | null;
+/**
+ * Is a codex thread currently open by a live writer?
+ * `{ held, pid, lockPath, sessionId, reason }` — fail-open on every error path.
+ *
+ * `sessionId` null ⇒ scan the whole home. psu resumes a tracked row with no
+ * recorded native id as `resume --last`, which lands on the home's most recent
+ * thread — usually the live one — so "any held writer in this home" is the honest
+ * question there. It is also the right question for the picker, where a row's
+ * recorded `sessionId` can have DRIFTED from the thread actually running: a codex
+ * carry-respawn mints a new uuid, and adv row #18052 still recorded 01a036a4-…
+ * while 01a038ff-… was the live thread.
+ * Pure apart from the injected readers — exported for tests.
+ */
+export function codexThreadWriterHolder(codexHome: any, sessionId: any, { readProcLocks, statFile, listDir, }?: {
+    readProcLocks?: (() => string) | undefined;
+    statFile?: import("fs").StatSyncFn | undefined;
+    listDir?: typeof safeReaddir | undefined;
+}): {
+    held: boolean;
+    pid: null;
+    lockPath: null;
+    sessionId: null;
+    reason: any;
+} | {
+    held: boolean;
+    pid: number;
+    lockPath: string | null;
+    sessionId: any;
+    reason: string;
+};
+/**
+ * The CODEX_HOME a resume of `session` will run in — an explicit `codexHome`
+ * (WI-3884: the home a rollout was actually FOUND in by disk scan) wins over the
+ * row-id derivation. Extracted so the writer-lock guard, the picker and the spawn
+ * all ask about the SAME home; a second copy of this derivation is how a guard
+ * ends up reporting confidently on a directory nothing runs in. Pure — exported
+ * for tests.
+ */
+export function codexResumeHome(session: any, home?: string): any;
+/**
+ * The refusal text for a resume codex is going to reject anyway. Pure — exported
+ * for tests.
+ *
+ * Deliberately NOT overridable by `PSU_FORCE_RESUME=1`: that variable overrides
+ * psu's OWN double-host guard, and anyone reaching for it here would simply
+ * receive codex's `-32600` one step later. Saying so is the difference between a
+ * message that ends the confusion and one that relocates it.
+ */
+export function codexActiveWriterMessage(session: any, holder: any): string;
+/**
  * The bootstrap-su POST body that mints the NEW tracked row + native id for a
  * fork. Pure — exported for tests. A fork carries over the original's workspace +
  * plan and lands in the ORIGINAL's cwd (harness_slug:null so the server doesn't
@@ -2925,3 +3040,5 @@ export type ResumeClaimOutcome = {
     detail?: string;
 };
 import { spawn } from "node:child_process";
+declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
+export {};
