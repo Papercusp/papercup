@@ -31,6 +31,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import runTool, {
   detachedTestTimeoutHint,
   discoverKnownHiveCheckoutRoots,
+  groupDirectVitestRoutes,
   normalizeTestFilePaths,
   selectTestFileRoot,
 } from '../run';
@@ -102,6 +103,9 @@ const CROSS_WORKSPACE_GREEN_TARGET = 'apps/operator/lib/verify-tauri-headless-po
 const SIDESTAGE_HIVE_ROOT = discoverKnownHiveCheckoutRoots().find(
   (root) => root.endsWith('/sidestage') && existsSync(join(root, 'apps/web/src/auction.test.tsx')),
 );
+const SIDESTAGE_LAYERED_TARGET = SIDESTAGE_HIVE_ROOT
+  ? join(SIDESTAGE_HIVE_ROOT, 'apps/web/src/CopilotPanel.integration.test.tsx')
+  : null;
 
 const selectorRoots: string[] = [];
 const selectorPhantom = join(tmpdir(), 'papercusp-testing-run-selector-phantom-does-not-exist');
@@ -133,37 +137,81 @@ describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
   const files = ['packages/x/real.test.ts'];
 
   it('falls back to the canonical repo when the requested root is invalid and the canonical repo resolves every file', () => {
-    expect(selectTestFileRoot(files, selectorPhantom, { discoveredRoots: [], canonicalRepoRoot: selectorCanonical }))
-      .toEqual({ root: selectorCanonical, source: 'canonical-repo' });
+    expect(
+      selectTestFileRoot(files, selectorPhantom, { discoveredRoots: [], canonicalRepoRoot: selectorCanonical }),
+    ).toEqual({ root: selectorCanonical, source: 'canonical-repo' });
   });
 
   it('keeps a valid requested checkout authoritative even when the canonical repo also resolves every file', () => {
-    expect(selectTestFileRoot(files, selectorRequested, { discoveredRoots: [], canonicalRepoRoot: selectorCanonical }))
-      .toEqual({ root: selectorRequested, source: 'requested' });
+    expect(
+      selectTestFileRoot(files, selectorRequested, { discoveredRoots: [], canonicalRepoRoot: selectorCanonical }),
+    ).toEqual({ root: selectorRequested, source: 'requested' });
   });
 
   it('selects exactly one resolving discovered Hive checkout before the canonical repo', async () => {
     const discovered = await makeScratchTestCheckout('papercusp-testing-run-selector-discovered-');
-    expect(selectTestFileRoot(files, selectorPhantom, {
-      discoveredRoots: [discovered],
-      canonicalRepoRoot: selectorCanonical,
-    })).toEqual({ root: discovered, source: 'hive-checkout' });
+    expect(
+      selectTestFileRoot(files, selectorPhantom, {
+        discoveredRoots: [discovered],
+        canonicalRepoRoot: selectorCanonical,
+      }),
+    ).toEqual({ root: discovered, source: 'hive-checkout' });
   });
 
   it('refuses a discovered-root tie instead of letting the canonical repo break the ambiguity', async () => {
     const first = await makeScratchTestCheckout('papercusp-testing-run-selector-tie-a-');
     const second = await makeScratchTestCheckout('papercusp-testing-run-selector-tie-b-');
-    expect(selectTestFileRoot(files, selectorPhantom, {
-      discoveredRoots: [first, second],
-      canonicalRepoRoot: selectorCanonical,
-    })).toEqual({ root: selectorPhantom, source: 'requested' });
+    expect(
+      selectTestFileRoot(files, selectorPhantom, {
+        discoveredRoots: [first, second],
+        canonicalRepoRoot: selectorCanonical,
+      }),
+    ).toEqual({ root: selectorPhantom, source: 'requested' });
   });
 
   it('preserves the requested root when no valid checkout resolves every file', () => {
-    expect(selectTestFileRoot(['packages/x/missing.test.ts'], selectorPhantom, {
-      discoveredRoots: [],
-      canonicalRepoRoot: selectorCanonical,
-    })).toEqual({ root: selectorPhantom, source: 'requested' });
+    expect(
+      selectTestFileRoot(['packages/x/missing.test.ts'], selectorPhantom, {
+        discoveredRoots: [],
+        canonicalRepoRoot: selectorCanonical,
+      }),
+    ).toEqual({ root: selectorPhantom, source: 'requested' });
+  });
+});
+
+describe('groupDirectVitestRoutes (EI-21414388102126733)', () => {
+  it('runs an external-Hive file from its owning workspace instead of the project root', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-direct-workspace-'));
+    selectorRoots.push(root);
+    await mkdir(join(root, '.git'));
+    await mkdir(join(root, 'apps/web/src'), { recursive: true });
+    await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['apps/*'] }));
+    await writeFile(join(root, 'apps/web/package.json'), JSON.stringify({ name: '@example/web' }));
+    await writeFile(join(root, 'apps/web/vite.config.ts'), 'export default {};\n');
+    await writeFile(join(root, 'apps/web/src/widget.integration.test.tsx'), 'export {};\n');
+
+    expect(groupDirectVitestRoutes(['apps/web/src/widget.integration.test.tsx'], root)).toEqual([
+      { cwd: join(root, 'apps/web'), files: ['src/widget.integration.test.tsx'] },
+    ]);
+  });
+
+  it('selects an owning workspace integration config when one exists', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-direct-layer-'));
+    selectorRoots.push(root);
+    await mkdir(join(root, '.git'));
+    await mkdir(join(root, 'packages/db/src'), { recursive: true });
+    await writeFile(join(root, 'package.json'), JSON.stringify({ private: true, workspaces: ['packages/*'] }));
+    await writeFile(join(root, 'packages/db/package.json'), JSON.stringify({ name: '@example/db' }));
+    await writeFile(join(root, 'packages/db/vitest.integration.config.ts'), 'export default {};\n');
+    await writeFile(join(root, 'packages/db/src/db.integration.test.ts'), 'export {};\n');
+
+    expect(groupDirectVitestRoutes(['packages/db/src/db.integration.test.ts'], root)).toEqual([
+      {
+        cwd: join(root, 'packages/db'),
+        config: 'vitest.integration.config.ts',
+        files: ['src/db.integration.test.ts'],
+      },
+    ]);
   });
 });
 
@@ -208,6 +256,20 @@ describe('testing:run (integration)', () => {
       const out = await body(call({ files: [join(SIDESTAGE_HIVE_ROOT as string, 'apps/web/src/auction.test.tsx')] }));
 
       expect(out.ok).toBe(true);
+      expect(out.failed).toBe(0);
+      expect(out.files).toBe(1);
+      expect(out.passed).toBeGreaterThan(0);
+      expect(out.root).toBe(SIDESTAGE_HIVE_ROOT);
+    },
+    180_000,
+  );
+
+  it.skipIf(!SIDESTAGE_LAYERED_TARGET || !existsSync(SIDESTAGE_LAYERED_TARGET))(
+    'routes a layered external-Hive file through its owning workspace config',
+    async () => {
+      const out = await body(call({ files: [SIDESTAGE_LAYERED_TARGET as string] }));
+
+      expect(out.ok, JSON.stringify(out)).toBe(true);
       expect(out.failed).toBe(0);
       expect(out.files).toBe(1);
       expect(out.passed).toBeGreaterThan(0);
@@ -395,9 +457,7 @@ describe('testing:run (integration)', () => {
     expect(hint).toContain('npm run test:file -- <test path>');
     expect(hint).toContain('owning Vitest config');
     expect(hint).not.toContain('capability:inspect');
-    expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.test.ts'])).toContain(
-      'capability:inspect',
-    );
+    expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.test.ts'])).toContain('capability:inspect');
   });
 
   // EI-19324351741370770: the foreground timeout used to kill only the router

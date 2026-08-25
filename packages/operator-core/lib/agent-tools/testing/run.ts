@@ -60,10 +60,7 @@ import {
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
-import {
-  FOREGROUND_TIMEOUT_CEILING_MS,
-  clampForegroundTimeoutMs,
-} from '../capability/foreground-transport-cap';
+import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
@@ -95,9 +92,7 @@ export function detachedTestTimeoutHint(files: string[]): string {
   return hasIntegrationFile ? DETACHED_ROUTER_TEST_HINT : DETACHED_INSPECT_TEST_HINT;
 }
 
-type TestFilePathResolution =
-  | { ok: true; files: string[] }
-  | { ok: false; path: string; matches: string[] };
+type TestFilePathResolution = { ok: true; files: string[] } | { ok: false; path: string; matches: string[] };
 
 /**
  * Expand the root package's declared workspace directories. The repository's root workspace
@@ -109,7 +104,7 @@ function declaredWorkspaceDirs(root: string): string[] {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
       workspaces?: string[] | { packages?: string[] };
     };
-    const patterns = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages ?? [];
+    const patterns = Array.isArray(pkg.workspaces) ? pkg.workspaces : (pkg.workspaces?.packages ?? []);
     const dirs = new Set<string>();
     for (const pattern of patterns) {
       if (typeof pattern !== 'string' || !pattern) continue;
@@ -159,14 +154,16 @@ function isWorkspaceCheckoutRoot(root: string): boolean {
 
 function isVitestCheckoutRoot(root: string): boolean {
   if (!isWorkspaceCheckoutRoot(root)) return false;
-  return [
-    'vitest.config.ts',
-    'vitest.config.mts',
-    'vitest.config.cts',
-    'vitest.config.js',
-    'vitest.config.mjs',
-    'vitest.config.cjs',
-  ].some((name) => existsSync(join(root, name))) || existsSync(join(root, 'node_modules', '.bin', 'vitest'));
+  return (
+    [
+      'vitest.config.ts',
+      'vitest.config.mts',
+      'vitest.config.cts',
+      'vitest.config.js',
+      'vitest.config.mjs',
+      'vitest.config.cjs',
+    ].some((name) => existsSync(join(root, name))) || existsSync(join(root, 'node_modules', '.bin', 'vitest'))
+  );
 }
 
 /** Find the owning superproject for an absolute path, bounded to its ancestors. */
@@ -223,11 +220,7 @@ export function discoverKnownHiveCheckoutRoots(
   return [...roots];
 }
 
-export type TestFileRootSource =
-  | 'requested'
-  | 'absolute-file-checkout'
-  | 'hive-checkout'
-  | 'canonical-repo';
+export type TestFileRootSource = 'requested' | 'absolute-file-checkout' | 'hive-checkout' | 'canonical-repo';
 
 export interface SelectedTestFileRoot {
   root: string;
@@ -262,9 +255,8 @@ export function selectTestFileRoot(
   } = {},
 ): SelectedTestFileRoot {
   const preferredRoot = checkoutRootForTestFiles(files, requested);
-  const preferredSource: TestFileRootSource = resolve(preferredRoot) === resolve(requested)
-    ? 'requested'
-    : 'absolute-file-checkout';
+  const preferredSource: TestFileRootSource =
+    resolve(preferredRoot) === resolve(requested) ? 'requested' : 'absolute-file-checkout';
   const selected = selectUnambiguousEvidenceRoot<TestFileRootSource>({
     preferred: { root: preferredRoot, source: preferredSource },
     candidates: (opts.discoveredRoots ?? discoverKnownHiveCheckoutRoots()).map((root) => ({
@@ -321,10 +313,10 @@ const ROUTER_EXIT_ROUTE_ERROR = 2;
  *  typed refusal naming why nothing could be judged. Discriminate on `error`. */
 export type TestFilesCoreResult =
   | ({ ok: boolean; runId: string; root: string; error?: undefined } & DistilledTestRun & {
-      failuresReturned?: number;
-      failuresOmitted?: number;
-      truncationNote?: string;
-    })
+        failuresReturned?: number;
+        failuresOmitted?: number;
+        truncationNote?: string;
+      })
   | {
       ok: false;
       runId: string;
@@ -396,7 +388,11 @@ function runTestProcess(
       } catch {
         // Group already gone, or (non-POSIX) negative-pid kill unsupported — fall back
         // to at least killing the router itself so we never silently no-op.
-        try { child.kill(signal); } catch { /* already gone */ }
+        try {
+          child.kill(signal);
+        } catch {
+          /* already gone */
+        }
       }
     };
     const killGroupWithFallback = () => {
@@ -420,7 +416,9 @@ function runTestProcess(
     else signal?.addEventListener('abort', onAbort, { once: true });
     // Cap retained diagnostics — the router's own output is a fallback for the
     // error paths, never the success path's payload.
-    const append = (b: Buffer) => { output = (output + b.toString('utf8')).slice(-8192); };
+    const append = (b: Buffer) => {
+      output = (output + b.toString('utf8')).slice(-8192);
+    };
     child.stdout?.on('data', append);
     child.stderr?.on('data', append);
     const finish = (outcome: RouterOutcome) => {
@@ -430,7 +428,9 @@ function runTestProcess(
       signal?.removeEventListener('abort', onAbort);
       resolve(outcome);
     };
-    child.on('error', (e) => finish({ code: null, timedOut, aborted, output: `${output}\n[spawn-error] ${e.message}` }));
+    child.on('error', (e) =>
+      finish({ code: null, timedOut, aborted, output: `${output}\n[spawn-error] ${e.message}` }),
+    );
     child.on('close', (code) => finish({ code, timedOut, aborted, output }));
   });
 }
@@ -443,15 +443,7 @@ function runRouter(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<RouterOutcome> {
-  return runTestProcess(
-    process.execPath,
-    [join(cwd, 'scripts', 'test-files.mjs')],
-    args,
-    cwd,
-    env,
-    timeoutMs,
-    signal,
-  );
+  return runTestProcess(process.execPath, [join(cwd, 'scripts', 'test-files.mjs')], args, cwd, env, timeoutMs, signal);
 }
 
 /** Spawn a generic external Vitest checkout through its local npm installation. */
@@ -471,6 +463,87 @@ function runDirectVitest(
     timeoutMs,
     signal,
   );
+}
+
+export interface DirectVitestRouteGroup {
+  /** The declared npm workspace that owns these files (or the checkout root). */
+  cwd: string;
+  /** Layer-specific config, relative to cwd. Omitted to let Vitest/Vite discover the workspace default. */
+  config?: string;
+  /** Exact file filters, relative to cwd. */
+  files: string[];
+}
+
+const VITEST_LAYER_CONFIGS = {
+  integration: [
+    'vitest.integration.config.ts',
+    'vitest.integration.config.mts',
+    'vitest.integration.config.cts',
+    'vitest.integration.config.js',
+    'vitest.integration.config.mjs',
+    'vitest.integration.config.cjs',
+  ],
+  browser: [
+    'vitest.browser.config.ts',
+    'vitest.browser.config.mts',
+    'vitest.browser.config.cts',
+    'vitest.browser.config.js',
+    'vitest.browser.config.mjs',
+    'vitest.browser.config.cjs',
+  ],
+} as const;
+
+function directVitestLayerConfig(file: string, workspaceRoot: string, checkoutRoot: string): string | undefined {
+  const layer = /\.browser\.test\.[cm]?[jt]sx?$/i.test(file)
+    ? 'browser'
+    : /\.integration\.test\.[cm]?[jt]sx?$/i.test(file)
+      ? 'integration'
+      : null;
+  if (layer === null) return undefined;
+
+  let dir = workspaceRoot;
+  while (isInsideRoot(checkoutRoot, dir)) {
+    for (const name of VITEST_LAYER_CONFIGS[layer]) {
+      if (existsSync(join(dir, name))) return relative(workspaceRoot, join(dir, name)).split(sep).join('/');
+    }
+    if (resolve(dir) === resolve(checkoutRoot)) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+/**
+ * Route a generic external Vitest checkout at the same OWNERSHIP grain as npm workspaces.
+ *
+ * Papercusp checkouts use scripts/test-files.mjs. Managed Hive repositories often do not,
+ * so the old fallback ran every requested file from the repository root. In a project-style
+ * Vitest config that eagerly loads every child config, one explicit layered filename then
+ * poisons unrelated unit configs before the owning workspace can run it (EI-21414388102126733).
+ * Running from the nearest declared workspace preserves its Vite environment and confines
+ * config discovery; an available integration/browser config is selected explicitly.
+ */
+export function groupDirectVitestRoutes(
+  files: string[],
+  root: string,
+  workspaceDirs: string[] = declaredWorkspaceDirs(root),
+): DirectVitestRouteGroup[] {
+  const groups = new Map<string, DirectVitestRouteGroup>();
+  const workspaceRoots = workspaceDirs.map((dir) => resolve(root, dir)).sort((a, b) => b.length - a.length);
+
+  for (const file of files) {
+    const absolute = isAbsolute(file) ? resolve(file) : resolve(root, file);
+    const cwd = workspaceRoots.find((candidate) => isInsideRoot(candidate, absolute)) ?? root;
+    const requested = relative(cwd, absolute).split(sep).join('/');
+    const config = directVitestLayerConfig(requested, cwd, root);
+    const key = `${cwd}\0${config ?? ''}`;
+    const group = groups.get(key) ?? { cwd, ...(config ? { config } : {}), files: [] };
+    group.files.push(requested);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()];
 }
 
 /**
@@ -557,30 +630,61 @@ export async function runTestFilesCore(opts: {
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',
     };
-    const outcome = await (hasRouter ? runRouter(
-      [...pathResolution.files, '--', ...vitestArgs],
-      root,
-      // The reporter inside the child reads this and stamps run_group_id, so
-      // the run's per-file rows are findable afterwards. We write no rows here.
-      //
-      // P-004: arm coverage attribution for the same child. Stamped unconditionally even
-      // though a unit fork cannot use it — the fork disarms itself off the no-real-pg rail
-      // (see attribution/context.ts), which is a decision only the fork can make correctly,
-      // because one `files` array routinely spans both layers.
-      {
-        ...process.env,
-        PAPERCUSP_TEST_RUN_GROUP: runId,
-        PAPERCUSP_TEST_ATTRIBUTION: '1',
-      },
-      timeoutMs,
-      opts.signal,
-    ) : runDirectVitest(
-      ['run', ...vitestArgs, ...pathResolution.files],
-      root,
-      childEnv,
-      timeoutMs,
-      opts.signal,
-    ));
+    let directReportPaths: string[] | null = null;
+    let outcome: RouterOutcome;
+    if (hasRouter) {
+      outcome = await runRouter(
+        [...pathResolution.files, '--', ...vitestArgs],
+        root,
+        // The reporter inside the child reads this and stamps run_group_id, so
+        // the run's per-file rows are findable afterwards. We write no rows here.
+        //
+        // P-004: arm coverage attribution for the same child. Stamped unconditionally even
+        // though a unit fork cannot use it — the fork disarms itself off the no-real-pg rail
+        // (see attribution/context.ts), which is a decision only the fork can make correctly,
+        // because one `files` array routinely spans both layers.
+        childEnv,
+        timeoutMs,
+        opts.signal,
+      );
+    } else {
+      const groups = groupDirectVitestRoutes(pathResolution.files, root);
+      directReportPaths = groups.map((_, index) => (index === 0 ? reportPath : join(dir, `report.${index}.json`)));
+      const deadline = Date.now() + timeoutMs;
+      const outcomes: RouterOutcome[] = [];
+      for (const [index, group] of groups.entries()) {
+        if (opts.signal?.aborted) {
+          outcomes.push({
+            code: null,
+            timedOut: false,
+            aborted: true,
+            output: 'caller aborted before direct Vitest group start',
+          });
+          break;
+        }
+        const remaining = Math.max(1000, deadline - Date.now());
+        const groupArgs = [
+          'run',
+          ...(group.config ? ['--config', group.config] : []),
+          ...vitestArgs.map((arg) =>
+            arg.startsWith('--outputFile=') ? `--outputFile=${directReportPaths?.[index] ?? reportPath}` : arg,
+          ),
+          ...group.files,
+        ];
+        const groupOutcome = await runDirectVitest(groupArgs, group.cwd, childEnv, remaining, opts.signal);
+        outcomes.push(groupOutcome);
+        if (groupOutcome.timedOut || groupOutcome.aborted) break;
+      }
+      outcome = {
+        code: outcomes.some((entry) => entry.code === null) ? null : outcomes.some((entry) => entry.code !== 0) ? 1 : 0,
+        timedOut: outcomes.some((entry) => entry.timedOut),
+        aborted: outcomes.some((entry) => entry.aborted),
+        output: outcomes
+          .map((entry) => entry.output)
+          .join('\n')
+          .slice(-8192),
+      };
+    }
 
     if (outcome.aborted) {
       return {
@@ -599,9 +703,7 @@ export async function runTestFilesCore(opts: {
         root,
         error: 'timeout',
         timeoutMs,
-        hint:
-          `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
-          detachedTestTimeoutHint(opts.files),
+        hint: `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` + detachedTestTimeoutHint(opts.files),
         routerOutput: outcome.output.slice(-2000),
       };
     }
@@ -618,12 +720,22 @@ export async function runTestFilesCore(opts: {
     // run: a two-workspace request with a RED first group returned `failed:0,
     // failures:[]`. `dir` is a private mkdtemp this function owns, so every *.json in
     // it belongs to THIS run and can be merged without any output parsing.
+    if (directReportPaths?.some((path) => !existsSync(path))) {
+      return {
+        ok: false,
+        runId,
+        root,
+        error: 'no_report',
+        routerOutput: outcome.output.slice(-2000),
+      };
+    }
+
     let reportTexts: string[];
     try {
       const names = (await readdir(dir)).filter((n) => n.endsWith('.json')).sort();
-      reportTexts = (
-        await Promise.all(names.map((n) => readFile(join(dir, n), 'utf8').catch(() => null)))
-      ).filter((t): t is string => t !== null);
+      reportTexts = (await Promise.all(names.map((n) => readFile(join(dir, n), 'utf8').catch(() => null)))).filter(
+        (t): t is string => t !== null,
+      );
     } catch {
       reportTexts = [];
     }
@@ -670,12 +782,11 @@ export async function runTestFilesCore(opts: {
     // LIST COUNT and so cannot bound bytes at all — one long assertion diff
     // outweighs fifty terse failures. Counts stay complete and a cut is stated
     // explicitly, so `failures.length` is never readable as "how many failed".
-    return boundTestRunPayload(
-      { ok: run.failed === 0 && outcome.code === 0, runId, root },
-      run,
-    ) as TestFilesCoreResult;
+    return boundTestRunPayload({ ok: run.failed === 0 && outcome.code === 0, runId, root }, run) as TestFilesCoreResult;
   } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => { /* best-effort */ });
+    await rm(dir, { recursive: true, force: true }).catch(() => {
+      /* best-effort */
+    });
   }
 }
 
@@ -685,8 +796,10 @@ export default defineTool({
     'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
-    notWhen: 'Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.',
-    chaining: 'testing:run → a red here is real (the router refuses false-greens); testing:flakiness { } on a failing file tells you whether it is a known flake before you treat it as your regression.',
+    notWhen:
+      'Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.',
+    chaining:
+      'testing:run → a red here is real (the router refuses false-greens); testing:flakiness { } on a failing file tells you whether it is a known flake before you treat it as your regression.',
   },
   capability: 'testing:run',
   requirePrincipal: false,
@@ -699,15 +812,36 @@ export default defineTool({
   // verdict. The dedicated capability grant stays inert for every other tool.
   agentRoles: [...AGENT_ROLES, 'judge'],
   args: z.object({
-    files: z.array(z.string().min(1)).min(1).max(50)
-      .describe('Test file paths (repo-root-relative, absolute, or relative to exactly one declared npm workspace). Each is routed to its owning workspace + Vitest config; ambiguous workspace-relative paths and paths matching zero tests fail the call rather than passing vacuously.'),
-    testNamePattern: z.string().min(1).max(200).optional()
-      .describe("Run only tests whose full name matches (Vitest `-t`). Use to re-run ONE failing test from a previous result's `failures[].test`. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`), never reported as a pass — vitest merely skips them all and exits 0."),
-    timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
+    files: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(50)
+      .describe(
+        'Test file paths (repo-root-relative, absolute, or relative to exactly one declared npm workspace). Each is routed to its owning workspace + Vitest config; ambiguous workspace-relative paths and paths matching zero tests fail the call rather than passing vacuously.',
+      ),
+    testNamePattern: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        "Run only tests whose full name matches (Vitest `-t`). Use to re-run ONE failing test from a previous result's `failures[].test`. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`), never reported as a pass — vitest merely skips them all and exits 0.",
+      ),
+    timeoutMs: z
+      .number()
+      .int()
+      .min(1000)
+      .max(MAX_TIMEOUT_MS)
+      .optional()
       .describe(
         `Hard budget for the whole run. Default ${DEFAULT_TIMEOUT_MS}ms, but a FOREGROUND run is clamped to ${FOREGROUND_TIMEOUT_CEILING_MS}ms — below the ~55s MCP transport cap — so a slow suite returns an actionable timeout instead of an opaque transport error. For a longer suite, follow the timeout response's detached recovery; integration files use the npm run test:file router.`,
       ),
-    maxFailures: z.number().int().min(1).max(100).optional()
+    maxFailures: z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .optional()
       .describe(
         `Cap the returned failures list (default 20). Counts stay complete; \`failuresTruncated\` flags the cut. Note this caps the LIST COUNT, not bytes — the result is separately bounded to ${TESTING_RUN_MAX_PAYLOAD_BYTES} B, which is what actually limits a run with huge assertion diffs.`,
       ),
