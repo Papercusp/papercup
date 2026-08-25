@@ -44,14 +44,38 @@ import { writeStderrSync, writeStdoutSync } from "./lib/write-stdout-sync.mjs";
 // that makes `validateDocPart` a shared import above. A second copy of the cut order or
 // the budget arithmetic here would drift from the thing that actually authors the file,
 // and this report's whole value is that it predicts what project-doc-parts will DO.
-// Importing is safe: that module runs its main() only under an `import.meta.url` guard.
-import {
-  CHARS_PER_TOKEN_KNOWN_MODEL,
-  CLIENTS,
-  memoryWarningThreshold,
-  projectClient,
-  readProjectedParts,
-} from "./project-doc-parts.mjs";
+//
+// It is loaded DYNAMICALLY on purpose. This script has no "type": "module" above it, so
+// tsx compiles it to CJS, and project-doc-parts.mjs has top-level await inside its
+// `import.meta.url` main-guard — which a CJS transform cannot express ("Top-level await
+// is currently not supported with the cjs output format"). A dynamic import stays a real
+// ESM load and crosses that boundary; a static one fails at startup. Loading it is
+// otherwise safe: the main-guard means importing runs no projection.
+type ProjectorModule = {
+  CHARS_PER_TOKEN_KNOWN_MODEL: number;
+  CLIENTS: { client: string; file: string; reader: string }[];
+  memoryWarningThreshold: (o: {
+    contextTokens: number;
+    charsPerToken: number;
+  }) => number;
+  projectClient: (
+    parts: ProjectionRow[],
+    opts: {
+      client: string;
+      docId: string;
+      file: string;
+      reader: string;
+      budget: number;
+    },
+  ) => { text: string; kept: ProjectionRow[]; dropped: ProjectionRow[] };
+  readProjectedParts: (
+    client: { query: Function },
+    docId: string,
+  ) => Promise<ProjectionRow[]>;
+};
+
+const loadProjector = async (): Promise<ProjectorModule> =>
+  (await import("./project-doc-parts.mjs")) as unknown as ProjectorModule;
 
 const WORKSPACE_ID =
   process.env.PAPERCUSP_WORKSPACE_ID ?? "papercusp-workspace";
@@ -260,6 +284,7 @@ function applyEditInMemory(
  * four unrelated rules from every agent's context and was very nearly blamed on a peer.)
  */
 function projectionImpact(
+  proj: ProjectorModule,
   before: ProjectionRow[],
   after: ProjectionRow[],
   docId: string,
@@ -267,12 +292,12 @@ function projectionImpact(
   // The SAME defaults project-doc-parts' main() uses, via the same imported function —
   // a hardcoded number here would silently stop predicting the real projection the day
   // the budget moves.
-  const budget = memoryWarningThreshold({
+  const budget = proj.memoryWarningThreshold({
     contextTokens: 400_000,
-    charsPerToken: CHARS_PER_TOKEN_KNOWN_MODEL,
+    charsPerToken: proj.CHARS_PER_TOKEN_KNOWN_MODEL,
   });
 
-  return CLIENTS.map(
+  return proj.CLIENTS.map(
     ({
       client,
       file,
@@ -284,8 +309,8 @@ function projectionImpact(
     }): ClientImpact => {
       try {
         const opts = { client, docId, file, reader, budget };
-        const b = projectClient(before, opts);
-        const a = projectClient(after, opts);
+        const b = proj.projectClient(before, opts);
+        const a = proj.projectClient(after, opts);
         const droppedBefore = new Set<string>(
           b.dropped.map((p: ProjectionRow) => p.part_key),
         );
@@ -394,6 +419,9 @@ async function main(): Promise<void> {
         "  --create --kind <invariant|pointer|recipe|prose> --ordinal <n>",
         '  --target-section <heading> --client-scope <all|claude|codex|""> --project-rank <n>',
         "  --revive               un-tombstone a retired part",
+        "  --accept-evictions     proceed with a --write that pushes OTHER parts out of",
+        "                         the file. Every run reports the eviction delta; this",
+        "                         flag is what makes causing one deliberate.",
         "",
         "After a successful write, project it:  node scripts/project-doc-parts.mjs --write",
       ].join("\n"),
@@ -639,12 +667,58 @@ async function main(): Promise<void> {
       console.log(describeColumnChanges(existing, nextComparable));
     } else console.log(`    new body    ${body.length} chars`);
 
+    // ── projection impact ────────────────────────────────────────────────────
+    // Computed IN MEMORY from the pre-edit rows this open transaction can still see,
+    // so the author learns what their edit displaces from the command that makes it.
+    // Before this, the only eviction signal was project-doc-parts' absolute `⚠ cut:`
+    // line — a DIFFERENT command, run later, if at all.
+    const proj = await loadProjector();
+    const beforeRows: ProjectionRow[] = await proj.readProjectedParts(
+      client,
+      docId,
+    );
+    const afterRows = applyEditInMemory(
+      beforeRows,
+      partKey,
+      merged.clientScope.length > 0
+        ? {
+            part_key: partKey,
+            kind: merged.kind,
+            body,
+            ordinal: merged.ordinal,
+            client_scope: merged.clientScope,
+            target_section: merged.targetSection,
+            project_rank: merged.projectRank,
+          }
+        : null,
+    );
+    const impacts = projectionImpact(proj, beforeRows, afterRows, docId);
+    console.log(renderImpact(impacts, partKey));
+
     if (!write) {
       await client.query("ROLLBACK");
       console.log(
         "\n  ✓ dry run — nothing written. Re-run with --write to apply.",
       );
       return;
+    }
+
+    // Eviction is gated, growth is not. A net-negative headroom change is ordinary and
+    // harmless; a rule DISAPPEARING from every agent's context is the actual damage, and
+    // it is the one outcome an author never intends silently. Same shape as the
+    // dark-flags watermark: the write is not forbidden, it is made deliberate.
+    const evicting = impacts.filter((i) => i.evicted.length > 0);
+    if (evicting.length > 0 && args.get("accept-evictions") !== true) {
+      await client.query("ROLLBACK");
+      die(
+        REFUSED,
+        `✗ refused: this edit would evict ${evicting
+          .map((i) => `${i.evicted.length} part(s) from ${i.file}`)
+          .join(", ")}.\n` +
+          `  The evicted rules are listed above — they would vanish from every agent's\n` +
+          `  context, and nothing else in the pipeline would report it as YOUR doing.\n` +
+          `  Shorten this body, or re-run with --accept-evictions to do it on purpose.`,
+      );
     }
 
     const input: SetDocPartInput = {
