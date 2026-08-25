@@ -463,7 +463,7 @@ describe('buildReleaseTrace', () => {
       green: null,
       candidate: sha,
     });
-    expect(out.gate.candidateVerdict.reason).toContain('active checkpoint');
+    expect(out.gate.candidateVerdict.reason).toContain('checkpoint run');
     expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
   });
 
