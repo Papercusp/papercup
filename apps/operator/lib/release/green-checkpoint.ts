@@ -49,6 +49,7 @@ import {
   type RangeChangeSet,
 } from "./git-ops";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
+import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
 // WI-38224: a plain constant, so a STATIC import is correct here even though this file otherwise
 // prefers dynamic ones — it must be evaluated in THIS process to describe THIS process.
 import { RUNNER_PROCESS_BOOTED_AT_MS } from "@papercusp/operator-core/lib/release/in-flight-retriage";
@@ -735,7 +736,10 @@ export interface CheckpointResult {
      *  are a HOST fault, not a verdict about the code. `green: null` (never `false`) — see
      *  {@link classifyInfraFault}. Treated as a no-op by `classifyGateStallStatus`, exactly
      *  like 'migrations-pending', so an infra fault cannot inflate the red streak. */
-    | "infra-inconclusive";
+    | "infra-inconclusive"
+    /** EI-21436432400491183: the candidate was already fossil-old when this red suite result
+     *  was ready to publish. No code verdict is rendered; the next run must judge a fresher tip. */
+    | "candidate-fossil";
   /** D-001 / WI-39944: present when this verdict belongs to the serialized frozen
    * repair queue. Downstream recording uses it to suppress the legacy moving-tip
    * release-fixer dispatch; the queue already owns one targeted fixer. */
@@ -7978,6 +7982,7 @@ async function runGreenCheckpointInner(
   // the number is still complete, and the first at which it is actionable. Fail-soft in every
   // direction: a git failure here degrades to logging the gap alone, and nothing below reads
   // the result. See `candidateSelectedAtMs` for why this exists.
+  let candidateCommittedAtSecForVerdict: number | null = null;
   if (!earlyPreflightFailure) {
     const selectionToSuiteMs = Date.now() - candidateSelectedAtMs;
     let committedNote = "";
@@ -7990,6 +7995,7 @@ async function runGreenCheckpointInner(
       // git prints anything non-numeric. Without this guard the catch below never runs and the
       // line reads "candidate committed NaNm ago", which is worse than omitting it.
       if (Number.isFinite(committedAtSec)) {
+        candidateCommittedAtSecForVerdict = committedAtSec;
         const ageMin = Math.round((Date.now() / 1000 - committedAtSec) / 60);
         committedNote = `; candidate committed ${ageMin}m ago`;
       }
@@ -8073,6 +8079,47 @@ async function runGreenCheckpointInner(
       { candidate, green, promoted, reason, advancedTo },
       (s) => deps.log(s),
     );
+
+  // EI-21436432400491183: gate-verdict-freshness can identify a fossil only AFTER its red has
+  // been persisted. That is useful for readers, but it still leaves the stale failing-test
+  // signature in the repair queue and can dispatch agents against code the gate never judged
+  // as current. Refuse the red before `decision-pending`/`recordPendingVerdict` or any repair
+  // side effect. A missing commit timestamp is fail-open (the existing freshness reader also
+  // treats it as unavailable); pinned diagnostics remain intentionally untouched.
+  const candidateAgeAtVerdictMs =
+    candidateCommittedAtSecForVerdict == null
+      ? null
+      : Math.max(0, Date.now() - candidateCommittedAtSecForVerdict * 1_000);
+  if (
+    !diagnosticOnly &&
+    !green &&
+    candidateAgeAtVerdictMs != null &&
+    candidateAgeAtVerdictMs > CANDIDATE_FOSSIL_AGE_MS
+  ) {
+    const ageHours = Math.round((candidateAgeAtVerdictMs / 3_600_000) * 10) / 10;
+    const fossilSummary =
+      `green-checkpoint withheld a red verdict for candidate ${candidate.slice(0, 8)}: ` +
+      `the candidate was already ${ageHours}h old when the suite result was ready to publish ` +
+      `(threshold ${Math.round(CANDIDATE_FOSSIL_AGE_MS / 60_000)}m). ` +
+      `No failing-test signature was published; the next run must re-judge a fresh tip.`;
+    deps.log(fossilSummary);
+    stampPromotion(false, "candidate-fossil");
+    return {
+      advanced: false,
+      candidate,
+      from: lastReady,
+      green: null,
+      candidateSource,
+      ...(diagnostic ? { diagnostic } : {}),
+      reason: "candidate-fossil",
+      summary: fossilSummary,
+      ...(deps.runId ? { runId: deps.runId } : {}),
+      ...(logPath ? { logPath } : {}),
+      ...(isolationNote ? { isolationNote } : {}),
+      ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+    };
+  }
+
   if (diagnosticOnly) {
     const diagnosticGreen = infraFault ? null : green;
     const diagnosticSummary =
