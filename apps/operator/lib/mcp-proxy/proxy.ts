@@ -90,6 +90,21 @@ const UPSTREAM_AGENT = new http.Agent({
 });
 
 /**
+ * WI-41042 — one bounded, proxy-owned correlation key per client request. The proxy always
+ * overwrites this header before forwarding, so an untrusted client cannot inject an unbounded
+ * value into upstream logs or make two unrelated requests appear correlated.
+ */
+export const MCP_PROXY_TRACE_HEADER = 'x-papercusp-mcp-trace-id';
+export const MAX_MCP_PROXY_TRACE_ID_CHARS = 36; // randomUUID()'s fixed serialized width
+
+const configuredInitializeSlowMs = Number(process.env.PAPERCUSP_MCP_PROXY_INITIALIZE_SLOW_MS);
+/** Successful initialize requests are silent unless their end-to-end proxy time crosses this. */
+export const DEFAULT_INITIALIZE_SLOW_MS =
+  Number.isFinite(configuredInitializeSlowMs) && configuredInitializeSlowMs > 0
+    ? Math.floor(configuredInitializeSlowMs)
+    : 2_500;
+
+/**
  * W8 (backend-reliability-100pct-2026-07-03) — make the proxy's forwarded FAILURES VISIBLE.
  * A non-2xx the proxy forwards, a retry-recovery, or a window-exhaustion NEVER creates a
  * `tool_invocations` row (the request errors at the HTTP layer, BELOW tool dispatch), so the
@@ -176,6 +191,12 @@ export interface McpProxyOptions {
    *  (initialize / tools/list / ping). Defaults to HANDSHAKE_UPSTREAM_TIMEOUT_MS; injectable
    *  so tests can drive a stalling upstream without sleeping 8s. Never applied to a tools/call. */
   handshakeTimeoutMs?: number;
+  /**
+   * WI-41042 — emit a privacy-bounded initialize-stage record when a successful initialize
+   * crosses this end-to-end duration. Timeouts are always recorded. Injectable for tests;
+   * defaults to `PAPERCUSP_MCP_PROXY_INITIALIZE_SLOW_MS` or 2500ms.
+   */
+  initializeSlowMs?: number;
   /** Delay between retries while the upstream is refusing connections. */
   retryBackoffMs?: number;
   /**
@@ -1108,6 +1129,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     : 0;
   let handshakeInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
+  const initializeSlowMs = opts.initializeSlowMs ?? DEFAULT_INITIALIZE_SLOW_MS;
   const inFlightStarts = new Map<number, number>();
   let nextInFlightId = 0;
 
@@ -1263,6 +1285,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   };
 
   const server = http.createServer((req, res) => {
+    const receivedAt = Date.now();
     if (req.method === 'GET' && req.url === MCP_PROXY_LOCAL_HEALTH_PATH) {
       let target: McpProxyTarget | null = null;
       try {
@@ -1328,6 +1351,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     req.on('end', () => {
       void (async () => {
         const rawBody = Buffer.concat(chunks);
+        const bodyReadyAt = Date.now();
         // EI-19305299022434394 — admission control, checked BEFORE any upstream socket is
         // opened (and before we even bother classifying the forward). A request that arrives
         // while `maxInFlight` forwards are already outstanding is shed immediately with 429 +
@@ -1424,6 +1448,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           }
           handshakeGrantReservations = Math.max(0, handshakeGrantReservations - 1);
         }
+        const admittedAt = Date.now();
         const inFlightId = nextInFlightId++;
         const inFlightStartedAt = Date.now();
         inFlightStarts.set(inFlightId, inFlightStartedAt);
@@ -1444,11 +1469,38 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
           const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
           const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID });
+          const traceId = randomUUID();
+          fwd.headers[MCP_PROXY_TRACE_HEADER] = traceId;
           // WI-41042 detector gap: `klass:'idempotent'` folds initialize,
           // tools/list, ping, resources and prompts together. Preserve only the
           // bounded protocol method names in failure telemetry so the next
           // no-header stall identifies its handler path without logging args.
-          const rpcTrace = fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {};
+          const rpcTrace = {
+            traceId,
+            ...(fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {}),
+          };
+          const isInitialize = fwd.rpcMethods.includes('initialize');
+          const recordInitializeStage = (
+            outcome: 'slow_response' | 'timeout_retry' | 'timeout_exhausted',
+            upstreamMs: number,
+          ): void => {
+            const totalMs = Date.now() - receivedAt;
+            if (!isInitialize || (outcome === 'slow_response' && totalMs < initializeSlowMs)) return;
+            // Privacy boundary: request-specific fields are limited to the proxy-owned trace id,
+            // a finite outcome enum, and stage durations. Never add methods, tool names, args,
+            // headers, URLs, bodies, or error text to this record.
+            record({
+              kind: 'initialize_stage',
+              traceId,
+              outcome,
+              stages: {
+                bodyReadMs: Math.max(0, bodyReadyAt - receivedAt),
+                admissionWaitMs: Math.max(0, admittedAt - bodyReadyAt),
+                upstreamMs: Math.max(0, upstreamMs),
+                totalMs: Math.max(0, totalMs),
+              },
+            });
+          };
           // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
           // restart-sized window (~30 attempts) and amplifying a transient stall ~30x.
           const retryWindowMs = effectiveRetryWindowMs(req.url ?? '/', opts.retryWindowMs);
@@ -1468,6 +1520,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // Checked at the TOP so it also covers a client that left between two attempts.
             if (clientGone) break;
             attempts++;
+            const attemptStartedAt = Date.now();
             // WI-6740: bound the write-free control-plane batch tightly (see
             // HANDSHAKE_UPSTREAM_TIMEOUT_MS). EI-19305299022434394: a real tools/call is no
             // longer literally unbounded either — `maxHoldMs` (generous, default 10 min) is the
@@ -1508,6 +1561,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             } finally {
               abortAttempt = null;
             }
+            const upstreamMs = Date.now() - attemptStartedAt;
             // The abort above surfaces as an ordinary failed attempt; `clientGone` is what
             // decides, so a race between the abort landing and the response arriving cannot
             // write to a dead socket.
@@ -1523,6 +1577,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             if (outcome.ures) {
               const ures = outcome.ures;
               const status = ures.statusCode ?? 502;
+              recordInitializeStage('slow_response', upstreamMs);
               // P-010: :3070 shed this tools/call (event loop critically saturated). The tool
               // NEVER dispatched (429 = not fulfilled) → replay is write-safe for any class.
               // Drain the shed response to free the socket, wait Retry-After, and retry within
@@ -1584,12 +1639,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // handshake so a ~10s :3070 stall is a slightly-slower connect instead of a
             // session that is tool-dark for hours. Checked BEFORE the socket-error branch
             // so it gets its own (larger) bound rather than consuming MAX_POST_CONNECT_RETRIES.
-            if (
+            const retryTimedOutHandshake = Boolean(
               outcome.timedOut &&
-              handshakeTimeoutRetryable(
-                fwd.klass, handshakeTimeoutRetries, MAX_HANDSHAKE_TIMEOUT_RETRIES, elapsed, retryWindowMs,
-              )
-            ) {
+                handshakeTimeoutRetryable(
+                  fwd.klass,
+                  handshakeTimeoutRetries,
+                  MAX_HANDSHAKE_TIMEOUT_RETRIES,
+                  elapsed,
+                  retryWindowMs,
+                ),
+            );
+            if (outcome.timedOut) {
+              recordInitializeStage(
+                retryTimedOutHandshake ? 'timeout_retry' : 'timeout_exhausted',
+                upstreamMs,
+              );
+            }
+            if (retryTimedOutHandshake) {
               handshakeTimeoutRetries++;
               record({ kind: 'handshake_timeout_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, handshakeTimeoutRetries, elapsedMs: elapsed, ...rpcTrace });
               await new Promise((r) => setTimeout(r, backoff));
