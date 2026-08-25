@@ -12,6 +12,8 @@
  * reports exit-0 tasks as FAILED").
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { formatTaskOutcomeFields } from '../../../../scripts/lib/task-progress-line.mjs';
 
@@ -43,5 +45,19 @@ describe('formatTaskOutcomeFields', () => {
       exitStatus: 1,
       signal: 'none',
     });
+  });
+});
+
+describe('affected-tests synchronous spawn failures', () => {
+  const source = readFileSync(resolve(__dirname, '../../../../scripts/affected-tests.mjs'), 'utf8');
+
+  it('converts a synchronous E2BIG-class throw into an attributed terminal task result', () => {
+    // `spawn()` can throw before returning a ChildProcess (E2BIG does), so an `error`
+    // listener alone cannot observe it. Pin all three load-bearing effects: the boundary is
+    // caught, the task is named by a terminal progress marker, and the scheduler receives a
+    // nonzero result instead of a rejected shard / process-level exit-without-verdict.
+    expect(source).toMatch(/try\s*\{\s*child = spawn\(/);
+    expect(source).toContain('AFFECTED_TASK_PROGRESS state=spawn-error task=${progressTask}');
+    expect(source).toMatch(/resolveRun\(\{\s*status: 1,[\s\S]*?error: spawnError,/);
   });
 });

@@ -43,14 +43,17 @@ it collision-free:
   coordinate-before-editing out of fear of interfering. Make the edit your task needs and
   let the lock arbitrate; an unnecessary detour to avoid a peer is the mistake, not the edit.
 - **Declare a real intent + claim your lane — and hold a work-item before you edit.** On
-  starting a distinct piece of work, `coord:declare-intent { intent, current_plan_slug, items }`
-  — the intent line is what a blocked peer reads; `items` is the P-NNN plan-item lane only and
+  starting a distinct piece of work, `coord:declare-intent { intent, current_plan_slug, items }`.
+  This is the separate declaration call; the combined wake bootstrap is
+  `coord:orient { intent, planSlug, planItems }` — do not pass the declaration fields to orient.
+  The intent line is what a blocked peer reads; `items` is the P-NNN plan-item lane only and
   CLAIMS those plan items. **Do not put WI-/EI- work-item IDs in `items`**: the live schema
   rejects them. `scheduler:get_next` atomically claims a fleet-admitted WI-/EI- work-item and
   declares its intent automatically. If you hold multiple ad-hoc work-items, re-declare one
-  spanning prose intent with `coord:declare-intent { intent, items: [] }` (or omit `items`),
-  naming the work-item refs in the intent; leave `current_plan_slug` unset instead of using a
-  WI-/EI- id as a plan-lane or goal ref.
+  with `coord:declare-intent { intent }` — omit `items` so existing plan-item claims stay
+  untouched; use `items: []` only when you intentionally release a plan lane — and name the
+  work-item refs in the intent. Leave `current_plan_slug` unset on this ad-hoc declaration;
+  never use a WI-/EI- id as a plan-lane or goal ref.
   An unclaimed lane is invisible to peers → work gets double-placed. Before your
   first code/deliverable edit you MUST hold a work-item assigned to you — claim the plan item
   (declare-intent `{ items }` / `plan_items:claim`) or, for ad-hoc work, `work_items:create
@@ -122,9 +125,12 @@ kickoff adds mission specifics, never this:
   title, assign_to: self }` (creates AND claims in one write — no create→claim race).
   Pick `kind` by what the unit IS: `change` for a code edit (the default for coding
   work), `bug` for broken code, `task` ONLY for non-code work.
-- **Finish with `work_items:complete { id, completion, state:'done' }` — completion
-  EVIDENCE required** (what you verified and how). A bare "done" assertion is re-opened
-  by the leader's completion-integrity audit.
+- **Finish with `work_items:complete { id, completion, state:'done', assumptions:'none' }`
+  — `completion` is a structured OBJECT, never a bare prose string** (a string is rejected
+  `invalid_args`): at minimum `{ summary, testsRun, testResult, verifiedHow, filesChanged }`
+  — EVIDENCE of what you verified and how. `assumptions` is required on a terminal close
+  (`'none'` or fact keys). A bare "done" assertion is re-opened by the leader's
+  completion-integrity audit.
 - **Persist with `loop:arm`; each wake pull + advance one unit. Lane drained? Park ONE
   `events:await { event: 'work-item:claimable', payload_filter: <your claim spec's
   view>, timeout_sec: 1800 }`, then `loop:end`** — the pool refilling re-wakes you
@@ -150,7 +156,9 @@ kickoff adds mission specifics, never this:
   proceed now, don't re-wait.
 - **Wind-down on the leader's stand-down order:** finish only the atomic step in hand →
   `work_items:checkpoint` + release with a one-line reason (or complete with evidence) →
-  `loop:end` → ack the leader with a one-line disposition.
+  `loop:end` → `coord:ack { msg_id }` the leader's cue (a lifecycle RECEIPT — it takes only
+  msg_id and carries no free text), then send your one-line disposition as a separate
+  `coord:send { expects:'none', summary }`.
 
 ## Git — a background routine owns commit + push
 
@@ -179,6 +187,18 @@ there and redo it.
   sequences multiple subsystems: `plans:new` + `plans:add-item`, then `plans:start`
   (promotes items into work-items). Don't over-apply — a single work-item, a one-shot
   fix, or pure investigation needs no plan.
+- **Audit the complete source conversation before activating a draft plan.** Before
+  `draft → ready` / `active` or `plans:start`, use `sessions:search` / `sessions:read`
+  to re-read the full plan-related conversation — never rely on memory or a summary.
+  Extract every requirement, scope boundary, constraint, correction, rejected
+  alternative, decision, dependency, sequence, acceptance condition, unresolved
+  question, and promised follow-up; map each to a plan section, D-NNN, or P-NNN;
+  repair every omission; then record `plans:audit { phase:'activation', ... }` before
+  activating. A later edit PRESERVES that audit. Read the edit response's
+  `activationAudit` metadata, compare its audited/current revisions, and re-audit when
+  the edit changes meaning (requirements, scope, constraints, decisions, dependencies,
+  sequencing, acceptance criteria, open questions, or promised follow-ups). Spelling,
+  formatting, and other cosmetic-only edits do not need another audit.
 - **Decompose deliberately; don't reflex-parallelize.** Encode real `blocked-by` deps;
   fan out only when items are genuinely independent AND touch disjoint files (same-file
   "parallel" work just serializes on the locks).
@@ -226,19 +246,19 @@ there and redo it.
   it, not background weather to shrug at — and FILE it (`improvements:capture { kind:'bug' }`)
   the moment you notice, whether or not you then investigate: the flap itself is a bug even
   after it self-recovers.
-- **A red release/CI gate that's blocking your work is YOUR gate to green — not a queue to
-  wait in, route around, or hand off.** When the gate is red and that's why your verified
-  change isn't live, OWN greening it: find the ACTUAL failing tests (query the test-run ledger,
-  don't guess) and FIX them — even out of your lane, even in another agent's in-flight files,
-  even when the fix is in shared config that affects the whole fleet. A gate is shared
-  infrastructure; "those reds aren't mine" / "that's someone else's lane" / "I'll wait for
-  someone else to fix it" are INVALID excuses — a days-red gate is everyone's problem and the
-  next agent it blocks is you. Diagnose the ROOT cause first (one shared misconfiguration often
-  red-pins a whole class of tests — fixing it greens them all at once), fix it durably, and
-  verify the reds go green locally before claiming it. **Fixing the code is not the same as
-  greening the gate — do not conflate them.** The gate is a PERIODIC full-suite VERDICT, not a
-  live reaction to your commit: after your fix lands the gate stays red until the verdict
-  RE-RUNS. So getting your change live is THREE separate hops, each with its own lever —
+- **A red release/CI gate must have one concrete fixer — not a crowd of supervisors.**
+  When the gate is red and no live agent already owns and is progressing the repair, CLAIM and
+  OWN greening it: find the ACTUAL failing tests (query the test-run ledger, don't guess) and
+  FIX them — even out of your lane, even in another agent's in-flight files, even when the fix
+  is in shared config that affects the whole fleet. If a live fixer already owns and progresses
+  it, send useful evidence once, do not create a parallel supervisor or fallback loop, and stop
+  rereading the same status surfaces. A gate is shared infrastructure; "those reds aren't mine"
+  is not an excuse for leaving an UNOWNED gate red. Diagnose the ROOT cause first (one shared
+  misconfiguration often red-pins a whole class of tests — fixing it greens them all at once),
+  fix it durably, and verify the reds go green locally before claiming it. **Fixing the code is
+  not the same as greening the gate — do not conflate them.** The gate is a PERIODIC full-suite
+  VERDICT, not a live reaction to your commit: after your fix lands the gate stays red until
+  the verdict RE-RUNS. So getting your change live is THREE separate hops, each with its own lever —
   (1) COMMIT the fix (the auto-commit routine; force it if it's lagging), (2) RE-RUN THE VERDICT
   (fire it now; don't wait for the periodic tick to re-evaluate), (3) SHIP the now-green result
   (expedite the deploy). Assuming a code fix auto-greens the gate, or conflating "re-run the
@@ -308,6 +328,40 @@ there and redo it.
   Deviating requires saying explicitly WHY no template fits, to the owner, BEFORE you
   scaffold; starting an app with neither a materialized template nor that stated
   justification is non-compliance.
+
+## Anti-babysitting rule — monitoring is not work by default
+
+AUTO authorizes execution; it does not create a monitoring mission. **Fixing is work;
+watching someone else fix is not.**
+
+Do NOT arm a loop, register an await, or repeatedly inspect another agent's work unless ALL
+are true:
+
+1. The interactive owner explicitly requested ongoing monitoring, OR this session is the
+   registered owner/leader of the operation being monitored.
+2. This session holds the work-item or leadership role whose next action depends on the
+   transition.
+3. No other live agent already owns and is progressing that responsibility.
+4. The transition unlocks a concrete action this session will perform.
+5. The monitor has a named stop condition and a bounded no-delta budget.
+
+If another live owner is progressing:
+
+- send useful evidence once;
+- do not create a parallel supervisor;
+- do not arm a fallback loop;
+- end any existing monitor loop; and
+- stop reading the same status surfaces.
+
+A self-authored or inherited "monitor", "supervise", "evidence-only", or "keep watching"
+goal is not owner authorization. End it on the first wake unless the interactive owner
+explicitly requested monitoring. For non-owners, one no-delta wake is terminal: `loop:end`.
+For registered owners/leaders, use one exact event await when possible; do not also run a
+periodic polling loop for the same predicate.
+
+This rule governs agent-driven monitoring, not system routines or a registered fleet leader's
+real supervision duties. Those remain legitimate when their durable role, actionable
+transition, named stop condition, and bounded budget satisfy the contract above.
 
 ### The papercusp-way routing gate (intent → mechanism)
 
@@ -792,10 +846,13 @@ AUTO you skip the ask and still register per the tiers.
   the active drain item/plan. Outside DRAIN, for a suspected TOOL-CALL failure, preserve that
   immediacy without exciting the work queue:
   pass `improvements:capture { toolFailure:{ toolName, errorCode?, status?, message,
-  schemaRevision?, fieldPath?, runtimeVersion? } }`. A one-off lands immediately in correlated,
-  non-claimable probation; a second independent reporter or the invocation-ledger watchdog
-  promotes the SAME row. Set `reproduced:true`, `clearServerMismatch:true`, or
-  `hardInternal:true` only when you have that direct evidence — those bypass probation.
+  schemaRevision?, fieldPath?, runtimeVersion?, reproduced?, clearServerMismatch?, hardInternal? } }`.
+  The direct-evidence flags live INSIDE the `toolFailure` object: set
+  `toolFailure.reproduced:true`, `toolFailure.clearServerMismatch:true`, or
+  `toolFailure.hardInternal:true` only when you have that direct evidence — never pass those
+  flags at the top level. A one-off lands immediately in correlated, non-claimable probation; a
+  second independent reporter or the invocation-ledger watchdog promotes the SAME row. Those
+  nested flags bypass probation.
   A "bug" includes SUB-OPTIMAL, not just a hard stopper: a false alarm / wrong reading from any
   monitor or tracker (a false alarm is a bug in the alarm), a flap that self-recovered,
   degradation under load — the system must stay responsive at ANY load, so load-correlated
@@ -857,7 +914,7 @@ A **multi-agent coding platform**, run locally (Tauri desktop + embedded PG + a 
 
 Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, `features:*`, `issues:*`, `harness:get/status/…`) need to know **which** — and the `harness` arg is **per-call, not a session property**:
 1. **Session scoped to a harness** (`ctx.harnessSlug` set) — pass nothing.
-2. **Operator scope (the usual su case)** — **name the harness on the call**: `harness: '<slug>'` for a managed harness, **`harness: 'all'`** for Papercusp's *own* docs/plans. Without it you get `harness_required` — which never means "this session can't," only "you haven't said which yet." **You are never blocked.**
+2. **Operator scope (the usual su case)** — **name the harness on the call**: `harness: '<slug>'` for a managed harness. For Papercusp's engineering docs via `docs:*`, use `harness: 'engineering'` from a workspace-scoped session; `harness: 'all'` is reserved for a truly unscoped (`--all-workspaces`) session because the scoped transport rejects that cross-workspace sentinel. For `plans:*`, use a concrete in-scope harness or `harness: 'all'` only from an unscoped session. Without it you get `harness_required` — which never means "this session can't," only "you haven't said which yet." **You are never blocked.**
 
 Workspace-global tools (`harness:list`, `search:*`, `memory:*`, `coord:*`, `locks:*`, `flags:*`) work regardless of scope. A few need a workspace transaction (`audit:list`) and fail `workspace_required` until you pass `workspace: '<slug>'`. Topic → `papercusp:list_workspaces` → `harness:list { workspace }` → the per-harness verb. Don't paper over a missing slug/workspace with a default — ask one short question.
 
@@ -926,7 +983,7 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 
 - **Memory layers (facts = deterministic delivery; mem0 = what I know; coord = what's happening; insights = how things work).** A scoped standing CONCLUSION that future briefs/orients must carry VERBATIM → `facts:assert { scope, scopeRef?, key, body }` (upsert-by-key, TTL default 7d, folded into `coord:orient`'s `facts` block; bodies STORE at ≤500 chars — longer truncates with `…`, so write tight conclusions; `facts:list { scope }` before asserting; `facts:retract` when it stops being true). Fuzzy background worth semantic recall → `memory:remember`/`memory:search` (`harness_slug` for project facts; the shared store every client + agent recalls from — never a client-local silo). In-flight progress for a cold resume → `work_items:checkpoint` (per work-item) / `loop:checkpoint` (per armed engine loop) — never a prose message that scrolls away. Live ephemera → coord (declare-intent at start, handoff on transitions). Long-form runbooks → an MDX in `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` — write one when a proven non-obvious root cause would save the next agent an hour (in the SAME turn as the fix, not queued).
 - **Papercusp friction → `improvements:capture { kind, title }`** (the subjective sibling of the watchdog — a workaround you wrote, a misleading doc, a >3-attempt confusing failure). Managed-harness problems → `work_items:create`.
-- **Docs-first for "how does X work":** `docs:outline` → `docs:get { slugs }` → narrow with `heading:`; `docs:search` only when you don't know the page (operator scope: pass `harness:'all'`). Cite slug URLs; don't speculate from training memory. **Design-docs before UI** (`/internal/docs/design` + `design-phase:*`).
+- **Docs-first for "how does X work":** `docs:outline` → `docs:get { slugs }` → narrow with `heading:`; `docs:search` only when you don't know the page (workspace-scoped operator sessions: pass `harness:'engineering'` for Papercusp engineering docs; use `harness:'all'` only from an unscoped session). Cite slug URLs; don't speculate from training memory. **Design-docs before UI** (`/internal/docs/design` + `design-phase:*`).
 - **Subscribe → look up → file:** subscribe your areas (`watch:create { pattern: topic, targetKind:"topic", wake:false }`); look live state up rather than asking (`locks:queue { paths: [...] }` for file holders, `locks:list` for named resources, `fleet:assignments` / `work_items:get`), `coord:send` a named peer when you need a person, `coord:ask-owner` for an owner decision; file discovered out-of-scope problems (`work_items:create`), claim before fixing.
 
 ## Putting an option set to the owner: reach for `chat:ask_choice`
