@@ -561,25 +561,62 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     }
   });
 
-  it('drops an ended loop fire folded into a newer sibling wake', async () => {
+  // EI-21393930883750326: the drop verdict is composition-aware. An ended loop
+  // fire folded beside a NON-loop sibling (the await → loop:end parking
+  // incident: await 93491's work-item:claimable fire rode in delivery #166616
+  // with a stale loop fire and the whole attempt was dropped, silently
+  // stranding the parked member) must be DELIVERED, not suppressed — the stale
+  // loop imperative is neutralized by the rehydration banner instead.
+  it('delivers a coalesced wake whose ended loop fire rides beside a non-loop await-event sibling (EI-21393930883750326)', async () => {
     const { coalesceDeliveries } = await import('./engine');
     const oldLoop = work({
       id: 20,
       payload: loopPayload,
       createdAt: new Date(Date.now() - 60_000).toISOString(),
     });
-    const newerSibling = work({
+    const awaitFire = work({
       id: 21,
-      payload: { ok: true },
+      eventKey: 'work-item:claimable',
+      // A real await-event payload: `harness` alone is event metadata, NOT a
+      // loop marker (readColdLoopMarker's pairing rule).
+      payload: { id: 'WI-41477', kind: 'bug', state: 'open', harness: 'papercusp' },
       createdAt: new Date().toISOString(),
     });
-    const coalesced = coalesceDeliveries([oldLoop, newerSibling]);
+    const coalesced = coalesceDeliveries([oldLoop, awaitFire]);
+    const findPty = vi.fn(() => ({ id: 'pty-loop' }));
+    const write = vi.fn(() => true);
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      // The loop is ended (loop:end won the race) — exactly the incident state.
+      getLoopStatusFn: vi.fn(async () => null) as never,
+      // Hermetic: the rehydration banner path reads the carry-note store.
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({ note: null, updatedAtMs: null })) as never,
+    });
+
+    const out = await executeWake({ ...coalesced, wakeHandle: advHandle() }, d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(d.getLoopStatusFn).toHaveBeenCalledWith('su-abc');
+    expect(write).toHaveBeenCalled();
+  });
+
+  it('still drops a coalesced attempt whose every folded component is a loop fire', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const olderLoop = work({
+      id: 30,
+      payload: loopPayload,
+      createdAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+    const newerLoop = work({
+      id: 31,
+      payload: { ...loopPayload, wakeCount: 8 },
+      createdAt: new Date().toISOString(),
+    });
+    const coalesced = coalesceDeliveries([olderLoop, newerLoop]);
     const d = deps({ getLoopStatusFn: vi.fn(async () => null) as never });
 
-    const out = await executeWake(
-      { ...coalesced, wakeHandle: advHandle() },
-      d,
-    );
+    const out = await executeWake({ ...coalesced, wakeHandle: advHandle() }, d);
 
     expect(out).toMatchObject({ kind: 'drop' });
     expect((out as { reason: string }).reason).toContain('queued loop delivery');

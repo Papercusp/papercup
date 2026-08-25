@@ -601,6 +601,44 @@ function readLatestLoopDeliveryMarker(payload: unknown): LoopDeliveryMarker | nu
   return markers.length > 0 ? markers[markers.length - 1] : null;
 }
 
+/**
+ * EI-21393930883750326: whether the delivery carries any NON-loop component —
+ * a one-shot await-event fire, a timeout fire, an inbox wake — that owns the
+ * wake independently of the loop lifecycle. Coalescing folds sibling
+ * deliveries into ONE attempt, so a stale loop fire can ride beside a live
+ * await-event fire; dropping the whole attempt on the loop's supersession
+ * silently strands the waiter (observed live: await 93491 on
+ * work-item:claimable fired, but delivery #166616 was dropped wholesale
+ * because a folded loop fire post-dated loop:end — the member parked per the
+ * documented await → loop:end protocol was never re-woken). Composition
+ * decides the drop: only a PURELY-loop attempt may be suppressed wholesale.
+ *
+ * Enumeration mirrors readLoopDeliveryMarkers exactly: events[] when the
+ * envelope carries them, the latest-only compat headline otherwise, the plain
+ * payload when not coalesced. A component is non-loop when readColdLoopMarker
+ * finds no loop marker on it (bare event `harness` metadata is already NOT a
+ * marker — see readColdLoopMarker's pairing rule).
+ */
+function deliveryHasNonLoopComponent(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object') return true; // no marker possible ⇒ non-loop
+  const record = payload as { coalesced?: unknown; events?: unknown; latest?: unknown };
+  if (record.coalesced === true) {
+    if (Array.isArray(record.events) && record.events.length > 0) {
+      return record.events.some((event) => {
+        if (!event || typeof event !== 'object') return true;
+        return readColdLoopMarker((event as { payload?: unknown }).payload) === null;
+      });
+    }
+    // Compat with a pre-events[] envelope / hand-authored latest-only payload:
+    // judge composition by the same headline the marker read falls back to.
+    if (record.latest && typeof record.latest === 'object') {
+      return readColdLoopMarker((record.latest as { payload?: unknown }).payload) === null;
+    }
+    return true;
+  }
+  return readColdLoopMarker(payload) === null;
+}
+
 /** Compose the single-line wake turn injected/submitted into the woken session. */
 export function wakeTurnText(d: DeliveryWork): string {
   // EI-20130618357432548 — the owner's own chat-pane message is delivered AS the
@@ -749,7 +787,13 @@ function classifyLoopDeliverySupersession(
   return null;
 }
 
-/** Read and classify a loop delivery's lifecycle without blocking normal wakes. */
+/** Read and classify a loop delivery's lifecycle without blocking normal wakes.
+ *  Returns the supersession that justifies DROPPING the whole delivery attempt —
+ *  which, per EI-21393930883750326, exists only for a PURELY-loop attempt: a
+ *  coalesced union that also carries a non-loop component (a one-shot
+ *  await-event / timeout fire) must still be delivered, so a stale folded loop
+ *  fire yields null here and is instead neutralized by rehydrateLoopWakeText's
+ *  🛑 supersession banner on the delivered text. */
 async function readLoopDeliverySupersession(
   d: DeliveryWork,
   getStatus: typeof getLoopStatus,
@@ -759,11 +803,19 @@ async function readLoopDeliverySupersession(
   try {
     const status = await getStatus(d.subscriberId);
     // A coalesced wake is one delivery attempt. If any folded loop fire is
-    // ended, re-armed, or from another lineage, suppress the whole attempt so
-    // its stale imperative cannot ride along with the newer headline event.
+    // ended, re-armed, or from another lineage, the LOOP half of the attempt
+    // is stale — but the attempt may only be suppressed wholesale when it is
+    // purely loop. A non-loop component (an await-event fire whose contract
+    // is "firing re-invokes the waiter") owns the wake regardless of loop
+    // lifecycle; dropping it strands the waiter (EI-21393930883750326). The
+    // stale loop imperative is stripped/annotated at text-rehydration time
+    // instead of by suppressing the delivery.
     for (const candidate of candidates) {
       const supersession = classifyLoopDeliverySupersession(d, status, candidate);
-      if (supersession) return supersession;
+      if (supersession) {
+        if (deliveryHasNonLoopComponent(d.payload)) return null;
+        return supersession;
+      }
     }
     return null;
   } catch {
@@ -1993,6 +2045,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // channel would otherwise replay the old imperative and recreate awaits.
     // Drop only on a confirmed ended/re-armed status; a status-read failure is
     // fail-open so a transient PG issue cannot strand an otherwise valid wake.
+    // EI-21393930883750326: the drop verdict is composition-aware — it holds
+    // only for a PURELY-loop attempt. A coalesced union that also carries a
+    // non-loop component (a one-shot await-event / timeout fire) is DELIVERED,
+    // with the stale loop imperative neutralized by the rehydration banner,
+    // because suppressing it wholesale silently strands the parked waiter.
     const loopSupersession = await readLoopDeliverySupersession(
       d,
       deps.getLoopStatusFn ?? getLoopStatus,
