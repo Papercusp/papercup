@@ -851,13 +851,15 @@ export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS = 60_000;
 // server would have completed, which is the failure this constant exists to prevent.
 export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS = 900_000;
 
-// `scorecards:emit` is also intentionally long-running. Its deterministic
-// criterion-check leg owns a 120s test budget inside a 180s tool timeout, then
-// still has to persist the card and serialize the response. The ordinary 30s
-// ptool deadline abandons that write mid-flight and returns no canonical card
-// reference (EI-21179169504957086). Keep the client outside the tool's own
-// deadline so the typed success/refusal is always the first outcome observed.
-export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 195_000;
+// `scorecards:emit` is intentionally long-running. Its deterministic
+// criterion-check leg owns a 13-minute check budget inside a 15-minute tool
+// timeout, then still has to persist the card and serialize the response. The
+// previous 195s client budget was left behind when that server budget grew and
+// returned MCP -32001 with the write outcome unknown while the card was still
+// being evaluated (EI-21402752040470797). The MCP transport adds a 5s buffer to
+// the declared timeout; keep the client above that effective 905s deadline so
+// the typed success/refusal is the first outcome observed.
+export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
 
 // EI-21106949380687332: a FOREGROUND-capable tool (testing:run, build:typecheck,
 // capability:bash, capability:inspect, code:run) self-clamps its OWN command timeout to

@@ -756,10 +756,11 @@ describe('ptool timeoutForTool — plan lifecycle CAS outlives the flat client d
   });
 });
 
-describe('ptool timeoutForTool — scorecards:emit outlives its 180s tool budget (EI-21179169504957086)', () => {
+describe('ptool timeoutForTool — scorecards:emit outlives its 900s tool budget (EI-21402752040470797)', () => {
   it('keeps the direct client request alive through criterion checks and ledger persistence', () => {
     expect(timeoutForTool('scorecards:emit', {})).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
-    expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBeGreaterThan(180_000);
+    // scorecards:emit declares 900s; the MCP transport adds a 5s buffer.
+    expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBeGreaterThan(905_000);
     expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 

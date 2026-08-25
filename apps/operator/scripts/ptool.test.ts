@@ -254,7 +254,8 @@ describe('ptool call deadlines', () => {
     expect(PTOOL_EVENTS_AWAIT_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
-    expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBeGreaterThan(180_000);
+    // scorecards:emit declares 900s; the MCP transport adds a 5s buffer.
+    expect(PTOOL_SCORECARD_EMIT_TIMEOUT_MS).toBeGreaterThan(905_000);
   });
 
   it('passes the selected deadline to both MCP timeout guards', async () => {
