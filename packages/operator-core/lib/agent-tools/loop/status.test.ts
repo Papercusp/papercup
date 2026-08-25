@@ -225,7 +225,25 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
 
     const out = await run();
 
-    expect(out.pendingAwaits).toEqual({ status: 'none' });
+    expect(out.pendingAwaits).toEqual({ status: 'none', scope: 'non-inbox-wake' });
+  });
+
+  it('still reports standing inbox-wake reachability when no loop or explicit park exists (EI-21452056705704146)', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+    listWakeAwaitsMock.mockResolvedValue({ totalCount: 0, sample: [] });
+
+    const out = await run();
+
+    expect(out.loop).toBeNull();
+    expect(out.reachability).toEqual({
+      reachable: true,
+      channel: 'inject',
+      durableWhileAlive: true,
+      summary: 'ok',
+    });
+    // `none` is scoped to caller-authored parks; it no longer masquerades as
+    // proof that the standing host inbox-wake channel is absent.
+    expect(out.pendingAwaits).toEqual({ status: 'none', scope: 'non-inbox-wake' });
   });
 
   it('reports status:found with a sample of event keys when awaits are live', async () => {
@@ -244,6 +262,7 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
       status: 'found',
       count: 2,
       sample: ['work-item:claimable', 'release:green:papercusp'],
+      scope: 'non-inbox-wake',
     });
   });
 
@@ -266,6 +285,7 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
       status: 'found',
       count: 6,
       sample: ['await:1', 'await:2', 'await:3', 'await:4', 'await:5'],
+      scope: 'non-inbox-wake',
     });
   });
 
@@ -275,7 +295,7 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
 
     const out = await run();
 
-    expect(out.pendingAwaits).toEqual({ status: 'unknown' });
+    expect(out.pendingAwaits).toEqual({ status: 'unknown', scope: 'non-inbox-wake' });
   });
 
   it('is computed even when no loop is armed (a bare events:await with no loop still deserves this answer)', async () => {
@@ -288,7 +308,12 @@ describe('loop:status pendingAwaits (EI-19415169477907694)', () => {
     const out = await run();
 
     expect(out.loop).toBeNull();
-    expect(out.pendingAwaits).toEqual({ status: 'found', count: 1, sample: ['lock:grant:t1'] });
+    expect(out.pendingAwaits).toEqual({
+      status: 'found',
+      count: 1,
+      sample: ['lock:grant:t1'],
+      scope: 'non-inbox-wake',
+    });
   });
 });
 
@@ -302,6 +327,8 @@ describe('loop:status declared-vs-actual envelope (EI-21197839138727609)', () =>
     const tool = statusTool as unknown as { guidance?: { returns?: string } };
     expect(tool.guidance?.returns).toContain('ROOT ENVELOPE');
     expect(tool.guidance?.returns).toMatch(/NESTED under `loop`/);
+    expect(tool.guidance?.returns).toContain("pendingAwaits.scope:'non-inbox-wake'");
+    expect(tool.guidance?.returns).toMatch(/NEVER evidence that the owner is globally unreachable/);
   });
 
   it('nests the loop record under `loop` (never at the root) so reducers descend .loop', async () => {
