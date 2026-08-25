@@ -37,6 +37,8 @@ import {
   shouldRotateFailureLog,
   injectCurrentSuperuserBearer,
   stripClientConnectionHeader,
+  MCP_PROXY_TRACE_HEADER,
+  MAX_MCP_PROXY_TRACE_ID_CHARS,
   type McpProxyTarget,
 } from "./proxy";
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
@@ -1094,6 +1096,76 @@ describe('WI-6740: upstream silence — bounded + replayed for the handshake, ne
       expect(relevant.length).toBeGreaterThanOrEqual(2);
       expect(relevant.every((record) => record.klass === 'idempotent')).toBe(true);
       expect(relevant.every((record) => JSON.stringify(record.rpcMethods) === '["tools/list"]')).toBe(true);
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      if (previous === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = previous;
+    }
+  });
+
+  it('WI-41042: correlates initialize across the upstream hop and records only bounded stage telemetry', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const logFile = path.join(os.tmpdir(), `mcp-proxy-initialize-trace-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const previous = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    const upstreamTraceIds: string[] = [];
+    let calls = 0;
+    try {
+      const upstream = track(http.createServer((req, res) => {
+        calls++;
+        upstreamTraceIds.push(String(req.headers[MCP_PROXY_TRACE_HEADER] ?? ''));
+        if (calls === 1) return; // one no-header timeout, then a deliberately slow recovery
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end('{"jsonrpc":"2.0","id":1,"result":{}}');
+        }, 20);
+      }));
+      await listen(upstream);
+      const proxy = track(
+        createMcpProxy({
+          listenPort: 0,
+          targetHost: '127.0.0.1',
+          targetPort: port(upstream),
+          retryWindowMs: 5_000,
+          retryBackoffMs: 5,
+          handshakeTimeoutMs: 40,
+          initializeSlowMs: 1,
+          log: () => {},
+        }),
+      );
+      await listen(proxy);
+
+      const body = '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"must-not-log"}}}';
+      expect((await request(port(proxy), body)).status).toBe(200);
+      expect(upstreamTraceIds).toHaveLength(2);
+      expect(upstreamTraceIds[0]).toBe(upstreamTraceIds[1]);
+      expect(upstreamTraceIds[0]).toMatch(/^[0-9a-f-]+$/);
+      expect(upstreamTraceIds[0]!.length).toBeLessThanOrEqual(MAX_MCP_PROXY_TRACE_ID_CHARS);
+
+      const records = fs
+        .readFileSync(logFile, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const stageRecords = records.filter((record) => record.kind === 'initialize_stage');
+      expect(stageRecords.map((record) => record.outcome)).toEqual(['timeout_retry', 'slow_response']);
+      for (const record of stageRecords) {
+        expect(record.traceId).toBe(upstreamTraceIds[0]);
+        expect(record.pid).toBe(process.pid);
+        expect(record.stages).toEqual({
+          bodyReadMs: expect.any(Number),
+          admissionWaitMs: expect.any(Number),
+          upstreamMs: expect.any(Number),
+          totalMs: expect.any(Number),
+        });
+        for (const forbidden of ['method', 'path', 'rpcMethods', 'detail', 'body', 'args', 'tool', 'toolName']) {
+          expect(record).not.toHaveProperty(forbidden);
+        }
+        expect(JSON.stringify(record)).not.toContain('must-not-log');
+      }
     } finally {
       fs.rmSync(logFile, { force: true });
       if (previous === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
