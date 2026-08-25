@@ -432,7 +432,7 @@ async function mutateStoredQualification(
   options: StoredQualificationMutationOptions = {},
 ): Promise<StoredQualificationMutation> {
   try {
-    return await boundedOrgTxn(async (tx) => {
+    return await boundedOrgTxn<StoredQualificationMutation>(async (tx) => {
       const rows = await tx<{ metadata: Record<string, unknown> | null }[]>`
         SELECT metadata
           FROM harness_shared.routines
@@ -460,6 +460,15 @@ async function mutateStoredQualification(
               metadata.repair_queue,
             )
           : null;
+      // `reconciliation` is only produced from a parsed predecessor. Keep that
+      // runtime invariant explicit so the conflict branches below cannot
+      // accidentally return a nullable transaction if this logic is refactored.
+      if (reconciliation && !current) {
+        return {
+          status: 'unreadable' as const,
+          error: 'repair queue reconciliation has no predecessor qualification',
+        };
+      }
       if (reconciliation?.status === 'blocked') {
         return {
           status: 'conflict' as const,
