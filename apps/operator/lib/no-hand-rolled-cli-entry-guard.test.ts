@@ -43,6 +43,19 @@ describe('lint:no-hand-rolled-cli-entry — repository ratchet', () => {
     const result = scanTree();
     expect(result.violations.map((hit: { rel: string; line: number; kind: string }) => `${hit.rel}:${hit.line}:${hit.kind}`)).toEqual([]);
     expect(result.stale).toEqual([]);
+    expect(result.staleExemptions).toEqual([]);
+  });
+
+  it('records standalone bare-node guards as reasoned, count-bounded exemptions rather than baseline debt', () => {
+    const result = scanTree();
+    expect(result.exemptions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          rel: 'packages/operator-core/lib/systemd-scope-env-runner.mjs',
+          kind: 'path-to-file-url',
+          reason: expect.stringMatching(/bare node.*copied verbatim/i),
+        }),
+      ]),
+    );
   });
 });
-

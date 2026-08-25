@@ -123,6 +123,25 @@ const ALLOW_COUNTS = new Map([
   ['scripts/trace-vite-externalized.mjs|path-to-file-url', 1],
 ]);
 
+/**
+ * Architecturally-safe standalone entrypoints are not bundle debt. Each entry
+ * must be executed by bare node as its own file and copied verbatim (rather
+ * than inlined into the desktop sidecar), which keeps import.meta.url scoped to
+ * that file. Keep these separate from the shrink-only debt baseline so the
+ * exception carries its reason and cannot silently bless additional guards in
+ * the same file.
+ */
+const STANDALONE_ENTRY_EXEMPTIONS = new Map([
+  [
+    'packages/operator-core/lib/systemd-scope-env-runner.mjs|path-to-file-url',
+    {
+      count: 1,
+      reason:
+        'Invoked by bare node and copied verbatim into host/desktop bundles; importing the TypeScript helper would make this dependency-free runner unresolvable.',
+    },
+  ],
+]);
+
 function* walk(dir) {
   let entries;
   try {
@@ -228,13 +247,20 @@ export function scanTree() {
   }
 
   const violations = [];
+  const exemptions = [];
   for (const hit of everyGuard) {
     const key = keyFor(hit.rel, hit.kind);
     const allowed = ALLOW_COUNTS.get(key) ?? 0;
+    const exemption = STANDALONE_ENTRY_EXEMPTIONS.get(key);
     const prior = everyGuard
       .filter((candidate) => keyFor(candidate.rel, candidate.kind) === key && candidate.offset < hit.offset)
       .length;
-    if (prior >= allowed) violations.push(hit);
+    if (prior < allowed) continue;
+    if (exemption && prior - allowed < exemption.count) {
+      exemptions.push({ ...hit, reason: exemption.reason });
+      continue;
+    }
+    violations.push(hit);
   }
 
   const stale = [...ALLOW_COUNTS.entries()]
@@ -242,7 +268,12 @@ export function scanTree() {
     .map(([key, allowed]) => ({ key, allowed, current: counts.get(key) ?? 0 }))
     .sort((a, b) => a.key.localeCompare(b.key));
 
-  return { everyGuard, counts, violations, stale };
+  const staleExemptions = [...STANDALONE_ENTRY_EXEMPTIONS.entries()]
+    .filter(([key, exemption]) => (counts.get(key) ?? 0) < (ALLOW_COUNTS.get(key) ?? 0) + exemption.count)
+    .map(([key, exemption]) => ({ key, exempted: exemption.count, current: counts.get(key) ?? 0, reason: exemption.reason }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+
+  return { everyGuard, counts, violations, exemptions, stale, staleExemptions };
 }
 
 const LIST_ONLY = process.argv.includes('--list');
@@ -260,7 +291,7 @@ function printSeed(everyGuard, counts) {
 }
 
 function main() {
-  const { everyGuard, counts, violations, stale } = scanTree();
+  const { everyGuard, counts, violations, exemptions, stale, staleExemptions } = scanTree();
   if (LIST_ONLY) {
     printSeed(everyGuard, counts);
     return;
@@ -271,15 +302,24 @@ function main() {
     console.error(
       '\nUse the bundle-safe helper instead:\n' +
         "  import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';\n" +
-        '  if (isCliEntry(import.meta.url)) main();\n',
+        '  if (isCliEntry(import.meta.url)) main();\n\n' +
+        'For a deliberately bare-node, verbatim-copied standalone entrypoint that cannot import the helper, add a count-bounded, reason-carrying STANDALONE_ENTRY_EXEMPTIONS entry; never grow ALLOW_COUNTS for new code.\n',
     );
     process.exitCode = 1;
     return;
   }
-  console.log(`✔ lint:no-hand-rolled-cli-entry — no new hand-rolled guards (${everyGuard.length} measured occurrence(s)).`);
+  console.log(
+    `✔ lint:no-hand-rolled-cli-entry — no new hand-rolled guards (${everyGuard.length} measured occurrence(s), ${exemptions.length} reasoned standalone exemption(s)).`,
+  );
   if (stale.length > 0) {
     console.log('\nStale baseline entries (migrated or removed; delete them from ALLOW_COUNTS):');
     for (const item of stale) console.log(`  ${item.key}: allowed ${item.allowed}, current ${item.current}`);
+  }
+  if (staleExemptions.length > 0) {
+    console.log('\nStale standalone exemptions (guard migrated or removed; delete the exemption):');
+    for (const item of staleExemptions) {
+      console.log(`  ${item.key}: exempted ${item.exempted}, current ${item.current} — ${item.reason}`);
+    }
   }
 }
 
