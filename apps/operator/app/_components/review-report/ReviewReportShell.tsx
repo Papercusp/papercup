@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * ReviewReportShell (cleanup-report-flows-2026-08-24 P-001, D-001) — the SHARED
@@ -26,14 +26,14 @@
  * collapse state; within one run, rows flipping pending→applied are handled
  * live (selection self-intersects with what is still pending).
  */
-import { useMemo, useRef, useState, type ReactNode } from 'react';
-import { Check, ChevronDown, ShieldCheck } from 'lucide-react';
-import { Button } from '../../harness/Button';
-import { Checkbox } from '../../harness/Checkbox';
-import './review-report.css';
+import { useMemo, useRef, useState, type ReactNode } from "react";
+import { Check, ChevronDown, ShieldCheck } from "lucide-react";
+import { Button } from "../../harness/Button";
+import { Checkbox } from "../../harness/Checkbox";
+import "./review-report.css";
 
-export type ReviewRowConfidence = 'provable' | 'recommended';
-export type ReviewRowStatus = 'pending' | 'applied' | 'dismissed';
+export type ReviewRowConfidence = "provable" | "recommended";
+export type ReviewRowStatus = "pending" | "applied" | "dismissed";
 
 export interface ReviewReportTransition {
   from: string;
@@ -79,7 +79,7 @@ export interface ReviewReportShellProps {
   groups: ReviewReportGroup[];
   /** Initial selection: 'pending' (default — every selectable row), 'none', or
    *  an explicit row-id list. */
-  defaultSelected?: 'pending' | 'none' | readonly string[];
+  defaultSelected?: "pending" | "none" | readonly string[];
   applyLabel?: string;
   dismissLabel?: string;
   /** Disables all interaction while an apply is in flight. */
@@ -91,27 +91,28 @@ export interface ReviewReportShellProps {
 }
 
 function rowStatus(row: ReviewReportRow): ReviewRowStatus {
-  return row.status ?? 'pending';
+  return row.status ?? "pending";
 }
 
 function rowSelectable(row: ReviewReportRow): boolean {
-  return rowStatus(row) === 'pending' && row.selectable !== false;
+  return rowStatus(row) === "pending" && row.selectable !== false;
 }
 
 function initialSelection(
   groups: readonly ReviewReportGroup[],
-  defaultSelected: ReviewReportShellProps['defaultSelected'],
+  defaultSelected: ReviewReportShellProps["defaultSelected"],
 ): Set<string> {
-  if (defaultSelected === 'none') return new Set();
+  if (defaultSelected === "none") return new Set();
   if (Array.isArray(defaultSelected)) return new Set(defaultSelected);
   const all = new Set<string>();
-  for (const g of groups) for (const r of g.rows) if (rowSelectable(r)) all.add(r.id);
+  for (const g of groups)
+    for (const r of g.rows) if (rowSelectable(r)) all.add(r.id);
   return all;
 }
 
 const CONFIDENCE_LABEL: Record<ReviewRowConfidence, string> = {
-  provable: 'provable',
-  recommended: 'recommended',
+  provable: "provable",
+  recommended: "recommended",
 };
 
 export default function ReviewReportShell({
@@ -119,21 +120,24 @@ export default function ReviewReportShell({
   icon,
   subtitle,
   groups,
-  defaultSelected = 'pending',
-  applyLabel = 'Apply selected',
-  dismissLabel = 'Dismiss',
+  defaultSelected = "pending",
+  applyLabel = "Apply selected",
+  dismissLabel = "Dismiss",
   busy = false,
   footer,
   onApply,
   onDismiss,
 }: ReviewReportShellProps) {
-  const [selected, setSelected] = useState<Set<string>>(() => initialSelection(groups, defaultSelected));
+  const [selected, setSelected] = useState<Set<string>>(() =>
+    initialSelection(groups, defaultSelected),
+  );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const groupNodes = useRef(new Map<string, HTMLElement>());
 
   const pendingIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const g of groups) for (const r of g.rows) if (rowSelectable(r)) ids.add(r.id);
+    for (const g of groups)
+      for (const r of g.rows) if (rowSelectable(r)) ids.add(r.id);
     return ids;
   }, [groups]);
 
@@ -184,8 +188,10 @@ export default function ReviewReportShell({
       return next;
     });
     const node = groupNodes.current.get(groupId);
-    node?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
-    node?.querySelector<HTMLButtonElement>('.review-report__group-toggle')?.focus({ preventScroll: true });
+    node?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    node
+      ?.querySelector<HTMLButtonElement>(".review-report__group-toggle")
+      ?.focus({ preventScroll: true });
   };
 
   return (
@@ -193,13 +199,19 @@ export default function ReviewReportShell({
       <header className="review-report__head">
         <div className="review-report__identity">
           {icon != null ? (
-            <span className="review-report__icon" data-testid="review-report-icon" aria-hidden="true">
+            <span
+              className="review-report__icon"
+              data-testid="review-report-icon"
+              aria-hidden="true"
+            >
               {icon}
             </span>
           ) : null}
           <div className="review-report__head-text">
             <h2 className="review-report__title">{title}</h2>
-            {subtitle != null && <div className="review-report__subtitle">{subtitle}</div>}
+            {subtitle != null && (
+              <div className="review-report__subtitle">{subtitle}</div>
+            )}
           </div>
         </div>
         <div className="review-report__actions">
@@ -227,20 +239,36 @@ export default function ReviewReportShell({
       </header>
 
       <div className="review-report__body">
-        <aside className="review-report__navigator" aria-label="Report group navigation">
-          <div className="review-report__selection-summary" data-testid="review-report-selection-summary">
-            <span className="review-report__selection-kicker">Ready to apply</span>
-            <strong className="review-report__selection-total" data-testid="review-report-selection-total">
+        <aside
+          className="review-report__navigator"
+          aria-label="Report group navigation"
+        >
+          <div
+            className="review-report__selection-summary"
+            data-testid="review-report-selection-summary"
+          >
+            <span className="review-report__selection-kicker">
+              Ready to apply
+            </span>
+            <strong
+              className="review-report__selection-total"
+              data-testid="review-report-selection-total"
+            >
               {liveSelected.size} / {pendingIds.size}
             </strong>
             <span className="review-report__selection-caption">
-              selectable recommendation{pendingIds.size === 1 ? '' : 's'}
+              selectable recommendation{pendingIds.size === 1 ? "" : "s"}
             </span>
           </div>
-          <nav className="review-report__nav-list" aria-label="Jump to report group">
+          <nav
+            className="review-report__nav-list"
+            aria-label="Jump to report group"
+          >
             {groups.map((group, index) => {
               const groupPending = group.rows.filter(rowSelectable);
-              const selCount = groupPending.filter((row) => liveSelected.has(row.id)).length;
+              const selCount = groupPending.filter((row) =>
+                liveSelected.has(row.id),
+              ).length;
               return (
                 <button
                   key={group.id}
@@ -250,10 +278,16 @@ export default function ReviewReportShell({
                   aria-controls={`review-report-group-${index}`}
                   onClick={() => navigateToGroup(group.id)}
                 >
-                  <span className="review-report__nav-label">{group.title}</span>
-                  <span className="review-report__nav-count">{group.rows.length}</span>
+                  <span className="review-report__nav-label">
+                    {group.title}
+                  </span>
+                  <span className="review-report__nav-count">
+                    {group.rows.length}
+                  </span>
                   <span className="review-report__nav-selection">
-                    {groupPending.length > 0 ? `${selCount}/${groupPending.length} selected` : 'reviewed'}
+                    {groupPending.length > 0
+                      ? `${selCount}/${groupPending.length} selected`
+                      : "reviewed"}
                   </span>
                 </button>
               );
@@ -264,9 +298,15 @@ export default function ReviewReportShell({
         <div className="review-report__groups">
           {groups.map((group, index) => {
             const groupPending = group.rows.filter(rowSelectable);
-            const selCount = groupPending.filter((r) => liveSelected.has(r.id)).length;
-            const groupState: 'none' | 'some' | 'all' =
-              groupPending.length === 0 || selCount === 0 ? 'none' : selCount === groupPending.length ? 'all' : 'some';
+            const selCount = groupPending.filter((r) =>
+              liveSelected.has(r.id),
+            ).length;
+            const groupState: "none" | "some" | "all" =
+              groupPending.length === 0 || selCount === 0
+                ? "none"
+                : selCount === groupPending.length
+                  ? "all"
+                  : "some";
             const isCollapsed = collapsed.has(group.id);
             return (
               <section
@@ -279,111 +319,153 @@ export default function ReviewReportShell({
                 className="review-report__group"
                 data-testid={`review-group-${group.id}`}
               >
-            <header className="review-report__group-head">
-              <Checkbox
-                dataTestId={`review-group-check-${group.id}`}
-                ariaLabel={`Select all in ${group.title}`}
-                checked={groupState === 'all'}
-                indeterminate={groupState === 'some'}
-                disabled={busy || groupPending.length === 0}
-                onChange={() => toggleGroup(group)}
-              />
-              <button
-                type="button"
-                className="review-report__group-toggle"
-                data-testid={`review-group-toggle-${group.id}`}
-                aria-expanded={!isCollapsed}
-                onClick={() => toggleCollapsed(group.id)}
-              >
-                <span className="review-report__group-title">{group.title}</span>
-                <span className="review-report__group-count" data-testid={`review-group-count-${group.id}`}>
-                  {group.rows.length}
-                </span>
-                {group.description != null ? (
-                  <span className="review-report__group-desc">{group.description}</span>
-                ) : null}
-                <span className="review-report__group-selection">
-                  {selCount}/{groupPending.length} selected
-                </span>
-                <ChevronDown
-                  size={14}
-                  className={`review-report__chevron${isCollapsed ? ' review-report__chevron--closed' : ''}`}
-                  aria-hidden="true"
-                />
-              </button>
-            </header>
-            {!isCollapsed && (
-              <ul className="review-report__rows">
-                {group.rows.map((row) => {
-                  const status = rowStatus(row);
-                  const selectable = rowSelectable(row);
-                  return (
-                    <li
-                      key={row.id}
-                      className={`review-report__row review-report__row--${status}`}
-                      data-testid={`review-row-${row.id}`}
+                <header className="review-report__group-head">
+                  <Checkbox
+                    dataTestId={`review-group-check-${group.id}`}
+                    ariaLabel={`Select all in ${group.title}`}
+                    checked={groupState === "all"}
+                    indeterminate={groupState === "some"}
+                    disabled={busy || groupPending.length === 0}
+                    onChange={() => toggleGroup(group)}
+                  />
+                  <button
+                    type="button"
+                    className="review-report__group-toggle"
+                    data-testid={`review-group-toggle-${group.id}`}
+                    aria-expanded={!isCollapsed}
+                    onClick={() => toggleCollapsed(group.id)}
+                  >
+                    <span className="review-report__group-title">
+                      {group.title}
+                    </span>
+                    <span
+                      className="review-report__group-count"
+                      data-testid={`review-group-count-${group.id}`}
                     >
-                      <span className="review-report__row-check-slot">
-                        {selectable ? (
-                          <Checkbox
-                            dataTestId={`review-row-check-${row.id}`}
-                            ariaLabel={`Select ${row.title}`}
-                            checked={liveSelected.has(row.id)}
-                            disabled={busy}
-                            onChange={() => toggleRow(row.id)}
-                          />
-                        ) : (
+                      {group.rows.length}
+                    </span>
+                    {group.description != null ? (
+                      <span className="review-report__group-desc">
+                        {group.description}
+                      </span>
+                    ) : null}
+                    <span className="review-report__group-selection">
+                      {selCount}/{groupPending.length} selected
+                    </span>
+                    <ChevronDown
+                      size={14}
+                      className={`review-report__chevron${isCollapsed ? " review-report__chevron--closed" : ""}`}
+                      aria-hidden="true"
+                    />
+                  </button>
+                </header>
+                {!isCollapsed && (
+                  <ul className="review-report__rows">
+                    {group.rows.map((row) => {
+                      const status = rowStatus(row);
+                      const selectable = rowSelectable(row);
+                      return (
+                        <li
+                          key={row.id}
+                          className={`review-report__row review-report__row--${status}`}
+                          data-testid={`review-row-${row.id}`}
+                        >
+                          <span className="review-report__row-check-slot">
+                            {selectable ? (
+                              <Checkbox
+                                dataTestId={`review-row-check-${row.id}`}
+                                ariaLabel={`Select ${row.title}`}
+                                checked={liveSelected.has(row.id)}
+                                disabled={busy}
+                                onChange={() => toggleRow(row.id)}
+                              />
+                            ) : (
+                              <span
+                                className="review-report__row-status-mark"
+                                data-testid={`review-row-mark-${row.id}`}
+                                title={
+                                  status === "pending"
+                                    ? "manual review required"
+                                    : status
+                                }
+                                aria-hidden
+                              >
+                                {status === "applied"
+                                  ? "✓"
+                                  : status === "pending"
+                                    ? "↗"
+                                    : "—"}
+                              </span>
+                            )}
+                          </span>
+                          <span className="review-report__row-identity">
+                            {row.sourceLabel != null ? (
+                              <span className="review-report__source-chip">
+                                {row.sourceLabel}
+                              </span>
+                            ) : null}
+                            {row.referenceLabel != null ? (
+                              <span className="review-report__reference">
+                                {row.referenceLabel}
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="review-report__row-change">
+                            {row.transition != null ? (
+                              <span
+                                className="review-report__transition"
+                                data-testid={`review-row-transition-${row.id}`}
+                              >
+                                <span className="review-report__state review-report__state--from">
+                                  {row.transition.from}
+                                </span>
+                                <span
+                                  className="review-report__transition-arrow"
+                                  aria-hidden="true"
+                                >
+                                  →
+                                </span>
+                                <span className="review-report__state review-report__state--to">
+                                  {row.transition.to}
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="review-report__row-title">
+                                {row.title}
+                              </span>
+                            )}
+                          </span>
+                          <span className="review-report__row-evidence">
+                            {row.transition != null ? (
+                              <span className="review-report__row-title">
+                                {row.title}
+                              </span>
+                            ) : null}
+                            {row.evidence.map((line, i) => (
+                              <span
+                                key={i}
+                                className="review-report__evidence-item"
+                              >
+                                {line}
+                              </span>
+                            ))}
+                          </span>
                           <span
-                            className="review-report__row-status-mark"
-                            data-testid={`review-row-mark-${row.id}`}
-                            title={status === 'pending' ? 'manual review required' : status}
-                            aria-hidden
+                            className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
+                            data-testid={`review-row-conf-${row.id}`}
                           >
-                            {status === 'applied' ? '✓' : status === 'pending' ? '↗' : '—'}
+                            {CONFIDENCE_LABEL[row.confidence]}
                           </span>
-                        )}
-                      </span>
-                      <span className="review-report__row-identity">
-                        {row.sourceLabel != null ? (
-                          <span className="review-report__source-chip">{row.sourceLabel}</span>
-                        ) : null}
-                        {row.referenceLabel != null ? (
-                          <span className="review-report__reference">{row.referenceLabel}</span>
-                        ) : null}
-                      </span>
-                      <span className="review-report__row-change">
-                        {row.transition != null ? (
-                          <span className="review-report__transition" data-testid={`review-row-transition-${row.id}`}>
-                            <span className="review-report__state review-report__state--from">{row.transition.from}</span>
-                            <span className="review-report__transition-arrow" aria-hidden="true">→</span>
-                            <span className="review-report__state review-report__state--to">{row.transition.to}</span>
-                          </span>
-                        ) : (
-                          <span className="review-report__row-title">{row.title}</span>
-                        )}
-                      </span>
-                      <span className="review-report__row-evidence">
-                        {row.transition != null ? <span className="review-report__row-title">{row.title}</span> : null}
-                        {row.evidence.map((line, i) => (
-                          <span key={i} className="review-report__evidence-item">
-                            {line}
-                          </span>
-                        ))}
-                      </span>
-                      <span
-                        className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
-                        data-testid={`review-row-conf-${row.id}`}
-                      >
-                        {CONFIDENCE_LABEL[row.confidence]}
-                      </span>
-                      {row.detail != null ? (
-                        <span className="review-report__row-detail">{row.detail}</span>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
+                          {row.detail != null ? (
+                            <span className="review-report__row-detail">
+                              {row.detail}
+                            </span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
               </section>
             );
           })}

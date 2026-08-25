@@ -34,7 +34,11 @@
   border: 1px solid color-mix(in oklab, var(--accent), var(--border) 64%);
   border-radius: 16px;
   background:
-    radial-gradient(circle at 50% -12%, color-mix(in oklab, var(--accent) 9%, transparent), transparent 42%),
+    radial-gradient(
+      circle at 50% -12%,
+      color-mix(in oklab, var(--accent) 9%, transparent),
+      transparent 42%
+    ),
     color-mix(in oklab, var(--bg) 94%, var(--bg-2));
   box-shadow: 0 18px 50px rgb(0 0 0 / 24%);
 }
@@ -69,11 +73,17 @@
   border: 1px solid color-mix(in oklab, var(--accent), transparent 44%);
   border-radius: 10px;
   color: color-mix(in oklab, var(--accent), white 30%);
-  background: linear-gradient(145deg, color-mix(in oklab, var(--accent) 58%, transparent), color-mix(in oklab, var(--accent) 28%, var(--bg)));
+  background: linear-gradient(
+    145deg,
+    color-mix(in oklab, var(--accent) 58%, transparent),
+    color-mix(in oklab, var(--accent) 28%, var(--bg))
+  );
   box-shadow: 0 8px 24px color-mix(in oklab, var(--accent) 18%, transparent);
 }
 
-.review-report__head-text { min-width: 0; }
+.review-report__head-text {
+  min-width: 0;
+}
 
 .review-report__title {
   margin: 0;
@@ -98,13 +108,19 @@
 .review-report__apply.pc-btn {
   min-width: 166px;
   border-color: color-mix(in oklab, var(--good), white 6%);
-  background: linear-gradient(145deg, color-mix(in oklab, var(--good) 72%, var(--bg)), color-mix(in oklab, var(--good) 48%, var(--bg)));
+  background: linear-gradient(
+    145deg,
+    color-mix(in oklab, var(--good) 72%, var(--bg)),
+    color-mix(in oklab, var(--good) 48%, var(--bg))
+  );
   color: color-mix(in oklab, var(--good), white 84%);
   font-weight: 600;
   box-shadow: 0 8px 22px color-mix(in oklab, var(--good) 18%, transparent);
 }
 
-.review-report__dismiss.pc-btn { min-width: 92px; }
+.review-report__dismiss.pc-btn {
+  min-width: 92px;
+}
 
 .review-report__apply.pc-btn:disabled,
 .review-report__dismiss.pc-btn:disabled {
@@ -303,7 +319,10 @@
 
 .review-report__row {
   display: grid;
-  grid-template-columns: 26px minmax(120px, 180px) minmax(150px, 220px) minmax(0, 1fr) 88px;
+  grid-template-columns: 26px minmax(120px, 180px) minmax(150px, 220px) minmax(
+      0,
+      1fr
+    ) 88px;
   align-items: center;
   gap: 10px;
   min-height: 42px;
@@ -359,7 +378,9 @@
   color: color-mix(in oklab, var(--fg), transparent 18%);
 }
 
-.review-report__row-change { min-width: 0; }
+.review-report__row-change {
+  min-width: 0;
+}
 
 .review-report__transition {
   display: inline-flex;
@@ -382,7 +403,9 @@
   border-color: color-mix(in oklab, var(--good), transparent 52%);
 }
 
-.review-report__transition-arrow { color: var(--fg-mute); }
+.review-report__transition-arrow {
+  color: var(--fg-mute);
+}
 
 .review-report__row-title {
   overflow: hidden;
@@ -482,7 +505,9 @@
     grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
   }
 
-  .review-report__apply.pc-btn { flex: 1 1 auto; }
+  .review-report__apply.pc-btn {
+    flex: 1 1 auto;
+  }
 
   .review-report__group-desc {
     order: 4;
@@ -490,7 +515,9 @@
     white-space: normal;
   }
 
-  .review-report__group-selection { display: none; }
+  .review-report__group-selection {
+    display: none;
+  }
 
   .review-report__row {
     grid-template-columns: 26px minmax(0, 1fr) 78px;
@@ -511,5 +538,7 @@
 
   .review-report__row-change,
   .review-report__row-evidence,
-  .review-report__row-detail { margin-top: 2px; }
+  .review-report__row-detail {
+    margin-top: 2px;
+  }
 }
