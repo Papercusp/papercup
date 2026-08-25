@@ -788,6 +788,64 @@ export function controlBytes(decoded: any): any;
 /** Strip ANSI escapes (CSI / OSC / simple ESC pairs) + normalize \r so a TUI
  *  byte stream reads as plain lines. Pure — exported for tests. */
 export function stripAnsi(s: any): string;
+/** The onboarding actuator is never enabled for an interactive or non-Claude
+ * launch. Pure and exported so the environment gate cannot silently broaden. */
+export function headlessClaudeOnboardingEnabled(env?: NodeJS.ProcessEnv): boolean;
+/** Read the bounded startup window from the launch environment. */
+export function headlessClaudeOnboardingStartupMs(env?: NodeJS.ProcessEnv): any;
+/**
+ * Decide whether one startup output chunk warrants the next onboarding Enter.
+ *
+ * The pty may split a prompt anywhere (including inside an ANSI sequence), so
+ * raw chunks accumulate before ANSI stripping and matching. The theme match
+ * advances to the security phase and clears that buffer: output that happened
+ * to contain both screens cannot cause the second Enter before the first one
+ * has been consumed by Claude. The returned `submit` action is intentionally
+ * just a decision; the host owns the child.write('\r') side effect.
+ *
+ * @param {{enabled?: boolean, startupMs?: number, now?: () => number}} [options]
+ */
+export function makeHeadlessClaudeOnboardingStateMachine({ enabled, startupMs, now, }?: {
+    enabled?: boolean;
+    startupMs?: number;
+    now?: () => number;
+}): {
+    observe: (chunk: any, at?: number) => {
+        action: string;
+        prompt: null;
+        phase: string;
+        active: boolean;
+        complete: boolean;
+        expired: boolean;
+    };
+    expire: (at?: number) => {
+        action: string;
+        prompt: null;
+        phase: string;
+        active: boolean;
+        complete: boolean;
+        expired: boolean;
+    } | {
+        expiredAt: number;
+        action: string;
+        prompt: null;
+        phase: string;
+        active: boolean;
+        complete: boolean;
+        expired: boolean;
+    };
+    isActive: () => boolean;
+    isComplete: () => boolean;
+    status: () => {
+        phase: string;
+        active: boolean;
+        complete: boolean;
+        expired: boolean;
+        startedAt: number;
+        expiresAt: any;
+        bufferedChars: number;
+    };
+};
 export function makeScrollbackGuard(): {
     /** @param {string} chunk @returns {string} bytes safe to write to the terminal */
     filter(chunk: string): string;
@@ -1325,6 +1383,15 @@ export const SHUTDOWN_ACK_DELAY_MS: number;
  *  purpose — the consumer question is "active or idle for minutes?", and a
  *  per-byte rewrite would turn the pty bridge into an fs hot loop. */
 export const ACTIVITY_PERSIST_MS: 15000;
+/**
+ * Claude can still show its first-run wizard to a headless launch even when
+ * the persisted config says onboarding is complete. A human can press Enter
+ * through that wizard; a headless managed pty cannot. Keep the recovery
+ * deliberately narrow: only the explicit headless Claude launch mode gets
+ * these two startup answers, and only while the child is in its bounded boot
+ * window.
+ */
+export const HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS: 30000;
 /** WI-41386 — the SCROLLBACK GUARD on the child → terminal bridge.
  *
  *  `ESC[3J` (ED param 3, "erase saved lines") deletes the TERMINAL'S SCROLLBACK

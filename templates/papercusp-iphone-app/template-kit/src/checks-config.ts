@@ -75,6 +75,18 @@ export interface ChecksBootSection {
   shutdownGraceMs?: number;
 }
 
+/** Fast static inputs required before a Tauri desktop build can compile. */
+export interface ChecksNativeDesktopSection {
+  /** App-root-relative Rust package manifest. */
+  cargoManifest: string;
+  /** App-root-relative committed lockfile for reproducible application builds. */
+  cargoLock: string;
+  /** App-root-relative Tauri v2 config. */
+  tauriConfig: string;
+  /** App-root-relative icon files; must exactly match `bundle.icon`. */
+  icons: string[];
+}
+
 /** `gym-signals` — the hive's guardrail signals are declared and wired. */
 export interface ChecksGymSection {
   /** The HIVE blueprint.yaml, app-root-relative. */
@@ -297,6 +309,7 @@ export interface TemplateChecksConfig {
   confinement?: ChecksConfinementSection;
   seam?: ChecksSeamSection;
   boot?: ChecksBootSection;
+  nativeDesktop?: ChecksNativeDesktopSection;
   gym?: ChecksGymSection;
   composition?: ChecksCompositionSection;
   components?: ChecksComponentsSection;
@@ -408,6 +421,24 @@ export function validateChecksConfig(value: unknown): string[] {
         errors.push("boot.discoveryFile: required non-empty string");
       if (value.boot.mode === "spawn" && !isStringArray(value.boot.command))
         errors.push("boot.command: required (list of strings) in spawn mode");
+    }
+  }
+
+  if (value.nativeDesktop !== undefined) {
+    if (!isRecord(value.nativeDesktop))
+      errors.push("nativeDesktop: must be an object");
+    else {
+      for (const field of ["cargoManifest", "cargoLock", "tauriConfig"] as const) {
+        if (!isNonEmptyString(value.nativeDesktop[field]))
+          errors.push(`nativeDesktop.${field}: required non-empty string`);
+      }
+      requireStringArray(
+        errors,
+        "nativeDesktop",
+        "icons",
+        value.nativeDesktop.icons,
+        true,
+      );
     }
   }
 

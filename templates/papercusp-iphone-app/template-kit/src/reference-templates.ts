@@ -167,7 +167,7 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
       id: "boot-e2e",
       run: "checks/boot-e2e.test.ts",
       summary:
-        "composed app builds, sidecar spawns, discovery file written, health returns 200",
+        "native Cargo/config/icon inputs exist, composed app builds, sidecar spawns, discovery file written, health returns 200",
     },
   ],
   musts: [
@@ -175,6 +175,11 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
       id: "thin-shell",
       rule: "No domain logic in Rust — the shell is a HOST; packaged sidecar resolution is resource_dir()/dist-sidecar + vendored bin/node + bundled_path_env, dev is the repo dist-sidecar",
       enforcedBy: "prose-only",
+    },
+    {
+      id: "native-bundle-inputs",
+      rule: "Cargo.toml + committed Cargo.lock + tauri.conf.json + every explicitly configured bundle icon exist and are non-empty before native compilation",
+      enforcedBy: "boot-e2e",
     },
     {
       id: "discovery-file",
