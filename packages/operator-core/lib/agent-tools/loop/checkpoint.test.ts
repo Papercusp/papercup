@@ -423,6 +423,27 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(b.checksLint).toBeUndefined();
   });
 
+  it('checksLint accepts exact durable task ids carried by a contested check', async () => {
+    const firstTask = '0mt8rdwku1p1azr046o';
+    const secondTask = '0mt8rdx3wk0yfrza157';
+    const b = body(
+      await call({
+        note: `Focused task generation ${firstTask} and ${secondTask} MUST remain active.`,
+        checks: [
+          {
+            id: 'durable-caller-fix-tests',
+            claim: 'both focused tasks are active without terminal verdicts',
+            recheck: `capability:bash_output task_id=${firstTask}; capability:bash_output task_id=${secondTask}`,
+            contested: `${firstTask} and ${secondTask} were active without terminal verdicts`,
+          },
+        ],
+      }),
+    );
+
+    expect(b.ok).toBe(true);
+    expect(b.checksLint).toBeUndefined();
+  });
+
   // outage-must-not-be-silent-2026-08-02 P-009 — the absence-claim leg.
   //
   // The pre-existing checksLint keys on a distinctive token (hash / WI-EI id / ISO instant)

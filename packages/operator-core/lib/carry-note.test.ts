@@ -731,6 +731,22 @@ describe('lintUncheckedExternalClaims — carried claims must carry their probe 
     expect(lintUncheckedExternalClaims(prose, probes)).toEqual([]);
   });
 
+  it('treats exact durable task ids in contested checks as probe coverage', () => {
+    const firstTask = '0mt8rdwku1p1azr046o';
+    const secondTask = '0mt8rdx3wk0yfrza157';
+    const prose = `Focused task generation ${firstTask} and ${secondTask} MUST remain active.`;
+    const probes = renderCheckLine({
+      id: 'durable-caller-fix-tests',
+      claim: 'both focused tasks are active without terminal verdicts',
+      recheck: `capability:bash_output task_id=${firstTask}; capability:bash_output task_id=${secondTask}`,
+      contested: `${firstTask} and ${secondTask} were active without terminal verdicts`,
+    });
+
+    expect(lintUncheckedExternalClaims(prose, '')).toEqual([prose]);
+    expect(lintUncheckedExternalClaims(prose, probes)).toEqual([]);
+    expect(lintUncheckedExternalClaims('abcdefghijklmnopqrs MUST remain active', '')).toEqual([]);
+  });
+
   it('ignores prose without assertion verbs or external-state content, and caps at 3', () => {
     expect(lintUncheckedExternalClaims('read the inbox, then build the patch', '')).toHaveLength(0);
     // Verb but neither a concrete token NOR an external-state noun — clean.

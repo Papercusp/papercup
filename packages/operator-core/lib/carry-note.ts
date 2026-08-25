@@ -1616,6 +1616,12 @@ const CLAIM_TOKEN_RES: ReadonlyArray<RegExp> = [
   // fleet habitually quotes 10-char short-shas; the letter requirement keeps plain
   // numbers like "12345678" from reading as hashes).
   /\b(?=[0-9a-f]*[a-f])[0-9a-f]{8,40}\b/gi,
+  // task-manager/types.ts newTaskId(): 9-char base-36 time prefix + 10-char
+  // base-36 random suffix. These durable handles are the only stable identity a
+  // cold successor has for capability:bash / PTY work, so an exact task id in a
+  // check row is a stronger coverage anchor than similar surrounding prose. Require
+  // both a digit and a letter so an ordinary 19-letter word is not promoted to an id.
+  /\b(?=[0-9a-z]{19}\b)(?=[0-9a-z]*\d)(?=[0-9a-z]*[a-z])[0-9a-z]{19}\b/g,
   /\b(?:WI|EI|F)-\d+\b/g, // work-item / insight ids
   /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/g, // ISO timestamps
 ];
