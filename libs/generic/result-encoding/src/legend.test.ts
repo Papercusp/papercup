@@ -26,6 +26,7 @@ describe('renderWireSchemas — the "## Wire schemas" legend', () => {
     expect(out).toContain('read → id:id, state:todo|done');
     expect(out).toContain('`work_items:set_state`');
     expect(out).toContain('write ← id:id, state:str, harness:str?');
+    expect(out).toContain('`ptool --json -` fallback therefore wraps the row as `{ "row": "value1,value2" }`');
   });
 
   it('returns empty string when no tool has derivable columns', () => {

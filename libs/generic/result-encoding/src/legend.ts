@@ -73,9 +73,11 @@ export function renderWireSchemas(entries: ReadonlyArray<PrePromptEntry>, lookup
     '- **read →** Results arrive as **headerless CSV**: a `[N]` row-count line (so you can',
     "  tell if it was truncated) then N rows of comma-separated VALUES in the column order",
     '  listed below. No header row — map positions to the columns here.',
-    '- **write ←** Call these tools with a single `row` argument: the VALUES in the column',
-    '  order below, comma-separated. Omit trailing optional columns. A `text` column is',
-    '  always last and may contain commas — do not quote or escape it.',
+    '- **write ←** Call these tools with a JSON object containing one `row` argument; the',
+    '  row value is the VALUES in the column order below, comma-separated. The sanctioned',
+    '  `ptool --json -` fallback therefore wraps the row as `{ "row": "value1,value2" }`.',
+    '  Omit trailing optional columns. A `text` column is always last and may contain commas',
+    '  — do not quote or escape it inside the row value.',
     '',
   ].join('\n');
   return `${preamble}${blocks.join('\n')}`;

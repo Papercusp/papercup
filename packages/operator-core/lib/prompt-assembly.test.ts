@@ -362,6 +362,7 @@ describe('renderWireSchemasSection — the "## Wire schemas" legend (P-003)', ()
     expect(out).toContain('read → id:id, state:todo|done');
     expect(out).toContain('`work_items:claim`');
     expect(out).toContain('write ← id:id, assignee:str?, harness:str?');
+    expect(out).toContain('`ptool --json -` fallback therefore wraps the row as `{ "row": "value1,value2" }`');
     clearPrePromptRegistry();
   });
 
