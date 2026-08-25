@@ -2835,6 +2835,46 @@ describe("runGreenCheckpoint", () => {
     expect(calls).toContain("runGreen");
   });
 
+  it("EI-21436432400491183: refuses to publish a fossil red after a 121m setup gap", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const logs: string[] = [];
+    const { deps, calls } = stubDeps(false, ["lib/fossil.test.ts"]);
+    const priorLog = deps.log;
+    deps.log = (s: string) => {
+      logs.push(s);
+      priorLog?.(s);
+    };
+    const realNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    const nowSpy = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const priorSetup = deps.setupTree;
+      deps.setupTree = async (ref: string) => {
+        offsetMs = 121 * 60_000;
+        return priorSetup?.(ref);
+      };
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r).toMatchObject({
+        advanced: false,
+        green: null,
+        reason: "candidate-fossil",
+      });
+      expect(r.summary).toContain("withheld a red verdict");
+      expect(r.summary).toContain("already 2h old");
+      expect(calls).not.toContain("advance");
+      expect(calls).not.toContain("broadcast");
+      expect(calls).not.toContain("escalate");
+      expect(calls).toContain("runGreen");
+      expect(logs.some((line) => line.includes("candidate-fossil"))).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   /**
    * WI-7069 — `killProcessGroupOnTimeout` must reach a GRANDCHILD process, not just the
    * direct child. setupTree's own shell scripts fork further children (git/cp/npm); a plain
