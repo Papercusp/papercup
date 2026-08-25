@@ -71,6 +71,7 @@ async function configuredHost(): Promise<{
   await import('./configure');
   return h.configureBackup.mock.calls[0]![0] as {
     readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
+    acquireMigrationLock: () => Promise<{ release: () => Promise<void> }>;
   };
 }
 

@@ -81,6 +81,7 @@ import { isPidInLiveWindowScope } from '../../task-manager/terminal-residue-cens
 import { PSU_LAUNCH_LOG_TAIL_CHARS, readPsuLaunchLogTail } from '../../psu-launch-log.mjs';
 import {
   resolveSavedFleetLaunchSpec,
+  type SavedFleetLaunchConfig,
   type SavedFleetLaunchSpecProvenance,
 } from '../fleet_registry/saved-launch-spec';
 
@@ -673,7 +674,11 @@ export default defineTool({
     // its transcript/backend identity, but omitted placement/routing flags still
     // come from the fleet profile so a dead visible member returns headlessly
     // when that is the fleet's recorded shape.
-    let persistedHeadcountProfile: Awaited<ReturnType<typeof getFleetHeadcountTarget>> = null;
+    type AppliedHeadcountProfile = Omit<
+      NonNullable<Awaited<ReturnType<typeof getFleetHeadcountTarget>>>,
+      'config'
+    > & { config: SavedFleetLaunchConfig };
+    let persistedHeadcountProfile: AppliedHeadcountProfile | null = null;
     let savedLaunchSpecMeta: {
       provenance: SavedFleetLaunchSpecProvenance;
       reusePath: string;

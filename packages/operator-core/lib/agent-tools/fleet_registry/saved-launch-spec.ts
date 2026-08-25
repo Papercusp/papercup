@@ -161,7 +161,7 @@ function provenanceFor(
 }
 
 /** Convert the validated headcount recipe to the command-neutral member spec. */
-export function savedFleetLaunchSpecFromConfig(config: FleetHeadcountConfig): SavedFleetLaunchSpec {
+export function savedFleetLaunchSpecFromConfig(config: SavedFleetLaunchConfig): SavedFleetLaunchSpec {
   return {
     ...(config.plan !== undefined ? { plan: config.plan } : {}),
     harness: config.harness,
