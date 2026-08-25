@@ -35,6 +35,7 @@ export const MECHANICAL_CHECKPOINT_MARKER = '⟦auto-checkpoint mechanical';
 
 /** Separator between agent-authored prose and the appended mechanical block. */
 const MECHANICAL_SEP = '\n\n---\n';
+const STRUCTURED_CARRY_SECTION_RE = /^##\s+(?:Checks|Walls)\s*$/im;
 
 export interface HeldCheckpointState {
   checkpoint: string | null;
@@ -104,7 +105,19 @@ export function mergeMechanicalCheckpoint(existing: string | null | undefined, b
   const agentPart = (markerAt >= 0 ? prior.slice(0, markerAt) : prior)
     .replace(/(\n\s*---\s*)+$/, '')
     .trimEnd();
-  return agentPart ? `${agentPart}${MECHANICAL_SEP}${block}` : block;
+  if (!agentPart) return block;
+
+  // Mechanical tool-log lines are ordinary prose, but carry-note parsing treats
+  // every line after `## Checks`/`## Walls` as a structured row. Keep the system
+  // snapshot before those sections so activity metadata cannot consume the
+  // twelve-row claim budget or evict real verified claims.
+  const sectionMatch = STRUCTURED_CARRY_SECTION_RE.exec(agentPart);
+  const structuredStart = sectionMatch?.index ?? -1;
+  if (structuredStart < 0) return `${agentPart}${MECHANICAL_SEP}${block}`;
+
+  const authoredBody = agentPart.slice(0, structuredStart).trimEnd();
+  const structuredSections = agentPart.slice(structuredStart).trimStart();
+  return [authoredBody, block, structuredSections].filter(Boolean).join(MECHANICAL_SEP);
 }
 
 /* ------------------------------------------------------------------ */

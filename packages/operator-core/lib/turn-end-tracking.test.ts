@@ -77,6 +77,31 @@ describe('composeMechanicalCheckpoint / mergeMechanicalCheckpoint', () => {
     expect(second).toContain('later turn');
     expect(second).not.toContain('P-015 legs 1-2 landed');
   });
+
+  it('keeps mechanical tool logs outside authored Checks and Walls rows', async () => {
+    const { splitCarryNoteChecks, splitCarryNoteWalls } = await import('./carry-note');
+    const prior = [
+      '## Did',
+      'The agent-authored checkpoint.',
+      '',
+      '## Checks',
+      '- ✓ release gate is green — re-check: read the gate — evidence: observed green',
+      '',
+      '## Walls',
+      '- owner approval remains — re-check: ask owner',
+    ].join('\n');
+
+    const merged = mergeMechanicalCheckpoint(prior, block);
+    const { checks, body } = splitCarryNoteChecks(merged);
+    const { walls } = splitCarryNoteWalls(merged);
+
+    expect(checks).toHaveLength(1);
+    expect(checks[0]?.claim).toBe('release gate is green');
+    expect(walls).toHaveLength(1);
+    expect(walls[0]?.claim).toBe('owner approval remains');
+    expect(body).toContain(MECHANICAL_CHECKPOINT_MARKER);
+    expect(merged.indexOf(MECHANICAL_CHECKPOINT_MARKER)).toBeLessThan(merged.indexOf('## Checks'));
+  });
 });
 
 describe('deliverable detection', () => {
