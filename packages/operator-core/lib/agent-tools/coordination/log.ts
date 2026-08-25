@@ -194,6 +194,10 @@ export const coordLog: CoordEventLog = {
     await coordScopeReady();
     return impl.appendLine(surface, writerKey, line);
   },
+  appendLineIfAbsent: async (surface, writerKey, line) => {
+    await coordScopeReady();
+    return impl.appendLineIfAbsent(surface, writerKey, line);
+  },
   readLines: async (surface, opts) => {
     await coordScopeReady();
     return impl.readLines(surface, opts);

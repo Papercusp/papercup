@@ -11,6 +11,7 @@
 
 import type { CoordEnvelope } from '../core/envelope';
 import type {
+  AppendLineIfAbsentResult,
   CoordEventLog,
   CoordLogCursorPage,
   EventSurface,
@@ -28,6 +29,7 @@ interface Seq {
 
 export class InMemoryCoordLog implements CoordEventLog {
   private lines = new Map<LineSurface, Seq[]>();
+  private lineByMsgId = new Map<LineSurface, Map<string, Seq>>();
   private events = new Map<EventSurface, Map<string, Seq>>();
   // WI-3880: one monotonic counter across every surface/kind, assigned at
   // first-write time — the true, stable append-order cursor for this backend
@@ -48,9 +50,29 @@ export class InMemoryCoordLog implements CoordEventLog {
     // This store DOES mint a monotonic sequence, so it can answer the contract's
     // "point AT this record" question rather than degrading to null.
     const id = this.nextSeq();
-    arr.push({ id, envelope: line });
+    const row = { id, envelope: line };
+    arr.push(row);
     this.lines.set(surface, arr);
+    const byMsgId = this.lineByMsgId.get(surface) ?? new Map<string, Seq>();
+    // Keep the first row for replay lookup while preserving appendLine's
+    // historical behavior of allowing deliberate duplicate appends.
+    if (!byMsgId.has(line.msg_id)) byMsgId.set(line.msg_id, row);
+    this.lineByMsgId.set(surface, byMsgId);
     return id;
+  }
+
+  async appendLineIfAbsent(
+    surface: LineSurface,
+    writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<AppendLineIfAbsentResult> {
+    const byMsgId = this.lineByMsgId.get(surface) ?? new Map<string, Seq>();
+    const existing = byMsgId.get(line.msg_id);
+    if (existing) {
+      return { created: false, sequence: existing.id, envelope: existing.envelope };
+    }
+    const sequence = await this.appendLine(surface, writerKey, line);
+    return { created: true, sequence, envelope: line };
   }
 
   async readLines(surface: LineSurface): Promise<CoordEnvelope[]> {

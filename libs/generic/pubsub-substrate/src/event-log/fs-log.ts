@@ -21,6 +21,7 @@ import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { CoordEnvelope } from '../core/envelope';
 import type {
+  AppendLineIfAbsentResult,
   CoordEventLog,
   CoordLogCursorPage,
   EventSurface,
@@ -43,6 +44,10 @@ async function appendJsonl(filepath: string, envelope: CoordEnvelope): Promise<v
   await fs.mkdir(dirname(filepath), { recursive: true });
   await fs.appendFile(filepath, JSON.stringify(envelope) + '\n', 'utf8');
 }
+
+const LINE_LOCK_RETRY_MS = 10;
+const LINE_LOCK_ATTEMPTS = 600;
+const LINE_LOCK_STALE_MS = 60_000;
 
 async function readJsonl(filepath: string): Promise<CoordEnvelope[]> {
   let buf: string;
@@ -87,6 +92,56 @@ export class FsCoordLog implements CoordEventLog {
     return join(this.root(), `plan-events-${ym}.jsonl`);
   }
 
+  private lineLockFile(surface: LineSurface, msgId: string): string {
+    return join(this.root(), '.line-locks', surface, `${sanitise(msgId)}.lock`);
+  }
+
+  /** Serialize idempotent line claims across processes sharing the coord dir. */
+  private async withLineLock<T>(surface: LineSurface, msgId: string, fn: () => Promise<T>): Promise<T> {
+    const filepath = this.lineLockFile(surface, msgId);
+    await fs.mkdir(dirname(filepath), { recursive: true });
+    for (let attempt = 0; attempt < LINE_LOCK_ATTEMPTS; attempt += 1) {
+      try {
+        const handle = await fs.open(filepath, 'wx');
+        try {
+          return await fn();
+        } finally {
+          await handle.close().catch(() => {});
+          await fs.rm(filepath, { force: true }).catch(() => {});
+        }
+      } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException)?.code !== 'EEXIST') throw e;
+        // A crashed writer must not strand every future replay forever. Only
+        // reclaim a lock whose mtime is well beyond the normal critical section.
+        try {
+          const stat = await fs.stat(filepath);
+          if (Date.now() - stat.mtimeMs > LINE_LOCK_STALE_MS) {
+            await fs.rm(filepath, { force: true });
+            continue;
+          }
+        } catch (statError: unknown) {
+          if ((statError as NodeJS.ErrnoException)?.code !== 'ENOENT') throw statError;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, LINE_LOCK_RETRY_MS));
+      }
+    }
+    throw new Error(`coord line claim lock timed out for ${surface}/${msgId}`);
+  }
+
+  private async appendLineUnlocked(
+    surface: LineSurface,
+    writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<number | null> {
+    if (surface === 'messages') {
+      await appendJsonl(join(this.lineDir('messages'), `${sanitise(writerKey)}.jsonl`), line);
+    } else {
+      // plan-events: writerKey ignored; rotate by current month.
+      await appendJsonl(this.planEventsFile(), line);
+    }
+    return null;
+  }
+
   /** All plan-events files oldest→newest: legacy first, then monthly. */
   private async planEventsFiles(): Promise<string[]> {
     const dir = this.root();
@@ -110,16 +165,24 @@ export class FsCoordLog implements CoordEventLog {
     writerKey: string,
     line: CoordEnvelope,
   ): Promise<number | null> {
-    if (surface === 'messages') {
-      await appendJsonl(join(this.lineDir('messages'), `${sanitise(writerKey)}.jsonl`), line);
-    } else {
-      // plan-events: writerKey ignored; rotate by current month.
-      await appendJsonl(this.planEventsFile(), line);
-    }
+    await this.withLineLock(surface, line.msg_id, () => this.appendLineUnlocked(surface, writerKey, line));
     // JSONL-per-writer mints no cross-stream sequence number: a byte offset is
     // not stable across rotation and a line index is per-file, so neither can
     // name this record globally. Null per the contract — the append succeeded.
     return null;
+  }
+
+  async appendLineIfAbsent(
+    surface: LineSurface,
+    writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<AppendLineIfAbsentResult> {
+    return this.withLineLock(surface, line.msg_id, async () => {
+      const existing = (await this.readLines(surface)).find((candidate) => candidate.msg_id === line.msg_id);
+      if (existing) return { created: false, sequence: null, envelope: existing };
+      await this.appendLineUnlocked(surface, writerKey, line);
+      return { created: true, sequence: null, envelope: line };
+    });
   }
 
   async readLines(surface: LineSurface, opts: ReadLinesOpts = {}): Promise<CoordEnvelope[]> {

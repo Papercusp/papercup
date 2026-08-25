@@ -31,6 +31,16 @@ export interface ReadLinesOpts {
   filesBack?: number;
 }
 
+/** Result of an idempotent line append attempt. */
+export interface AppendLineIfAbsentResult {
+  /** True only for the caller that appended the line. */
+  created: boolean;
+  /** Storage sequence for the claimed line, when the backend mints one. */
+  sequence: number | null;
+  /** The newly-created line, or the already-stored winner on replay. */
+  envelope: CoordEnvelope;
+}
+
 export interface CoordEventLog {
   /**
    * Append one envelope to a single-writer line stream. For `messages`,
@@ -48,6 +58,21 @@ export interface CoordEventLog {
     writerKey: string,
     line: CoordEnvelope,
   ): Promise<number | null>;
+
+  /**
+   * Append a line only when its envelope `msg_id` is not already present.
+   *
+   * The presence check and append are one claim operation: exactly one
+   * concurrent caller receives `created:true`; replays receive the stored
+   * envelope and do not append a second line. Implementations must preserve
+   * this guarantee across their supported writer boundary (in-process, files,
+   * or database connections).
+   */
+  appendLineIfAbsent(
+    surface: LineSurface,
+    writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<AppendLineIfAbsentResult>;
 
   /** Read every line across a line surface (union of all keyed files). */
   readLines(surface: LineSurface, opts?: ReadLinesOpts): Promise<CoordEnvelope[]>;

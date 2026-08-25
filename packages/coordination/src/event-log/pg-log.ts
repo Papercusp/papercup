@@ -36,6 +36,7 @@
 import type { Sql } from 'postgres';
 import type { CoordEnvelope } from '@papercusp/pubsub-substrate/core';
 import type {
+  AppendLineIfAbsentResult,
   CoordEventLog,
   CoordLogCursorPage,
   EventSurface,
@@ -474,6 +475,58 @@ export class PgCoordLog implements CoordEventLog {
     const raw = rows[0]?.id;
     const id = typeof raw === 'number' ? raw : Number(raw);
       return Number.isFinite(id) ? id : null;
+    }, this.opts.contentionRetry);
+  }
+
+  /**
+   * Claim a line idempotently without adding a schema-level unique index for
+   * the append-only `messages` surface. The transaction-scoped advisory lock
+   * serializes only callers for this workspace/surface/msg_id; the existing
+   * row is read and, when absent, inserted on the same connection.
+   */
+  async appendLineIfAbsent(
+    surface: LineSurface,
+    writerKey: string,
+    line: CoordEnvelope,
+  ): Promise<AppendLineIfAbsentResult> {
+    return withPgContentionRetry(async () => {
+      await this.opts.ensureSchema();
+      const sql = this.opts.getSql();
+      const workspaceId = this.resolveWs();
+      const lockKey = `${workspaceId}\u0000${surface}\u0000${line.msg_id}`;
+      return sql.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+        const existing = await tx<{ id: string | number; body: unknown; ts: Date; msg_id: string }[]>`
+          SELECT id, body, ts, msg_id
+            FROM harness_shared.coord_event_log
+           WHERE workspace_id = ${workspaceId}
+             AND surface = ${surface}
+             AND msg_id = ${line.msg_id}
+           ORDER BY id ASC
+           LIMIT 1
+        `;
+        if (existing.length > 0) {
+          const raw = existing[0].id;
+          const sequence = typeof raw === 'number' ? raw : Number(raw);
+          return {
+            created: false,
+            sequence: Number.isFinite(sequence) ? sequence : null,
+            envelope: parseBody(existing[0].body, existing[0]),
+          };
+        }
+        const inserted = await tx<{ id: string | number }[]>`
+          INSERT INTO harness_shared.coord_event_log (workspace_id, surface, writer_key, msg_id, body, harness_slug, ts)
+          VALUES (${workspaceId}, ${surface}, ${writerKey}, ${line.msg_id}, ${JSON.stringify(line)}::text::jsonb, ${line.harness_slug ?? null}, ${line.ts}::timestamptz)
+          RETURNING id
+        `;
+        const raw = inserted[0]?.id;
+        const sequence = typeof raw === 'number' ? raw : Number(raw);
+        return {
+          created: true,
+          sequence: Number.isFinite(sequence) ? sequence : null,
+          envelope: line,
+        };
+      });
     }, this.opts.contentionRetry);
   }
 
