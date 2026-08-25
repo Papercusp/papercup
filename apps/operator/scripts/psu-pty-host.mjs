@@ -2638,6 +2638,32 @@ export function makeTurnCoalescer() {
       pending.set(key, metadata === undefined ? { data, folded: 0 } : { data, folded: 0, metadata });
       return false;
     },
+    /** Replace the text/metadata of an EXISTING waiter without counting another
+     *  logical fire. A retry of the SAME durable delivery id is not a folded wake,
+     *  but its executor-side delivery re-check may have rebuilt the envelope from a
+     *  newer loop:checkpoint while the first attempt was still behind this host's
+     *  busy gate (EI-21428742689578243). Returning false when the waiter already
+     *  claimed its slot keeps this best-effort and never resurrects a delivered turn. */
+    refresh(key, data, metadata) {
+      const p = pending.get(key);
+      if (!p) return false;
+      // A newer DISTINCT fire may already have folded into this same routine
+      // waiter after the original delivery was accepted. A late retry of the
+      // older delivery still carries its older fireNumber: it may refresh its
+      // own checkpoint snapshot, but it must not roll the logical fire backward.
+      if (
+        p.metadata?.routineId &&
+        metadata?.routineId === p.metadata.routineId &&
+        Number.isFinite(p.metadata.fireNumber) &&
+        Number.isFinite(metadata.fireNumber) &&
+        p.metadata.fireNumber > metadata.fireNumber
+      ) {
+        return false;
+      }
+      p.data = data;
+      if (metadata !== undefined) p.metadata = metadata;
+      return true;
+    },
     claim(key) {
       const p = pending.get(key) ?? null;
       pending.delete(key);
@@ -4103,12 +4129,33 @@ export function hostThroughPty(o) {
       // pre-fix sender) makes this a no-op — unchanged behavior.
       const duplicateState = deliveryDedup.state(msg.deliveryId);
       if (duplicateState) {
+        // EI-21428742689578243: `accepted` means the FIRST copy can wait behind
+        // the host's busy/composer gates for minutes. During that wait the durable
+        // pump retries the SAME delivery id, and executeWake rehydrates its text
+        // from the latest loop:checkpoint. Pre-fix, the id-dedup returned here
+        // before the turn coalescer could see those fresh bytes, so the eventually
+        // delivered banner combined an enqueue-time checkpoint with a newer age.
+        // Refresh only a still-pending LOOP waiter. It remains ONE logical delivery
+        // (folded is unchanged), completed ids remain immutable, and a waiter that
+        // already claimed its slot is deliberately not resurrected.
+        const pendingLoopKey =
+          duplicateState === 'pending' && msg.mode === 'turn' && msg.routineId
+            ? turnCoalesceKey(msg.data, msg.routineId)
+            : null;
+        const pendingLoopMetadata =
+          msg.routineId && msg.fireNumber != null
+            ? { routineId: msg.routineId, fireNumber: msg.fireNumber }
+            : undefined;
+        const refreshedPendingTurn =
+          pendingLoopKey != null
+            ? turnCoalescer.refresh(pendingLoopKey, msg.data, pendingLoopMetadata)
+            : false;
         const duplicateReason =
           duplicateState === 'pending' ? 'pending-delivery-id' : 'duplicate-delivery-id';
         try {
           process.stderr.write(
             `psu-pty-host: duplicate delivery id ${msg.deliveryId} for ${ownerId} short-circuited ` +
-              `(${duplicateState}, mode:${msg.mode})\n`,
+              `(${duplicateState}, mode:${msg.mode}${refreshedPendingTurn ? ', queued text refreshed' : ''})\n`,
           );
         } catch {
           /* diagnostic only */

@@ -430,6 +430,84 @@ describe('psu-pty-host delivery-id dedup: a retry of an ALREADY-DELIVERED wake n
   );
 
   it(
+    'a SAME deliveryId retry refreshes the pending loop text before the busy gate opens, then still injects exactly once (EI-21428742689578243)',
+    async () => {
+      const idleMs = 250;
+      const ownerId = uniqueOwner('DEDUP-PENDING-REFRESH');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, type, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', echoChildCode(6500)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: String(idleMs),
+          PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '8000',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '120',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '40',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        },
+        ownerId,
+        advSessionId: 35_092,
+        io,
+        bridgeTty: true,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      const host = await waitForHost(ownerId);
+      expect(host).not.toBeNull();
+
+      let typing = true;
+      const typingTask = (async () => {
+        while (typing) {
+          type('x');
+          await sleep(60);
+        }
+      })();
+
+      const envelope = {
+        mode: 'turn' as const,
+        deliveryId: 'pending-refresh-1',
+        routineId: 'rt-pending-refresh',
+        fireNumber: 4,
+      };
+      expect(await injectIntoHost(sock, { ...envelope, data: 'STALE checkpoint hash; age=900s' })).toBe(true);
+      await sleep(150);
+      expect(captured()).not.toContain('ECHO:STALE');
+
+      // The durable pump retries the SAME delivery after executeWake has rebuilt
+      // its LIVE RE-CHECK block. The host must replace the queued bytes rather than
+      // treating its first accepted snapshot as immutable.
+      expect(await injectIntoHost(sock, { ...envelope, data: 'FRESH checkpoint hash; age=2s' })).toBe(true);
+
+      typing = false;
+      await typingTask;
+      await sleep(idleMs + 100);
+      type('\r');
+      expect(await waitForOutput(captured, 'ECHO:x', 3000)).toBe(true);
+      expect(await waitForOutput(captured, 'ECHO:FRESH checkpoint hash; age=2s', 3000)).toBe(true);
+      expect(captured()).not.toContain('ECHO:STALE checkpoint hash; age=900s');
+      expect((captured().match(/ECHO:FRESH checkpoint hash; age=2s/g) ?? []).length).toBe(1);
+
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+
+  it(
     'a DIFFERENT deliveryId with the SAME text is a genuinely new delivery — not deduped',
     async () => {
       // Guards against an over-broad fix: dedup must key off the delivery ID, never

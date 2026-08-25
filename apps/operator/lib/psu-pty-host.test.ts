@@ -1928,6 +1928,39 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
       });
     });
 
+    it('refreshes a pending same-delivery waiter without counting a second logical fire (EI-21428742689578243)', () => {
+      const c = makeTurnCoalescer();
+      const key = 'loop-fire:r-1';
+      expect(c.admit(key, 'stale checkpoint; age=900s', { routineId: 'r-1', fireNumber: 4 })).toBe(false);
+
+      expect(c.refresh(key, 'fresh checkpoint; age=2s', { routineId: 'r-1', fireNumber: 4 })).toBe(true);
+      expect(c.claim(key)).toEqual({
+        data: 'fresh checkpoint; age=2s',
+        folded: 0,
+        metadata: { routineId: 'r-1', fireNumber: 4 },
+      });
+
+      // Once the waiter has claimed its slot, a late retry cannot recreate it.
+      expect(c.refresh(key, 'too late')).toBe(false);
+      expect(c.size()).toBe(0);
+    });
+
+    it('does not let an older same-delivery retry roll back a newer folded fire', () => {
+      const c = makeTurnCoalescer();
+      const key = 'loop-fire:r-1';
+      expect(c.admit(key, 'fire 4 snapshot', { routineId: 'r-1', fireNumber: 4 })).toBe(false);
+      expect(c.admit(key, 'fire 5 snapshot', { routineId: 'r-1', fireNumber: 5 })).toBe(true);
+
+      // Fire 4's durable delivery id is still pending at the host and can retry
+      // after fire 5 folded. Its retry must not replace the newer logical fire.
+      expect(c.refresh(key, 'fire 4 retry with a newer read', { routineId: 'r-1', fireNumber: 4 })).toBe(false);
+      expect(c.claim(key)).toEqual({
+        data: 'fire 5 snapshot',
+        folded: 1,
+        metadata: { routineId: 'r-1', fireNumber: 5 },
+      });
+    });
+
     it('different keys wait independently (no cross-source folding)', () => {
       const c = makeTurnCoalescer();
       expect(c.admit('a', 'A1')).toBe(false);
