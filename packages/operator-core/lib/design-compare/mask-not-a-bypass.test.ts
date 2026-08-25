@@ -12,9 +12,11 @@
  * as proven while being untested.
  *
  * What is actually true today, measured rather than assumed: `ignoredRegions`
- * is threaded from `CompareRenderInput` through the provider and STAMPED onto
- * the stored result, but no code anywhere reads a region's geometry. The mask
- * is INERT — a region declared ignored is still fully compared.
+ * is accepted on `CompareRenderInput` and STAMPED onto the stored result, but
+ * it never reaches the engine — `provider.compare()` takes the two image paths,
+ * the diff path and a threshold, and nothing else. No code anywhere reads a
+ * region's geometry. The mask is INERT: a region declared ignored is still
+ * fully compared.
  *
  * That is fail-safe in the direction that matters (you cannot hide a real diff
  * behind a mask) and misleading in the other (the stored evidence says regions
@@ -241,21 +243,28 @@ describe('masks are recorded but inert, and that must not drift silently', () =>
     expect(read.evidence[0]!.deterministic.ignoredRegions).toEqual([WHOLE_IMAGE_MASK]);
   });
 
-  it('passes the regions to the engine rather than applying them itself', async () => {
+  it('never hands the regions to the engine, so no masking can occur', async () => {
     const provider = failingProvider();
     const d = deps({ comparison: { provider, probe: probeOk } });
     await ratifyReferenceVerb(ratifyInput(), CALLER, d);
     await compareRenderVerb(compareInput({ ignoredRegions: [WHOLE_IMAGE_MASK] }), CALLER, d);
 
     /**
-     * The adapter hands regions to the engine and performs no masking of its
-     * own (D-002: Papercusp owns orchestration, never pixel mathematics).
+     * This is the load-bearing assertion of the file, and it is deliberately
+     * the OPPOSITE of what the field's presence suggests.
      *
-     * This pins WHERE responsibility sits. Today no engine path honours the
-     * regions, so they are inert; if that changes, masking becomes capable of
-     * suppressing real differences and the tests above become load-bearing in a
-     * way they are not yet. Whoever makes that change must come through here.
+     * `provider.compare()` is invoked with exactly four fields — the two image
+     * paths, the diff path, and the engine threshold. `ignoredRegions` is not
+     * among them and is not part of `ProviderRequest` at all. So a declared
+     * mask is accepted from the caller, persisted onto the evidence record, and
+     * never reaches anything capable of acting on it.
+     *
+     * Pinning the ABSENCE is what makes the guard useful. The day someone
+     * threads regions through to an engine, this expectation fails, and they
+     * are forced to answer the question the other tests here are waiting for:
+     * what stops a mask from suppressing a real difference? Right now nothing
+     * needs to stop it, because nothing can perform it.
      */
-    expect(provider.sawRegions).toEqual([WHOLE_IMAGE_MASK]);
+    expect(provider.sawRegions).toBeUndefined();
   });
 });
