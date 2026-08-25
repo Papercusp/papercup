@@ -352,8 +352,13 @@ export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope:
     rediscover?: null | undefined;
     onRebase?: null | undefined;
 }): Promise<any>;
-/** Retry proxy-generated, pre-dispatch handshake refusals for tools/list. */
-export function listToolsWithLocalRetry(client: any, params?: any, { timeoutMs, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, }?: {
+/**
+ * Retry only the proxy-generated, pre-dispatch refusals that can occur while
+ * the session handshake class is full. The same MCP session remains valid: a
+ * rejected tools/list never reached the upstream and is safe to replay without
+ * reconnecting or creating a second session.
+ */
+export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, }?: {
     timeoutMs?: number | undefined;
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
@@ -372,13 +377,12 @@ export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, c
     contextTier?: string;
 }): URL;
 /** List every tool, following pagination if the server returns a cursor. */
-export function listAllTools(client: any, { timeoutMs }?: {
+export function listAllTools(client: any, { timeoutMs, retryLocalErrors, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, }?: {
     timeoutMs?: number | undefined;
     retryLocalErrors?: boolean | undefined;
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
     totalTimeoutMs?: number | undefined;
-    sleep?: ((ms: any) => Promise<any>) | undefined;
 }): Promise<any[]>;
 /** The live stdout delivery-failure probe (injectable in printResult for tests).
  *  Node SWALLOWS EPIPE on process.stdout by design: when the consumer of a
@@ -404,12 +408,12 @@ export function printResult(result: unknown, { raw, deliveryProbe }?: unknown): 
  */
 export const PTOOL_TRUNCATED_RESULT_MESSAGE: string;
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
-export const PTOOL_LIST_TOOLS_RETRY_DELAY_MS: number;
-export const PTOOL_LIST_TOOLS_MAX_ATTEMPTS: number;
-export const PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS: number;
 export const PTOOL_CONNECT_TIMEOUT_MS: number;
 export const PTOOL_CONNECT_RETRY_DELAY_MS: 1000;
 export const PTOOL_CONNECT_MAX_ATTEMPTS: number;
+export const PTOOL_LIST_TOOLS_RETRY_DELAY_MS: 1000;
+export const PTOOL_LIST_TOOLS_MAX_ATTEMPTS: number;
+export const PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS: number;
 export const PTOOL_CALL_TOOL_TIMEOUT_MS: 30000;
 export const PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS: 300000;
 export const PTOOL_RESPAWN_MEMBER_TIMEOUT_MS: 675000;
