@@ -144,12 +144,76 @@ describe('EI-18850448565330905: buildCrashCheckpointResult never leaves a crash 
     expect(r.green).not.toBe(false);
   });
 
-  it("keeps reason 'not-green' so the red streak and held-gate alarm still count a persistent crash", () => {
-    // release-actions derives `status` from `reason`, NEVER from `green` (status: verdict.reason).
-    // So the tri-state above must NOT be paid for by softening the reason — a crash-looping gate
-    // has to keep incrementing consecutiveReds and firing the held-gate alarm.
+  /**
+   * EI-21465187777146773 — this test's PROPERTY is inherited unchanged from the one it replaces
+   * ("a persistent crash must keep counting and keep firing the held-gate alarm"); only the
+   * counter it counts in has moved. Read the whole comment before touching the expectation.
+   *
+   * The predecessor pinned `reason === 'not-green'`, and its reasoning was sound at the time:
+   * release-actions derives `status` from `reason` and NEVER from `green`, so softening the
+   * reason would have made a crash-looping gate go silent — and silence is how `main` freezes
+   * with nobody told. What it could not express is that 'not-green' bought that loudness by
+   * asserting something false: a red verdict, with an EMPTY failing-test list, about code no run
+   * had judged. EI-21462211894072863 built the class that gets both — `'error'` counts in
+   * `gate_health.consecutiveNoVerdict` and escalates at the same `stallReds` threshold, saying
+   * WEDGED rather than RED — so staying loud no longer costs a fabricated verdict.
+   *
+   * ⚠ Asserting the reason STRING alone is what let this defect exist: the producer said
+   * 'not-green' while the consumer's no-verdict class only ever recognized 'error', and both
+   * suites stayed green through the disagreement. So the assertion runs the builder's OWN output
+   * through the real consumer instead, in the manner of torn-sweep-classification-path.test.ts.
+   */
+  it('⭐ a crash still COUNTS — the builder\'s own reason routes to no-verdict, never red, never a silent noop', () => {
     const r = buildCrashCheckpointResult({ candidate: 'abc123', error: new Error('boom'), runId: 'run-7' });
-    expect(r.reason).toBe('not-green');
+    expect(r.reason).toBe('error');
+    // The seam. Both collapse directions are stated explicitly so neither is reachable silently:
+    expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
+    expect(classifyGateStallStatus(r.reason, false)).not.toBe('red'); // the fabricated verdict
+    expect(classifyGateStallStatus(r.reason, false)).not.toBe('noop'); // the silence WI-39841 feared
+    // …and a moved pin still wins, exactly as for every other status.
+    expect(classifyGateStallStatus(r.reason, true)).toBe('reset');
+  });
+
+  it('⭐ and stays VISIBLE — the reason is a recorded abort, classified transient (a crash latches nothing)', () => {
+    // Counting it is only half of "loud": a reader has to be able to see it. A reason outside
+    // RECORDED_INCONCLUSIVE_STATUSES records a tick nobody can be advised about.
+    const r = buildCrashCheckpointResult({ candidate: 'abc123', error: new Error('boom'), runId: 'run-8' });
+    expect(isRecordedInconclusiveStatus(r.reason)).toBe(true);
+    expect(classifyGateAbort(r.reason)).toBe('transient');
+    // The advice must not send the reader at a failing-test list this tick never produced —
+    // the exact response the no-verdict split exists to prevent.
+    expect(gateAbortLever(r.reason)).toMatch(/do NOT triage/i);
+  });
+
+  /**
+   * PERMANENT FALSIFIABILITY CONTROL (repo convention: for a module you import, keep a
+   * deliberately-wrong implementation in the test file rather than mutating the shared tree — a
+   * mutation probe would hold a real source file modified for the life of the run, which
+   * git-sync's whole-tree sweep can commit even when nothing goes wrong).
+   *
+   * `preFixCrashResult` is `buildCrashCheckpointResult` AS IT BEHAVED before this change. Its
+   * divergence from the real builder is ONE field, and the calibration below pins that, so the
+   * failure it produces is attributable to this fix rather than to an unrelated difference.
+   */
+  it('CONTROL: the pre-fix crash result FAILS the property the fixed one satisfies', () => {
+    const opts = { candidate: 'abc123', error: new Error('boom'), runId: 'run-control' };
+    const real = buildCrashCheckpointResult(opts);
+    const preFix = { ...real, reason: 'not-green' as const };
+
+    // CALIBRATION — everything the fix did not touch must still agree, or the divergence below
+    // says nothing about this change. `green: null` in particular: the pre-fix builder ALREADY
+    // returned it, which is why the tri-state alone never fixed the streak.
+    expect(preFix.green).toBe(real.green);
+    expect(preFix.green).toBeNull();
+    expect(preFix.crashed).toBe(real.crashed);
+    expect(preFix.summary).toBe(real.summary);
+    expect(preFix.advanced).toBe(real.advanced);
+
+    // …and diverges at EXACTLY the defect: the old reason banked a red for a run that judged
+    // nothing, and was not even a status a reader could be advised about.
+    expect(classifyGateStallStatus(preFix.reason, false)).toBe('red');
+    expect(classifyGateStallStatus(real.reason, false)).toBe('no-verdict');
+    expect(isRecordedInconclusiveStatus(preFix.reason)).toBe(false);
   });
 
   it('carries the thrown Error\'s stack (falling back to its message) in the summary', () => {
@@ -213,8 +277,14 @@ describe('WI-40916 / EI-212278: materialization admission refusal is not a code 
       error: new Error(message),
       runId: 'run-generic',
     });
-    expect(r.reason).toBe('not-green');
+    // EI-21465187777146773: the generic crash path now says 'error'. The discrimination this
+    // test exists for is UNCHANGED and is still the load-bearing part — an incomplete signature
+    // must not be absorbed into the measured infra class, because 'infra-inconclusive' is a
+    // true NOOP (it disturbs no counter at all) while a crash has to keep counting.
+    expect(r.reason).toBe('error');
     expect(r.crashed).toBe(true);
+    expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
+    expect(classifyGateStallStatus('infra-inconclusive', false)).toBe('noop');
   });
 });
 
@@ -261,7 +331,10 @@ describe('WI-41252 / D-066: dependency-generation torn snapshots are not code re
       error: new Error(message),
       runId: 'run-generic',
     });
-    expect(r.reason).toBe('not-green');
+    // EI-21465187777146773: 'error' is the generic crash path's reason now — still counting
+    // (no-verdict), still NOT the measured infra noop the exact signatures earn.
+    expect(r.reason).toBe('error');
     expect(r.crashed).toBe(true);
+    expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
   });
 });

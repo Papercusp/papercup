@@ -488,7 +488,10 @@ describe("WI-41720 / D-073: dependency-generation fatal path reaches the real CL
     expect(terminal).toMatchObject({
       candidate,
       green: null,
-      reason: "not-green",
+      // EI-21465187777146773: a CAUGHT crash publishes the same no-verdict status an unreported
+      // one gets from checkpointFallbackStatus — it counts in consecutiveNoVerdict (WEDGED),
+      // not in consecutiveReds. See green-checkpoint-crash-result.test.ts for the seam.
+      reason: "error",
       crashed: true,
       runId,
     });

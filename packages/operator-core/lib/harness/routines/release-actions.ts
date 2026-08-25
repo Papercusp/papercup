@@ -818,8 +818,11 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   }
   // EI-20702428259478130: persist the ABNORMAL-EXIT discriminators. `summary` and `crashed` were
   // the only CheckpointVerdict fields this function never copied, and that made an INFRA DEATH and
-  // a REAL TEST FAILURE identical in the durable record: both land as status='not-green' with
-  // detail {green:false, runId, candidate} and nothing else to tell them apart.
+  // a REAL TEST FAILURE identical in the durable record: both landed as status='not-green' with
+  // detail {green:false, runId, candidate} and nothing else to tell them apart. (EI-21465187777146773
+  // has since separated them at the STATUS level too — a caught crash now publishes reason 'error',
+  // the no-verdict class — but these two fields remain the machine-readable discriminators, and are
+  // what the held-gate alarm quotes rather than infers; see readLastGateRunEvidence.)
   //
   // Measured cost, 2026-08-17 on oddsmith: four consecutive verdicts recorded not-green while the
   // suite passed 4460/4460. Nothing in the ledger could distinguish them from a genuine red — the

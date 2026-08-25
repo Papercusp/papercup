@@ -14326,6 +14326,14 @@ if (require.main === module) {
           // means this run never rendered a verdict, so claiming the code is RED is a fabricated
           // measurement; `green === null` is what routes it to `green-checkpoint:inconclusive`.
           // `reason` stays 'not-green' so the red streak / held-gate alarm still count it.
+          //
+          // ⚠ This path deliberately DIVERGES from buildCrashCheckpointResult, which moved to
+          // reason 'error' (the no-verdict class) in EI-21465187777146773. The divergence is not
+          // an oversight and not yet a decision: unlike a crash, this path can carry a REAL
+          // failing-file list (`carried` below, EI-20669541349219660) rescued from a suite that
+          // finished red before the kill — so its red is sometimes contentful. When `carried` is
+          // empty it is the same contentless red, and that half is filed as WI-41740 rather than
+          // changed here on the way past.
           green: null,
           reason: "not-green",
           summary:
