@@ -12,10 +12,17 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('../../git-pipeline-stats', () => ({ gitPipelineSnapshot: mocks.gitPipelineSnapshot }));
 vi.mock('../../git-pipeline-position', () => ({ gitPipelinePosition: mocks.gitPipelinePosition }));
-vi.mock('../../release-deploy-launch', () => ({ computeDeployStatus: mocks.computeDeployStatus }));
+vi.mock('../../release-deploy-launch', () => ({
+  computeDeployStatus: mocks.computeDeployStatus,
+  integrationRoot: () => '/test/integration-root',
+}));
 vi.mock('../../release-trace', () => ({ buildReleaseTrace: mocks.buildReleaseTrace }));
 vi.mock('../../events/await/store', () => ({ inspectEventKey: mocks.inspectEventKey }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: mocks.resolveAgentIdentity }));
+vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/operator-home-harness')>()),
+  operatorHomeHarnessSlug: () => 'test-home',
+}));
 
 import tool, {
   RELEASE_TRACE_AWAIT_TIMEOUT_MS,
@@ -84,6 +91,67 @@ describe('release:trace tool contract', () => {
       useSpawnerSidecar: false,
       includeActiveRun: true,
     });
+  });
+
+  it('stamps the operator-home subject and warns a concrete foreign-harness caller', async () => {
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha: 'abcd1234' });
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
+
+    const out = (await tool.handler(
+      { sha: 'abcd1234' } as never,
+      { role: 'cup', harnessSlug: 'sidestage' } as never,
+    )) as {
+      data: {
+        subject: { harness: string; scope: string; integrationRoot: string; note: string };
+        harnessMismatch: { callerHarness: string; reportedHarness: string; warning: string };
+      };
+    };
+
+    expect(out.data.subject).toMatchObject({
+      harness: 'test-home',
+      scope: 'operator-home-release-pipeline',
+      integrationRoot: '/test/integration-root',
+    });
+    expect(out.data.subject.note).toContain('test-home');
+    expect(out.data.harnessMismatch).toMatchObject({
+      callerHarness: 'sidestage',
+      reportedHarness: 'test-home',
+    });
+    expect(out.data.harnessMismatch.warning).toContain('sidestage');
+    expect(out.data.harnessMismatch.warning).toContain('test-home');
+  });
+
+  it('does not invent a mismatch for same-harness, wildcard, or unknown callers', async () => {
+    for (const harnessSlug of ['test-home', '*', undefined]) {
+      const snapshot = {
+        generatedAtMs: 123,
+        deploy: { integrationRoot: '/workspace/papercusp' },
+        gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
+      };
+      mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+      mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha: 'abcd1234' });
+      mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+      mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+      mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+      mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
+
+      const out = (await tool.handler(
+        { sha: 'abcd1234' } as never,
+        { role: 'cup', harnessSlug } as never,
+      )) as { data: { subject: { harness: string }; harnessMismatch?: unknown } };
+
+      expect(out.data.subject.harness).toBe('test-home');
+      expect(out.data.harnessMismatch).toBeUndefined();
+    }
   });
 
   it('keeps an active checkpoint from surfacing a gate-wedged trace (EI-21313251739637753)', async () => {
@@ -355,13 +423,22 @@ describe('release:trace tool contract', () => {
     vi.useFakeTimers();
     mocks.gitPipelineSnapshot.mockImplementation(() => new Promise(() => {}));
 
-    const pending = tool.handler({ sha: 'abcd1234' } as never, {} as never);
+    const pending = tool.handler(
+      { sha: 'abcd1234' } as never,
+      { role: 'cup', harnessSlug: 'sidestage' } as never,
+    );
     await vi.advanceTimersByTimeAsync(RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS);
     const result = await pending;
 
     expect(result).toMatchObject({
       data: {
         ok: false,
+        subject: {
+          harness: 'test-home',
+          scope: 'operator-home-release-pipeline',
+          integrationRoot: '/test/integration-root',
+        },
+        harnessMismatch: { callerHarness: 'sidestage', reportedHarness: 'test-home' },
         trace: { status: 'unknown', complete: false },
         nextVerb: null,
         error: {

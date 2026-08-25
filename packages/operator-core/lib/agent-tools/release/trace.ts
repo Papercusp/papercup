@@ -4,11 +4,12 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { gitPipelinePosition } from '../../git-pipeline-position';
 import { gitPipelineSnapshot } from '../../git-pipeline-stats';
-import { computeDeployStatus } from '../../release-deploy-launch';
+import { computeDeployStatus, integrationRoot } from '../../release-deploy-launch';
 import { buildReleaseTrace, type ReleaseTraceAwait, type ReleaseTraceWake } from '../../release-trace';
 import { buildKey } from '../../events/await/catalog';
 import { inspectEventKey } from '../../events/await/store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
+import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { statePlaneForDoor } from '../state-plane-door';
 
@@ -24,6 +25,42 @@ export const RELEASE_TRACE_AWAIT_TIMEOUT_MS = 10_000;
 
 type TraceTimeoutStage = 'pipeline_snapshot' | 'pipeline_position' | 'await_history';
 
+/**
+ * release:trace composes one fixed pipeline: the operator-home integration
+ * tree, green-checkpoint, and deployed :3070 state. A caller from another
+ * harness must not be able to mistake those correct values for its own release
+ * truth, so every returned envelope names the subject and concrete foreign
+ * callers receive a warning beside it.
+ */
+function releaseTraceSubjectStamp(ctx: { harnessSlug?: string | null }) {
+  const home = canonicalHarnessSlug(operatorHomeHarnessSlug());
+  const subject = {
+    harness: home,
+    scope: 'operator-home-release-pipeline' as const,
+    integrationRoot: integrationRoot(),
+    note:
+      `Every sha, gate verdict and deploy position in this reply describes the \`${home}\` operator release pipeline ONLY. ` +
+      'Other harnesses run their own green-checkpoint and promotion — this reply is not evidence about them.',
+  };
+
+  const raw = ctx?.harnessSlug?.trim();
+  const caller = raw && raw !== '*' ? canonicalHarnessSlug(raw) : null;
+  if (!caller || caller === home) return { subject };
+
+  return {
+    subject,
+    harnessMismatch: {
+      callerHarness: caller,
+      reportedHarness: home,
+      warning:
+        `⚠ CROSS-HARNESS READ — you called from harness \`${caller}\`, but release:trace reports the \`${home}\` operator pipeline. ` +
+        `These SHAs, gate reds and deploy positions are NOT \`${caller}\`'s and must not be quoted as its release truth: ` +
+        `\`${caller}\` promotes on its OWN green-checkpoint. This tool has no \`${caller}\` mode; use that harness's own release surface.`,
+    },
+  };
+}
+type ReleaseTraceSubjectStamp = ReturnType<typeof releaseTraceSubjectStamp>;
+
 function throwReadError(read: BoundedTimeoutResult<unknown>, label: string): never {
   if (read.error instanceof Error) throw read.error;
   throw new Error(read.errorMessage ?? `${label} failed`);
@@ -34,11 +71,13 @@ function traceTimeoutResponse(
   stage: TraceTimeoutStage,
   timeoutMs: number,
   read: BoundedTimeoutResult<unknown>,
+  subjectStamp: ReleaseTraceSubjectStamp,
   event?: string,
 ) {
   return {
     data: {
       ok: false,
+      ...subjectStamp,
       target: { path: args.path ?? null, sha: args.sha ?? null },
       trace: { status: 'unknown', complete: false },
       nextVerb: null,
@@ -134,7 +173,8 @@ export default defineTool({
     z.object({ path: tracePath.optional(), sha: traceSha, ...traceContext }),
   ]),
   async handler(args, ctx) {
-    if (!args.path && !args.sha) return { data: { ok: false, error: 'Provide path or sha.' } };
+    const subjectStamp = releaseTraceSubjectStamp(ctx);
+    if (!args.path && !args.sha) return { data: { ok: false, ...subjectStamp, error: 'Provide path or sha.' } };
     const identity = resolveAgentIdentity(ctx);
     // A diagnostic read must stay fork/sidecar-free. The default enables the
     // dev-deploy spawner sidecar, which can block this read while composing
@@ -149,7 +189,13 @@ export default defineTool({
     );
     if (snapshotRead.degraded) {
       if (snapshotRead.reason === 'error') throwReadError(snapshotRead, 'release:trace:pipeline-snapshot');
-      return traceTimeoutResponse(args, 'pipeline_snapshot', RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS, snapshotRead);
+      return traceTimeoutResponse(
+        args,
+        'pipeline_snapshot',
+        RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS,
+        snapshotRead,
+        subjectStamp,
+      );
     }
     const snapshot = snapshotRead.value;
     if (!snapshot) throw new Error('release:trace:pipeline-snapshot returned no snapshot');
@@ -171,7 +217,13 @@ export default defineTool({
     );
     if (positionRead.degraded) {
       if (positionRead.reason === 'error') throwReadError(positionRead, 'release:trace:pipeline-position');
-      return traceTimeoutResponse(args, 'pipeline_position', RELEASE_TRACE_POSITION_TIMEOUT_MS, positionRead);
+      return traceTimeoutResponse(
+        args,
+        'pipeline_position',
+        RELEASE_TRACE_POSITION_TIMEOUT_MS,
+        positionRead,
+        subjectStamp,
+      );
     }
     const position = positionRead.value;
     if (!position) throw new Error('release:trace:pipeline-position returned no position');
@@ -226,6 +278,7 @@ export default defineTool({
         'await_history',
         RELEASE_TRACE_AWAIT_TIMEOUT_MS,
         timedOutHistory.read,
+        subjectStamp,
         timedOutHistory.event,
       );
     }
@@ -310,6 +363,6 @@ export default defineTool({
       },
     });
     const plane = statePlaneForDoor(trace, 'release:trace', { path: args.path, sha: args.sha }, ctx);
-    return { data: { ...trace, ...(plane ? { plane } : {}) } };
+    return { data: { ...trace, ...subjectStamp, ...(plane ? { plane } : {}) } };
   },
 });
