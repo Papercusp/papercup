@@ -1901,8 +1901,8 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
        SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
            last_error = 'acked by subscriber while awake'
      WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
-       AND status IN ('pending', 'parked', 'delivering')
-    RETURNING id
+       AND status IN ('pending', 'parked')
+     RETURNING id
   `;
   if (rows.length > 0) return { acked: true, alreadySettled: false };
 
@@ -1916,7 +1916,13 @@ export async function ackDelivery(input: { deliveryId: number; subscriberId: str
        AND subscriber_id = ${input.subscriberId}
      LIMIT 1
   `;
-  if (settled.length > 0) return { acked: false, alreadySettled: true, status: settled[0].status };
+  if (settled.length > 0) {
+    const status = settled[0].status;
+    if (status === 'pending' || status === 'parked' || status === 'delivering') {
+      return { acked: false, alreadySettled: false, status };
+    }
+    return { acked: false, alreadySettled: true, status };
+  }
   return { acked: false, alreadySettled: false };
 }
 
