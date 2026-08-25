@@ -45,7 +45,10 @@ import {
   type ProjectionRow,
 } from "../packages/operator-core/lib/doc-projection/eviction-delta";
 import { connectScriptPg } from "./lib/pg-url.mjs";
-import { writeStderrSync, writeStdoutSync } from "./lib/write-stdout-sync.mjs";
+import {
+  writeStderrSync,
+  writeStdoutExactSync,
+} from "./lib/write-stdout-sync.mjs";
 // The projector's composition is IMPORTED, never re-implemented — the same reasoning
 // that makes `validateDocPart` a shared import above. A second copy of the cut order or
 // the budget arithmetic here would drift from the thing that actually authors the file,
@@ -80,8 +83,11 @@ type ProjectorModule = {
   ) => Promise<ProjectionRow[]>;
 };
 
-const loadProjector = async (): Promise<ProjectorModule> =>
-  (await import("./project-doc-parts.mjs")) as unknown as ProjectorModule;
+const loadProjector = async (): Promise<ProjectorModule> => {
+  // @ts-expect-error — the canonical .mjs projector has no declaration file; the
+  // ProjectorModule cast above is this script's intentionally narrow runtime contract.
+  return (await import("./project-doc-parts.mjs")) as unknown as ProjectorModule;
+};
 
 const WORKSPACE_ID =
   process.env.PAPERCUSP_WORKSPACE_ID ?? "papercusp-workspace";
@@ -360,7 +366,7 @@ async function main(): Promise<void> {
           `${r.body.length} chars, scope ${JSON.stringify(r.client_scope)}, ` +
           `rank ${r.project_rank}, section ${JSON.stringify(r.target_section)}]\n`,
       );
-      writeStdoutSync(r.body);
+      writeStdoutExactSync(r.body);
       return;
     }
 
