@@ -3070,6 +3070,7 @@ fn turn_to_message(t: models::TurnDto) -> Option<models::ChatMessage> {
         role: t.role,
         content: t.text,
         reasoning: String::new(),
+        provenance: None,
         tools,
         streaming: false,
     })
@@ -3084,10 +3085,20 @@ fn native_turn_to_message(t: agent_chats::AgentChatTranscriptTurn) -> Option<mod
     } else {
         t.content
     };
+    let provenance = t
+        .engine
+        .zip(t.model)
+        .zip(t.account_route)
+        .map(|((engine, model), account_route)| models::ChatProvenance {
+            engine,
+            model,
+            account_route,
+        });
     Some(models::ChatMessage {
         role: t.role,
         content,
         reasoning: String::new(),
+        provenance,
         tools: t
             .tools
             .into_iter()
@@ -3278,7 +3289,6 @@ async fn stream_agent_chat_turn(
         }
     };
 
-    let mut saw_done = false;
     let mut saw_visible_progress = false;
     let empty_deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     loop {
@@ -3311,6 +3321,32 @@ async fn stream_agent_chat_turn(
             AgentChatEvent::ReasoningDelta { text, .. } => {
                 saw_visible_progress |= !text.is_empty();
                 let _ = tx.send(Event::ChatReasoning(text));
+            }
+            AgentChatEvent::Provenance {
+                engine,
+                model,
+                account_route,
+            } => {
+                let _ = tx.send(Event::ChatProvenance(models::ChatProvenance {
+                    engine,
+                    model,
+                    account_route,
+                }));
+            }
+            AgentChatEvent::StepStart { step_index } => {
+                let _ = tx.send(Event::ChatStepStarted { step_index });
+            }
+            AgentChatEvent::StepEnd {
+                step_index,
+                stop_reason,
+                tool_call_count,
+                ..
+            } => {
+                let _ = tx.send(Event::ChatStepEnded {
+                    step_index,
+                    tool_call_count,
+                    stop_reason,
+                });
             }
             AgentChatEvent::ToolCall {
                 call,
@@ -3380,24 +3416,22 @@ async fn stream_agent_chat_turn(
                 return;
             }
             // finalText is authoritative and may be the provider's only text;
-            // apply it before finalizing instead of trusting deltas existed.
+            // apply it before finalizing instead of trusting deltas existed. End
+            // the task HERE so there is exactly one ChatDone emission site for a
+            // successful native turn.
             AgentChatEvent::Done { final_text, .. } => {
                 let _ = tx.send(Event::ChatFinal(final_text));
-                saw_done = true;
-                break;
+                let _ = tx.send(Event::ChatDone);
+                return;
             }
-            // Per-step boundaries/usage are the only frames not rendered yet.
+            // Heartbeats carry no pane state.
             _ => {}
         }
     }
 
-    if saw_done {
-        let _ = tx.send(Event::ChatDone);
-    } else {
-        let _ = tx.send(Event::ChatError(
-            "agent chat stream closed before done".to_string(),
-        ));
-    }
+    let _ = tx.send(Event::ChatError(
+        "agent chat stream closed before done".to_string(),
+    ));
 }
 
 /// POST one HITL decision for the native agent-chat seam (P-005 slice 2). The

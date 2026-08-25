@@ -31,6 +31,13 @@ export interface TranscriptTurn {
   role: 'user' | 'assistant';
   content: string;
   ts: string;
+  /** Execution provenance for native-loop assistant turns. Optional for legacy
+   * transcript rows written before the owned loop existed. */
+  engine?: string;
+  /** Exact resolved model spec, including any explicit effort suffix. */
+  model?: string;
+  /** Gateway route used for the turn: `auto`, `default`, or a pinned account. */
+  account_route?: string;
   tokens_in?: number;
   tokens_out?: number;
   cost_cents?: number;

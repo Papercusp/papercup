@@ -1510,6 +1510,9 @@ pub struct App {
     pub chat_draft: String,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
+    /// Latest owned-loop step boundary for the in-flight turn. The wire uses
+    /// zero-based indices; this read model stores a one-based display number.
+    pub chat_step: Option<crate::models::ChatStepProgress>,
     pub conversation_id: Option<String>,
     /// The native agent-chat id this pane's turns run on (P-005 / D-011).
     /// Distinct from `conversation_id`, which is the legacy operator-converse
@@ -1799,6 +1802,7 @@ impl App {
             chat_draft: String::new(),
             chat_scroll: 0,
             chat_streaming: false,
+            chat_step: None,
             conversation_id: None,
             agent_chat_id: None,
             agent_chat_role: "operator".to_string(),
@@ -1891,6 +1895,7 @@ impl App {
         self.chat_messages.push(ChatMessage::user(text));
         self.chat_messages.push(ChatMessage::streaming_assistant());
         self.chat_streaming = true;
+        self.chat_step = None;
         self.chat_scroll = 0;
     }
 
@@ -1921,6 +1926,13 @@ impl App {
         self.chat_scroll = 0;
     }
 
+    fn set_chat_provenance(&mut self, provenance: crate::models::ChatProvenance) {
+        if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
+            m.provenance = Some(provenance);
+        }
+        self.chat_scroll = 0;
+    }
+
     fn set_chat_final(&mut self, text: String) {
         if !text.trim().is_empty() {
             if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
@@ -1934,6 +1946,7 @@ impl App {
         self.chat_messages.clear();
         self.pending_approvals.clear();
         self.chat_streaming = false;
+        self.chat_step = None;
         self.chat_scroll = 0;
     }
 
@@ -2038,6 +2051,7 @@ impl App {
             m.streaming = false;
         }
         self.chat_streaming = false;
+        self.chat_step = None;
         self.chat_scroll = 0;
     }
 
@@ -2054,6 +2068,7 @@ impl App {
             m.streaming = false;
         }
         self.chat_streaming = false;
+        self.chat_step = None;
         self.last_error = Some(format!("operator: {err}"));
         self.chat_scroll = 0;
     }
@@ -5111,6 +5126,32 @@ impl App {
             }
             Event::ChatFinal(text) => {
                 self.set_chat_final(text);
+                Action::Render
+            }
+            Event::ChatProvenance(provenance) => {
+                self.set_chat_provenance(provenance);
+                Action::Render
+            }
+            Event::ChatStepStarted { step_index } => {
+                self.chat_step = Some(crate::models::ChatStepProgress {
+                    step: step_index.saturating_add(1),
+                    running: true,
+                    tool_call_count: 0,
+                    stop_reason: None,
+                });
+                Action::Render
+            }
+            Event::ChatStepEnded {
+                step_index,
+                tool_call_count,
+                stop_reason,
+            } => {
+                self.chat_step = Some(crate::models::ChatStepProgress {
+                    step: step_index.saturating_add(1),
+                    running: false,
+                    tool_call_count,
+                    stop_reason,
+                });
                 Action::Render
             }
             Event::ChatToolCall(tc) => {

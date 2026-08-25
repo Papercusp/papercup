@@ -254,6 +254,16 @@ pub enum Event {
     ChatDelta(String),
     ChatReasoning(String),
     ChatFinal(String),
+    /// Exact engine/model/account route for the in-flight native assistant turn.
+    ChatProvenance(crate::models::ChatProvenance),
+    ChatStepStarted {
+        step_index: u32,
+    },
+    ChatStepEnded {
+        step_index: u32,
+        tool_call_count: u32,
+        stop_reason: Option<String>,
+    },
     /// A `tool_call` the operator made mid-turn — a chip on the streaming bubble.
     ChatToolCall(ChatToolCall),
     /// The in-flight operator turn finished (`done`) — finalize the bubble.

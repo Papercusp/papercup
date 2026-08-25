@@ -42,7 +42,7 @@ import {
   type DispatchResult,
   type ToolDispatcher,
 } from '../../../agent-loop/capability-toolset';
-import { runLoopChatTurn } from '../../../agent-loop/chat-engine';
+import { resolveLoopChatModel, runLoopChatTurn } from '../../../agent-loop/chat-engine';
 import { pgLoopSessionStore } from '../../../agent-loop/session-store';
 import type { LoopTool } from '../../../agent-loop/loop';
 import { MODEL_EFFORT_LEVELS } from '../../../agent-config-constants';
@@ -597,6 +597,11 @@ const messagesRoute = defineTool({
     // store.
     if (useLoopEngine) {
       const workspaceId = activeWorkspaceId();
+      const effectiveModel = resolveLoopChatModel({
+        ...(body.model ? { model: body.model } : {}),
+        ...(effort ? { effort } : {}),
+      });
+      const accountRoute = account ?? 'auto';
       const dispatchCtx = {
         workspaceId,
         harnessSlug: itemHarness.harness,
@@ -643,6 +648,16 @@ const messagesRoute = defineTool({
       return sseResponse({
         signal: req.signal,
         setup: async (sink) => {
+          // Announce what will ACTUALLY run before the first model event. The
+          // client attaches this to the in-flight bubble; the same values are
+          // persisted below so a reconnect never rewrites history from today's
+          // global picker selection.
+          sink.event('provenance', {
+            type: 'provenance',
+            engine: 'loop',
+            model: effectiveModel,
+            accountRoute,
+          });
           let result: Awaited<ReturnType<typeof runLoopChatTurn>>;
           try {
             result = await runLoopChatTurn({
@@ -651,7 +666,7 @@ const messagesRoute = defineTool({
               system: assembled.systemText,
               transcript: baseTranscript,
               sink,
-              ...(body.model ? { model: body.model } : {}),
+              model: effectiveModel,
               ...(effort ? { effort } : {}),
               ...(account ? { account } : {}),
               signal: req.signal,
@@ -680,6 +695,9 @@ const messagesRoute = defineTool({
               role: 'assistant',
               content: terminalError,
               ts: new Date().toISOString(),
+              engine: 'loop',
+              model: effectiveModel,
+              account_route: accountRoute,
               tokens_in: result.tokensIn,
               tokens_out: result.tokensOut,
               cost_cents: Math.round(result.costUsd * 100),
@@ -699,6 +717,9 @@ const messagesRoute = defineTool({
             role: 'assistant',
             content: result.finalText,
             ts: new Date().toISOString(),
+            engine: 'loop',
+            model: effectiveModel,
+            account_route: accountRoute,
             tokens_in: result.tokensIn,
             tokens_out: result.tokensOut,
             cost_cents: Math.round(result.costUsd * 100),

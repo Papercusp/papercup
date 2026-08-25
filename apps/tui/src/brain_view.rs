@@ -788,6 +788,7 @@ mod tests {
                 role: "system".into(),
                 content: "alpha\n\n  beta".into(),
                 reasoning: String::new(),
+                provenance: None,
                 tools: Vec::new(),
                 streaming: false,
             },

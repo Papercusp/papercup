@@ -47,6 +47,16 @@ export const DEFAULT_LOOP_CHAT_MODEL =
 
 export const DEFAULT_LOOP_CHAT_MAX_STEPS = 24;
 
+/** Resolve the exact model spec used for one interactive loop turn. The route
+ * uses the same helper before execution so the live provenance frame and the
+ * persisted transcript can never disagree with the model handed to the loop. */
+export function resolveLoopChatModel(opts: { model?: string; effort?: string }): string {
+  const baseModel = opts.model ?? DEFAULT_LOOP_CHAT_MODEL;
+  return opts.effort
+    ? `${splitModelSpec(baseModel).model ?? baseModel}:${opts.effort}`
+    : baseModel;
+}
+
 /** Wire-copy guard: a tool_result payload larger than this rides as a
  *  truncated preview (the FULL result still reaches the model — the wire
  *  copy exists for pane rendering, not for correctness). */
@@ -175,10 +185,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
       workspaceId: opts.workspaceId,
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     });
-  const baseModel = opts.model ?? DEFAULT_LOOP_CHAT_MODEL;
-  const model = opts.effort
-    ? `${splitModelSpec(baseModel).model ?? baseModel}:${opts.effort}`
-    : baseModel;
+  const model = resolveLoopChatModel(opts);
 
   // ── P-009 resume: prefer the stored ModelMessage working set ────────────
   let stored: LoopSessionRow | null = null;

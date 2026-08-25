@@ -1700,6 +1700,26 @@ fn draw_config(f: &mut Frame, app: &App, area: Rect) {
 /// the bottom-anchored scroll offset is exact; `chat_scroll` counts lines UP from
 /// the latest (0 = pinned to the newest). The in-flight assistant bubble shows a
 /// live `<say>` preview via `chat_tags::live_preview`.
+fn chat_step_label(app: &App) -> String {
+    let Some(step) = app.chat_step.as_ref() else {
+        return "starting".to_string();
+    };
+    if step.running {
+        return format!("step {} running", step.step);
+    }
+    let mut label = format!(
+        "step {} finished · {} tool{}",
+        step.step,
+        step.tool_call_count,
+        if step.tool_call_count == 1 { "" } else { "s" }
+    );
+    if let Some(reason) = step.stop_reason.as_deref().filter(|reason| !reason.is_empty()) {
+        label.push_str(" · ");
+        label.push_str(reason);
+    }
+    label
+}
+
 fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     // Inline card (sentinel-tui-shared-backend-and-cards Phase 2a): when the
     // operator brain has an open `chat:ask_choice` card, reserve a bottom strip
@@ -1747,6 +1767,15 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             who.to_string()
         };
         lines.push(Line::from(Span::styled(header, who_style)));
+        if let Some(provenance) = m.provenance.as_ref() {
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  {} · {} · account {}",
+                    provenance.engine, provenance.model, provenance.account_route
+                ),
+                Theme::dim(),
+            )));
+        }
         if m.role == "assistant" && !m.reasoning.trim().is_empty() {
             lines.push(Line::from(Span::styled("  reasoning", Theme::dim())));
             for line in wrap_text(m.reasoning.trim(), inner_w.saturating_sub(2)) {
@@ -1862,15 +1891,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     } else {
         String::new()
     };
+    let streaming_title = if app.chat_streaming {
+        format!(" · {} · Ctrl+X cancel", chat_step_label(app))
+    } else {
+        String::new()
+    };
     let title = format!(
         " {}Agent Chat{}{} ",
         dock_focus,
         earlier,
-        if app.chat_streaming {
-            " · …thinking · Ctrl+X cancel"
-        } else {
-            ""
-        },
+        streaming_title,
     );
     let para = Paragraph::new(lines).scroll((top, 0)).block(
         Block::default()
@@ -1919,7 +1949,16 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         };
         (
             " Approval — Ctrl+Y approve · Ctrl+N deny ",
-            format!("⏸ {} is waiting on your decision{queued}", p.tool_name),
+            format!(
+                "⏸ {} · call {} is waiting on your decision{queued}",
+                p.tool_name, p.call_id
+            ),
+            Theme::notify(),
+        )
+    } else if app.chat_streaming {
+        (
+            " Running — input locked ",
+            format!("{} · Ctrl+X cancel", chat_step_label(app)),
             Theme::notify(),
         )
     } else if app.chat_composing {

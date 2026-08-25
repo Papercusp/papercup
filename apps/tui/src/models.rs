@@ -1833,11 +1833,28 @@ pub struct PendingApproval {
 /// assistant message is `streaming`, `content` holds the raw accumulated delta
 /// text (rendered through `chat_tags::live_preview`); once the turn finalizes it
 /// holds the user-visible `<say>` body (`chat_tags::finalize`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatProvenance {
+    pub engine: String,
+    pub model: String,
+    pub account_route: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatStepProgress {
+    /// One-based step number for display.
+    pub step: u32,
+    pub running: bool,
+    pub tool_call_count: u32,
+    pub stop_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
     pub reasoning: String,
+    pub provenance: Option<ChatProvenance>,
     pub tools: Vec<ChatToolCall>,
     pub streaming: bool,
 }
@@ -1848,6 +1865,7 @@ impl ChatMessage {
             role: "user".into(),
             content: text.into(),
             reasoning: String::new(),
+            provenance: None,
             tools: Vec::new(),
             streaming: false,
         }
@@ -1857,6 +1875,7 @@ impl ChatMessage {
             role: "assistant".into(),
             content: text.into(),
             reasoning: String::new(),
+            provenance: None,
             tools: Vec::new(),
             streaming: false,
         }
@@ -1867,6 +1886,7 @@ impl ChatMessage {
             role: "assistant".into(),
             content: String::new(),
             reasoning: String::new(),
+            provenance: None,
             tools: Vec::new(),
             streaming: true,
         }

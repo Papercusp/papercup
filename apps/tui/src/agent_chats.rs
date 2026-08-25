@@ -113,6 +113,12 @@ pub struct AgentChatTranscriptTurn {
     pub tools: Vec<AgentChatTranscriptToolCall>,
     #[serde(default)]
     pub error: bool,
+    #[serde(default)]
+    pub engine: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub account_route: Option<String>,
     #[serde(default, rename = "unreportedFrames")]
     pub unreported_frames: Option<u64>,
 }
@@ -195,6 +201,11 @@ pub enum AgentChatEvent {
     Heartbeat {
         ts_ms: Option<u64>,
     },
+    Provenance {
+        engine: String,
+        model: String,
+        account_route: String,
+    },
     StepStart {
         step_index: u32,
     },
@@ -249,6 +260,14 @@ pub type AgentChatEventStream = mpsc::UnboundedReceiver<Result<AgentChatEvent>>;
 struct HeartbeatPayload {
     #[serde(default)]
     ts_ms: Option<u64>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProvenancePayload {
+    engine: String,
+    model: String,
+    account_route: String,
 }
 
 #[derive(Deserialize)]
@@ -350,6 +369,15 @@ pub fn decode_agent_chat_event(frame: &SseFrame) -> Result<AgentChatEvent> {
             let payload: HeartbeatPayload = parse_payload(value, "heartbeat")?;
             Ok(AgentChatEvent::Heartbeat {
                 ts_ms: payload.ts_ms,
+            })
+        }
+        "provenance" => {
+            validate_payload_type(&value, "provenance", false)?;
+            let payload: ProvenancePayload = parse_payload(value, "provenance")?;
+            Ok(AgentChatEvent::Provenance {
+                engine: payload.engine,
+                model: payload.model,
+                account_route: payload.account_route,
             })
         }
         "step_start" => {
