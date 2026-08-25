@@ -192,6 +192,16 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the gate-failure triage invariant post-load (re-run named files individually)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-25',
+      plan: 'ratified-mockup-implementation-validation-2026-08-24 P-008',
+      // The generated corpus writer is the load-bearing measurement: commit
+      // 1d5d04b33c moved corpus-parts 289 -> 290 and corpus-blocks 254 -> 255
+      // while the frozen manifest stayed at 253. The added block is the ratified-
+      // design visual-evidence mandate, a standalone post-load part.
+      why: 'added the ratified-design current-evidence mandate post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {

@@ -355,38 +355,38 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     spawnSyncMock.mockReset();
   });
 
-  it('exits non-zero when the name filter executed no tests', () => {
+  it('exits non-zero when the name filter executed no tests', async () => {
     stubVitest(REAL_ROWS.allSkipped);
-    expect(main([FILE, '--', '-t', 'zzz-no-such-test-name'])).not.toBe(0);
+    expect(await main([FILE, '--', '-t', 'zzz-no-such-test-name'])).not.toBe(0);
   });
 
   // The EI-19376339983058011 invariant: TEST_FILE_RESULT's PRESENCE is what callers grep to ask
   // "did this actually run?" (`if ! grep -q 'TEST_FILE_RESULT'; then UNMEASURED; fi`). Zero tests
   // ran, so the marker must be absent — not present with status=failed.
-  it('does NOT print the TEST_FILE_RESULT verdict marker for a run that tested nothing', () => {
+  it('does NOT print the TEST_FILE_RESULT verdict marker for a run that tested nothing', async () => {
     stubVitest(REAL_ROWS.allSkipped);
-    main([FILE, '--', '-t', 'zzz-no-such-test-name']);
+    await main([FILE, '--', '-t', 'zzz-no-such-test-name']);
     expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
   });
 
-  it('names the pattern AS VITEST RECEIVED IT, so npm quote-eating is self-diagnosing', () => {
+  it('names the pattern AS VITEST RECEIVED IT, so npm quote-eating is self-diagnosing', async () => {
     stubVitest(REAL_ROWS.allSkipped);
-    main([FILE, '--', '-t', 'cd', '+', 'EXIT-trap']);
+    await main([FILE, '--', '-t', 'cd', '+', 'EXIT-trap']);
     const err = linesFrom(errSpy);
     expect(err).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
     expect(err).toContain('pattern="cd"');
     expect(err).toContain('EXIT-trap');
   });
 
-  it('stays green when the filter DID match tests (guards against a blanket refusal)', () => {
+  it('stays green when the filter DID match tests (guards against a blanket refusal)', async () => {
     stubVitest(REAL_ROWS.partial);
-    expect(main([FILE, '--', '-t', 'rejects'])).toBe(0);
+    expect(await main([FILE, '--', '-t', 'rejects'])).toBe(0);
     expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
   });
 
-  it('forwards Vitest flags placed directly after the file list', () => {
+  it('forwards Vitest flags placed directly after the file list', async () => {
     stubVitest(REAL_ROWS.partial);
-    expect(main([FILE, '-t', 'rejects'])).toBe(0);
+    expect(await main([FILE, '-t', 'rejects'])).toBe(0);
     // WI-39830: forwarded as the JOINED token. This assertion previously pinned the split
     // `['-t', 'rejects']` pair — i.e. it pinned the defect, which is why the defect survived a
     // green suite. Order matters: `arrayContaining(['-t','rejects'])` would also pass on argv
@@ -398,9 +398,9 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
 
   // The end-to-end shape of WI-39830, through the real main(): a `--`-prefixed pattern — which
   // this repo's own test names routinely are — must never reach vitest as two argv entries.
-  it('never hands vitest a split `-t <pattern>` for a name that starts with `--`', () => {
+  it('never hands vitest a split `-t <pattern>` for a name that starts with `--`', async () => {
     stubVitest(REAL_ROWS.partial);
-    expect(main([FILE, '--', '-t', '--files= is ignored'])).toBe(0);
+    expect(await main([FILE, '--', '-t', '--files= is ignored'])).toBe(0);
     const argv = vitestRunCall()?.[1] as string[];
     expect(argv).toContain('--testNamePattern=--files= is ignored');
     // The failing shape stated positively: `-t` immediately followed by a `-`-prefixed token is
@@ -410,9 +410,9 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
 
   // Non-vacuousness: every assertion above would also hold if the new check refused EVERY run.
   // Pin that an ordinary no-filter run is untouched.
-  it('leaves a run with no name filter alone', () => {
+  it('leaves a run with no name filter alone', async () => {
     stubVitest(REAL_ROWS.allPassed);
-    expect(main([FILE])).toBe(0);
+    expect(await main([FILE])).toBe(0);
     expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
     expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER');
   });
@@ -420,9 +420,9 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   // Fail OPEN on an unreadable summary. A JSON reporter writes no summary row to stdout, and
   // turning that into a red would break a legitimate invocation — the opposite, equally expensive
   // mistake. Say so out loud instead of silently re-opening the false-green hole.
-  it('does not fabricate a red when the test count is unreadable, but says it is unverified', () => {
+  it('does not fabricate a red when the test count is unreadable, but says it is unverified', async () => {
     stubVitest('{"testResults":[]}\n');
-    expect(main([FILE, '--', '-t', 'anything', '--reporter=json'])).toBe(0);
+    expect(await main([FILE, '--', '-t', 'anything', '--reporter=json'])).toBe(0);
     expect(linesFrom(errSpy)).toContain('TEST_FILE_NAME_FILTER_UNVERIFIED');
   });
 
@@ -455,10 +455,10 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
       return p;
     };
 
-    it('fails a zero-match run that the stdout-only detector let through as passed', () => {
+    it('fails a zero-match run that the stdout-only detector let through as passed', async () => {
       const report = withReport(REAL_REPORTS.allSkipped);
       stubVitest('');
-      expect(main([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`])).not.toBe(0);
+      expect(await main([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`])).not.toBe(0);
       const err = linesFrom(errSpy);
       expect(err).toContain('TEST_FILE_NAME_FILTER_NO_MATCH');
       expect(err).toContain('testsExecuted=0');
@@ -467,29 +467,29 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
       expect(linesFrom(logSpy)).not.toContain('TEST_FILE_RESULT');
     });
 
-    it('stays green when the report shows the filter really did match tests', () => {
+    it('stays green when the report shows the filter really did match tests', async () => {
       const report = withReport(REAL_REPORTS.partial);
       stubVitest('');
-      expect(main([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${report}`])).toBe(0);
+      expect(await main([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${report}`])).toBe(0);
       expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
       expect(linesFrom(errSpy)).not.toContain('TEST_FILE_NAME_FILTER');
     });
 
     // The report is PREFERRED, not merely consulted: when the two sources disagree the exact
     // one must win. Here stdout claims a full green run while the report records zero executed.
-    it('prefers the report over a stdout summary row that disagrees with it', () => {
+    it('prefers the report over a stdout summary row that disagrees with it', async () => {
       const report = withReport(REAL_REPORTS.allSkipped);
       stubVitest(REAL_ROWS.allPassed);
-      expect(main([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`])).not.toBe(0);
+      expect(await main([FILE, '--', '-t', 'zzz-no-such-test-name', '--reporter=json', `--outputFile=${report}`])).not.toBe(0);
       expect(linesFrom(errSpy)).toContain('testsExecuted=0');
     });
 
     // Fail OPEN, still. A named report that never appeared (a crashed run, a bad path) must
     // fall back to the stdout parse rather than fabricate a zero.
-    it('falls back to stdout when the named report does not exist', () => {
+    it('falls back to stdout when the named report does not exist', async () => {
       stubVitest(REAL_ROWS.partial);
       const missing = join(dir, 'never-written.json');
-      expect(main([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${missing}`])).toBe(0);
+      expect(await main([FILE, '--', '-t', 'rejects', '--reporter=json', `--outputFile=${missing}`])).toBe(0);
       expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
     });
   });
