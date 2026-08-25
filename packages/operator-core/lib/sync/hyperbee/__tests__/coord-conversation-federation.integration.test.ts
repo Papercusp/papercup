@@ -98,6 +98,7 @@ describe('coord_conversations federation (real PG)', () => {
         accepted_post_id  bigint,
         capture_target    text,
         promoted_issue_id text,
+        producer          text,   -- EI-21462599108204160 (mig 961): which tool opened it
         created_at        timestamptz DEFAULT now() NOT NULL,
         updated_at        timestamptz DEFAULT now() NOT NULL,
         resolved_at       timestamptz,
