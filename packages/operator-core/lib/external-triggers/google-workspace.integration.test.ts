@@ -49,6 +49,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
     const first = await provisionOwnedGoogleWorkspaceSources(sql, {
       workspaceId: WS,
       ownerUserId: userId,
+      providerAccountId: 'owner@example.com',
       field: 'owner',
     });
     expect(first.map((row) => row.kind).sort()).toEqual(['contacts', 'gcal', 'gmail']);
@@ -71,6 +72,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
     const second = await provisionOwnedGoogleWorkspaceSources(sql, {
       workspaceId: WS,
       ownerUserId: userId,
+      providerAccountId: 'owner@example.com',
       field: 'owner-reconnected',
     });
     expect(second.map((row) => row.id).sort()).toEqual(first.map((row) => row.id).sort());
@@ -139,11 +141,13 @@ describe('Google Workspace owned trigger-source provisioning', () => {
       provisionOwnedGoogleWorkspaceSources(sql, {
         workspaceId: WS,
         ownerUserId: userId,
+        providerAccountId: 'owner@example.com',
         field: 'owner-a',
       }),
       provisionOwnedGoogleWorkspaceSources(sql, {
         workspaceId: WS,
         ownerUserId: userId,
+        providerAccountId: 'owner@example.com',
         field: 'owner-b',
       }),
     ]);

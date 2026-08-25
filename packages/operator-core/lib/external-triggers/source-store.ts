@@ -56,7 +56,10 @@ function required(value: string, field: string): string {
 }
 
 function ownedProviderAccountId(input: CreateOwnedExternalTriggerSourceInput, credentialRef: string | null): string {
-  return required(input.providerAccountId?.trim() || credentialRef || `legacy-owner:${input.ownerUserId}`, 'provider_account_id');
+  return required(
+    input.providerAccountId?.trim() || credentialRef || `legacy-owner:${input.ownerUserId}`,
+    'provider_account_id',
+  );
 }
 
 /** Provision a user-owned source from an authenticated local connection. */
@@ -221,6 +224,84 @@ export async function listOwnedExternalTriggerSources(
 }
 
 /**
+ * Replace the provisional identity of one owned provider account without
+ * replacing any source rows. Bindings, cursors, delivery history, and source
+ * ids all continue to point at the same rows after the provider reveals its
+ * canonical account identity during OAuth.
+ */
+export async function renameOwnedExternalTriggerSourceAccount(
+  sql: postgres.Sql,
+  input: {
+    workspaceId: string;
+    ownerUserId: string;
+    previousProviderAccountId: string;
+    providerAccountId: string;
+  },
+): Promise<ExternalTriggerSourceRow[]> {
+  const workspaceId = required(input.workspaceId, 'workspace_id');
+  const ownerUserId = required(input.ownerUserId, 'owner_user_id');
+  const previousProviderAccountId = required(input.previousProviderAccountId, 'previous_provider_account_id');
+  const providerAccountId = required(input.providerAccountId, 'provider_account_id');
+
+  return sql.begin(async (tx) => {
+    const existing = await tx<Array<{ id: string }>>`
+      SELECT id::text
+        FROM harness_shared.trigger_sources
+       WHERE workspace_id = ${workspaceId}
+         AND owner_user_id = ${ownerUserId}::uuid
+         AND provider_account_id = ${previousProviderAccountId}
+       FOR UPDATE`;
+    if (!existing.length) {
+      throw new Error(`external_trigger_provider_account_not_found:${previousProviderAccountId}`);
+    }
+    if (previousProviderAccountId === providerAccountId) {
+      return tx<ExternalTriggerSourceRow[]>`
+        SELECT id::text,
+               workspace_id AS "workspaceId",
+               kind,
+               owner_user_id::text AS "ownerUserId",
+               provider_account_id AS "providerAccountId",
+               credential_ref AS "credentialRef",
+               status,
+               config,
+               cursor
+          FROM harness_shared.trigger_sources
+         WHERE workspace_id = ${workspaceId}
+           AND owner_user_id = ${ownerUserId}::uuid
+           AND provider_account_id = ${providerAccountId}
+         ORDER BY kind, id`;
+    }
+    const conflict = await tx<Array<{ present: boolean }>>`
+      SELECT true AS present
+        FROM harness_shared.trigger_sources
+       WHERE workspace_id = ${workspaceId}
+         AND owner_user_id = ${ownerUserId}::uuid
+         AND provider_account_id = ${providerAccountId}
+       LIMIT 1
+       FOR UPDATE`;
+    if (conflict.length) {
+      throw new Error(`external_trigger_provider_account_conflict:${providerAccountId}`);
+    }
+    return tx<ExternalTriggerSourceRow[]>`
+      UPDATE harness_shared.trigger_sources
+         SET provider_account_id = ${providerAccountId},
+             updated_at = now()
+       WHERE workspace_id = ${workspaceId}
+         AND owner_user_id = ${ownerUserId}::uuid
+         AND provider_account_id = ${previousProviderAccountId}
+      RETURNING id::text,
+                workspace_id AS "workspaceId",
+                kind,
+                owner_user_id::text AS "ownerUserId",
+                provider_account_id AS "providerAccountId",
+                credential_ref AS "credentialRef",
+                status,
+                config,
+                cursor`;
+  });
+}
+
+/**
  * Toggle one provider surface without revoking the shared OAuth connection.
  * The durable preference lives on the existing source config row and the
  * status transition makes every current poller honor it immediately. A source
@@ -285,8 +366,9 @@ export async function setOwnedExternalTriggerSourceCapability(
 
 /**
  * Stop polling selected owned source kinds without deleting settled events or
- * Personal Vault documents. Returns only the opaque credential refs needed by
- * the server to clear its token store; callers must never serialize them.
+ * Personal Vault documents. The opaque reference remains as the reconnect
+ * target while its token-store values are cleared by the caller; pollers honor
+ * the disabled status and never treat the reference itself as a live token.
  */
 export async function disconnectOwnedExternalTriggerSources(
   sql: postgres.Sql,
@@ -310,8 +392,7 @@ export async function disconnectOwnedExternalTriggerSources(
     ),
     disconnected AS (
       UPDATE harness_shared.trigger_sources AS source
-         SET credential_ref = NULL,
-             status = 'disabled',
+         SET status = 'disabled',
              last_error = NULL,
              updated_at = now()
         FROM matched

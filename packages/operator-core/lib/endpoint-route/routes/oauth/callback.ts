@@ -16,8 +16,14 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   GOOGLE_WORKSPACE_OAUTH_PLUGIN,
   assertGoogleWorkspaceOwnerUserId,
+  googleWorkspaceOAuthField,
   provisionOwnedGoogleWorkspaceSources,
+  resolveGoogleWorkspaceProviderAccount,
 } from '../../../external-triggers/google-workspace';
+import {
+  listOwnedExternalTriggerSources,
+  renameOwnedExternalTriggerSourceAccount,
+} from '../../../external-triggers/source-store';
 import { ensureGmailRespondDraftBinding } from '../../../external-triggers/gmail-flagship';
 import {
   FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
@@ -107,14 +113,22 @@ export default defineTool({
 
     const connectsGoogleWorkspace = providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
     const connectsFacebookPersonalVault = providerId === 'facebook' && plugin === FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN;
-    let googleOwner: { ownerUserId: string; workspaceId: string } | null = null;
+    let googleOwner: {
+      ownerUserId: string;
+      workspaceId: string;
+      reconnectProviderAccountId: string | null;
+    } | null = null;
     let facebookOwner: { ownerUserId: string; workspaceId: string } | null = null;
     if (connectsGoogleWorkspace) {
       try {
         const ownerUserId = assertGoogleWorkspaceOwnerUserId(verified.privateContext?.ownerUserId);
         const workspaceId = verified.privateContext?.workspaceId?.trim() ?? '';
         if (!workspaceId) throw new Error('google_workspace_workspace_id_required');
-        googleOwner = { ownerUserId, workspaceId };
+        googleOwner = {
+          ownerUserId,
+          workspaceId,
+          reconnectProviderAccountId: verified.privateContext?.reconnectProviderAccountId?.trim() || null,
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return Response.json({ ok: false, error: message }, { status: 400 });
@@ -140,6 +154,46 @@ export default defineTool({
       return redirectWith(req.url, returnPath, 'oauth_error', msg);
     }
 
+    let googleProviderAccountId: string | null = null;
+    let googlePreviousFields: string[] = [];
+    if (googleOwner) {
+      try {
+        const resolved = await resolveGoogleWorkspaceProviderAccount(tokens.accessToken);
+        googleProviderAccountId = resolved.providerAccountId;
+        const expected = googleOwner.reconnectProviderAccountId;
+        if (expected && expected !== resolved.providerAccountId) {
+          const provisional =
+            expected.startsWith(`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:`) || expected.startsWith('legacy-owner:');
+          if (!provisional) {
+            return redirectWith(req.url, returnPath, 'oauth_error', 'google_workspace_account_mismatch');
+          }
+          await renameOwnedExternalTriggerSourceAccount(getOrgPg().sql, {
+            workspaceId: googleOwner.workspaceId,
+            ownerUserId: googleOwner.ownerUserId,
+            previousProviderAccountId: expected,
+            providerAccountId: resolved.providerAccountId,
+          });
+        }
+        const owned = await listOwnedExternalTriggerSources(
+          getOrgPg().sql,
+          googleOwner.workspaceId,
+          googleOwner.ownerUserId,
+        );
+        googlePreviousFields = [
+          ...new Set(
+            owned
+              .filter(
+                (source) => source.providerAccountId === resolved.providerAccountId && source.credentialRef !== null,
+              )
+              .map((source) => googleWorkspaceOAuthField(source.credentialRef)),
+          ),
+        ];
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return redirectWith(req.url, returnPath, 'oauth_error', message);
+      }
+    }
+
     const patch: Record<string, unknown> = { [field]: tokens.accessToken };
     if (tokens.refreshToken) patch[`${field}_refresh`] = tokens.refreshToken;
     if (tokens.expiresAt !== undefined) patch[`${field}_expires_at`] = tokens.expiresAt;
@@ -154,6 +208,7 @@ export default defineTool({
         const sources = await provisionOwnedGoogleWorkspaceSources(getOrgPg().sql, {
           workspaceId: googleOwner.workspaceId,
           ownerUserId: googleOwner.ownerUserId,
+          providerAccountId: googleProviderAccountId!,
           field,
           createdBy: `owner:${googleOwner.ownerUserId}`,
         });
@@ -165,6 +220,16 @@ export default defineTool({
           gmail,
           `owner:${googleOwner.ownerUserId}`,
         );
+        for (const previousField of googlePreviousFields) {
+          if (previousField === field) continue;
+          await fsTokenStorage.update(GOOGLE_WORKSPACE_OAUTH_PLUGIN, harness, {
+            [previousField]: null,
+            [previousField + '_refresh']: null,
+            [previousField + '_expires_at']: null,
+            [previousField + '_scopes']: null,
+            [previousField + '_expired']: true,
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return redirectWith(req.url, returnPath, 'oauth_error', message);

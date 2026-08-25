@@ -12,6 +12,7 @@ import { getOAuthToken } from '../oauth/token';
 
 export const GOOGLE_WORKSPACE_OAUTH_PLUGIN = 'google-workspace';
 export const GOOGLE_WORKSPACE_SOURCE_KINDS = ['gmail', 'gcal', 'contacts'] as const;
+export const GOOGLE_GMAIL_PROFILE_ENDPOINT = 'https://gmail.googleapis.com/gmail/v1/users/me/profile';
 export const GOOGLE_CALENDAR_MEETING_PREP_HARNESS = 'papercusp';
 export const GOOGLE_CALENDAR_MEETING_PREP_PLAN = 'meeting-prep-brief-2026-08-22';
 export const GOOGLE_CALENDAR_MEETING_PREP_EVENT = 'ext:gcal:event-upcoming';
@@ -21,6 +22,30 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 export interface GoogleContactsProbeResult {
   status: number;
   endpoint: string;
+}
+
+export interface GoogleWorkspaceProviderAccount {
+  providerAccountId: string;
+  displayName: string;
+}
+
+/** Resolve the provider-native identity behind a freshly exchanged token. */
+export async function resolveGoogleWorkspaceProviderAccount(
+  accessToken: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<GoogleWorkspaceProviderAccount> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_workspace_access_token_required');
+  const response = await fetchImpl(GOOGLE_GMAIL_PROFILE_ENDPOINT, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) throw new Error(`google_workspace_profile_${response.status}`);
+  const body = (await response.json()) as { emailAddress?: unknown };
+  const emailAddress = typeof body.emailAddress === 'string' ? body.emailAddress.trim().toLowerCase() : '';
+  if (!emailAddress || !emailAddress.includes('@')) {
+    throw new Error('google_workspace_profile_email_required');
+  }
+  return { providerAccountId: emailAddress, displayName: emailAddress };
 }
 
 /**
@@ -97,6 +122,7 @@ export async function provisionOwnedGoogleWorkspaceSources(
   input: {
     workspaceId: string;
     ownerUserId: string;
+    providerAccountId: string;
     field: string;
     createdBy?: string | null;
   },
@@ -110,6 +136,7 @@ export async function provisionOwnedGoogleWorkspaceSources(
         workspaceId: input.workspaceId,
         kind,
         ownerUserId,
+        providerAccountId: input.providerAccountId,
         credentialRef,
         status: 'connected',
         config: { capabilityEnabled: true },

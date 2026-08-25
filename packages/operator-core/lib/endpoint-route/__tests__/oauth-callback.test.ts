@@ -22,6 +22,7 @@ const sourceMocks = vi.hoisted(() => ({
       workspaceId: 'workspace-1',
       kind: 'gmail',
       ownerUserId: '22222222-2222-4222-8222-222222222222',
+      providerAccountId: 'owner@example.com',
       credentialRef: 'google-workspace:owner',
       status: 'connected',
       config: { installSlug: 'papercusp' },
@@ -42,6 +43,12 @@ const sourceMocks = vi.hoisted(() => ({
     config: {},
     cursor: {},
   })),
+  resolveGoogleAccount: vi.fn(async () => ({
+    providerAccountId: 'owner@example.com',
+    displayName: 'owner@example.com',
+  })),
+  listOwned: vi.fn(async (): Promise<unknown[]> => []),
+  renameAccount: vi.fn(async (): Promise<unknown[]> => []),
   sql: { test: true },
 }));
 
@@ -59,6 +66,12 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('../../external-triggers/google-workspace', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../external-triggers/google-workspace')>()),
   provisionOwnedGoogleWorkspaceSources: sourceMocks.provision,
+  resolveGoogleWorkspaceProviderAccount: sourceMocks.resolveGoogleAccount,
+}));
+vi.mock('../../external-triggers/source-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../external-triggers/source-store')>()),
+  listOwnedExternalTriggerSources: sourceMocks.listOwned,
+  renameOwnedExternalTriggerSourceAccount: sourceMocks.renameAccount,
 }));
 vi.mock('../../external-triggers/gmail-flagship', () => ({
   ensureGmailRespondDraftBinding: sourceMocks.ensureGmailBinding,
@@ -72,7 +85,18 @@ vi.mock('../../oauth/state', () => ({
     if (!token.includes('.') || token === 'garbage.sig') {
       return { ok: false, error: 'bad-signature' };
     }
-    if (token === 'google.valid' || token === 'google.missing') {
+    if (
+      token === 'google.valid' ||
+      token === 'google.missing' ||
+      token === 'google.legacy' ||
+      token === 'google.mismatch'
+    ) {
+      const reconnectProviderAccountId =
+        token === 'google.legacy'
+          ? 'google-workspace:legacy-field'
+          : token === 'google.mismatch'
+            ? 'owner@example.com'
+            : undefined;
       return {
         ok: true,
         privateContext: {
@@ -86,12 +110,13 @@ vi.mock('../../oauth/state', () => ({
                   'https://www.googleapis.com/auth/gmail.readonly',
                   'https://www.googleapis.com/auth/calendar.events',
                 ]),
+                ...(reconnectProviderAccountId ? { reconnectProviderAccountId } : {}),
               }),
         },
         claims: {
           plugin: 'google-workspace',
           harness: 'papercusp',
-          field: 'owner-22222222-2222-4222-8222-222222222222',
+          field: token === 'google.legacy' ? 'legacy-field' : 'owner-22222222-2222-4222-8222-222222222222',
           providerHost: 'accounts.google.com',
           provider: 'google',
         },
@@ -150,6 +175,15 @@ beforeEach(async () => {
   sourceMocks.provision.mockClear();
   sourceMocks.provisionFacebook.mockClear();
   sourceMocks.ensureGmailBinding.mockClear();
+  sourceMocks.resolveGoogleAccount.mockReset();
+  sourceMocks.resolveGoogleAccount.mockResolvedValue({
+    providerAccountId: 'owner@example.com',
+    displayName: 'owner@example.com',
+  });
+  sourceMocks.listOwned.mockReset();
+  sourceMocks.listOwned.mockResolvedValue([]);
+  sourceMocks.renameAccount.mockReset();
+  sourceMocks.renameAccount.mockResolvedValue([]);
 });
 
 afterEach(async () => {
@@ -263,6 +297,7 @@ describe('GET /api/oauth/callback', () => {
     expect(sourceMocks.provision).toHaveBeenCalledWith(sourceMocks.sql, {
       workspaceId: 'workspace-1',
       ownerUserId: '22222222-2222-4222-8222-222222222222',
+      providerAccountId: 'owner@example.com',
       field: 'owner-22222222-2222-4222-8222-222222222222',
       createdBy: 'owner:22222222-2222-4222-8222-222222222222',
     });
@@ -281,6 +316,78 @@ describe('GET /api/oauth/callback', () => {
       'https://www.googleapis.com/auth/calendar.events',
     ]);
     expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=google-workspace');
+  });
+
+  it('adopts a canonical Google account identity in place for a provisional reconnect', async () => {
+    sourceMocks.listOwned.mockResolvedValue([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        workspaceId: 'workspace-1',
+        kind: 'gmail',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        providerAccountId: 'owner@example.com',
+        credentialRef: 'google-workspace:legacy-field',
+        status: 'connected',
+        config: {},
+        cursor: { historyId: 'keep-me' },
+      },
+    ]);
+    providers.registerProvider({
+      id: 'google',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({ accessToken: 'google-access' }),
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.legacy'));
+    expect(response.status).toBe(307);
+    expect(sourceMocks.renameAccount).toHaveBeenCalledWith(sourceMocks.sql, {
+      workspaceId: 'workspace-1',
+      ownerUserId: '22222222-2222-4222-8222-222222222222',
+      previousProviderAccountId: 'google-workspace:legacy-field',
+      providerAccountId: 'owner@example.com',
+    });
+    expect(sourceMocks.provision).toHaveBeenCalledWith(
+      sourceMocks.sql,
+      expect.objectContaining({ providerAccountId: 'owner@example.com', field: 'legacy-field' }),
+    );
+  });
+
+  it('fails closed when a targeted Google reconnect authenticates a different canonical account', async () => {
+    sourceMocks.resolveGoogleAccount.mockResolvedValue({
+      providerAccountId: 'other@example.com',
+      displayName: 'other@example.com',
+    });
+    providers.registerProvider({
+      id: 'google',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({ accessToken: 'must-not-store' }),
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(
+      new Request('http://x/api/oauth/callback?code=authorization-code&state=google.mismatch'),
+    );
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe(
+      'http://x/settings/personal-vault?oauth_error=google_workspace_account_mismatch',
+    );
+    expect(sourceMocks.renameAccount).not.toHaveBeenCalled();
+    expect(sourceMocks.provision).not.toHaveBeenCalled();
   });
 
   it('fails closed when a Google Workspace callback lacks server-owned identity context', async () => {

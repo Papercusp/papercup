@@ -71,6 +71,7 @@ interface SafeIntegrationStatus {
   status: 'needs-app-config' | 'available' | 'connected' | 'degraded' | 'error';
   sources: SafeIntegrationSource[];
   capabilities?: SafeGoogleCapability[];
+  accounts?: SafeGoogleAccountStatus[];
 }
 
 type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts' | 'youtube';
@@ -82,6 +83,16 @@ interface SafeGoogleCapability {
   connected: boolean;
   status: 'needs-app-config' | 'available' | 'connected' | 'disabled' | 'needs-consent' | 'degraded' | 'error';
   missingScopes: string[];
+}
+
+interface SafeGoogleAccountStatus {
+  providerAccountId: string;
+  displayName: string;
+  connected: boolean;
+  status: SafeIntegrationStatus['status'];
+  sources: SafeIntegrationSource[];
+  grantedScopes: string[];
+  capabilities: SafeGoogleCapability[];
 }
 
 const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
@@ -154,7 +165,7 @@ function safeIntegrationStatus(
   kinds: readonly string[],
 ): SafeIntegrationStatus {
   const sources = owned.filter((source) => kinds.includes(source.kind));
-  const connected = sources.some((source) => source.credentialRef !== null);
+  const connected = sources.some((source) => source.credentialRef !== null && source.status !== 'disabled');
   const status =
     providerLoadFailed || sources.some((source) => source.status === 'error')
       ? 'error'
@@ -204,20 +215,28 @@ function scopeList(value: unknown): string[] {
   }
 }
 
-async function googleGrantedScopes(owned: OwnedExternalTriggerSourceRow[]): Promise<string[]> {
+function googleCredentialState(
+  owned: OwnedExternalTriggerSourceRow[],
+  tokenConfig: Readonly<Record<string, unknown>>,
+): { connected: boolean; grantedScopes: string[] } {
   const source = owned.find(
     (candidate) =>
       GOOGLE_WORKSPACE_SOURCE_KINDS.includes(candidate.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]) &&
       candidate.credentialRef !== null,
   );
-  if (!source?.credentialRef) return [];
+  if (!source?.credentialRef) return { connected: false, grantedScopes: [] };
   const field = googleWorkspaceOAuthField(source.credentialRef);
-  const config = await fsTokenStorage.read(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp');
-  const stored = scopeList(config[field + '_scopes']);
+  const token = tokenConfig[field];
+  const connected =
+    typeof token === 'string' ? Boolean(token.trim()) : token !== null && token !== undefined && token !== false;
+  const stored = scopeList(tokenConfig[field + '_scopes']);
   // Older connections predate granted-scope metadata. Their base read scopes
   // were mandatory, but calendar.events was not, so only the write upgrade is
   // conservatively reported missing until the next consent round-trip.
-  return stored.length ? stored : [...GOOGLE_WORKSPACE_SCOPES];
+  return {
+    connected,
+    grantedScopes: stored.length ? stored : connected ? [...GOOGLE_WORKSPACE_SCOPES] : [],
+  };
 }
 
 function googleCapabilities(
@@ -225,11 +244,11 @@ function googleCapabilities(
   providerLoadFailed: boolean,
   owned: OwnedExternalTriggerSourceRow[],
   grantedScopes: string[],
+  sharedConnected: boolean,
 ): SafeGoogleCapability[] {
   const sources = owned.filter((source) =>
     GOOGLE_WORKSPACE_SOURCE_KINDS.includes(source.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]),
   );
-  const sharedConnected = sources.some((source) => source.credentialRef !== null);
   const granted = new Set(grantedScopes);
   return GOOGLE_CAPABILITY_DEFS.map((definition) => {
     // The shared credential lives on a Workspace source, but capability rows
@@ -266,6 +285,84 @@ function googleCapabilities(
   });
 }
 
+function safeSources(owned: OwnedExternalTriggerSourceRow[]): SafeIntegrationSource[] {
+  return owned.map((source) => ({
+    kind: source.kind,
+    status: source.status,
+    lastConnectedAt: source.lastConnectedAt,
+    lastSyncAt: safeLastSyncAt(source),
+  }));
+}
+
+function googleAccountStatus(
+  providerAccountId: string,
+  configured: boolean,
+  providerLoadFailed: boolean,
+  owned: OwnedExternalTriggerSourceRow[],
+  tokenConfig: Readonly<Record<string, unknown>>,
+): SafeGoogleAccountStatus {
+  const credential = googleCredentialState(owned, tokenConfig);
+  const status: SafeIntegrationStatus['status'] =
+    providerLoadFailed || owned.some((source) => source.status === 'error')
+      ? 'error'
+      : credential.connected && owned.some((source) => source.status === 'degraded')
+        ? 'degraded'
+        : credential.connected
+          ? 'connected'
+          : configured
+            ? 'available'
+            : 'needs-app-config';
+  return {
+    providerAccountId,
+    displayName: providerAccountId,
+    connected: credential.connected,
+    status,
+    sources: safeSources(owned),
+    grantedScopes: credential.grantedScopes,
+    capabilities: googleCapabilities(
+      configured,
+      providerLoadFailed,
+      owned,
+      credential.grantedScopes,
+      credential.connected,
+    ),
+  };
+}
+
+function googleOwnedSources(owned: OwnedExternalTriggerSourceRow[]): OwnedExternalTriggerSourceRow[] {
+  const kinds = new Set(GOOGLE_CAPABILITY_DEFS.map((definition) => definition.sourceKind));
+  return owned.filter(
+    (source) =>
+      kinds.has(source.kind as SafeGoogleCapability['sourceKind']) &&
+      (source.credentialRef?.startsWith(`${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:`) || source.providerAccountId !== null),
+  );
+}
+
+function selectOwnedGoogleProviderAccount(owned: OwnedExternalTriggerSourceRow[], requested: string): string {
+  const accountIds = [
+    ...new Set(
+      googleOwnedSources(owned)
+        .map((source) => source.providerAccountId?.trim() ?? '')
+        .filter(Boolean),
+    ),
+  ];
+  const normalized = requested.trim();
+  if (normalized) {
+    if (!accountIds.includes(normalized)) throw new Error('google_workspace_account_not_found');
+    return normalized;
+  }
+  if (accountIds.length === 1) return accountIds[0]!;
+  if (accountIds.length === 0) throw new Error('google_workspace_not_connected');
+  throw new Error('google_workspace_account_required');
+}
+
+function googleAccountSelectionError(error: unknown): Response {
+  const message = messageOf(error);
+  const status =
+    message === 'google_workspace_account_not_found' ? 404 : message === 'google_workspace_not_connected' ? 409 : 400;
+  return Response.json({ ok: false, error: message }, { status });
+}
+
 async function integrationStatuses(
   workspaceId: string,
   ownerUserId: string,
@@ -278,18 +375,39 @@ async function integrationStatuses(
   }
   const owned = await listOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, ownerUserId);
   const googleConfigured = !providerLoadFailed && getProvider('google') !== null;
-  const grantedGoogleScopes = await googleGrantedScopes(owned);
-  const google = safeIntegrationStatus(
-    'google',
-    googleConfigured,
-    providerLoadFailed,
-    owned,
-    GOOGLE_WORKSPACE_SOURCE_KINDS,
+  const googleSources = googleOwnedSources(owned);
+  const tokenConfig = await fsTokenStorage.read(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp');
+  const accounts = [
+    ...new Set(googleSources.map((source) => source.providerAccountId?.trim() ?? '').filter(Boolean)),
+  ].map((providerAccountId) =>
+    googleAccountStatus(
+      providerAccountId,
+      googleConfigured,
+      providerLoadFailed,
+      googleSources.filter((source) => source.providerAccountId === providerAccountId),
+      tokenConfig,
+    ),
   );
+  const googleConnected = accounts.some((account) => account.connected);
+  const googleStatus: SafeIntegrationStatus['status'] =
+    providerLoadFailed || accounts.some((account) => account.status === 'error')
+      ? 'error'
+      : accounts.some((account) => account.status === 'degraded')
+        ? 'degraded'
+        : googleConnected
+          ? 'connected'
+          : googleConfigured
+            ? 'available'
+            : 'needs-app-config';
   return {
     google: {
-      ...google,
-      capabilities: googleCapabilities(googleConfigured, providerLoadFailed, owned, grantedGoogleScopes),
+      provider: 'google',
+      configured: googleConfigured,
+      connected: googleConnected,
+      status: googleStatus,
+      sources: safeSources(googleSources),
+      accounts,
+      ...(accounts.length === 1 ? { capabilities: accounts[0]!.capabilities } : {}),
     },
     facebook: safeIntegrationStatus(
       'facebook',
@@ -388,9 +506,21 @@ const disconnectGoogle = defineTool({
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
-    const disconnected = await disconnectOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, user.id, [
-      ...GOOGLE_WORKSPACE_SOURCE_KINDS,
-    ]);
+    const sql = getOrgPg().sql;
+    const owned = await listOwnedExternalTriggerSources(sql, workspaceId, user.id);
+    let providerAccountId: string;
+    try {
+      providerAccountId = selectOwnedGoogleProviderAccount(owned, new URL(req.url).searchParams.get('account') ?? '');
+    } catch (error) {
+      return googleAccountSelectionError(error);
+    }
+    const disconnected = await disconnectOwnedExternalTriggerSources(
+      sql,
+      workspaceId,
+      user.id,
+      [...GOOGLE_WORKSPACE_SOURCE_KINDS],
+      providerAccountId,
+    );
     for (const credentialRef of disconnected.credentialRefs) {
       const field = googleWorkspaceOAuthField(credentialRef);
       await fsTokenStorage.update(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp', {
@@ -404,6 +534,7 @@ const disconnectGoogle = defineTool({
     return Response.json({
       ok: true,
       provider: 'google',
+      providerAccountId,
       disconnectedSources: disconnected.sources,
     });
   },
@@ -414,7 +545,7 @@ const setGoogleCapability = defineTool({
   path: '/user/personal-vault/integrations/google/capabilities',
   auth: 'loopback',
   async handler(req) {
-    const body = await jsonBody<{ capability?: unknown; enabled?: unknown }>(req);
+    const body = await jsonBody<{ capability?: unknown; enabled?: unknown; providerAccountId?: unknown }>(req);
     const definition = GOOGLE_CAPABILITY_DEFS.find((candidate) => candidate.id === body?.capability);
     if (!definition) {
       return Response.json({ ok: false, error: 'google_capability_invalid' }, { status: 400 });
@@ -426,8 +557,18 @@ const setGoogleCapability = defineTool({
     const workspaceId = activeWorkspaceId();
     const sql = getOrgPg().sql;
     const owned = await listOwnedExternalTriggerSources(sql, workspaceId, user.id);
+    let providerAccountId: string;
+    try {
+      providerAccountId = selectOwnedGoogleProviderAccount(
+        owned,
+        typeof body?.providerAccountId === 'string' ? body.providerAccountId : '',
+      );
+    } catch (error) {
+      return googleAccountSelectionError(error);
+    }
     const credentialRef = owned.find(
       (source) =>
+        source.providerAccountId === providerAccountId &&
         GOOGLE_WORKSPACE_SOURCE_KINDS.includes(source.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]) &&
         source.credentialRef !== null,
     )?.credentialRef;
@@ -437,6 +578,7 @@ const setGoogleCapability = defineTool({
     const source = await setOwnedExternalTriggerSourceCapability(sql, {
       workspaceId,
       ownerUserId: user.id,
+      providerAccountId,
       kind: definition.sourceKind,
       credentialRef,
       enabled: body.enabled,
@@ -444,6 +586,7 @@ const setGoogleCapability = defineTool({
     });
     return Response.json({
       ok: true,
+      providerAccountId,
       capability: definition.id,
       enabled: body.enabled,
       source: { kind: source.kind, status: source.status },

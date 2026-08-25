@@ -7,6 +7,7 @@ import {
   getExternalTriggerSource,
   listOwnedExternalTriggerSources,
   listPollableExternalTriggerSources,
+  renameOwnedExternalTriggerSourceAccount,
   requireExternalTriggerSourceOwner,
   setOwnedExternalTriggerSourceCapability,
   updateExternalTriggerSourceSyncState,
@@ -190,8 +191,16 @@ describe('external trigger source ownership', () => {
 
     const disconnected = await listOwnedExternalTriggerSources(sql, WS, userId);
     expect(disconnected).toEqual([
-      expect.objectContaining({ id: calendar.id, status: 'disabled', credentialRef: null }),
-      expect.objectContaining({ id: gmail.id, status: 'disabled', credentialRef: null }),
+      expect.objectContaining({
+        id: calendar.id,
+        status: 'disabled',
+        credentialRef: 'google-workspace:owner-user',
+      }),
+      expect.objectContaining({
+        id: gmail.id,
+        status: 'disabled',
+        credentialRef: 'google-workspace:owner-user',
+      }),
     ]);
     await expect(listPollableExternalTriggerSources(sql, WS, 'gmail')).resolves.toEqual([
       expect.objectContaining({ id: other.id, ownerUserId: otherUsers[0].id }),
@@ -231,5 +240,54 @@ describe('external trigger source ownership', () => {
     await expect(listPollableExternalTriggerSources(sql, WS, 'contacts')).resolves.toEqual([
       expect.objectContaining({ id: disabled.id, credentialRef: 'google-workspace:owner-user' }),
     ]);
+  });
+
+  it('keeps provider accounts independent and adopts a canonical identity without replacing rows', async () => {
+    const legacy = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'google-workspace:legacy-field',
+      credentialRef: 'google-workspace:legacy-field',
+      status: 'connected',
+      cursor: { historyId: 'keep-legacy-cursor' },
+    });
+    const second = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'gmail',
+      ownerUserId: userId,
+      providerAccountId: 'second@example.com',
+      credentialRef: 'google-workspace:second-field',
+      status: 'connected',
+      cursor: { historyId: 'keep-second-cursor' },
+    });
+
+    const adopted = await renameOwnedExternalTriggerSourceAccount(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      previousProviderAccountId: 'google-workspace:legacy-field',
+      providerAccountId: 'first@example.com',
+    });
+    expect(adopted).toEqual([
+      expect.objectContaining({
+        id: legacy.id,
+        providerAccountId: 'first@example.com',
+        cursor: { historyId: 'keep-legacy-cursor' },
+      }),
+    ]);
+
+    await expect(
+      disconnectOwnedExternalTriggerSources(sql, WS, userId, ['gmail'], 'second@example.com'),
+    ).resolves.toEqual({ sources: 1, credentialRefs: ['google-workspace:second-field'] });
+    await expect(getExternalTriggerSource(sql, WS, legacy.id)).resolves.toMatchObject({
+      providerAccountId: 'first@example.com',
+      credentialRef: 'google-workspace:legacy-field',
+      status: 'connected',
+    });
+    await expect(getExternalTriggerSource(sql, WS, second.id)).resolves.toMatchObject({
+      providerAccountId: 'second@example.com',
+      credentialRef: 'google-workspace:second-field',
+      status: 'disabled',
+    });
   });
 });
