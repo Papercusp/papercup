@@ -115,6 +115,8 @@ describe('composeDispatch', () => {
     expect(res.pickupConfirmed).toBe(false);
     expect(res.recipient_dead).toEqual(['su-dead']);
     expect(res.assigned?.ok).toBe(true); // the durable lane still landed
+    expect(res.ok).toBe(false);
+    expect(res.failure).toMatchObject({ code: 'target_dead', queuePreserved: true });
     expect(res.warning).toMatch(/RELAUNCH|relaunch/);
     expect(res.warning).toMatch(/no LIVE session/i);
   });
@@ -474,5 +476,143 @@ describe('composeDispatch', () => {
       expect(res.skippedItems).toBeUndefined();
       expectQueuedWake(res);
     });
+  });
+});
+
+describe('composeDispatch — promoted workItemIds', () => {
+  const assignment = (patch: Record<string, unknown> = {}) => ({
+    ok: true,
+    targetAgent: 'agent-email-full',
+    requested: ['WI-READY', 'WI-BLOCKED'],
+    actionable: ['WI-READY'],
+    assigned: ['WI-READY'],
+    retained: [],
+    skipped: [
+      {
+        workItemId: 'WI-BLOCKED',
+        code: 'dependency_blocked' as const,
+        reason: 'unresolved work-item blocker: WI-ROOT',
+        blockers: ['WI-ROOT'],
+      },
+    ],
+    failed: [],
+    executionWorkItemIds: ['WI-READY'],
+    ...patch,
+  });
+
+  it('assigns and wakes only the filtered actionable work-item frontier', async () => {
+    const assignWorkItems = vi.fn(async () => assignment());
+    const { call, calls } = mockCall({
+      'coord:presence': presence([
+        { ownerId: 'agent-email-full', sessionState: 'parked', wakeable: true },
+      ]),
+      'coord:send': sendEnv('agent-email-full', {
+        mode: 'required',
+        targets: ['agent-email-full'],
+        queued: 1,
+        woken: 1,
+      }),
+    });
+
+    const result = await composeDispatch(
+      {
+        to: 'agent-email',
+        note: 'execute the plan-run frontier',
+        planSlug: 'email-run-42',
+        workItemIds: ['WI-READY', 'WI-BLOCKED'],
+        harness: 'email',
+      },
+      call,
+      { assignWorkItems },
+    );
+
+    expect(assignWorkItems).toHaveBeenCalledWith({
+      workItemIds: ['WI-READY', 'WI-BLOCKED'],
+      targetAgent: 'agent-email-full',
+      harness: 'email',
+    });
+    expect(calls.map((c) => c.name)).toEqual(['coord:presence', 'coord:send']);
+    const sentBody = JSON.stringify(calls[1]?.args.body);
+    expect(sentBody).toContain('WI-READY');
+    expect(sentBody).not.toContain('WI-BLOCKED');
+    expect(result.workItems).toEqual(assignment());
+    expect(result.assigned).toBeNull();
+    expect(result.ok).toBe(true);
+    expectQueuedWake(result);
+  });
+
+  it('does not send or wake when every promoted work-item is still blocked', async () => {
+    const allBlocked = assignment({
+      requested: ['WI-BLOCKED'],
+      actionable: [],
+      assigned: [],
+      skipped: [
+        {
+          workItemId: 'WI-BLOCKED',
+          code: 'plan_lane_blocked',
+          reason: 'blocked-by P-001',
+        },
+      ],
+      executionWorkItemIds: [],
+    });
+    const { call, calls } = mockCall({
+      'coord:presence': presence([
+        { ownerId: 'agent-email-full', sessionState: 'parked', wakeable: true },
+      ]),
+    });
+
+    const result = await composeDispatch(
+      {
+        to: 'agent-email',
+        note: 'execute the plan-run frontier',
+        workItemIds: ['WI-BLOCKED'],
+      },
+      call,
+      { assignWorkItems: vi.fn(async () => allBlocked) },
+    );
+
+    expect(calls.map((c) => c.name)).toEqual(['coord:presence']);
+    expect(result.ok).toBe(true);
+    expect(result.delivered).toBeNull();
+    expect(result.queued).toBe(0);
+    expect(result.warning).toMatch(/remain unassigned.*not woken/i);
+  });
+
+  it('returns a loud structured absent-target failure without undoing assignment', async () => {
+    const readyOnly = assignment({
+      targetAgent: 'agent-email-stable',
+      requested: ['WI-READY'],
+      skipped: [],
+    });
+    const { call } = mockCall({
+      'coord:presence': presence([]),
+      'coord:send': sendEnv('agent-email-stable', {
+        mode: 'required',
+        targets: ['agent-email-stable'],
+        queued: 0,
+        woken: 0,
+        recipient_absent: true,
+      }),
+    });
+
+    const result = await composeDispatch(
+      {
+        to: 'agent-email-stable',
+        note: 'execute the plan-run frontier',
+        workItemIds: ['WI-READY'],
+      },
+      call,
+      { assignWorkItems: vi.fn(async () => readyOnly) },
+    );
+
+    expect(result.workItems?.assigned).toEqual(['WI-READY']);
+    expect(result.ok).toBe(false);
+    expect(result.failure).toMatchObject({
+      code: 'target_absent',
+      target: 'agent-email-stable',
+      recoverable: true,
+      queuePreserved: true,
+    });
+    expect(result.recipient_absent).toBe(true);
   });
 });
