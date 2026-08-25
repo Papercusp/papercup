@@ -14,10 +14,7 @@ import userEvent from "@testing-library/user-event";
 import ReviewReportShell, { type ReviewReportGroup } from "./ReviewReportShell";
 
 const REPORT_CSS = readFileSync(
-  resolve(
-    process.cwd(),
-    "app/_components/review-report/review-report.css",
-  ),
+  resolve(process.cwd(), "app/_components/review-report/review-report.css"),
   "utf8",
 );
 
