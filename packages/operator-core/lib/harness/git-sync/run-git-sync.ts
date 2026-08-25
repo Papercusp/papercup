@@ -763,9 +763,7 @@ export async function checkToolRoutingBeforeCommit(
       `[git-sync] ${repoPath}: generated tool-routing check passed before commit (${affected.length} routing-affecting dirty path(s))`,
     );
   } catch (e) {
-    log(
-      `[git-sync] ${repoPath}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`,
-    );
+    log(`[git-sync] ${repoPath}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`);
   }
 }
 
@@ -783,8 +781,10 @@ export const isGitHubSshPublicKeyFailure = (result: { stdout: string; stderr: st
  *  account behind that key has no verified email. The configured HTTPS credential may belong to
  *  a different, write-capable automation account, so this is the same credential-plane failure
  *  class as a missing SSH key — but only after the configured remote is proven to be GitHub SSH. */
-export const isGitHubSshEmailVerificationFailure = (result: { stdout: string; stderr: string }): boolean =>
-  /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
+export const isGitHubSshEmailVerificationFailure = (result: {
+  stdout: string;
+  stderr: string;
+}): boolean => /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
 
 const isGitHubSshRemoteUrl = (url: string): boolean =>
   /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url.trim());
@@ -2435,12 +2435,9 @@ export async function commitAttributedGroups(
     if (c.code === 0) {
       committedAny = true;
       committedCount += 1;
-    } else if (!nothingToCommit(c)) {
-      return {
-        committedAny,
-        committedCount,
-        error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}`,
-      };
+    }
+    else if (!nothingToCommit(c)) {
+      return { committedAny, committedCount, error: `attributed commit failed: ${(c.stderr || c.stdout).trim().slice(0, 300)}` };
     }
   }
   return { committedAny, committedCount };
@@ -2517,7 +2514,10 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   const skippedPaths = o.protectedHoldings
     .filter((holding) =>
       dirty.some(
-        (file) => file === holding.path || file.startsWith(`${holding.path}/`) || holding.path.startsWith(`${file}/`),
+        (file) =>
+          file === holding.path ||
+          file.startsWith(`${holding.path}/`) ||
+          holding.path.startsWith(`${file}/`),
       ),
     )
     .map((holding) => ({
@@ -2796,7 +2796,14 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     }
     if (!catchAllSubjected) commitArgs.push('-m', message);
     let c = await runGit(commitArgs, repoPath);
-    c = await recoverIndexLockContention(c, () => runGit(commitArgs, repoPath), runGit, repoPath, 'git commit', o.log);
+    c = await recoverIndexLockContention(
+      c,
+      () => runGit(commitArgs, repoPath),
+      runGit,
+      repoPath,
+      'git commit',
+      o.log,
+    );
     if (c.code === 0) {
       committedAny = true;
       committedCount += 1;
@@ -2874,7 +2881,10 @@ export async function bridgeContainedCommitIntoCurrentBranch(
     return { status: 'declined', reason: `${sourceRef} has no merge base with HEAD` };
   }
 
-  const changed = await runGit(['diff', '--name-only', '--no-renames', '-z', `${mergeBase}..${sourceRef}`], repoPath);
+  const changed = await runGit(
+    ['diff', '--name-only', '--no-renames', '-z', `${mergeBase}..${sourceRef}`],
+    repoPath,
+  );
   if (changed.code !== 0) {
     return { status: 'error', message: `could not enumerate ${sourceRef}-only paths` };
   }
@@ -2902,7 +2912,10 @@ export async function bridgeContainedCommitIntoCurrentBranch(
     }
   }
 
-  const merge = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', '-s', 'ours', sourceRef], repoPath);
+  const merge = await runGit(
+    [...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', '-s', 'ours', sourceRef],
+    repoPath,
+  );
   if (merge.code !== 0) {
     await runGit(['merge', '--abort'], repoPath);
     return {
@@ -3589,13 +3602,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           contentErrors: commitRes.contentErrors,
           skippedPaths: commitRes.skippedPaths,
         }
-      : {
-          status: 'nothing',
-          ...commitMetrics,
-          oversized: commitRes.oversized,
-          contentErrors: commitRes.contentErrors,
-          skippedPaths: commitRes.skippedPaths,
-        };
+      : { status: 'nothing', ...commitMetrics, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
     log(
       `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
     );
@@ -3638,24 +3645,17 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         log(`[git-sync] ${repo}: release-main ancestry bridge declined — ${releaseBridge.reason}`);
       }
       const bridged = releaseBridge.status === 'bridged';
-      repoResult =
-        commitRes.committedLocal || bridged
-          ? {
-              status: 'synced',
-              ...commitMetrics,
-              pushed: false,
-              merged: bridged,
-              oversized: commitRes.oversized,
-              contentErrors: commitRes.contentErrors,
-              skippedPaths: commitRes.skippedPaths,
-            }
-          : {
-              status: 'nothing',
-              ...commitMetrics,
-              oversized: commitRes.oversized,
-              contentErrors: commitRes.contentErrors,
-              skippedPaths: commitRes.skippedPaths,
-            };
+      repoResult = commitRes.committedLocal || bridged
+        ? {
+            status: 'synced',
+            ...commitMetrics,
+            pushed: false,
+            merged: bridged,
+            oversized: commitRes.oversized,
+            contentErrors: commitRes.contentErrors,
+            skippedPaths: commitRes.skippedPaths,
+          }
+        : { status: 'nothing', ...commitMetrics, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors, skippedPaths: commitRes.skippedPaths };
     }
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
@@ -3690,63 +3690,19 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const didSomething = sub.didSomething || supr.didSomething;
 
   if (conflicts.length > 0)
-    return {
-      status: 'conflict',
-      dirtyPathCount,
-      committedCount,
-      conflicts,
-      errors,
-      pushed,
-      merged,
-      mergeCompleted,
-      oversized,
-      contentErrors,
-      skippedPaths,
-      strandedSubmodules,
-    };
+    return { status: 'conflict', dirtyPathCount, committedCount, conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
   if (errors.length > 0)
-    return {
-      status: 'error',
-      dirtyPathCount,
-      committedCount,
-      errors,
-      pushed,
-      merged,
-      mergeCompleted,
-      oversized,
-      contentErrors,
-      skippedPaths,
-      strandedSubmodules,
-    };
+    return { status: 'error', dirtyPathCount, committedCount, errors, pushed, merged, mergeCompleted, oversized, contentErrors, skippedPaths, strandedSubmodules };
   // A live lock is a partial exclusion, not a fleet-wide stop. Report the legacy
   // skipped verdict only when every visible dirty path was protected and the pass
   // made no progress anywhere. A pass that committed/pushed an unlocked sibling is
   // `synced` and still carries skippedPaths for observability + the next retry.
   if (skippedPaths.length > 0 && !didSomething)
-    return {
-      status: 'skipped-locked',
-      dirtyPathCount,
-      committedCount,
-      skippedPaths,
-      mergeCompleted,
-      oversized,
-      contentErrors,
-      strandedSubmodules,
-    };
+    return { status: 'skipped-locked', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
   // one to be stranding work — the visible tree is clean precisely because the dirty repo
   // is invisible — so this is the last status that should omit it.
-  if (!didSomething)
-    return {
-      status: 'nothing',
-      dirtyPathCount,
-      committedCount,
-      skippedPaths,
-      mergeCompleted,
-      oversized,
-      contentErrors,
-      strandedSubmodules,
-    };
+  if (!didSomething) return { status: 'nothing', dirtyPathCount, committedCount, skippedPaths, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
   return {

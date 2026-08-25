@@ -252,7 +252,8 @@ describe('EI-20428405431869483 generated tool-routing pre-commit check', () => {
       if (args[0] === 'ls-files') {
         return {
           code: 0,
-          stdout: 'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
+          stdout:
+            'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
           stderr: '',
         };
       }
@@ -300,7 +301,8 @@ describe('EI-20428405431869483 generated tool-routing pre-commit check', () => {
       if (args[0] === 'ls-files') {
         return {
           code: 0,
-          stdout: 'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
+          stdout:
+            'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
           stderr: '',
         };
       }
@@ -392,7 +394,10 @@ describe('runGitSync (real git, no submodule)', () => {
     const bridged = git(originDir, 'rev-parse', 'refs/heads/staging');
     expect(bridged).not.toBe(stagingBefore);
     expect(git(originDir, 'rev-parse', `${bridged}^{tree}`)).toBe(stagingTree);
-    expect(git(originDir, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([stagingBefore, isolatedMain]);
+    expect(git(originDir, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([
+      stagingBefore,
+      isolatedMain,
+    ]);
     expect(git(originDir, 'merge-base', '--is-ancestor', isolatedMain, bridged)).toBe('');
     expect(logs.join('\n')).toMatch(/bridged fully-represented origin\/main into current ancestry/);
   });
@@ -437,7 +442,10 @@ describe('runGitSync (real git, no submodule)', () => {
     const bridged = git(repo, 'rev-parse', 'HEAD');
     expect(bridged).not.toBe(stagingBefore);
     expect(git(repo, 'rev-parse', 'HEAD^{tree}')).toBe(stagingTree);
-    expect(git(repo, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([stagingBefore, isolatedMain]);
+    expect(git(repo, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([
+      stagingBefore,
+      isolatedMain,
+    ]);
     expect(git(repo, 'merge-base', '--is-ancestor', isolatedMain, bridged)).toBe('');
     expect(git(originDir, 'rev-parse', 'refs/heads/staging')).toBe(stagingBefore);
   });
@@ -509,7 +517,9 @@ describe('runGitSync (real git, no submodule)', () => {
 
     expect(out.status).toBe('synced');
     expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
-    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(`${ignoredPath}/transient-artifact`);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(
+      `${ignoredPath}/transient-artifact`,
+    );
     expect(readFileSync(ignoredArtifact, 'utf8')).toBe('must remain local and untracked\n');
     expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
   });
@@ -537,7 +547,9 @@ describe('runGitSync (real git, no submodule)', () => {
     const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
     for (const markerPath of markerPaths) {
       expect(originFiles).not.toContain(markerPath);
-      expect(git(repo, 'check-ignore', '-v', '--no-index', markerPath)).toContain('.build-pending-*/');
+      expect(git(repo, 'check-ignore', '-v', '--no-index', markerPath)).toContain(
+        '.build-pending-*/',
+      );
     }
     expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
   });
@@ -551,25 +563,21 @@ describe('runGitSync (real git, no submodule)', () => {
       repoPath: repo,
       config: cfg,
       excludePaths: ['file.txt'],
-      liveLockHoldings: [
-        {
-          path: 'file.txt',
-          owner: 'su-peer',
-          intent: 'editing the source half of an atomic change',
-        },
-      ],
+      liveLockHoldings: [{
+        path: 'file.txt',
+        owner: 'su-peer',
+        intent: 'editing the source half of an atomic change',
+      }],
       log: (message) => logs.push(message),
     });
 
     expect(out.status).toBe('synced');
-    expect(out.skippedPaths).toEqual([
-      {
-        scope: 'superproject',
-        path: 'file.txt',
-        owner: 'su-peer',
-        intent: 'editing the source half of an atomic change',
-      },
-    ]);
+    expect(out.skippedPaths).toEqual([{
+      scope: 'superproject',
+      path: 'file.txt',
+      owner: 'su-peer',
+      intent: 'editing the source half of an atomic change',
+    }]);
     expect(logs.join('\n')).toContain('committing the unlocked remainder');
 
     // The protected edit remains local, while unrelated finished work reaches origin.
@@ -587,24 +595,20 @@ describe('runGitSync (real git, no submodule)', () => {
       config: cfg,
       // Holder provenance alone is sufficient to protect the path; callers cannot
       // accidentally omit the parallel exclusion projection and commit through a lock.
-      liveLockHoldings: [
-        {
-          path: 'file.txt',
-          owner: 'su-peer',
-          intent: 'editing the source half of an atomic change',
-        },
-      ],
-    });
-
-    expect(out.status).toBe('skipped-locked');
-    expect(out.skippedPaths).toEqual([
-      {
-        scope: 'superproject',
+      liveLockHoldings: [{
         path: 'file.txt',
         owner: 'su-peer',
         intent: 'editing the source half of an atomic change',
-      },
-    ]);
+      }],
+    });
+
+    expect(out.status).toBe('skipped-locked');
+    expect(out.skippedPaths).toEqual([{
+      scope: 'superproject',
+      path: 'file.txt',
+      owner: 'su-peer',
+      intent: 'editing the source half of an atomic change',
+    }]);
     expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
     expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
   });
@@ -762,9 +766,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(runCheck).toHaveBeenCalledOnce();
     expect(out.status).toBe('synced');
     expect(logs.join('\n')).toMatch(/generated tool-routing check failed.*continuing with the commit fail-soft/);
-    expect(
-      git(originDir, 'show', 'main:packages/operator-core/lib/bash-substitution/pairs/dependency-install.ts'),
-    ).toContain('version = 2');
+    expect(git(originDir, 'show', 'main:packages/operator-core/lib/bash-substitution/pairs/dependency-install.ts')).toContain('version = 2');
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
@@ -836,7 +838,9 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
       ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
     ]);
-    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('email-verification-fallback.txt');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain(
+      'email-verification-fallback.txt',
+    );
   });
 
   it('EI-20378687739683215: does not rewrite a non-GitHub email-verification rejection', async () => {
