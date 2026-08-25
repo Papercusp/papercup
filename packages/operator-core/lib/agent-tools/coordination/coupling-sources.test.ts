@@ -89,6 +89,12 @@ describe('couplingSourcesFor — the lock lane is ALWAYS armed; the domain does 
     ]) {
       expect(typeof sources.planEdges).toBe('function');
       expect(typeof sources.recentPartners).toBe('function');
+      // P-004. Armed UNCONDITIONALLY and asserted here rather than at each reader:
+      // wiring a source per call site is exactly how `holds-a-lock-on` stayed dark for
+      // 12 days (D-088). It must also never become conditional — the census reads
+      // `armed: !!sources.obligations`, so an omitted source reports the leg STARVED,
+      // making a genuinely empty obligation list indistinguishable from an unwired one.
+      expect(typeof sources.obligations).toBe('function');
     }
   });
 });
