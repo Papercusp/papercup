@@ -37,6 +37,8 @@ vi.mock('../../workspace-registry', () => ({
 const store = await import('./store');
 const engine = await import('./engine');
 const { armInboxWake } = await import('./inbox-wake-arm');
+const { wakeRecipients } = await import('../../agent-tools/coordination/inbox-wake');
+const { setWakeMode } = await import('../../agent-tools/coordination/wake-mode');
 const { configureCoordLog, resetCoordLog } = await import('../../agent-tools/coordination/log');
 const coordSend = (await import('../../agent-tools/coordination/tools/send')).default;
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
@@ -113,7 +115,7 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     expect(typeof one.msg_id).toBe('string');
     expect(one.wake).toMatchObject({
       queued: 1,
-      woken: 0,
+      woken: 1,
       pickupConfirmed: false,
       wakeOutcome: 'queued',
     });
@@ -164,14 +166,14 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
 
     // First wake → queued, then delivered by the explicit pump. (bulk n=1 → per-message fields on results[0].)
     const r1 = await send(1);
-    expect(r1.results[0].wake).toMatchObject({ queued: 1, woken: 0, pickupConfirmed: false, wakeOutcome: 'queued' });
+    expect(r1.results[0].wake).toMatchObject({ queued: 1, woken: 1, pickupConfirmed: false, wakeOutcome: 'queued' });
     await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
     expect(hostB.received).toHaveLength(1);
 
     // Second wake to the SAME agent → still queued, still delivered by the pump.
     // A consumed or cancelled watch would return queued:0 and never reach the socket.
     const r2 = await send(2);
-    expect(r2.results[0].wake).toMatchObject({ queued: 1, woken: 0, pickupConfirmed: false, wakeOutcome: 'queued' });
+    expect(r2.results[0].wake).toMatchObject({ queued: 1, woken: 1, pickupConfirmed: false, wakeOutcome: 'queued' });
     await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
     expect(hostB.received).toHaveLength(2);
 
@@ -179,6 +181,34 @@ describe('coord:send {wake:true} → real engine → real pump → real socket (
     const deliveries = await store.listRecentDeliveries(idleB);
     expect(deliveries.filter((d) => d.status === 'delivered')).toHaveLength(2);
     expect(hostB.received.every((m) => JSON.stringify(m).includes(idleB))).toBe(true);
+  });
+
+  it('EI-21420024752195459: owner-verified resume → manual parked target → fresh socket turn', async () => {
+    const sender = uid('resume-sender');
+    const idleB = uid('resume-target');
+    await armInboxWake({ ownerId: idleB, workspaceId: h.ws, minSleepSec: 0 });
+    await setWakeMode(idleB, 'manual', 'test: paused target awaiting an owner-verified resume');
+    const hostB = await tb.spawnSocketHost(idleB);
+
+    const fan = await wakeRecipients([idleB], {
+      source: sender,
+      summary: 'OWNER-VERIFIED SYSTEM-WIDE RESUME',
+      workspaceId: h.ws,
+      relayProvenance: {
+        tier: 'owner-verified-turn',
+        quote: 'tell all agents system-wide to resume their work',
+        origin: 'owner',
+      },
+    });
+
+    expect(fan).toMatchObject({ targets: [idleB], woken: 1, staged: 0, stagedTargets: [] });
+    await engine.pumpWakeDeliveries(h.ws, { findPsuHost: tb.findPsuHostDep() });
+
+    expect(hostB.received).toHaveLength(1);
+    expect(hostB.received[0]).toMatchObject({ v: 1, mode: 'turn' });
+    expect(JSON.stringify(hostB.received[0])).toContain('OWNER-VERIFIED SYSTEM-WIDE RESUME');
+    const deliveries = await store.listRecentDeliveries(idleB);
+    expect(deliveries[0]).toMatchObject({ status: 'delivered', channel: 'psu-socket-inject' });
   });
 
   it('wake:false (plain inject) enqueues the message but never touches the socket', async () => {

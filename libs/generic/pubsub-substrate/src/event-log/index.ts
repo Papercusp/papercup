@@ -11,6 +11,7 @@
 
 export {
   type CoordEventLog,
+  type AppendLineIfAbsentResult,
   type LineSurface,
   type EventSurface,
   type ReadLinesOpts,
