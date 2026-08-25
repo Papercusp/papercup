@@ -107,6 +107,29 @@ describe('renderModesPolicy — SU zero-pauses AUTO clause (P-014)', () => {
   });
 });
 
+describe('renderModesPolicy — anti-babysitting loop authority (WI-41514 / ABM-P002-PROMPT@1)', () => {
+  const full = renderModesPolicy();
+  const fleet = renderModesPolicy('fleet');
+
+  it('FULL: only an explicit owner-authored ongoing objective gets the AUTO loop shortcut', () => {
+    expect(full).toContain('An OWNER-AUTHORED OPEN-ENDED / ongoing directive');
+    expect(full).toMatch(/Only an explicit objective authored by\s+the interactive owner qualifies/);
+    expect(full).toMatch(/AUTO alone does not create a monitoring mission/);
+    expect(full).toMatch(
+      /self-authored or inherited\s+"monitor", "supervise", "evidence-only", or "keep watching" goal is not owner authorization/,
+    );
+  });
+
+  it('FLEET: preserves assigned-work loops without licensing an invented monitoring mission', () => {
+    expect(fleet).toContain('For assigned work that outlives this turn');
+    expect(fleet).toMatch(/does not create permission to\s+invent a monitoring mission/);
+    expect(fleet).toMatch(/Monitoring requires registered\s+work ownership \/ leadership/);
+    expect(fleet).toMatch(
+      /self-authored or inherited "monitor", "supervise",\s+"evidence-only", or "keep watching" goal never qualifies/,
+    );
+  });
+});
+
 describe('renderModesPolicy — DRAIN defect-filing exception (WI-38401)', () => {
   const full = renderModesPolicy();
 

@@ -1121,6 +1121,30 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
     }
   });
 
+  it('ABM-P002: every live blueprint tier renders the universal anti-babysitting contract', async () => {
+    const renders = await Promise.all([
+      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase) }),
+      renderSuPlaybook({ agent: 'claude', baseSource: fileURLToPath(blueprintBase), tier: 'fleet' }),
+    ]);
+
+    for (const { text } of renders) {
+      expect(text).toContain('## Anti-babysitting rule — monitoring is not work by default');
+      expect(text).toContain('AUTO authorizes execution; it does not create a monitoring mission');
+      expect(text).toContain('Fixing is work;\nwatching someone else fix is not');
+      expect(text).toContain('The interactive owner explicitly requested ongoing monitoring');
+      expect(text).toContain('holds the work-item or leadership role');
+      expect(text).toContain('No other live agent already owns and is progressing');
+      expect(text).toContain('The transition unlocks a concrete action');
+      expect(text).toContain('named stop condition and a bounded no-delta budget');
+      expect(text).toContain('do not create a parallel supervisor');
+      expect(text).toContain('do not arm a fallback loop');
+      expect(text).toContain('one no-delta wake is terminal: `loop:end`');
+      expect(text).toContain("system routines or a registered fleet leader's\nreal supervision duties");
+      expect(text).toContain('A red release/CI gate must have one concrete fixer');
+      expect(text).not.toContain("a days-red gate is everyone's problem");
+    }
+  });
+
   /**
    * THE CONTROL. Without it this suite passes even if `injectSharedBaseNotes` were changed to
    * append unconditionally — which would push the notes into minimal/test bases that are
