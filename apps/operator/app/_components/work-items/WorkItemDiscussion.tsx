@@ -40,6 +40,9 @@ export interface WorkItemDiscussionProps {
   workItemId: string;
   title?: string | null;
   onClose?: () => void;
+  /** Focus this discussion once every inert ancestor has been released. The
+   * Inbox report can mount it underneath an active takeover before closing. */
+  focusWhenInteractive?: boolean;
 }
 
 function WorkItemConversationChat({
@@ -139,7 +142,9 @@ export default function WorkItemDiscussion({
   workItemId,
   title,
   onClose,
+  focusWhenInteractive = false,
 }: WorkItemDiscussionProps) {
+  const sectionRef = useRef<HTMLElement | null>(null);
   const workspaceId = useWorkspaceId();
   const targetKey = `${workspaceId}::${harnessSlug}::${workItemId}`;
   const identity = useSyncQuery<ConversationIdentity>({
@@ -218,12 +223,52 @@ export default function WorkItemDiscussion({
     [title, workItemId],
   );
 
+  useEffect(() => {
+    if (!focusWhenInteractive) return;
+    const section = sectionRef.current;
+    if (!section) return;
+
+    const focus = () => {
+      if (!section.isConnected || section.closest("[inert]")) return false;
+      section.focus({ preventScroll: true });
+      return document.activeElement === section;
+    };
+    if (focus()) return;
+
+    // A report's Discuss handoff writes the underlying Inbox URL state first,
+    // so this section mounts while the routed pane is still inert. Observe only
+    // the inert ancestors that currently block it, then focus immediately after
+    // ReportTakeoverLayer releases the final one.
+    const inertAncestors: HTMLElement[] = [];
+    for (
+      let ancestor = section.parentElement;
+      ancestor;
+      ancestor = ancestor.parentElement
+    ) {
+      if (ancestor.hasAttribute("inert")) inertAncestors.push(ancestor);
+    }
+    if (inertAncestors.length === 0) return;
+
+    const observer = new MutationObserver(() => {
+      if (focus()) observer.disconnect();
+    });
+    for (const ancestor of inertAncestors) {
+      observer.observe(ancestor, {
+        attributes: true,
+        attributeFilter: ["inert"],
+      });
+    }
+    return () => observer.disconnect();
+  }, [focusWhenInteractive, targetKey]);
+
   return (
     <section
+      ref={sectionRef}
       id={`work-item-discussion-${workItemId}`}
       className="wi-discussion"
       aria-label={`Papercup discussion for ${workItemId}`}
       data-testid={`work-item-discussion-${workItemId}`}
+      tabIndex={focusWhenInteractive ? -1 : undefined}
     >
       <header className="wi-discussion__header">
         <span className="wi-discussion__mark" aria-hidden="true">
