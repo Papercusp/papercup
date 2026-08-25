@@ -23,6 +23,12 @@
  */
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 
+import {
+  browserIdentityFromUserAgent,
+  canonicalRenderHost,
+  type FontMetrics,
+} from './render-host';
+
 import type {
   CaptureBrowser,
   CapturePage,
@@ -148,6 +154,24 @@ class PlaywrightCapturePage implements CapturePage {
           });
           return !available;
         }),
+        // P-011/D-023: the same instrument, asked one more question.
+        //
+        // The filter above throws these widths away after comparing them. Kept,
+        // they identify the MACHINE: the generics resolve to whatever fonts the
+        // host actually has, so two boxes with different font packages measure
+        // differently here even though every field of CaptureEnvironment agrees.
+        // That is the axis D-021 recorded as unmeasured, and it is the reason a
+        // same-host threshold of ~34 pixels cannot be enforced across hosts.
+        fontMetrics: Object.fromEntries(
+          ['monospace', 'sans-serif', 'serif'].map((generic) => {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            if (!context) return [generic, 0];
+            context.font = `72px ${generic}`;
+            return [generic, context.measureText('mmmmmmmmmmlliWWWW@1234567890').width];
+          }),
+        ),
+        userAgent: navigator.userAgent,
       }),
       {
         families: [...options.requiredFontFamilies],
@@ -173,6 +197,10 @@ class PlaywrightCapturePage implements CapturePage {
         : {}),
       fontsReady: pageFacts.fontsReady,
       missingFontFamilies: pageFacts.missingFontFamilies,
+      renderHost: canonicalRenderHost({
+        ...browserIdentityFromUserAgent(pageFacts.userAgent),
+        fontMetrics: pageFacts.fontMetrics as FontMetrics,
+      }),
     };
   }
 

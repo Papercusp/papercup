@@ -214,6 +214,15 @@ export interface ObservedEnvironment {
   readonly fontsReady: boolean;
   /** Requested families the page cannot render. Non-empty ⇒ silent substitution. */
   readonly missingFontFamilies: readonly string[];
+  /**
+   * The rendering host this page reports (P-011/D-023), as `render-host.ts`'s
+   * canonical string.
+   *
+   * Optional so a test double is not forced to synthesise a fingerprint it has
+   * no opinion about. A capture that reports none simply cannot be used as
+   * evidence for a reference that records one — it is never treated as a match.
+   */
+  readonly renderHost?: string;
 }
 
 export interface SettleOptions {

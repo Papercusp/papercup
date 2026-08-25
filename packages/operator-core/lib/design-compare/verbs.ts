@@ -210,6 +210,16 @@ export interface RatifyReferenceInput {
     readonly source: string;
     readonly sourceRef: string;
     readonly derivedFrom?: string;
+    /**
+     * The rendering host the reference IMAGE was captured on (P-011/D-023),
+     * from `capture.observed.renderHost`. Absent for an upload or a Figma
+     * export, which no host rendered.
+     *
+     * Recorded at ratification and never again: it is what a later completion's
+     * evidence has to match, so a value the completion could supply would be a
+     * value the completion could choose.
+     */
+    readonly capturedOnRenderHost?: string;
   };
 }
 
@@ -257,6 +267,9 @@ export async function ratifyReferenceVerb(
     ratifiedAt,
     ...(input.provenance.derivedFrom !== undefined
       ? { derivedFrom: input.provenance.derivedFrom }
+      : {}),
+    ...(input.provenance.capturedOnRenderHost
+      ? { capturedOnRenderHost: input.provenance.capturedOnRenderHost }
       : {}),
   };
 

@@ -13,6 +13,11 @@
  */
 import { evaluateDesignGate, type DesignGateVerdict, renderDesignGateRefusal } from './gate';
 import { DESIGN_GATE_DOES_NOT_ESTABLISH } from './gate';
+import {
+  describeEnforceability,
+  evaluateEnforceability,
+  type EnforceabilityOutcome,
+} from './enforceability';
 import type { FeatureScope, ReferenceStorePort } from './reference-store';
 import { getDesignEvidenceVerb, type VerbCaller, type VerbDeps } from './verbs';
 
@@ -118,7 +123,14 @@ export async function evaluateFeatureDesignGate(
         }`,
       );
     }
-    references.push({ referenceId, verdict: evaluateDesignGate(read) });
+    references.push({
+      referenceId,
+      verdict: evaluateDesignGate(read),
+      // Read from the reference's own ratification provenance, which the
+      // completing agent cannot influence at completion time. Deriving it from
+      // anything the completion supplies would make enforcement opt-out.
+      enforceability: evaluateEnforceability(read.reference?.capturedOnRenderHost),
+    });
   }
 
   const applicable = references.filter((r) => r.verdict.applicable);
@@ -130,6 +142,7 @@ export async function evaluateFeatureDesignGate(
     satisfied: blocking.length === 0,
     references,
     blocking,
+    enforceableBlocking: blocking.filter((r) => r.enforceability.enforceable),
     doesNotEstablish: DESIGN_GATE_DOES_NOT_ESTABLISH,
   };
 }
@@ -151,9 +164,18 @@ export function renderFeatureDesignGate(result: FeatureDesignGateResult): string
     );
   }
   const bodies = result.blocking
-    .map((r) =>
-      r.verdict.applicable && !r.verdict.satisfied ? renderDesignGateRefusal(r.verdict) : '',
-    )
+    .map((r) => {
+      if (!(r.verdict.applicable && !r.verdict.satisfied)) return '';
+      const refusal = renderDesignGateRefusal(r.verdict);
+      // A reference that failed but will NOT block has to say so in the same
+      // breath. Otherwise the two outcomes an operator most needs to tell apart
+      // — "this was checked and enforced" and "this was checked and could not
+      // be enforced" — render identically, and a gate that quietly stopped
+      // enforcing looks exactly like a gate that passed.
+      return r.enforceability.enforceable
+        ? refusal
+        : `${refusal}\n${describeEnforceability(r.enforceability)}`;
+    })
     .filter(Boolean);
   return bodies.join('\n\n');
 }

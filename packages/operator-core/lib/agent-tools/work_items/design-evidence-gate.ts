@@ -134,9 +134,19 @@ export async function designEvidenceCompletionGate(
     if (result.satisfied) {
       return { status: 'satisfied', report: renderFeatureDesignGate(result) ?? '' };
     }
+    // P-011/D-023: the flag says enforcement is ON; it does not say this
+    // particular comparison was measured on a machine the threshold speaks for.
+    // Both must hold. `enforceableBlocking` is the subset of failing references
+    // whose ratification host matches the calibration host — for anything else,
+    // the derived tolerance (about 34 pixels of a 1280x800 render) was never
+    // measured against that machine's fonts, and refusing on it would fail
+    // correct work, which is precisely what D-021 forbade.
+    //
+    // The refusal is driven by that subset rather than by `blocking` so an
+    // unenforceable reference can never suppress a calibrated failure beside it.
     return {
       status: 'unsatisfied',
-      enforced,
+      enforced: enforced && result.enforceableBlocking.length > 0,
       featureId,
       blockingReferenceIds: result.blocking.map((b) => b.referenceId),
       report: renderFeatureDesignGate(result) ?? '',
