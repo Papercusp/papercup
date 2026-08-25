@@ -503,6 +503,85 @@ export interface WorkspaceHostReleaseProvenanceResult {
   readonly errors: readonly string[];
 }
 
+/**
+ * The release-addressing rule, shared by every surface that pins a workspace-host bundle.
+ *
+ * D-106 requires build manifests, bootstrap configuration, validators and fixtures to agree on
+ * ONE rule for what makes a pin immutable rather than each restating it. Two callers can prove
+ * different things, so the caller passes the digest/version it can actually stand behind:
+ *
+ *   - the build manifest proves them from the artifact it just built;
+ *   - the bootstrap contract proves them from the pins the release itself carries, which makes
+ *     this a SELF-CONSISTENCY check — the URL must address the very digest the host is about to
+ *     verify after download. Without it, `requirePublicHttpsUrl` would happily accept a mutable
+ *     `.../latest.tgz` alongside a well-formed digest that nothing ties it to, and that URL is
+ *     baked into a script that runs as root on the host.
+ *
+ * Because both callers run the same rule, a URL accepted by one surface cannot be rejected by
+ * the other — which is the property that kept drifting when the rule was written out twice.
+ */
+export function workspaceHostReleaseAddressingErrors(
+  release: WorkspaceHostReleasePins,
+  expected: {
+    readonly sha256: string;
+    readonly version: string;
+    /**
+     * How the caller names the artifact it can prove, so the message stays accurate on both
+     * surfaces: the manifest proves "the built artifact"; bootstrap proves the digest the
+     * release pins.
+     */
+    readonly subject?: string;
+  },
+): string[] {
+  const errors: string[] = [];
+  const expectedDigest = expected.sha256.toLowerCase();
+  const subject = expected.subject ?? "the built artifact";
+
+  errors.push(...immutableUrlErrors(release.bundleUrl, "release.bundleUrl"));
+  errors.push(
+    ...immutableUrlErrors(release.signatureUrl, "release.signatureUrl"),
+  );
+
+  // The signature must be the detached companion of the bundle it signs. Allowing an unrelated
+  // signature URL would let a valid signature over a DIFFERENT artifact satisfy the check.
+  if (release.signatureUrl !== `${release.bundleUrl}.minisig`)
+    errors.push(
+      "release.signatureUrl must be release.bundleUrl suffixed with .minisig",
+    );
+
+  // An immutable pin needs the URL to name WHICH artifact it addresses — otherwise the same URL
+  // can be re-pointed at a different build without the pin changing. Two forms qualify:
+  //
+  //   content-addressed  .../sha256/<bundleSha256>/server.tgz   (the canonical published path)
+  //   version-embedded   .../<version>/server.tgz
+  //
+  // The content-addressed form is strictly stronger and is therefore checked first: the digest
+  // IS the immutability proof, where a version string only promises one. A content-addressed URL
+  // whose digest is NOT the expected one is a HARDER failure than an unpinned one — it does not
+  // merely fail to prove immutability, it positively addresses a different artifact — so it is
+  // reported as a mismatch rather than falling through to the version-embedding rule.
+  if (release.bundleUrl.length > 0) {
+    // Match against the PATH only. A digest in a query string or fragment does not determine
+    // which bytes the origin serves, so treating one as an address would accept a mutable URL
+    // that merely mentions the digest it is supposed to be pinned to.
+    const contentAddress = CONTENT_ADDRESSED_DIGEST.exec(
+      urlPathname(release.bundleUrl),
+    );
+    if (contentAddress) {
+      const addressedDigest = (contentAddress[1] ?? "").toLowerCase();
+      if (addressedDigest !== expectedDigest)
+        errors.push(
+          `release.bundleUrl is content-addressed at ${addressedDigest}, which is not ${subject} ${expectedDigest}`,
+        );
+    } else if (!release.bundleUrl.includes(expected.version))
+      errors.push(
+        `release.bundleUrl must be content-addressed under /sha256/${expectedDigest}/ or embed the release version ${expected.version} so the pin is immutable`,
+      );
+  }
+
+  return errors;
+}
+
 function immutableUrlErrors(value: string, label: string): string[] {
   let parsed: URL;
   try {
@@ -562,47 +641,15 @@ export function verifyWorkspaceHostReleaseProvenance(
       `release.version ${release.version} does not match the built artifact version ${manifest.releaseArtifact.version}`,
     );
 
-  errors.push(...immutableUrlErrors(release.bundleUrl, "release.bundleUrl"));
+  // The addressing rule lives in one place (see workspaceHostReleaseAddressingErrors) so the
+  // bootstrap contract cannot drift from it. Here the manifest is the authority for what the
+  // URL must address, because it just built the artifact.
   errors.push(
-    ...immutableUrlErrors(release.signatureUrl, "release.signatureUrl"),
+    ...workspaceHostReleaseAddressingErrors(release, {
+      sha256: expectedDigest,
+      version: manifest.releaseArtifact.version,
+    }),
   );
-
-  // The signature must be the detached companion of the bundle it signs. Allowing an unrelated
-  // signature URL would let a valid signature over a DIFFERENT artifact satisfy the check.
-  if (release.signatureUrl !== `${release.bundleUrl}.minisig`)
-    errors.push(
-      "release.signatureUrl must be release.bundleUrl suffixed with .minisig",
-    );
-
-  // An immutable pin needs the URL to name WHICH artifact it addresses — otherwise the same URL
-  // can be re-pointed at a different build without the pin changing. Two forms qualify:
-  //
-  //   content-addressed  .../sha256/<bundleSha256>/server.tgz   (the canonical published path)
-  //   version-embedded   .../<version>/server.tgz
-  //
-  // The content-addressed form is strictly stronger and is therefore checked first: the digest
-  // IS the immutability proof, where a version string only promises one. A content-addressed URL
-  // whose digest is NOT the built artifact's is a HARDER failure than an unpinned one — it does
-  // not merely fail to prove immutability, it positively addresses a different artifact — so it
-  // is reported as a mismatch rather than falling through to the version-embedding rule.
-  if (release.bundleUrl.length > 0) {
-    // Match against the PATH only. A digest in a query string or fragment does not determine
-    // which bytes the origin serves, so treating one as an address would accept a mutable URL
-    // that merely mentions the digest it is supposed to be pinned to.
-    const contentAddress = CONTENT_ADDRESSED_DIGEST.exec(
-      urlPathname(release.bundleUrl),
-    );
-    if (contentAddress) {
-      const addressedDigest = (contentAddress[1] ?? "").toLowerCase();
-      if (addressedDigest !== expectedDigest)
-        errors.push(
-          `release.bundleUrl is content-addressed at ${addressedDigest}, which is not the built artifact ${expectedDigest}`,
-        );
-    } else if (!release.bundleUrl.includes(manifest.releaseArtifact.version))
-      errors.push(
-        `release.bundleUrl must be content-addressed under /sha256/${expectedDigest}/ or embed the release version ${manifest.releaseArtifact.version} so the pin is immutable`,
-      );
-  }
 
   const initializer = manifest.materials.find(
     (material) => material.path === WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,

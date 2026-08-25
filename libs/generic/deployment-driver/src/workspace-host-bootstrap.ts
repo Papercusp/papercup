@@ -1,3 +1,4 @@
+import { workspaceHostReleaseAddressingErrors } from './workspace-host-build-manifest';
 import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
 
 /**
@@ -326,6 +327,24 @@ function validateInput(
   requirePublicHttpsUrl(input.release.bundleUrl, 'release.bundleUrl');
   requirePublicHttpsUrl(input.release.signatureUrl, 'release.signatureUrl');
   requireSha256(input.release.bundleSha256, 'release.bundleSha256');
+  // requirePublicHttpsUrl only proves the URL is well-formed, credential-free HTTPS. It does NOT
+  // tie the URL to the digest this release pins, so on its own it accepts a mutable
+  // `.../latest.tgz` next to a perfectly valid bundleSha256 — and that URL is interpolated into
+  // an install script that runs as root. D-106 puts the addressing rule in one shared place;
+  // bootstrap adjudicates it against the release's OWN pins, which is the strongest claim it can
+  // make without the build manifest. Run it after requireSha256 so the digest is known well-formed.
+  const releaseAddressingErrors = workspaceHostReleaseAddressingErrors(
+    input.release,
+    {
+      sha256: input.release.bundleSha256,
+      version: input.release.version,
+      subject: 'the digest this release pins',
+    },
+  );
+  requireCondition(
+    releaseAddressingErrors.length === 0,
+    `release provenance: ${releaseAddressingErrors.join('; ')}`,
+  );
   requireSha256(input.release.signingKeySha256, 'release.signingKeySha256');
   requireCondition(
     input.release.signingPublicKey.trim().length > 0,
