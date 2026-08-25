@@ -31,6 +31,8 @@ pub struct NewAgentChat {
 pub struct AgentChatTurnRequest {
     pub content: String,
     pub model: Option<String>,
+    pub effort: Option<String>,
+    pub account: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -512,6 +514,12 @@ pub(crate) fn loop_message_body(request: &AgentChatTurnRequest) -> Value {
     if let Some(model) = &request.model {
         body["model"] = Value::String(model.clone());
     }
+    if let Some(effort) = &request.effort {
+        body["effort"] = Value::String(effort.clone());
+    }
+    if let Some(account) = &request.account {
+        body["account"] = Value::String(account.clone());
+    }
     body
 }
 
@@ -777,14 +785,24 @@ mod tests {
         let body = loop_message_body(&AgentChatTurnRequest {
             content: "do the work".to_string(),
             model: Some("claude-sonnet-4-6".to_string()),
+            effort: Some("high".to_string()),
+            account: Some("pool-a".to_string()),
         });
         assert_eq!(
             body,
-            json!({"content": "do the work", "engine": "loop", "model": "claude-sonnet-4-6"})
+            json!({
+                "content": "do the work",
+                "engine": "loop",
+                "model": "claude-sonnet-4-6",
+                "effort": "high",
+                "account": "pool-a"
+            })
         );
         let without_model = loop_message_body(&AgentChatTurnRequest {
             content: "continue".to_string(),
             model: None,
+            effort: None,
+            account: None,
         });
         assert_eq!(
             without_model,
