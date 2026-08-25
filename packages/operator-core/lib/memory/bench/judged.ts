@@ -30,7 +30,9 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 import {
+  deriveRubricVersion,
   judgeRun,
+  JUDGE_PROMPT_SCAFFOLD_VERSION,
   type JudgeRubric,
   type LlmCallFn,
   type PersonaTraits,
@@ -47,13 +49,7 @@ import { BENCH_SCOPE, makeBackendCtx, type BackendCtx, type BenchBackendName } f
 // Frozen judging contract (D-005)
 // =============================================================================
 
-export const JUDGED_TIER_RUBRIC_VERSION = 'memory-usefulness.v1';
-
-/** Frozen judge model — bump RUBRIC_VERSION when changing it. */
-export const JUDGED_TIER_JUDGE_MODEL = 'claude-sonnet-4-6';
-
-export const MEMORY_USEFULNESS_RUBRIC: JudgeRubric = {
-  version: JUDGED_TIER_RUBRIC_VERSION,
+export const MEMORY_USEFULNESS_RUBRIC_CONTENT: Pick<JudgeRubric, 'axes'> = {
   axes: [
     {
       id: 'usefulness',
@@ -68,6 +64,45 @@ export const MEMORY_USEFULNESS_RUBRIC: JudgeRubric = {
       },
     },
   ],
+};
+
+/**
+ * Every caller-authored value that reaches the shared judge prompt. Per-query
+ * text is represented by placeholders and remains in the run identity; the
+ * framing, transcript/telemetry constants, and scenario identity are stable
+ * judging inputs and therefore belong in the derived version.
+ */
+export const JUDGED_INSTRUCTION_CONTRACT = {
+  scenarioId: 'memory-judged',
+  scenarioTemplate:
+    'Memory-retrieval usefulness check (class: {class}). An agent queried its memory ' +
+    'store with the intent "{query}". The assistant turn shows the TOP search result ' +
+    'the backend returned (verbatim). Score ONLY whether that result is useful for the intent.',
+  personaSummary: 'n/a — non-interactive retrieval bench (no sim-user)',
+  goalSummary: 'Top-1 retrieval usefulness for the stated intent.',
+  transcriptTemplate: 'Top memory result for the intent "{query}":\n\n{topResult}',
+  turnFinishReason: 'done' as const,
+  turnLatencyMs: 0,
+  turnCostUsd: 0,
+};
+
+export function deriveJudgedTierRubricVersion(scaffoldVersion: string): string {
+  return deriveRubricVersion('memory-usefulness', {
+    rubric: MEMORY_USEFULNESS_RUBRIC_CONTENT,
+    instructions: JUDGED_INSTRUCTION_CONTRACT,
+    scaffold: scaffoldVersion,
+  });
+}
+
+/** Derived from every content layer that contributes to the judge prompt. */
+export const JUDGED_TIER_RUBRIC_VERSION = deriveJudgedTierRubricVersion(JUDGE_PROMPT_SCAFFOLD_VERSION);
+
+/** Frozen judge model — changing it is a contract edit and must be versioned by the derived hash. */
+export const JUDGED_TIER_JUDGE_MODEL = 'claude-sonnet-4-6';
+
+export const MEMORY_USEFULNESS_RUBRIC: JudgeRubric = {
+  version: JUDGED_TIER_RUBRIC_VERSION,
+  ...MEMORY_USEFULNESS_RUBRIC_CONTENT,
 };
 
 /** Positive classes judged; hard negatives are scored by the deterministic tier. */
@@ -155,10 +190,17 @@ export function sampleGoldForJudging(
 
 /** Render the top hit the way the judge sees it. */
 export function renderTopHit(query: GoldQuery, hit: MemoryEntry | null): string {
-  if (!hit) {
-    return `Top memory result for the intent "${query.query}":\n\n(no result — the store returned nothing)`;
-  }
-  return `Top memory result for the intent "${query.query}":\n\n${hit.text}`;
+  return fillTemplate(JUDGED_INSTRUCTION_CONTRACT.transcriptTemplate, {
+    query: query.query,
+    topResult: hit ? hit.text : '(no result — the store returned nothing)',
+  });
+}
+
+/** Substitute per-row values into a hashed contract template without a second copy. */
+function fillTemplate(template: string, values: Readonly<Record<string, string>>): string {
+  return template.replace(/\{(query|class|topResult)\}/g, (whole, key: string) =>
+    Object.prototype.hasOwnProperty.call(values, key) ? values[key]! : whole,
+  );
 }
 
 const BENCH_PERSONA_TRAITS: PersonaTraits = {
@@ -177,10 +219,13 @@ export function synthesizeRun(
   latencyMs: number,
   judgeModel: string,
 ): RunSummary {
+  // Search latency is reported in JudgedQueryOutcome, but it is not a stable
+  // judging instruction. Keep the prompt telemetry bound to the contract.
+  void latencyMs;
   const now = new Date();
   return {
     runId: `t3-${query.id}`,
-    scenarioId: `memory-judged-${query.id}`,
+    scenarioId: JUDGED_INSTRUCTION_CONTRACT.scenarioId,
     scenarioVersion: 1,
     identityHash: `t3:${JUDGED_TIER_RUBRIC_VERSION}:${query.id}`,
     sutModel: 'memory-backend (non-LLM retrieval)',
@@ -195,15 +240,15 @@ export function synthesizeRun(
         toolCalls: [],
         cards: [],
         controlTags: [],
-        costUsd: 0,
-        latencyMs,
-        finishReason: 'done',
+        costUsd: JUDGED_INSTRUCTION_CONTRACT.turnCostUsd,
+        latencyMs: JUDGED_INSTRUCTION_CONTRACT.turnLatencyMs,
+        finishReason: JUDGED_INSTRUCTION_CONTRACT.turnFinishReason,
         rawSseTape: [],
       },
     ],
     toolInvocations: [],
     continueChainRows: [],
-    totalCostUsd: 0,
+    totalCostUsd: JUDGED_INSTRUCTION_CONTRACT.turnCostUsd,
     startedAt: now,
     finishedAt: now,
     finishReason: 'completed',
@@ -307,12 +352,12 @@ async function judgeOne(
       model: judgeModel,
       rubric: MEMORY_USEFULNESS_RUBRIC,
       scenarioId: run.scenarioId,
-      scenarioDescription:
-        `Memory-retrieval usefulness check (class: ${q.class}). An agent queried its memory ` +
-        `store with the intent "${q.query}". The assistant turn shows the TOP search result ` +
-        `the backend returned (verbatim). Score ONLY whether that result is useful for the intent.`,
-      personaSummary: 'n/a — non-interactive retrieval bench (no sim-user)',
-      goalSummary: 'Top-1 retrieval usefulness for the stated intent.',
+      scenarioDescription: fillTemplate(JUDGED_INSTRUCTION_CONTRACT.scenarioTemplate, {
+        class: q.class,
+        query: q.query,
+      }),
+      personaSummary: JUDGED_INSTRUCTION_CONTRACT.personaSummary,
+      goalSummary: JUDGED_INSTRUCTION_CONTRACT.goalSummary,
       ...(temperature !== undefined ? { temperature } : {}),
     },
     run,
