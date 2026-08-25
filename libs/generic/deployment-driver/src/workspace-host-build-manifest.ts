@@ -165,6 +165,12 @@ function normalizeMaterials(
     throw new WorkspaceHostBuildManifestError(
       "materials must contain at least one build input",
     );
+  materials.forEach((material, index) => {
+    if (typeof material.path === "string" && SECRET_MATERIAL.test(material.path))
+      throw new WorkspaceHostBuildManifestError(
+        `materials[${index}].path ${material.path} names secret key material, which must never be enumerated in a published manifest`,
+      );
+  });
   const normalized = materials.map((material, index) => ({
     path: requireRelativePath(material.path, `materials[${index}].path`),
     sha256: requireSha256(material.sha256, `materials[${index}].sha256`),
@@ -402,6 +408,88 @@ const MUTABLE_URL_SEGMENT =
  */
 const FIXTURE_HOST = /(?:^|\.)(?:invalid|test|example|localhost|local|internal)$/i;
 
+/**
+ * A content-addressed path segment pair — `/sha256/<64 hex>` followed by a `/` or the end of the
+ * path. Anchoring on the `sha256/` label rather than "a 64-hex run anywhere in the string" is
+ * deliberate: a bare hex run also matches a query value or a hostname, neither of which addresses
+ * the artifact, so a looser pattern would accept a mutable URL that merely mentions a digest.
+ */
+const CONTENT_ADDRESSED_DIGEST = /\/sha256\/([0-9a-fA-F]{64})(?=\/|$)/;
+
+/**
+ * The pathname of a URL, or the empty string when it does not parse. An unparseable URL is
+ * reported by the shape checks; returning empty here keeps the addressing rules from reading a
+ * digest out of a string that is not a URL at all.
+ */
+function urlPathname(value: string): string {
+  try {
+    return new URL(value).pathname;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * The published origin for workspace-host release artifacts.
+ *
+ * This is the maintained artifact origin, extended rather than replaced: a second publisher would
+ * be a parallel release system, which is precisely what this lane must not build.
+ */
+export const WORKSPACE_HOST_ARTIFACT_ORIGIN =
+  "https://papercusp-cupboard.aviynw.workers.dev";
+
+/** The published path prefix under which workspace-host artifacts are content-addressed. */
+export const WORKSPACE_HOST_ARTIFACT_PATH_PREFIX = "/artifacts/workspace-host";
+
+/** The three artifacts published together for one workspace-host bundle. */
+export interface WorkspaceHostCanonicalArtifactUrls {
+  readonly bundleUrl: string;
+  readonly signatureUrl: string;
+  readonly manifestUrl: string;
+}
+
+/**
+ * Derive the canonical published URLs for a bundle from its verified digest.
+ *
+ * This exists so that a bootstrap config or manifest never has to author these URLs by hand, and
+ * therefore can never *default* to a fixture host or a mutable `latest` path when a digest is
+ * missing: an absent or malformed digest THROWS rather than yielding a plausible-looking URL.
+ * Deriving from the digest is also what makes the resulting pin self-verifying — the address and
+ * the integrity check are the same value.
+ */
+export function deriveWorkspaceHostCanonicalArtifactUrls(
+  bundleSha256: string,
+  options: { readonly origin?: string } = {},
+): WorkspaceHostCanonicalArtifactUrls {
+  const digest = requireText(bundleSha256, "bundleSha256").toLowerCase();
+  if (!SHA256_HEX.test(digest))
+    throw new Error(
+      "bundleSha256 must be a lowercase SHA-256 digest; canonical artifact URLs are derived from the digest and must never be defaulted",
+    );
+
+  const origin = options.origin ?? WORKSPACE_HOST_ARTIFACT_ORIGIN;
+  let parsedOrigin: URL;
+  try {
+    parsedOrigin = new URL(origin);
+  } catch {
+    throw new Error(`origin ${origin} must be a valid public HTTPS URL`);
+  }
+  if (parsedOrigin.protocol !== "https:")
+    throw new Error(`origin ${origin} must use HTTPS`);
+  if (FIXTURE_HOST.test(parsedOrigin.hostname))
+    throw new Error(
+      `origin host ${parsedOrigin.hostname} is a reserved non-resolvable name, not a publication target`,
+    );
+
+  const base = `${parsedOrigin.origin}${WORKSPACE_HOST_ARTIFACT_PATH_PREFIX}/sha256/${digest}`;
+  const bundleUrl = `${base}/server.tgz`;
+  return {
+    bundleUrl,
+    signatureUrl: `${bundleUrl}.minisig`,
+    manifestUrl: `${base}/manifest.json`,
+  };
+}
+
 /** The release pins a bootstrap config carries, as the subset provenance can adjudicate. */
 export interface WorkspaceHostReleasePins {
   readonly version: string;
@@ -486,15 +574,35 @@ export function verifyWorkspaceHostReleaseProvenance(
       "release.signatureUrl must be release.bundleUrl suffixed with .minisig",
     );
 
-  // A version-bearing path is what makes the URL immutable in practice: it is the difference
-  // between an artifact that is replaced in place and one that is superseded alongside.
-  if (
-    release.bundleUrl.length > 0 &&
-    !release.bundleUrl.includes(manifest.releaseArtifact.version)
-  )
-    errors.push(
-      `release.bundleUrl must embed the release version ${manifest.releaseArtifact.version} so the pin is immutable`,
+  // An immutable pin needs the URL to name WHICH artifact it addresses — otherwise the same URL
+  // can be re-pointed at a different build without the pin changing. Two forms qualify:
+  //
+  //   content-addressed  .../sha256/<bundleSha256>/server.tgz   (the canonical published path)
+  //   version-embedded   .../<version>/server.tgz
+  //
+  // The content-addressed form is strictly stronger and is therefore checked first: the digest
+  // IS the immutability proof, where a version string only promises one. A content-addressed URL
+  // whose digest is NOT the built artifact's is a HARDER failure than an unpinned one — it does
+  // not merely fail to prove immutability, it positively addresses a different artifact — so it
+  // is reported as a mismatch rather than falling through to the version-embedding rule.
+  if (release.bundleUrl.length > 0) {
+    // Match against the PATH only. A digest in a query string or fragment does not determine
+    // which bytes the origin serves, so treating one as an address would accept a mutable URL
+    // that merely mentions the digest it is supposed to be pinned to.
+    const contentAddress = CONTENT_ADDRESSED_DIGEST.exec(
+      urlPathname(release.bundleUrl),
     );
+    if (contentAddress) {
+      const addressedDigest = (contentAddress[1] ?? "").toLowerCase();
+      if (addressedDigest !== expectedDigest)
+        errors.push(
+          `release.bundleUrl is content-addressed at ${addressedDigest}, which is not the built artifact ${expectedDigest}`,
+        );
+    } else if (!release.bundleUrl.includes(manifest.releaseArtifact.version))
+      errors.push(
+        `release.bundleUrl must be content-addressed under /sha256/${expectedDigest}/ or embed the release version ${manifest.releaseArtifact.version} so the pin is immutable`,
+      );
+  }
 
   const initializer = manifest.materials.find(
     (material) => material.path === WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
