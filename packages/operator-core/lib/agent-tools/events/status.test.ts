@@ -77,6 +77,31 @@ describe('events:status projection', () => {
     });
   });
 
+  it('accepts the await_id returned by events:await and narrows active_awaits to that registration', async () => {
+    vi.mocked(listActiveAwaits).mockResolvedValueOnce([
+      AWAIT_ROW,
+      { ...AWAIT_ROW, id: 12, eventKey: 'other:event' },
+    ] as never);
+
+    const out = await call({ await_id: 12 });
+
+    expect(out.active_awaits).toEqual([
+      {
+        await_id: 12,
+        event: 'other:event',
+        policy: 'wake',
+        note: 'n',
+        expires_ts: 'E',
+        on_timeout: 'wake',
+        created_at: 'C',
+      },
+    ]);
+  });
+
+  it('rejects combining await_id with exact event inspection', async () => {
+    await expect(call({ await_id: 11, event: 'lock:grant:t1' })).rejects.toThrow(/mutually exclusive/);
+  });
+
   it('never projects emitter-side announcement rows as cancellable active awaits', async () => {
     vi.mocked(listActiveAwaits).mockResolvedValueOnce([
       AWAIT_ROW,

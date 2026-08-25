@@ -175,10 +175,14 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: z.object({
     meter: z.boolean().optional().describe('Include the wake meter (per-agent counts by status/channel, 24h; events:await is single-workspace by design, so this is fleet-wide, not scoped to your workspace).'),
+    await_id: z.number().int().positive().optional().describe('Filter the active await list to the id returned by events:await. Omit to inspect all of your active awaits.'),
     event: z.string().min(1).max(200).optional().describe('Exact event key to inspect across declarations, waiter registrations, and wake outcomes.'),
     after_generation: z.number().int().nonnegative().optional().describe('Your cached declaration generation for `event`. The response says whether it is stale and how to resync.'),
   }),
   async handler(args, ctx) {
+    if (args.await_id != null && args.event != null) {
+      throw new Error('events:status — await_id and event are mutually exclusive; use await_id to inspect one registration or event to inspect one key.');
+    }
     if (args.after_generation != null && !args.event) {
       throw new Error('events:status — after_generation requires an exact `event` key.');
     }
@@ -321,7 +325,7 @@ export default defineTool({
                   // out of active_awaits prevents their row id being mistaken for
                   // an events:await id and passed to events:cancel.
                   active_awaits: awaits
-                    .filter((a) => a.rootId == null && a.policy !== 'announce')
+                    .filter((a) => a.rootId == null && a.policy !== 'announce' && (args.await_id == null || a.id === args.await_id))
                     .map((a) => ({
                       await_id: a.id,
                       event: a.eventKey,
