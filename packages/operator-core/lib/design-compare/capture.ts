@@ -700,7 +700,7 @@ export async function captureImplementationTarget(
           'capture-failed',
           `capture never reproduced itself: ${stabilityRetries + 1} attempts produced ` +
             `${stabilityRetries + 1} different images (last two digests ` +
-            `${previous.sha256.slice(0, 12)} then ${artifact.sha256.slice(0, 12)}). An unstable ` +
+            `${previous?.sha256.slice(0, 12) ?? '(none)'} then ${artifact.sha256.slice(0, 12)}). An unstable ` +
             `capture cannot support a pass/fail verdict, because the next run would compare a ` +
             `different image.`,
           url,
