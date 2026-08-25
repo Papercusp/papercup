@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { WorkspaceHostResourceRef } from '@papercusp/deployment-driver';
 import {
   GCP_WORKSPACE_HOST_AMBIGUOUS_OPERATION_RUNBOOK_REF,
+  GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS,
   GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS,
   censusGcpWorkspaceHostResources,
   createGcpWorkspaceHostAmbiguousOperationRecoveryRecord,
@@ -23,6 +24,23 @@ function labels(hostId = 'host-1', workspaceId = 'workspace-1') {
     [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: gcpWorkspaceHostLabelValue(hostId),
     [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: gcpWorkspaceHostLabelValue(workspaceId),
   };
+}
+
+function inventoryEvidence() {
+  return GCP_WORKSPACE_HOST_CENSUS_RESOURCE_KINDS.map((kind) =>
+    ['firewall', 'subnetwork', 'network', 'router', 'nat'].includes(kind)
+      ? {
+          kind,
+          strategy: 'deterministic-name' as const,
+          providerEvidenceRef: `gcp://inventory/${kind}`,
+          deterministicNames: [`pc-host-1-${kind}`],
+        }
+      : {
+          kind,
+          strategy: 'managed-labels' as const,
+          providerEvidenceRef: `gcp://inventory/${kind}`,
+        },
+  );
 }
 
 describe('GCP workspace-host safety preflight', () => {
@@ -177,11 +195,14 @@ describe('GCP managed-resource census and orphan reaper', () => {
         },
         { resource: resource('vm', 'other-host'), labels: labels('host-2'), observedAt: NOW },
       ],
+      inventoryEvidence: inventoryEvidence(),
       evaluatedAt: NOW,
       orphanGraceMs: 2 * HOUR,
     });
 
     expect(census.controllerIndependent).toBe(true);
+    expect(census.inventoryComplete).toBe(true);
+    expect(census.clean).toBe(false);
     expect(census.untracked.map(({ resource: entry }) => entry.providerId)).toEqual(['disk-orphan']);
     expect(census.labelMismatches.map(({ resource: entry }) => entry.providerId)).toEqual(['vm-1']);
     expect(census.missing.map((entry) => entry.providerId)).toEqual(['vm-1', 'disk-expected']);
@@ -197,6 +218,37 @@ describe('GCP managed-resource census and orphan reaper', () => {
           'provider-read-delete-confirmation',
         ],
       }),
+    ]);
+  });
+
+  it('requires non-vacuous all-kind inventory evidence and detects deterministic Router/NAT orphans', () => {
+    const evidence = inventoryEvidence().map((entry) =>
+      entry.kind === 'router'
+        ? { ...entry, deterministicNames: ['pc-host-1-router'] }
+        : entry.kind === 'nat'
+          ? { ...entry, deterministicNames: ['pc-host-1-nat'] }
+          : entry,
+    );
+    const base = {
+      hostId: 'host-1',
+      workspaceId: 'workspace-1',
+      expected: [] as WorkspaceHostResourceRef[],
+      observed: [
+        { resource: resource('router', 'pc-host-1-router'), labels: {}, observedAt: NOW },
+        { resource: resource('nat', 'pc-host-1-nat'), labels: {}, observedAt: NOW },
+      ],
+      evaluatedAt: NOW,
+      orphanGraceMs: HOUR,
+    };
+
+    expect(() => censusGcpWorkspaceHostResources({ ...base, inventoryEvidence: evidence.slice(0, -1) })).toThrow(
+      'inventory incomplete: nat',
+    );
+    const census = censusGcpWorkspaceHostResources({ ...base, inventoryEvidence: evidence });
+    expect(census.clean).toBe(false);
+    expect(census.untracked.map(({ resource: entry }) => `${entry.kind}:${entry.providerId}`)).toEqual([
+      'router:pc-host-1-router',
+      'nat:pc-host-1-nat',
     ]);
   });
 });
