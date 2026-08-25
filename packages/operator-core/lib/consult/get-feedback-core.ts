@@ -390,6 +390,31 @@ export interface VettingConsultCritique {
   critics: string[];
 }
 
+/**
+ * P-006 archive-served consults intentionally have no posts on the wrapper
+ * conversation. Their outcome carries the source consult's structured answer
+ * and responder provenance instead, so the vetting gate must read that answer
+ * as one attributed critique rather than treating the empty wrapper thread as
+ * unanswered.
+ */
+function archivedVettingCritic(outcome: unknown): string | null {
+  if (outcome == null || typeof outcome !== 'object' || Array.isArray(outcome)) return null;
+  const archive = outcome as Record<string, unknown>;
+  if (archive.source !== 'archive' || typeof archive.source_conversation_id !== 'string') return null;
+  if (archive.source_conversation_id.trim() === '') return null;
+
+  const answer = archive.answer;
+  if (answer == null || typeof answer !== 'object' || Array.isArray(answer)) return null;
+  const answerText = (answer as Record<string, unknown>).answer;
+  if (typeof answerText !== 'string' || answerText.trim() === '') return null;
+
+  const responderId =
+    typeof archive.source_responder_id === 'string' && archive.source_responder_id.trim() !== ''
+      ? archive.source_responder_id
+      : null;
+  return responderId;
+}
+
 export async function readVettingConsultCritique(
   sql: Sql,
   workspaceId: string,
@@ -397,15 +422,39 @@ export async function readVettingConsultCritique(
   emitterId: string,
 ): Promise<VettingConsultCritique> {
   const stateRows = (await sql`
-    SELECT state, requester_id
+    SELECT state, requester_id, responder_id, outcome
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
      LIMIT 1
-  `) as unknown as { state: string; requester_id: string }[];
+  `) as unknown as Array<{
+    state: string;
+    requester_id: string;
+    responder_id: string | null;
+    outcome: unknown;
+  }>;
   const stateRow = stateRows[0];
   if (!stateRow) {
     return { exists: false, state: null, critiquePosts: 0, declinePosts: 0, critics: [] };
   }
+
+  // Archive-served wrappers are closed_answered consult_state rows with an
+  // empty wrapper thread by design (P-006). Count their copied structured
+  // answer once, attributed to the original responder, while preserving the
+  // same self/requester exclusions as real posts. A provenance-only or
+  // malformed archive payload remains zero critique and keeps the gate honest.
+  const archivedCriticFromOutcome = archivedVettingCritic(stateRow.outcome);
+  const archivedCritic = stateRow.responder_id ?? archivedCriticFromOutcome;
+  const isArchiveAnswer = archivedCriticFromOutcome !== null;
+  if (isArchiveAnswer && archivedCritic && archivedCritic !== emitterId && archivedCritic !== stateRow.requester_id) {
+    return {
+      exists: true,
+      state: stateRow.state,
+      critiquePosts: 1,
+      declinePosts: 0,
+      critics: [archivedCritic],
+    };
+  }
+
   const postRows = (await sql`
     SELECT kind, author_id
       FROM harness_shared.consult_post_meta

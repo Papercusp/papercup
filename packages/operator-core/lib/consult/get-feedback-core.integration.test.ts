@@ -852,6 +852,54 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
     expect(v.critiquePosts).toBe(0);
   });
 
+  it('counts a structured answer on an archive-served wrapper as one critique from the source responder', async () => {
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question, outcome)
+      VALUES
+        (
+          ${WSV}, 'conv-archive-wrapper', ${REQUESTER}, 'su-reviewer', 'closed_answered',
+          'critique this rubric',
+          ${rootSql.json({
+            source: 'archive',
+            source_conversation_id: 'conv-archive-source',
+            source_responder_id: 'su-reviewer',
+            answer: { answer: 'The release evidence criterion still needs a live-pin check.', confidence: 0.9 },
+          })}
+        )
+    `;
+
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-archive-wrapper', REQUESTER);
+    expect(v).toMatchObject({
+      exists: true,
+      state: 'closed_answered',
+      critiquePosts: 1,
+      declinePosts: 0,
+      critics: ['su-reviewer'],
+    });
+  });
+
+  it('does not treat archive provenance or confidence without answer text as critique', async () => {
+    await rootSql`
+      INSERT INTO harness_shared.consult_state
+        (workspace_id, conversation_id, requester_id, responder_id, state, question, outcome)
+      VALUES
+        (
+          ${WSV}, 'conv-archive-malformed', ${REQUESTER}, 'su-reviewer', 'closed_answered',
+          'critique this rubric',
+          ${rootSql.json({
+            source: 'archive',
+            source_conversation_id: 'conv-archive-source',
+            source_responder_id: 'su-reviewer',
+            answer: { confidence: 0.9 },
+          })}
+        )
+    `;
+
+    const v = await readVettingConsultCritique(rootSql, WSV, 'conv-archive-malformed', REQUESTER);
+    expect(v).toMatchObject({ exists: true, critiquePosts: 0, declinePosts: 0, critics: [] });
+  });
+
   it('is workspace-scoped — a same-named consult in another workspace is invisible', async () => {
     await seedConsult('conv-scoped', 'active', [['su-reviewer', 'answer']]);
     const v = await readVettingConsultCritique(rootSql, 'ws-other', 'conv-scoped', REQUESTER);
