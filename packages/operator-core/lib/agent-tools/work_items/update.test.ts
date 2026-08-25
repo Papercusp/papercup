@@ -25,7 +25,9 @@ const updM = vi.mocked(updateWorkItem);
 const mergeM = vi.mocked(mergeWorkItemPayload);
 const linkM = vi.mocked(linkWorkItem);
 const floorsM = vi.mocked(explainIssueClaimFloors);
-const tool = (await import('./update')).default;
+const updateMod = await import('./update');
+const tool = updateMod.default;
+const { reservedPayloadKeys } = updateMod; // WI-41509 payload merge guard
 
 type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
@@ -652,6 +654,68 @@ describe('work_items:update — body/summary alias + strict (WI-4492)', () => {
 
     it('REJECTS an unknown field inside items:[…]', () => {
       expect(tool.args.safeParse({ items: [{ id: 'EI-1', notafield: 1 }] }).success).toBe(false);
+    });
+  });
+
+  /* WI-41509 — the free-form payload merge and the guard that makes it safe.
+   *
+   * The capability exists because an existing item's payload was closed to agents: a plan
+   * that ruled "stamp your verdict onto payload.<key>" was unsatisfiable, and the zero it
+   * produced read as a skipped step rather than a missing tool (learning-loop triage
+   * D-004/D-058). The guard exists because payload also carries ADMISSION IDENTITY —
+   * `payload ? 'plan_item'` admits an item into a plan-scoped fleet lane — so a merge that
+   * could write those keys would let any caller forge admission or wedge a claim floor.
+   *
+   * FALSIFIABILITY: `refusesEverything` / `refusesNothing` below are deliberately-wrong
+   * implementations kept permanently in-file as controls. They must FAIL the same
+   * assertions the real guard passes — otherwise these tests would still be green against
+   * a guard that had stopped discriminating, which is the failure mode a guard test exists
+   * to catch. The substring case is the calibration: it is the one a naive `includes()`
+   * implementation gets wrong while passing every other assertion here. */
+  describe('payload merge guard (WI-41509)', () => {
+    const refusesEverything = (p: Record<string, unknown> | undefined) => Object.keys(p ?? {});
+    const refusesNothing = (_p: Record<string, unknown> | undefined) => [] as string[];
+
+    it('refuses admission, claim-state and _-prefixed keys — and accepts ordinary ones', () => {
+      expect(reservedPayloadKeys({ plan_item: {} })).toEqual(['plan_item']);
+      expect(reservedPayloadKeys({ claim_hold_by: 'x' })).toEqual(['claim_hold_by']);
+      expect(reservedPayloadKeys({ needsOwnerAction: true })).toEqual(['needsOwnerAction']);
+      expect(reservedPayloadKeys({ _ei: 1 })).toEqual(['_ei']);
+      expect(reservedPayloadKeys({ _somethingInventedTomorrow: 1 })).toEqual([
+        '_somethingInventedTomorrow',
+      ]);
+      expect(reservedPayloadKeys({ triage: { merit: 'M1' } })).toEqual([]);
+      expect(reservedPayloadKeys(undefined)).toEqual([]);
+    });
+
+    it('CALIBRATION: a key merely CONTAINING a reserved name is allowed (exact match, not substring)', () => {
+      // A naive `includes()` guard passes every assertion above and fails this one.
+      expect(reservedPayloadKeys({ my_plan_item_notes: 1, triage_lane_summary: 1 })).toEqual([]);
+    });
+
+    it('CONTROL: deliberately-wrong guards fail the assertions the real guard passes', () => {
+      expect(refusesEverything({ triage: 1 })).not.toEqual([]); // over-refuses a legal key
+      expect(refusesNothing({ plan_item: {} })).not.toEqual(['plan_item']); // under-refuses admission
+    });
+
+    it('MERGES a free-form key without disturbing siblings, via mergeWorkItemPayload', async () => {
+      mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-1' }) });
+      mockResolvedTyped(
+        mergeM,
+        workItemFixture({ id: 'EI-1', payload: { _ei: 1, triage: { merit: 'M1' } } }),
+      );
+      await body({ id: 'EI-1', payload: { triage: { merit: 'M1' } } });
+      // The patch is passed through verbatim — a shallow jsonb merge, never a replace.
+      expect(mergeM).toHaveBeenCalledWith('EI-1', { triage: { merit: 'M1' } }, { harness: undefined });
+    });
+
+    it('REFUSES BEFORE ANY WRITE — a reserved key leaves no half-applied column edit', async () => {
+      const b = await body({ id: 'EI-1', title: 'new title', payload: { plan_item: { a: 1 } } });
+      expect(b.results[0].ok).toBe(false);
+      expect(b.results[0].error).toMatch(/plan_item/);
+      // The load-bearing half: the title edit must NOT have landed under the error.
+      expect(updM).not.toHaveBeenCalled();
+      expect(mergeM).not.toHaveBeenCalled();
     });
   });
 });
