@@ -11,6 +11,7 @@ import { describeStoreIdentityMismatch, storeIdentityViolation } from '@papercus
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { getLoopCarryNoteWithMeta, shortCarryHash } from '../../carry-note';
 import {
   probeWakeReachability,
   type WakeReachabilityVerdict,
@@ -28,12 +29,12 @@ export default defineTool({
   // documentation of the RESPONSE, so `returns` is also where it belongs — and it
   // is demand-loaded via tools:find rather than baked into every system prompt.
   description:
-    "Inspect the loop on your own session (or another owner's, with `ownerId`); this read is owner-scoped and intentionally does not take a `harness` argument. It reports active?, interval, parked (turn in flight), next/last fire, and cost-cap. Four fields carry warnings you must read before acting — `turnsStalled` (armed but not producing), `cadenceDrift` (a late fire path after sustained slow cadence), `pendingAwaits` (whether you are REALLY parked), and a `storeIdentityViolation` guard that makes a `null` mean UNKNOWN rather than \"no loop\": see `returns`.",
+    "Inspect the loop on your own session (or another owner's, with `ownerId`); this read is owner-scoped and intentionally does not take a `harness` argument. It reports active?, interval, parked (turn in flight), next/last fire, cost-cap, and the current carry-note read-back. Four fields carry warnings you must read before acting — `turnsStalled` (armed but not producing), `cadenceDrift` (a late fire path after sustained slow cadence), `pendingAwaits` (whether you are REALLY parked), and a `storeIdentityViolation` guard that makes a `null` mean UNKNOWN rather than \"no loop\": see `returns`.",
   guidance: {
     when: 'Check whether your loop is still armed + when it next fires, or inspect another agent\'s loop. Pass `ownerId` for another session; do not pass `harness` because this read is keyed by owner.',
     returns:
       "`cadenceDrift` (EI-21276782387845111) is true only when sustained slow-cadence evidence is corroborated by a scheduled fire several intervals overdue. It stays false for a parked turn (the configured interval begins after turn settlement), missing cadence history, or a fire that is not demonstrably late; combine it with the raw cadence fields rather than treating false as proof of normal cadence.\n\n" +
-      "ROOT ENVELOPE: `{ ok, ownerId, loop, reachability, pendingAwaits, storeIdentityWarning? }` — the loop RECORD is NESTED under `loop`: `{ active, intervalSec, parked, nextFireAt, lastFiredAt, fireCount, firesSinceArm, cost-cap, … }`, or null when no loop exists for the owner. jq / code:run reducers must descend through `.loop`; assuming root-level `active`/interval fields iterates null (EI-21197839138727609).\n\n" +
+      "ROOT ENVELOPE: `{ ok, ownerId, loop, carryNote, reachability, pendingAwaits, storeIdentityWarning? }` — the loop RECORD is NESTED under `loop`: `{ active, intervalSec, parked, nextFireAt, lastFiredAt, fireCount, firesSinceArm, cost-cap, … }`, or null when no loop exists for the owner. `carryNote` is the routine-scoped read-back `{ note, contentHash, updatedAtMs }`, or null when no loop exists; use its hash to reconcile an uncertain `loop:checkpoint` transport result. jq / code:run reducers must descend through `.loop`; assuming root-level `active`/interval fields iterates null (EI-21197839138727609).\n\n" +
       "The loop record for the owner (active, intervalSec, parked, nextFireAt, lastFiredAt, fireCount, firesSinceArm, cost-cap), or null when no loop exists.\n\nFields that change what you should DO:\n• `firesSinceArm` vs `maxFires` (WI-36070) — the ONLY valid dead-man comparison. `fireCount` is a LIFETIME counter and a re-arm resets the budget, so `fireCount > maxFires` on an active loop is the EXPECTED reading, not a breached bound. Comparing those two reports a healthy loop as already-halted, and hides a loop one fire from going silently inert (EI-19899671638499010).\n• `turnsStalled` (EI-18712914572668391) — true when fires keep landing (fireCount climbing) but `lastTurnAt` (the most recent real turn-completion marker) isn't keeping pace, e.g. a wedged wake channel. This is the armed-but-not-PRODUCING case: `stalled` alone only catches a PARKED in-flight turn stuck past its dwell window, so a loop can be firing on schedule and doing nothing while `stalled` stays false.\n• `storeIdentityViolation` (EI-19384072467112035) — a `null` loop alongside this block means the process was reading from the WRONG database when it looked. Treat that null as UNKNOWN, NOT as \"no loop\", and do NOT re-arm on the strength of it alone: re-arming on a misread is how a live loop gets duplicated.\n• `pendingAwaits` (EI-19415169477907694) — your OWN live non-inbox-wake events:await registrations right now, so \"am I actually parked?\" is answerable after a call whose response you never trust (a dropped MCP transport, a backgrounded/failed events:await). `status:'found'` with a sample of keys means a registration IS live; `status:'none'` means NOTHING is registered — the loud signal that a believed-successful await never actually landed; `status:'unknown'` means the lookup itself failed and must NEVER be read as 'none'.\n• Cadence (EI-20217869515819188) — compare `expectedFiresSinceArm` with `firesSinceArm` to see how many interval-sized opportunities elapsed versus attempted fires. `effectiveIntervalSec` and `cadenceRatio` expose a slow fire path (`cadenceRatio` > 1 means slower than configured; > 3 is a warning), and `longestObservedGapSec` reports the largest arm-scoped wake gap. A null cadence field means insufficient timestamps/history, never zero.",
     notWhen: 'See the WORK a loop is producing — that is fleet:assignments (the self-assigned work_items). Whole-engine health — autoloop:status.',
     chaining: 'loop:arm to start; loop:end to stop.',
@@ -63,6 +64,21 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     const ownerId = args.ownerId ?? identity.ownerId;
     const status = await getLoopStatus(ownerId);
+
+    // EI-21380031331878722: loop:checkpoint may commit and lose its transport
+    // response after connect. Surface the same routine-scoped carry-note read and
+    // content hash here so the caller can reconcile that outcome without guessing
+    // or blindly retrying a replacement note. The routine's install slug is the
+    // authoritative carry-note harness, just as it is for the cold wake reader.
+    const carryNote = status
+      ? await getLoopCarryNoteWithMeta({ harness: status.harnessSlug, ownerId })
+          .then((meta) => ({
+            note: meta.note,
+            contentHash: meta.note === null ? null : shortCarryHash(meta.note),
+            updatedAtMs: meta.updatedAtMs,
+          }))
+          .catch(() => ({ note: null, contentHash: null, updatedAtMs: null }))
+      : null;
 
     // WI-655 — surface LIVE wake-reachability alongside the loop row: an active loop
     // whose owner can't receive a wake (the `no-session-now` black-hole) reads as a loud
@@ -141,6 +157,7 @@ export default defineTool({
             ok: true,
             ownerId,
             loop: status,
+            carryNote,
             reachability: reachabilityOut,
             pendingAwaits,
             ...(storeIdentityWarning ? { storeIdentityWarning } : {}),

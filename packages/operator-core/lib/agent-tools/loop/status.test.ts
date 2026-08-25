@@ -39,13 +39,19 @@ vi.mock('../../events/await/store', () => ({
 }));
 
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn() }));
+vi.mock('../../carry-note', () => ({
+  getLoopCarryNoteWithMeta: vi.fn(async () => ({ note: null, updatedAtMs: null })),
+  shortCarryHash: vi.fn((note: string) => `hash:${note}`),
+}));
 
 import { _resetStoreIdentityForTests, pinOrVerifyStoreIdentity } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import { listWakeAwaitsForSubscriber } from '../../events/await/store';
 import statusTool from './status';
 
 const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
+const getLoopCarryNoteWithMetaMock = getLoopCarryNoteWithMeta as unknown as ReturnType<typeof vi.fn>;
 const listWakeAwaitsMock = listWakeAwaitsForSubscriber as unknown as ReturnType<typeof vi.fn>;
 
 const OURS = { systemIdentifier: '7635091775813704249', database: 'papercusp' };
@@ -109,8 +115,54 @@ describe('loop:status return guidance matches the emitted loop record', () => {
 beforeEach(() => {
   _resetStoreIdentityForTests();
   getLoopStatusMock.mockReset();
+  getLoopCarryNoteWithMetaMock.mockReset();
+  getLoopCarryNoteWithMetaMock.mockResolvedValue({ note: null, updatedAtMs: null });
   listWakeAwaitsMock.mockReset();
   listWakeAwaitsMock.mockResolvedValue({ totalCount: 0, sample: [] });
+});
+
+describe('loop:status carry-note read-back (EI-21380031331878722)', () => {
+  it('surfaces the routine-scoped note, current hash, and write timestamp', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      active: true,
+      ownerId: 'su-caller-own-id',
+      harnessSlug: 'papercusp',
+      intervalSec: 60,
+    });
+    getLoopCarryNoteWithMetaMock.mockResolvedValue({
+      note: '## Next action\nreconcile the uncertain write',
+      updatedAtMs: 1_787_546_123_000,
+    });
+
+    const out = await run();
+
+    expect(out.carryNote).toEqual({
+      note: '## Next action\nreconcile the uncertain write',
+      contentHash: 'hash:## Next action\nreconcile the uncertain write',
+      updatedAtMs: 1_787_546_123_000,
+    });
+    expect(getLoopCarryNoteWithMetaMock).toHaveBeenCalledWith({
+      harness: 'papercusp',
+      ownerId: 'su-caller-own-id',
+    });
+  });
+
+  it('reports an explicit empty read when the routine has no carry-note', async () => {
+    getLoopStatusMock.mockResolvedValue({ active: true, harnessSlug: 'papercusp' });
+
+    const out = await run();
+
+    expect(out.carryNote).toEqual({ note: null, contentHash: null, updatedAtMs: null });
+  });
+
+  it('does not perform a carry-note lookup when no loop exists', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+
+    const out = await run();
+
+    expect(out.carryNote).toBeNull();
+    expect(getLoopCarryNoteWithMetaMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('loop:status store-identity delivery', () => {
