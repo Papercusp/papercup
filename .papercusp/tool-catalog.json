@@ -15080,7 +15080,7 @@
           "POST"
         ]
       },
-      "description": "Acquire a NAMED resource (must be registered; see locks:list). mode:\"shared\" = \"I am using it\" (many coexist); mode:\"exclusive\" = \"I need to restart/mutate it\" (granted only once shared holders drain to zero). For exclusive, set wait:{max_drain_sec:N} (≤300) to block while existing shared holders finish — new shared acquisitions are refused meanwhile. Release with locks:release_resource.",
+      "description": "Acquire a NAMED resource (must be registered; see locks:list). mode:\"shared\" = \"I am using it\" (many coexist); mode:\"exclusive\" = \"I need to restart/mutate it\" (granted only once shared holders drain to zero). For exclusive, set wait:{max_drain_sec:N} (≤45) to block while existing shared holders finish — new shared acquisitions are refused meanwhile. Release with locks:release_resource.",
       "capabilities": [
         "locks:write"
       ],
