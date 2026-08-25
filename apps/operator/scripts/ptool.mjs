@@ -1082,6 +1082,19 @@ function errorDetail(error) {
 }
 
 /**
+ * Read the proxy's typed retry hint from a pre-dispatch refusal. The MCP SDK
+ * surfaces the JSON body in the error text rather than preserving response
+ * headers, so parse the emitted `retryAfterSec` field and fall back to the
+ * caller's bounded cadence when the body is absent or malformed.
+ */
+function retryAfterMsFromError(error) {
+  const match = errorDetail(error).match(/(?:["']retryAfterSec["']|\bretryAfterSec\b)\s*:\s*(-?\d+(?:\.\d+)?)/i);
+  if (!match) return null;
+  const seconds = Number(match[1]);
+  return Number.isFinite(seconds) && seconds >= 0 ? seconds * 1_000 : null;
+}
+
+/**
  * Format a tools/call failure without implying that the call did not run.
  * Stream transport failures can arrive after the operator has dispatched the
  * tool, so callers must verify mutation state before replaying the payload.
@@ -1421,7 +1434,9 @@ export async function listToolsWithLocalRetry(
       ) {
         throw error;
       }
-      await sleep(Math.min(retryDelayMs, remainingAfterFailure ?? retryDelayMs));
+      const serverRetryAfterMs = retryAfterMsFromError(error);
+      const retryWaitMs = serverRetryAfterMs ?? retryDelayMs;
+      await sleep(Math.min(retryWaitMs, remainingAfterFailure ?? retryWaitMs));
     }
   }
 

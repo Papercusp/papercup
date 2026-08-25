@@ -650,16 +650,16 @@ describe('ptool tool catalog request budget (EI-20224721374462856)', () => {
       timeoutMs: 0,
       totalTimeoutMs: 0,
       maxAttempts: 2,
-      retryDelayMs: 0,
+      retryDelayMs: 1_000,
       sleep,
     })).resolves.toEqual([{ name: 'coord:orient' }]);
     expect(client.listTools).toHaveBeenCalledTimes(2);
     expect(client.listTools).toHaveBeenNthCalledWith(1, {}, undefined);
     expect(client.listTools).toHaveBeenNthCalledWith(2, {}, undefined);
-    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(sleep).toHaveBeenCalledWith(2_000);
   });
 
-  it('does not retry typed handshake refusals unless the operator URL is local', async () => {
+  it('does not retry typed handshake refusals when local retry is disabled', async () => {
     const proxyError = Object.assign(
       new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_handshake_overloaded"}'),
       { code: 429 },
