@@ -164,6 +164,24 @@ export default function ReviewReportShell({
   useLayoutEffect(() => {
     const actionSettled = wasBusy.current && !busy;
     wasBusy.current = busy;
+    if (actionSettled) {
+      const erroredGroupIds = new Set(
+        groups
+          .filter((group) => group.rows.some((row) => row.error != null))
+          .map((group) => group.id),
+      );
+      if (erroredGroupIds.size > 0) {
+        setCollapsed((previous) => {
+          if (![...erroredGroupIds].some((id) => previous.has(id))) {
+            return previous;
+          }
+          const next = new Set(previous);
+          for (const id of erroredGroupIds) next.delete(id);
+          return next;
+        });
+      }
+    }
+
     const action = restoreActionFocusAfterBusy.current;
     if (!actionSettled || action === null) return;
 
@@ -173,7 +191,7 @@ export default function ReviewReportShell({
         ? dismissButtonRef.current
         : applyButtonRef.current;
     target?.focus({ preventScroll: true });
-  }, [busy, liveSelected.size]);
+  }, [busy, groups, liveSelected.size]);
 
   const toggleRow = (id: string) => {
     setSelected((prev) => {

@@ -414,4 +414,39 @@ describe("collapse", () => {
     await user.keyboard("{Enter}");
     expect(screen.queryByTestId("review-row-f1")).toBeNull();
   });
+
+  it("reveals a collapsed selected group when an apply error settles", () => {
+    const groups = groupsFixture();
+    const props = {
+      title: "Collapsed failure report",
+      groups,
+      onApply: vi.fn(),
+      onDismiss: vi.fn(),
+    };
+    const { rerender } = render(<ReviewReportShell {...props} />);
+    const toggle = screen.getByTestId("review-group-toggle-flip-to-done");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("review-row-f1")).toBeNull();
+    expect(applyBtn().textContent).toContain("(3)");
+
+    fireEvent.click(applyBtn());
+    rerender(<ReviewReportShell {...props} busy />);
+    const failedGroups = groups.map((group) => ({
+      ...group,
+      rows: group.rows.map((row) =>
+        row.id === "f1" ? { ...row, error: "The hidden write failed." } : row,
+      ),
+    }));
+    rerender(
+      <ReviewReportShell {...props} groups={failedGroups} busy={false} />,
+    );
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const alert = screen.getByTestId("review-row-error-f1");
+    expect(alert.getAttribute("role")).toBe("alert");
+    expect(alert.textContent).toBe("The hidden write failed.");
+    expect(rowCheck("f1").getAttribute("aria-checked")).toBe("true");
+    expect(applyBtn().textContent).toContain("(3)");
+  });
 });
