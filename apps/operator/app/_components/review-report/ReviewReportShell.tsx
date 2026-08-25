@@ -143,7 +143,7 @@ export default function ReviewReportShell({
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const applyButtonRef = useRef<HTMLButtonElement>(null);
   const dismissButtonRef = useRef<HTMLButtonElement>(null);
-  const restoreApplyFocusAfterBusy = useRef(false);
+  const restoreActionFocusAfterBusy = useRef<"apply" | "dismiss" | null>(null);
   const wasBusy = useRef(busy);
 
   const pendingIds = useMemo(() => {
@@ -164,11 +164,14 @@ export default function ReviewReportShell({
   useLayoutEffect(() => {
     const actionSettled = wasBusy.current && !busy;
     wasBusy.current = busy;
-    if (!actionSettled || !restoreApplyFocusAfterBusy.current) return;
+    const action = restoreActionFocusAfterBusy.current;
+    if (!actionSettled || action === null) return;
 
-    restoreApplyFocusAfterBusy.current = false;
+    restoreActionFocusAfterBusy.current = null;
     const target =
-      liveSelected.size > 0 ? applyButtonRef.current : dismissButtonRef.current;
+      action === "dismiss" || liveSelected.size === 0
+        ? dismissButtonRef.current
+        : applyButtonRef.current;
     target?.focus({ preventScroll: true });
   }, [busy, liveSelected.size]);
 
@@ -240,8 +243,8 @@ export default function ReviewReportShell({
             data-testid="review-report-apply"
             disabled={busy || liveSelected.size === 0}
             onClick={(event) => {
-              restoreApplyFocusAfterBusy.current =
-                document.activeElement === event.currentTarget;
+              restoreActionFocusAfterBusy.current =
+                document.activeElement === event.currentTarget ? "apply" : null;
               onApply([...liveSelected].sort());
             }}
           >
@@ -254,7 +257,13 @@ export default function ReviewReportShell({
             className="review-report__dismiss"
             data-testid="review-report-dismiss"
             disabled={busy}
-            onClick={onDismiss}
+            onClick={(event) => {
+              restoreActionFocusAfterBusy.current =
+                document.activeElement === event.currentTarget
+                  ? "dismiss"
+                  : null;
+              onDismiss();
+            }}
           >
             {dismissLabel}
           </Button>
