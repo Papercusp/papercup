@@ -6,6 +6,8 @@ import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
 import { getAcceptanceRubricForPlan } from './rubrics';
 import { listWorkItems } from './work-items';
 import type { GraderEligibility, GraderEscalation } from './consult/acceptance-grader-select';
+import { listTasks } from './task-manager/store';
+import { killTask } from './task-manager/control';
 
 type LaunchCtx = Parameters<typeof launchAgentTool.handler>[1];
 
@@ -31,7 +33,14 @@ export type AcceptanceGraderLifecycle = {
   /** Wake delivery for an assigned grader ({ woke: 0 } = parked; they read the
    * grading request on their next turn — the subscribe is durable). */
   notified?: { woke: number };
+  /** A stable launch receipt may outlive the judge mission it originally
+   * represented. When that receipt pointed at an ended/over-age task, these
+   * are the stale task ids bypassed before a fresh deterministic retry. */
+  staleRecovery?: { retiredTaskIds: string[]; attempts: number };
 };
+
+export const ACCEPTANCE_GRADER_STALE_AFTER_MS = 2 * 60 * 60_000;
+const ACCEPTANCE_GRADER_MAX_STALE_RETRIES = 4;
 
 const trim = (value: unknown, max: number): string | null =>
   typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null;
@@ -348,6 +357,10 @@ export async function launchAcceptanceGrader(
     getAudit?: typeof getLatestPlanAudit;
     listWork?: typeof listWorkItems;
     launch?: typeof launchAgentTool.handler;
+    listTasks?: typeof listTasks;
+    killTask?: typeof killTask;
+    nowMs?: () => number;
+    staleAfterMs?: number;
   } = {},
 ): Promise<AcceptanceGraderLifecycle> {
   const plan = await (deps.readPlan ?? readPlanBySlug)(planSlug, {
@@ -380,23 +393,87 @@ export async function launchAcceptanceGrader(
   ].join('\n\n');
 
   try {
-    const result = (await (deps.launch ?? launchAgentTool.handler)(
-      {
-        brief,
-        harness: plan.row.harnessSlug,
-        headless: true,
-        agent: 'claude',
-        count: 1,
-        members: [{ role: 'judge' }],
-        label,
-        idempotencyKey,
-      } as never,
-      ctx,
-    )) as { isError?: boolean; content?: Array<{ text?: string }>; data?: { deduped?: boolean; launch?: unknown } };
-    if (result.isError) {
-      return { state: 'failed', idempotencyKey, label, launch: result.data?.launch, error: result.content?.[0]?.text ?? 'acceptance grader launch failed' };
+    const launch = deps.launch ?? launchAgentTool.handler;
+    const readTasks = deps.listTasks ?? listTasks;
+    const terminateTask = deps.killTask ?? killTask;
+    const nowMs = deps.nowMs ?? Date.now;
+    const staleAfterMs = deps.staleAfterMs ?? ACCEPTANCE_GRADER_STALE_AFTER_MS;
+    const retiredTaskIds: string[] = [];
+    let currentIdempotencyKey = idempotencyKey;
+
+    for (let attempt = 0; attempt <= ACCEPTANCE_GRADER_MAX_STALE_RETRIES; attempt += 1) {
+      const result = (await launch(
+        {
+          brief,
+          harness: plan.row.harnessSlug,
+          headless: true,
+          agent: 'claude',
+          count: 1,
+          members: [{ role: 'judge' }],
+          label,
+          idempotencyKey: currentIdempotencyKey,
+        } as never,
+        ctx,
+      )) as {
+        isError?: boolean;
+        content?: Array<{ text?: string }>;
+        data?: { deduped?: boolean; launch?: unknown };
+      };
+      if (result.isError) {
+        return {
+          state: 'failed',
+          idempotencyKey: currentIdempotencyKey,
+          label,
+          launch: result.data?.launch,
+          error: result.content?.[0]?.text ?? 'acceptance grader launch failed',
+          ...(retiredTaskIds.length
+            ? { staleRecovery: { retiredTaskIds, attempts: attempt + 1 } }
+            : {}),
+        };
+      }
+      if (!result.data?.deduped) {
+        return {
+          state: 'launched',
+          idempotencyKey: currentIdempotencyKey,
+          label,
+          launch: result.data?.launch,
+          ...(retiredTaskIds.length
+            ? { staleRecovery: { retiredTaskIds, attempts: attempt + 1 } }
+            : {}),
+        };
+      }
+
+      const launchData = result.data.launch as { tasks?: Array<{ taskId?: unknown }> } | undefined;
+      const taskId = typeof launchData?.tasks?.[0]?.taskId === 'string' ? launchData.tasks[0].taskId : null;
+      if (!taskId) {
+        return { state: 'deduped', idempotencyKey: currentIdempotencyKey, label, launch: result.data.launch };
+      }
+      const task = (await readTasks({ rootTaskId: taskId, includeEnded: true, limit: 50 })).find(
+        (row) => row.taskId === taskId,
+      );
+      if (!task) {
+        return { state: 'deduped', idempotencyKey: currentIdempotencyKey, label, launch: result.data.launch };
+      }
+      const live = task.endedAt == null && (task.state === 'pending' || task.state === 'running');
+      const startedAtMs = Date.parse(task.startedAt);
+      const overAge = Number.isFinite(startedAtMs) && nowMs() - startedAtMs >= staleAfterMs;
+      if (live && !overAge) {
+        return { state: 'deduped', idempotencyKey: currentIdempotencyKey, label, launch: result.data.launch };
+      }
+      if (live) {
+        await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+      }
+      retiredTaskIds.push(taskId);
+      currentIdempotencyKey = `${currentIdempotencyKey}:retry:${taskId}`;
     }
-    return { state: result.data?.deduped ? 'deduped' : 'launched', idempotencyKey, label, launch: result.data?.launch };
+
+    return {
+      state: 'failed',
+      idempotencyKey: currentIdempotencyKey,
+      label,
+      error: `acceptance grader stale-dedupe recovery exceeded ${ACCEPTANCE_GRADER_MAX_STALE_RETRIES} retries`,
+      staleRecovery: { retiredTaskIds, attempts: ACCEPTANCE_GRADER_MAX_STALE_RETRIES + 1 },
+    };
   } catch (error) {
     return { state: 'failed', idempotencyKey, label, error: error instanceof Error ? error.message : String(error) };
   }

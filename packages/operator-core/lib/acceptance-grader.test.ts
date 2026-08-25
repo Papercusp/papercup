@@ -55,6 +55,8 @@ function deps(launch: ReturnType<typeof vi.fn>) {
     getAudit: vi.fn(async () => audit),
     listWork: vi.fn(async () => workItems),
     launch: launch as never,
+    listTasks: vi.fn(async () => []),
+    killTask: vi.fn(async () => ({ ok: true })) as never,
   };
 }
 
@@ -100,6 +102,45 @@ describe('launchAcceptanceGrader', () => {
     }));
     const result = await launchAcceptanceGrader('ship-the-thing', ctx, deps(launch));
     expect(result).toMatchObject({ state: 'deduped', launch: { tasks: [{ taskId: 'task-1' }] } });
+  });
+
+  it('retires an over-age deduped judge and launches a deterministic fresh retry', async () => {
+    const launch = vi.fn(async (args: Record<string, unknown>) =>
+      String(args.idempotencyKey).includes(':retry:task-stale')
+        ? {
+            content: [{ type: 'text', text: 'launched retry' }],
+            data: { deduped: false, launch: { tasks: [{ taskId: 'task-fresh' }] } },
+          }
+        : {
+            content: [{ type: 'text', text: 'already launched' }],
+            data: { deduped: true, launch: { tasks: [{ taskId: 'task-stale' }] } },
+          },
+    );
+    const kill = vi.fn(async () => ({ ok: true }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      listTasks: vi.fn(async () => [
+        {
+          taskId: 'task-stale',
+          state: 'running',
+          startedAt: '2026-08-24T00:00:00.000Z',
+          endedAt: null,
+        },
+      ]) as never,
+      killTask: kill as never,
+      nowMs: () => Date.parse('2026-08-25T00:00:00.000Z'),
+    });
+
+    expect(kill).toHaveBeenCalledWith('task-stale', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[1][0]).toMatchObject({
+      idempotencyKey: expect.stringContaining(':retry:task-stale'),
+    });
+    expect(result).toMatchObject({
+      state: 'launched',
+      launch: { tasks: [{ taskId: 'task-fresh' }] },
+      staleRecovery: { retiredTaskIds: ['task-stale'], attempts: 2 },
+    });
   });
 
   it('uses the same label prefix algebra that cleanup matches', () => {
