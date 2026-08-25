@@ -169,8 +169,27 @@ export function gateAbortLever(status: string): string {
         `clear, and a re-fire contends with them; ⚠ do NOT triage the files an earlier red named, this tick ` +
         `judged no code at all`
       );
-    case 'standing-condition':
     case 'unknown':
+      /**
+       * EI-21462211894072863: split OUT of the standing-condition arm below, which it used to
+       * share. That arm ends "…and re-firing aborts the same way" — a confident claim about a
+       * status we have by definition not classified, and precisely the manufactured-paralysis
+       * failure this module's header documents. It was harmless while 'unknown' could not reach a
+       * reader (no unclassified status was ever RECORDED as inconclusive); adding 'error' to the
+       * recorded set makes this arm live, so it now has to be honest.
+       *
+       * Note the asymmetry with `gateAbortRefireClause`, which was ALREADY conservative for
+       * 'unknown'. The two are meant to agree — the whole reason this module exists is that a
+       * lever and its sentence drifted twice — so leaving the lever asserting a latch while the
+       * sentence beside it declined to would have re-created that exact defect a third time.
+       */
+      return (
+        `the last run recorded an abort whose cause is unclassified (${status}) — it rendered no verdict, ` +
+        `so ⚠ do NOT triage the files an earlier red named; this tick judged no code at all. Read the ` +
+        `green-checkpoint log for THIS run before deciding whether to re-fire: it is unknown whether the ` +
+        `condition still stands, so neither waiting nor re-firing is safe to assume`
+      );
+    case 'standing-condition':
     default:
       return `clear the gate's abort condition (${status}) — it renders no verdict until then, and re-firing aborts the same way`;
   }

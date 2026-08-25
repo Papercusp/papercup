@@ -177,6 +177,7 @@ import {
   isRecordedInconclusiveStatus,
   classifyGateAbort,
   gateAbortRefireClause,
+  gateAbortLever,
 } from '../../release/gate-abort-status';
 import type { QualificationAdmission } from '../../release-checkpoint-config';
 import type { FlakeSuspect } from '../../dev-data';
@@ -512,6 +513,15 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     // "nothing blocks a re-fire" is knowable here.
     expect(gateAbortRefireClause('error')).not.toMatch(/aborts the same way/);
     expect(gateAbortRefireClause('error')).not.toMatch(/blocks a re-fire/);
+    /**
+     * …and the LEVER must agree with that sentence. This module exists because a lever and the
+     * sentence beside it drifted twice in the same direction, so an 'unknown' abort that told the
+     * reader "re-firing aborts the same way" while the sentence declined to would be that same
+     * defect a third time. It also has to keep the reader off the failing-test list, which is the
+     * response the whole no-verdict split exists to prevent.
+     */
+    expect(gateAbortLever('error')).not.toMatch(/aborts the same way/);
+    expect(gateAbortLever('error')).toMatch(/do NOT triage/i);
   });
 
   describe('WI-39450: a PROVEN-STALE pass is a non-verdict, not a red', () => {
