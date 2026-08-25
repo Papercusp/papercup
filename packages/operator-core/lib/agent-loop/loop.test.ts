@@ -267,6 +267,44 @@ describe('runAgentLoop', () => {
     expect(doneEvent(events).stopReason).toBe('error');
   });
 
+  it('an early stream EOF is an error, not a successful empty completion', async () => {
+    const { port } = scriptedPort([{ type: 'text_delta', text: 'partial' }]);
+    const events = await collect({ port, model: 'm1', messages: [textMessage('user', 'hi')] });
+    expect(events.find((e) => e.type === 'error')).toMatchObject({
+      message: 'model stream ended before terminal stop/error event',
+    });
+    expect(doneEvent(events).stopReason).toBe('error');
+  });
+
+  it('abort settles a never-ending iterator and invokes its cleanup', async () => {
+    const ctrl = new AbortController();
+    let returned = false;
+    const port: ModelPort = {
+      stream: () => ({
+        [Symbol.asyncIterator]() {
+          return {
+            next: () => new Promise<IteratorResult<ModelStreamEvent>>(() => undefined),
+            return: async () => {
+              returned = true;
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      }),
+    };
+    const pending = collect({
+      port,
+      model: 'm1',
+      messages: [textMessage('user', 'hi')],
+      signal: ctrl.signal,
+    });
+    const timer = setTimeout(() => ctrl.abort(), 10);
+    const events = await pending;
+    clearTimeout(timer);
+    expect(doneEvent(events).stopReason).toBe('aborted');
+    expect(returned).toBe(true);
+  });
+
   it('an aborted signal stops before the next step', async () => {
     const ctrl = new AbortController();
     ctrl.abort();

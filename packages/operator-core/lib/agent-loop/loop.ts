@@ -215,6 +215,20 @@ function toResultContent(value: unknown): unknown {
   }
 }
 
+/** Best-effort iterator cleanup. A provider's `return()` is allowed to be
+ * asynchronous, but it must not be allowed to keep the caller blocked while
+ * an abort is already settling the turn. Calling it (and observing rejection)
+ * is enough to give well-behaved adapters a chance to cancel their transport.
+ */
+function closeModelStream(iterator: AsyncIterator<ModelStreamEvent>): void {
+  if (typeof iterator.return !== 'function') return;
+  try {
+    void Promise.resolve(iterator.return()).catch(() => undefined);
+  } catch {
+    // Cleanup is best-effort; the turn's terminal event remains authoritative.
+  }
+}
+
 export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<LoopEvent, void, void> {
   const messages: ModelMessage[] = [...opts.messages];
   const steps: LoopStepInfo[] = [];
@@ -268,30 +282,86 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
     let stepUsage: ModelUsage | null = null;
     let streamErrored = false;
 
-    const stream = opts.port.stream({
-      model: stepModel,
-      ...(stepSystem !== undefined ? { system: stepSystem } : {}),
-      // SNAPSHOT, not the live array: the loop mutates `messages` after this
-      // call, and an adapter that reads its request lazily (queued behind a
-      // governor, retried) must see the conversation AS OF this step.
-      messages: [...stepMessages],
-      ...(stepTools.length
-        ? {
-            tools: stepTools.map(({ name, description, inputSchema }) => ({
-              name,
-              ...(description !== undefined ? { description } : {}),
-              inputSchema,
-            })),
-          }
-        : {}),
-      ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
-      ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-      ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
-    });
+    let stream: AsyncIterable<import('./model-port').ModelStreamEvent>;
+    try {
+      stream = opts.port.stream({
+        model: stepModel,
+        ...(stepSystem !== undefined ? { system: stepSystem } : {}),
+        // SNAPSHOT, not the live array: the loop mutates `messages` after this
+        // call, and an adapter that reads its request lazily (queued behind a
+        // governor, retried) must see the conversation AS OF this step.
+        messages: [...stepMessages],
+        ...(stepTools.length
+          ? {
+              tools: stepTools.map(({ name, description, inputSchema }) => ({
+                name,
+                ...(description !== undefined ? { description } : {}),
+                inputSchema,
+              })),
+            }
+          : {}),
+        ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+        ...(opts.temperature !== undefined ? { temperature: opts.temperature } : {}),
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+        ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+      });
+    } catch (e) {
+      yield { type: 'error', message: e instanceof Error ? e.message : String(e) };
+      yield done('error');
+      return;
+    }
+
+    const iterator = stream[Symbol.asyncIterator]();
+    let abortHandler: (() => void) | undefined;
+    let abortPromise: Promise<void> | undefined;
+    if (opts.signal) {
+      abortPromise = new Promise<void>((resolve) => {
+        abortHandler = resolve;
+        opts.signal!.addEventListener('abort', resolve, { once: true });
+      });
+    }
+    let sawStop = false;
+    let streamAborted = false;
+    let streamEndedEarly = false;
 
     try {
-      for await (const ev of stream) {
+      while (true) {
+        if (opts.signal?.aborted) {
+          streamAborted = true;
+          break;
+        }
+
+        // Do not use raw `for await` here: an adapter can leave `next()`
+        // pending after its signal fires. Racing each pull lets the owned
+        // loop settle and close the iterator instead of hanging the chat.
+        const nextResult = Promise.resolve()
+          .then(() => iterator.next())
+          .then(
+            (value) => ({ kind: 'next' as const, value }),
+            (error) => ({ kind: 'error' as const, error }),
+          );
+        const result = abortPromise
+          ? await Promise.race([
+              nextResult,
+              abortPromise.then(() => ({ kind: 'aborted' as const })),
+            ])
+          : await nextResult;
+
+        if (result.kind === 'aborted') {
+          streamAborted = true;
+          break;
+        }
+        if (result.kind === 'error') throw result.error;
+        if (opts.signal?.aborted) {
+          streamAborted = true;
+          break;
+        }
+        if (result.value.done) {
+          streamEndedEarly = !sawStop && !streamErrored;
+          break;
+        }
+
+        const ev = result.value.value;
         switch (ev.type) {
           case 'text_delta':
             text += ev.text;
@@ -313,6 +383,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
             break;
           }
           case 'stop':
+            sawStop = true;
             stopReason = ev.reason;
             stepUsage = ev.usage ?? null;
             break;
@@ -321,11 +392,32 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
             yield { type: 'error', message: ev.message, ...(ev.raw !== undefined ? { raw: ev.raw } : {}) };
             break;
         }
-        if (streamErrored) break;
+        // `stop` and `error` are terminal ModelPort events. Stop pulling
+        // immediately so a provider that leaves its iterator open cannot
+        // strand the turn after it already emitted its terminal frame.
+        if (sawStop || streamErrored) break;
       }
     } catch (e) {
-      yield { type: 'error', message: e instanceof Error ? e.message : String(e) };
-      streamErrored = true;
+      if (opts.signal?.aborted) {
+        streamAborted = true;
+      } else {
+        yield { type: 'error', message: e instanceof Error ? e.message : String(e) };
+        streamErrored = true;
+      }
+    } finally {
+      if (opts.signal && abortHandler) opts.signal.removeEventListener('abort', abortHandler);
+      if (streamAborted || streamEndedEarly || streamErrored || sawStop) closeModelStream(iterator);
+    }
+
+    if (streamAborted) {
+      yield done('aborted');
+      return;
+    }
+
+    if (streamEndedEarly) {
+      yield { type: 'error', message: 'model stream ended before terminal stop/error event' };
+      yield done('error');
+      return;
     }
 
     if (streamErrored) {

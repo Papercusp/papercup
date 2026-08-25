@@ -3113,12 +3113,14 @@ async fn stream_agent_chat_turn(
         }
     };
 
+    let mut saw_done = false;
     while let Some(decoded) = stream.recv().await {
         let ev = match decoded {
             Ok(ev) => ev,
-            // A single unsupported/garbled frame must not abort a live turn —
-            // the stream stays open and the next frame is still delivered.
-            Err(_) => continue,
+            Err(e) => {
+                let _ = tx.send(Event::ChatError(format!("agent chat stream: {e}")));
+                return;
+            }
         };
         match ev {
             AgentChatEvent::TextDelta { text, .. } => {
@@ -3193,7 +3195,10 @@ async fn stream_agent_chat_turn(
             // `done` closes the turn. It carries `finalText` but NO transcript
             // snapshot (D-011) — the bubble finalizes from the deltas already
             // rendered, so no re-read is needed to complete the turn.
-            AgentChatEvent::Done { .. } => break,
+            AgentChatEvent::Done { .. } => {
+                saw_done = true;
+                break;
+            }
             // Reasoning and per-step frames belong to the richer pane surfaces
             // (reasoning fold, per-step usage); the streaming bubble ignores them
             // for now. Tool-result frames are handled ABOVE, as of slice 3 — do
@@ -3202,7 +3207,13 @@ async fn stream_agent_chat_turn(
         }
     }
 
-    let _ = tx.send(Event::ChatDone);
+    if saw_done {
+        let _ = tx.send(Event::ChatDone);
+    } else {
+        let _ = tx.send(Event::ChatError(
+            "agent chat stream closed before done".to_string(),
+        ));
+    }
 }
 
 /// POST one HITL decision for the native agent-chat seam (P-005 slice 2). The

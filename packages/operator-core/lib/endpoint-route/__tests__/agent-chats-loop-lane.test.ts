@@ -225,6 +225,7 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       transcript: Array<{ role: string; content: string }>;
       model?: string;
       chatId: string;
+      priority?: string;
     };
     // systemText = persona + context sections, NO history block, NO user turn.
     expect(opts.system).toContain('ROLE PROMPT');
@@ -233,6 +234,7 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     expect(opts.transcript.at(-1)).toMatchObject({ role: 'user', content: 'hello loop' });
     expect(opts.model).toBe('m-override');
     expect(opts.chatId).toBe(CHAT);
+    expect(opts.priority).toBe('interactive');
 
     // Persistence: user turn first (preflight), then the assistant turn with totals.
     expect(mocks.updates.length).toBeGreaterThanOrEqual(2);

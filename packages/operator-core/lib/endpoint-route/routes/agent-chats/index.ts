@@ -625,6 +625,10 @@ const messagesRoute = defineTool({
               sink,
               ...(body.model ? { model: body.model } : {}),
               signal: req.signal,
+              // This route is the interactive PUI chat surface. Untiered
+              // inference is starved behind fleet work, so keep the admission
+              // intent explicit at the route boundary.
+              priority: 'interactive',
               tools,
               // P-009: resume from + persist the full ModelMessage session
               // (tool detail survives across turns; usage/cost totals live

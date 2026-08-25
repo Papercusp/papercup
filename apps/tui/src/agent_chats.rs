@@ -442,10 +442,23 @@ pub(crate) fn decode_agent_chat_stream(
     let (tx, rx) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Some(frame) = frames.recv().await {
-            if tx.send(decode_agent_chat_event(&frame)).is_err() {
+            let decoded = decode_agent_chat_event(&frame);
+            let done = matches!(decoded, Ok(AgentChatEvent::Done { .. }));
+            if tx.send(decoded).is_err() {
+                return;
+            }
+            if done {
+                // The terminal event is authoritative; do not wait for the
+                // transport to close before handing it to the caller.
                 return;
             }
         }
+        // A closed SSE channel without `done` is a failed turn, not a
+        // successful empty response. The stream task surfaces this as the
+        // same typed error path as a decoder failure.
+        let _ = tx.send(Err(anyhow!(
+            "agent-chat SSE stream closed before done"
+        )));
     });
     rx
 }
@@ -716,6 +729,29 @@ mod tests {
         assert!(
             matches!(infrastructure_error, AgentChatEvent::Error { ref message } if message == "setup exploded")
         );
+    }
+
+    #[tokio::test]
+    async fn stream_reports_early_eof_without_done() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut events = decode_agent_chat_stream(rx);
+        tx.send(frame(
+            "text_delta",
+            json!({"type": "text_delta", "stepIndex": 0, "text": "partial"}),
+        ))
+        .expect("send frame");
+        drop(tx);
+
+        assert!(matches!(
+            events.recv().await.expect("text event").expect("decode text"),
+            AgentChatEvent::TextDelta { ref text, .. } if text == "partial"
+        ));
+        let error = events
+            .recv()
+            .await
+            .expect("early EOF error")
+            .expect_err("EOF must not decode as success");
+        assert!(error.to_string().contains("closed before done"));
     }
 
     #[test]
