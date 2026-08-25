@@ -995,7 +995,7 @@ describe('buildReleaseTrace', () => {
     expect(out.staleWake.verdict).toBe('none');
   });
 
-  it('EI-210996: classifies candidate-bound abnormal termination without a result marker as inconclusive', () => {
+  it('EI-210996: classifies candidate-bound abnormal termination without a result marker as inconclusive and consumed', () => {
     const checkpointRun = {
       active: false,
       terminalMarker: false,
@@ -1025,8 +1025,56 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.find((c) => c.code === 'checkpoint-run-inconclusive')?.summary).toMatch(
       /explicitly INCONCLUSIVE, not red or green/,
     );
-    expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
-    expect(out.nextVerb?.reason).toContain('oom-kill/killed:KILL');
+    expect(out.gate.consumedAuthority).toMatchObject({
+      governingRef: 'stable-candidate-related-gate-2026-08-23#D-053',
+      candidate: sha.slice(0, 8),
+      status: 'consumed',
+      retryAllowed: false,
+    });
+    expect(out.constraints).toContainEqual(
+      expect.objectContaining({ code: 'checkpoint-authority-consumed', blocking: true }),
+    );
+    expect(out.nextVerb).toBeNull();
+  });
+
+  it('EI-21411776375901170: terminal marker does not restore retry after an exact abnormal D-053 terminal', () => {
+    const checkpointRun = {
+      active: false,
+      terminalMarker: true,
+      terminalEvidence: {
+        source: 'systemd-exec-stop-post' as const,
+        candidate: sha,
+        serviceResult: 'oom-kill',
+        exitCode: 'killed',
+        exitStatus: 'KILL',
+        abnormal: true,
+      },
+      candidate: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      asOfAgeMs: 0,
+    };
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+          gate: { ...position().gate, checkpointRunInFlight: checkpointRun },
+        }),
+        gate: { ...input().gate, checkpointRunInFlight: checkpointRun },
+      }),
+    );
+
+    expect(out.gate.consumedAuthority).toMatchObject({
+      governingRef: 'stable-candidate-related-gate-2026-08-23#D-053',
+      candidate: sha,
+      status: 'consumed',
+      retryAllowed: false,
+      reason: expect.stringContaining('D-053 consumes its one-shot checkpoint authority'),
+    });
+    expect(out.constraints).toContainEqual(
+      expect.objectContaining({ code: 'checkpoint-authority-consumed', blocking: true }),
+    );
+    expect(out.nextVerb).toBeNull();
   });
 
   it('EI-21103060581352507: refuses to await a candidate whose checkpoint was cancelled and has no producer', () => {
