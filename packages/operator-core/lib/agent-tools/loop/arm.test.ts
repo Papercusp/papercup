@@ -475,6 +475,22 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
     expect(b.loop.workItem).toBe('WI-7');
   });
 
+  it('detects the full cold-loop id from a goal before the soft 4000-character clamp', async () => {
+    const id = 'EI-21402283154473718';
+    const goal = `${'x'.repeat(3995)}${id}`;
+    detectM.mockReturnValue(id as never);
+    claimM.mockResolvedValue(claimedRow as never);
+
+    const b = body(await call({ carry: 'cold', goal }));
+
+    // The raw goal is the structural source; the bounded copy is only for persistence
+    // and prompt rendering. This catches a partial `EI-214022` candidate at the cap.
+    expect(detectM).toHaveBeenCalledWith(goal);
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ goal: goal.slice(0, 4000) }));
+    expect(claimM).toHaveBeenCalledWith(id, 'su-caller-own-id', { harness: 'papercusp' });
+    expect(b.loop.workItem).toBe(id);
+  });
+
   it('refuses a terminal workItem pin without claiming or binding it to the wake prompt', async () => {
     getWiM.mockResolvedValue({ id: 'EI-DONE', state: 'done', assignee: null } as never);
     const b = body(await call({ workItem: 'EI-DONE' }));

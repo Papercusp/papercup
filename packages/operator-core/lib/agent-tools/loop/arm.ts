@@ -605,7 +605,13 @@ export default defineTool({
     // (which may be an unrelated pot), then attempts the by-id claim in that wrong
     // namespace and reports not_found even though coord:orient reconciled a held
     // item in another harness (EI-21358731971685285).
-    const goal = clampText(args.goal, 4000);
+    // Keep the raw goal for structural work-item detection. The persisted/wake-prompt
+    // copy is intentionally soft-capped, but detecting after that clamp can turn an
+    // identifier that straddles the 4000-character boundary into a valid-looking
+    // truncated prefix (for example `EI-214022`), producing a misleading not_found
+    // auto-claim result (EI-21405190650662222).
+    const rawGoal = args.goal;
+    const goal = clampText(rawGoal, 4000);
     const carryForScope: 'warm' | 'cold' | undefined =
       args.carry ??
       (prior?.active
@@ -614,7 +620,7 @@ export default defineTool({
           ? await resolveDefaultCarry(ownerId)
           : undefined);
     const autoDetectedWorkItemForScope =
-      !explicitWorkItem && carryForScope === 'cold' ? (detectDrivenWorkItemId(goal) ?? undefined) : undefined;
+      !explicitWorkItem && carryForScope === 'cold' ? (detectDrivenWorkItemId(rawGoal) ?? undefined) : undefined;
     const scopeWorkItem = explicitWorkItem ?? monitorAuthorityWorkItem ?? autoDetectedWorkItemForScope;
     const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
