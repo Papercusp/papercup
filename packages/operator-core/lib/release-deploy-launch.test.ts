@@ -273,6 +273,8 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.state).toBe('gate-wedged');
     expect(s.recommendation).toMatch(/skipped-locked/);
     expect(s.recommendation).toMatch(/no gate verdict|FRESH verdict/i);
+    expect(s.recommendation).toMatch(/scheduled routine/i);
+    expect(s.recommendation).not.toMatch(/Run release:checkpoint-run/);
   });
 
   it('D-067: a live repair hold is a typed blocker, not a verdict, and suppresses inherited failures', () => {
@@ -310,6 +312,8 @@ describe('computeDeployStatus — decision tree', () => {
     });
     expect(s.gate.failingTests).toEqual([]);
     expect(s.state).toBe('gate-wedged');
+    expect(s.recommendation).toMatch(/scheduled routine.*FRESH guarded verdict/i);
+    expect(s.recommendation).not.toMatch(/Run release:checkpoint-run/);
   });
 
   it('D-067: an idle run plus an absent repair queue retires the stale repair hold and historical failures', () => {
@@ -342,6 +346,8 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.gate.verdictStaleReason).toMatch(/repair queue is absent.*run-lock is measured idle/i);
     expect(s.state).toBe('gate-verdict-stale');
     expect(s.recommendation).not.toContain('historical-red.test.ts');
+    expect(s.recommendation).toMatch(/scheduled routine.*FRESH verdict/i);
+    expect(s.recommendation).not.toMatch(/Run release:checkpoint-run/);
   });
 
   it('does not classify a non-verdict tick as wedged while a checkpoint is active', () => {
@@ -501,7 +507,8 @@ describe('WI-4489: gate verdict staleness', () => {
     expect(s.state).not.toBe('gate-red');
     expect(s.recommendation).toMatch(/STALE/);
     expect(s.recommendation).toMatch(/Do NOT chase the failing tests/);
-    expect(s.recommendation).toMatch(/release:checkpoint-run/);
+    expect(s.recommendation).toMatch(/scheduled routine.*FRESH verdict/i);
+    expect(s.recommendation).not.toMatch(/Run release:checkpoint-run/);
     // …and it must NOT claim the gate is green either. The honest state is "unknown".
     expect(s.gate.green).toBe(false);
     expect(s.gate.verdictStale).toBe(true);
@@ -795,6 +802,10 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
       blocker: 'D-012/D-013 live quiescence hold under WI-40086: waiting for immutable deps',
       verdictPending: false,
     });
+    expect(status.state).toBe('gate-paused');
+    expect(status.recommendation).toMatch(/DELIBERATELY PAUSED.*waiting for immutable deps/s);
+    expect(status.recommendation).toMatch(/Do not launch a manual checkpoint.*scheduled routine/s);
+    expect(status.recommendation).not.toMatch(/Run release:checkpoint-run/);
   });
 
   it('P-009 treats an uncorroborated failed liveness probe as unknown, never idle', () => {

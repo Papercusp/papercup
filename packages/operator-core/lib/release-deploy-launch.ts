@@ -225,6 +225,7 @@ export type DeployStateKind =
   | 'release-trigger-unavailable' // release-trigger is absent/inactive without usable pause provenance
   | 'gate-red' // the gate is RED — the green pin can't advance until the reds are fixed
   | 'gate-verdict-stale' // WI-4489: the blob says red, but the verdict is superseded/unverified — colour UNKNOWN, not red
+  | 'gate-paused' // P-009: the checkpoint routine is deliberately paused under recorded control authority
   | 'gate-wedged' // the green-checkpoint isn't firing or produced no verdict — surface to an operator
   | 'staging-buffered' // staging has commits awaiting the next (green) checkpoint — normal, just wait
   | 'unknown';
@@ -609,17 +610,23 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     recommendation =
       `The green-checkpoint liveness probe FAILED: ${checkpoint.blocker}. ` +
       `This is unknown execution state, not an idle reading and not a gate verdict; repair/retry the probe before launching or waiting on a run.`;
+  } else if (checkpoint.state === 'paused') {
+    state = 'gate-paused';
+    recommendation =
+      `The green-checkpoint routine is DELIBERATELY PAUSED under recorded control authority: ${checkpoint.blocker}. ` +
+      `Cached failing-test names are suppressed because no current verdict is being produced. ` +
+      `Do not launch a manual checkpoint around the hold; satisfy its recorded condition and restore the scheduled routine so the next ordinary fire produces the fresh verdict.`;
   } else if (checkpoint.state === 'blocked') {
     state = 'gate-wedged';
     recommendation =
       `${checkpoint.blocker}. The run produced no gate verdict, so cached failing-test names are suppressed. ` +
-      `Fix the named execution blocker, then run one FRESH guarded checkpoint.`;
+      `Fix the named execution blocker, then let the scheduled routine fire through for one FRESH guarded verdict; do not substitute a manual checkpoint when plan or control authority requires ordinary scheduled proof.`;
   } else if (latestCheckpointIsNonVerdict && !checkpointRunActive) {
     state = 'gate-wedged';
     recommendation =
       `The latest green-checkpoint tick was '${lastCheckpointEvent!.status}' and produced no gate verdict. ` +
       `The gate's cached health is unverified until a checkpoint actually judges the candidate. ` +
-      `Run release:checkpoint-run for a FRESH verdict, or let the scheduled routine fire through; do not treat this tick as green or red.`;
+      `Let the scheduled routine fire through for a FRESH verdict; do not substitute a manual checkpoint when plan or control authority requires ordinary scheduled proof, and do not treat this tick as green or red.`;
   } else if (redAuthoritative) {
     state = 'gate-red';
     recommendation =
@@ -640,7 +647,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       `Do NOT chase the failing tests it names; they may already be green (verify by running them before you touch anything). ` +
       (activeCheckpointRecommendation
         ? `${activeCheckpointRecommendation} If the gate keeps reporting 'skipped-locked' after it finishes, let one routine fire through.`
-        : `Run release:checkpoint-run for a FRESH verdict. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`);
+        : `Let the scheduled routine fire through for a FRESH verdict. Do not substitute a manual checkpoint when plan or control authority requires ordinary scheduled proof. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`);
   } else if (fireStale) {
     state = 'gate-wedged';
     recommendation =
