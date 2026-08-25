@@ -77,6 +77,21 @@ describe('events:status projection', () => {
     });
   });
 
+  it('never projects emitter-side announcement rows as cancellable active awaits', async () => {
+    vi.mocked(listActiveAwaits).mockResolvedValueOnce([
+      AWAIT_ROW,
+      {
+        ...AWAIT_ROW,
+        id: 12,
+        eventKey: 'gate:declared',
+        policy: 'announce',
+      },
+    ] as never);
+
+    const out = await call({});
+    expect(out.active_awaits.map((row: { await_id: number }) => row.await_id)).toEqual([11]);
+  });
+
   it('projects delivery rows to delivery_id/event/status/channel/last_error/...', async () => {
     const out = await call({});
     expect(out.recent_wakes[0]).toEqual({
