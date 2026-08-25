@@ -415,6 +415,24 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results[0].wake.note).toMatch(/ALIVE \(NOT dead\)|do NOT relaunch/i);
   });
 
+  it("EI-21458455211655064: miss-path recorded liveness fills an independently degraded idle probe", async () => {
+    wakeM.mockResolvedValueOnce({ targets: ['recorded-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
+    // The report-only probe can fail-soft to an empty classification after the
+    // durable wake miss, while the miss-path oracle has already read the same
+    // recipient as alive-but-not-wakeable.
+    idleM.mockResolvedValueOnce({ idle: [] } as never);
+    livenessM.mockResolvedValueOnce([
+      { ownerId: 'recorded-bee', sessionState: 'recorded', wakeable: false },
+    ] as never);
+    const b = await body({ to: ['recorded-bee'], summary: 'continue this', wake: 'required' });
+    expect(b.results[0].wake).toMatchObject({
+      recipient_absent: true,
+      recipient_alive_not_wakeable: ['recorded-bee'],
+    });
+    expect(b.results[0].wake.recipient_dead).toBeUndefined();
+    expect(b.results[0].wake.note).toMatch(/ALIVE \(NOT dead\)|do NOT relaunch/i);
+  });
+
   it("WI-5994: wake:'required' miss on a DORMANT-SCHEDULED recipient (armed loop, future fire) → NO recipient_dead, deferred-delivery note", async () => {
     wakeM.mockResolvedValueOnce({ targets: ['loopy-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({

@@ -1500,6 +1500,30 @@ async function sendOne(
           dead = report.idle;
           aliveNotWakeable = report.aliveNotWakeable ?? [];
           dormantScheduled = report.dormantScheduled ?? [];
+          // EI-21458455211655064: the miss-path liveness enrichment and the
+          // report-only idle probe both consult the shared oracle, but the
+          // latter is deliberately fail-soft and can degrade independently.
+          // If it misses the recorded/live classification, do not leave a
+          // recipient looking dead merely because `recipient_liveness` already
+          // proved it alive-but-not-wakeable. Keep the explicit absent signal
+          // (the wake really missed), while projecting the controlling
+          // alive/not-wakeable reason so callers do not announce a takeover the
+          // claim guard will refuse.
+          const dormantIds = new Set(dormantScheduled.map((entry) => entry.ownerId));
+          const aliveFromLiveness = new Set(
+            liveness
+              .filter(
+                (entry) =>
+                  !entry.wakeable &&
+                  (entry.sessionState === 'live' || entry.sessionState === 'recorded') &&
+                  !dormantIds.has(entry.ownerId),
+              )
+              .map((entry) => entry.ownerId),
+          );
+          if (aliveFromLiveness.size > 0) {
+            aliveNotWakeable = [...new Set([...aliveNotWakeable, ...aliveFromLiveness])];
+            dead = dead.filter((ownerId) => !aliveFromLiveness.has(ownerId));
+          }
           const remote = await remoteSessionsByOwnerId(identity.workspaceId);
           remoteHomed = fan.targets.filter((t) => remote.has(t));
           dead = dead.filter((d) => !remote.has(d));
