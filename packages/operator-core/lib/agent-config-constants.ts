@@ -39,9 +39,13 @@ export type AgentBackend = (typeof AGENT_BACKENDS)[number];
 export const INTERACTIVE_CLIENTS = ['legacy', 'pui'] as const;
 export type InteractiveClient = (typeof INTERACTIVE_CLIENTS)[number];
 
-/** D-028 / P-012: owned PUI is the interactive front door after the worker
- * parity gate turned GREEN. `legacy` remains an explicit escape hatch. */
-export const DEFAULT_INTERACTIVE_CLIENT: InteractiveClient = 'pui';
+/** REVERTED (owner directive 2026-08-24): the D-028/P-012 cutover that made
+ * owned PUI the bare-interactive default was a mistake — `psu` must keep
+ * working exactly as it did before PUI existed. `legacy` (the native
+ * Claude/OMP/Codex picker) is the default again; `pui` stays fully wired and
+ * launchable via `psu --client=pui` (or the settings toggle) as its own
+ * standalone client while it is rebuilt as its own TUI. */
+export const DEFAULT_INTERACTIVE_CLIENT: InteractiveClient = 'legacy';
 
 /**
  * The in-app brain surfaces that support a per-surface backend override. Keep in
