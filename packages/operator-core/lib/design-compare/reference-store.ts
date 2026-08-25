@@ -53,9 +53,32 @@ export const RATIFIED_REFERENCE_ARTIFACT_KIND = 'ratified_reference';
 /** `harness_design_artifacts.kind` for stored comparison evidence (migration 948). */
 export const COMPARE_RESULT_ARTIFACT_KIND = 'compare_result';
 
-/** The image formats a reference may be ratified from. */
+/**
+ * The image formats a caller may PRESENT. Not the formats that can be ratified —
+ * see `COMPARABLE_MEDIA_TYPES`.
+ */
 export const REFERENCE_MEDIA_TYPES = ['image/png', 'image/jpeg'] as const;
 export type ReferenceMediaType = (typeof REFERENCE_MEDIA_TYPES)[number];
+
+/**
+ * The formats the SELECTED comparison engine can actually read.
+ *
+ * P-005 is required to select pixelmatch (D-010 consequence 1), and lost-pixel's
+ * pixelmatch path decodes both images with `PNG.sync.read` — read directly from
+ * the installed `lost-pixel/dist/compare/compare.js:33-34`, which requires only
+ * `pngjs`. pngjs decodes PNG and nothing else, so a JPEG reference cannot be
+ * compared by the engine this system is required to use. (odiff does read JPEG,
+ * which is exactly why this is worth stating: the capability exists in the
+ * dependency tree and is unreachable through the engine we are mandated to
+ * select.)
+ *
+ * So a JPEG reference is refused AT RATIFICATION rather than accepted and
+ * discovered at comparison time. The failure is identical either way; the
+ * difference is that here it is one clear refusal to the person uploading the
+ * image, and there it is a gate that can never go green, found by whoever is
+ * unlucky enough to be blocked by it.
+ */
+export const COMPARABLE_MEDIA_TYPES: readonly ReferenceMediaType[] = ['image/png'];
 
 /**
  * Where a reference's bytes live.
@@ -202,7 +225,8 @@ export class ReferenceStoreError extends Error {
       | 'validation-failed'
       | 'revision-conflict'
       | 'not-ratified'
-      | 'already-retracted',
+      | 'already-retracted'
+      | 'unsupported-media-type',
     readonly errors: readonly RatificationError[] = [],
   ) {
     super(message);
@@ -297,6 +321,16 @@ export async function ratifyReference(
           `highest ever recorded (${highest}); revision numbers are never reused, because ` +
           `evidence is bound to a number and reusing one would make stale evidence read as current`,
       'revision-conflict',
+    );
+  }
+
+  if (!COMPARABLE_MEDIA_TYPES.includes(image.mediaType)) {
+    throw new ReferenceStoreError(
+      `'${image.mediaType}' cannot be ratified: the mandated comparison engine ` +
+        `(lost-pixel's pixelmatch path) decodes both images with pngjs, which reads PNG only, ` +
+        `so a ${image.mediaType} reference could be stored but never compared. ` +
+        `Convert it to PNG before ratifying. Accepted: ${COMPARABLE_MEDIA_TYPES.join(', ')}.`,
+      'unsupported-media-type',
     );
   }
 

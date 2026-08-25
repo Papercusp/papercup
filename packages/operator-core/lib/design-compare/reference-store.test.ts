@@ -89,6 +89,25 @@ function evidenceAt(revision: number, artifactId = `ev-${revision}`): StoredEvid
 
 const clock = () => 1_756_000_000_000;
 
+/**
+ * Await a call that MUST be refused, and hand back the typed refusal.
+ *
+ * Deliberately fails the test when the call SUCCEEDS. A bare
+ * `.catch(e => e as ReferenceStoreError)` types the result as a union with the
+ * success value, and — worse — a resolved promise would sail past the
+ * assertions below reading `undefined` off it, so a store that stopped refusing
+ * would look like a passing test.
+ */
+async function refusalOf(work: Promise<unknown>): Promise<ReferenceStoreError> {
+  try {
+    await work;
+  } catch (error) {
+    if (error instanceof ReferenceStoreError) return error;
+    throw error;
+  }
+  throw new Error('expected the call to be refused, but it succeeded');
+}
+
 describe('ratifying a reference', () => {
   it('stores the first revision and reports nothing superseded', async () => {
     const store = createInMemoryReferenceStore();
@@ -109,6 +128,30 @@ describe('ratifying a reference', () => {
     expect(referenceArtifactId('a', 3)).toBe('ratref:a:3');
     expect(referenceArtifactId('a', 3)).toBe(referenceArtifactId('a', 3));
     expect(referenceArtifactId('a', 4)).not.toBe(referenceArtifactId('a', 3));
+  });
+
+  it('refuses a JPEG at ratification, because the mandated engine can never read it', async () => {
+    // Read from the engine, not assumed: lost-pixel's pixelmatch path decodes
+    // both images with pngjs (compare.js:33-34), and D-010 consequence 1 makes
+    // pixelmatch mandatory. Accepting a JPEG here would produce a reference that
+    // stores fine and can never satisfy its own gate.
+    const store = createInMemoryReferenceStore();
+    const refusal = await refusalOf(
+      ratifyReference(store, {
+        scope: SCOPE,
+        candidate: candidate(1),
+        image: { ...IMAGE, mediaType: 'image/jpeg' },
+        now: clock,
+      }),
+    );
+    expect(refusal.code).toBe('unsupported-media-type');
+    expect(refusal.message).toMatch(/pngjs, which reads PNG only/);
+    expect(refusal.message).toMatch(/Convert it to PNG/);
+    expect(store.rows.size).toBe(0);
+
+    await expect(
+      ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock }),
+    ).resolves.toBeTruthy();
   });
 
   it('refuses a reference that declares no required case, which would gate vacuously', async () => {
@@ -155,19 +198,13 @@ describe('ratifying a reference', () => {
       provenance: { ...candidate(1).provenance, derivedFrom: undefined },
     }, 'derived-reference');
 
-    await ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock })
-      .catch(() => {});
     const store2 = createInMemoryReferenceStore();
-    const error = await ratifyReference(store2, {
-      scope: SCOPE,
-      candidate: bad,
-      image: IMAGE,
-      now: clock,
-    }).catch((e: unknown) => e as ReferenceStoreError);
+    const error = await refusalOf(
+      ratifyReference(store2, { scope: SCOPE, candidate: bad, image: IMAGE, now: clock }),
+    );
 
-    expect(error).toBeInstanceOf(ReferenceStoreError);
-    expect((error as ReferenceStoreError).code).toBe('validation-failed');
-    expect((error as ReferenceStoreError).errors.map((e) => e.code).sort()).toEqual([
+    expect(error.code).toBe('validation-failed');
+    expect(error.errors.map((e) => e.code).sort()).toEqual([
       'missing-derivation',
       'no-required-cases',
     ]);
@@ -204,22 +241,15 @@ describe('revising a reference', () => {
     const store = createInMemoryReferenceStore();
     await ratifyReference(store, { scope: SCOPE, candidate: candidate(2), image: IMAGE, now: clock });
 
-    const duplicate = await ratifyReference(store, {
-      scope: SCOPE,
-      candidate: candidate(2),
-      image: IMAGE,
-      now: clock,
-    }).catch((e: unknown) => e as ReferenceStoreError);
-    expect(duplicate).toBeInstanceOf(ReferenceStoreError);
+    const duplicate = await refusalOf(
+      ratifyReference(store, { scope: SCOPE, candidate: candidate(2), image: IMAGE, now: clock }),
+    );
     expect(duplicate.code).toBe('revision-conflict');
     expect(duplicate.message).toMatch(/already exists/);
 
-    const lower = await ratifyReference(store, {
-      scope: SCOPE,
-      candidate: candidate(1),
-      image: IMAGE,
-      now: clock,
-    }).catch((e: unknown) => e as ReferenceStoreError);
+    const lower = await refusalOf(
+      ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock }),
+    );
     expect(lower.code).toBe('revision-conflict');
     expect(lower.message).toMatch(/never reused/);
   });
@@ -232,22 +262,16 @@ describe('revising a reference', () => {
     await retractReference(store, SCOPE);
     expect(activeRevision(await store.listRevisions(SCOPE))).toBeUndefined();
 
-    const error = await ratifyReference(store, {
-      scope: SCOPE,
-      candidate: candidate(3),
-      image: IMAGE,
-      now: clock,
-    }).catch((e: unknown) => e as ReferenceStoreError);
-    expect((error as ReferenceStoreError).code).toBe('revision-conflict');
+    const sameNumber = await refusalOf(
+      ratifyReference(store, { scope: SCOPE, candidate: candidate(3), image: IMAGE, now: clock }),
+    );
+    expect(sameNumber.code).toBe('revision-conflict');
 
-    const lower = await ratifyReference(store, {
-      scope: SCOPE,
-      candidate: candidate(2),
-      image: IMAGE,
-      now: clock,
-    }).catch((e: unknown) => e as ReferenceStoreError);
-    expect((error as ReferenceStoreError).code).toBe('revision-conflict');
-    expect((lower as ReferenceStoreError).message).toMatch(/never reused/);
+    const lower = await refusalOf(
+      ratifyReference(store, { scope: SCOPE, candidate: candidate(2), image: IMAGE, now: clock }),
+    );
+    expect(lower.code).toBe('revision-conflict');
+    expect(lower.message).toMatch(/never reused/);
 
     // Moving forward past the retraction is allowed.
     await expect(
@@ -346,13 +370,13 @@ describe('retracting a reference', () => {
 
   it('refuses to retract what was never ratified, distinctly from an already-retracted one', async () => {
     const store = createInMemoryReferenceStore();
-    const never = await retractReference(store, SCOPE).catch((e: unknown) => e as ReferenceStoreError);
-    expect((never as ReferenceStoreError).code).toBe('not-ratified');
+    const never = await refusalOf(retractReference(store, SCOPE));
+    expect(never.code).toBe('not-ratified');
 
     await ratifyReference(store, { scope: SCOPE, candidate: candidate(1), image: IMAGE, now: clock });
     await retractReference(store, SCOPE);
-    const again = await retractReference(store, SCOPE).catch((e: unknown) => e as ReferenceStoreError);
-    expect((again as ReferenceStoreError).code).toBe('already-retracted');
+    const again = await refusalOf(retractReference(store, SCOPE));
+    expect(again.code).toBe('already-retracted');
   });
 
   it('activeRevision does not fall back to the newest row when it is retracted', async () => {
