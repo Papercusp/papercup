@@ -282,6 +282,11 @@ export interface PlanItemStamp {
   item_ids: string[];
 }
 
+type PlanItemColumnRow = {
+  source_plan_slug: string | null;
+  source_plan_item_ids: string[] | null;
+};
+
 function extractPlanItemStampFromPayload(payload: unknown): PlanItemStamp | null {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const raw = (payload as Record<string, unknown>).plan_item;
@@ -311,29 +316,31 @@ async function resolvePlanItemStampFromColumns(
   // `{ payload, harness }` object with no id/family; those legitimately have
   // no DB row to look up, so bail rather than query with an undefined id).
   if ((workItem.family !== 'feature' && workItem.family !== 'issue') || !workItem.id) return null;
+  const workItemId = workItem.id;
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  const rows = workItem.family === 'issue'
-    ? await (async () => {
-        const { issuesScopeWorkspace } = await import('../issues-engineer');
-        return sql<Array<{ source_plan_slug: string | null; source_plan_item_ids: string[] | null }>>`
-          SELECT source_plan_slug, source_plan_item_ids
-            FROM harness_shared.engineer_issues
-           WHERE issue_id = ${workItem.id}
-             AND workspace_id = ${issuesScopeWorkspace()}
-             AND ${workItem.harness ? sql`base_harness_slug = ${workItem.harness}` : sql`TRUE`}
-           LIMIT 1`;
-      })()
-    : await (async () => {
-        const { activeWorkspaceId } = await import('../workspace-registry');
-        return sql<Array<{ source_plan_slug: string | null; source_plan_item_ids: string[] | null }>>`
-          SELECT source_plan_slug, source_plan_item_ids
-            FROM harness_shared.harness_features_consolidated
-           WHERE feature_id = ${workItem.id}
-             AND workspace_id = ${activeWorkspaceId()}
-             AND ${workItem.harness ? sql`harness_slug = ${workItem.harness}` : sql`TRUE`}
-           LIMIT 1`;
-      })();
+  let rows: PlanItemColumnRow[];
+  if (workItem.family === 'issue') {
+    const { issuesScopeWorkspace } = await import('../issues-engineer');
+    const harness = workItem.harness;
+    rows = await sql<PlanItemColumnRow[]>`
+      SELECT source_plan_slug, source_plan_item_ids
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = ${workItemId}
+         AND workspace_id = ${issuesScopeWorkspace()}
+         AND ${harness ? sql`base_harness_slug = ${harness}` : sql`TRUE`}
+       LIMIT 1`;
+  } else {
+    const { activeWorkspaceId } = await import('../workspace-registry');
+    const harness = workItem.harness;
+    rows = await sql<PlanItemColumnRow[]>`
+      SELECT source_plan_slug, source_plan_item_ids
+        FROM harness_shared.harness_features_consolidated
+       WHERE feature_id = ${workItemId}
+         AND workspace_id = ${activeWorkspaceId()}
+         AND ${harness ? sql`harness_slug = ${harness}` : sql`TRUE`}
+       LIMIT 1`;
+  }
   const row = rows[0];
   if (!row?.source_plan_slug || !row.source_plan_item_ids || row.source_plan_item_ids.length === 0) return null;
   return { plan_slug: row.source_plan_slug, item_ids: row.source_plan_item_ids };
