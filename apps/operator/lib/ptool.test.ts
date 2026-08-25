@@ -496,6 +496,27 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
+  it('retries a proxy-generated handshake-bulkhead 429, then succeeds', async () => {
+    const proxyError = Object.assign(
+      new Error('Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_handshake_overloaded","retryAfterSec":2}'),
+      { code: 429 },
+    );
+    const wrapped = new Error(formatOperatorConnectFailure('http://127.0.0.1:9071', proxyError), {
+      cause: proxyError,
+    });
+    const client = { close: vi.fn() };
+    const connectOnce = vi.fn().mockRejectedValueOnce(wrapped).mockResolvedValue(client);
+    const sleep = vi.fn(async () => {});
+
+    expect(isExplicitHttpConnectFailure(wrapped)).toBe(true);
+    expect(isRetryableLocalHttpConnectFailure(wrapped)).toBe(true);
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:9071', {}, { maxAttempts: 2, sleep }),
+    ).resolves.toBe(client);
+    expect(connectOnce).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
+
   it('does not classify arbitrary local 502s or the proxy unavailable 503 as retryable', async () => {
     const generic502 = Object.assign(new Error('bad gateway'), { code: 502 });
     const proxy503 = Object.assign(new Error('{"error":"mcp_proxy_upstream_unavailable"}'), { code: 503 });

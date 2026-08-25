@@ -1179,7 +1179,14 @@ export function isRetryableLocalHttpConnectFailure(error) {
     if (seen.has(current)) break;
     seen.add(current);
     const status = Number(current.code);
-    if (status === 502 && /mcp_proxy_upstream_error/i.test(errorDetail(current))) return true;
+    const detail = errorDetail(current);
+    if (status === 502 && /mcp_proxy_upstream_error/i.test(detail)) return true;
+    // The proxy's handshake bulkhead (and its global admission ceiling) refuse
+    // before forwarding with a typed 429. The initial MCP connect has not
+    // dispatched a tool yet, so retrying this local, proxy-generated refusal is
+    // safe and lets the reconnect herd drain instead of surfacing a terminal
+    // "could not reach operator" error to ptool callers.
+    if (status === 429 && /mcp_proxy_(?:handshake_)?overloaded/i.test(detail)) return true;
     current = current.cause;
   }
   return false;
