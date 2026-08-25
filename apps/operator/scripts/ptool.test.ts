@@ -6,8 +6,10 @@ import {
   buildCallToolParams,
   buildMcpUrl,
   escapeJsonStringControls,
+  parseArgs,
   parseJsonInput,
   resolveContextTier,
+  resolveHarnessScope,
   resolveTokenPath,
   resolveTokenPaths,
   formatToolCallFailure,
@@ -61,6 +63,13 @@ describe('ptool bootstrap dependencies', () => {
 });
 
 describe('ptool MCP identity binding', () => {
+  it('accepts an explicit idempotency receipt in both CLI flag forms', () => {
+    expect(parseArgs(['work_items:checkpoint', '--idempotency-key', 'receipt-1']).idempotencyKey)
+      .toBe('receipt-1');
+    expect(parseArgs(['events:cancel', '--idempotency-key=receipt-2']).idempotencyKey)
+      .toBe('receipt-2');
+  });
+
   it('carries the live PAPERCUSP_SID as the MCP client query parameter', () => {
     const url = buildMcpUrl('http://127.0.0.1:3170', {
       workspace: 'papercusp-workspace',
@@ -79,6 +88,15 @@ describe('ptool MCP identity binding', () => {
     expect(resolveContextTier({ env: { NODE_ENV: 'test', PAPERCUSP_CONTEXT_TIER: ' full ' } })).toBe('full');
     expect(buildMcpUrl('http://127.0.0.1:3170', { contextTier: 'full' }).searchParams.get('ctx_tier'))
       .toBe('full');
+  });
+
+  it('inherits the active harness from the su environment, with an explicit flag taking precedence', () => {
+    expect(resolveHarnessScope({ env: { PAPERCUSP_HARNESS_SLUG: ' papercusp ' } })).toBe('papercusp');
+    expect(resolveHarnessScope({
+      harness: 'cli-harness',
+      env: { PAPERCUSP_HARNESS_SLUG: 'papercusp' },
+    })).toBe('cli-harness');
+    expect(resolveHarnessScope({ env: { NODE_ENV: 'test' } })).toBeNull();
   });
 });
 
@@ -128,6 +146,9 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('events:cancel')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('work_items:checkpoint')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('loop:checkpoint')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('loop:end')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'loop:end',
@@ -137,6 +158,14 @@ describe('ptool call deadlines', () => {
       name: 'work_items:get',
       args: { id: 'EI-21281814895308307' },
     })).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'events:cancel',
+      args: { delivery_id: 164257 },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'work_items:checkpoint',
+      args: { id: 'WI-41055', checkpoint: 'resume' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:orient')).toBe(60_000);
     expect(timeoutForTool('release:trace')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:presence')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
@@ -223,6 +252,17 @@ describe('ptool tools/call failure diagnostics', () => {
     expect(message).toContain('the tool call may have executed');
     expect(message).toContain('verify its state before retrying');
     expect(message).toContain('Do not blindly retry a mutation');
+  });
+
+  it('surfaces the idempotency receipt needed to replay an unknown outcome', () => {
+    const error = Object.assign(new Error('Request timed out'), { code: -32001 });
+    const message = formatToolCallFailure('work_items:checkpoint', error, {
+      idempotencyKey: 'receipt-unknown-1',
+    });
+
+    expect(message).toContain('outcome=unknown');
+    expect(message).toContain('idempotencyKey=receipt-unknown-1');
+    expect(message).toContain('--idempotency-key receipt-unknown-1');
   });
 
   it('does not mislabel a known pre-dispatch pressure shed as ambiguous', () => {

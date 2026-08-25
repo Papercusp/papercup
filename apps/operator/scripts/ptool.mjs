@@ -94,6 +94,7 @@ export function parseArgs(argv = []) {
     workspace: null,
     harness: null,
     projection: null,
+    idempotencyKey: null,
     raw: false,
     url: null,
     tokenFile: null,
@@ -110,6 +111,7 @@ export function parseArgs(argv = []) {
     '--workspace': 'workspace',
     '--harness': 'harness',
     '--projection': 'projection',
+    '--idempotency-key': 'idempotencyKey',
     '--url': 'url',
     '--token-file': 'tokenFile',
   };
@@ -171,6 +173,24 @@ export function resolveWorkspaceScope({ workspace = null, env = process.env, cwd
     if (match?.[1] && match[1] !== '.papercusp') return match[1];
   }
   return null;
+}
+
+/**
+ * Resolve the harness scope for a ptool session. An explicit CLI flag wins;
+ * otherwise inherit the harness exported by a tracked su/psu session. A
+ * missing harness stays null deliberately — ptool must not guess a project
+ * when the caller is not harness-scoped.
+ * @param {{harness?: string | null, env?: EnvironmentMap}} [options]
+ * @returns {string | null}
+ */
+export function resolveHarnessScope({ harness = null, env = process.env } = {}) {
+  const explicit = typeof harness === 'string' ? harness.trim() : '';
+  if (explicit) return explicit;
+
+  const fromEnv = typeof env?.PAPERCUSP_HARNESS_SLUG === 'string'
+    ? env.PAPERCUSP_HARNESS_SLUG.trim()
+    : '';
+  return fromEnv || null;
 }
 
 /**
@@ -875,6 +895,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // may-have-executed timeout.
   ['plans:set-plan-status', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['work_items:get', PTOOL_WORK_ITEMS_GET_TIMEOUT_MS],
+  // EI-21385061122156093: these durable writers can each spend the full
+  // coordination/serialization window before returning their receipt. A 30s
+  // client cutoff abandoned all three calls in one concurrent batch; loop's
+  // writer was already covered below, so keep the other two on the same 60s
+  // budget and preserve the server's typed result or timeout envelope.
+  ['events:cancel', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['work_items:checkpoint', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21269176538636068: these continuity/control-plane calls perform
   // multi-leg coordination reads or writes of their own. Under pool
   // contention they can legitimately outlive the ordinary 30s ptool
@@ -972,13 +999,16 @@ function errorDetail(error) {
  * separately because that signal is safe to retry and cannot have executed.
  * Pure — exported for focused diagnostics tests.
  */
-export function formatToolCallFailure(toolName, error) {
+export function formatToolCallFailure(toolName, error, { idempotencyKey } = {}) {
   const name = typeof toolName === 'string' && toolName ? toolName : '(unknown tool)';
   const detail = errorDetail(error);
   if (isLoopPressureShed(error)) {
     return `ptool: tools/call ${name} was rejected before dispatch: ${detail}; no tool execution occurred.`;
   }
-  return `ptool: tools/call ${name} failed: ${detail}; the tool call may have executed — verify its state before retrying. Do not blindly retry a mutation.`;
+  const receipt = typeof idempotencyKey === 'string' && idempotencyKey
+    ? ` outcome=unknown; idempotencyKey=${idempotencyKey}; after reconciling state, replay this logical call with --idempotency-key ${idempotencyKey} instead of creating a new invocation.`
+    : '';
+  return `ptool: tools/call ${name} failed: ${detail}; the tool call may have executed — verify its state before retrying. Do not blindly retry a mutation.${receipt}`;
 }
 
 export async function callToolWithPressureRetry(
@@ -1448,6 +1478,7 @@ Flags:
   --script-file <path>            direct code:run JavaScript source (quoting-free)
   --workspace <ws>                scope the session (needed for harness:*, features:*, …)
   --harness <slug>                scope the session to a harness
+  --idempotency-key <key>         reuse one logical tools/call receipt after reconciling an unknown outcome
   --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)
   PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)
   --raw                           print the raw result text (no JSON pretty-print)
@@ -1493,7 +1524,8 @@ async function main() {
   }
   const operatorUrl = args.url || OPERATOR_URL;
   const workspace = resolveWorkspaceScope({ workspace: args.workspace });
-  const scope = { workspace, harness: args.harness, tokenFile: args.tokenFile };
+  const harness = resolveHarnessScope({ harness: args.harness });
+  const scope = { workspace, harness, tokenFile: args.tokenFile };
   let client = await connectWithLocalRetry(
     connect,
     operatorUrl,
@@ -1574,7 +1606,7 @@ async function main() {
       }
       callArgs = mergeDispatchProjection(callArgs, projection);
     }
-    callArgs = mergeConvenienceArgs(callArgs, { workspace, harness: args.harness }, tool.inputSchema);
+    callArgs = mergeConvenienceArgs(callArgs, { workspace, harness }, tool.inputSchema);
 
     // Interactive confirmation (only when we prompted — a scripted --json/
     // --json-file/stdin call is non-interactive by intent).
@@ -1591,6 +1623,9 @@ async function main() {
     }
 
     let result;
+    // Keep the receipt outside the try so a transport failure can surface the
+    // exact key needed to replay the completed server result.
+    const idempotencyKey = args.idempotencyKey || randomUUID();
     try {
       const recovered = await callToolWithReplayRecovery(
         client,
@@ -1598,7 +1633,7 @@ async function main() {
           outputSchema: tool.outputSchema,
           // One key belongs to this logical CLI invocation. Reconnect recovery
           // deliberately reuses these params so the server can deduplicate it.
-          idempotencyKey: randomUUID(),
+          idempotencyKey,
         }),
         {
           timeoutMs: timeoutForTool(toolName, callArgs),
@@ -1608,7 +1643,7 @@ async function main() {
       client = recovered.client;
       result = recovered.result;
     } catch (error) {
-      console.error(formatToolCallFailure(toolName, error));
+      console.error(formatToolCallFailure(toolName, error, { idempotencyKey }));
       process.exitCode = 1;
       return;
     }
