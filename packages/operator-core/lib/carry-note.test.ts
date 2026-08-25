@@ -26,6 +26,7 @@ import {
   lintUncheckedImperativeActions,
   rescueTaggedCarryNoteBlob,
   mergeCarryRows,
+  patchExistingCheckEntries,
   carryRowKey,
   sanitizeCarryRowId,
   CARRY_ROW_ID_MAX,
@@ -1188,6 +1189,50 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
       });
       expect(merged.checks.map((c) => c.claim)).toEqual(['claim 1', 'claim 2', 'claim 3']);
       expect(merged.checks[1]?.verified).toContain('freshly re-verified');
+    });
+
+    it('patches selected keyed rows in an over-cap legacy note without evicting its tail', () => {
+      const legacyRowCount = CARRY_NOTE_MAX_CHECKS * 4 + 2;
+      const prior = withCarryNoteChecks(
+        'legacy body',
+        Array.from({ length: legacyRowCount }, (_, i) => ({
+          id: `legacy-${String(i + 1).padStart(2, '0')}`,
+          claim: `legacy claim ${i + 1}`,
+          recheck: `probe legacy ${i + 1}`,
+          verified: `legacy evidence ${i + 1}`,
+        })),
+      );
+
+      const patched = patchExistingCheckEntries(
+        [
+          { id: 'legacy-03', claim: 'legacy claim 3 refreshed', verified: 'fresh evidence 3' },
+          { id: 'legacy-49', claim: 'legacy claim 49 refreshed', verified: 'fresh evidence 49' },
+        ],
+        splitCarryNoteChecks(prior).checks,
+        1_777_000_000_000,
+      );
+
+      expect(patched).not.toBeNull();
+      expect(patched).toHaveLength(legacyRowCount);
+      expect(patched?.[2]).toMatchObject({ id: 'legacy-03', claim: 'legacy claim 3 refreshed' });
+      expect(patched?.[48]).toMatchObject({ id: 'legacy-49', claim: 'legacy claim 49 refreshed' });
+      expect(patched?.[0]).toMatchObject({ claim: 'legacy claim 1', verified: 'legacy evidence 1' });
+      expect(patched?.[legacyRowCount - 1]).toMatchObject({ claim: `legacy claim ${legacyRowCount}` });
+
+      const merged = mergeCarryRows({
+        priorNote: prior,
+        baseNote: 'refresh body',
+        checks: [
+          { id: 'legacy-03', claim: 'legacy claim 3 refreshed', verified: 'fresh evidence 3' },
+          { id: 'legacy-49', claim: 'legacy claim 49 refreshed', verified: 'fresh evidence 49' },
+        ],
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+      expect(merged.checks).toHaveLength(legacyRowCount);
+      expect(merged.droppedChecks).toEqual([]);
+      expect(merged.note).toContain('legacy claim 1');
+      expect(merged.note).toContain(`legacy claim ${legacyRowCount}`);
     });
 
     it('merges WALLS by the same contract — an owner-gated commitment is the worst row to drop', () => {

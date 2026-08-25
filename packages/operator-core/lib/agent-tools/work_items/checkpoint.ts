@@ -153,6 +153,7 @@ import {
   coerceCarryRowShape,
   type CarryArgRepair,
   normalizeCheckEntries,
+  patchExistingCheckEntries,
   splitCarryNoteChecks,
   truncateCarryField,
   withCarryNoteChecks,
@@ -172,6 +173,10 @@ function appendChecksOverflowCount(
 ): number {
   if (suppliedChecks === undefined) return 0;
   const priorChecks = splitCarryNoteChecks(priorNote).checks;
+  // A legacy note may exceed today's cap. Updating only rows that already exist
+  // is an in-place patch, not an overflowing union, so preserve the full legacy
+  // evidence instead of refusing the refresh or normalizing away its tail.
+  if (suppliedChecks.length > 0 && patchExistingCheckEntries(suppliedChecks, priorChecks) !== null) return 0;
   const unionKeys = new Set(
     [...suppliedChecks, ...priorChecks]
       .filter((row) => (row.claim ?? '').trim().length > 0)
@@ -784,6 +789,10 @@ export default defineTool({
                     ? joinCheckpoint(priorSplit.body, incomingBody)
                     : incomingBody;
                 if (shouldAppendRefresh) autoAppendedRefresh = true;
+                const patchedExistingChecks =
+                  (additiveChecks || preservePriorOnShrink) && suppliedChecks !== undefined && suppliedChecks.length > 0
+                    ? patchExistingCheckEntries(suppliedChecks, prior, Date.now())
+                    : null;
                 // EI-19944669306930709: under `append: true` the supplied rows are
                 // UNIONED onto the carried set instead of replacing it. `append` is an
                 // explicit declaration that this write is ADDITIVE, and it governed only
@@ -825,7 +834,9 @@ export default defineTool({
                 // silently evicting the very rows it promised to preserve.
                 const preserveEmptyAdditiveChecks = additiveChecks && suppliedChecks?.length === 0;
                 const merged =
-                  effectiveChecks !== undefined
+                  patchedExistingChecks !== null
+                    ? patchedExistingChecks
+                    : effectiveChecks !== undefined
                     ? preserveEmptyAdditiveChecks
                       ? prior
                       : normalizeCheckEntries(effectiveChecks, prior)
@@ -927,7 +938,11 @@ export default defineTool({
                 const priorSplit = splitCarryNoteChecks(priorNote);
                 const priorChecks = priorSplit.checks;
                 const effectiveChecks = additiveChecks ? [...(suppliedChecks ?? []), ...priorChecks] : suppliedChecks;
-                const merged = normalizeCheckEntries(effectiveChecks ?? [], priorChecks);
+                const patchedExistingChecks =
+                  additiveChecks && (suppliedChecks?.length ?? 0) > 0
+                    ? patchExistingCheckEntries(suppliedChecks ?? [], priorChecks)
+                    : null;
+                const merged = patchedExistingChecks ?? normalizeCheckEntries(effectiveChecks ?? [], priorChecks);
                 const rendered = withCarryNoteChecks(priorSplit.body, merged);
                 return rendered.length > CHECKPOINT_CAP
                   ? `checks_body_overflow — this body-preserving checks patch would render ${rendered.length} chars, exceeding the ${CHECKPOINT_CAP}-char checkpoint cap and evicting the oldest narrative content. Refusing the write; retry without checks or shorten the checks before retrying, or pass { confirmShrink: true } only if that loss is intentional.`

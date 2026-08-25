@@ -1087,6 +1087,51 @@ export function normalizeCheckEntries(
 }
 
 /**
+ * Patch only rows that already exist in a carried note, preserving the prior
+ * order and row count even when the note predates today's row cap. A normal
+ * merge intentionally normalizes the whole union and therefore cannot safely
+ * refresh a selected row in a legacy over-cap note: the cap would evict the
+ * unmentioned tail. Returning null when any supplied row is new keeps callers'
+ * existing additive overflow policy unchanged for true upserts.
+ *
+ * Stable ids are authoritative, with the same narrow id-introduction migration
+ * that the normalizer uses: an id-bearing row may match an id-less prior row
+ * when its claim is unchanged. The returned array is a new array, but prior row
+ * objects that were not selected are retained as-is.
+ */
+export function patchExistingCheckEntries(
+  entries: ReadonlyArray<{
+    id?: string;
+    claim: string;
+    recheck?: string;
+    verified?: string;
+    contested?: string;
+    sinceMs?: number;
+  }>,
+  prior: ReadonlyArray<CheckEntry>,
+  nowMs: number = Date.now(),
+): CheckEntry[] | null {
+  if (entries.length === 0) return [...prior];
+
+  const priorByKey = new Map(prior.map((c) => [carryRowKey(c), c] as const));
+  const updates = new Map<CheckEntry, CheckEntry>();
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const claim = (entry.claim ?? '').trim();
+    const key = carryRowKey(entry);
+    if (!claim || seen.has(key)) continue;
+    seen.add(key);
+
+    const existing = priorRowForIncoming(entry, prior, priorByKey);
+    if (!existing) return null;
+    const updated = normalizeCheckEntries([entry], [existing], nowMs)[0];
+    if (updated) updates.set(existing, updated);
+  }
+
+  return prior.map((row) => updates.get(row) ?? row);
+}
+
+/**
  * WI-6813: the walls+checks merge, extracted PURE so it can run INSIDE
  * {@link setCarryNoteWithPrior}'s locked transaction (via its `transform` seam)
  * instead of as a caller-side read → merge → write. That caller-side shape has a
@@ -1221,6 +1266,10 @@ export function mergeCarryRows(opts: {
    *  prior set in — the only list against which "your row did not fit" is decidable. */
   const suppliedWalls = opts.walls ?? (rawParts.walls.length > 0 ? rawParts.walls : undefined);
   const suppliedChecks = opts.checks ?? (rawCheckParts.checks.length > 0 ? rawCheckParts.checks : undefined);
+  const patchedChecks =
+    merging && suppliedChecks !== undefined && suppliedChecks.length > 0
+      ? patchExistingCheckEntries(suppliedChecks, priorCheckParts.checks, opts.nowMs)
+      : null;
   const walls =
     opts.walls !== undefined
       ? normalizeWallEntries(
@@ -1236,7 +1285,9 @@ export function mergeCarryRows(opts: {
           )
         : priorParts.walls;
   const checks =
-    opts.checks !== undefined
+    patchedChecks !== null
+      ? patchedChecks
+      : opts.checks !== undefined
       ? normalizeCheckEntries(
           upsertOntoPrior(opts.checks, priorCheckParts.checks, merging, CARRY_NOTE_MAX_CHECKS),
           priorCheckParts.checks,

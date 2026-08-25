@@ -1730,6 +1730,17 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             })),
           );
 
+        const legacyPriorWithManyKeyedRows = () =>
+          withCarryNoteChecks(
+            'legacy checkpoint body',
+            Array.from({ length: CARRY_NOTE_MAX_CHECKS * 4 + 2 }, (_, i) => ({
+              id: `legacy-${String(i + 1).padStart(2, '0')}`,
+              claim: `LEGACY-${String(i + 1).padStart(2, '0')} holds`,
+              recheck: `probe legacy ${i + 1}`,
+              verified: `legacy evidence ${i + 1}`,
+            })),
+          );
+
         it('UNIONS a supplied row onto the carried set instead of dropping the rest', async () => {
           await seed([
             { claim: 'A holds', recheck: 'probe A' },
@@ -1867,6 +1878,49 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS + 1 });
           expect(r.error).toBeUndefined();
           expect(readCurrent()).toBe(prior);
+        });
+
+        it('refreshes selected keyed rows in an over-cap legacy note without evicting its evidence', async () => {
+          const prior = legacyPriorWithManyKeyedRows();
+          const readCurrent = installLegacyPrior(prior);
+          const legacyRowCount = CARRY_NOTE_MAX_CHECKS * 4 + 2;
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'current verifier body',
+            rowsMode: 'merge',
+            checks: [
+              {
+                id: 'legacy-03',
+                claim: 'LEGACY-03 refreshed holds',
+                recheck: 'probe refreshed legacy 3',
+                verified: 'fresh evidence 3',
+              },
+              {
+                id: 'legacy-21',
+                claim: 'LEGACY-21 refreshed holds',
+                recheck: 'probe refreshed legacy 21',
+                verified: 'fresh evidence 21',
+              },
+              {
+                id: 'legacy-49',
+                claim: 'LEGACY-49 refreshed holds',
+                recheck: 'probe refreshed legacy 49',
+                verified: 'fresh evidence 49',
+              },
+            ],
+          })) as { ok: boolean; checks: number; checksDropped?: string[]; errorCode?: string };
+
+          expect(r).toMatchObject({ ok: true, checks: legacyRowCount });
+          expect(r.checksDropped).toBeUndefined();
+          expect(r.errorCode).toBeUndefined();
+          const stored = readCurrent();
+          expect(stored).toContain('- ✓ [#legacy-03] LEGACY-03 refreshed holds');
+          expect(stored).toContain('- ✓ [#legacy-21] LEGACY-21 refreshed holds');
+          expect(stored).toContain('- ✓ [#legacy-49] LEGACY-49 refreshed holds');
+          expect(stored).not.toContain('LEGACY-03 holds');
+          expect(stored).toContain('LEGACY-01 holds');
+          expect(stored).toContain('LEGACY-50 holds');
         });
 
         /**
