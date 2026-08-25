@@ -184,19 +184,29 @@ describe("<InboxBulkReport>", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("hydrates the existing inline recommendation card only when its drill-in opens", () => {
+  it("hydrates only the active focused decision desk and closes the previous desk", () => {
     render(
       <InboxBulkReport
-        run={{ ...run, totalItems: 1, recommended: 1, autoResolved: 0 }}
-        runItems={[runItem()]}
-        attentionItems={[attention("a")]}
+        run={{ ...run, totalItems: 2, recommended: 2, autoResolved: 0 }}
+        runItems={[runItem(), runItem({ itemId: "b", position: 1 })]}
+        attentionItems={[attention("a"), attention("b")]}
         onClose={vi.fn()}
       />,
     );
 
     expect(H.hydrate).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("inbox-bulk-drill-a"));
+    expect(screen.getByTestId("inbox-bulk-decision-desk-a")).toBeTruthy();
     expect(screen.getByTestId("recommendation-a")).toBeTruthy();
     expect(H.hydrate).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId("inbox-bulk-drill-b"));
+    expect(screen.queryByTestId("inbox-bulk-decision-desk-a")).toBeNull();
+    expect(screen.getByTestId("inbox-bulk-decision-desk-b")).toBeTruthy();
+    expect(screen.getByTestId("recommendation-b")).toBeTruthy();
+    expect(
+      screen.getByTestId("inbox-bulk-drill-a").getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(H.hydrate).toHaveBeenCalledTimes(2);
   });
 });
