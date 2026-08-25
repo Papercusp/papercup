@@ -1497,6 +1497,12 @@ export default defineTool({
       .describe(
         "Harness the plan belongs to. Defaults to the session's harness scope; required when the session is unscoped.",
       ),
+    type: z
+      .enum(['single', 'paired'])
+      .optional()
+      .describe(
+        "Fleet TYPE (D-008), which also SELECTS THE OPTION SHAPE this call accepts (D-009). 'single' (default) is today's fleet, unchanged: N independent members configured by the FLAT knobs (agent/model/count/headless/account/carry/…). 'paired' launches N director↔implementer pairs and takes those same knobs as two per-role groups instead — `directors:{…}` and `implementers:{…}` — so a top-tier visible director can sit beside cheaper headless implementers. The shapes do not merge: passing per-role groups with type 'single', or flat per-member knobs with type 'paired', is REJECTED with invalid_args naming the expected shape, never coerced (a flat value broadcast to both roles is how you end up with a fleet of directors running the implementer's model).",
+      ),
     agent: z
       .enum(['claude', 'omp', 'codex'])
       .optional()
@@ -2146,7 +2152,15 @@ export default defineTool({
         // Leaderless while a leader is being spawned — see the note above. Installed by
         // setFleetLeader only after that agent's terminal actually opens.
         leaderOwnerId: wantsSpawnedLeader ? null : ownerId,
+        // D-008 / P-010. Applies on FIRST INSERT only; a top-up of an existing
+        // fleet keeps its stored type, which is why launchType below reads the
+        // RECORD rather than the argument.
+        fleetType: launchOptions.type,
       });
+      // The authoritative type for the rest of this launch is the one on the
+      // durable row — not what the caller asked for. On a top-up of an existing
+      // fleet those differ, and the members must match the fleet they join.
+      launchFleetType = record.fleetType;
       priorLaunchTransaction = record.lastLaunchTransaction ?? null;
       if (wantsSpawnedLeader && !created) {
         // Idempotency beats the flag: a relaunch/top-up of an existing fleet must not
