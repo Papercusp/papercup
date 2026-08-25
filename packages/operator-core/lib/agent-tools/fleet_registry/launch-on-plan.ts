@@ -57,7 +57,9 @@ import {
   setFleetLaunchTransaction,
   type FleetLaunchTransaction,
   type FleetHeadcountConfig,
+  type FleetType,
 } from '../../agent-fleets-store';
+import { describeLaunchRoles, resolveLaunchOptions } from './pair-launch-options';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
 import {
@@ -1463,6 +1465,25 @@ function stampLaunchOutcome(
   });
 }
 
+/**
+ * One role's slice of a PAIRED launch (D-009 / P-011). Deliberately the same
+ * knobs as the flat single-fleet set, minus `count` — a paired fleet is 1:1, so
+ * N lives at the top level (D-012) and a per-role count is refused rather than
+ * ignored. Declared once and used for both roles so the two can never drift.
+ */
+const PAIRED_ROLE_ARGS = z.object({
+  agent: z.enum(['claude', 'omp', 'codex']).optional(),
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  headless: z.boolean().optional(),
+  account: z.string().optional(),
+  carry: z.enum(['warm', 'cold']).optional(),
+  // Accepted by the SCHEMA so the refusal comes from resolveLaunchOptions with a
+  // real repair ("pair count lives at the top level"), rather than as an opaque
+  // zod "unrecognized key" that does not say where to put it instead.
+  count: z.number().int().min(1).optional(),
+});
+
 export default defineTool({
   name: 'fleet:launch-on-plan',
   description:
@@ -1497,6 +1518,12 @@ export default defineTool({
       .describe(
         "Harness the plan belongs to. Defaults to the session's harness scope; required when the session is unscoped.",
       ),
+    directors: PAIRED_ROLE_ARGS.optional().describe(
+      "type:'paired' ONLY (D-009): the DIRECTOR half of every pair — the session that decomposes the plan item into milestones, issues one directive at a time, verifies each from the ledger, and closes the milestone work items. Give it the strongest model you are willing to pay for (D-006): its job is judgement, and it never loads file bodies so it stays cheap per turn. Each knob here is independent of `implementers`. Passing this on a type:'single' fleet is rejected.",
+    ),
+    implementers: PAIRED_ROLE_ARGS.optional().describe(
+      "type:'paired' ONLY (D-009): the IMPLEMENTER half of every pair — the session that edits, tests and reports, and cannot self-direct (it is parked between directives and tool-denied from completing work items or arming loops). May be a CHEAPER tier than the director (D-006), and a different model FAMILY is preferred so the pair's errors decorrelate. Passing this on a type:'single' fleet is rejected.",
+    ),
     type: z
       .enum(['single', 'paired'])
       .optional()
@@ -1716,6 +1743,32 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    // D-009 / P-011: branch the option shape on the declared type BEFORE any
+    // other work. A shape mismatch is a caller error that costs nothing to
+    // detect and everything to discover late — after terminals have opened on
+    // the wrong per-role settings there is no cheap undo.
+    const launchOptions = resolveLaunchOptions({
+      type: args.type,
+      count: args.count,
+      agent: args.agent,
+      // No flat `effort` knob exists on this tool — effort rides inside the
+      // model spec (`<modelId>[:<effort>]`). The per-role groups DO take it
+      // separately, which is why PER_ROLE_KNOBS still lists it.
+      model: args.model,
+      headless: args.headless,
+      account: args.account,
+      carry: args.carry,
+      directors: args.directors,
+      implementers: args.implementers,
+    });
+    if (!launchOptions.ok) {
+      return err(launchOptions.message);
+    }
+    // Provisional: the AUTHORITATIVE type is re-read off the registry row after
+    // createFleetIfAbsent, because a top-up joins an existing fleet whose stored
+    // type wins over whatever this call asked for.
+    let launchFleetType: FleetType = launchOptions.type;
+
     const { identity, ownerId, workspaceId: callerWs } = resolveFleetCaller(ctx);
     // An explicit `workspace` arg (psu --workspace) scopes the fleet + envelope + every
     // member; otherwise the launch session's workspace (never the '*' wildcard).
