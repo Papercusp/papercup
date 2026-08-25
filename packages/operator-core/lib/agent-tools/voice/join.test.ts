@@ -15,8 +15,11 @@ import { joinVoiceChannel } from '../../voice-node/manager';
 const joinM = vi.mocked(joinVoiceChannel);
 const tool = (await import('./join')).default;
 
-type Out = { content: { text: string }[] };
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+// voice:join returns the canonical `{ data }` shape (token-opt P-003, migrated
+// 2026-08-25 / WI-41709). Pinned deliberately rather than accepting both shapes,
+// so a revert to inline JSON fails here instead of passing quietly.
+type Out = { data: Record<string, unknown> };
+const body = (o: Out) => o.data;
 
 beforeEach(() => vi.clearAllMocks());
 

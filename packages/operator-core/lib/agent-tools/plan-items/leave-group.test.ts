@@ -18,8 +18,11 @@ import { leaveWorkGroup } from '../../plan-items/work-group';
 const leaveM = vi.mocked(leaveWorkGroup);
 const tool = (await import('./leave-group')).default;
 
-type Out = { content: { text: string }[] };
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+// plan_items:leave_group returns the canonical `{ data }` shape (token-opt P-003,
+// migrated 2026-08-25 / WI-41709). Pinned deliberately rather than accepting
+// both shapes, so a revert to inline JSON fails here instead of passing quietly.
+type Out = { data: Record<string, unknown> };
+const body = (o: Out) => o.data;
 
 beforeEach(() => vi.clearAllMocks());
 

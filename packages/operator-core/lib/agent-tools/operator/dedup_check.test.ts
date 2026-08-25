@@ -32,8 +32,11 @@ const MAKE_CTX = (over: Record<string, unknown> = {}) =>
     ...over,
   }) as never;
 
-function parsePayload(result: { content: Array<{ text: string }> }): Record<string, unknown> {
-  return JSON.parse(result.content[0].text);
+// operator:dedup_check returns the canonical `{ data }` shape (token-opt P-003,
+// migrated 2026-08-25 / WI-41709). Pinned deliberately rather than accepting
+// both shapes, so a revert to inline JSON fails here instead of passing quietly.
+function parsePayload(result: { data: unknown }): Record<string, unknown> {
+  return result.data as Record<string, unknown>;
 }
 
 beforeEach(() => {

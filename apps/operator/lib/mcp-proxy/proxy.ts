@@ -1470,7 +1470,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
           const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID });
           const traceId = randomUUID();
-          fwd.headers[MCP_PROXY_TRACE_HEADER] = traceId;
+          fwd.headers = { ...fwd.headers, [MCP_PROXY_TRACE_HEADER]: traceId };
           // WI-41042 detector gap: `klass:'idempotent'` folds initialize,
           // tools/list, ping, resources and prompts together. Preserve only the
           // bounded protocol method names in failure telemetry so the next

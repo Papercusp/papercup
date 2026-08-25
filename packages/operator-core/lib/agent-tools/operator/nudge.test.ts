@@ -16,9 +16,12 @@ import { maybeFireNudge } from '../../voice-nudges';
 const fireM = vi.mocked(maybeFireNudge);
 const tool = (await import('./nudge')).default;
 
-type Out = { content: { text: string }[] };
+// operator:nudge returns the canonical `{ data }` shape (token-opt P-003,
+// migrated 2026-08-25 / WI-41709). Pinned deliberately rather than accepting
+// both shapes, so a revert to inline JSON fails here instead of passing quietly.
+type Out = { data: Record<string, unknown> };
 const call = (kind: string) => tool.handler({ kind } as never, {} as never) as Promise<Out>;
-const body = (o: Out) => JSON.parse(o.content[0]!.text);
+const body = (o: Out) => o.data;
 
 beforeEach(() => vi.clearAllMocks());
 

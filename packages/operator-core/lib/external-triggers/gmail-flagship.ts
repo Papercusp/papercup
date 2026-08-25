@@ -190,6 +190,7 @@ interface GmailDraftTriggerRow {
   sourceId: string;
   ownerUserId: string | null;
   credentialRef: string | null;
+  providerAccountId: string | null;
   sourceStatus: string;
   sourceConfig: Record<string, unknown>;
   sourceCursor: Record<string, unknown>;
