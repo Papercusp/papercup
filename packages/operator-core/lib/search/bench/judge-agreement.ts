@@ -86,16 +86,57 @@ const SEARCH_RELEVANCE_RUBRIC_CONTENT: Pick<JudgeRubric, 'axes'> = {
   ],
 };
 
-// The cache key must move whenever the actual judging contract moves. Keeping
-// this derived from the serialized rubric content removes the old hand-maintained
+/**
+ * The INSTRUCTION half of the judging contract — everything handed to the judge that
+ * is not the rubric object. `judgeRun` assembles scenarioDescription / personaSummary /
+ * goalSummary straight into the prompt (judge.ts:236,239,242), and reads
+ * `rubric.criticality` to decide single- vs multi-pass judging (judge.ts:81), so all
+ * four are judging inputs and every one of them must be inside the cache key.
+ *
+ * `scenarioTemplate` carries a `{query}` placeholder rather than interpolating the
+ * pair's query directly: the INVARIANT text — what the judge is being asked to do —
+ * stays a hashable constant, while the per-pair query is already covered by
+ * `query_hash` in the search_judge_grades primary key.
+ *
+ * This object is the single source for BOTH the prompt and the version hash, so the
+ * two cannot diverge. Editing any string here moves JUDGE_AGREEMENT_RUBRIC_VERSION and
+ * makes prior paid grades unreachable — which is the intended behaviour, never an update.
+ */
+export const JUDGE_INSTRUCTION_CONTRACT: {
+  scenarioTemplate: string;
+  personaSummary: string;
+  goalSummary: string;
+  criticality: JudgeRubric['criticality'] | null;
+} = {
+  scenarioTemplate:
+    'Search-relevance check. A user issued the query "{query}". The assistant turn ' +
+    'shows ONE document a retrieval system could return for it, verbatim. Score ONLY ' +
+    'whether that document is topically relevant to the query. There is no conversation ' +
+    'to evaluate and no tool use — ignore both.',
+  personaSummary: 'n/a — non-interactive relevance bench (no sim-user)',
+  goalSummary: 'Topical relevance of one document to one query.',
+  // null, not undefined: JSON.stringify DROPS undefined keys, so an undefined
+  // criticality would leave this axis outside the hash exactly as before.
+  criticality: null,
+};
+
+// The cache key must move whenever the actual judging contract moves. Keeping this
+// derived from the serialized contract removes the old hand-maintained
 // version/comment binding: changing an axis, anchor, or instruction automatically
 // makes prior paid grades unreachable without relying on a remembered bump.
-export const JUDGE_AGREEMENT_RUBRIC_VERSION =
-  `search-relevance.${sha256(JSON.stringify(SEARCH_RELEVANCE_RUBRIC_CONTENT)).slice(0, 12)}`;
+export const JUDGE_AGREEMENT_RUBRIC_VERSION = `search-relevance.${sha256(
+  JSON.stringify({
+    rubric: SEARCH_RELEVANCE_RUBRIC_CONTENT,
+    instructions: JUDGE_INSTRUCTION_CONTRACT,
+  }),
+).slice(0, 12)}`;
 
 export const SEARCH_RELEVANCE_RUBRIC: JudgeRubric = {
   version: JUDGE_AGREEMENT_RUBRIC_VERSION,
   ...SEARCH_RELEVANCE_RUBRIC_CONTENT,
+  ...(JUDGE_INSTRUCTION_CONTRACT.criticality
+    ? { criticality: JUDGE_INSTRUCTION_CONTRACT.criticality }
+    : {}),
 };
 
 const BENCH_PERSONA_TRAITS: PersonaTraits = {
@@ -315,13 +356,14 @@ export async function judgeRelevance(
       model: judgeModel,
       rubric: SEARCH_RELEVANCE_RUBRIC,
       scenarioId: run.scenarioId,
-      scenarioDescription:
-        `Search-relevance check. A user issued the query "${pair.query}". The assistant turn ` +
-        `shows ONE document a retrieval system could return for it, verbatim. Score ONLY ` +
-        `whether that document is topically relevant to the query. There is no conversation ` +
-        `to evaluate and no tool use — ignore both.`,
-      personaSummary: 'n/a — non-interactive relevance bench (no sim-user)',
-      goalSummary: 'Topical relevance of one document to one query.',
+      // Built FROM the hashed contract, never restated here — a second copy of this
+      // text is exactly what would let the prompt drift away from the cache key.
+      scenarioDescription: JUDGE_INSTRUCTION_CONTRACT.scenarioTemplate.replace(
+        '{query}',
+        pair.query,
+      ),
+      personaSummary: JUDGE_INSTRUCTION_CONTRACT.personaSummary,
+      goalSummary: JUDGE_INSTRUCTION_CONTRACT.goalSummary,
       ...(temperature !== undefined ? { temperature } : {}),
     },
     run,
