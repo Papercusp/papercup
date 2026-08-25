@@ -956,11 +956,19 @@ async function sendOne(
   // seam contracts as the stamps above: pure gate before IO, fail-soft, ALL
   // detections ride (the aggregate read needs the denominator), and per D-090
   // this is data about the fleet's habits, never a per-sender nag.
-  if (fieldStamp.sections) {
+  // The scan must see ALL section texts — including the single plain-text
+  // section stampMessageFields deliberately leaves off the envelope (its
+  // `authored || length > 1` guard is persistence weight, not scan
+  // eligibility). A one-section text body is the dominant message shape;
+  // gating the scan on fieldStamp.sections silently exempted it (caught by
+  // the send.test.ts wiring pin, state-plane-adoption-2026-08-02 C5).
+  const staleQuoteSections =
+    fieldStamp.sections ?? (Array.isArray(msg.body) ? msg.body : undefined);
+  if (staleQuoteSections) {
     try {
       const staleQuoteStamps = await resolveStaleQuoteStamps({
         selfOwnerId: identity.ownerId,
-        sections: fieldStamp.sections,
+        sections: staleQuoteSections,
         workspaceId: identity.workspaceId,
       });
       if (staleQuoteStamps.length) extra[STALE_QUOTE_FIELD] = staleQuoteStamps;
