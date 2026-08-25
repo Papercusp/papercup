@@ -12,6 +12,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
+const claimSpecMocks = vi.hoisted(() => ({ setClaimSpec: vi.fn() }));
 const activationMocks = vi.hoisted(() => ({ gate: vi.fn() }));
 
 const H = vi.hoisted(() => {
@@ -107,9 +108,21 @@ vi.mock('../../../plan-workitem-promotion-run', () => ({
   promotePlanItems: vi.fn(async () => ({ promoted: 0, skipped: 0, flagOff: false })),
 }));
 
-vi.mock('../plan-admission-preflight', () => ({
-  preflightExactPlanAdmission: (...args: unknown[]) => admissionMocks.preflight(...args),
-}));
+vi.mock('../plan-admission-preflight', async (orig) => {
+  const actual = await orig<typeof import('../plan-admission-preflight')>();
+  return {
+    ...actual,
+    preflightExactPlanAdmission: (...args: unknown[]) => admissionMocks.preflight(...args),
+  };
+});
+
+vi.mock('../../../scheduler/claim-spec-store', async (orig) => {
+  const actual = await orig<typeof import('../../../scheduler/claim-spec-store')>();
+  return {
+    ...actual,
+    setClaimSpec: (...args: unknown[]) => claimSpecMocks.setClaimSpec(...args),
+  };
+});
 
 vi.mock('../plan-activation-gate', async (orig) => {
   const actual = await orig<typeof import('../plan-activation-gate')>();
@@ -191,6 +204,8 @@ beforeEach(() => {
     specSetHash: null,
     wouldBlock: ['no-first-class-spec-clauses'],
   };
+  claimSpecMocks.setClaimSpec.mockReset();
+  claimSpecMocks.setClaimSpec.mockResolvedValue({ ok: true, errors: [], revision: 1 });
   promotePlanItemsMock.mockReset();
   promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false, ...NO_EDGES });
 });
@@ -417,6 +432,45 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     expect(res.data.results[0].message).toContain('Actionable plan items lack a promoted row: P-002.');
     expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
     expectNoOpStatusWrite();
+  });
+
+  it('persists the ready exact-plan claim spec for the starter before returning', async () => {
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.data.results[0]).toMatchObject({
+      ok: true,
+      claimSpecBinding: { ok: true, revision: 1 },
+    });
+    expect(claimSpecMocks.setClaimSpec).toHaveBeenCalledTimes(1);
+    expect(claimSpecMocks.setClaimSpec).toHaveBeenCalledWith(expect.objectContaining({
+      cupId: 'agent-test',
+      workspaceId: 'ws-of-harness',
+      updatedBy: 'agent-test',
+      potSlug: 'papercup',
+      spec: expect.objectContaining({
+        specId: 'plans-start-live-plan-2026-06-02',
+        view: { filter: { field: 'plan', op: '=', value: 'live-plan-2026-06-02' } },
+      }),
+    }));
+  });
+
+  it('refuses the start when the exact-plan claim-spec binding cannot be persisted', async () => {
+    claimSpecMocks.setClaimSpec.mockRejectedValueOnce(new Error('claim spec store unavailable'));
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(res.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'claim_spec_binding_failed',
+      status: null,
+      opStatusRetired: true,
+      admission: { ready: true, reason: 'ready' },
+      claimSpecBinding: null,
+      claimSpecBindingError: 'claim spec store unavailable',
+    });
+    expect(res.data.results[0].message).toContain('Exact-plan claim-spec binding failed: claim spec store unavailable');
   });
 
   it('WI-5825: still detects plan_not_found — the retired branch reads the SAME key the write used', async () => {
