@@ -16,7 +16,9 @@ import {
   WORKSPACE_HOST_CONTROL_QUERY,
   appendWorkspaceHostLogs,
   exportWorkspaceHostAudit,
+  readWorkspaceHostConnection,
   readWorkspaceHostControl,
+  readWorkspaceHostResourceCheckpoints,
   redactWorkspaceHostValue,
 } from './observability-store';
 
@@ -51,6 +53,69 @@ describe('workspace-host observability store', () => {
       nested: { url: 'https://alice:[REDACTED]@example.test/?token=[REDACTED]' },
       accessKey: '[REDACTED]',
     });
+  });
+
+  it('reads one stored connection as a typed non-secret provider reference', async () => {
+    H.rows.set('FROM harness_shared.workspace_host_connections WHERE', [
+      {
+        id: 'connection-1',
+        target: 'gcp',
+        credential_ref: 'adc://controller',
+        status: 'connected',
+        status_detail: null,
+      },
+    ]);
+
+    await expect(readWorkspaceHostConnection('ws-1', 'connection-1')).resolves.toEqual({
+      id: 'connection-1',
+      target: 'gcp',
+      status: 'connected',
+      connection: {
+        target: 'gcp',
+        cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
+      },
+    });
+  });
+
+  it('hydrates operation-scoped resource checkpoints for replay', async () => {
+    H.rows.set('FROM harness_shared.workspace_host_resources WHERE workspace_id', [
+      {
+        logical_key: 'create-instance',
+        state: 'retry-wait',
+        attempts: 1,
+        retry_class: 'ambiguous',
+        retry_after_ms: 2_000,
+        target: 'gcp',
+        kind: 'vm',
+        provider_id: 'pc-host-vm',
+        parent_provider_id: 'project-1',
+        region: 'us-central1',
+        zone: 'us-central1-a',
+        provider_request_id: 'operation-1',
+        deletion_confirmation: null,
+        error: { message: 'provider outcome unknown' },
+      },
+    ]);
+
+    await expect(readWorkspaceHostResourceCheckpoints('ws-1', 'host-1', 'op-1')).resolves.toEqual([
+      {
+        logicalKey: 'create-instance',
+        state: 'retry-wait',
+        attempts: 1,
+        retryClass: 'ambiguous',
+        retryAfterMs: 2_000,
+        providerResource: {
+          target: 'gcp',
+          kind: 'vm',
+          providerId: 'pc-host-vm',
+          parentProviderId: 'project-1',
+          region: 'us-central1',
+          zone: 'us-central1-a',
+        },
+        providerRequestId: 'operation-1',
+        error: 'provider outcome unknown',
+      },
+    ]);
   });
 
   it('projects the latest operation, resource ids, health, signals, logs, and timeline', async () => {

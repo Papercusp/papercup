@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import type {
+  WorkspaceHostProviderConnection,
   WorkspaceHostDesiredSpec,
   WorkspaceHostHealthAttestation,
   WorkspaceHostLifecycleAction,
@@ -116,6 +117,47 @@ export async function upsertWorkspaceHostConnection(input: WorkspaceHostConnecti
         disk_price_per_gib_month = EXCLUDED.disk_price_per_gib_month,
         updated_at = now()
     `;
+  });
+}
+
+export interface StoredWorkspaceHostConnection {
+  id: string;
+  target: string;
+  status: ConnectionStatus;
+  statusDetail?: string;
+  connection: WorkspaceHostProviderConnection;
+}
+
+/** Read the exact credential reference selected by a provisioning request. */
+export async function readWorkspaceHostConnection(
+  workspaceId: string,
+  connectionId: string,
+): Promise<StoredWorkspaceHostConnection | null> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<Array<{
+      id: string;
+      target: string;
+      credential_ref: string;
+      status: ConnectionStatus;
+      status_detail: string | null;
+    }>>`
+      SELECT id, target, credential_ref, status, status_detail
+      FROM harness_shared.workspace_host_connections
+      WHERE workspace_id = ${workspaceId} AND id = ${connectionId}
+      LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      id: row.id,
+      target: row.target,
+      status: row.status,
+      ...(row.status_detail ? { statusDetail: row.status_detail } : {}),
+      connection: {
+        target: row.target,
+        cloudCredentialRef: { kind: 'cloud', ref: row.credential_ref },
+      },
+    };
   });
 }
 
@@ -329,6 +371,82 @@ export async function upsertWorkspaceHostResourceCheckpoint(input: {
         error = EXCLUDED.error,
         updated_at = now()
     `;
+  });
+}
+
+interface ResourceCheckpointDbRow {
+  logical_key: string;
+  state: WorkspaceHostResourceCheckpoint['state'];
+  attempts: number;
+  retry_class: WorkspaceHostResourceCheckpoint['retryClass'] | null;
+  retry_after_ms: number | null;
+  target: string | null;
+  kind: string | null;
+  provider_id: string | null;
+  parent_provider_id: string | null;
+  region: string | null;
+  zone: string | null;
+  provider_request_id: string | null;
+  deletion_confirmation: unknown;
+  error: unknown;
+}
+
+function checkpointError(value: unknown): string | undefined {
+  if (typeof value === 'string' && value.trim()) return value;
+  if (value && typeof value === 'object' && typeof (value as { message?: unknown }).message === 'string') {
+    return (value as { message: string }).message;
+  }
+  return undefined;
+}
+
+/**
+ * Hydrate only checkpoints belonging to this stable operation. Filtering by operation id prevents
+ * a new operation on the same host from treating an older resource graph as its own replay state.
+ */
+export async function readWorkspaceHostResourceCheckpoints(
+  workspaceId: string,
+  hostId: string,
+  operationId: string,
+): Promise<WorkspaceHostResourceCheckpoint[]> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = await tx<ResourceCheckpointDbRow[]>`
+      SELECT logical_key, state, attempts, retry_class, retry_after_ms,
+             target, kind, provider_id, parent_provider_id, region, zone,
+             provider_request_id, deletion_confirmation, error
+      FROM harness_shared.workspace_host_resources
+      WHERE workspace_id = ${workspaceId}
+        AND host_id = ${hostId}
+        AND operation_id = ${operationId}
+      ORDER BY logical_key
+    `;
+    return rows.map((row) => {
+      const providerResource =
+        row.target && row.kind && row.provider_id
+          ? {
+              target: row.target,
+              kind: row.kind,
+              providerId: row.provider_id,
+              ...(row.parent_provider_id ? { parentProviderId: row.parent_provider_id } : {}),
+              ...(row.region ? { region: row.region } : {}),
+              ...(row.zone ? { zone: row.zone } : {}),
+            }
+          : undefined;
+      const deletionConfirmation =
+        row.deletion_confirmation && typeof row.deletion_confirmation === 'object'
+          ? (row.deletion_confirmation as WorkspaceHostResourceCheckpoint['deletionConfirmation'])
+          : undefined;
+      return {
+        logicalKey: row.logical_key,
+        state: row.state,
+        attempts: row.attempts,
+        ...(row.retry_class ? { retryClass: row.retry_class } : {}),
+        ...(row.retry_after_ms != null ? { retryAfterMs: row.retry_after_ms } : {}),
+        ...(providerResource ? { providerResource } : {}),
+        ...(row.provider_request_id ? { providerRequestId: row.provider_request_id } : {}),
+        ...(deletionConfirmation ? { deletionConfirmation } : {}),
+        ...(checkpointError(row.error) ? { error: checkpointError(row.error) } : {}),
+      };
+    });
   });
 }
 
