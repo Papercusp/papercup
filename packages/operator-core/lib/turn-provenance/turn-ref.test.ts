@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   classifyRecordedTurn,
   OWNER_DIALOG_TURN_MARKER,
@@ -467,5 +467,44 @@ describe('verifyTurnRefs — indexed cross-owner predecessor scope', () => {
     });
 
     expect(verdict).toMatchObject({ found: false, checked: false, scope: 'cross-session' });
+  });
+
+  it('production loader includes the corpus namespace alongside the active workspace', async () => {
+    const sqlCalls: Array<{ text: string; values: unknown[] }> = [];
+    vi.doMock('@papercusp/db-org', () => ({
+      getOrgPg: () => ({
+        sql: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+          sqlCalls.push({ text: Array.from(strings).join('?'), values });
+          return [{
+            sessionId: PREDECESSOR,
+            ts: TS,
+            speaker: 'user',
+            text: 'the indexed owner directive',
+            turnOrigin: null,
+            turnOriginVerdict: 'unenrolled-origin',
+          }];
+        },
+      }),
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
+
+    const refs = parseTurnRefs(formatTurnRef(PREDECESSOR, TS));
+    const [verdict] = await verifyTurnRefs(OWNER, refs, {
+      filePath: join(tmpdir(), 'successor-only.jsonl'),
+      sessionId: CURRENT,
+      scope: 'cross-session',
+    });
+
+    expect(verdict).toMatchObject({
+      found: true,
+      checked: true,
+      verdict: 'owner-turn',
+      scope: 'cross-session',
+    });
+    expect(sqlCalls).toHaveLength(1);
+    expect(sqlCalls[0].text).toContain("workspace_id = 'default'");
+    expect(sqlCalls[0].values).toContain('papercusp-workspace');
+    vi.doUnmock('@papercusp/db-org');
+    vi.doUnmock('../workspace-registry');
   });
 });
