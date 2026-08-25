@@ -829,7 +829,7 @@ scripts/mutation-probe.sh \
 ```
 
 
-Exit codes: `0` mutant/historical source CAUGHT (guard is falsifiable ✓) · `1` mutant/historical source SURVIVED (your guard is weaker than you think) · `2` misuse / missing historical control / failed calibration / no-op mutation · `3` in-tree restore FAILED, act now. Note `0` means *the guard failed on the mutant or historical source* — "the probe succeeded" and "the test passed" mean OPPOSITE things here.
+Exit codes: `0` mutant/historical source CAUGHT (guard is falsifiable ✓) · `1` mutant/historical source SURVIVED (your guard is weaker than you think) · `2` misuse / missing historical control / failed calibration / no-op mutation / a mutant that no longer PARSES · `3` in-tree restore FAILED, act now. Note `0` means *the guard failed on the mutant or historical source* — "the probe succeeded" and "the test passed" mean OPPOSITE things here.
 
 
 For tier 3, pause the sweep from your agent session — git-sync's own tick takes this
