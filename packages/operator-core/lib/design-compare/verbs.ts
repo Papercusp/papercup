@@ -1,0 +1,673 @@
+/**
+ * Mockup-to-implementation validation: the design-phase plugin verb bodies.
+ *
+ * Plan: ratified-mockup-implementation-validation-2026-08-24 (P-006).
+ *
+ * D-009 settled that no existing design-phase verb can carry a comparison
+ * without being deformed, so the plugin gains verbs of its own. D-017 settled
+ * that the CommonJS plugin must NOT reach into this package to run them: the
+ * operator PUBLISHES these implementations into a pinned module slot
+ * (`host-registry.ts`) and the plugin READS it. Everything below is therefore
+ * ordinary dependency-injected TypeScript with no knowledge of plugins, MCP,
+ * or CommonJS — which is what makes it testable without either.
+ *
+ * ─── WHAT THIS FILE IS ALLOWED TO DO ─────────────────────────────────────────
+ *
+ * Orchestration only. It resolves a reference, checks the preconditions that do
+ * not need an engine, delegates to the P-005 provider seam, and persists what
+ * comes back. It contains no pixel mathematics, no thresholds of its own, and
+ * no verdict logic — `computeVerdict` (contract.ts) is the single place a pass
+ * is decided (D-002, D-004, D-012).
+ *
+ * ─── THE TWO REFUSALS, AND WHY THEY ARE DIFFERENT SHAPES ─────────────────────
+ *
+ * A verb can fail in two genuinely different ways, and collapsing them is how a
+ * gate ends up reading a misconfiguration as a measurement:
+ *
+ *   1. A REFUSAL (`ok: false`) — the comparison never happened and cannot be
+ *      described as one: the reference was never ratified, the engine is not
+ *      installed in this host, the caller has no identity. There is no
+ *      `CompareResult` here, deliberately. `INVALID_REASONS` is a closed set
+ *      describing comparisons that were ATTEMPTED, and minting one for a
+ *      comparison that never started would put a host misconfiguration into the
+ *      evidence table wearing the clothes of evidence.
+ *
+ *   2. An INVALID RESULT (`ok: true`, `verdict: 'invalid'`) — a real comparison
+ *      attempt that could not yield pass/fail: dimensions disagreed, the
+ *      environment was not the contracted one, the engine errored. This IS
+ *      evidence, it is persisted, and it is never a silent pass.
+ */
+import {
+  COMPARE_RESULT_SCHEMA_VERSION,
+  type CaptureEnvironment,
+  type CompareResult,
+  type IgnoredRegion,
+  type ImplementationTarget,
+  type ReferenceIdentity,
+  type ThresholdPolicy,
+  environmentsMatch,
+} from './contract';
+import type { PngDimensions } from './png-header';
+import type { RatifiedReference, ReferenceProvenance, RequiredCase } from './ratification';
+import {
+  type ReferenceImageRef,
+  type ReferenceScope,
+  type ReferenceStorePort,
+  ReferenceStoreError,
+  type StoredEvidenceRow,
+  type StoredReferenceRow,
+  activeRevision,
+  evidenceArtifactId,
+  ratifyReference,
+} from './reference-store';
+import { type ComparisonDeps, type ComparisonRequest, compareAgainstReference } from './provider';
+
+// ─── refusals ────────────────────────────────────────────────────────────────
+
+/**
+ * Why a verb declined to produce a result at all.
+ *
+ * Distinct from `InvalidReason` on purpose (see the header). These are the
+ * conditions under which no comparison was attempted, so none can be described.
+ */
+export const VERB_REFUSAL_CODES = [
+  /** No design-compare implementation is installed in this host (D-017). */
+  'engine-unavailable',
+  /** The caller carries no usable identity, so provenance could not be recorded. */
+  'unauthenticated',
+  /** The reference has never been ratified, or has no active revision. */
+  'not-ratified',
+  /** A concurrent writer took this revision first. Re-read and retry. */
+  'revision-conflict',
+  /** The submission is malformed. Retrying it unchanged is pointless. */
+  'validation-failed',
+  /** The reference image could not be turned into bytes an engine can read. */
+  'reference-unreadable',
+  /** The store itself failed. */
+  'storage-error',
+] as const;
+export type VerbRefusalCode = (typeof VERB_REFUSAL_CODES)[number];
+
+export interface VerbRefusal {
+  readonly ok: false;
+  readonly code: VerbRefusalCode;
+  readonly detail: string;
+  /** Present for 'validation-failed': every problem at once, not the first. */
+  readonly errors?: readonly { readonly code: string; readonly message: string }[];
+}
+
+export type VerbOutcome<T> = ({ readonly ok: true } & T) | VerbRefusal;
+
+function refuse(code: VerbRefusalCode, detail: string, errors?: VerbRefusal['errors']): VerbRefusal {
+  return { ok: false, code, detail, ...(errors ? { errors } : {}) };
+}
+
+/**
+ * Map a store refusal onto a verb refusal.
+ *
+ * `ReferenceStoreError.code` already distinguishes "the world moved under you,
+ * retry" from "your submission is malformed, do not retry", and that
+ * distinction is the whole point of the mapping — a caller that retries a
+ * malformed submission loops forever, and one that does not retry a conflict
+ * gives up on work that would have succeeded.
+ */
+function refuseFromStore(error: ReferenceStoreError): VerbRefusal {
+  const code: VerbRefusalCode =
+    error.code === 'revision-conflict'
+      ? 'revision-conflict'
+      : error.code === 'not-ratified' || error.code === 'already-retracted'
+        ? 'not-ratified'
+        : 'validation-failed';
+  return refuse(
+    code,
+    error.message,
+    error.errors.length > 0 ? error.errors.map((e) => ({ code: e.code, message: e.message })) : undefined,
+  );
+}
+
+// ─── the caller ──────────────────────────────────────────────────────────────
+
+/**
+ * Who is calling, as established by the HOST — never by the caller's own input.
+ *
+ * This is the authorization seam. `ratifiedBy` on a stored reference is the
+ * audit trail that says which principal approved which bytes, so it is read
+ * from here and an input field claiming to be it is ignored (see
+ * `ratifyReferenceVerb`). A provenance record a caller can write for itself is
+ * not a provenance record.
+ */
+export interface VerbCaller {
+  /** Stable principal id — the spawn/session identity the host attached. */
+  readonly actorId: string;
+  /** The calling agent's role, as the host resolved it. */
+  readonly role: string;
+}
+
+function describeCaller(caller: VerbCaller): string {
+  return `${caller.role}:${caller.actorId}`;
+}
+
+// ─── shared dependencies ─────────────────────────────────────────────────────
+
+/**
+ * A reference image, made readable by an engine.
+ *
+ * A `ReferenceImageRef.locator` is whatever the ratifier stored — a path, an
+ * artifact URL, an inline `data:` URL — and the provider needs a filesystem
+ * path. Injected rather than implemented here so a test never has to write a
+ * PNG to disk, and so the materialisation strategy is the host's business.
+ */
+export type ReferenceImageMaterializer = (
+  image: ReferenceImageRef,
+) => Promise<{ readonly path: string } | { readonly error: string }>;
+
+export interface VerbDeps {
+  /**
+   * The harness these verbs are bound to.
+   *
+   * Bound at construction rather than taken per call, because it is the row
+   * scope every store read and write is keyed by. A verb that accepted it as
+   * input would let a caller address another harness's design artifacts.
+   */
+  readonly harnessSlug: string;
+  readonly store: ReferenceStorePort;
+  readonly now: () => number;
+  /** ISO-8601 stamp for `capturedAt` / `ratifiedAt`. Injected for determinism. */
+  readonly clock: () => string;
+  readonly materializeReferenceImage: ReferenceImageMaterializer;
+  readonly comparison: ComparisonDeps;
+}
+
+function scopeFor(deps: VerbDeps, featureId: string, referenceId: string): ReferenceScope {
+  return { harnessSlug: deps.harnessSlug, featureId, referenceId };
+}
+
+// ─── verb 1: ratify_reference ────────────────────────────────────────────────
+
+export interface RatifyReferenceInput {
+  readonly featureId: string;
+  readonly referenceId: string;
+  /**
+   * The revision the caller believes it is creating.
+   *
+   * Required, never allocated for the caller: submitting `4` is a claim about
+   * having read `3`, and checking that claim is how a lost update is caught.
+   * Allocating silently would turn a stale read into a successful write.
+   */
+  readonly revision: number;
+  readonly referenceClass: ReferenceIdentity['referenceClass'];
+  readonly contentSha256: string;
+  readonly image: ReferenceImageRef;
+  readonly referenceEnvironment: CaptureEnvironment;
+  readonly requiredCases: readonly RequiredCase[];
+  readonly provenance: {
+    readonly source: string;
+    readonly sourceRef: string;
+    readonly derivedFrom?: string;
+  };
+}
+
+export interface RatifyReferenceResult {
+  readonly artifactId: string;
+  readonly referenceId: string;
+  readonly revision: number;
+  readonly ratifiedBy: string;
+  readonly ratifiedAt: string;
+  readonly supersededRevision?: number;
+  /**
+   * Evidence this ratification just made unusable. Reported, never rewritten —
+   * the evidence is stale because the active revision moved, so there is
+   * nothing to mark and no window in which the marking has not happened yet.
+   */
+  readonly invalidatedEvidence: readonly {
+    readonly artifactId: string;
+    readonly referenceRevision: number;
+  }[];
+}
+
+export async function ratifyReferenceVerb(
+  input: RatifyReferenceInput,
+  caller: VerbCaller,
+  deps: VerbDeps,
+): Promise<VerbOutcome<RatifyReferenceResult>> {
+  if (!caller.actorId) {
+    return refuse(
+      'unauthenticated',
+      'ratification records who approved the reference bytes; the host supplied no caller identity, ' +
+        'and a provenance record with no principal in it is not a provenance record',
+    );
+  }
+
+  const ratifiedAt = deps.clock();
+  const ratifiedBy = describeCaller(caller);
+  // NOTE: `ratifiedBy` and `ratifiedAt` are built HERE, from the host-supplied
+  // caller and clock. `RatifyReferenceInput` deliberately has no field for
+  // either, so there is nothing for a caller to forge — the absence is the
+  // guarantee, not a validation step that could be forgotten.
+  const provenance: ReferenceProvenance = {
+    source: input.provenance.source,
+    sourceRef: input.provenance.sourceRef,
+    ratifiedBy,
+    ratifiedAt,
+    ...(input.provenance.derivedFrom !== undefined
+      ? { derivedFrom: input.provenance.derivedFrom }
+      : {}),
+  };
+
+  const candidate: RatifiedReference = {
+    identity: {
+      referenceId: input.referenceId,
+      revision: input.revision,
+      referenceClass: input.referenceClass,
+      contentSha256: input.contentSha256,
+    },
+    state: 'active',
+    provenance,
+    referenceEnvironment: input.referenceEnvironment,
+    requiredCases: input.requiredCases,
+  };
+
+  try {
+    const outcome = await ratifyReference(deps.store, {
+      scope: scopeFor(deps, input.featureId, input.referenceId),
+      candidate,
+      image: input.image,
+      now: deps.now,
+    });
+    return {
+      ok: true,
+      artifactId: outcome.stored.artifactId,
+      referenceId: input.referenceId,
+      revision: input.revision,
+      ratifiedBy,
+      ratifiedAt,
+      ...(outcome.supersededRevision !== undefined
+        ? { supersededRevision: outcome.supersededRevision }
+        : {}),
+      invalidatedEvidence: outcome.invalidatedEvidence.map((e) => ({
+        artifactId: e.artifactId,
+        referenceRevision: e.referenceRevision,
+      })),
+    };
+  } catch (error) {
+    if (error instanceof ReferenceStoreError) return refuseFromStore(error);
+    throw error;
+  }
+}
+
+// ─── verb 2: compare_render ──────────────────────────────────────────────────
+
+export interface CompareRenderInput {
+  readonly featureId: string;
+  readonly referenceId: string;
+  readonly target: ImplementationTarget;
+  readonly environment: CaptureEnvironment;
+  readonly policy: ThresholdPolicy;
+  readonly actualImagePath: string;
+  readonly diffImagePath: string;
+  readonly expectedDimensions?: PngDimensions;
+  readonly ignoredRegions?: readonly IgnoredRegion[];
+  readonly timeoutMs?: number;
+  /** Advisory prose. Recorded beside the evidence, never able to change it. */
+  readonly advisoryNotes?: string;
+}
+
+export interface CompareRenderResult {
+  readonly artifactId: string;
+  readonly result: CompareResult;
+}
+
+export async function compareRenderVerb(
+  input: CompareRenderInput,
+  caller: VerbCaller,
+  deps: VerbDeps,
+): Promise<VerbOutcome<CompareRenderResult>> {
+  void caller;
+  const scope = scopeFor(deps, input.featureId, input.referenceId);
+
+  let rows: readonly StoredReferenceRow[];
+  try {
+    rows = await deps.store.listRevisions(scope);
+  } catch (error) {
+    return refuse('storage-error', error instanceof Error ? error.message : String(error));
+  }
+
+  const active = activeRevision(rows);
+  if (!active) {
+    // No CompareResult is minted here, and that is deliberate: without an active
+    // revision there is no `ReferenceIdentity` to stamp one with, and a result
+    // that cannot say which reference revision it is about is not evidence.
+    return refuse(
+      'not-ratified',
+      rows.length === 0
+        ? `'${input.referenceId}' has never been ratified for feature ${input.featureId}; ` +
+          `exploration is unconstrained until an explicit ratification (D-001), so there is nothing to compare against`
+        : `'${input.referenceId}' has no active revision (its highest is ` +
+          `${Math.max(...rows.map((r) => r.reference.identity.revision))}); it is retracted or superseded, ` +
+          `and a withdrawn design must not keep gating work`,
+    );
+  }
+
+  const identity = active.reference.identity;
+  const capturedAt = deps.clock();
+
+  /** Build the request once, so every exit below stamps identical identity. */
+  const requestFor = (referenceImagePath: string): ComparisonRequest => ({
+    reference: identity,
+    target: input.target,
+    environment: input.environment,
+    policy: input.policy,
+    referenceImagePath,
+    actualImagePath: input.actualImagePath,
+    diffImagePath: input.diffImagePath,
+    ...(input.expectedDimensions ? { expectedDimensions: input.expectedDimensions } : {}),
+    capturedAt,
+    ...(input.ignoredRegions ? { ignoredRegions: input.ignoredRegions } : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+    ...(input.advisoryNotes ? { advisoryNotes: input.advisoryNotes } : {}),
+  });
+
+  // PRECONDITION, BEFORE ANY ENGINE: the capture must have been taken at the
+  // environment the reference image itself is contracted at. `environmentsMatch`
+  // is deliberately exact — a near-match is a different render, and comparing a
+  // different render against these pixels produces a number that looks like
+  // evidence and is not. This runs first for the same reason the provider's own
+  // geometry guard does: an engine that resizes would normalise the error away.
+  if (!environmentsMatch(input.environment, active.reference.referenceEnvironment)) {
+    const invalid = invalidResult({
+      identity,
+      input,
+      capturedAt,
+      reason: 'environment-mismatch',
+      detail:
+        `the capture was taken at ${describeEnvironment(input.environment)} but reference ` +
+        `${identity.referenceId}@${identity.revision} is contracted at ` +
+        `${describeEnvironment(active.reference.referenceEnvironment)}. These are different renders, ` +
+        `so a pixel comparison between them measures the environment difference, not implementation fidelity.`,
+    });
+    return persist(invalid, input, deps);
+  }
+
+  const materialized = await deps.materializeReferenceImage(active.image);
+  if ('error' in materialized) {
+    // A reference that cannot be read is a storage/host problem, not a
+    // comparison outcome — the reference is ratified and valid, we simply
+    // cannot get at its bytes. Refusing keeps that out of the evidence table.
+    return refuse(
+      'reference-unreadable',
+      `reference ${identity.referenceId}@${identity.revision} could not be materialised from ` +
+        `locator '${active.image.locator}': ${materialized.error}`,
+    );
+  }
+
+  const result = await compareAgainstReference(requestFor(materialized.path), deps.comparison);
+  return persist(result, input, deps);
+}
+
+function describeEnvironment(env: CaptureEnvironment): string {
+  return (
+    `${env.viewport.width}x${env.viewport.height}@${env.deviceScaleFactor} ` +
+    `${env.browser}/${env.theme}/${env.fontSet}` +
+    `${env.fixture ? `/fixture:${env.fixture}` : ''}${env.state ? `/state:${env.state}` : ''}`
+  );
+}
+
+function invalidResult(args: {
+  readonly identity: ReferenceIdentity;
+  readonly input: CompareRenderInput;
+  readonly capturedAt: string;
+  readonly reason: NonNullable<CompareResult['invalidReason']>;
+  readonly detail: string;
+}): CompareResult {
+  const { identity, input, capturedAt, reason, detail } = args;
+  return {
+    schemaVersion: COMPARE_RESULT_SCHEMA_VERSION,
+    verdict: 'invalid',
+    invalidReason: reason,
+    detail,
+    reference: identity,
+    target: input.target,
+    environment: input.environment,
+    // Engine identity is stamped even though no engine ran: consequence 7 makes
+    // it mandatory on EVERY result, and the refusal paths are exactly where it
+    // is easiest to omit. A refusal that cannot say whose contract it was
+    // refusing on behalf of is not interpretable.
+    engine: { engine: 'papercusp/precondition', engineVersion: String(COMPARE_RESULT_SCHEMA_VERSION) },
+    policy: input.policy,
+    ...(input.ignoredRegions ? { ignoredRegions: input.ignoredRegions } : {}),
+    capturedAt,
+    ...(input.advisoryNotes ? { advisoryNotes: input.advisoryNotes } : {}),
+  };
+}
+
+async function persist(
+  result: CompareResult,
+  input: CompareRenderInput,
+  deps: VerbDeps,
+): Promise<VerbOutcome<CompareRenderResult>> {
+  const artifactId = evidenceArtifactId(result);
+  try {
+    await deps.store.insertEvidence({
+      artifactId,
+      result,
+      featureId: input.featureId,
+      harnessSlug: deps.harnessSlug,
+    });
+  } catch (error) {
+    if (error instanceof ReferenceStoreError) return refuseFromStore(error);
+    return refuse('storage-error', error instanceof Error ? error.message : String(error));
+  }
+  return { ok: true, artifactId, result };
+}
+
+// ─── verb 3: get_design_evidence ─────────────────────────────────────────────
+
+export interface GetDesignEvidenceInput {
+  readonly featureId: string;
+  readonly referenceId: string;
+}
+
+/**
+ * One stored comparison, split into the two halves that must never be confused.
+ *
+ * `deterministic` is what the gate may read. `advisory` is prose a human or a
+ * model wrote to explain a failure, and D-004 forbids it from establishing
+ * anything. They are separate OBJECTS rather than sibling fields so a reader
+ * cannot slide from one to the other by accident: there is no shape of this
+ * record in which prose sits next to a verdict looking equally load-bearing.
+ */
+export interface EvidenceView {
+  readonly artifactId: string;
+  /** Whether this evidence is bound to the CURRENTLY active reference revision. */
+  readonly current: boolean;
+  /**
+   * True when the stored record's schema version is not the one this build
+   * understands. Such a record is reported, never silently trusted: reading an
+   * unknown shape as current is how a gate passes on evidence it cannot parse.
+   */
+  readonly schemaVersionMismatch: boolean;
+  readonly deterministic: {
+    readonly schemaVersion: number;
+    readonly verdict: CompareResult['verdict'];
+    readonly invalidReason?: CompareResult['invalidReason'];
+    readonly detail?: string;
+    readonly reference: ReferenceIdentity;
+    readonly target: ImplementationTarget;
+    readonly environment: CaptureEnvironment;
+    readonly engine: CompareResult['engine'];
+    readonly policy: ThresholdPolicy;
+    readonly counts?: CompareResult['counts'];
+    readonly diffRatio?: number;
+    readonly diffRegions?: CompareResult['diffRegions'];
+    readonly artifacts?: CompareResult['artifacts'];
+    readonly ignoredRegions?: readonly IgnoredRegion[];
+    readonly capturedAt: string;
+  };
+  readonly advisory: {
+    /** Never consulted for a verdict (D-004). Null when none was recorded. */
+    readonly notes: string | null;
+  };
+}
+
+/** One required case and whether current evidence exists for it. */
+export interface CoverageView {
+  readonly caseId: string;
+  readonly environment: CaptureEnvironment;
+  readonly rationale: string;
+  /** The current evidence for this case, or null when none has been produced. */
+  readonly evidenceArtifactId: string | null;
+  readonly verdict: CompareResult['verdict'] | null;
+}
+
+export interface GetDesignEvidenceResult {
+  readonly reference: {
+    readonly referenceId: string;
+    readonly activeRevision: number;
+    readonly referenceClass: ReferenceIdentity['referenceClass'];
+    readonly contentSha256: string;
+    readonly state: RatifiedReference['state'];
+    readonly referenceEnvironment: CaptureEnvironment;
+    readonly ratifiedBy: string;
+    readonly ratifiedAt: string;
+  } | null;
+  /** Every revision ever recorded, newest last — the audit trail. */
+  readonly revisions: readonly {
+    readonly revision: number;
+    readonly state: RatifiedReference['state'];
+    readonly supersededByRevision: number | null;
+  }[];
+  readonly evidence: readonly EvidenceView[];
+  readonly coverage: readonly CoverageView[];
+  /** How many stored results are NOT current. Named so a zero is legible. */
+  readonly staleCount: number;
+}
+
+export async function getDesignEvidenceVerb(
+  input: GetDesignEvidenceInput,
+  caller: VerbCaller,
+  deps: VerbDeps,
+): Promise<VerbOutcome<GetDesignEvidenceResult>> {
+  void caller;
+  const scope = scopeFor(deps, input.featureId, input.referenceId);
+
+  let rows: readonly StoredReferenceRow[];
+  let stored: readonly StoredEvidenceRow[];
+  try {
+    rows = await deps.store.listRevisions(scope);
+    stored = await deps.store.listEvidenceResults(scope);
+  } catch (error) {
+    return refuse('storage-error', error instanceof Error ? error.message : String(error));
+  }
+
+  const active = activeRevision(rows);
+  const activeRevisionNumber = active?.reference.identity.revision;
+
+  const evidence: EvidenceView[] = stored.map((row) => {
+    const r = row.result;
+    const schemaVersionMismatch = r.schemaVersion !== COMPARE_RESULT_SCHEMA_VERSION;
+    return {
+      artifactId: row.artifactId,
+      // A record we cannot parse is never current. Combining the two conditions
+      // here rather than leaving them to the reader means there is no path on
+      // which an unreadable record is reported current.
+      current:
+        !schemaVersionMismatch &&
+        activeRevisionNumber !== undefined &&
+        r.reference.revision === activeRevisionNumber,
+      schemaVersionMismatch,
+      deterministic: {
+        schemaVersion: r.schemaVersion,
+        verdict: r.verdict,
+        ...(r.invalidReason ? { invalidReason: r.invalidReason } : {}),
+        ...(r.detail ? { detail: r.detail } : {}),
+        reference: r.reference,
+        target: r.target,
+        environment: r.environment,
+        engine: r.engine,
+        policy: r.policy,
+        ...(r.counts ? { counts: r.counts } : {}),
+        ...(r.diffRatio !== undefined ? { diffRatio: r.diffRatio } : {}),
+        ...(r.diffRegions ? { diffRegions: r.diffRegions } : {}),
+        ...(r.artifacts ? { artifacts: r.artifacts } : {}),
+        ...(r.ignoredRegions ? { ignoredRegions: r.ignoredRegions } : {}),
+        capturedAt: r.capturedAt,
+      },
+      advisory: { notes: r.advisoryNotes ?? null },
+    };
+  });
+
+  const coverage: CoverageView[] = (active?.reference.requiredCases ?? []).map((c: RequiredCase) => {
+    const hit = evidence.find(
+      (e) => e.current && environmentsMatch(e.deterministic.environment, c.environment),
+    );
+    return {
+      caseId: c.caseId,
+      environment: c.environment,
+      rationale: c.rationale,
+      evidenceArtifactId: hit?.artifactId ?? null,
+      verdict: hit?.deterministic.verdict ?? null,
+    };
+  });
+
+  return {
+    ok: true,
+    reference: active
+      ? {
+          referenceId: active.reference.identity.referenceId,
+          activeRevision: active.reference.identity.revision,
+          referenceClass: active.reference.identity.referenceClass,
+          contentSha256: active.reference.identity.contentSha256,
+          state: active.reference.state,
+          referenceEnvironment: active.reference.referenceEnvironment,
+          ratifiedBy: active.reference.provenance.ratifiedBy,
+          ratifiedAt: active.reference.provenance.ratifiedAt,
+        }
+      : null,
+    revisions: rows.map((r) => ({
+      revision: r.reference.identity.revision,
+      state: r.reference.state,
+      supersededByRevision: r.reference.supersededByRevision ?? null,
+    })),
+    evidence,
+    coverage,
+    staleCount: evidence.filter((e) => !e.current).length,
+  };
+}
+
+// ─── the published surface ───────────────────────────────────────────────────
+
+/**
+ * What the host publishes and the plugin calls. One object, so a plugin that
+ * finds the slot populated has found ALL of it — a partially-installed surface
+ * would fail per-verb at call time instead of at install time.
+ */
+export interface DesignCompareVerbs {
+  readonly ratifyReference: (
+    input: RatifyReferenceInput,
+    caller: VerbCaller,
+  ) => Promise<VerbOutcome<RatifyReferenceResult>>;
+  readonly compareRender: (
+    input: CompareRenderInput,
+    caller: VerbCaller,
+  ) => Promise<VerbOutcome<CompareRenderResult>>;
+  readonly getDesignEvidence: (
+    input: GetDesignEvidenceInput,
+    caller: VerbCaller,
+  ) => Promise<VerbOutcome<GetDesignEvidenceResult>>;
+}
+
+/**
+ * Bind the verbs to one set of dependencies.
+ *
+ * `deps` are resolved per harness by the host, so this is what turns
+ * host-agnostic functions into the surface the plugin reads out of the pinned
+ * slot. The plugin never sees `VerbDeps`, which is what keeps Postgres, the
+ * engine and the filesystem out of the CommonJS layer entirely.
+ */
+export function createDesignCompareVerbs(deps: VerbDeps): DesignCompareVerbs {
+  return {
+    ratifyReference: (input, caller) => ratifyReferenceVerb(input, caller, deps),
+    compareRender: (input, caller) => compareRenderVerb(input, caller, deps),
+    getDesignEvidence: (input, caller) => getDesignEvidenceVerb(input, caller, deps),
+  };
+}
