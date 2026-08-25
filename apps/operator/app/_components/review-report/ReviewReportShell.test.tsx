@@ -145,6 +145,11 @@ describe("rendering", () => {
     expect(screen.getByTestId("review-row-conf-f2").textContent).toBe(
       "recommended",
     );
+    expect(
+      screen
+        .getByTestId("review-group-toggle-flip-to-done")
+        .querySelector(".review-report__group-toggle-inner"),
+    ).toBeTruthy();
     expect(report.querySelector(".review-report__navigator")).toBeNull();
     expect(
       screen.queryByTestId("review-group-columns-flip-to-done"),
@@ -157,6 +162,17 @@ describe("rendering", () => {
     );
     expect(REPORT_CSS).toMatch(
       /\.review-report__row:focus-visible\s*\{[^}]*outline: 2px solid var\(--review-accent-strong\);[^}]*outline-offset: -2px;/s,
+    );
+  });
+
+  it("keeps WebKitGTK-safe group layout off the native button", () => {
+    const buttonRule = REPORT_CSS.match(
+      /\.review-report__group-toggle\s*\{[^}]*\}/s,
+    )?.[0];
+    expect(buttonRule).toContain("display: block");
+    expect(buttonRule).not.toMatch(/display:\s*(?:inline-)?(?:flex|grid)/);
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__group-toggle-inner\s*\{[^}]*display: flex;[^}]*width: 100%;/s,
     );
   });
 

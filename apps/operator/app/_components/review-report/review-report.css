@@ -162,9 +162,7 @@
 }
 
 .review-report__group-toggle {
-  display: flex;
-  align-items: center;
-  gap: 9px;
+  display: block;
   flex: 1 1 auto;
   min-width: 0;
   border: 0;
@@ -173,6 +171,14 @@
   font: inherit;
   cursor: pointer;
   text-align: left;
+}
+
+.review-report__group-toggle-inner {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
 }
 
 .review-report__chevron {
@@ -415,7 +421,7 @@
   }
 
   .review-report__head,
-  .review-report__group-toggle {
+  .review-report__group-toggle-inner {
     align-items: flex-start;
     flex-wrap: wrap;
   }
