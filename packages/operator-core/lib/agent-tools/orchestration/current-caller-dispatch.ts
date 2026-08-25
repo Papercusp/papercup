@@ -18,6 +18,7 @@ import {
   dispatchNeedsTx,
   effectiveDispatchWorkspace,
   synthesizeDispatchPrincipal,
+  synthesizeTransportPrincipal,
 } from '../../endpoint-route/routes/transport/role-principal-caps';
 
 /**
@@ -67,6 +68,23 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, a
   const callSpawnCtx = { ...spawnCtxLike, workspaceId: effectiveWs };
   if (!dispatchNeedsTx(callSpawnCtx)) {
     return runWithWorkspaceIfConcrete(effectiveWs, () => next({ ...baseCtx, workspaceId: effectiveWs }));
+  }
+
+  // A concrete-workspace superuser principal is fully derivable from transport
+  // context: it has the system/operator identity and capability bypass, never a
+  // provisioned per-workspace capability set. Opening `withWorkspace` merely to
+  // synthesize that principal retained an org-app pool slot for every nested
+  // transaction-free capability and made hermetic orchestration tests attempt a
+  // real Postgres connection. Direct transaction-free SU dispatch needs neither.
+  if (tool.needsWorkspaceTx !== true && callSpawnCtx.isSuperuser === true) {
+    return runWithWorkspaceIfConcrete(effectiveWs, () =>
+      next({
+        ...baseCtx,
+        workspaceId: effectiveWs,
+        tx: undefined,
+        principal: synthesizeTransportPrincipal(callSpawnCtx) ?? undefined,
+      }),
+    );
   }
 
   if (tool.needsWorkspaceTx !== true) {
