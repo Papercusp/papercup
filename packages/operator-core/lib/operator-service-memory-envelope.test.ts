@@ -64,7 +64,7 @@ describe('papercup-dev-api service memory envelope (EI-20340243384897336)', () =
     const aggregateRecycleCeilingMiB =
       MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND + workers * MEMORY_WATCHDOG_LIMIT_MB_REQUEST;
 
-    expect(workers).toBe(10);
+    expect(workers).toBe(6);
     expect(expectedProcesses).toBe(workers + 1);
     expect(
       resolveClusterWorkers(
