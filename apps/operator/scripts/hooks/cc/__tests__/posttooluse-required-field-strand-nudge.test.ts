@@ -16,7 +16,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -175,19 +175,20 @@ describe('required-field-strand nudge — the emitted command survives a git-syn
       // The REAL detector, copied at test time so it cannot drift from the one that ships —
       // with its own local imports, or it fails to load and the hook (correctly) fails open
       // to silence, which reads here as "the nudge did not fire".
-      copyFileSync(resolve(ROOT, 'scripts/check-required-field-strands.mjs'), join(tmp, 'scripts/check-required-field-strands.mjs'));
-      // Copy the WHOLE scripts/lib, never a hand-listed subset (WI-41647). The
-      // detector's local import graph is TRANSITIVE — today not-checked.mjs plus
-      // tsc-baseline-gate.mjs -> tsc-red-observations.mjs — and a hand-maintained
-      // list cannot track a graph: it rots silently the moment anyone adds an
-      // import. That is exactly how this test broke. a0095c0959 added
-      // `./lib/tsc-baseline-gate.mjs`; it was not in the two-file copy list, so the
-      // detector failed to load, the hook (correctly) failed open to silence, and
-      // the empty stdout surfaced HERE as `Unexpected end of JSON input` at the
-      // JSON.parse below — an error naming nothing about the real cause. Copying
-      // the directory makes the fixture immune to any future local import instead
-      // of needing an edit per import.
-      cpSync(resolve(ROOT, 'scripts/lib'), join(tmp, 'scripts/lib'), { recursive: true });
+      // Copy the WHOLE scripts/ tree, never a hand-listed subset (WI-41647). The
+      // detector's relative-import closure is transitive AND crosses directories —
+      // measured today as SIX files spanning both scripts/ and scripts/lib/:
+      // check-required-field-strands -> lib/not-checked, lib/tsc-baseline-gate ->
+      // lib/tsc-red-observations AND ../check-declared-deps-extracted ->
+      // ../check-peer-dep-conflicts. A hand-maintained list cannot track a graph:
+      // it rots silently the moment anyone adds an import, and that is exactly how
+      // this test broke (a0095c0959 added ./lib/tsc-baseline-gate.mjs). When the
+      // detector fails to load, the hook CORRECTLY fails open to silence, so its
+      // empty stdout surfaces here as `Unexpected end of JSON input` at the
+      // JSON.parse below — an error naming nothing about the real cause, which is
+      // what makes this failure mode so expensive to diagnose. Copying the tree is
+      // ~5MB/322 files into a tmpdir and is immune to any future import.
+      cpSync(resolve(ROOT, 'scripts'), join(tmp, 'scripts'), { recursive: true });
       // `typescript` must resolve from the copy; a stub lint-tsc stands in for the
       // typecheck leg, which is NOT what this test is about (it asserts DETECTION).
       symlinkSync(resolve(ROOT, 'node_modules'), join(tmp, 'node_modules'));
