@@ -43,6 +43,10 @@ export const NON_VOCABULARY_TOKENS: ReadonlySet<string> = new Set([
   'zero-diff',
   'byte-identical',
   'host-to-host',
+  // A CSS generic font family, named because the render-host fingerprint
+  // measures its advance width (D-023). It is a value in the platform, not a
+  // constant in this subsystem, so there is nothing here for it to drift from.
+  'sans-serif',
 ]);
 
 export interface DesignEvidenceDocFacts {
@@ -66,6 +70,15 @@ export interface DesignEvidenceCodeFacts {
    * the first time in a refusal, which is the worst moment to meet it.
    */
   readonly gateFailureReasons: readonly string[];
+  /**
+   * Why a failing reference was NOT refused (`NotEnforceableReason`, D-023).
+   *
+   * A vocabulary an operator meets in a message telling them their work was
+   * allowed through — the moment they are least likely to go looking for an
+   * explanation, and most likely to read "could not enforce" as "passed". If
+   * the page does not carry the reason, that misreading is the default.
+   */
+  readonly notEnforceableReasons: readonly string[];
   readonly flagNames: readonly string[];
   /** referenceClass -> 'gateable' | 'advisory-only' | 'absent', as policy.ts derives it today. */
   readonly eligibility: ReadonlyMap<string, string>;
@@ -127,6 +140,7 @@ export function judgeDesignEvidenceDoc(
     ['invalid reason', code.invalidReasons],
     ['reference class', code.referenceClasses],
     ['gate failure reason', code.gateFailureReasons],
+    ['not-enforceable reason', code.notEnforceableReasons],
   ];
 
   for (const [label, values] of vocabularies) {
@@ -156,6 +170,7 @@ export function judgeDesignEvidenceDoc(
     ...code.invalidReasons,
     ...code.referenceClasses,
     ...code.gateFailureReasons,
+    ...code.notEnforceableReasons,
   ]);
 
   for (const token of tokens) {
