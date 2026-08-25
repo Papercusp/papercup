@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import type {
+  WorkspaceHostDesiredSpec,
   WorkspaceHostHealthAttestation,
   WorkspaceHostLifecycleAction,
   WorkspaceHostObservation,
@@ -135,24 +137,38 @@ export interface WorkspaceHostInput {
   observedAt?: string;
   endpoint?: string;
   recoverability?: { kind: 'snapshot' | 'backup' | 'none'; label: string; updatedAt?: string };
+  /**
+   * The provisioning intent this host was created from (migration 956).
+   *
+   * Recorded by the provisioner so later lifecycle actions — initialization above all — can
+   * recover WHICH cloud instance this host is instead of re-deriving it from the observed
+   * columns. Omitting it on a later upsert PRESERVES the stored spec rather than clearing it:
+   * an observation refresh must never erase provisioning intent.
+   */
+  desiredSpec?: WorkspaceHostDesiredSpec;
 }
 
 export async function upsertWorkspaceHost(input: WorkspaceHostInput): Promise<void> {
   const recoverability = input.recoverability ?? { kind: 'none' as const, label: 'No recovery point recorded' };
+  // Credential REFERENCES are expected here; credential MATERIAL never is. Asserting before the
+  // write means a spec carrying secret material fails loudly at the boundary instead of being
+  // persisted and later exported by the audit route.
+  if (input.desiredSpec) assertWorkspaceHostSecretIsolation(input.desiredSpec, 'workspaceHost.desiredSpec');
+  const desiredSpec = input.desiredSpec ? JSON.stringify(input.desiredSpec) : null;
   await withWorkspace(input.workspaceId, async (tx) => {
     await tx`
       INSERT INTO harness_shared.workspace_hosts (
         workspace_id, id, name, connection_id, target, scope_label, region, size,
         image, disk_gib, network, estimated_monthly_usd, desired_state,
         observed_state, observed_at, endpoint, recoverability_kind,
-        recoverability_label, recoverability_updated_at, updated_at
+        recoverability_label, recoverability_updated_at, desired_spec, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.id}, ${input.name}, ${input.connectionId},
         ${input.target}, ${input.scopeLabel}, ${input.region}, ${input.size},
         ${input.image}, ${input.diskGiB}, ${input.network}, ${input.estimatedMonthlyUsd ?? null},
         ${input.desiredState}, ${input.observedState}, ${input.observedAt ?? null},
         ${input.endpoint ?? null}, ${recoverability.kind}, ${recoverability.label},
-        ${recoverability.updatedAt ?? null}, now()
+        ${recoverability.updatedAt ?? null}, ${desiredSpec}::jsonb, now()
       )
       ON CONFLICT (workspace_id, id) DO UPDATE SET
         name = EXCLUDED.name,
@@ -172,8 +188,50 @@ export async function upsertWorkspaceHost(input: WorkspaceHostInput): Promise<vo
         recoverability_kind = EXCLUDED.recoverability_kind,
         recoverability_label = EXCLUDED.recoverability_label,
         recoverability_updated_at = EXCLUDED.recoverability_updated_at,
+        -- PRESERVE, don't clobber: an observation refresh omits the spec, and provisioning
+        -- intent must survive it. Only a caller that actually supplies a spec replaces one.
+        desired_spec = COALESCE(EXCLUDED.desired_spec, harness_shared.workspace_hosts.desired_spec),
         updated_at = now()
     `;
+  });
+}
+
+/** Why a host's recorded provisioning intent could not be returned. */
+export type WorkspaceHostDesiredSpecMiss = 'host-not-found' | 'no-recorded-spec';
+
+export interface WorkspaceHostDesiredSpecLookup {
+  desired: WorkspaceHostDesiredSpec | null;
+  /** Set only when `desired` is null — which of the two distinct causes applied. */
+  miss?: WorkspaceHostDesiredSpecMiss;
+}
+
+/**
+ * Read back the provisioning intent recorded for one host.
+ *
+ * The two null cases are deliberately DISTINGUISHED rather than collapsed. "No such host" and
+ * "a host that predates migration 956, or was written by a provisioner that recorded no intent"
+ * demand different responses — the first is a bad request, the second is a host that cannot be
+ * initialized until its provisioner records what it built. Returning a bare null for both would
+ * force every caller to re-query to tell them apart, and the likely failure is that none would.
+ */
+export async function readWorkspaceHostDesiredSpec(
+  workspaceId: string,
+  hostId: string,
+): Promise<WorkspaceHostDesiredSpecLookup> {
+  return withWorkspace(workspaceId, async (tx) => {
+    const rows = (await tx`
+      SELECT desired_spec
+        FROM harness_shared.workspace_hosts
+       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
+       LIMIT 1
+    `) as Array<{ desired_spec: unknown }>;
+
+    if (rows.length === 0) return { desired: null, miss: 'host-not-found' as const };
+    const spec = rows[0]?.desired_spec;
+    if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+      return { desired: null, miss: 'no-recorded-spec' as const };
+    }
+    return { desired: spec as WorkspaceHostDesiredSpec };
   });
 }
 
