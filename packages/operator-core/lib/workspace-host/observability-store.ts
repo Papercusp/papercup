@@ -285,6 +285,7 @@ export interface StoredWorkspaceHostDestroyTarget {
   name: string;
   connectionId: string;
   target: string;
+  observedState: string;
   desired: WorkspaceHostDesiredSpec;
   resources: readonly {
     resource: WorkspaceHostResourceRef;
@@ -306,7 +307,7 @@ export async function readWorkspaceHostDestroyTarget(
 ): Promise<StoredWorkspaceHostDestroyTarget | null> {
   return withWorkspace(workspaceId, async (tx) => {
     const hosts = (await tx`
-      SELECT id, name, connection_id, target, desired_spec
+      SELECT id, name, connection_id, target, observed_state, desired_spec
       FROM harness_shared.workspace_hosts
       WHERE workspace_id = ${workspaceId} AND id = ${hostId}
       LIMIT 1
@@ -315,6 +316,7 @@ export async function readWorkspaceHostDestroyTarget(
       name: string;
       connection_id: string;
       target: string;
+      observed_state: string;
       desired_spec: unknown;
     }>;
     const host = hosts[0];
@@ -365,6 +367,7 @@ export async function readWorkspaceHostDestroyTarget(
       name: host.name,
       connectionId: host.connection_id,
       target: host.target,
+      observedState: host.observed_state,
       desired: host.desired_spec as WorkspaceHostDesiredSpec,
       resources,
     };
