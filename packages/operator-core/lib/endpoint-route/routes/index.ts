@@ -904,6 +904,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(workspaceById as AnyRoute[]),
   ...flatten(workspaceSwitch as AnyRoute),
   ...flatten(workspaceHostAudit as AnyRoute),
+  ...flatten(workspaceHostInitialize as AnyRoute),
   ...flatten(userActionsBySlug as AnyRoute),
   ...flatten(userActionsLog as AnyRoute),
   ...flatten(elevenlabsWebhook as AnyRoute),
