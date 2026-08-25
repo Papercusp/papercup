@@ -434,6 +434,11 @@ export function createIssueContradictionFiler(opts?: {
         severity: 'minor',
         scope: `harness:${harness}`,
         createdBy,
+        // The population is bounded by judged, conclusive contradictions plus the
+        // open-item dedupe above, so this is the deliberate admission bypass the
+        // module contract already promises — now explicit at the INSERT boundary.
+        admission: 'auto',
+        admittedBy: 'bypass:bounded-doc-contradiction-dedupe',
         payload: {
           dedupeKey: spec.dedupeKey,
           contradiction: spec.finding,
