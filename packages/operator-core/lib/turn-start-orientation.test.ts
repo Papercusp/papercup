@@ -37,6 +37,7 @@ const base: OrientationState = {
   executableFrontier: null,
   neverDropFacts: [],
   toolSurface: null,
+  carryBlindWindow: null,
 };
 const withWork: OrientationState = {
   held: [
@@ -57,6 +58,7 @@ const withWork: OrientationState = {
   executableFrontier: null,
   neverDropFacts: [],
   toolSurface: null,
+  carryBlindWindow: null,
 };
 
 /** The context generation most of these cases hold fixed; P-023's own block varies it. */
@@ -498,6 +500,7 @@ describe('turn-start-orientation — what it says', () => {
       executableFrontier: { planSlug: 'one-plan', executableWidth: 2 },
       neverDropFacts: ['guard-rail:some-settled-thing'],
       toolSurface: null,
+      carryBlindWindow: null,
     });
   });
 
@@ -670,5 +673,78 @@ describe('never-drop facts fold', () => {
     });
     expect(out).toContain('directed msg(s) awaiting YOUR reply');
     expect(out).toContain('never-drop facts');
+  });
+});
+
+/**
+ * EI-21442716425230784 — the carry blind window's line.
+ *
+ * A successor inherits a carry document built BEFORE the cut it describes: the
+ * psu host waits on a busy-gate, and everything the predecessor does in that
+ * window is absent from the doc. The doc warns that such a window exists but
+ * carries no signal about THIS one, so the successor cannot tell an empty window
+ * from one holding the most owner-salient act of the session (the reported case:
+ * an OAuth consent URL the owner was explicitly asked to act on).
+ */
+describe('carry blind window line', () => {
+  const window = {
+    snapshotAtMs: Date.parse('2026-08-25T16:13:55.000Z'),
+    cutAtMs: Date.parse('2026-08-25T16:17:52.000Z'),
+    windowMs: 237_000,
+    callsAfter: 26,
+    lastCallAtMs: Date.parse('2026-08-25T16:17:33.000Z'),
+    lastToolName: 'capability:bash',
+  };
+
+  it('renders above the directed-message line — it is the only line that DECAYS', () => {
+    // Every other line describes state the agent can re-read all session. This one
+    // describes turns living solely in a dead predecessor's transcript, so losing
+    // it to budget truncation loses it permanently.
+    const lines = renderOrientationLines({ ...withWork, carryBlindWindow: window });
+    const blind = lines.findIndex((l) => l.includes('carry blind window'));
+    const directed = lines.findIndex((l) => l.includes('directed msg(s)'));
+    expect(blind).toBeGreaterThanOrEqual(0);
+    expect(directed).toBeGreaterThanOrEqual(0);
+    expect(blind).toBeLessThan(directed);
+  });
+
+  it('a measured window makes an otherwise-identical orientation re-emit', () => {
+    // The shape this must survive: a successor's first turn holds exactly what its
+    // predecessor held, so every other token is unchanged. A fingerprint blind to
+    // the window would suppress the one warning that cannot be re-derived.
+    const without = fingerprintOrientation(base, 7);
+    const with_ = fingerprintOrientation({ ...base, carryBlindWindow: window }, 7);
+    expect(orientationUnchanged(without, with_)).toBe(false);
+  });
+
+  it('does not re-emit while the same window stands — it is a one-shot', () => {
+    const first = fingerprintOrientation({ ...base, carryBlindWindow: window }, 7);
+    const second = fingerprintOrientation({ ...base, carryBlindWindow: { ...window } }, 7);
+    expect(orientationUnchanged(first, second)).toBe(true);
+  });
+
+  it('a window alone is enough to spend the block on', () => {
+    expect(isEmptyOrientation(base)).toBe(true);
+    expect(isEmptyOrientation({ ...base, carryBlindWindow: window })).toBe(false);
+  });
+
+  it('degrades to silence when the reader fails, never to a manufactured window', async () => {
+    getLoopStatusMock.mockResolvedValue({ active: false });
+    const state = await resolveOrientationState('su-x', 'ws-1', {
+      held: async () => [],
+      inbox: async () => ({ count: 0, newest: [] }),
+      announcedGates: async () => [],
+      loopArmed: async () => false,
+      loopFireWithheld: async () => false,
+      improvementTriage: async () => null,
+      executableFrontier: async () => null,
+      neverDropFacts: async () => [],
+      toolSurface: async () => null,
+      carryBlindWindow: async () => {
+        throw new Error('host event log unreadable');
+      },
+      contextEpoch: async () => 1,
+    });
+    expect(state.carryBlindWindow).toBeNull();
   });
 });

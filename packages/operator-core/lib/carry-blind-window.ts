@@ -214,9 +214,13 @@ export async function readCarryBlindWindow(
          LIMIT 1
       ),
       after AS (
+        -- Every column here MUST be t-qualified: the snapshot CTE also exposes
+        -- an invoked_at, so a bare reference raises 'column reference
+        -- "invoked_at" is ambiguous' (42702) at RUNTIME — a shape no
+        -- type-checker sees and no unit test with a fake sql tag can reach.
         SELECT count(*)::bigint AS calls_after,
-               max(invoked_at) AS last_call_at,
-               (ARRAY_AGG(tool_name ORDER BY invoked_at DESC))[1] AS last_tool
+               max(t.invoked_at) AS last_call_at,
+               (ARRAY_AGG(t.tool_name ORDER BY t.invoked_at DESC))[1] AS last_tool
           FROM harness_shared.tool_invocations t, snapshot s
          WHERE t.coord_owner_id = ${ownerId}
            AND t.invoked_at > s.invoked_at

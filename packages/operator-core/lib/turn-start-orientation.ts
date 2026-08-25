@@ -699,6 +699,13 @@ export interface OrientationDeps {
    */
   toolSurface: (ownerId: string) => Promise<OrientationToolSurface | null>;
   /**
+   * The measured carry blind window (EI-21442716425230784), or null when there
+   * is no recent cut, the window was empty, or it could not be read — all three
+   * render as silence, because a window manufactured from a failed read would
+   * send a successor hunting turns that do not exist.
+   */
+  carryBlindWindow: (ownerId: string, workspaceId: string) => Promise<CarryBlindWindow | null>;
+  /**
    * The agent's CONTEXT GENERATION (P-023 / D-008) — NOT part of the rendered
    * state, only of the dedup key, which is why it is not on `OrientationState`.
    * Reads `memory_session_epochs`, the same counter the memory surfaced-ledger
@@ -731,6 +738,7 @@ export async function resolveOrientationState(
     executableFrontier,
     neverDropFacts,
     toolSurface,
+    carryBlindWindow,
   ] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
     d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
@@ -748,6 +756,10 @@ export async function resolveOrientationState(
     // toolless; the cost of a missed warning is one more turn, the cost of a false
     // one is an agent restarting a session that was fine.
     d.toolSurface(ownerId).catch(() => null as OrientationToolSurface | null),
+    // Same fail-soft rule, and it matters here specifically: the reader spans a
+    // host event log and a PG count, either of which can be unavailable on the
+    // very turn a successor boots.
+    d.carryBlindWindow(ownerId, workspaceId).catch(() => null as CarryBlindWindow | null),
   ]);
   return {
     held,
@@ -760,6 +772,7 @@ export async function resolveOrientationState(
     executableFrontier,
     neverDropFacts,
     toolSurface,
+    carryBlindWindow,
   };
 }
 
@@ -998,6 +1011,14 @@ export function defaultOrientationDeps(): OrientationDeps {
         label: 'turn-start tool surface',
       });
       return value;
+    },
+    // EI-21442716425230784. Both endpoints of the window are ALREADY recorded —
+    // the carry snapshot is the caller's own session:request-compaction row, the
+    // cut is the per-owner host event log's verdict — so this reader adds no
+    // write at the boundary and no new state anywhere.
+    carryBlindWindow: async (ownerId, workspaceId) => {
+      const { readCarryBlindWindow } = await import('./carry-blind-window');
+      return await readCarryBlindWindow(ownerId, { workspaceId });
     },
     contextEpoch: async (ownerId) => {
       const [{ currentSessionEpoch }, { getOrgPg }] = await Promise.all([
