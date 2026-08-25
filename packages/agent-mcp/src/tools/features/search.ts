@@ -26,6 +26,7 @@ interface FeatureRow {
 
 export default defineTool({
   name: 'features:search',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'features:read',
   guidance: {

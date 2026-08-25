@@ -21,6 +21,7 @@ interface TagCount {
 
 export default defineTool({
   name: 'features:tag_vocabulary',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'features:read',
   guidance: {

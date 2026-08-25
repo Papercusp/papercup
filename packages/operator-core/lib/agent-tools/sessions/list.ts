@@ -308,6 +308,7 @@ async function readHistoricalCensus(
 
 export default defineTool({
   name: 'sessions:list',
+  needsWorkspaceTx: true,
   crossWorkspace: true,
   capability: 'search:read',
   description:

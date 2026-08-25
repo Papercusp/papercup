@@ -55,7 +55,7 @@ describe('warnIfHoldingWorkspaceTxTooLong (EI-18803497769946984)', () => {
     // The tool name is the entire point — a warning that cannot be attributed is the
     // status quo we are replacing.
     expect(clock.warnings[0]).toContain('build:typecheck');
-    expect(clock.warnings[0]).toContain('skipWorkspaceTx');
+    expect(clock.warnings[0]).toContain('needsWorkspaceTx:true');
 
     release('done');
     await expect(wrapped).resolves.toBe('done');

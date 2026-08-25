@@ -26,6 +26,7 @@ const ALL_ROLES = [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle'] as const;
 
 export default defineTool({
   name: 'search:fulltext',
+  needsWorkspaceTx: true,
   // P-062 Phase 4: reads `operator_turns` (a non-workspace-scoped global table)
   // among its sources and scopes the ws-scoped sources by the explicit
   // workspaceId arg, not RLS. Must run on the admin (rolbypassrls) handle — a

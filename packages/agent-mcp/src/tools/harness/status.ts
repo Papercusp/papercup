@@ -42,6 +42,7 @@ interface AuditRow {
 
 export default defineTool({
   name: 'harness:status',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'harness:read',
   description:

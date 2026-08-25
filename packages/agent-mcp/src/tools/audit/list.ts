@@ -15,6 +15,7 @@ import { defineTool } from '@papercusp/tooldef';
 
 export default defineTool({
   name: 'audit:list',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'audit:read',
   guidance: {

@@ -115,6 +115,7 @@ function archivedClaudeSession(
 
 export default defineTool({
   name: 'dev:claude_session',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   description:
     'Find / search / read local Claude Code chat transcripts — the Claude-Code analogue of dev:omp_session. Scans BOTH ~/.claude/projects AND the per-session isolation dirs ~/.papercusp/session-claude/<owner>/projects, so psu/su CONSOLE sessions are found too. op=list (sessions by cwd + recency, the reliable read), op=search (RAW substring grep — lossy; for ranked cross-client content search prefer sessions:search), op=read (one session as a compact bounded turn list). Pass filePath or sessionId to read.',

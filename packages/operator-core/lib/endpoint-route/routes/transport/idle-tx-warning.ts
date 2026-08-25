@@ -49,8 +49,9 @@ export function idleTxWarningMessage(toolName: string, afterMs: number = IDLE_TX
     `for ${afterMs / 1000}s without settling. Postgres kills an idle transaction at ` +
     `idle_in_transaction_session_timeout (60s), which reaches the caller as a bare ` +
     `"write CONNECTION_CLOSED 127.0.0.1:6432" that names neither this tool nor this cause. ` +
-    `If this handler never reads ctx.tx, declare skipWorkspaceTx: true on it ` +
-    `(EI-18803497769946984).`
+    `Only tools declaring needsWorkspaceTx:true retain an ambient transaction. ` +
+    `If this handler never reads ctx.tx, remove that declaration ` +
+    `(EI-18808330244321407).`
   );
 }
 

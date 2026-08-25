@@ -87,6 +87,7 @@ function loopGoalOf(text: string | null | undefined): string | null {
 
 export default defineTool({
   name: 'sessions:digest',
+  needsWorkspaceTx: true,
   crossWorkspace: true,
   capability: 'search:read',
   description:

@@ -68,6 +68,7 @@ const readArgsSchema = z
 
 export default defineTool({
   name: 'sessions:read',
+  needsWorkspaceTx: true,
   crossWorkspace: true,
   capability: 'search:read',
   description:

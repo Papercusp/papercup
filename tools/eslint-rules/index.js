@@ -20,5 +20,6 @@ module.exports = {
     'no-raw-route-handlers': require('./no-raw-route-handlers.js'),
     'no-bare-jsonb-cast': require('./no-bare-jsonb-cast.js'),
     'no-parse-boundary-falsy-default': require('./no-parse-boundary-falsy-default.js'),
+    'no-undeclared-workspace-tx': require('./no-undeclared-workspace-tx.js'),
   },
 };

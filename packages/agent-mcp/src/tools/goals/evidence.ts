@@ -20,6 +20,7 @@ export const goalEvidenceArgs = z
 
 export default defineTool({
   name: 'blender:attach-goal-evidence',
+  needsWorkspaceTx: true,
   description:
     'Append evidence or a finding ABOUT an existing goal. This is structurally zero-authority: it writes only an append-only goal:evidence audit row and cannot change the goal title, outcome, criterion, budget, status, tripwires, or launch settings. The entry is returned by goals:get { id, detail:"full" } under history.',
   capability: 'goals:write',

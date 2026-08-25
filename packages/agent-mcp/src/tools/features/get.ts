@@ -42,6 +42,7 @@ const FeatureKey = z.object({
 
 export default defineTool({
   name: 'features:get',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'features:read',
   description:

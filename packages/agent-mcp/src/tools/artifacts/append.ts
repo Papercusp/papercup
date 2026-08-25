@@ -40,6 +40,7 @@ type AppendItem = z.infer<typeof AppendItem>;
 
 export default defineTool({
   name: 'artifacts:append',
+  needsWorkspaceTx: true,
   description:
     'Append to one OR many PG-canonical text artifacts (harness_text_artifacts); creates the row if absent. Pass a single `{ slug?, rel_path, suffix }` or `items:[{ slug?, rel_path, suffix }]` for several. Returns { ok, results:[{ ok, slug, rel_path, appended_bytes, total_bytes, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself.',
   capability: 'artifacts:write',

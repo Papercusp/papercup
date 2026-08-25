@@ -92,6 +92,7 @@ function minimizeSearchOutput(result: SearchOutput): SearchOutput {
 
 export default defineTool({
   name: 'sessions:search',
+  needsWorkspaceTx: true,
   crossWorkspace: true,
   capability: 'search:read',
   description:

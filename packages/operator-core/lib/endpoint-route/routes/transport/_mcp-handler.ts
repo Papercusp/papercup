@@ -1130,10 +1130,11 @@ import { warnIfHoldingWorkspaceTxTooLong } from './idle-tx-warning';
  * (dispatchTool), so the two can never drift apart again:
  *   - crossWorkspace tool → the admin (rolbypassrls) handle, so it spans
  *     workspaces (RLS never hides another workspace's rows).
- *   - needsTx + skipWorkspaceTx tool (concrete workspace) → the principal is
- *     synthesized in its OWN short-lived tx (committed immediately), then the
- *     handler runs with NO ambient tx held open (see skipWorkspaceTx below).
- *   - needsTx tool (concrete workspace) → a withWorkspace(ws) harness_app tx +
+ *   - ordinary concrete-workspace tool → the principal is synthesized in its
+ *     OWN short-lived tx (committed immediately), then the handler runs with
+ *     NO ambient tx held open.
+ *   - needsWorkspaceTx tool (concrete workspace) → a withWorkspace(ws)
+ *     harness_app tx +
  *     a least-privilege synthesized principal, held open for the WHOLE handler.
  *   - unscoped ('*') non-crossWorkspace tool → runs tx-less (its own
  *     "workspace= arg required" fallback fires).
@@ -1145,27 +1146,21 @@ import { warnIfHoldingWorkspaceTxTooLong } from './idle-tx-warning';
  * unscoped psu/fleet session. Routing both dispatch paths through this helper is
  * the durable fix.
  *
- * EI-18666279107998059: the plain `needsTx` branch holds ONE Postgres
- * transaction open for the tool's ENTIRE handler execution — fine for the
- * overwhelming majority of tools (fast, and many read/write via `ctx.tx`), but
- * a handler that legitimately blocks a long time doing NO `ctx.tx` queries of
- * its own (e.g. `capability:bash` awaiting a multi-minute child process) then
- * leaves that transaction sitting IDLE for the whole wait. Once idle time
- * exceeds Postgres's `idle_in_transaction_session_timeout` (60s on this
- * deployment), the server kills the connection and the call fails with a bare
- * `write CONNECTION_CLOSED 127.0.0.1:6432` (PgBouncer's port) — an error that
- * looks like an infra outage but is really "this call's ambient tx went idle
- * too long," correlating with wall-clock call DURATION rather than the command
- * run. A tool opts out via `skipWorkspaceTx: true` (set only when its handler
- * never reads `ctx.tx`); this synthesizes the principal in a short probe
- * transaction (committed in milliseconds — capability/role gating, which reads
- * `ctx.principal` not `ctx.tx`, is unaffected) and then runs the handler with
- * no ambient tx at all.
+ * EI-18808330244321407: transaction retention is explicit opt-in. The former
+ * default wrapped essentially every scoped tool for its entire handler, even
+ * though only a small minority read `ctx.tx`; slow non-DB work then sat idle in
+ * a transaction until Postgres killed it. An ordinary tool now gets only the
+ * short principal-synthesis transaction. A handler that actually reads
+ * `ctx.tx` declares `needsWorkspaceTx: true`, and only that branch retains the
+ * transaction. Generic tooldef dispatch also installs a fail-loud getter so an
+ * undeclared access throws `WorkspaceTxNotDeclaredError` immediately.
  */
 async function dispatchWithSynthesizedTx<T>(
   tool: {
     name?: string;
     crossWorkspace?: boolean;
+    needsWorkspaceTx?: boolean;
+    /** Legacy compatibility metadata; transaction-free is now the default. */
     skipWorkspaceTx?: boolean;
     requirePrincipal?: boolean;
   },
@@ -1196,7 +1191,7 @@ async function dispatchWithSynthesizedTx<T>(
   // saturated. Signed role callers still take the existing synthesis path so
   // their capability grants remain enforced.
   if (
-    tool.skipWorkspaceTx === true &&
+    tool.needsWorkspaceTx !== true &&
     tool.requirePrincipal === false &&
     baseCtx.gateBypass?.capability === true &&
     dispatchNeedsTx(spawnCtx)
@@ -1207,11 +1202,9 @@ async function dispatchWithSynthesizedTx<T>(
     const ctx: UnifiedToolContext = { ...baseCtx, tx: undefined };
     return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(ctx));
   }
-  // EI-18666279107998059: same needsTx scoping as below, but the principal is
-  // synthesized in its OWN short-lived transaction (committed before `run`
-  // ever starts) instead of one held open for the whole handler. See the
-  // function doc comment for the full rationale.
-  if (tool.skipWorkspaceTx === true && dispatchNeedsTx(spawnCtx)) {
+  // EI-18808330244321407: default path. Preserve needsTx scoping for principal
+  // synthesis, but commit that short transaction before the handler starts.
+  if (tool.needsWorkspaceTx !== true && dispatchNeedsTx(spawnCtx)) {
     const ctxWs = spawnCtx.workspaceId;
     // The handler deliberately opted out of retaining an ambient transaction,
     // but role/capability gating still needs a short principal-synthesis tx.
@@ -1224,10 +1217,10 @@ async function dispatchWithSynthesizedTx<T>(
     const principal = await retryOnRetryableDbDeadline(() =>
       withWorkspace(ctxWs, (tx) => synthesizeDispatchPrincipal(tx, spawnCtx)),
     );
-    const ctx: UnifiedToolContext = { ...baseCtx, principal };
+    const ctx: UnifiedToolContext = { ...baseCtx, tx: undefined, principal };
     return runWithWorkspaceIfConcrete(ctxWs, () => run(ctx));
   }
-  if (dispatchNeedsTx(spawnCtx)) {
+  if (tool.needsWorkspaceTx === true && dispatchNeedsTx(spawnCtx)) {
     const ctxWs = spawnCtx.workspaceId;
     return runWithWorkspaceIfConcrete(ctxWs, () =>
       // A deadline from withWorkspace fires before its callback starts, so a
@@ -1241,7 +1234,7 @@ async function dispatchWithSynthesizedTx<T>(
             tx,
             principal: await synthesizeDispatchPrincipal(tx, spawnCtx),
           };
-          // EI-18803497769946984: this is the ONE branch that holds a transaction open
+          // EI-18808330244321407: this is the ONE branch that holds a transaction open
           // for the whole handler, so it is the only one that can trip the 60s idle
           // timeout. Name the tool while we still can.
           return warnIfHoldingWorkspaceTxTooLong(tool.name ?? '<unnamed tool>', run(ctx));

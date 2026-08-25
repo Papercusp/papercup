@@ -49,6 +49,7 @@ const stringTolerantBool = z.preprocess(
 
 export default defineTool({
   name: 'goals:create',
+  needsWorkspaceTx: true,
   description:
     'Open a durable GOAL record (harness_shared.goals) — the weeks-long outcome a GOAL-mode agent owns, above the pot/plan/work-item stack. ' +
     '{ title, body?, killCriterion?, tripwires?, budgetCents?, parentId?, status? }. Returns the allocated id. ' +

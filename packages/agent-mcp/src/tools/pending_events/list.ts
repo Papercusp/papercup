@@ -17,6 +17,7 @@ type PERow = z.infer<typeof PESelect>;
 
 export default defineTool({
   name: 'pending_events:list',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'pending_events:read',
   guidance: {

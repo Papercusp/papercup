@@ -37,6 +37,7 @@ type DeleteItem = z.infer<typeof DeleteItem>;
 
 export default defineTool({
   name: 'artifacts:delete',
+  needsWorkspaceTx: true,
   description:
     'Delete one OR many PG-canonical text artifact rows by (harness_slug, rel_path). Restricted to architect/operator/curator roles. Pass a single `{ slug?, rel_path }` or `items:[{ slug?, rel_path }]` for several. Returns { ok, results:[{ ok, slug, rel_path, deleted | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself.',
   capability: 'artifacts:write',

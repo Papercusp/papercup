@@ -26,6 +26,7 @@ type GoalRow = z.infer<typeof GoalSelect>;
 
 export default defineTool({
   name: 'goals:get',
+  needsWorkspaceTx: true,
   capability: 'goals:read',
   guidance: {
     when: 'User names a specific goal and wants the rationale / acceptance criteria.',

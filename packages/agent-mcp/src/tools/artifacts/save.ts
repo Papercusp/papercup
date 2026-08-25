@@ -39,6 +39,7 @@ type SaveItem = z.infer<typeof SaveItem>;
 
 export default defineTool({
   name: 'artifacts:save',
+  needsWorkspaceTx: true,
   description:
     'Upsert one OR many PG-canonical text artifacts (harness_text_artifacts) by (harness_slug, rel_path); replaces existing content. Pass a single `{ slug?, rel_path, content }` or `items:[{ slug?, rel_path, content }]` for several. Returns { ok, results:[{ ok, slug, rel_path, bytes, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself.',
   capability: 'artifacts:write',

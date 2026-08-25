@@ -45,6 +45,7 @@ type LoadItem = z.infer<typeof LoadItem>;
 
 export default defineTool({
   name: 'artifacts:load',
+  needsWorkspaceTx: true,
   description:
     'Read one OR many PG-canonical text artifacts (harness_text_artifacts) by (harness_slug, rel_path). Pass a single `{ slug?, rel_path }` or `items:[{ slug?, rel_path }]` for several. Returns { ok, results:[{ ok, slug, rel_path, found, content, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself.',
   capability: 'artifacts:read',

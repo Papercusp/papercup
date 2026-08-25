@@ -243,7 +243,10 @@ describe('P-012 server-side mixed capability scripts', () => {
     });
     expect(handlerContexts).toHaveLength(7);
     for (const handlerCtx of handlerContexts) {
-      expect(handlerCtx.tx).toBe(ctx.tx);
+      // Every capability fixture is transaction-free by default. Even though
+      // the caller context carries a tx, generic dispatch hides it behind the
+      // named fail-loud contract rather than leaking ambient retention inward.
+      expect(() => handlerCtx.tx).toThrowError('workspace_tx_not_declared');
       // runToolOrchestration and dispatch-stack each own cancellation layers;
       // handlers receive a derived per-dispatch signal, never the caller's
       // parent object. The cancellation case below proves propagation.

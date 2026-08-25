@@ -31,6 +31,7 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
 
 export default defineTool({
   name: 'goals:set-output-schema',
+  needsWorkspaceTx: true,
   description:
     "Declare a goal's own JSON Schema for what it PRODUCES (the `output_schema` jsonb, P-021). Refused fail-loud unless the schema ajv-compiles. Once declared, disposition 'achieved' requires every declared-required output filled (via `outputs` on loop:end / session:end); 'killed' stays lenient. Pass schema:null to un-declare.",
   guidance: {

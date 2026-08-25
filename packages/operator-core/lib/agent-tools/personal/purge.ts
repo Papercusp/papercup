@@ -6,6 +6,7 @@ import type { PapercuspToolContext } from '../_tool-context';
 
 export default defineTool({
   name: 'personal:purge',
+  needsWorkspaceTx: true,
   capability: 'memory:write',
   description:
     'OWNER-only verified deletion of Personal Vault data. Deletes a source (documents including vectors, sync cursor, source aliases) or the whole vault corpus; retained grant history is untouched. Requires confirm:true.',

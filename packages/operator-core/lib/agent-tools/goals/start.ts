@@ -202,6 +202,7 @@ function err(text: string) {
 
 export default defineTool({
   name: 'goals:start',
+  needsWorkspaceTx: true,
   description:
     'Open a GOAL and spawn the GOAL-mode agent that owns it, atomically — the goal row, the agent, and the agent_modes stamp joining them, or none of them. ' +
     '{ title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent\'s ownerId. ' +

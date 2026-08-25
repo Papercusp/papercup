@@ -365,6 +365,7 @@ registerProjectedTool({
   inputSchema: { type: 'object', additionalProperties: true },
   capabilities: [],
   agentRoles: ['scoper'],
+  needsWorkspaceTx: true,
   expose: { mcp: { name: 'gatingtest:scoped' } },
   fn: probeFn('gatingtest:scoped'),
 });
@@ -375,6 +376,7 @@ registerProjectedTool({
   capabilities: [],
   agentRoles: ['operator'],
   profile: 'engineer',
+  needsWorkspaceTx: true,
   expose: { mcp: { name: 'gatingtest:engineer' } },
   fn: probeFn('gatingtest:engineer'),
 });
@@ -385,6 +387,7 @@ registerProjectedTool({
   capabilities: [],
   agentRoles: ['operator'],
   crossWorkspace: true,
+  needsWorkspaceTx: true,
   expose: { mcp: { name: 'gatingtest:crossworkspace' } },
   fn: probeFn('gatingtest:crossworkspace'),
 });
@@ -394,7 +397,6 @@ registerProjectedTool({
   inputSchema: { type: 'object', additionalProperties: false },
   capabilities: [],
   requirePrincipal: false,
-  skipWorkspaceTx: true,
   agentRoles: ['operator'],
   expose: { mcp: { name: 'gatingtest:txless_scope' } },
   fn: probeFn('gatingtest:txless_scope'),
@@ -464,11 +466,24 @@ registerProjectedTool({
   capabilities: ['agent_tools:read'],
   requirePrincipal: false,
   agentRoles: ['scoper'],
-  skipWorkspaceTx: true,
   expose: { mcp: { name: 'gatingtest:txless_role' } },
   fn: async (_input, ctx) => {
     txlessRoleProbeSeen.push(ctx);
     return { content: [{ type: 'text' as const, text: 'gatingtest:txless_role-ok' }] };
+  },
+});
+
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: undeclared ctx.tx access fails loudly',
+  inputSchema: { type: 'object', additionalProperties: false },
+  capabilities: ['agent_tools:read'],
+  requirePrincipal: false,
+  agentRoles: ['scoper'],
+  expose: { mcp: { name: 'gatingtest:undeclared_tx_read' } },
+  fn: async (_input, ctx) => {
+    void ctx.tx;
+    return { content: [{ type: 'text' as const, text: 'unreachable' }] };
   },
 });
 
@@ -2184,13 +2199,13 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
   it('EI-20226130855047135: privileged role-gated recovery calls skip principal synthesis', async () => {
     const projected = lookupByMcpName('tools:find');
     expect(projected?.requirePrincipal).toBe(false);
-    expect(projected?.skipWorkspaceTx).toBe(true);
+    expect(projected?.needsWorkspaceTx).toBeFalsy();
 
     const res = await callTool('gatingtest:txless_role', {}, superuserExtra('&workspace=ws-test'));
     expect(res.isError).toBeUndefined();
     expect(textOf(res)).toBe('gatingtest:txless_role-ok');
     expect(txlessRoleProbeSeen).toHaveLength(1);
-    expect(txlessRoleProbeSeen[0].tx).toBeUndefined();
+    expect(() => txlessRoleProbeSeen[0].tx).toThrowError('workspace_tx_not_declared');
     // No DB-backed principal synthesis occurs, but the transport still carries
     // a lightweight provenance principal for telemetry.
     expect(txlessRoleProbeSeen[0].principal).toMatchObject({
@@ -2202,10 +2217,34 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(h.withWorkspaceCalls).toEqual([]);
   });
 
+  it('a signed role caller gets only a short principal-synthesis tx for a default tool', async () => {
+    const res = await callTool(
+      'gatingtest:txless_role',
+      {},
+      extraFor(signedUrl({ role: 'scoper' })),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(txlessRoleProbeSeen).toHaveLength(1);
+    expect(() => txlessRoleProbeSeen[0].tx).toThrowError('workspace_tx_not_declared');
+    expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+  });
+
+  it('an undeclared ctx.tx access fails immediately with the named contract error', async () => {
+    const res = await callTool(
+      'gatingtest:undeclared_tx_read',
+      {},
+      superuserExtra('&workspace=ws-test'),
+    );
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('workspace_tx_not_declared');
+    expect(textOf(res)).toContain('needsWorkspaceTx: true');
+    expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
   it('EI-20228655954419996: privileged work_items:get does not queue on org-app', async () => {
     const projected = lookupByMcpName('work_items:get');
     expect(projected?.requirePrincipal).toBe(false);
-    expect(projected?.skipWorkspaceTx).toBe(true);
+    expect(projected?.needsWorkspaceTx).toBeFalsy();
 
     // The real handler is intentionally allowed to return its normal not-found
     // result against this test's empty fake store. The load-bearing assertion is
@@ -2220,7 +2259,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
   it('EI-20229910901734876: privileged scheduler:get_next does not queue on org-app', async () => {
     const projected = lookupByMcpName('scheduler:get_next');
     expect(projected?.requirePrincipal).toBe(false);
-    expect(projected?.skipWorkspaceTx).toBe(true);
+    expect(projected?.needsWorkspaceTx).toBeFalsy();
 
     // scheduler:get_next owns its DB accessors and already opts out of retaining
     // an ambient workspace transaction. The privileged dispatcher must also skip
@@ -2238,7 +2277,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
   it('EI-20229273881874423: privileged locks:queue does not queue on org-app', async () => {
     const projected = lookupByMcpName('locks:queue');
     expect(projected?.requirePrincipal).toBe(false);
-    expect(projected?.skipWorkspaceTx).toBe(true);
+    expect(projected?.needsWorkspaceTx).toBeFalsy();
 
     // locks:queue owns its read pool and does not use ctx.tx. The privileged
     // dispatcher must therefore skip the short principal-synthesis probe as
@@ -2312,7 +2351,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(seen).toHaveLength(1);
     const call = seen[0];
     expect(call.ctx.workspaceId).toBe('*');
-    expect(call.ctx.tx).toBeUndefined();
+    expect(() => call.ctx.tx).toThrowError('workspace_tx_unavailable');
     expect(call.ctx.principal).toBeNull();
     expect(call.alsWorkspace).toBeUndefined();
     expect(h.withWorkspaceCalls).toEqual([]);
@@ -2358,7 +2397,7 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     const call = seen[0];
     expect(h.workspaceForCoordOwner).toHaveBeenCalledWith('su-unknown');
     expect(call.ctx.workspaceId).toBe('*');
-    expect(call.ctx.tx).toBeUndefined();
+    expect(() => call.ctx.tx).toThrowError('workspace_tx_unavailable');
     expect(h.withWorkspaceCalls).toEqual([]);
   });
 
@@ -2546,7 +2585,7 @@ describe('tools:invoke threads the TARGET tool\'s tx/principal, not the tx-less 
     const inner = seen.at(-1);
     expect(inner?.tool).toBe('gatingtest:txless_scope');
     expect(inner?.ctx.harnessSlug).toBe('papercup');
-    expect(inner?.ctx.tx).toBeUndefined();
+    expect(() => inner?.ctx.tx).toThrowError('workspace_tx_not_declared');
     expect(inner?.ctx.principal).toMatchObject({
       kind: 'system',
       slug: 'system:operator',

@@ -50,6 +50,7 @@ type HistoryItem = z.infer<typeof HistoryItem>;
 
 export default defineTool({
   name: 'features:history',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'features:read',
   description:

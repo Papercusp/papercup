@@ -13,6 +13,7 @@ import { defineTool } from '@papercusp/tooldef';
 
 export default defineTool({
   name: 'intel:artifacts',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   guidance: {
     when: 'You need the Intel-panel-shaped view of recent artifacts — grouped + summarized for UI display.',

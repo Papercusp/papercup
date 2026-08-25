@@ -22,6 +22,7 @@ import { defineTool } from '@papercusp/tooldef';
 
 export default defineTool({
   name: 'intel:spawn_tree',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   guidance: {
     when: 'User asks "what triggered this?", "show me the lineage of agent X", or you need the parent-child spawn graph for an Intel-panel-style view.',

@@ -48,6 +48,7 @@ type RelatedItem = z.infer<typeof RelatedItem>;
 
 export default defineTool({
   name: 'features:list_related',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'features:read',
   description:

@@ -31,6 +31,7 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
 
 export default defineTool({
   name: 'goals:set-input-schema',
+  needsWorkspaceTx: true,
   description:
     "Declare a goal's own JSON Schema for its start-time INPUTS (the `input_schema` jsonb, P-021) — `required: [...]` is what the start gate enforces. Refused fail-loud unless the schema ajv-compiles, so the start gate can never be left unable to check. Pass schema:null to un-declare. The VALUES are collected at the start door (goals:start { inputs }) and recorded on the goal row.",
   guidance: {

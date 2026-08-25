@@ -10,6 +10,7 @@ const ALL_ROLES = [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle'] as const;
 
 export default defineTool({
   name: 'personal:search',
+  needsWorkspaceTx: true,
   capability: 'search:read',
   requirePrincipal: false,
   agentRoles: [...ALL_ROLES],

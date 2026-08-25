@@ -41,6 +41,7 @@ const argsSchema = z.object({
 
 export default defineTool({
   name: 'goals:set-schedule',
+  needsWorkspaceTx: true,
   description:
     "Author or clear a goal's activation schedule — each armed fire starts the goal's holder via the startGoalById primitive (refusing when it is already held / not active). Validates the RRULE. Does NOT arm (goals:arm-schedule does); pass schedule:null to un-schedule.",
   guidance: {

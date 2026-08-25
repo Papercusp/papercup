@@ -307,6 +307,8 @@ export {
   defaultComputeQuotaWindow,
   UnauthorizedToolError,
   HarnessRequiredError,
+  WorkspaceTxNotDeclaredError,
+  WorkspaceTxUnavailableError,
   PASS_THROUGH,
   type QuotaWindow,
   type DispatchProjectedDeps,
@@ -317,6 +319,7 @@ export {
   type CapabilityEnvelopeVerdict,
   type ToolDispatchOverrideFn,
 } from '@papercusp/tooldef';
+export { boundWorkspaceTx, applyWorkspaceTxContract } from '@papercusp/tooldef';
 // Declarative preconditions (`requires:` — autoloop-pot-operator-rebuild D-006):
 // the preInvoke mirror of `emits:`. The host wires `deps.firePrecondition` to
 // its dispatcher (Papercusp's: `lib/events` → fireReactionInProcess).

@@ -536,6 +536,7 @@ export function buildBoundedTimelineResponse(
 
 export default defineTool({
   name: 'sessions:timeline',
+  needsWorkspaceTx: true,
   crossWorkspace: true,
   capability: 'search:read',
   description:

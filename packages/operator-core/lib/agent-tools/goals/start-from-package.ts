@@ -22,6 +22,7 @@ function err(text: string) {
 
 export default defineTool({
   name: 'goals:start-from-package',
+  needsWorkspaceTx: true,
   description:
     'START an installed goal PACKAGE: adopt its seeded inactive stub (or mint a fresh instance) and spawn the GOAL-mode holder — the deliberate second half of install ≠ start. ' +
     '{ ref, harness?, inputs?, startBlocked?, startBlockedReason? }. Typed inputs are validated against the package inputSchema; standing packages get holder { requireLive: true, onLoss: \'respawn\' } and a weekly budget window unless the package pins its own; already-active instances of the same package are reported as info, never a gate. Returns the goal id, the holder ownerId, and every default applied.',

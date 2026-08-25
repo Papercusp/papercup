@@ -16,6 +16,7 @@ const features = generated.harnessFeaturesConsolidatedInHarnessShared;
 
 export default defineTool({
   name: 'tasks:list',
+  needsWorkspaceTx: true,
   capability: 'tasks:read',
   guidance: {
     when: 'User asks "what tasks do I have?", "what\'s on my plate", or you need a task id before calling `tasks:get`.',

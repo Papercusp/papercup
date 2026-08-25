@@ -61,6 +61,7 @@ function sortedRefs(refs: readonly string[]): string[] {
 
 export default defineTool({
   name: 'goals:update',
+  needsWorkspaceTx: true,
   description:
     'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings?, drainFleet? }. ' +
     'Partial — omitted fields stay untouched. status:"killed" when the kill criterion trips, "achieved" when the outcome is met. ' +

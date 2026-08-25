@@ -108,7 +108,7 @@ describe('code:run registration (B-CX-2A)', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     expect(tool).toBeDefined();
     expect(tool?.effect).toBe('write');
-    expect(tool?.skipWorkspaceTx).toBe(true);
+    expect(tool?.needsWorkspaceTx).toBeFalsy();
     expect(tool?.agentRoles?.length ?? 0).toBeGreaterThan(0);
     // All-roles widening: roles excluded under the old [...SU_ROLES,'cup'] gate now qualify.
     for (const role of ['worker', 'cup', 'papercup', 'kettle', 'reviewer']) {
@@ -991,10 +991,15 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
  * calls are spied per the mocks above).
  */
 describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', () => {
-  const readTool = { effect: 'read', expose: { mcp: { name: 'fleet:assignments' } } } as never;
+  const readTool = {
+    effect: 'read',
+    needsWorkspaceTx: true,
+    expose: { mcp: { name: 'fleet:assignments' } },
+  } as never;
   const crossWorkspaceTool = {
     effect: 'read',
     crossWorkspace: true,
+    needsWorkspaceTx: true,
     expose: { mcp: { name: 'papercusp:list_workspaces' } },
   } as never;
   const echoNext = async (callCtx: unknown) => callCtx;
@@ -1043,10 +1048,9 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
     expect(result.principal).toMatchObject({ workspaceId: 'ws-bee' });
   });
 
-  it('synthesizes a principal but does not retain tx for an inner skipWorkspaceTx tool', async () => {
+  it('synthesizes a principal but does not retain tx for a default transaction-free inner tool', async () => {
     const childTool = {
       effect: 'read',
-      skipWorkspaceTx: true,
       expose: { mcp: { name: 'capability:bash' } },
     };
     const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false };
@@ -1117,10 +1121,15 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
  * independently downstream, unaffected by this ctx-level default).
  */
 describe('code:run → inner calls default to full payload tier (EI-18699443874201617)', () => {
-  const readTool = { effect: 'read', expose: { mcp: { name: 'fleet:assignments' } } } as never;
+  const readTool = {
+    effect: 'read',
+    needsWorkspaceTx: true,
+    expose: { mcp: { name: 'fleet:assignments' } },
+  } as never;
   const crossWorkspaceTool = {
     effect: 'read',
     crossWorkspace: true,
+    needsWorkspaceTx: true,
     expose: { mcp: { name: 'papercusp:list_workspaces' } },
   } as never;
   const echoNext = async (callCtx: unknown) => callCtx;
@@ -1207,10 +1216,15 @@ describe('code:run → inner calls default to full payload tier (EI-186994438742
  * value does, and that is shaped by the OUTER code:run call).
  */
 describe('code:run → inner calls are exempt from the transport hard ceiling (EI-18719561823587590)', () => {
-  const readTool = { effect: 'read', expose: { mcp: { name: 'facts:list' } } } as never;
+  const readTool = {
+    effect: 'read',
+    needsWorkspaceTx: true,
+    expose: { mcp: { name: 'facts:list' } },
+  } as never;
   const crossWorkspaceTool = {
     effect: 'read',
     crossWorkspace: true,
+    needsWorkspaceTx: true,
     expose: { mcp: { name: 'papercusp:list_workspaces' } },
   } as never;
   const echoNext = async (callCtx: unknown) => callCtx;

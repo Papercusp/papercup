@@ -18,6 +18,7 @@ type FeatureRow = typeof features.$inferSelect;
 
 export default defineTool({
   name: 'tasks:get',
+  needsWorkspaceTx: true,
   capability: 'tasks:read',
   guidance: {
     when: 'User names a specific task ("the auth task", "task ABC-123") and you need its full body.',

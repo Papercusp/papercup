@@ -8,6 +8,7 @@ import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export default defineTool({
   name: 'social:reply',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'operator:write',
   requirePrincipal: false,

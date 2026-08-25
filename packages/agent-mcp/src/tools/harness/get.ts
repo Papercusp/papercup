@@ -21,6 +21,7 @@ type ProjectRow = z.infer<typeof ProjectSelect>;
 
 export default defineTool({
   name: 'harness:get',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'harness:read',
   guidance: {

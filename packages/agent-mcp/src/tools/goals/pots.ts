@@ -36,6 +36,7 @@ const noWorkspace = (): { data: null; degraded: boolean; degradedReasons: string
 
 export const attachPot = defineTool({
   name: 'goals:attach-pot',
+  needsWorkspaceTx: true,
   description:
     'Record that a pot (harness) is being worked on IN SERVICE OF a goal. ' +
     '{ goalId, harnessSlug, role?: "owner"|"contributing", note? }. ' +
@@ -101,6 +102,7 @@ export const attachPot = defineTool({
 
 export const detachPot = defineTool({
   name: 'goals:detach-pot',
+  needsWorkspaceTx: true,
   description:
     'Stop counting a pot toward a goal: { goalId, harnessSlug }. Tombstones the link (keeps the history) rather than deleting it.',
   capability: 'goals:write',
@@ -136,6 +138,7 @@ export const detachPot = defineTool({
 
 export const listGoalPots = defineTool({
   name: 'goals:pots',
+  needsWorkspaceTx: true,
   description:
     'The pots a goal is pursued through, main owner first, with measured child-fleet spend rolled up from no earlier than the goal\'s creation (not interactive-session attribution): { goalId, sinceMs?, spend? }.',
   capability: 'goals:read',

@@ -30,6 +30,7 @@ type GoalRow = z.infer<typeof GoalSelect>;
 
 export default defineTool({
   name: 'goals:list',
+  needsWorkspaceTx: true,
   capability: 'goals:read',
   guidance: {
     when: 'User asks "what are we trying to do?", "what are my goals?", "which goals are doable right now?" (read `actionable`), or you need a goal id before calling `goals:get`.',

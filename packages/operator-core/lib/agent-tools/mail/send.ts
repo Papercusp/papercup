@@ -10,6 +10,7 @@ import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
 export default defineTool({
   name: 'mail:send',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'operator:write',
   requirePrincipal: false,

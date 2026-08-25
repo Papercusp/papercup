@@ -29,6 +29,7 @@ interface ProjectRow {
 
 export default defineTool({
   name: 'harness:list',
+  needsWorkspaceTx: true,
   profile: 'engineer',
   capability: 'harness:read',
   guidance: {

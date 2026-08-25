@@ -8,7 +8,11 @@
  * carries source and revision metadata only; no author privilege reaches here.
  */
 import { withWorkspace, getOrgPg } from '@papercusp/db-org';
-import { type UnifiedToolContext, type WrapDispatch } from '@papercusp/agent-mcp';
+import {
+  boundWorkspaceTx,
+  type UnifiedToolContext,
+  type WrapDispatch,
+} from '@papercusp/agent-mcp';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
   dispatchNeedsTx,
@@ -51,8 +55,13 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, a
     return runWithWorkspaceIfConcrete(effectiveWs, () => next(callCtx));
   }
 
-  if (effectiveWs === spawnCtxLike.workspaceId && ctx.tx != null) {
-    return next(baseCtx);
+  const outerTx = boundWorkspaceTx(ctx);
+  if (
+    tool.needsWorkspaceTx === true &&
+    effectiveWs === spawnCtxLike.workspaceId &&
+    outerTx !== undefined
+  ) {
+    return next({ ...baseCtx, tx: outerTx });
   }
 
   const callSpawnCtx = { ...spawnCtxLike, workspaceId: effectiveWs };
@@ -60,7 +69,7 @@ export const bindCurrentCallerDispatch: WrapDispatch = async (tool, _toolName, a
     return runWithWorkspaceIfConcrete(effectiveWs, () => next({ ...baseCtx, workspaceId: effectiveWs }));
   }
 
-  if (tool.skipWorkspaceTx === true) {
+  if (tool.needsWorkspaceTx !== true) {
     return runWithWorkspaceIfConcrete(effectiveWs, () =>
       withWorkspace(effectiveWs, async (tx) => {
         const principal = await synthesizeDispatchPrincipal(tx, callSpawnCtx);

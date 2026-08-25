@@ -64,6 +64,7 @@ async function searchKind(
 
 export default defineTool({
   name: 'search:query',
+  needsWorkspaceTx: true,
   capability: 'search:read',
   guidance: {
     when: 'User asks an open-ended question that could match anything in the workspace ("anything about auth?", "find references to budget guard"). Cross-resource full-text search over tasks, goals, projects, audit.',

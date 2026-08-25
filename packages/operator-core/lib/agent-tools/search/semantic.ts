@@ -68,6 +68,7 @@ const ALL_ROLES = [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle'] as const;
 
 export default defineTool({
   name: 'search:semantic',
+  needsWorkspaceTx: true,
   // P-062 Phase 4: same as search:fulltext — reads the non-workspace-scoped
   // operator_turns source and scopes by the explicit workspaceId arg, so it
   // runs on the admin (rolbypassrls) handle, not a workspace-scoped RLS tx.

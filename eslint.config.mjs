@@ -68,6 +68,22 @@ export default [
     },
   },
   {
+    // EI-18808330244321407: projected handlers are transaction-free by
+    // default. A first-party tool that reads ctx.tx must opt in explicitly;
+    // runtime dispatch carries the same fail-loud contract for indirect misses.
+    files: [
+      'packages/agent-mcp/src/tools/**/*.ts',
+      'packages/operator-core/lib/agent-tools/**/*.ts',
+    ],
+    ignores: ['**/*.test.ts', '**/*.spec.ts', '**/__tests__/**'],
+    plugins: {
+      papercusp: papercuspRules,
+    },
+    rules: {
+      'papercusp/no-undeclared-workspace-tx': 'error',
+    },
+  },
+  {
     // Regression guard for `endpoint-hono-elimination-2026-05-21` —
     // every application route must use `defineRoute`. Raw Hono
     // (`app.get/post/use/route/...`, `new Hono()`) is restricted to

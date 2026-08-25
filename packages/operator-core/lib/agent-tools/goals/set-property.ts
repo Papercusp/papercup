@@ -30,6 +30,7 @@ const text = (payload: Record<string, unknown>, isError = false) => ({
 
 export default defineTool({
   name: 'goals:set-property',
+  needsWorkspaceTx: true,
   description:
     "Write ONE typed property value on a goal (P-023). The property must be DECLARED in the goal's property_schema; the value is validated against its datatype's payload_schema; editable_by is enforced (owner-edit vs agent-edit provenance is derived from the caller, never self-declared); expectedVersion is a CAS guard (0 = no explicit value yet — a 'stale' refusal means re-read and retry). Emits a property_changed delta event the owning agent's next orient folds.",
   guidance: {
