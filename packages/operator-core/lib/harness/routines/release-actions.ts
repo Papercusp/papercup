@@ -1778,7 +1778,33 @@ export function gateStallRecordOnlyLogMessage(status: string): string {
   );
 }
 
-export function gateStallNoopLogMessage(status: string): string {
+type InfraInconclusiveCause = 'pc-heavy-admission' | 'vite-cache-loss' | 'unclassified';
+
+function classifyInfraInconclusiveCause(detail: string | null | undefined): InfraInconclusiveCause {
+  const normalized = detail?.toLowerCase() ?? '';
+  if (
+    normalized.includes('pc-heavy') ||
+    normalized.includes('exclusive-all-slots') ||
+    (normalized.includes('materializ') && normalized.includes('slot'))
+  ) {
+    return 'pc-heavy-admission';
+  }
+  if (
+    normalized.includes('vite-node') ||
+    normalized.includes('module cache') ||
+    normalized.includes('err_module_not_found')
+  ) {
+    return 'vite-cache-loss';
+  }
+  return 'unclassified';
+}
+
+function oneLineMeasuredDetail(detail: string | null | undefined): string | null {
+  const normalized = detail?.trim().replace(/\s+/g, ' ');
+  return normalized || null;
+}
+
+export function gateStallNoopLogMessage(status: string, detail?: string | null): string {
   if (status === 'disk-headroom') {
     return (
       `${orchestratorStdoutTag()} 'disk-headroom' — this run ABORTED before checkout setup or tests ` +
@@ -1806,20 +1832,45 @@ export function gateStallNoopLogMessage(status: string): string {
       `progress backstops)`
     );
   }
-  // EI-20767792192323374: the THIRD noop condition, and its correct operator response differs
-  // from BOTH of the others — nobody holds a lock (so "wait, it resolves itself" is wrong) and
-  // no migration is pending (so pointing at the migration list is wrong). The host deleted the
-  // runner's temp root mid-suite; the next scheduled run judges normally once that stops, and
-  // the files this run named are innocent and must not be triaged.
+  // EI-20767792192323374 / EI-21393982931638628: `infra-inconclusive` is an outcome class,
+  // not a root cause. It was introduced for a vite-node cache-loss incident, but the same
+  // status now also covers pc-heavy admission/materialisation refusal. Narrating the original
+  // incident for every member of the class invented a host failure even while the measured
+  // summary named four live capacity holders. Derive the operator response from that summary;
+  // when it is absent or unfamiliar, stay explicitly unclassified rather than guessing.
   if (status === 'infra-inconclusive') {
-    return (
-      `${orchestratorStdoutTag()} 'infra-inconclusive' — this run's suite FAILED WHOLESALE because the gate's own ` +
-      `vite-node module cache was deleted mid-run (a HOST fault: a /tmp reaper or a peer sweeping the runner's temp ` +
-      `root). It rendered no verdict about the code IN EITHER DIRECTION, so ⚠ DO NOT TRIAGE the files it failed — ` +
-      `they are innocent. No peer run is in flight; the next scheduled run judges normally once the host fault ` +
-      `clears. Leaving gate_health untouched (not a red; a frozen \`main\` is still escalated by ` +
-      `checkMainBehindStaging / evaluateGreenStall, not by this counter — see classifyGateStallStatus)`
-    );
+    const measuredDetail = oneLineMeasuredDetail(detail);
+    const measuredClause = measuredDetail
+      ? `Measured detail: ${measuredDetail}. `
+      : 'No measured cause detail was supplied; inspect gate_health.inconclusive.detail or the checkpoint log. ';
+    const sharedTail =
+      `It rendered no verdict about the code IN EITHER DIRECTION, so ⚠ DO NOT TRIAGE a file merely because ` +
+      `of this tick; re-verify any prior failing list at the candidate before acting on it. No peer ` +
+      `green-checkpoint run is in flight. Leaving gate_health untouched (not a red; a frozen \`main\` is ` +
+      `still escalated by checkMainBehindStaging / evaluateGreenStall, not by this counter — see ` +
+      `classifyGateStallStatus)`;
+
+    switch (classifyInfraInconclusiveCause(measuredDetail)) {
+      case 'pc-heavy-admission':
+        return (
+          `${orchestratorStdoutTag()} 'infra-inconclusive' — the gate could not acquire exclusive pc-heavy ` +
+          `capacity and aborted during runner admission/materialisation, before a suite verdict. ${measuredClause}` +
+          `Re-fire only after the named heavy-slot holders drain or are recovered. ${sharedTail}`
+        );
+      case 'vite-cache-loss':
+        return (
+          `${orchestratorStdoutTag()} 'infra-inconclusive' — the gate's own vite-node module cache disappeared ` +
+          `mid-run, so the suite result is a host-infrastructure failure rather than a code verdict. ` +
+          `${measuredClause}${sharedTail}`
+        );
+      case 'unclassified':
+      default:
+        return (
+          `${orchestratorStdoutTag()} 'infra-inconclusive' — an infrastructure failure prevented a code ` +
+          `verdict, but its mechanism is unclassified; no vite-cache or capacity cause is inferred. ` +
+          `${measuredClause}${sharedTail}`
+        );
+    }
   }
   if (status === 'cancelled') {
     return (
@@ -1967,7 +2018,7 @@ export async function trackGateStall(
     // can never be shadowed by this tick's false-red read-modify-write.
     // EI-19321275470651356: the two conditions in this class need opposite operator
     // advice, so the message is chosen by status (see gateStallNoopLogMessage).
-    console.log(gateStallNoopLogMessage(status));
+    console.log(gateStallNoopLogMessage(status, summary));
     // EI-19405864032365760: 'noop' must not COUNT this tick as a red — that reasoning
     // (EI-2615 / EI-18757975681519069) is correct and unchanged above. But "don't count it"
     // silently became "don't record it AT ALL", and those are different claims. The counters

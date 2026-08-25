@@ -538,6 +538,41 @@ describe('EI-210830: serialized repair holds are visible without incrementing th
       expect(fakeSql.unsafe.mock.calls.some(([query]) => String(query).includes("'{gate_health}'"))).toBe(false);
     },
   );
+
+  it('EI-21393982931638628: trackGateStall threads the measured infra cause to both log and metadata', async () => {
+    fakeSql.unsafe.mockClear();
+    const detail =
+      'pc-heavy --exclusive-all-slots refused materialization after 900s; live holders: 1990073, 3015730';
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    try {
+      await trackGateStall(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        'infra-inconclusive',
+        'abc123def456789',
+        [],
+        '28a3a3d50258',
+        undefined,
+        detail,
+      );
+
+      expect(log).toHaveBeenCalledWith(expect.stringContaining(detail));
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('runner admission/materialisation'));
+      expect(log).not.toHaveBeenCalledWith(expect.stringContaining('module cache disappeared'));
+
+      const update = fakeSql.unsafe.mock.calls.find(([query]) =>
+        String(query).includes("'{gate_health,inconclusive}'"),
+      );
+      expect(update).toBeDefined();
+      expect(JSON.parse(String((update![1] as unknown[])[1]))).toMatchObject({
+        status: 'infra-inconclusive',
+        candidate: 'abc123def456',
+        detail,
+      });
+    } finally {
+      log.mockRestore();
+    }
+  });
 });
 
 describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite operator advices)', () => {
@@ -598,19 +633,47 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     expect(gateStallNoopLogMessage('migrations-pending')).toContain('checkMainBehindStaging');
   });
 
-  it('EI-20767792192323374: infra-inconclusive gets a THIRD wording — both other advices are wrong here', () => {
+  it('EI-21393982931638628: pc-heavy refusal reports measured admission failure, never the old cache incident', () => {
     // Nobody holds a lock (so "wait, it resolves itself" is wrong) and no migration is pending
     // (so pointing at the migration list is wrong). The load-bearing instruction is the one no
     // other noop message needs: the files this run failed are INNOCENT and must not be triaged.
     // Without it a reader does exactly what the incident produced — agents sent at ~4,800 files
     // that were never broken.
-    const msg = gateStallNoopLogMessage('infra-inconclusive');
+    const detail =
+      'pc-heavy --exclusive-all-slots refused materialization after 900s; live holders: 1990073, 3015730';
+    const msg = gateStallNoopLogMessage('infra-inconclusive', detail);
     expect(msg).not.toContain('an active peer run holds the lock');
     expect(msg).not.toContain('migration preflight');
+    expect(msg).not.toContain('module cache disappeared');
+    expect(msg).toContain('runner admission/materialisation');
+    expect(msg).toContain(detail);
     expect(msg).toContain('DO NOT TRIAGE');
-    expect(msg).toContain('No peer run is in flight');
+    expect(msg).toContain('No peer green-checkpoint run is in flight');
     // Same "something still watches the freeze" guarantee the other two carry.
     expect(msg).toContain('checkMainBehindStaging');
+  });
+
+  it('EI-20767792192323374: a measured vite-node cache loss keeps its specific host-fault narration', () => {
+    const detail = 'ERR_MODULE_NOT_FOUND: vite-node module cache was deleted mid-run';
+    const msg = gateStallNoopLogMessage('infra-inconclusive', detail);
+
+    expect(msg).toContain('vite-node module cache disappeared');
+    expect(msg).toContain(detail);
+    expect(msg).not.toContain('pc-heavy capacity');
+    expect(msg).toContain('DO NOT TRIAGE');
+  });
+
+  it('EI-21393982931638628: missing or unfamiliar detail stays unclassified instead of inventing a mechanism', () => {
+    const missing = gateStallNoopLogMessage('infra-inconclusive');
+    const unfamiliar = gateStallNoopLogMessage('infra-inconclusive', 'child exited before publishing diagnostics');
+
+    for (const msg of [missing, unfamiliar]) {
+      expect(msg).toContain('mechanism is unclassified');
+      expect(msg).toContain('no vite-cache or capacity cause is inferred');
+      expect(msg).not.toContain('module cache disappeared');
+      expect(msg).not.toContain('pc-heavy capacity and aborted');
+    }
+    expect(unfamiliar).toContain('child exited before publishing diagnostics');
   });
 
   it('EI-20767792192323374: the three noop wordings are mutually distinct', () => {
