@@ -4,16 +4,16 @@
  * to nudge, did it leave `cup:spawn`/`work_items:create` UNCALLED, did its
  * `improvements:capture` carry `lane:observation`) are the load-bearing check.
  *
- * Mirrors the shape of `rubrics/queen.ts`. Bump the version on any anchor change
- * (it feeds the per-run identity hash).
+ * Mirrors the shape of `rubrics/queen.ts`. The version is DERIVED from the
+ * content below (WI-41678) — an anchor change moves it by construction. This
+ * file is one of the two that proved the old hand-maintained scheme unsafe:
+ * commit b7c7f2db8d rewrote these anchors (Queen→Mug) while the version stayed
+ * '1.0.0'.
  */
 
-import type { JudgeRubric } from '@papercusp/testing-shell/llm';
+import { deriveRubricVersion, type JudgeRubric } from '@papercusp/testing-shell/llm';
 
-export const OVERWATCH_RUBRIC_VERSION = '1.0.0';
-
-export const OVERWATCH_RUBRIC: JudgeRubric = {
-  version: OVERWATCH_RUBRIC_VERSION,
+const OVERWATCH_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   axes: [
     {
       id: 'nudgeNotReplace',

@@ -11,12 +11,9 @@
  * generalize.
  */
 
-import type { JudgeRubric } from '@papercusp/testing-shell/llm';
+import { deriveRubricVersion, type JudgeRubric } from '@papercusp/testing-shell/llm';
 
-export const ORACLE_RUBRIC_VERSION = '1.0.0';
-
-export const ORACLE_RUBRIC: JudgeRubric = {
-  version: ORACLE_RUBRIC_VERSION,
+const ORACLE_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   axes: [
     {
       id: 'helpfulness',
@@ -76,4 +73,11 @@ export const ORACLE_RUBRIC: JudgeRubric = {
     },
   ],
   criticality: 'normal',
+};
+
+export const ORACLE_RUBRIC_VERSION = deriveRubricVersion('oracle', ORACLE_RUBRIC_CONTENT);
+
+export const ORACLE_RUBRIC: JudgeRubric = {
+  version: ORACLE_RUBRIC_VERSION,
+  ...ORACLE_RUBRIC_CONTENT,
 };

@@ -7,12 +7,9 @@
  * without lecture, and progress checkpointing.
  */
 
-import type { JudgeRubric } from '@papercusp/testing-shell/llm';
+import { deriveRubricVersion, type JudgeRubric } from '@papercusp/testing-shell/llm';
 
-export const TUTOR_RUBRIC_VERSION = '1.0.0';
-
-export const TUTOR_RUBRIC: JudgeRubric = {
-  version: TUTOR_RUBRIC_VERSION,
+const TUTOR_RUBRIC_CONTENT: Omit<JudgeRubric, 'version'> = {
   axes: [
     {
       id: 'sectionProtocol',
@@ -50,4 +47,11 @@ export const TUTOR_RUBRIC: JudgeRubric = {
       },
     },
   ],
+};
+
+export const TUTOR_RUBRIC_VERSION = deriveRubricVersion('tutor', TUTOR_RUBRIC_CONTENT);
+
+export const TUTOR_RUBRIC: JudgeRubric = {
+  version: TUTOR_RUBRIC_VERSION,
+  ...TUTOR_RUBRIC_CONTENT,
 };
