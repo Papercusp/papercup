@@ -221,6 +221,42 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
     expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsOwnerAction).toBe(true);
   });
 
+  it('routes a product-decision needs-human request to blocked leader triage', async () => {
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'product-decision',
+        ref: 'product-decision:scope',
+        summary: 'Choose the product direction for this item.',
+        nextVerb: 'agent-review:submit',
+      },
+      'tester',
+      '2026-08-23T18:00:00.000Z',
+    );
+    await seedIssue('EI-product-decision-route', {
+      kind: 'change',
+      status: 'open',
+      createdTs: 100,
+      payload: { externalBlockers: blockers },
+    });
+
+    const res = await wi.setWorkItemStateWithAliasInfo('EI-product-decision-route', 'needs-human', {
+      harness: H,
+      by: 'tester',
+    });
+
+    expect(res.appliedState).toBe('blocked');
+    expect(res.aliasNote).toMatch(/lacked a strict typed owner capability.*blocked.*leader-fleet triage/);
+    const rows = await db.sql<{ status: string; payload: Record<string, unknown> | null }[]>`
+      SELECT status, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = 'EI-product-decision-route'`;
+    expect(rows[0]?.status).toBe('blocked');
+    expect(rows[0]?.payload).not.toHaveProperty('needsOwnerAction');
+    expect(rows[0]?.payload).not.toHaveProperty('needsHuman');
+  });
+
   it('does not disturb an item already pending agent review', async () => {
     const agentReview = { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-ledger', round: 1 };
     await seedIssue('EI-echo-review', { kind: 'change', status: 'open', payload: { agentReview } });
