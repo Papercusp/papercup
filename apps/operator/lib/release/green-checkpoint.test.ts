@@ -84,6 +84,7 @@ import {
   outputHasDeterministicFailureSignature,
   acquireCheckpointRunLock,
   checkpointRunLockDir,
+  buildTerminationCheckpointResult,
   createTerminationSignalHandler,
   armSelfWatchdog,
   checkpointSweepTargets,
@@ -1710,6 +1711,83 @@ describe("createTerminationSignalHandler (EI-10680: replaceStale relaunched into
     } finally {
       consoleErr.mockRestore();
     }
+  });
+
+  it("builds a truthful cancelled result with an explicit unknown sender", () => {
+    expect(
+      buildTerminationCheckpointResult({
+        candidate: "candidate-sha",
+        from: "ready-sha",
+        signal: "SIGTERM",
+        runId: "run-1",
+      }),
+    ).toMatchObject({
+      advanced: false,
+      candidate: "candidate-sha",
+      from: "ready-sha",
+      green: null,
+      reason: "cancelled",
+      runId: "run-1",
+      termination: {
+        mechanism: "managed-signal",
+        signal: "SIGTERM",
+        sender: null,
+      },
+    });
+  });
+
+  it("awaits the durable finalizer before release and suppresses a duplicate signal", async () => {
+    const order: string[] = [];
+    let finishFinalizer: (() => void) | undefined;
+    const finalizerGate = new Promise<void>((resolve) => {
+      finishFinalizer = resolve;
+    });
+    const releaseAndExit = vi.fn(() => {
+      order.push("release");
+    });
+    const finalize = vi.fn(async (signal: NodeJS.Signals) => {
+      order.push(`finalize:${signal}:start`);
+      await finalizerGate;
+      order.push(`finalize:${signal}:done`);
+    });
+    const handler = createTerminationSignalHandler(
+      releaseAndExit,
+      (message) => order.push(`log:${message}`),
+      finalize,
+    );
+
+    const first = handler("SIGTERM");
+    const duplicate = handler("SIGINT");
+    expect(order[0]).toContain("log:received SIGTERM");
+    expect(order[1]).toBe("finalize:SIGTERM:start");
+    expect(releaseAndExit).not.toHaveBeenCalled();
+    expect(duplicate).toBeUndefined();
+
+    finishFinalizer?.();
+    await first;
+
+    expect(order).toEqual([
+      expect.stringContaining("log:received SIGTERM"),
+      "finalize:SIGTERM:start",
+      "finalize:SIGTERM:done",
+      "release",
+    ]);
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(releaseAndExit).toHaveBeenCalledTimes(1);
+    expect(releaseAndExit).toHaveBeenCalledWith(143);
+  });
+
+  it("does not release when normal completion already claimed the terminal race", async () => {
+    const releaseAndExit = vi.fn();
+    const handler = createTerminationSignalHandler(
+      releaseAndExit,
+      () => {},
+      async () => false,
+    );
+
+    await handler("SIGTERM");
+
+    expect(releaseAndExit).not.toHaveBeenCalled();
   });
 });
 

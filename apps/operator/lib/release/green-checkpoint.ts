@@ -729,6 +729,8 @@ export interface CheckpointResult {
     | "repair-in-progress"
     | "repair-staging-mismatch"
     | "disk-headroom"
+    /** An external managed signal stopped the run before it could render a suite verdict. */
+    | "cancelled"
     /** EI-20767792192323374: the run's own module cache vanished mid-suite, so its failures
      *  are a HOST fault, not a verdict about the code. `green: null` (never `false`) — see
      *  {@link classifyInfraFault}. Treated as a no-op by `classifyGateStallStatus`, exactly
@@ -800,6 +802,8 @@ export interface CheckpointResult {
    *  verdict so a consumer can distinguish two runs that happen to judge the same
    *  candidate, and so an events:await can bind to an EXACT run when that matters. */
   runId?: string;
+  /** Structured provenance for a managed SIGTERM/SIGINT cancellation. */
+  termination?: CheckpointTermination;
   /** WI-4957: the full-suite output log THIS run wrote, when produced (not-green paths
    *  only — an advance/up-to-date verdict has no failing suite output to reference). */
   logPath?: string;
@@ -827,6 +831,49 @@ export interface CheckpointResult {
    *  exception may not identify it), so this is a coarse "the process crashed" signal,
    *  not a substitute for a leg-scoped verdict. */
   crashed?: boolean;
+}
+
+/** Provenance for a cancellation delivered through this process's managed signal handler. */
+export interface CheckpointTermination {
+  mechanism: "managed-signal";
+  signal: NodeJS.Signals;
+  /** Node receives the signal name but cannot identify the process that sent it. */
+  sender: string | null;
+}
+
+/**
+ * Build the terminal result for a managed SIGTERM/SIGINT before the process exits.
+ *
+ * Keep this separate from the CLI so the result shape is testable without installing a real
+ * signal handler. `sender` is deliberately explicit in the result: Node's signal callback has
+ * no sender identity, so an omitted value becomes `null` rather than an invented attribution.
+ */
+export function buildTerminationCheckpointResult(opts: {
+  candidate: string;
+  signal: NodeJS.Signals;
+  runId: string;
+  from?: string | null;
+  sender?: string | null;
+  summary?: string;
+}): CheckpointResult {
+  const sender = opts.sender ?? null;
+  return {
+    advanced: false,
+    candidate: opts.candidate,
+    from: opts.from ?? null,
+    green: null,
+    reason: "cancelled",
+    termination: {
+      mechanism: "managed-signal",
+      signal: opts.signal,
+      sender,
+    },
+    runId: opts.runId,
+    summary:
+      opts.summary ??
+      `green-checkpoint cancelled by managed ${opts.signal}` +
+        (sender === null ? " (sender unknown)" : ` (sender ${sender})`),
+  };
 }
 
 /**
@@ -1939,14 +1986,56 @@ export function acquireCheckpointRunLock(
  * without spawning a real process or sending a real signal.
  */
 export function createTerminationSignalHandler(
-  releaseAndExit: (code: number) => void,
+  releaseAndExit: (code: number) => void | Promise<void>,
   log: (msg: string) => void = (m) => console.error(m),
-): (signal: NodeJS.Signals) => void {
-  return (signal: NodeJS.Signals): void => {
+  /**
+   * Optional durable finalization that must complete before the process releases its lock.
+   * Returning `false` means a normal terminal path won the race while the signal was being
+   * handled, so the handler must not release/exit a second time.
+   */
+  finalize?: (
+    signal: NodeJS.Signals,
+  ) => boolean | void | Promise<boolean | void>,
+): (signal: NodeJS.Signals) => void | Promise<void> {
+  let handled = false;
+  return (signal: NodeJS.Signals): void | Promise<void> => {
+    if (handled) return;
+    handled = true;
     log(
       `received ${signal} — releasing run-lock and exiting (pid ${process.pid})`,
     );
-    releaseAndExit(143);
+    if (!finalize) {
+      releaseAndExit(143);
+      return;
+    }
+
+    let finalization: boolean | void | Promise<boolean | void>;
+    try {
+      // Invoke synchronously so the finalizer can claim the terminal race before a normal
+      // completion callback gets another turn on the event loop.
+      finalization = finalize(signal);
+    } catch (error) {
+      log(
+        `termination finalizer failed; releasing run-lock anyway: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      finalization = undefined;
+    }
+
+    return Promise.resolve(finalization)
+      .catch((error) => {
+        log(
+          `termination finalizer failed; releasing run-lock anyway: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return undefined;
+      })
+      .then(async (shouldRelease) => {
+        if (shouldRelease === false) return;
+        await releaseAndExit(143);
+      });
   };
 }
 
@@ -14094,6 +14183,14 @@ if (require.main === module) {
         pid: process.pid,
       },
     );
+    type TerminalOwner = "none" | "signal" | "normal" | "crash";
+    let terminalOwner: TerminalOwner = "none";
+    const claimTerminal = (owner: Exclude<TerminalOwner, "none">): boolean => {
+      if (terminalOwner !== "none") return false;
+      terminalOwner = owner;
+      return true;
+    };
+
     const releaseAndExit = (code: number): never => {
       watchdog.cancel();
       lock.release();
@@ -14104,6 +14201,54 @@ if (require.main === module) {
       // exit code below is still ours to return.
       sweepCheckpointSurvivors();
       process.exit(code);
+    };
+    const finalizeTermSignal = async (
+      signal: NodeJS.Signals,
+    ): Promise<boolean> => {
+      // Claim before any async candidate lookup. A normal completion that gets its callback
+      // onto the event loop after this point must not overwrite the cancellation result.
+      if (!claimTerminal("signal")) return false;
+
+      let candidate = candidateArg ?? cfg.integrationBranch;
+      try {
+        candidate = await revParse(
+          cfg.integrationRoot,
+          candidateArg ?? cfg.integrationBranch,
+        );
+      } catch {
+        /* best-effort — retain the CLI candidate/branch label for the terminal record */
+      }
+
+      let from: string | null = null;
+      try {
+        if (await refExists(cfg.integrationRoot, cfg.releaseRef)) {
+          from = await revParse(cfg.integrationRoot, cfg.releaseRef);
+        }
+      } catch {
+        /* best-effort — cancellation remains truthful without a resolved ready pin */
+      }
+
+      const cancelled = {
+        ...buildTerminationCheckpointResult({
+          candidate,
+          from,
+          signal,
+          runId,
+        }),
+        candidateSource,
+        ...(diagnostic ? { diagnostic } : {}),
+      };
+      // Record first, then emit the marker + inconclusive wake. The signal handler awaits this
+      // finalizer, so releaseAndExit cannot tear down either write before it is durable.
+      const recorded = await recordOwnVerdict(cancelled);
+      await emitResult(recorded ? { ...cancelled, recorded: true } : cancelled);
+      return true;
+    };
+    const releaseAfterSignal = (code: number): void => {
+      // A normal/crash terminal path may win while finalization is in flight. In that case the
+      // finalizer returns false and this guard is the second belt against a double exit.
+      if (terminalOwner !== "signal") return;
+      releaseAndExit(code);
     };
     // EI-10680: this process previously had NO signal handler for SIGTERM/SIGINT, so an
     // external "stop this run" (systemctl --user stop, e.g. from release-checkpoint-launch's
@@ -14119,7 +14264,11 @@ if (require.main === module) {
     // replaceStale attempts). Registering our OWN handler makes the release deterministic:
     // whatever else may or may not be listening, THIS run always drops its lock and exits the
     // moment it is asked to stop.
-    const handleTermSignal = createTerminationSignalHandler(releaseAndExit);
+    const handleTermSignal = createTerminationSignalHandler(
+      releaseAfterSignal,
+      undefined,
+      finalizeTermSignal,
+    );
     process.once("SIGTERM", handleTermSignal);
     process.once("SIGINT", handleTermSignal);
     runGreenCheckpoint(
@@ -14133,6 +14282,9 @@ if (require.main === module) {
       },
     )
       .then(async (r) => {
+        // Claim the terminal race before recording/emitting. If a managed signal already owns
+        // it, its awaited finalizer is responsible for the only marker and process exit.
+        if (!claimTerminal("normal")) return;
         // WI-4494: record BEFORE emitResult/exit — `releaseAndExit` calls process.exit(), which
         // would kill an un-awaited write. The marker then carries `recorded` so the routine knows
         // not to record this same verdict a second time (double-counting the red streak).
@@ -14141,6 +14293,7 @@ if (require.main === module) {
         releaseAndExit(0);
       })
       .catch(async (e) => {
+        if (!claimTerminal("crash")) return;
         watchdog.cancel();
         console.error(
           `${orchestratorStdoutTag()} FAILED:`,
