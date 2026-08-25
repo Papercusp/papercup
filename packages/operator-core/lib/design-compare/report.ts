@@ -88,6 +88,17 @@ export interface DesignEvidenceReport {
     readonly invalid: number;
     readonly gateableClasses: number;
     readonly advisoryOnlyClasses: number;
+    /**
+     * How many cases the policy made a prediction about, and how many held.
+     *
+     * These exist because `pass`/`fail` alone MISLEAD here. A regression case
+     * is SUPPOSED to fail — that is the threshold working — so a summary line
+     * reading "12 pass · 4 fail" invites a CI reader to believe four things are
+     * broken when nothing is. `predictionsHeld === predictionsMade` is the
+     * number that actually means "everything is fine".
+     */
+    readonly predictionsMade: number;
+    readonly predictionsHeld: number;
   };
   /** The two ways a shipped threshold can be wrong, measured rather than assumed. */
   readonly selfCheck: {
@@ -214,6 +225,8 @@ export function buildReport(measurement: CalibrationArtifact): DesignEvidenceRep
       invalid: cases.filter((c) => c.verdict === 'invalid').length,
       gateableClasses: classes.filter((c) => c.eligibility === 'gateable').length,
       advisoryOnlyClasses: classes.filter((c) => c.eligibility === 'advisory-only').length,
+      predictionsMade: cases.filter((c) => c.asPredicted !== null).length,
+      predictionsHeld: cases.filter((c) => c.asPredicted === true).length,
     },
     selfCheck: {
       noiseThatFailed,
@@ -229,7 +242,11 @@ export function formatReportSummary(report: DesignEvidenceReport): string {
   const lines: string[] = [
     `design evidence report (REPORT-ONLY — this run gates nothing)`,
     `  policy ${report.policyVersion} · engine ${report.engine.engine}@${report.engine.engineVersion}`,
-    `  ${report.summary.total} cases: ${report.summary.pass} pass · ${report.summary.fail} fail · ${report.summary.invalid} invalid`,
+    `  predictions held: ${report.summary.predictionsHeld}/${report.summary.predictionsMade}` +
+      ' (this is the line that means "fine")',
+    `  raw verdicts: ${report.summary.pass} pass · ${report.summary.fail} fail · ` +
+      `${report.summary.invalid} invalid of ${report.summary.total} — a regression case is` +
+      ' SUPPOSED to fail, so these do not count problems',
     `  classes: ${report.summary.gateableClasses} gateable · ${report.summary.advisoryOnlyClasses} advisory-only`,
   ];
   for (const cls of report.classes) {

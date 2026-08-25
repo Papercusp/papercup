@@ -108,6 +108,62 @@ describe('visual job wiring (P-008)', () => {
     });
   });
 
+  describe('the browser the capture actually launches is installed', () => {
+    // The defect this pins was live: the job installed Lost Pixel's nested
+    // playwright-core browser and nothing else, while the design-evidence
+    // capture launches the HOISTED playwright-core. Different versions, so
+    // different browser builds. The step would have failed on a missing
+    // executable every run, and `continue-on-error` would have kept it quiet.
+    // A dev box cannot reproduce it: ~/.cache/ms-playwright accumulates every
+    // build ever installed, so both are always present locally.
+    const installSteps = visualSteps.filter((s) => (s.run ?? '').includes('cli.js install'));
+
+    it('installs a browser for the playwright-core operator-core resolves', () => {
+      // DERIVED, not restated: resolve the package the capture code will
+      // actually import, and require an install step for that path. A bump of
+      // either playwright-core re-opens the gap, and this fails when it does.
+      const resolved = require.resolve('playwright-core/package.json', {
+        paths: [path.join(REPO_ROOT, 'packages/operator-core')],
+      });
+      const resolvedDir = path.dirname(resolved);
+      const installsForResolved = installSteps.filter((step) => {
+        const match = /node\s+(\S*playwright-core)\/cli\.js\s+install/.exec(step.run ?? '');
+        if (match === null) return false;
+        return path.resolve(REPO_ROOT, match[1] as string) === resolvedDir;
+      });
+      expect(
+        installsForResolved.length,
+        `no CI step installs a browser for ${resolvedDir}, which is the playwright-core ` +
+          'operator-core imports; the design-evidence capture cannot launch without it',
+      ).toBeGreaterThan(0);
+    });
+
+    it('still installs Lost Pixel’s own pinned browser', () => {
+      // The pre-existing install must survive. Replacing it rather than adding
+      // alongside it would break the regression suite to fix the report.
+      const forLostPixel = installSteps.filter((s) =>
+        (s.run ?? '').includes('lost-pixel/node_modules/playwright-core'),
+      );
+      expect(forLostPixel.length).toBeGreaterThan(0);
+    });
+
+    it('installs two distinct browsers, because two playwright-core versions are in play', () => {
+      // If these ever collapse to one version, this test failing is the prompt
+      // to delete the extra step — not a reason to weaken the assertion.
+      const lostPixelVersion = JSON.parse(
+        readFileSync(
+          path.join(REPO_ROOT, 'node_modules/lost-pixel/node_modules/playwright-core/package.json'),
+          'utf8',
+        ),
+      ) as { version: string };
+      const hoistedVersion = JSON.parse(
+        readFileSync(path.join(REPO_ROOT, 'node_modules/playwright-core/package.json'), 'utf8'),
+      ) as { version: string };
+      expect(lostPixelVersion.version).not.toBe(hoistedVersion.version);
+      expect(installSteps.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
   describe('the design evidence step reports and never gates (D-006)', () => {
     it('is wired into this job rather than standing up a parallel one', () => {
       // P-008 says "wire into the EXISTING path". A separate job would rebuild

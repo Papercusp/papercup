@@ -309,3 +309,13 @@ probehome.*/
 # incident guard blocks deletion commits from reaching origin while the owner's
 # ruling on it is still open (WI-39646). Untrack once that is ruled, not before.
 .papercup-console-active.*
+
+# Design evidence report output (`npm run design:evidence-report`, plan
+# ratified-mockup-implementation-validation-2026-08-24 P-008). The report JSON
+# plus its kept captures and diff PNGs — ~9MB of 1280x800 images per run, and a
+# fresh set every run. git-sync's blanket `git add -A` would sweep the whole
+# directory into the shared tree on its next tick. CI uploads it as an artifact
+# with an explicit retention instead, which is where a run's evidence belongs.
+# The COMMITTED artifact is packages/operator-core/lib/design-compare/
+# policy-calibration.json — a small, reviewed measurement, deliberately in-tree.
+design-evidence-report/

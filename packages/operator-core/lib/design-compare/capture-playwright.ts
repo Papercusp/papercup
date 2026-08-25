@@ -8,11 +8,18 @@
  * needs a browser, and it is kept deliberately thin and separate so the policy
  * stays unit-testable without launching Chromium.
  *
- * The engine is `playwright-core` at 1.59.1 — the same package and the same
- * installed version lost-pixel launches through its own `launchBrowser`
- * (node_modules/lost-pixel/dist/utils.js:271-276). Declaring it as a direct
- * dependency rather than reaching through lost-pixel's transitive copy is the
- * difference between a dependency and a borrowed one.
+ * The engine is `playwright-core`, declared as a direct dependency of
+ * operator-core rather than reached through lost-pixel's transitive copy —
+ * the difference between a dependency and a borrowed one.
+ *
+ * CORRECTION (P-008): an earlier version of this comment claimed this was "the
+ * same package and the same installed version lost-pixel launches". It is the
+ * same package and a DIFFERENT version. lost-pixel pins its own nested
+ * playwright-core at 1.47.2 (chromium-1217); the hoisted copy operator-core
+ * resolves is 1.59.1 (chromium-1234). Two versions means two browser builds,
+ * and any environment that installs only one of them — as CI did until P-008
+ * added a second install step — fails to launch this one. A dev box hides that
+ * completely, because ~/.cache/ms-playwright accumulates both.
  */
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
 

@@ -1062,6 +1062,21 @@ jobs:
       - name: Install Lost Pixel's pinned Chromium
         run: node node_modules/lost-pixel/node_modules/playwright-core/cli.js install chromium
 
+      # A SECOND browser, deliberately. Lost Pixel pins its own nested
+      # playwright-core (1.47.2 -> chromium-1217); operator-core depends on the
+      # hoisted playwright-core (1.59.1 -> chromium-1234) and that is what the
+      # design-evidence capture launches. Installing only Lost Pixel's leaves
+      # the design-evidence step failing on a missing executable EVERY run —
+      # and because that step is `continue-on-error`, it would fail quietly
+      # forever: a report-only stage that never reports. Locally this is
+      # invisible, because a dev box accumulates both browser builds in
+      # ~/.cache/ms-playwright.
+      # `ci-wiring.test.ts` derives the required version from the resolved
+      # package rather than restating it, so a version bump cannot silently
+      # re-open this.
+      - name: Install the Chromium operator-core's playwright-core launches
+        run: node node_modules/playwright-core/cli.js install chromium
+
       - name: Build Storybook (ui-primitives)
         working-directory: libs/generic/ui-primitives
         run: npm run build-storybook

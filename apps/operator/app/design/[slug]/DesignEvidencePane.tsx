@@ -62,6 +62,8 @@ interface EvidenceReport {
     invalid: number;
     gateableClasses: number;
     advisoryOnlyClasses: number;
+    predictionsMade: number;
+    predictionsHeld: number;
   };
   selfCheck: {
     noiseThatFailed: string[];
@@ -149,8 +151,13 @@ export default function DesignEvidencePane() {
       <header style={{ display: 'flex', alignItems: 'baseline', gap: 16, marginBottom: 4 }}>
         <h2 style={{ fontSize: 16, fontWeight: 600, margin: 0 }}>
           Design evidence{' '}
+          {/*
+            Predictions held, NOT pass/fail. A regression case is supposed to
+            fail, so a "4 fail" headline would report four problems where there
+            are none.
+          */}
           <span style={{ color: mutedText, fontWeight: 400 }}>
-            {report.summary.pass} pass · {report.summary.fail} fail · {report.summary.invalid} invalid
+            {report.summary.predictionsHeld}/{report.summary.predictionsMade} predictions held
           </span>
         </h2>
         <span

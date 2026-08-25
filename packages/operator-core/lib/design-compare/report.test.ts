@@ -227,6 +227,55 @@ describe('the self-check catches a threshold that has stopped separating', () =>
   });
 });
 
+describe('the summary counts predictions, not raw verdicts', () => {
+  it('does not count an expected regression failure as a problem', () => {
+    // The misreading this exists to prevent: a healthy run reads "N fail"
+    // because every regression case is SUPPOSED to fail.
+    const report = buildReport(
+      artifactOf([
+        classOf({
+          regression: {
+            n: 1,
+            minDiffRatio: RATIO_ABOVE_THRESHOLD,
+            samples: [
+              { caseId: 'caught', diffRatio: RATIO_ABOVE_THRESHOLD, pixelsTotal: 1_024_000, comparisonMs: 1 },
+            ],
+          },
+        }),
+      ]),
+    );
+    expect(report.summary.fail).toBe(1);
+    expect(report.summary.predictionsMade).toBe(1);
+    expect(report.summary.predictionsHeld).toBe(1);
+    expect(report.selfCheck.consistent).toBe(true);
+  });
+
+  it('leads the summary with predictions held rather than with pass/fail', () => {
+    const summary = formatReportSummary(buildReport(artifactOf([classOf()])));
+    const predictionsLine = summary.indexOf('predictions held');
+    const verdictsLine = summary.indexOf('raw verdicts');
+    expect(predictionsLine).toBeGreaterThan(-1);
+    expect(predictionsLine).toBeLessThan(verdictsLine);
+  });
+
+  it('excludes advisory-only cases from the prediction count', () => {
+    const report = buildReport(
+      artifactOf([
+        classOf({
+          referenceClass: 'raster-mockup',
+          cohorts: ['fixture-corpus'],
+          noise: {
+            n: 1,
+            maxDiffRatio: 0,
+            samples: [{ caseId: 'advisory', diffRatio: 0, pixelsTotal: 1000, comparisonMs: 1 }],
+          },
+        }),
+      ]),
+    );
+    expect(report.summary.predictionsMade).toBe(0);
+  });
+});
+
 describe('the summary states what it is', () => {
   it('says report-only on its first line, where a reader scanning a CI log sees it', () => {
     const summary = formatReportSummary(buildReport(artifactOf([classOf()])));
