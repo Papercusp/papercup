@@ -158,7 +158,34 @@ describe('desktop ACL command sync (WI-2143 guard)', () => {
     const buildRs = readFileSync(BUILD_RS, 'utf8');
     const helper = buildRs.match(/fn ensure_sidecar_placeholder[\s\S]*?\n\}/)?.[0] ?? '';
     expect(helper).toContain('has_db_sql_entry');
-    expect(helper).toMatch(/if has_serve && has_db_sql_entry\s*\{\s*return;/);
+
+    // The invariant is that the early return is gated on an AND-conjunction
+    // INCLUDING the independently-computed db-sql check — not on any one
+    // literal spelling of that conjunction. Asserting the exact two-resource
+    // text pinned this guard to a snapshot of the resource list and went red
+    // when `spa` was legitimately added as a third (WI-41672), even though the
+    // db-sql protection was fully intact.
+    const earlyReturn = helper.match(/if ([^{]*?)\{\s*return;/);
+    expect(earlyReturn, 'no early-return guard found in ensure_sidecar_placeholder').not.toBeNull();
+    const condition = earlyReturn![1];
+    // A disjunction would let a present serve.mjs excuse an absent db-sql —
+    // the exact WI-2143 shape — so the conjunction must stay an AND-chain.
+    expect(condition, 'early-return condition must be an AND-chain, not a disjunction').not.toContain('||');
+    const conjuncts = condition.split('&&').map((c) => c.trim());
+    expect(conjuncts).toContain('has_db_sql_entry');
+
+    // Derive the resource set from the placeholder writes themselves, so a
+    // NEWLY added resource is automatically held to "validate every resource
+    // glob independently" instead of quietly escaping this guard.
+    const placeholderFlags = [...helper.matchAll(/if !(\w+)\s*\{/g)].map((m) => m[1]);
+    expect(placeholderFlags).toContain('has_db_sql_entry');
+    for (const flag of placeholderFlags) {
+      expect(
+        conjuncts,
+        `ensure_sidecar_placeholder writes a placeholder for ${flag}, but the early return does not check it — a partial sidecar would skip it`,
+      ).toContain(flag);
+    }
+
     // Regression shape from the release gate: a partial sidecar retained
     // serve.mjs but omitted db-sql, and this shortcut skipped its placeholder.
     expect(helper).not.toMatch(/if sidecar\.join\("serve\.mjs"\)\.exists\(\)\s*\{\s*return;/);

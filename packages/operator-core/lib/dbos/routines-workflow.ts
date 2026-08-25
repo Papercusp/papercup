@@ -31,6 +31,7 @@ import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
   ROUTINES_LOOP_QUEUE,
+  ROUTINES_RELEASE_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
   queueForRoutine,
   shouldFireUnderPoolShed,
@@ -102,11 +103,21 @@ const routinesTriggersQueue = idempotentWorkflowQueue(
   ROUTINES_TRIGGERS_QUEUE,
   () => new WorkflowQueue(ROUTINES_TRIGGERS_QUEUE, { concurrency: queueConcurrency(4) }),
 );
+// EI-21446637172005297: the operator-home green-checkpoint is the release finalizer for
+// the workspace. A frozen repair queue cannot recover while this fire waits FIFO behind
+// four long subject-hive gates, so keep the home finalizer on a dedicated serial lane.
+// Subject-hive green-checkpoints remain on the shared queue and retain its bounded
+// concurrency; queueForRoutine identifies the home via operatorHomeHarnessSlug().
+const routinesReleaseQueue = idempotentWorkflowQueue(
+  ROUTINES_RELEASE_QUEUE,
+  () => new WorkflowQueue(ROUTINES_RELEASE_QUEUE, { concurrency: queueConcurrency(1) }),
+);
 export const ROUTINE_FIRE_QUEUES = [
   routinesQueue.name,
   routinesCriticalQueue.name,
   routinesLoopQueue.name,
   routinesTriggersQueue.name,
+  routinesReleaseQueue.name,
 ] as const;
 
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
@@ -521,7 +532,7 @@ async function routinesTickImpl(): Promise<void> {
       await DBOS.startWorkflow(routineFireWorkflow, {
         // Queue classification isolates both must-never-starve persistence work (git-sync)
         // and deadline-sensitive loop wakes; long/unknown work stays on the shared lane.
-        queueName: queueForRoutine(r.targetRole),
+        queueName: queueForRoutine(r.targetRole, r.installSlug),
         enqueueOptions: { deduplicationID: `routine:${r.id}` },
         // A fire PENDING on a DEAD executor holds this dedup ID forever (DBOS
         // recovery is per-executor), silently collapsing every later fire while

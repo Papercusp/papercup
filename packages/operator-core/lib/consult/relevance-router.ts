@@ -334,7 +334,7 @@ export async function routeConsult(
          WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
            AND owner IS NOT NULL
            AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
-           AND (turn_origin_verdict IS NULL OR turn_origin_verdict <> 'machine-surface')
+           AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
            AND text_tsv @@ plainto_tsquery('english', ${params.question})
       ORDER BY "lexicalRank" DESC, COALESCE(ts, ingested_at) DESC
          LIMIT ${turnLimit}
@@ -416,10 +416,11 @@ export async function routeConsult(
   //    - `workspace_id = $ws OR 'default'`: the operational corpus lives at
   //      'default' (the session ingesters are workspace-blind); this is the
   //      same predicate the session_turn SearchSource uses.
-  //    - machine-surface turns (orient payloads, injected briefs) are excluded:
-  //      every agent receives near-identical injected boilerplate, so matches
-  //      there measure the injector, not the agent's engagement. NULL verdict
-  //      (not yet classified) passes — over-filtering starves the router.
+  //    - machine-injected and machine-surface turns (loop fires, orient payloads,
+  //      injected briefs) are excluded: every agent receives near-identical
+  //      injected boilerplate, so matches there measure the injector, not the
+  //      agent's engagement. NULL verdict (not yet classified) passes —
+  //      over-filtering starves the router.
   //    - withIterativeScan: without it the HNSW scan stops at hnsw.ef_search
   //      and silently under-returns (WI-37603).
   const turnRows = (await withIterativeScan(sql as never, (s) => (s as unknown as Sql)`
@@ -431,7 +432,7 @@ export async function routeConsult(
        AND text_embedding IS NOT NULL
        AND owner IS NOT NULL
        AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
-       AND (turn_origin_verdict IS NULL OR turn_origin_verdict <> 'machine-surface')
+       AND (turn_origin_verdict IS NULL OR turn_origin_verdict NOT IN ('agent-injected', 'machine-surface'))
   ORDER BY text_embedding <=> ${qVec}::vector
      LIMIT ${turnLimit}
   `)) as unknown as Array<{

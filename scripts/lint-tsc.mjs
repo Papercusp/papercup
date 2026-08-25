@@ -166,6 +166,13 @@ const baselineFile = resolve(ROOT, 'packages/operator-core/.tsc-baseline.json');
 export const TSC_COMMAND =
   'npx tsc -p packages/operator-core/tsconfig.json --noEmit --incremental false';
 
+/**
+ * EI-21441555291852229 — operator-core imports enrolled `.mjs` helpers through tracked,
+ * generated `.d.mts` companions. Refresh them before tsc resolves the type graph so the
+ * first typecheck after an export change sees the same contracts as every later run.
+ */
+export const TSC_PREFLIGHT_COMMAND = 'npm run gen:declarations';
+
 const USAGE = `Usage:
   npm run lint:tsc              # any file above its baseline fails, named
   npm run lint:tsc -- --mine    # fail on regressions in files dirty in the tree
@@ -184,6 +191,7 @@ async function main() {
   await runTscBaselineGate({
     root: ROOT,
     tscCommand: TSC_COMMAND,
+    preTscCommand: TSC_PREFLIGHT_COMMAND,
     baselineFile,
     label: 'operator-core',
     argv,

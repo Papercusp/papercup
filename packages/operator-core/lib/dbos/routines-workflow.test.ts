@@ -83,6 +83,7 @@ import {
   TRIGGER_POLL_ACTIONS,
   queueForRoutine,
 } from './routines-queue-classification';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 beforeEach(() => {
   state.stepOutputs.length = 0;
@@ -93,7 +94,13 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
   it('registers the shared, critical, deadline-sensitive loop, and external-poll queues at boot', () => {
     // Every lane queueForRoutine can return MUST be registered here, or a fire enqueued
     // onto it is never consumed (WI-41662 added routines-triggers).
-    expect(ROUTINE_FIRE_QUEUES).toEqual(['routines', 'routines-critical', 'routines-loop', 'routines-triggers']);
+    expect(ROUTINE_FIRE_QUEUES).toEqual([
+      'routines',
+      'routines-critical',
+      'routines-loop',
+      'routines-triggers',
+      'routines-release',
+    ]);
   });
 
   // Recurrence guard (WI-41662). Adding a lane is TWO edits — route to it in
@@ -114,6 +121,9 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     for (const target of routableTargets) {
       expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine(target));
     }
+    expect(ROUTINE_FIRE_QUEUES).toContain(
+      queueForRoutine('system:green-checkpoint', operatorHomeHarnessSlug()),
+    );
   });
 
   it('checkpoints and returns the complete LoopFireResult from the DBOS step', async () => {

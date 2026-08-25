@@ -3,6 +3,7 @@ import {
   ROUTINES_QUEUE,
   ROUTINES_CRITICAL_QUEUE,
   ROUTINES_LOOP_QUEUE,
+  ROUTINES_RELEASE_QUEUE,
   ROUTINES_TRIGGERS_QUEUE,
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
@@ -10,6 +11,7 @@ import {
   queueForRoutine,
   shouldFireUnderPoolShed,
 } from './routines-queue-classification';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 /**
  * 2026-06-23 routines-queue-starvation fix: git-sync must land on the protected `routines-critical` lane so
@@ -62,6 +64,28 @@ describe('queueForRoutine — the latency-isolated loop lane', () => {
     expect(queueForRoutine('system:loop-wake-status')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('system:pre-loop-wake')).toBe(ROUTINES_QUEUE);
     expect(queueForRoutine('loop-wake')).toBe(ROUTINES_QUEUE);
+  });
+});
+
+describe('queueForRoutine — operator-home release-finalizer lane (EI-21446637172005297)', () => {
+  it('routes the operator-home green-checkpoint away from four saturated subject-hive slots', () => {
+    const home = operatorHomeHarnessSlug();
+    expect(queueForRoutine('system:green-checkpoint', home)).toBe(ROUTINES_RELEASE_QUEUE);
+
+    for (const subjectHive of ['sidestage', 'calendar', 'thornbury-iphone', 'hello-world-3']) {
+      expect(queueForRoutine('system:green-checkpoint', subjectHive)).toBe(ROUTINES_QUEUE);
+    }
+  });
+
+  it('does not widen the dedicated lane to other home-hive work or near-miss actions', () => {
+    const home = operatorHomeHarnessSlug();
+    expect(queueForRoutine('system:gym-cycle', home)).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('system:green-checkpoint-status', home)).toBe(ROUTINES_QUEUE);
+    expect(queueForRoutine('green-checkpoint', home)).toBe(ROUTINES_QUEUE);
+  });
+
+  it('keeps an unscoped green-checkpoint on the shared lane (fail closed)', () => {
+    expect(queueForRoutine('system:green-checkpoint')).toBe(ROUTINES_QUEUE);
   });
 });
 

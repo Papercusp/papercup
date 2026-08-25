@@ -20,11 +20,13 @@
  * to `routines`. This extends the existing queue mechanism without weakening its persistence invariant.
  */
 import { SYSTEM_TARGET_PREFIX } from '../harness/routines/system-actions';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 
 export const ROUTINES_QUEUE = 'routines';
 export const ROUTINES_CRITICAL_QUEUE = 'routines-critical';
 export const ROUTINES_LOOP_QUEUE = 'routines-loop';
 export const ROUTINES_TRIGGERS_QUEUE = 'routines-triggers';
+export const ROUTINES_RELEASE_QUEUE = 'routines-release';
 
 /** Mirrors loop.ts's materialized target_role without importing that stateful module here. */
 export const LOOP_WAKE_TARGET_ROLE = `${SYSTEM_TARGET_PREFIX}loop-wake`;
@@ -64,14 +66,25 @@ export const TRIGGER_POLL_ACTIONS = new Set<string>([
 ]);
 
 /**
- * The queue NAME a routine fire should enqueue on, by its target role. A loop wake → the latency-isolated
- * `routines-loop` lane; a critical quick SYSTEM action → `routines-critical`; a quick external-source poll →
- * `routines-triggers`; everything else → `routines`.
+ * The queue NAME a routine fire should enqueue on, by its target role and (when
+ * needed) install slug. The operator-home green-checkpoint is the workspace's
+ * release finalizer: if it waits behind four long subject-hive gates, a frozen
+ * repair queue cannot recover and every staging delivery remains blocked. Give
+ * that one home-hive action its own serial lane; subject-hive checkpoints stay on
+ * the bounded shared lane so their aggregate concurrency remains unchanged.
+ *
+ * A loop wake → the latency-isolated `routines-loop` lane; a critical quick SYSTEM
+ * action → `routines-critical`; a quick external-source poll → `routines-triggers`;
+ * the operator-home green-checkpoint → `routines-release`; everything else →
+ * `routines`.
  */
-export function queueForRoutine(targetRole: string): string {
+export function queueForRoutine(targetRole: string, installSlug?: string | null): string {
   if (targetRole === LOOP_WAKE_TARGET_ROLE) return ROUTINES_LOOP_QUEUE;
   if (targetRole.startsWith(SYSTEM_TARGET_PREFIX)) {
     const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
+    if (action === 'green-checkpoint' && installSlug === operatorHomeHarnessSlug()) {
+      return ROUTINES_RELEASE_QUEUE;
+    }
     if (CRITICAL_ROUTINE_ACTIONS.has(action)) return ROUTINES_CRITICAL_QUEUE;
     if (TRIGGER_POLL_ACTIONS.has(action)) return ROUTINES_TRIGGERS_QUEUE;
   }

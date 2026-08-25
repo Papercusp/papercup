@@ -2128,6 +2128,7 @@ export function formatLintTscResultMarker({
 export async function runTscBaselineGate({
   root,
   tscCommand,
+  preTscCommand = null,
   baselineFile,
   label,
   argv,
@@ -2263,6 +2264,25 @@ export async function runTscBaselineGate({
 
   let tscOutput = '';
   let tscThrew = false;
+  // EI-21441555291852229 — some projects consume tracked declarations generated from
+  // JavaScript modules. Running tsc before refreshing those companions makes the first
+  // typecheck after an export change fail on the stale `.d.mts`, even though that same
+  // validation workflow then writes the declaration that makes its second run green.
+  // Keep this an explicit per-project hook: most gates have no generated-input preflight,
+  // and hiding a repo-wide mutation inside the shared policy would be surprising.
+  if (preTscCommand) {
+    try {
+      execSync(String(preTscCommand), {
+        cwd: root,
+        encoding: 'utf-8',
+        stdio: 'inherit',
+        env: tscChildEnv(),
+      });
+    } catch {
+      console.error(`❌ ${label} typecheck preflight failed: ${preTscCommand}`);
+      process.exit(1);
+    }
+  }
   // WI-7017 — throttle + coalesce the COMPILE, not the whole gate.
   //
   // `--files` is a GATE-scoping flag that never reaches tsc (`tscCommand` is a

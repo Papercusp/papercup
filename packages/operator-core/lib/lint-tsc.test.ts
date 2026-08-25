@@ -48,6 +48,7 @@ import {
   formatLandingRaceCaveat,
   LANDING_RACE_WINDOW_SEC,
   TSC_COMMAND,
+  TSC_PREFLIGHT_COMMAND,
   projectPrefixFromTscCommand,
   partitionFilesByCoverage,
   suggestTypecheckGate,
@@ -423,6 +424,44 @@ describe('TSC_COMMAND (EI-487 regression guard)', () => {
     // as a "harmless" perf tweak without re-deriving why it's here.
     expect(TSC_COMMAND).toContain('--incremental false');
     expect(TSC_COMMAND).toContain('--noEmit');
+  });
+
+  it('refreshes enrolled generated declarations before the first compiler pass', () => {
+    expect(TSC_PREFLIGHT_COMMAND).toBe('npm run gen:declarations');
+  });
+});
+
+describe('typecheck preflight ordering (EI-21441555291852229)', () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const gateUrl = pathToFileURL(join(repoRoot, 'scripts/lib/tsc-baseline-gate.mjs')).href;
+
+  it('finishes the declaration refresh before launching tsc', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-preflight-'));
+    try {
+      const marker = join(root, 'declarations-ready');
+      const baseline = join(root, 'baseline.json');
+      writeFileSync(baseline, JSON.stringify({ files: {} }));
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(gateUrl)};\n` +
+          `await runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  preTscCommand: ${JSON.stringify(`printf ready > ${marker}`)},\n` +
+          `  tscCommand: ${JSON.stringify(`test -f ${marker}`)},\n` +
+          `  baselineFile: ${JSON.stringify(baseline)},\n` +
+          `  label: 'preflight-order',\n` +
+          `  argv: [],\n` +
+          `});\n`,
+      );
+
+      const out = execFileSync(process.execPath, [join(root, 'run.mjs')], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+      expect(out).toContain('TSC preflight-order: 0 type errors');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

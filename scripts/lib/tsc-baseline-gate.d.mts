@@ -970,9 +970,10 @@ export function formatLintTscResultMarker({ label, scope, code, nothingTypecheck
     filesUnchecked?: number;
     routed?: boolean;
 }): string;
-export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
+export function runTscBaselineGate({ root, tscCommand, preTscCommand, baselineFile, label, argv, countField, foreignBaselines, }: {
     root: any;
     tscCommand: any;
+    preTscCommand?: null | undefined;
     baselineFile: any;
     label: any;
     argv: any;

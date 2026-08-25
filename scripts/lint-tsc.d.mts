@@ -19,6 +19,12 @@
  */
 /** @type {string} */
 export const TSC_COMMAND: string;
+/**
+ * EI-21441555291852229 — operator-core imports enrolled `.mjs` helpers through tracked,
+ * generated `.d.mts` companions. Refresh them before tsc resolves the type graph so the
+ * first typecheck after an export change sees the same contracts as every later run.
+ */
+export const TSC_PREFLIGHT_COMMAND: "npm run gen:declarations";
 import { parseTscErrors } from './lib/tsc-baseline-gate.mjs';
 import { normalizeDiagnosticPath } from './lib/tsc-baseline-gate.mjs';
 import { normalizeTscErrorPaths } from './lib/tsc-baseline-gate.mjs';
