@@ -326,6 +326,7 @@ export default function PlanCleanupReport({
   return (
     <ReviewReportShell
       key={run.runId}
+      eyebrow="Plans clean-up"
       title="Clean-up report"
       icon={<BrushCleaning size={19} />}
       subtitle={

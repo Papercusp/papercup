@@ -492,6 +492,7 @@ export default function InboxBulkReport({
   return (
     <ReviewReportShell
       key={run.runId}
+      eyebrow="Inbox resolution"
       title="Inbox bulk-resolve report"
       icon={<Sparkles size={19} />}
       subtitle={

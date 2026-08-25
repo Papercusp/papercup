@@ -107,6 +107,7 @@ describe("rendering", () => {
     const report = screen.getByTestId("review-report");
     const responsiveRow = screen.getByTestId("review-row-f1");
     expect(screen.getByText("Plan clean-up report")).toBeTruthy();
+    expect(screen.getByText("Resolution review")).toBeTruthy();
     const titleId = report.getAttribute("aria-labelledby");
     expect(titleId).toBeTruthy();
     expect(document.getElementById(titleId!)?.textContent).toBe(
@@ -152,6 +153,29 @@ describe("rendering", () => {
     expect(
       screen.queryByTestId("review-group-columns-flip-to-done"),
     ).toBeNull();
+  });
+
+  it("summarizes the run and exposes live group selection progress", () => {
+    renderShell();
+    expect(screen.getByTestId("review-report-summary")).toBeTruthy();
+    expect(screen.getByTestId("review-report-selected-count").textContent).toBe(
+      "3",
+    );
+    expect(screen.getByTestId("review-report-total-count").textContent).toBe(
+      "4",
+    );
+    expect(screen.getByTestId("review-report-handled-count").textContent).toBe(
+      "1",
+    );
+    expect(screen.getByTestId("review-report-manual-count").textContent).toBe(
+      "0",
+    );
+    const groupProgress = screen.getByTestId(
+      "review-group-selection-flip-to-done",
+    );
+    expect(groupProgress.textContent).toBe("2/2 selected");
+    fireEvent.click(rowCheck("f2"));
+    expect(groupProgress.textContent).toBe("1/2 selected");
   });
 
   it("exposes every row's complete reason through an explicit disclosure, including auto-applied rows", () => {

@@ -83,6 +83,8 @@ export interface ReviewReportGroup {
 
 export interface ReviewReportShellProps {
   title: string;
+  /** Compact context above the title; consumers distinguish Inbox from Plans. */
+  eyebrow?: string;
   /** Flow-specific symbol inside the shared Option-B title tile. */
   icon?: ReactNode;
   subtitle?: ReactNode;
@@ -127,6 +129,7 @@ const CONFIDENCE_LABEL: Record<ReviewRowConfidence, string> = {
 
 export default function ReviewReportShell({
   title,
+  eyebrow = "Resolution review",
   icon,
   subtitle,
   groups,
@@ -409,7 +412,7 @@ export default function ReviewReportShell({
             </span>
           ) : null}
           <div className="review-report__head-text">
-            <span className="review-report__eyebrow">Resolution review</span>
+            <span className="review-report__eyebrow">{eyebrow}</span>
             <h2 id={titleId} className="review-report__title">
               {title}
             </h2>
@@ -471,15 +474,21 @@ export default function ReviewReportShell({
         <dl className="review-report__metrics">
           <div className="review-report__metric">
             <dt>Results</dt>
-            <dd>{reportCounts.total}</dd>
+            <dd data-testid="review-report-total-count">
+              {reportCounts.total}
+            </dd>
           </div>
           <div className="review-report__metric review-report__metric--good">
             <dt>Handled</dt>
-            <dd>{reportCounts.applied}</dd>
+            <dd data-testid="review-report-handled-count">
+              {reportCounts.applied}
+            </dd>
           </div>
           <div className="review-report__metric review-report__metric--manual">
             <dt>Manual</dt>
-            <dd>{reportCounts.manual}</dd>
+            <dd data-testid="review-report-manual-count">
+              {reportCounts.manual}
+            </dd>
           </div>
         </dl>
       </div>

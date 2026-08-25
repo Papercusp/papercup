@@ -93,6 +93,7 @@ const shared = {
 export const PlansCleanUp: Story = {
   args: {
     ...shared,
+    eyebrow: 'Plans clean-up',
     title: 'Clean-up report',
     icon: <BrushCleaning size={19} />,
     subtitle: '7 proposed fixes across 5 plans · scanned just now · 9 safe fixes auto-applied',
@@ -104,6 +105,7 @@ export const PlansCleanUp: Story = {
 export const InboxBulkResolve: Story = {
   args: {
     ...shared,
+    eyebrow: 'Inbox resolution',
     title: 'Inbox bulk-resolve report',
     icon: <Sparkles size={19} />,
     subtitle: '5 need your call · 12 auto-resolved · 1 needs manual follow-up',
