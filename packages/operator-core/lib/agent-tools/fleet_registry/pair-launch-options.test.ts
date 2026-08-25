@@ -15,6 +15,7 @@ import {
   PAIR_ROLE_IMPLEMENTER,
   pairIndexOfSeat,
   pairSeatRole,
+  pairsToCouple,
   PER_ROLE_KNOBS,
   resolveLaunchOptions,
   wholePairSeats,
@@ -348,6 +349,46 @@ describe('expandPairedMembers routes each role through the EXISTING per-member o
   it('clamps an odd seat allowance to whole pairs', () => {
     expect(expandPairedMembers(pairedFixture(), 5)).toHaveLength(4);
     expect(expandPairedMembers(pairedFixture(), 1)).toHaveLength(0);
+  });
+
+  it('PAIRING MATH: emits a pair only when BOTH seats opened', () => {
+    // A half pair is a real outcome — a clamped wave, a terminal that failed to
+    // open, a member that failed verification.
+    const seats = new Map([
+      [0, 'su-d0'],
+      [1, 'su-i0'],
+      [2, 'su-d1'],
+      // seat 3 never opened
+    ]);
+    expect(pairsToCouple(seats)).toEqual([{ pairIndex: 0, director: 'su-d0', implementer: 'su-i0' }]);
+  });
+
+  it('PAIRING MATH: skips a lone implementer as readily as a lone director', () => {
+    expect(pairsToCouple(new Map([[1, 'su-i0']]))).toEqual([]);
+    expect(pairsToCouple(new Map([[0, 'su-d0']]))).toEqual([]);
+  });
+
+  it('PAIRING MATH: uses ABSOLUTE seats, so a top-up wave couples its own pairs', () => {
+    // A top-up onto a fleet with 2 live members opens seats 2 and 3.
+    const seats = new Map([
+      [2, 'su-d1'],
+      [3, 'su-i1'],
+    ]);
+    expect(pairsToCouple(seats)).toEqual([{ pairIndex: 1, director: 'su-d1', implementer: 'su-i1' }]);
+  });
+
+  it('PAIRING MATH: emits each pair once, in pair order, regardless of map order', () => {
+    const seats = new Map([
+      [3, 'su-i1'],
+      [0, 'su-d0'],
+      [2, 'su-d1'],
+      [1, 'su-i0'],
+    ]);
+    expect(pairsToCouple(seats).map((p) => p.pairIndex)).toEqual([0, 1]);
+  });
+
+  it('PAIRING MATH: an empty wave couples nothing rather than throwing', () => {
+    expect(pairsToCouple(new Map())).toEqual([]);
   });
 
   it('produces specs whose every knob is a real MemberSpec field', () => {

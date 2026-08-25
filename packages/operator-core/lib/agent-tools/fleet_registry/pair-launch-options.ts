@@ -302,6 +302,46 @@ export function expandPairedMembers(
   });
 }
 
+/** One director↔implementer edge the launch should declare (P-012). */
+export interface PairToCouple {
+  pairIndex: number;
+  director: string;
+  implementer: string;
+}
+
+/**
+ * Which pairs are ready to be COUPLED, given the members that actually opened
+ * (P-012). `seatOwners` maps an ABSOLUTE seat index to the owner id that opened
+ * in it — absolute, because a top-up wave opens seats `liveMembers + i` and pair
+ * identity is a property of the fleet, not of the wave.
+ *
+ * A pair is emitted only when BOTH of its seats are present. That is the whole
+ * job: a launch wave can be clamped, a terminal can fail to open, and a member
+ * can fail verification, so half a pair really does occur. Coupling a director
+ * to a member that never opened would create a dangling edge that reads, on
+ * every later coupling-expanded roster, exactly like a healthy pair — and the
+ * missing half is the failure you most need to see. Skipping is what makes the
+ * absence visible instead.
+ *
+ * Seats belonging to an EARLIER wave are naturally skipped by the same rule:
+ * their partner is not in this wave's map, and they were coupled when they
+ * opened.
+ */
+export function pairsToCouple(seatOwners: ReadonlyMap<number, string>): PairToCouple[] {
+  const out: PairToCouple[] = [];
+  const seen = new Set<number>();
+  for (const seat of [...seatOwners.keys()].sort((a, b) => a - b)) {
+    const pairIndex = pairIndexOfSeat(seat);
+    if (seen.has(pairIndex)) continue;
+    seen.add(pairIndex);
+    const director = seatOwners.get(pairIndex * 2);
+    const implementer = seatOwners.get(pairIndex * 2 + 1);
+    if (!director || !implementer) continue;
+    out.push({ pairIndex, director, implementer });
+  }
+  return out;
+}
+
 /**
  * The spawn-announcement line(s) the persona rule requires. A paired launch owes
  * the owner ONE LINE PER ROLE (account + model + carry), not a merged summary —

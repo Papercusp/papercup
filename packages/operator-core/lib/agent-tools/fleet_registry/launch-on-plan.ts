@@ -62,6 +62,8 @@ import {
 import {
   describeLaunchRoles,
   expandPairedMembers,
+  pairIndexOfSeat,
+  pairsToCouple,
   resolveLaunchOptions,
   wholePairSeats,
 } from './pair-launch-options';
@@ -4121,6 +4123,72 @@ export default defineTool({
         `  ↳ claim-lane pool-effect (P-010): ${laneDesc} matches ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(',')}]${pe.harness ? ` in \`${pe.harness}\`` : ''} — ${fedNote}.`,
       );
     }
+    // P-012: AUTO-COUPLE each director↔implementer pair as soon as both of its
+    // members are open. Coupling is what makes the director able to SEE its
+    // implementer's working state (and vice versa) without either of them asking
+    // — the pair's whole operating loop depends on it, so leaving it to a manual
+    // coord:couple would mean every paired fleet launches subtly broken until
+    // someone noticed.
+    //
+    // Two deliberate properties:
+    //   • FAIL-SOFT. The members are already running by the time we get here.
+    //     Throwing would report a failed launch for a fleet that actually opened,
+    //     which is strictly worse than an uncoupled pair the result names.
+    //   • VISIBLE-ABSENCE. A pair whose partner never opened is SKIPPED, not
+    //     half-coupled, and the shortfall is stated in the message — a dangling
+    //     edge would render on every later roster as a healthy pair.
+    let pairCoupling: { pairs: number; coupled: number; skipped: number; error: string | null } | null = null;
+    if (launchFleetType === 'paired') {
+      const openedIds = new Set(opened.map((o) => o.ownerId));
+      // ABSOLUTE seats: a top-up wave opens seats `liveMembers + i`, and pair
+      // identity belongs to the fleet, not to the wave.
+      const seatOwners = new Map<number, string>();
+      requestedMemberIds.forEach((memberOwnerId, i) => {
+        if (openedIds.has(memberOwnerId)) seatOwners.set(liveMembers + i, memberOwnerId);
+      });
+      const couplable = pairsToCouple(seatOwners);
+      const touchedPairs = new Set([...seatOwners.keys()].map((s) => pairIndexOfSeat(s))).size;
+      let coupled = 0;
+      let couplingError: string | null = null;
+      try {
+        // Lazy, like the promotion failsafe above: keeps the coordination store
+        // off this module's static import graph.
+        const { declareCoupling } = await import('../../coord/couplings');
+        for (const p of couplable) {
+          const edge = await declareCoupling({
+            agentA: p.director,
+            agentB: p.implementer,
+            declaredBy: ownerId,
+            workspaceId,
+            // No ttlSec — D-006 (coupling-signal-liveness-and-lifecycle): a
+            // clock expiry would silently stop two live pair members from seeing
+            // each other. Retirement here is cause-based; the edge dies with the
+            // pair.
+            reason:
+              `directed pair ${p.pairIndex} of fleet \`${fleetSlug}\` — the director issues one directive ` +
+              `at a time and reads the implementer's state to verify each milestone`,
+          });
+          if (edge) coupled += 1;
+        }
+      } catch (e) {
+        couplingError = e instanceof Error ? e.message : String(e);
+      }
+      const skipped = Math.max(0, touchedPairs - coupled);
+      pairCoupling = { pairs: touchedPairs, coupled, skipped, error: couplingError };
+      if (couplingError) {
+        lines.push(
+          `  ⚠ pair auto-coupling FAILED (${couplingError}) — the members are running but are NOT coupled. ` +
+            'Couple each pair by hand with coord:couple, or the director cannot see its implementer.',
+        );
+      } else if (skipped > 0) {
+        lines.push(
+          `  ⚠ ${skipped} of ${touchedPairs} pair(s) left UNCOUPLED — only one half opened. ` +
+            'A lone member has no counterpart; top up the fleet or kill the orphan.',
+        );
+      } else if (coupled > 0) {
+        lines.push(`  ↳ auto-coupled ${coupled} director↔implementer pair(s).`);
+      }
+    }
     const carryMode: 'warm' | 'cold' = args.carry ?? 'warm';
     // P-006: denominate the headline against the TARGET (`count`), never against the post-clamp
     // attempt — `opened/attempted` rendered a clamped 10→4 wave as "4/4 opened" (complete success).
@@ -4362,6 +4430,9 @@ export default defineTool({
                 pairs: Math.floor(fill.fleetSize / 2),
                 requestedPairs: Math.floor(count / 2),
                 announcement: pairedAnnouncement ?? [],
+                // P-012: null only on a non-paired fleet, so a reader can tell
+                // "coupling did not apply" from "coupling ran and coupled zero".
+                coupling: pairCoupling,
               }
             : null,
         opened,
