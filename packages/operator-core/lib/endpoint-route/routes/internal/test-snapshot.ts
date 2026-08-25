@@ -104,21 +104,9 @@ export default defineTool({
             }
           }
 
-          // P-081: drive each VAL's assertion status from the tests covering it.
-          // Uncovered VALs (derived 'todo') are left as-is.
-          const tests = keep.map((k) => ({ coversVALs: coversOf(k), status: k.status }));
-          for (const a of assertions) {
-            const derived = deriveAssertionStatus(a.val_id, tests);
-            if (derived !== 'todo') {
-              await sql`
-                UPDATE harness_shared.harness_plan_assertions
-                   SET status = ${derived}
-                 WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND val_id = ${a.val_id}`;
-            }
-          }
         }
       } catch {
-        /* assertions table unavailable — skip linkage/status (fail-soft) */
+        /* assertions table unavailable — skip linkage (fail-soft) */
       }
     }
 
@@ -143,6 +131,45 @@ export default defineTool({
         });
       }
     }
+
+    // P-081 / EI-21437624500324717: refresh the display-cache status only
+    // AFTER this phase's replace-all write, then derive against ALL phases.
+    // Deriving from `keep` alone is wrong: a staging snapshot must not reset a
+    // VAL still covered in production. Conversely, skipping derived `todo`
+    // leaves a stale `passed` forever after the final covering test disappears.
+    // Reading the post-write table solves both cases, including an empty
+    // current-phase snapshot, while the verdict-bearing consumers continue to
+    // derive live from this same evidence rather than trusting the cache.
+    try {
+      const assertions = await sql<{ val_id: string }[]>`
+        SELECT val_id
+          FROM harness_shared.harness_plan_assertions
+         WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
+      if (assertions.length > 0) {
+        const testRows = await sql<
+          { status: string; payload: { coversVALs?: unknown } | null }[]
+        >`
+          SELECT status, payload
+            FROM harness_shared.harness_tests
+           WHERE workspace_id = ${ws} AND harness_slug = ${slug}`;
+        const tests = testRows.map((row) => ({
+          status: row.status,
+          coversVALs: Array.isArray(row.payload?.coversVALs)
+            ? row.payload.coversVALs.filter((val): val is string => typeof val === 'string')
+            : [],
+        }));
+        for (const assertion of assertions) {
+          const derived = deriveAssertionStatus(assertion.val_id, tests);
+          await sql`
+            UPDATE harness_shared.harness_plan_assertions
+               SET status = ${derived}
+             WHERE workspace_id = ${ws} AND harness_slug = ${slug} AND val_id = ${assertion.val_id}`;
+        }
+      }
+    } catch {
+      /* assertions/tests table unavailable — skip display-cache refresh (fail-soft) */
+    }
+
     void notifySyncInvalidate('harnessTests.byHarness', { harnessSlug: slug, phase }).catch(() => {});
     return Response.json({ ok: true, count: keep.length });
   },

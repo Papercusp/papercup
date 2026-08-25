@@ -109,7 +109,9 @@ function makeDb(tokenRows: unknown[]) {
   ins.onConflictDoUpdate = () => Promise.resolve(undefined);
   ins.onConflictDoNothing = () => Promise.resolve(undefined);
   ins.returning = () => Promise.resolve([]);
-  return { select: () => sel, insert: () => ins, sql: vi.fn() };
+  const del: Record<string, unknown> = {};
+  del.where = () => Promise.resolve(undefined);
+  return { select: () => sel, insert: () => ins, delete: () => del, sql: vi.fn() };
 }
 
 beforeEach(() => {
@@ -190,5 +192,59 @@ describe('pr-event — token + payload depth (P-014)', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
+  });
+});
+
+describe('test-snapshot — phase-aware assertion status refresh (EI-21437624500324717)', () => {
+  const path = '/internal/test-snapshot';
+  const app = () => appWith(testSnapshot as AnyRoute);
+
+  function setupSnapshotSql(testRows: Array<{ status: string; payload: { coversVALs?: unknown } }>) {
+    const updates: string[] = [];
+    const sql = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join(' ');
+      if (query.includes('SELECT val_id, plan_slug, item_id, requires_test')) {
+        return [{ val_id: 'VAL-1', plan_slug: 'plan-a', item_id: 'P-001', requires_test: true }];
+      }
+      if (query.includes('SELECT val_id') && query.includes('harness_plan_assertions')) {
+        return [{ val_id: 'VAL-1' }];
+      }
+      if (query.includes('SELECT status, payload') && query.includes('harness_tests')) {
+        return testRows;
+      }
+      if (query.includes('UPDATE harness_shared.harness_plan_assertions')) {
+        updates.push(String(values[0]));
+        return [];
+      }
+      throw new Error(`unexpected SQL in test-snapshot assertion test: ${query}`);
+    });
+    getOrgPg.mockReturnValue({ db: makeDb([{ harness_slug: 'papercup' }]), sql });
+    return updates;
+  }
+
+  it('keeps cross-phase coverage passed, then returns to todo after the final covering test disappears', async () => {
+    // This staging replacement contains no VAL-1 coverage, but the post-write
+    // all-phase read still sees a production test. A current-phase-only
+    // derivation would incorrectly reset the global assertion cache to todo.
+    const crossPhaseUpdates = setupSnapshotSql([
+      { status: 'passing', payload: { coversVALs: ['VAL-1'] } },
+    ]);
+    const covered = await app().request(
+      path,
+      authd({
+        phase: 'staging',
+        files: [{ testId: 'unrelated.test.ts', payload: { status: 'passing', coversVALs: [] } }],
+      }),
+    );
+    expect(covered.status).toBe(200);
+    expect(crossPhaseUpdates).toEqual(['passed']);
+
+    // The final covering test is now gone too. Empty replacement snapshots
+    // must still run the refresh and persist todo instead of leaving the prior
+    // passed cache value stranded forever.
+    const uncoveredUpdates = setupSnapshotSql([]);
+    const uncovered = await app().request(path, authd({ phase: 'production', files: [] }));
+    expect(uncovered.status).toBe(200);
+    expect(uncoveredUpdates).toEqual(['todo']);
   });
 });
