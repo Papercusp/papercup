@@ -33,10 +33,6 @@ const dbSql = vi.hoisted(() => vi.fn((strings: TemplateStringsArray) => {
   }
   return Promise.resolve([]);
 }));
-const dbOrgActual = vi.hoisted(() =>
-  vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org'),
-);
-
 vi.mock('@papercusp/sse', () => ({
   sseResponse: (opts: { setup: CapturedSetup }) => {
     routeProbe.events = [];
@@ -55,10 +51,7 @@ vi.mock('@papercusp/sse', () => ({
 vi.mock('@papercusp/scheduled-registry', () => ({
   managedSetInterval: () => ({ stop: vi.fn() }),
 }));
-vi.mock('@papercusp/db-org', async () => ({
-  ...(await dbOrgActual),
-  getOrgPg: () => ({ sql: dbSql }),
-}));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: dbSql }) }));
 vi.mock('../../claude-sessions', () => ({
   resolveInteractiveTranscript: vi.fn(async () => null),
   SESSION_THINKING_ACTIVE_MS: 30_000,
