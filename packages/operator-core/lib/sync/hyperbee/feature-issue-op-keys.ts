@@ -424,6 +424,22 @@ function toFeatureValue(row: Record<string, unknown>): HarnessFeatureRow {
     // 708's header). A PLAIN carried column, NOT part of the digest (see D-035
     // sibling note in feature-issue-op-keys.ts's authority comment above).
     closed_ts: numOrNull(row.closed_ts),
+    // WI-41745 — mig 966 appended these three to harness_features_consolidated
+    // (mig 374 defined it as SELECT *, which PG expands at creation, so mig 944's
+    // base-table columns never reached the view). That fixed the feature-family
+    // READ path and simultaneously made the columns part of this table's federated
+    // surface, with nothing carrying them.
+    //
+    // The feature capture already emits them — it ships the whole work_items row via
+    // to_jsonb(v_rec) — so they were on the wire and dropped HERE. `admission` is the
+    // born-pending claim gate (admittedWhereSql = admission IS DISTINCT FROM
+    // 'pending'), so a dropped column arrives NULL and reads as ADMITTED. Same
+    // treatment, and the same monotonic ON CONFLICT floor, as the issue family got in
+    // EI-21467654382027859; admitted_at/admitted_by are the promoter's verdict
+    // provenance and travel with it.
+    admission: strOrNull(row.admission),
+    admitted_at: strOrNull(row.admitted_at),
+    admitted_by: strOrNull(row.admitted_by),
   };
 }
 

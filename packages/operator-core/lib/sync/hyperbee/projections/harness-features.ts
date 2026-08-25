@@ -124,6 +124,17 @@ export interface HarnessFeatureRow {
    * pre-698 legacy-row semantics).
    */
   closed_ts?: number | null;
+  /**
+   * WI-41745 — the born-pending admission trio (mig 944), exposed on this view by
+   * mig 966. `admission` is the claim gate itself (`admittedWhereSql` =
+   * `(admission IS DISTINCT FROM 'pending')`), so a dropped column arrives NULL and
+   * reads as ADMITTED on the peer. OPTIONAL on the wire for the usual all-or-nothing
+   * decodeValue reason: an op from a peer on older code carries none of them, and
+   * rejecting such a row would discard the WHOLE feature op.
+   */
+  admission?: string | null;
+  admitted_at?: string | null;
+  admitted_by?: string | null;
 }
 
 function isString(v: unknown): v is string { return typeof v === 'string'; }
@@ -189,6 +200,10 @@ export function isHarnessFeatureRow(input: unknown): input is HarnessFeatureRow 
   if (r.terminal_reason !== undefined && !isStringOrNull(r.terminal_reason)) return false; // P-009/D-001 — optional on the wire
   if (r.authority !== undefined && !isStringOrNull(r.authority)) return false; // mig 708/D-035 — optional on the wire
   if (r.closed_ts !== undefined && !isNumberOrNull(r.closed_ts)) return false; // mig 708 PART 2 — optional on the wire
+  // WI-41745 (mig 944/966) — all three optional on the wire; see the interface note.
+  if (r.admission !== undefined && !isStringOrNull(r.admission)) return false;
+  if (r.admitted_at !== undefined && !isStringOrNull(r.admitted_at)) return false;
+  if (r.admitted_by !== undefined && !isStringOrNull(r.admitted_by)) return false;
   // metadata + tags + payload are JSONB blobs; accept anything (incl. null/missing).
   return true;
 }
@@ -317,6 +332,7 @@ async function writeToPg(
        design_spec_id, design_status, needs_design, discarded_design_work,
        source_plan_slug, source_plan_item_ids, see_also, wave, deprecation_reason, completion_ref,
        terminal_owner, terminal_completion_ref, terminal_reason, authority, closed_ts,
+       admission, admitted_at, admitted_by,
        author_pubkey, origin, fed_ts, fed_hlc, verified_author_github_user_id)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.feature_id}, ${row.title}, ${row.summary}, ${row.status}, ${row.attempts}, ${row.claims}, ${row.notes},
@@ -343,6 +359,8 @@ async function writeToPg(
        ${row.completion_ref == null ? null : JSON.stringify(normalizeJsonbInput(row.completion_ref))}::text::jsonb,
        ${row.terminal_owner ?? null}, ${row.terminal_completion_ref ?? null}, ${row.terminal_reason ?? null},
        ${row.authority ?? null}, ${row.closed_ts ?? null},
+       -- WI-41745: the born-pending admission trio (mig 944, exposed here by mig 966).
+       ${row.admission ?? null}, ${row.admitted_at ?? null}, ${row.admitted_by ?? null},
        ${authorPubkey}, ${origin}, ${fedTs}, ${fedHlc}, ${verifiedAuthorGithubUserId})
     ON CONFLICT (harness_slug, feature_id) DO UPDATE SET
       title = EXCLUDED.title,
@@ -399,6 +417,36 @@ async function writeToPg(
       -- mig 708 PART 2: honour a federated close time; the BEFORE trigger's own
       -- COALESCE/freeze logic (mig 698) then decides whether it actually wins.
       closed_ts = EXCLUDED.closed_ts,
+      -- WI-41745: identical monotonic floor to the one the issue family got in
+      -- EI-21467654382027859, and for the same two reasons. (1) EXCLUDED NULL means the
+      -- op predates the change, and taking NULL would read as ADMITTED at the claim gate
+      -- and un-hide a born-pending item. (2) An explicit 'pending' arriving over a
+      -- locally PROMOTED row is a peer that has not seen the promotion — and the LWW
+      -- guard below does not cover it, because a LOCAL promotion does not restamp
+      -- fed_ts/fed_hlc, so the remote op legitimately outranks it in fed_order_key space.
+      -- Promotion is one-way (pending -> admitted/auto/unreviewed); nothing demotes.
+      -- admitted_at/admitted_by follow the SAME branch so the trio cannot disagree.
+      admission = CASE
+        WHEN EXCLUDED.admission IS NULL THEN work_items.admission
+        WHEN EXCLUDED.admission = 'pending'
+             AND work_items.admission IS NOT NULL
+             AND work_items.admission IS DISTINCT FROM 'pending' THEN work_items.admission
+        ELSE EXCLUDED.admission
+      END,
+      admitted_at = CASE
+        WHEN EXCLUDED.admission IS NULL THEN work_items.admitted_at
+        WHEN EXCLUDED.admission = 'pending'
+             AND work_items.admission IS NOT NULL
+             AND work_items.admission IS DISTINCT FROM 'pending' THEN work_items.admitted_at
+        ELSE EXCLUDED.admitted_at
+      END,
+      admitted_by = CASE
+        WHEN EXCLUDED.admission IS NULL THEN work_items.admitted_by
+        WHEN EXCLUDED.admission = 'pending'
+             AND work_items.admission IS NOT NULL
+             AND work_items.admission IS DISTINCT FROM 'pending' THEN work_items.admitted_by
+        ELSE EXCLUDED.admitted_by
+      END,
       author_pubkey = EXCLUDED.author_pubkey,
       origin = EXCLUDED.origin,
       fed_ts = EXCLUDED.fed_ts,
