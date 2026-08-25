@@ -456,12 +456,15 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         },
       },
     });
+    const mergedPatches: Record<string, unknown>[] = [];
     const d: CaptureDeps & { created: CreateIssueInput[]; occurrences: RecordIssueOccurrenceInput[] } = {
       ...deps({ found: [prior] }),
       findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
       updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
-      mergeIssuePayload: async (_id, patch) =>
-        existing({ ...prior, kind: 'bug', severity: 'major', payload: { ...(prior.payload as object), ...patch } }),
+      mergeIssuePayload: async (_id, patch) => {
+        mergedPatches.push(patch);
+        return existing({ ...prior, kind: 'bug', severity: 'major', payload: { ...(prior.payload as object), ...patch } });
+      },
       tagIssue: async () => {},
       untagIssue: async () => {},
     };
@@ -496,6 +499,11 @@ describe('captureImprovement — correlated tool-failure probation (P-013)', () 
         reportKind: 'promoted',
       }),
     ]);
+    expect(mergedPatches[0]).toMatchObject({
+      watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape',
+      lane: null,
+      toolFailureProbation: { state: 'promoted', watchdogKey: 'repeated-tool-error:work_items:get:structural:second-shape' },
+    });
   });
 });
 
