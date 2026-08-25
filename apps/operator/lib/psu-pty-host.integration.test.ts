@@ -154,6 +154,45 @@ describe('session-port managed seed + native persistence helpers', () => {
     expect(startupOutputReady('codex', ' 62%  context left ')).toBe(true);
   });
 
+  it('auto-advances the headless Claude theme and Security notes prompts exactly once', async () => {
+    const ownerId = `su-headless-onboarding-itest-${process.pid}-${Math.floor(performance.now())}`;
+    const sock = socketPathFor(ownerId);
+    const { captured, io } = fakeIo();
+    const childCode =
+      "let advances=0;" +
+      "process.stdout.write('Choose your preferred theme: Dark mode\\n');" +
+      "process.stdin.setEncoding('utf8');" +
+      "process.stdin.on('data',d=>{const count=(d.match(/[\\r\\n]/g)||[]).length;for(let i=0;i<count;i++){advances++;process.stdout.write('AUTO_CR_'+advances+'\\n');if(advances===1)process.stdout.write('Security notes\\nPress Enter to continue\\n');if(advances===2){process.stdout.write('ONBOARDING_READY\\n');setTimeout(()=>process.exit(0),50);}}});";
+    const done = hostThroughPty({
+      command: execPath,
+      args: ['-e', childCode],
+      cwd: '/tmp',
+      env: {
+        ...process.env,
+        PAPERCUSP_SID: ownerId,
+        PAPERCUSP_AGENT: 'claude',
+        PAPERCUSP_PSU_HEADLESS: '1',
+        PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '1000',
+        PAPERCUSP_FLEET_BG: '',
+        PAPERCUSP_FLEET_FG: '',
+        PAPERCUSP_FLEET_CURSOR: '',
+        TERM: 'xterm-256color',
+      },
+      ownerId,
+      io,
+      bridgeTty: false,
+      onExit: () => {},
+    });
+
+    const deadline = Date.now() + 5_000;
+    while (!captured().includes('ONBOARDING_READY') && Date.now() < deadline) await sleep(10);
+    expect(captured()).toContain('ONBOARDING_READY');
+    expect((captured().match(/AUTO_CR_1/g) || []).length).toBe(1);
+    expect((captured().match(/AUTO_CR_2/g) || []).length).toBe(1);
+    expect(await done).toBe(0);
+    expect(existsSync(sock)).toBe(false);
+  }, 10_000);
+
   it('signals the forkpty process group and retains a direct-child fallback', () => {
     const groupKill = vi.fn();
     const directKill = vi.fn();
