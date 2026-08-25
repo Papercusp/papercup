@@ -392,6 +392,74 @@ describe('attributeFailedTask — `node --test` output is a SECOND runner format
     expect(a.unattributed).toEqual([{ task: 'w :: test', reason: 'no-file-rows' }]);
   });
 
+  /**
+   * EI-21440128879545486. A router refusal executes NOTHING, so every parser above speaks for
+   * nothing and the reason used to land on `no-file-rows` — "a worker crash, an OOM, a spawn
+   * error". Triage then hunts infrastructure while the router has already printed the refusal
+   * AND the offending paths in plain text. That misread survived seven unrelated test fixes and
+   * kept `main` frozen, because no test was ever broken and re-running changed nothing.
+   *
+   * Verbatim captured shape from the run that froze the gate
+   * (checkpoint log ...-cand-dfe7bd9f4e56.log, lines 23162-23164).
+   */
+  const ROUTE_REFUSAL_OUTPUT = [
+    '  unmatched e2e/design-dashboard-flow.spec.ts',
+    '  unmatched e2e/docs-routes.spec.ts',
+    'TEST_FILE_ROUTE_ERROR (group cwd=apps/operator) requested=330 matched=328; refusing a ' +
+      'false-green zero/partial-match run for this group; For the supported routed test ' +
+      'surface, use testing:run { files: [...] }.',
+  ].join('\n');
+
+  it('names a ROUTER REFUSAL instead of blaming infrastructure', () => {
+    const a = attributeFailedTask({
+      workspace: '@papercusp/web',
+      task: '@papercusp/web :: test',
+      captured: true,
+      output: ROUTE_REFUSAL_OUTPUT,
+    });
+    // Still unattributed — the unmatched files did not FAIL, they never ran, so naming them as
+    // failing files would send the gate's isolation re-run after tests that pass.
+    expect(a.entries).toEqual([]);
+    expect(a.unattributed).toEqual([{ task: '@papercusp/web :: test', reason: 'route-refusal' }]);
+  });
+
+  it('FALSIFIABILITY: the new reason is not a catch-all — no marker means the verdict does not move', () => {
+    // Paired control: without the refusal line the reason must stay put, or `route-refusal`
+    // would just be a rename of the reason it was split out of.
+    const a = attributeFailedTask({
+      workspace: '@papercusp/web',
+      task: '@papercusp/web :: test',
+      captured: true,
+      output: '  unmatched e2e/docs-routes.spec.ts\nJS heap out of memory\n',
+    });
+    expect(a.unattributed).toEqual([
+      { task: '@papercusp/web :: test', reason: 'no-file-rows' },
+    ]);
+  });
+
+  it('leaves a DECLARED reason ahead of it — the branch may only replace no-file-rows', () => {
+    const declared = attributeFailedTask({
+      workspace: 'w',
+      task: 'w :: test',
+      captured: true,
+      output: ROUTE_REFUSAL_OUTPUT,
+      fallbackReason: 'non-vitest',
+    });
+    expect(declared.unattributed).toEqual([{ task: 'w :: test', reason: 'non-vitest' }]);
+  });
+
+  it('still attributes real failing files when a refusal marker is also present', () => {
+    // One group refusing must not erase another group's genuine FAIL rows.
+    const a = attributeFailedTask({
+      workspace: '@papercusp/web',
+      task: '@papercusp/web :: test',
+      captured: true,
+      output: `${ROUTE_REFUSAL_OUTPUT}\n FAIL  lib/real-thing.test.ts > it breaks\n`,
+    });
+    expect(a.entries.map((e) => e.file)).toContain('lib/real-thing.test.ts');
+    expect(a.unattributed).toEqual([]);
+  });
+
   it('does NOT attribute a PASSING run: `test at` is failure-exclusive, verified against emitted bytes', () => {
     // A green node --test run prints per-file ✔ rows and a summary, and NO `test at` line —
     // that exclusivity is the property the matcher leans on, so it is pinned here.
