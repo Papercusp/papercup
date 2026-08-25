@@ -178,6 +178,27 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
   });
 
+  it('uses the rubric workspace when a superuser dispatch omits workspaceId', async () => {
+    resolveHarnessPaths.mockResolvedValue({
+      projectDir: '/tmp/papercusp-target-tree',
+      stateDir: '/tmp/papercusp-target-tree/.papercusp',
+    });
+    const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
+      ok: true,
+      checkRuns: { 'det-outcome': PASS_RUN },
+    });
+
+    const res = await emitScorecard(
+      emitArgs({ targetHive: 'email' }) as never,
+      { createdBy: 'su-grader', ctxHarness: 'papercusp', checkRoot: '/tmp/grader-tree' },
+      { evaluateChecks },
+    );
+
+    expect(res.ok).toBe(true);
+    expect(resolveHarnessPaths).toHaveBeenCalledWith('email', 'ws-test');
+    expect(evaluateChecks.mock.calls[0][0].root).toBe('/tmp/papercusp-target-tree');
+  });
+
   it('a check refusal refuses the EMIT — nothing is filed', async () => {
     const evaluateChecks = vi.fn<EvaluateChecks>().mockResolvedValue({
       ok: false,

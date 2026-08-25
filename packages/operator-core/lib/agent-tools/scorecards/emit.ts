@@ -187,12 +187,20 @@ export async function cleanupAcceptanceGraderTasks(
  */
 async function resolveDeterministicCheckRoot(
   args: Pick<z.infer<typeof scorecardEmitArgs>, 'targetHive'>,
-  input: { ctxHarness?: string; workspaceId?: string; checkRoot?: string },
+  input: {
+    ctxHarness?: string;
+    workspaceId?: string;
+    checkRoot?: string;
+    rubricWorkspaceId?: string | null;
+  },
 ): Promise<string | undefined> {
   const callerRoot = input.checkRoot ?? resolveAgentWorkspaceRoot({});
-  if (!args.targetHive || args.targetHive === input.ctxHarness || !input.workspaceId) return callerRoot;
+  // EI-21384279769470409: a workspace-scoped superuser dispatch may omit
+  // ctx.workspaceId even though the rubric itself is workspace-bound.
+  const workspaceId = input.workspaceId ?? input.rubricWorkspaceId ?? undefined;
+  if (!args.targetHive || args.targetHive === input.ctxHarness || !workspaceId) return callerRoot;
 
-  const targetPaths = await resolveHarnessPaths(args.targetHive, input.workspaceId);
+  const targetPaths = await resolveHarnessPaths(args.targetHive, workspaceId);
   return resolveAgentWorkspaceRoot({ projectDir: targetPaths.projectDir });
 }
 
@@ -548,7 +556,10 @@ export async function emitScorecard(
     const testCheckedCriteria = rubric.criteria.filter((c) => c.check?.kind === 'tests');
     if (testCheckedCriteria.length > 0) {
       const evaluateChecks = deps.evaluateChecks ?? evaluateCriterionTestChecks;
-      const checkRoot = await resolveDeterministicCheckRoot(args, input);
+      const checkRoot = await resolveDeterministicCheckRoot(args, {
+        ...input,
+        rubricWorkspaceId: rubric.workspaceId,
+      });
       const checkEvaluation = await evaluateChecks({
         criteria: rubric.criteria,
         ratings,
