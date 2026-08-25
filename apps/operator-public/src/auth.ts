@@ -94,7 +94,7 @@ export async function checkRepoPermission(
  * Cupboard-operator allowlist. Operators are identified by GitHub user id
  * (public, not secret) listed in the `CUPBOARD_OPERATOR_GITHUB_IDS` var. An
  * operator still authenticates with a normal GitHub bearer (`resolveGithubBearer`);
- * this just gates whether their resolved id may use the /admin moderation surface.
+ * this gates every /admin operator surface (moderation and artifact publication).
  * Empty / unset ⇒ no operators ⇒ /admin is closed.
  */
 export function parseOperatorIds(env: { CUPBOARD_OPERATOR_GITHUB_IDS?: string }): Set<number> {
