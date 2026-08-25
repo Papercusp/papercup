@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AgentFleetRecord } from '../../agent-fleets-store';
 import type { PresenceRecord } from '../../agent-tools/coordination/presence';
-import type { TurnRefVerdict } from '../../turn-provenance/turn-ref';
 import type { WorkItem } from '../../work-items';
 import {
   admitMonitorArm,
@@ -10,6 +9,7 @@ import {
   normalizeMonitorPredicateKey,
   prepareMonitorConfig,
   type MonitorAdmissionDependencies,
+  type MonitorOwnerTurnEvidence,
   type PersistedMonitorConfig,
 } from './monitor-policy';
 
@@ -114,17 +114,16 @@ function fleet(overrides: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
   };
 }
 
-function turn(overrides: Partial<TurnRefVerdict> = {}): TurnRefVerdict {
+function turn(overrides: Partial<MonitorOwnerTurnEvidence> = {}): MonitorOwnerTurnEvidence {
   return {
-    ref: '[turn:codex:abc12345@2026-08-25T03:59:00.000Z]',
+    ref: 'session_turn:codex:abc12345:7',
     found: true,
+    checked: true,
+    ownerId: OWNER,
+    speaker: 'user',
     verdict: 'owner-typed',
     origin: null,
-    snippet: 'keep watching until the release is green',
-    quote: 'keep watching until the release is green',
     quoteMatch: true,
-    checked: true,
-    scope: 'owner-chain',
     ...overrides,
   };
 }
@@ -216,7 +215,7 @@ describe('monitor policy — pure authority and duplicate-owner decisions', () =
   it('requires an owner-candidate verdict and an exact matching quote', () => {
     const ownerConfig = config({
       kind: 'owner-turn',
-      turnRef: '[turn:codex:abc12345@2026-08-25T03:59:00.000Z]',
+      turnRef: 'session_turn:codex:abc12345:7',
       quote: 'keep watching until the release is green',
     });
     expect(
@@ -243,6 +242,14 @@ describe('monitor policy — pure authority and duplicate-owner decisions', () =
         nowMs: NOW,
       }),
     ).toMatchObject({ allowed: false, code: 'monitor_owner_quote_mismatch' });
+    expect(
+      decideMonitorAdmission({
+        ownerId: OWNER,
+        config: ownerConfig,
+        evidence: { ownerTurn: turn({ ownerId: 'su-other-owner' }) },
+        nowMs: NOW,
+      }),
+    ).toMatchObject({ allowed: false, code: 'monitor_owner_turn_not_owner' });
   });
 
   it.each([
@@ -253,7 +260,7 @@ describe('monitor policy — pure authority and duplicate-owner decisions', () =
   ] as const)('rejects %s as owner-turn authority', (_label, verdict, origin) => {
     const ownerConfig = config({
       kind: 'owner-turn',
-      turnRef: '[turn:codex:abc12345@2026-08-25T03:59:00.000Z]',
+      turnRef: 'session_turn:codex:abc12345:7',
       quote: 'keep watching until the release is green',
     });
     expect(
@@ -300,7 +307,7 @@ describe('monitor policy — resolved admission', () => {
         monitor: {
           predicateKey: 'p',
           stopCondition: 's',
-          authority: { kind: 'owner-turn', turnRef: '[turn:not-canonical]', quote: 'watch it' },
+          authority: { kind: 'owner-turn', turnRef: 'not-a-session-turn-ref', quote: 'watch it' },
         },
       },
       deps(),

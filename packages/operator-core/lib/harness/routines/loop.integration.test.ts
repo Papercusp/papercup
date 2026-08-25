@@ -23,7 +23,7 @@ import {
   countAgentToolCallsInWindow,
   LOOP_WAKE_ACTION,
 } from './loop';
-import { listActiveMonitorOwnersForPredicate } from './monitor-policy';
+import { listActiveMonitorOwnersForPredicate, readMonitorOwnerTurnEvidence } from './monitor-policy';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -131,6 +131,41 @@ describe('loop surface round-trip (real PG)', () => {
         { sql },
       ),
     ).toEqual([OWNER]);
+  });
+
+  it('anti-babysitting P-003: resolves canonical session_turn owner authority and exact quote from real PG', async () => {
+    const sessionId = 'p003-owner-authority-session';
+    const turnIdx = 7;
+    await sql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, harness_slug,
+         speaker, text, turn_origin, turn_origin_verdict, turn_origin_classifier_version)
+      VALUES
+        (${WS}, 'codex', ${sessionId}, ${turnIdx}, now(), ${OWNER}, ${HARNESS},
+         'user', 'Keep monitoring fleet alpha until it drains.', NULL, 'owner-typed', 1)
+      ON CONFLICT (workspace_id, source_kind, session_id, turn_idx) DO UPDATE SET
+        owner = EXCLUDED.owner,
+        speaker = EXCLUDED.speaker,
+        text = EXCLUDED.text,
+        turn_origin = EXCLUDED.turn_origin,
+        turn_origin_verdict = EXCLUDED.turn_origin_verdict
+    `;
+
+    const evidence = await readMonitorOwnerTurnEvidence(
+      OWNER,
+      WS,
+      `session_turn:codex:${sessionId}:${turnIdx}`,
+      'monitoring fleet alpha until it drains',
+      { sql },
+    );
+    expect(evidence).toMatchObject({
+      found: true,
+      checked: true,
+      ownerId: OWNER,
+      speaker: 'user',
+      verdict: 'owner-typed',
+      quoteMatch: true,
+    });
   });
 
   it('getLoopStatus reads an armed loop, and null for an unknown owner', async () => {
