@@ -324,19 +324,16 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   "papercusp-improvement-auto-implement",
   "papercusp-lazy-substrate-boot",
   "papercusp-capability-envelope-overrides",
-  // 2026-08-25 (ratified-mockup-implementation-validation-2026-08-24 P-007, su-884f6):
-  // papercusp-design-evidence-gate-enforcing — the ENFORCING half of the design-evidence
-  // completion gate. A `cutover` case, so it does not count toward the parking watermark.
-  // D-006 is the unmet precondition and it is explicit: the contract runs REPORT-ONLY
-  // against committed fixtures and a cohort of real ratified designs first, and the
-  // measured repeatability/noise/runtime (P-008) determines the first versioned policy;
-  // P-009 verifies independently and P-011 owns the flip. Turning it on before that
-  // blocks completions on an uncalibrated threshold — the specific harm D-006 exists to
-  // prevent. This is NOT finished-work-parked-dark: the gate itself ships ENABLED as
-  // papercusp-design-evidence-gate and reports on every terminal completion from day one;
-  // what is withheld is only the refusal. GRADUATES when P-011 completes the rollout.
-  // Count 35 → 36.
-  "papercusp-design-evidence-gate-enforcing",
+  // (papercusp-design-evidence-gate-enforcing was added here 2026-08-25 by P-007 and
+  // REMOVED the same day by P-011, which is the graduation its own entry predicted.
+  // Its stated precondition was D-006: calibrate before refusing. P-011 met it, and
+  // then found the precondition was incomplete — D-021's same-host caveat was prose the
+  // gate could not act on, and probing showed CaptureEnvironment cannot even EXPRESS
+  // which machine a capture ran on, so a cross-host comparison was indistinguishable
+  // from a same-host one at every precondition checked. D-023 closes that: enforcement
+  // is scoped, in code, to references ratified on the machine the threshold was measured
+  // on. The flag is now default-ON and the SCOPE — not the flag — is what withholds the
+  // refusal everywhere the measurement does not reach. Count 36 → 35.)
   // (papercusp-task-manager was added here 2026-07-27 by WI-6499 and REMOVED 2026-08-02
   // by WI-6844 — it graduated to default-ON on an explicit owner directive: "we put it
   // behind a testing flag. Remove that flag, we'll make it part of our standard
