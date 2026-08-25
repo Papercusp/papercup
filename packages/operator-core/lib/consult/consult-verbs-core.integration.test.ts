@@ -328,9 +328,17 @@ describe('consultReplyCore — kind rules + transitions', () => {
   it('a non-participant is refused; an unknown conversation is not_a_consult', async () => {
     const id = await seedConsult();
     const { deps } = makeDeps();
-    expect(
-      await consultReplyCore({ workspaceId: WS, authorId: 'stranger', conversationId: id, kind: 'new_fact', body: 'b' }, deps),
-    ).toEqual({ error: 'not_a_participant' });
+    const refused = await consultReplyCore(
+      { workspaceId: WS, authorId: 'stranger', conversationId: id, kind: 'new_fact', body: 'b' },
+      deps,
+    );
+    // EI-21385436565682208: the refusal must NAME the remedy — participation is
+    // router-assigned, so conversations:join can never fix a not_a_participant.
+    expect(refused).toMatchObject({
+      error: 'not_a_participant',
+      hint: expect.stringContaining('consult:get_feedback'),
+    });
+    expect(refused).toMatchObject({ hint: expect.stringContaining('conversations:join cannot enroll you') });
     expect(
       await consultReplyCore({ workspaceId: WS, authorId: RESPONDER, conversationId: 'conv-none', kind: 'new_fact', body: 'b' }, deps),
     ).toEqual({ error: 'not_a_consult' });

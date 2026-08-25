@@ -78,6 +78,16 @@ interface SnapshotCandidate {
   liveness?: string;
 }
 
+/**
+ * EI-21385436565682208: shared remedy text for every not_a_participant refusal.
+ * Consult participation is selected by consult:get_feedback's router; a generic
+ * conversations:join subscription can never confer it, so the refusal must point
+ * at the verbs that CAN advance the caller instead of leaving them in the
+ * join->reply->refuse loop the filed repro demonstrated.
+ */
+const CONSULT_PARTICIPATION_REMEDY =
+  'Consult participants are router-assigned by consult:get_feedback - conversations:join cannot enroll you. Re-route via consult:get_feedback { question }, or deliver the answer out-of-band (e.g. coord:send to the requester).';
+
 export interface ConsultVerbDeps {
   getSql: () => Sql;
   /** Write-through into the conversation thread — bound to
@@ -143,7 +153,7 @@ export interface ConsultVerbDeps {
 
 export type ConsultVerbError =
   | { error: 'not_a_consult' }
-  | { error: 'not_a_participant' }
+  | { error: 'not_a_participant'; hint: string }
   | { error: 'not_the_responder' }
   | { error: 'consult_not_open'; state: string; hint: string }
   | { error: 'invalid_kind'; role: 'requester' | 'responder'; allowed: readonly string[]; hint: string }
@@ -289,7 +299,13 @@ export async function consultReplyCore(
   // selectees REMAIN participants after the chain advances past them — the
   // one consult thread is the accumulator they keep deliberating in.
   if (!isConsultParticipant(row, req.authorId)) {
-    return { error: 'not_a_participant' };
+    // EI-21385436565682208: name the ACTUAL remedy. conversations:join cannot
+    // enroll anyone here (participation is router-assigned), so an un-hinted
+    // not_a_participant sent agents into a join -> reply -> refuse loop.
+    return {
+      error: 'not_a_participant',
+      hint: CONSULT_PARTICIPATION_REMEDY,
+    };
   }
   const role: 'requester' | 'responder' = req.authorId === row.requester_id ? 'requester' : 'responder';
 
@@ -673,7 +689,7 @@ export async function consultCloseCore(
   const row = rawRow;
 
   if (!isConsultParticipant(row, req.authorId)) {
-    return { error: 'not_a_participant' };
+    return { error: 'not_a_participant', hint: CONSULT_PARTICIPATION_REMEDY };
   }
 
   // Structured outcome (D-001 — the outcome column comment is the authority):
