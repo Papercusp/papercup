@@ -556,3 +556,127 @@ describe('workspace-host credential resolver', () => {
     }
   });
 });
+
+/**
+ * The sealed agent family was the one family with no direct coverage: the suite reached it only
+ * through table-driven assertions over every family, which cannot see whether its own scheme
+ * round-trips or which revocation surface it lands on. Both are load-bearing rulings.
+ */
+describe('agent-encrypted-reference (the sealed agent family)', () => {
+  const SEALED_FIELDS = { hostId: 'byoc-canary-01', agentSet: 'claude-codex-omp' };
+
+  it('round-trips its own pc-agent-sealed reference', () => {
+    const ref = buildWorkspaceHostCredentialReference('agent-encrypted-reference', SEALED_FIELDS);
+    expect(ref).toBe('pc-agent-sealed://byoc-canary-01/claude-codex-omp');
+    const parsed = parseWorkspaceHostCredentialReference(ref, 'agent');
+    expect(parsed.family).toBe('agent-encrypted-reference');
+    expect(parsed.segments).toEqual(['byoc-canary-01', 'claude-codex-omp']);
+  });
+
+  it('SHARES the agent revocation scheme with the forwarded family, by design', () => {
+    // A request carries at most one agent channel, so the two families never coexist and one
+    // revocation surface for "the agent binding on this host" is the honest model. Asserting it
+    // here means a later split into two schemes has to be a deliberate change, not a drift.
+    const sealed = buildWorkspaceHostCredentialRevocationReference(
+      'agent-encrypted-reference',
+      SEALED_FIELDS,
+      3,
+    );
+    const forwarded = buildWorkspaceHostCredentialRevocationReference(
+      'agent-forwarded-reference',
+      SEALED_FIELDS,
+      3,
+    );
+    expect(sealed).toBe(forwarded);
+    expect(sealed.startsWith('pc-agent-revocation://')).toBe(true);
+    expect(parseWorkspaceHostCredentialRevocationReference(sealed, 'agent-encrypted-reference')
+      .generation).toBe(3);
+  });
+
+  it('accepts an encrypted-reference delivery and refuses a forwarded-agent one', () => {
+    const ref = buildWorkspaceHostCredentialReference('agent-encrypted-reference', SEALED_FIELDS);
+    const revocationRef = buildWorkspaceHostCredentialRevocationReference(
+      'agent-encrypted-reference',
+      SEALED_FIELDS,
+      1,
+    );
+    const base = {
+      channel: 'agent' as const,
+      credentialRef: { kind: 'agent', ref },
+      requestedAt: REQUESTED_AT,
+    };
+    const descriptor = describeWorkspaceHostCredentialBinding({
+      ...base,
+      delivery: {
+        kind: 'encrypted-reference',
+        generation: 1,
+        audience: 'pc-byoc-canary-01-vm',
+        revocationRef,
+      },
+    });
+    expect(descriptor.family).toBe('agent-encrypted-reference');
+
+    expect(() =>
+      describeWorkspaceHostCredentialBinding({
+        ...base,
+        delivery: {
+          kind: 'forwarded-agent',
+          generation: 1,
+          audience: 'pc-byoc-canary-01-vm',
+          revocationRef,
+        },
+      }),
+    ).toThrow(/may not be delivered as 'forwarded-agent'/);
+  });
+
+  it('needs no expiry, unlike the short-lived git delegation', () => {
+    const ref = buildWorkspaceHostCredentialReference('agent-encrypted-reference', SEALED_FIELDS);
+    expect(() =>
+      describeWorkspaceHostCredentialBinding({
+        channel: 'agent',
+        credentialRef: { kind: 'agent', ref },
+        delivery: {
+          kind: 'encrypted-reference',
+          generation: 1,
+          audience: 'pc-byoc-canary-01-vm',
+          revocationRef: buildWorkspaceHostCredentialRevocationReference(
+            'agent-encrypted-reference',
+            SEALED_FIELDS,
+            1,
+          ),
+        },
+        requestedAt: REQUESTED_AT,
+      }),
+    ).not.toThrow();
+  });
+
+  it('binds through the resolver under its own family', async () => {
+    const materializers = allFamilyMaterializers();
+    const resolver = new WorkspaceHostCredentialResolver(materializers);
+    const evidence = await resolver.run('bind', {
+      channel: 'agent',
+      credentialRef: {
+        kind: 'agent',
+        ref: buildWorkspaceHostCredentialReference('agent-encrypted-reference', SEALED_FIELDS),
+      },
+      delivery: {
+        kind: 'encrypted-reference',
+        generation: 2,
+        audience: 'pc-byoc-canary-01-vm',
+        revocationRef: buildWorkspaceHostCredentialRevocationReference(
+          'agent-encrypted-reference',
+          SEALED_FIELDS,
+          2,
+        ),
+      },
+      requestedAt: REQUESTED_AT,
+    });
+    expect(evidence.family).toBe('agent-encrypted-reference');
+    expect(evidence.deliveryKind).toBe('encrypted-reference');
+    expect(evidence.generation).toBe(2);
+    const sealedMaterializer = materializers.find(
+      (m) => m.family === 'agent-encrypted-reference',
+    );
+    expect(sealedMaterializer?.calls).toEqual(['bind:agent:g2']);
+  });
+});
