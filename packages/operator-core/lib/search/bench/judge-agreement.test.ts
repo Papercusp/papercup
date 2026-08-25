@@ -14,11 +14,16 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { LlmCallFn } from '@papercusp/testing-shell/llm';
+import {
+  composeJudgeScaffoldProbe,
+  JUDGE_PROMPT_SCAFFOLD_VERSION,
+  type LlmCallFn,
+} from '@papercusp/testing-shell/llm';
 
 import {
   aggregateByArm,
   buildPairsForQuery,
+  deriveJudgeAgreementRubricVersion,
   JUDGE_AGREEMENT_RUBRIC_VERSION,
   JUDGE_INSTRUCTION_CONTRACT,
   runJudgeAgreement,
@@ -123,9 +128,20 @@ describe('aggregateByArm', () => {
 });
 
 describe('content-derived rubric version', () => {
-  /** Re-derives the version the way judge-agreement.ts does, over supplied content. */
-  const versionOf = (axes: unknown, instructions: unknown) =>
-    `search-relevance.${sha256(JSON.stringify({ rubric: { axes }, instructions })).slice(0, 12)}`;
+  /**
+   * Re-derives the version the way judge-agreement.ts does, over supplied content.
+   * `scaffold` defaults to the live one so every pre-existing control below keeps
+   * measuring exactly what it measured before the third layer was added.
+   */
+  const versionOf = (
+    axes: unknown,
+    instructions: unknown,
+    scaffold: string = JUDGE_PROMPT_SCAFFOLD_VERSION,
+  ) =>
+    `search-relevance.${sha256(JSON.stringify({ rubric: { axes }, instructions, scaffold })).slice(
+      0,
+      12,
+    )}`;
 
   it('derives from the judging axes AND the instruction contract', () => {
     expect(JUDGE_AGREEMENT_RUBRIC_VERSION).toBe(
@@ -218,6 +234,69 @@ describe('content-derived rubric version', () => {
       criticality,
     });
     expect(JUDGE_AGREEMENT_RUBRIC_VERSION).not.toBe(preFix);
+  });
+
+  /**
+   * WI-41675 — the FOURTH instance of this defect class, one layer further out than
+   * the three above. Those were about values THIS file authors that escaped its own
+   * hash. This is about text this file never authors and cannot see: the rules, the
+   * score-5 anchor, the output schema and the structural labels that
+   * `@papercusp/testing-shell` wraps around every judge prompt. Editing one of them
+   * changed every judged prompt on the platform while leaving already-paid grades
+   * reachable under an unchanged key.
+   */
+  it('binds the live version to the live testing-shell scaffold version', () => {
+    expect(JUDGE_AGREEMENT_RUBRIC_VERSION).toBe(
+      deriveJudgeAgreementRubricVersion(JUDGE_PROMPT_SCAFFOLD_VERSION),
+    );
+  });
+
+  it('moves the cache namespace when the scaffold version changes', () => {
+    // The falsifiability control for the whole layer. The derivation is a pure
+    // function of the scaffold version, so two scaffolds MUST key differently —
+    // and the live key must not be reachable from some other scaffold.
+    expect(deriveJudgeAgreementRubricVersion('aaaaaaaaaaaa')).not.toBe(
+      deriveJudgeAgreementRubricVersion('bbbbbbbbbbbb'),
+    );
+    expect(deriveJudgeAgreementRubricVersion('aaaaaaaaaaaa')).not.toBe(
+      JUDGE_AGREEMENT_RUBRIC_VERSION,
+    );
+  });
+
+  it('is NOT the pre-fix scaffold-blind derivation (the WI-41675 pin)', () => {
+    // Mirrors the two pins above. Before this fix the key was the rubric plus the
+    // instruction contract and nothing else — under that derivation every scaffold
+    // control here would still pass while the defect was fully present.
+    const preFix = `search-relevance.${sha256(
+      JSON.stringify({
+        rubric: { axes: SEARCH_RELEVANCE_RUBRIC.axes },
+        instructions: JUDGE_INSTRUCTION_CONTRACT,
+      }),
+    ).slice(0, 12)}`;
+    expect(JUDGE_AGREEMENT_RUBRIC_VERSION).not.toBe(preFix);
+  });
+
+  /**
+   * A hash is only as honest as the input it is taken over, and the scaffold version
+   * is taken over a PROBE — text composed by the real builders rather than the real
+   * prompt. So enumerate what that probe must contain. Each marker below is static
+   * text the judge genuinely reads; if the probe ever stopped composing the surface
+   * carrying it, the version would go quietly blind to that surface while every
+   * other test here still passed.
+   */
+  it.each([
+    ['the score-5 anchor rule', 'Score-5 anchor'],
+    ['the behavioral-suggestion rule', 'NOT an implementation change'],
+    ['the no-code-changes rule', 'Do not propose code changes'],
+    ['the output schema', '"agrees_with_deterministic_asserts"'],
+    ['the known-tool-registry branch', 'Known tool registry'],
+    ['the no-registry fallback branch', 'NO ground-truth tool registry'],
+    ['the transcript turn label', '### Turn'],
+    ['the finishReason label', '**finishReason:**'],
+    ['the telemetry total label', 'Total:'],
+    ['the empty-violations text', '(none — all deterministic asserts passed)'],
+  ])('the hashed scaffold probe covers %s', (_surface, marker) => {
+    expect(composeJudgeScaffoldProbe()).toContain(marker);
   });
 });
 

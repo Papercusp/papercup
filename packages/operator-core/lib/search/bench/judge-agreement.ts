@@ -46,6 +46,7 @@
 
 import {
   judgeRun,
+  JUDGE_PROMPT_SCAFFOLD_VERSION,
   type JudgeRubric,
   type LlmCallFn,
   type PersonaTraits,
@@ -175,16 +176,39 @@ function fillTemplate(template: string, values: Readonly<Record<string, string>>
   );
 }
 
-// The cache key must move whenever the actual judging contract moves. Keeping this
-// derived from the serialized contract removes the old hand-maintained
-// version/comment binding: changing an axis, anchor, or instruction automatically
-// makes prior paid grades unreachable without relying on a remembered bump.
-export const JUDGE_AGREEMENT_RUBRIC_VERSION = `search-relevance.${sha256(
-  JSON.stringify({
-    rubric: SEARCH_RELEVANCE_RUBRIC_CONTENT,
-    instructions: JUDGE_INSTRUCTION_CONTRACT,
-  }),
-).slice(0, 12)}`;
+/**
+ * Derive the cache key from every input that can change the judged prompt.
+ *
+ * The key must move whenever the actual judging contract moves. Deriving it from
+ * the serialized contract removes the old hand-maintained version/comment
+ * binding: changing an axis, anchor, or instruction makes prior paid grades
+ * unreachable on its own, with no remembered bump.
+ *
+ * `scaffoldVersion` is the third and last layer (WI-41675 / D-012). The first
+ * two — the rubric content and this file's own instruction contract — are
+ * values WE author. The third is text we do not author and cannot see from
+ * here: the rules, score-5 anchor, output schema and structural labels that
+ * `@papercusp/testing-shell`'s judge wraps around them. Without it, editing a
+ * rule line in that package changed every judged prompt while leaving already-
+ * paid grades reachable under an unchanged key.
+ *
+ * Taken as a parameter rather than read from the import so the derivation is
+ * falsifiable in a test: two different scaffold versions must produce two
+ * different keys.
+ */
+export function deriveJudgeAgreementRubricVersion(scaffoldVersion: string): string {
+  return `search-relevance.${sha256(
+    JSON.stringify({
+      rubric: SEARCH_RELEVANCE_RUBRIC_CONTENT,
+      instructions: JUDGE_INSTRUCTION_CONTRACT,
+      scaffold: scaffoldVersion,
+    }),
+  ).slice(0, 12)}`;
+}
+
+export const JUDGE_AGREEMENT_RUBRIC_VERSION = deriveJudgeAgreementRubricVersion(
+  JUDGE_PROMPT_SCAFFOLD_VERSION,
+);
 
 export const SEARCH_RELEVANCE_RUBRIC: JudgeRubric = {
   version: JUDGE_AGREEMENT_RUBRIC_VERSION,
