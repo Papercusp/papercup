@@ -3104,6 +3104,34 @@ try:
 except Exception:
     pass  # advisory must never wedge a command
 
+# ── tauri-agent-tools screenshot window-resolution advisory (EI-21383660965482252) ──
+# SOFT/ADVISORY (third-party CLI — same rationale as EI-15605 above: we cannot
+# fix its resolution logic). `screenshot` resolves the OS window by DOCUMENT
+# TITLE (`xdotool search --name "Papercusp Operator"`) and the native window's
+# WM_NAME is NOT the document title — so the search finds nothing, nothing is
+# captured, and no output file is produced EVEN WHEN the bridge/PID is healthy
+# and even when --pid was passed explicitly (the pid aims the BRIDGE; the pixel
+# grab still title-matches the window). Measured live against a healthy single
+# bridge (pid 3593460). Alternatives that work: pixels → capability:computer
+# screenshot (display-target, lease-managed); layout facts → tauri-verify
+# bridge assertions over the authenticated bridge (EI-11084); in-page proof →
+# `tauri-agent-tools eval --pid <PID>` driving canvas/html2canvas.
+try:
+    if not ADVISORY and _tat_sub == 'screenshot':
+        ADVISORY = (
+            'tauri-agent-tools screenshot advisory (EI-21383660965482252): this subcommand '
+            'resolves the OS window by DOCUMENT TITLE (xdotool search --name "Papercusp '
+            'Operator"), and the native window\'s WM_NAME is not the document title — so the '
+            'search fails, nothing is captured, and no output file is produced even when the '
+            'bridge/PID is healthy (--pid aims the bridge, not the pixel grab). Working '
+            'alternatives: pixels -> capability:computer screenshot (display-target, '
+            'lease-managed); layout facts -> tauri-verify bridge assertions over the '
+            'authenticated bridge (EI-11084); in-page proof -> tauri-agent-tools eval --pid '
+            '<PID> with canvas/html2canvas. Advisory only; this command is proceeding as issued.'
+        )
+except Exception:
+    pass  # advisory must never wedge a command
+
 # Destructive tree-wide git guard (hive-loop-supervision-2026-06-21): a
 # pathspec-less `git reset --hard` / `git checkout|restore .` (or `:/`) /
 # `git clean -f*` / `git stash` on the SHARED staging checkout discards EVERY
