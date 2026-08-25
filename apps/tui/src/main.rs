@@ -25,6 +25,7 @@ mod framing;
 mod glyph;
 mod hives;
 mod http;
+mod identity;
 mod ipc;
 mod layout;
 mod lexicon;
@@ -52,7 +53,7 @@ mod wake_board;
 mod workbench;
 mod zellij_theme;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -76,6 +77,7 @@ Usage:
 
 Subcommands:
   workbench                  Open the full zellij workbench
+  doctor                     Verify and print the selected operator/store identity
   hud                        Open the HUD pane
   chat                       Open the operator chat dock
   brain-view [SCOPE]         View the live Queen/Overwatch transcript
@@ -116,7 +118,8 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     match subcommand.as_deref() {
-        Some("workbench") => return run_workbench(),
+        Some("workbench") => return run_workbench().await,
+        Some("doctor") => return run_doctor().await,
         // The chat-only DOCK (operator chat | brain) — the desktop-docked native
         // terminal surface (native-terminal-desktop P-013 / D-011). Materialises
         // its own 2-pane layout and hands off to zellij.
@@ -161,7 +164,7 @@ async fn main() -> Result<()> {
         // status board — a pinned data board, the network-pane convention.
         Some("dock-driver") | Some("wake-pane") | Some("prompt-pane") | Some("mail-pane")
         | Some("work-pane") | Some("network-pane") | Some("hive-pane") | Some("plans-pane") => {}
-        None if std::env::var_os("ZELLIJ").is_none() => return run_workbench(),
+        None if std::env::var_os("ZELLIJ").is_none() => return run_workbench().await,
         _ => {}
     }
     // Pinned single-tab dock pane: render JUST that tab's body (no tab strip /
@@ -318,9 +321,47 @@ async fn main() -> Result<()> {
 /// sessions, EI-186) are reaped and a fresh session is created. zellij
 /// returning — exit OR detach — still kills the session, so no detached server
 /// (whose dead-pane PTYs busy-spin) is left behind.
-fn run_workbench() -> Result<()> {
+async fn selected_backend_identity() -> Result<(OperatorClient, client::BackendIdentity)> {
+    let client = OperatorClient::from_discovery()
+        .await
+        .context("resolve canonical PUI operator endpoint")?;
+    let identity = client
+        .backend_identity()
+        .await
+        .context("probe canonical PUI operator/store identity")?;
+    Ok((client, identity))
+}
+
+async fn run_doctor() -> Result<()> {
+    let (_client, identity) = selected_backend_identity().await?;
+    println!("PUI operator identity: OK");
+    println!("endpoint:       {}", identity.endpoint);
+    println!("selection:      {}", identity.selection_source);
+    println!("transport:      {}", identity.transport);
+    println!("workspace:      {}", identity.workspace_id);
+    println!(
+        "store:          {} ({}, {})",
+        identity.store.id, identity.store.target, identity.store.source
+    );
+    println!(
+        "build:          v{} ({})",
+        identity.build.version,
+        identity.build.sha.as_deref().unwrap_or("sha unavailable")
+    );
+    println!(
+        "agent chat:     {} via {}",
+        identity.agent_chat.scope, identity.agent_chat.route
+    );
+    Ok(())
+}
+
+async fn run_workbench() -> Result<()> {
     let session = layout::session_name("wb");
-    let argv = if reap::live_session_exists(&session) {
+    let (_client, backend) = selected_backend_identity().await?;
+    let live = reap::live_session_exists(&session);
+    identity::bind(&session, &backend, live)?;
+    identity::inherit(&backend);
+    let argv = if live {
         layout::attach_argv(&session)
     } else {
         reap::reap_stale(&session);
@@ -330,6 +371,7 @@ fn run_workbench() -> Result<()> {
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;
     reap::kill_and_delete(&session);
+    identity::clear(&session);
     std::process::exit(status.code().unwrap_or(0));
 }
 
@@ -351,7 +393,11 @@ async fn run_chat_dock() -> Result<()> {
     // Legacy pid-keyed `pui-dock-*` sessions (EI-186 scheme) are still reaped
     // on the create path, and zellij returning kills our own session.
     let session = layout::session_name("dock");
-    let argv = if reap::live_session_exists(&session) {
+    let (client, backend) = selected_backend_identity().await?;
+    let live = reap::live_session_exists(&session);
+    identity::bind(&session, &backend, live)?;
+    identity::inherit(&backend);
+    let argv = if live {
         layout::attach_argv(&session)
     } else {
         let env = std::env::var("PAPERCUSP_BRAIN_CMD").ok();
@@ -359,11 +405,8 @@ async fn run_chat_dock() -> Result<()> {
         // Resolve the active Hive lexicon (pane DISPLAY names) from the
         // operator; unreachable → classic lexicon. (The hive-agent-tabs flag
         // is RETIRED — the live-TUI dock shape is the only shape.)
-        let lex = match OperatorClient::from_discovery().await {
-            Ok(c) => match c.lexicon_active_pack().await {
-                Ok(pack) => lexicon::Lexicon::from_payload(&pack),
-                Err(_) => lexicon::Lexicon::default(),
-            },
+        let lex = match client.lexicon_active_pack().await {
+            Ok(pack) => lexicon::Lexicon::from_payload(&pack),
             Err(_) => lexicon::Lexicon::default(),
         };
         let path = layout::materialize_chat_dock(&brain_argv, &lex)?;
@@ -373,6 +416,7 @@ async fn run_chat_dock() -> Result<()> {
     let (prog, rest) = argv.split_first().expect("launch argv is never empty");
     let status = std::process::Command::new(prog).args(rest).status()?;
     reap::kill_and_delete(&session);
+    identity::clear(&session);
     std::process::exit(status.code().unwrap_or(0));
 }
 
@@ -388,6 +432,10 @@ async fn run<B: Backend>(
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::unbounded_channel::<Event>();
     let mut app = App::new();
+    // Resolve the same canonical record `pui doctor` prints. This is an
+    // independent process inside zellij, but both endpoint variables were
+    // normalized/inherited by the session launcher above.
+    tokio::spawn(backend_identity_fetch(tx.clone()));
     // Attention pops (transient toast + OS desktop notification) are MUTED by
     // default (owner ask 2026-06-14); `PUI_NOTIFY=1` (or true/on/yes) re-enables
     // them. The Inbox badge + `N` history overlay stay live regardless.
@@ -1386,6 +1434,14 @@ async fn run<B: Backend>(
 /// `Event::TestingFiles` (stale-guarded in the reducer by domain id). On error
 /// an empty file list still ships so the loading state resolves; the error
 /// itself lands in the status bar.
+async fn backend_identity_fetch(tx: UnboundedSender<Event>) {
+    let result = selected_backend_identity()
+        .await
+        .map(|(_, identity)| identity)
+        .map_err(|error| format!("operator identity: {error:#}"));
+    let _ = tx.send(Event::BackendIdentity(result));
+}
+
 async fn fetch_testing_files(harness: String, domain_id: String, tx: UnboundedSender<Event>) {
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
@@ -2911,10 +2967,7 @@ async fn join_hive(slug: String, links: Vec<String>, tx: UnboundedSender<Event>)
     }
     let _ = tx.send(Event::Notify(models::Notif {
         level: "info".to_string(),
-        message: format!(
-            "pot {slug}: joined {ok}/{} member harness(es)",
-            links.len()
-        ),
+        message: format!("pot {slug}: joined {ok}/{} member harness(es)", links.len()),
         harness: None,
         ts: None,
     }));

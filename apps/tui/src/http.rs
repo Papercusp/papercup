@@ -168,21 +168,48 @@ pub fn discovered_token() -> Option<String> {
     discover_operator().ok().and_then(|(_, token)| token)
 }
 
+/// Return the discovered bearer only when `operator.json` describes the SAME
+/// canonical endpoint. Borrowing a token from a different operator is a hidden
+/// cross-operator fallback even if the eventual request happens to reject it.
+pub fn discovered_token_for(base: &str) -> Option<String> {
+    let (discovered_base, token) = discover_operator().ok()?;
+    let discovered_base = base_for_selection(&discovered_base).ok()?;
+    let selected_base = base_for_selection(base).ok()?;
+    (discovered_base == selected_base)
+        .then_some(token)
+        .flatten()
+}
+
 /// Map an explicit operator selection to a base URL (P-001 refit): the
 /// well-known names `staging` (:3170, runs the staging tree) and `release`
 /// (:3070, runs green `main`), or any full http(s) URL. Anything else is an
 /// error — explicit means explicit, no guessing.
 pub fn base_for_selection(sel: &str) -> Result<String> {
-    Ok(match sel {
+    let sel = sel.trim().trim_end_matches('/');
+    let sel = sel
+        .strip_suffix("/api/mcp")
+        .unwrap_or(sel)
+        .trim_end_matches('/');
+    let raw = match sel {
         "staging" => "http://127.0.0.1:3170".to_string(),
         "release" => "http://127.0.0.1:3070".to_string(),
-        s if s.starts_with("http://") || s.starts_with("https://") => {
-            s.trim_end_matches('/').to_string()
-        }
+        s if s.starts_with("http://") || s.starts_with("https://") => s.to_string(),
         other => anyhow::bail!(
             "PUI_OPERATOR must be `staging`, `release`, or an http(s) URL — got {other:?}"
         ),
-    })
+    };
+    let mut url = reqwest::Url::parse(&raw).context("parse PUI operator URL")?;
+    if !url.username().is_empty() || url.password().is_some() {
+        anyhow::bail!("PUI operator URL must not contain credentials");
+    }
+    if url.host_str() == Some("localhost") {
+        url.set_host(Some("127.0.0.1"))
+            .map_err(|_| anyhow!("normalize localhost operator URL"))?;
+    }
+    url.set_path("");
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url.as_str().trim_end_matches('/').to_string())
 }
 
 #[cfg(test)]
@@ -204,8 +231,13 @@ mod tests {
             base_for_selection("https://op.example:9443/").unwrap(),
             "https://op.example:9443"
         );
+        assert_eq!(
+            base_for_selection("http://localhost:3070/api/mcp").unwrap(),
+            "http://127.0.0.1:3070"
+        );
         assert!(base_for_selection("prod").is_err());
         assert!(base_for_selection("").is_err());
+        assert!(base_for_selection("http://user:secret@localhost:3070").is_err());
     }
     use tokio::net::TcpListener;
 

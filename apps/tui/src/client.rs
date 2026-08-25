@@ -18,12 +18,12 @@ use crate::models::{
     ActivityRecentPayload, ActivityRow, AgentConfigResponse, AttentionItem, AttentionResponse,
     BeeAssignment, BeeMailEntry, BeeMailPayload, BeeMailSide, ConvDetail, ConvListResponse,
     ConvSummary, ConversationLoad, CoordFeedPayload, CoordInboxResponse, CoordMsg, CrewMember,
-    CrewRow, CrewSummary, CrewsResponse, DocsResponse,
-    FeaturesPayload, FlagsResponse, FleetAssignmentsPayload, HarnessFeature, HarnessIssue,
-    HarnessRef, IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, LexiconPackPayload,
-    Notif, OperatorConfig, PlanItemStates, PlanSummary, PlansResponse, ProjectsResponse,
-    RosterEntry, RosterResponse, TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload,
-    TurnsPage, ViewState, ViewStateResponse, WorkItem, WorkItemsPayload,
+    CrewRow, CrewSummary, CrewsResponse, DocsResponse, FeaturesPayload, FlagsResponse,
+    FleetAssignmentsPayload, HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow,
+    LayoutSummary, LayoutsResponse, LexiconPackPayload, Notif, OperatorConfig, PlanItemStates,
+    PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse, TestingDomain,
+    TestingResponse, ToastsResponse, TuiPanesPayload, TurnsPage, ViewState, ViewStateResponse,
+    WorkItem, WorkItemsPayload,
 };
 use crate::shared_cache;
 use crate::sse::{parse_sse_frames, SseFrame};
@@ -38,6 +38,15 @@ use tokio::sync::mpsc;
 enum Transport {
     Ipc(Arc<IpcClient>),
     Http(HttpClient),
+}
+
+impl Transport {
+    fn name(&self) -> &'static str {
+        match self {
+            Transport::Ipc(_) => "ipc",
+            Transport::Http(_) => "http",
+        }
+    }
 }
 
 impl Transport {
@@ -132,8 +141,80 @@ fn ipc_sse_pipe(
 }
 
 /// Thin typed client over the operator API, transport-agnostic (D-009).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoreIdentity {
+    pub id: String,
+    pub target: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildIdentity {
+    pub version: String,
+    pub sha: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatIdentity {
+    pub scope: String,
+    pub route: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerIdentity {
+    schema_version: u32,
+    workspace_id: String,
+    store: StoreIdentity,
+    build: BuildIdentity,
+    agent_chat: AgentChatIdentity,
+}
+
+/// The complete, non-secret rendezvous record shown by `pui doctor`, stamped
+/// onto stable zellij sessions, and rendered in the UI status line.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendIdentity {
+    pub schema_version: u32,
+    pub endpoint: String,
+    pub selection_source: String,
+    pub transport: String,
+    pub workspace_id: String,
+    pub store: StoreIdentity,
+    pub build: BuildIdentity,
+    pub agent_chat: AgentChatIdentity,
+}
+
+impl BackendIdentity {
+    /// Build changes do not change where a stable session stores or reads data.
+    /// Endpoint + workspace + store + agent-chat scope are the rendezvous key.
+    pub fn same_rendezvous(&self, other: &Self) -> bool {
+        self.endpoint == other.endpoint
+            && self.workspace_id == other.workspace_id
+            && self.store.id == other.store.id
+            && self.agent_chat.scope == other.agent_chat.scope
+    }
+
+    pub fn compact(&self) -> String {
+        format!(
+            "op {} · {} · ws {} · store {} · v{} · chat {}",
+            self.endpoint,
+            self.transport,
+            self.workspace_id,
+            self.store.id,
+            self.build.version,
+            self.agent_chat.scope
+        )
+    }
+}
+
 pub struct OperatorClient {
     transport: Transport,
+    endpoint: String,
+    selection_source: String,
 }
 
 impl OperatorClient {
@@ -146,23 +227,21 @@ impl OperatorClient {
     /// operator that launched this pui. Unset/empty → the legacy chain: local
     /// IPC socket, else HTTP+bearer from `~/.papercusp/operator.json`.
     pub async fn from_discovery() -> Result<Self> {
-        if let Some((source, sel)) = explicit_operator_selection() {
-            return Self::from_selection(&sel)
-                .with_context(|| format!("explicit pui endpoint {source}={sel}"));
+        let selection = resolve_operator_selection(
+            std::env::var("PUI_OPERATOR").ok().as_deref(),
+            std::env::var("PAPERCUSP_OPERATOR_URL").ok().as_deref(),
+            std::env::var("PAPERCUSP_HONO_PORT").ok().as_deref(),
+        )?;
+        if selection.explicit {
+            return Self::from_resolved_selection(selection);
         }
         match IpcClient::connect_discovered().await {
             Ok(ipc) => Ok(Self {
                 transport: Transport::Ipc(Arc::new(ipc)),
+                endpoint: selection.base,
+                selection_source: selection.source,
             }),
-            Err(ipc_err) => match HttpClient::from_discovery() {
-                Ok(http) => Ok(Self {
-                    transport: Transport::Http(http),
-                }),
-                Err(http_err) => Err(anyhow!(
-                    "no backend reachable ({}) — ipc: {ipc_err}; http: {http_err}",
-                    discovery_target_description()
-                )),
-            },
+            Err(_ipc_err) => Self::from_resolved_selection(selection),
         }
     }
 
@@ -171,9 +250,19 @@ impl OperatorClient {
     /// harmless on endpoints that don't require it.
     pub fn from_selection(sel: &str) -> Result<Self> {
         let base = crate::http::base_for_selection(sel)?;
-        let token = crate::http::discovered_token();
+        Self::from_resolved_selection(OperatorSelection {
+            base,
+            source: "explicit argument".to_string(),
+            explicit: true,
+        })
+    }
+
+    fn from_resolved_selection(selection: OperatorSelection) -> Result<Self> {
+        let token = crate::http::discovered_token_for(&selection.base);
         Ok(Self {
-            transport: Transport::Http(HttpClient::new(base, token)),
+            transport: Transport::Http(HttpClient::new(selection.base.clone(), token)),
+            endpoint: selection.base,
+            selection_source: selection.source,
         })
     }
 
@@ -181,7 +270,50 @@ impl OperatorClient {
     pub fn new(ipc: Arc<IpcClient>) -> Self {
         Self {
             transport: Transport::Ipc(ipc),
+            endpoint: "ipc:test".to_string(),
+            selection_source: "test".to_string(),
         }
+    }
+
+    /// Probe the selected operator for the server half of the canonical
+    /// identity. The timeout is the fail-fast contract for startup/doctor: a
+    /// dead or mismatched backend becomes an actionable error, not a hung UI.
+    pub async fn backend_identity(&self) -> Result<BackendIdentity> {
+        let value =
+            tokio::time::timeout(Duration::from_secs(3), self.get_json("/api/tui/identity"))
+                .await
+                .map_err(|_| {
+                    anyhow!(
+                        "operator identity probe timed out after 3s ({})",
+                        self.endpoint
+                    )
+                })??;
+        let server: ServerIdentity =
+            serde_json::from_value(value).context("decode /api/tui/identity")?;
+        if server.schema_version != 1 {
+            anyhow::bail!(
+                "unsupported operator identity schema {}",
+                server.schema_version
+            );
+        }
+        let expected_scope = format!("workspace:{}", server.workspace_id);
+        if server.agent_chat.scope != expected_scope {
+            anyhow::bail!(
+                "operator identity is internally inconsistent: workspace {} but agent-chat scope {}",
+                server.workspace_id,
+                server.agent_chat.scope
+            );
+        }
+        Ok(BackendIdentity {
+            schema_version: server.schema_version,
+            endpoint: self.endpoint.clone(),
+            selection_source: self.selection_source.clone(),
+            transport: self.transport.name().to_string(),
+            workspace_id: server.workspace_id,
+            store: server.store,
+            build: server.build,
+            agent_chat: server.agent_chat,
+        })
     }
 
     /// Subscribe to an SSE route, yielding parsed frames (transport-agnostic).
@@ -504,7 +636,9 @@ impl OperatorClient {
     /// picker still renders Auto (and the disabled default row), which is the
     /// honest degradation — those two do not depend on the pool.
     pub async fn accounts_status(&self) -> Result<Vec<crate::session_config::AccountRow>> {
-        let env = self.run_tool("accounts:status", serde_json::json!({})).await?;
+        let env = self
+            .run_tool("accounts:status", serde_json::json!({}))
+            .await?;
         let inner = run_tool_inner_json(&env)?;
         let Some(rows) = inner.get("accounts") else {
             return Ok(Vec::new());
@@ -568,10 +702,9 @@ impl OperatorClient {
         // SSE-invalidate push and each independently re-fetch within
         // milliseconds of each other. A short shared-disk cache (`shared_cache`)
         // collapses that burst into one real call + N-1 free local reads.
-        if let Some(cached) = shared_cache::read_fresh(
-            Self::PLANS_LIST_CACHE_KEY,
-            Self::PLANS_LIST_CACHE_FRESH_FOR,
-        ) {
+        if let Some(cached) =
+            shared_cache::read_fresh(Self::PLANS_LIST_CACHE_KEY, Self::PLANS_LIST_CACHE_FRESH_FOR)
+        {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&cached) {
                 return Ok(v);
             }
@@ -1002,7 +1135,10 @@ impl OperatorClient {
             "note": note,
         });
         let v = self.post_json("/api/admin/inbox/triage", payload).await?;
-        let first = v.get("results").and_then(|r| r.as_array()).and_then(|a| a.first());
+        let first = v
+            .get("results")
+            .and_then(|r| r.as_array())
+            .and_then(|a| a.first());
         let item_ok = first.and_then(|it| it.get("ok")).and_then(|b| b.as_bool());
         if v.get("ok").and_then(|b| b.as_bool()) == Some(false) || item_ok == Some(false) {
             let err = first
@@ -1123,7 +1259,10 @@ impl OperatorClient {
         //
         // A failure degrades to an EMPTY menu, never to an invented tier list:
         // the picker still offers its inherit row, which is the honest default.
-        let tiers = match self.run_tool("config:tiers-get", serde_json::json!({})).await {
+        let tiers = match self
+            .run_tool("config:tiers-get", serde_json::json!({}))
+            .await
+        {
             Ok(env) => run_tool_inner_json(&env)
                 .ok()
                 .and_then(|inner| inner.get("tiers").cloned())
@@ -1234,9 +1373,7 @@ impl OperatorClient {
     /// and stay marked on each row (pui-hives-tab-2026-06-07).
     pub async fn federated_hives(&self) -> Result<Vec<crate::models::PresenceRow>> {
         let (path, body) = federated_hives_request();
-        let env = self
-            .post_json(path, body)
-            .await?;
+        let env = self.post_json(path, body).await?;
         let text = env
             .get("content")
             .and_then(|c| c.get(0))
@@ -1985,56 +2122,73 @@ impl OperatorClient {
     }
 }
 
-/// Read the launcher's explicit endpoint handoff. Keep this precedence aligned
-/// with the operator-side spawn helpers: `PUI_OPERATOR` is the pui-specific
-/// override, while `PAPERCUSP_OPERATOR_URL` is the shared child callback seam.
-/// The latter may carry the historical `/api/mcp` suffix; pui needs the bare
-/// origin accepted by `base_for_selection`.
-fn explicit_operator_selection() -> Option<(&'static str, String)> {
-    for (name, raw) in [
-        ("PUI_OPERATOR", std::env::var("PUI_OPERATOR").ok()),
-        ("PAPERCUSP_OPERATOR_URL", std::env::var("PAPERCUSP_OPERATOR_URL").ok()),
-    ] {
-        let Some(raw) = raw else { continue };
-        let value = raw.trim().to_string();
-        if value.is_empty() {
-            continue;
-        }
-        let value = value
-            .strip_suffix("/api/mcp")
-            .unwrap_or(&value)
-            .trim_end_matches('/')
-            .to_string();
-        if !value.is_empty() {
-            return Some((name, value));
-        }
-    }
-    None
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OperatorSelection {
+    base: String,
+    source: String,
+    explicit: bool,
 }
 
-/// A bounded, non-secret description included in startup failures. It tells
-/// operators whether the pui was explicitly pinned or was using ambient IPC
-/// discovery, without printing bearer tokens or database URLs.
-fn discovery_target_description() -> String {
-    if let Ok(value) = std::env::var("PUI_OPERATOR") {
-        let value = value.trim();
-        if !value.is_empty() {
-            return format!("PUI_OPERATOR={value}");
+/// Resolve exactly one canonical endpoint. Two explicit selectors are allowed
+/// only when they normalize to the same origin; neither may silently outrank
+/// the other. With no explicit selector the per-port IPC record and HTTP
+/// fallback are both bound to the same `PAPERCUSP_HONO_PORT` origin.
+fn resolve_operator_selection(
+    pui_operator: Option<&str>,
+    papercusp_operator_url: Option<&str>,
+    hono_port: Option<&str>,
+) -> Result<OperatorSelection> {
+    let pui = pui_operator
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(crate::http::base_for_selection)
+        .transpose()?;
+    let shared = papercusp_operator_url
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(crate::http::base_for_selection)
+        .transpose()?;
+    if let (Some(a), Some(b)) = (&pui, &shared) {
+        if a != b {
+            anyhow::bail!(
+                "conflicting operator selectors: PUI_OPERATOR resolves to {a}, but PAPERCUSP_OPERATOR_URL resolves to {b}; set both to the same operator or unset one"
+            );
         }
     }
-    if let Ok(value) = std::env::var("PAPERCUSP_OPERATOR_URL") {
-        let value = value.trim();
-        if !value.is_empty() {
-            return format!("PAPERCUSP_OPERATOR_URL={value}");
-        }
+    if let Some(base) = pui.or(shared) {
+        let source = match (
+            pui_operator.filter(|v| !v.trim().is_empty()),
+            papercusp_operator_url.filter(|v| !v.trim().is_empty()),
+        ) {
+            (Some(_), Some(_)) => "PUI_OPERATOR + PAPERCUSP_OPERATOR_URL",
+            (Some(_), None) => "PUI_OPERATOR",
+            _ => "PAPERCUSP_OPERATOR_URL",
+        };
+        return Ok(OperatorSelection {
+            base,
+            source: source.to_string(),
+            explicit: true,
+        });
     }
-    if let Ok(port) = std::env::var("PAPERCUSP_HONO_PORT") {
-        let port = port.trim();
-        if !port.is_empty() {
-            return format!("ambient endpoint-ipc (PAPERCUSP_HONO_PORT={port})");
-        }
+    let port = hono_port
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("3070")
+        .parse::<u16>()
+        .context("PAPERCUSP_HONO_PORT must be a valid TCP port")?;
+    if port == 0 {
+        anyhow::bail!("PAPERCUSP_HONO_PORT must be greater than zero");
     }
-    "ambient endpoint-ipc discovery".to_string()
+    Ok(OperatorSelection {
+        base: format!("http://127.0.0.1:{port}"),
+        source: if hono_port.is_some() {
+            "PAPERCUSP_HONO_PORT"
+        } else {
+            "release default"
+        }
+        .to_string(),
+        explicit: false,
+    })
 }
 
 /// Minimal percent-encoding for a docs relative path.
@@ -2200,6 +2354,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn canonical_selection_rejects_conflicting_explicit_endpoints() {
+        let err = resolve_operator_selection(
+            Some("release"),
+            Some("http://localhost:3170/api/mcp"),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("conflicting operator selectors"), "{err}");
+        assert!(err.contains("set both to the same operator"), "{err}");
+    }
+
+    #[test]
+    fn canonical_selection_accepts_equivalent_names_and_urls() {
+        let selected = resolve_operator_selection(
+            Some("release"),
+            Some("http://localhost:3070/api/mcp"),
+            Some("3170"),
+        )
+        .unwrap();
+        assert_eq!(selected.base, "http://127.0.0.1:3070");
+        assert_eq!(selected.source, "PUI_OPERATOR + PAPERCUSP_OPERATOR_URL");
+        assert!(selected.explicit);
+    }
+
+    #[test]
+    fn ambient_selection_binds_ipc_and_http_to_one_port() {
+        let selected = resolve_operator_selection(None, None, Some("3270")).unwrap();
+        assert_eq!(selected.base, "http://127.0.0.1:3270");
+        assert_eq!(selected.source, "PAPERCUSP_HONO_PORT");
+        assert!(!selected.explicit);
+        assert!(resolve_operator_selection(None, None, Some("0")).is_err());
+        assert!(resolve_operator_selection(None, None, Some("not-a-port")).is_err());
+    }
+
+    fn identity(endpoint: &str, workspace: &str, store: &str) -> BackendIdentity {
+        BackendIdentity {
+            schema_version: 1,
+            endpoint: endpoint.into(),
+            selection_source: "test".into(),
+            transport: "http".into(),
+            workspace_id: workspace.into(),
+            store: StoreIdentity {
+                id: store.into(),
+                target: "postgresql://127.0.0.1:5432/papercusp".into(),
+                source: "test".into(),
+            },
+            build: BuildIdentity {
+                version: "1.0.0".into(),
+                sha: Some("abc".into()),
+            },
+            agent_chat: AgentChatIdentity {
+                scope: format!("workspace:{workspace}"),
+                route: "/api/agent-chats".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn rendezvous_ignores_build_but_refuses_endpoint_workspace_or_store_drift() {
+        let base = identity("http://127.0.0.1:3070", "ws", "pg-a");
+        let mut rebuild = base.clone();
+        rebuild.build.version = "2.0.0".into();
+        rebuild.build.sha = Some("def".into());
+        assert!(base.same_rendezvous(&rebuild));
+        assert!(!base.same_rendezvous(&identity("http://127.0.0.1:3170", "ws", "pg-a")));
+        assert!(!base.same_rendezvous(&identity("http://127.0.0.1:3070", "other-ws", "pg-a")));
+        assert!(!base.same_rendezvous(&identity("http://127.0.0.1:3070", "ws", "pg-b")));
+    }
+
+    #[test]
     fn urlencode_keeps_path_chars_escapes_specials() {
         assert_eq!(
             urlencode("decisions/routine-durability.md"),
@@ -2230,7 +2455,9 @@ mod tests {
         .to_string();
         let rows = parse_federated_hives(&text).expect("parses unified roster");
         assert_eq!(
-            rows.iter().map(|row| row.owner_id.as_str()).collect::<Vec<_>>(),
+            rows.iter()
+                .map(|row| row.owner_id.as_str())
+                .collect::<Vec<_>>(),
             ["fed:1@box-a", "fed:2@box-b"]
         );
         assert!(rows[1].stale);
@@ -2279,7 +2506,10 @@ mod tests {
         let sid_a = a["callerSid"].as_str().expect("callerSid must be a string");
         let sid_b = b["callerSid"].as_str().expect("callerSid must be a string");
         assert!(sid_a.starts_with("pui-"), "got {sid_a:?}");
-        assert_eq!(sid_a, sid_b, "callerSid must be stable across calls from one process");
+        assert_eq!(
+            sid_a, sid_b,
+            "callerSid must be stable across calls from one process"
+        );
         assert_eq!(sid_a, format!("pui-{}", std::process::id()));
     }
 

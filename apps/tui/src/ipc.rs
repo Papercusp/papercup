@@ -364,32 +364,19 @@ fn discover_socket() -> Result<PathBuf> {
     discover_socket_in(&home.join(".papercusp"), port)
 }
 
-/// EI-190 / EI-7760: the singleton `endpoint-ipc.json` is LAST-WRITER-WINS
-/// across EVERY operator on the box — ephemeral hosts (gate runs, scratch
-/// ports) overwrite it and exit, leaving it pointing at a dead pid, which
-/// strands every panel on "no backend reachable". Prefer the per-port file
-/// for the operator this pui targets; use the singleton only as a fallback,
-/// and skip any discovery whose writer pid is dead (dead writer = dead
-/// socket).
+/// EI-190 / EI-7760 / WI-41592: the singleton `endpoint-ipc.json` is
+/// LAST-WRITER-WINS across EVERY operator on the box. It is therefore not a
+/// valid fallback for an already-selected port: doing so can connect this PUI
+/// to a different operator/store. Resolve the per-port record only and fail
+/// loudly when it is absent or stale; the caller may use HTTP to the SAME
+/// selected origin, never another discovery source.
 fn discover_socket_in(dir: &Path, port: u32) -> Result<PathBuf> {
     let per_port = dir.join(format!("endpoint-ipc.{port}.json"));
-    let singleton = dir.join("endpoint-ipc.json");
-    let mut last_err: Option<anyhow::Error> = None;
-    for disc in [&per_port, &singleton] {
-        match read_discovery(disc) {
-            Ok((path, pid)) => {
-                if writer_alive(pid) {
-                    return Ok(path);
-                }
-                last_err = Some(anyhow::anyhow!(
-                    "discovery {} points at dead pid {pid}",
-                    disc.display()
-                ));
-            }
-            Err(e) => last_err = Some(e),
-        }
+    let (path, pid) = read_discovery(&per_port)?;
+    if !writer_alive(pid) {
+        anyhow::bail!("discovery {} points at dead pid {pid}", per_port.display());
     }
-    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no endpoint-ipc discovery file")))
+    Ok(path)
 }
 
 fn read_discovery(disc: &Path) -> Result<(PathBuf, i64)> {
@@ -426,7 +413,7 @@ mod tests {
     use tokio::net::UnixListener;
 
     #[test]
-    fn discover_socket_prefers_per_port_and_skips_dead_writers() {
+    fn discover_socket_is_strictly_per_port_and_skips_dead_writers() {
         let dir = tempfile::tempdir().unwrap();
         let me = std::process::id() as i64;
         // pid_max caps well below this — /proc/<dead> never exists.
@@ -448,7 +435,8 @@ mod tests {
             discover_socket_in(dir.path(), 3070).unwrap(),
             PathBuf::from("/tmp/pp.sock")
         );
-        // Dead per-port writer → fall back to a live singleton.
+        // A live singleton must NEVER rescue a dead per-port writer: it may
+        // belong to a different operator/store.
         std::fs::write(
             &pp,
             format!(r#"{{"socketPath":"/tmp/pp.sock","pid":{dead}}}"#),
@@ -459,10 +447,7 @@ mod tests {
             format!(r#"{{"socketPath":"/tmp/single.sock","pid":{me}}}"#),
         )
         .unwrap();
-        assert_eq!(
-            discover_socket_in(dir.path(), 3070).unwrap(),
-            PathBuf::from("/tmp/single.sock")
-        );
+        assert!(discover_socket_in(dir.path(), 3070).is_err());
         // Both writers dead → error, not a corpse dial.
         std::fs::write(
             &single,
@@ -470,13 +455,10 @@ mod tests {
         )
         .unwrap();
         assert!(discover_socket_in(dir.path(), 3070).is_err());
-        // Legacy pid-less singleton (no per-port file) stays usable.
+        // A legacy singleton without a per-port record is also refused.
         std::fs::remove_file(&pp).unwrap();
         std::fs::write(&single, r#"{"socketPath":"/tmp/legacy.sock"}"#).unwrap();
-        assert_eq!(
-            discover_socket_in(dir.path(), 3070).unwrap(),
-            PathBuf::from("/tmp/legacy.sock")
-        );
+        assert!(discover_socket_in(dir.path(), 3070).is_err());
     }
 
     fn event_bin_frame(id: u64, name: &str, bin: &[u8]) -> Vec<u8> {

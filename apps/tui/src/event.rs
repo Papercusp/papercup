@@ -212,6 +212,9 @@ pub enum Event {
     ToastHistory(Vec<Notif>),
     /// A backend fetch failed (shown in the status bar).
     Error(String),
+    /// Canonical endpoint/workspace/store/build/chat identity. Unlike ordinary
+    /// polling errors, a failed identity probe remains visible until fixed.
+    BackendIdentity(Result<crate::client::BackendIdentity, String>),
     /// The persisted workbench view-state loaded on startup (P12 / D-002) —
     /// restore the active tab/selections/scroll where the user left off.
     ViewStateLoaded(ViewState),

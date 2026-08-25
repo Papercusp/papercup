@@ -3,8 +3,7 @@
 
 use crate::app::{App, HarnessFocus, PluginsFocus, Tab, TestingFocus};
 use crate::models::{
-    contribution_count, contribution_names, tier_glyph, tier_label, Notif, ToolOutcome,
-    INBOX_TIERS,
+    contribution_count, contribution_names, tier_glyph, tier_label, Notif, ToolOutcome, INBOX_TIERS,
 };
 use crate::theme::Theme;
 use ratatui::{
@@ -1782,9 +1781,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                     format!("  {} awaiting approval", crate::glyph::status::NEEDS_HUMAN),
                     Theme::warn(),
                 ),
-                ToolOutcome::Pending => {
-                    (format!("  {}", crate::glyph::status::WIP), Theme::dim())
-                }
+                ToolOutcome::Pending => (format!("  {}", crate::glyph::status::WIP), Theme::dim()),
                 ToolOutcome::Ok => (
                     format!("  {}", crate::glyph::status::DONE),
                     Theme::success(),
@@ -2717,16 +2714,21 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let (text, style) = match &app.last_error {
+    let identity_error = app.backend_identity_error.as_ref();
+    let (text, style) = match app.last_error.as_ref().or(identity_error) {
         Some(e) => (
             format!("{} {e}", crate::glyph::severity::WARN),
             Theme::warn(),
         ),
         // The POTS scope indicator (D-003) leads the status line.
-        None => (
-            format!("{} · {}", app.scope_label(), app.status),
-            Theme::dim(),
-        ),
+        None => {
+            let mut text = format!("{} · {}", app.scope_label(), app.status);
+            if let Some(identity) = app.backend_identity_status() {
+                text.push_str(" · ");
+                text.push_str(&identity);
+            }
+            (text, Theme::dim())
+        }
     };
     f.render_widget(
         Paragraph::new(Line::from(text)).style(Theme::status_text(style)),
@@ -2960,9 +2962,7 @@ fn draw_session_picker(f: &mut Frame, picker: &crate::session_config::SessionPic
         })
         .collect();
     let mut state = ListState::default();
-    state.select(Some(
-        picker.sel.min(picker.options.len().saturating_sub(1)),
-    ));
+    state.select(Some(picker.sel.min(picker.options.len().saturating_sub(1))));
     let list = List::new(items)
         .style(Theme::popup())
         .block(Theme::popup_block(Line::from(picker.title())))
@@ -3485,7 +3485,10 @@ pub(crate) fn diff_lines(d: &crate::diff::ToolDiff, width: usize) -> Vec<Line<'s
         Some(p) => format!("    ± {p}  +{} −{}", d.added, d.removed),
         None => format!("    ± +{} −{}", d.added, d.removed),
     };
-    out.push(Line::from(Span::styled(trunc(&head, width + 4), Theme::dim())));
+    out.push(Line::from(Span::styled(
+        trunc(&head, width + 4),
+        Theme::dim(),
+    )));
 
     for line in &d.lines {
         let (text, style) = match line {
@@ -4464,6 +4467,40 @@ mod tests {
         app.last_error = Some("backend down".into());
         let text = render(&app, 60, 8);
         assert!(text.contains("backend down"));
+    }
+
+    #[test]
+    fn canonical_backend_identity_and_identity_failures_are_visible() {
+        use crate::client::{AgentChatIdentity, BackendIdentity, BuildIdentity, StoreIdentity};
+        let mut app = App::new();
+        app.backend_identity = Some(BackendIdentity {
+            schema_version: 1,
+            endpoint: "http://127.0.0.1:3170".into(),
+            selection_source: "PUI_OPERATOR".into(),
+            transport: "http".into(),
+            workspace_id: "papercusp-workspace".into(),
+            store: StoreIdentity {
+                id: "pg-123456789abc".into(),
+                target: "postgresql://127.0.0.1:5432/papercusp".into(),
+                source: "env".into(),
+            },
+            build: BuildIdentity {
+                version: "0.1.0".into(),
+                sha: Some("abc".into()),
+            },
+            agent_chat: AgentChatIdentity {
+                scope: "workspace:papercusp-workspace".into(),
+                route: "/api/agent-chats".into(),
+            },
+        });
+        let text = render(&app, 260, 12);
+        assert!(text.contains("http://127.0.0.1:3170"), "{text}");
+        assert!(text.contains("pg-123456789abc"), "{text}");
+        assert!(text.contains("workspace:papercusp-workspace"), "{text}");
+
+        app.backend_identity_error = Some("operator identity: selector mismatch".into());
+        let text = render(&app, 100, 12);
+        assert!(text.contains("selector mismatch"), "{text}");
     }
 
     #[test]

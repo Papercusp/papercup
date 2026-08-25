@@ -118,7 +118,10 @@ pub enum Action {
     /// (P-005 slice 2). The run loop POSTs it via `resolve_agent_chat_approval`;
     /// until this lands the loop is blocked waiting for a decision, so the turn
     /// shows no error and no timeout — it simply never finishes.
-    ResolveAgentChatApproval { call_id: String, approved: bool },
+    ResolveAgentChatApproval {
+        call_id: String,
+        approved: bool,
+    },
     /// Answer the focused inline card (sentinel-tui-shared-backend-and-cards
     /// Phase 2a) — the run loop POSTs `/card-response`. The reducer has already
     /// optimistically dismissed the card from `card_state`. `payload` is the
@@ -1341,6 +1344,10 @@ pub struct App {
     /// Append-only for v1 (pruning a closed pane is a follow-on).
     pub launched: Vec<CrewMember>,
     pub last_error: Option<String>,
+    /// Persistent backend rendezvous diagnostic (`pui doctor` renders the same
+    /// record). Identity errors are not cleared by an unrelated successful poll.
+    pub backend_identity: Option<crate::client::BackendIdentity>,
+    pub backend_identity_error: Option<String>,
     /// Help overlay visible.
     pub show_help: bool,
     /// Command palette open + its current input buffer.
@@ -1718,6 +1725,8 @@ impl App {
             operator_config: OperatorConfig::default(),
             launched: Vec::new(),
             last_error: None,
+            backend_identity: None,
+            backend_identity_error: None,
             show_help: false,
             palette_open: false,
             palette_input: String::new(),
@@ -2459,6 +2468,12 @@ impl App {
         } else {
             format!("⊙ {}", self.harness)
         }
+    }
+
+    pub fn backend_identity_status(&self) -> Option<String> {
+        self.backend_identity
+            .as_ref()
+            .map(|identity| identity.compact())
     }
 
     /// Re-clamp the selections that index scope-FILTERED lists — called when
@@ -4836,6 +4851,19 @@ impl App {
                 self.last_error = Some(e);
                 Action::Render
             }
+            Event::BackendIdentity(result) => {
+                match result {
+                    Ok(identity) => {
+                        self.backend_identity = Some(identity);
+                        self.backend_identity_error = None;
+                    }
+                    Err(error) => {
+                        self.backend_identity = None;
+                        self.backend_identity_error = Some(error);
+                    }
+                }
+                Action::Render
+            }
             Event::ViewStateLoaded(vs) => {
                 let restored_theme = self.apply_view_state(&vs);
                 // Restore may land us on the Plans tab — publish so the poller fetches
@@ -7085,9 +7113,7 @@ fn claude_transcript_on_disk(r: &crate::models::RosterEntry) -> bool {
     }
     let file = format!("{sid}.jsonl");
     match std::fs::read_dir(std::path::Path::new(dir).join("projects")) {
-        Ok(entries) => entries
-            .flatten()
-            .any(|e| e.path().join(&file).is_file()),
+        Ok(entries) => entries.flatten().any(|e| e.path().join(&file).is_file()),
         Err(_) => false, // no projects dir yet → nothing to resume yet
     }
 }
@@ -7128,7 +7154,10 @@ mod tests {
         std::fs::remove_file(proj.join("uuid-t.jsonl")).unwrap();
         assert!(!claude_transcript_on_disk(&e));
         // Legacy payload (no configDir) → nothing to check, never gated.
-        assert!(claude_transcript_on_disk(&entry(None, Some("uuid-t".into()))));
+        assert!(claude_transcript_on_disk(&entry(
+            None,
+            Some("uuid-t".into())
+        )));
         // Non-claude / no-handle entries → never gated.
         assert!(claude_transcript_on_disk(&RosterEntry {
             owner_id: "s-plain".into(),
@@ -11039,7 +11068,9 @@ mod tests {
         assert_eq!(a.chat_messages[1].tools.len(), 1);
 
         // A call needing no approval never parks.
-        a.update(Event::ChatToolCall(ChatToolCall::plain("plans:list".into())));
+        a.update(Event::ChatToolCall(ChatToolCall::plain(
+            "plans:list".into(),
+        )));
         assert_eq!(a.pending_approvals.len(), 1);
 
         // Ctrl+Y answers the oldest pending call, carrying its real id.
@@ -11172,7 +11203,10 @@ mod tests {
 
         send_line(&mut a, "first");
         send_line(&mut a, "second");
-        assert_eq!(a.chat_history, vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(
+            a.chat_history,
+            vec!["first".to_string(), "second".to_string()]
+        );
         assert!(a.chat_input.is_empty());
 
         // Half-typed work is stashed on the FIRST Up, not destroyed.
@@ -11203,7 +11237,10 @@ mod tests {
         a.update(key('!', KeyModifiers::NONE));
         assert_eq!(a.chat_input, "second!");
         a.update(arrow(KeyCode::Down));
-        assert_eq!(a.chat_input, "second!", "Down must not clobber an edited line");
+        assert_eq!(
+            a.chat_input, "second!",
+            "Down must not clobber an edited line"
+        );
 
         // THE POINT OF BRACKETED PASTE: multi-line text lands as ONE edit with
         // its newlines intact, and does NOT submit. Before this, each newline
@@ -11216,7 +11253,10 @@ mod tests {
 
         // Re-sending the same line collapses instead of padding the ring.
         send_line(&mut a, "second");
-        assert_eq!(a.chat_history, vec!["first".to_string(), "second".to_string()]);
+        assert_eq!(
+            a.chat_history,
+            vec!["first".to_string(), "second".to_string()]
+        );
     }
 
     #[test]

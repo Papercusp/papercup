@@ -22,11 +22,15 @@
  *   DELETE /api/tui/crews/:name?owner=       delete one
  */
 import { defineTool } from '@papercusp/agent-mcp';
+import { createHash } from 'node:crypto';
 import intentsStream from './intents-stream';
 import intentResult from './intent-result';
 import planItemStates from './plan-item-states';
 import planItemConvert from './plan-item-convert';
 import planItemRelease from './plan-item-release';
+import { getBuildInfo } from '../../../build-info';
+import { getHarnessAdminUrlWithSource } from '../../../embedded-pg-discovery';
+import { activeWorkspaceId } from '../../../workspace-registry';
 import {
   getViewState,
   putViewState,
@@ -49,6 +53,51 @@ function ownerFromQuery(req: Request): string | null {
 function ownerRequired(): Response {
   return Response.json({ error: 'owner_required: pass ?owner=<pui owner id>' }, { status: 400 });
 }
+
+/**
+ * A non-secret, stable description of the Postgres store this operator uses.
+ * Credentials and query parameters never leave the process; the short id is
+ * derived only from protocol/host/port/database + the resolver source.
+ */
+function operatorStoreIdentity(): { id: string; target: string; source: string } {
+  const resolved = getHarnessAdminUrlWithSource();
+  let target: string;
+  try {
+    const url = new URL(resolved.url);
+    const port = url.port || (url.protocol === 'postgresql:' || url.protocol === 'postgres:' ? '5432' : 'default');
+    const database = url.pathname.replace(/^\/+/, '') || 'default';
+    target = `${url.protocol}//${url.hostname}:${port}/${database}`;
+  } catch {
+    // Keep the route diagnostic even if an experimental resolver returns a
+    // non-URL DSN. Never echo that raw value: it may contain credentials.
+    target = `unparseable (${resolved.source})`;
+  }
+  // Resolver provenance is diagnostic, not store identity: the same database
+  // may legitimately move from discovery-file to env resolution across boots.
+  const id = createHash('sha256').update(target).digest('hex').slice(0, 12);
+  return { id: `pg-${id}`, target, source: resolved.source };
+}
+
+// ─── canonical operator/store identity ────────────────────────────────────
+const identityGet = defineTool({
+  method: 'GET',
+  path: '/tui/identity',
+  auth: 'public',
+  handler() {
+    const workspaceId = activeWorkspaceId();
+    const build = getBuildInfo();
+    return Response.json({
+      schemaVersion: 1,
+      workspaceId,
+      store: operatorStoreIdentity(),
+      build: { version: build.version, sha: build.sha },
+      agentChat: {
+        scope: `workspace:${workspaceId}`,
+        route: '/api/agent-chats',
+      },
+    });
+  },
+});
 
 // ─── view_state ────────────────────────────────────────────────────────────
 const viewStateGet = defineTool({
@@ -188,6 +237,7 @@ const crewDelete = defineTool({
 });
 
 export default [
+  identityGet,
   viewStateGet,
   viewStatePut,
   layoutsList,

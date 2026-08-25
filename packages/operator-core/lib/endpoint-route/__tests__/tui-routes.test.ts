@@ -48,6 +48,27 @@ const mocks = vi.hoisted(() => ({
   deleteCrew: vi.fn(),
   /** tagged-template SQL stub for intent-result's UPDATE. */
   sql: vi.fn(),
+  activeWorkspaceId: vi.fn(() => 'ws-pui'),
+  getHarnessAdminUrlWithSource: vi.fn(() => ({
+    url: 'postgresql://secret:do-not-leak@127.0.0.1:5544/pui_store?sslmode=disable',
+    source: 'test-env',
+  })),
+  getBuildInfo: vi.fn(() => ({ version: '1.2.3', sha: 'abc123' })),
+}));
+
+vi.mock('../../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../workspace-registry')>()),
+  activeWorkspaceId: mocks.activeWorkspaceId,
+}));
+
+vi.mock('../../embedded-pg-discovery', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../embedded-pg-discovery')>()),
+  getHarnessAdminUrlWithSource: mocks.getHarnessAdminUrlWithSource,
+}));
+
+vi.mock('../../build-info', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../build-info')>()),
+  getBuildInfo: mocks.getBuildInfo,
 }));
 
 vi.mock('../../tui-workbench-store', () => ({
@@ -130,6 +151,30 @@ beforeEach(() => {
   mocks.sql.mockResolvedValue([]);
 });
 afterEach(() => vi.clearAllMocks());
+
+describe('GET /tui/identity', () => {
+  const def = () => routeByPath('GET', '/tui/identity');
+
+  it('returns one non-secret operator/store/build/chat identity', async () => {
+    const res = await def().handler(req('GET', `${BASE}/tui/identity`), ctx());
+    expect(res.status).toBe(200);
+    const body = await jsonOf(res);
+    expect(body).toMatchObject({
+      schemaVersion: 1,
+      workspaceId: 'ws-pui',
+      store: {
+        source: 'test-env',
+        target: 'postgresql://127.0.0.1:5544/pui_store',
+      },
+      build: { version: '1.2.3', sha: 'abc123' },
+      agentChat: { scope: 'workspace:ws-pui', route: '/api/agent-chats' },
+    });
+    expect((body.store as { id: string }).id).toMatch(/^pg-[0-9a-f]{12}$/);
+    expect(JSON.stringify(body)).not.toContain('secret');
+    expect(JSON.stringify(body)).not.toContain('do-not-leak');
+    expect(JSON.stringify(body)).not.toContain('sslmode');
+  });
+});
 
 // ── view_state ─────────────────────────────────────────────────────────────
 describe('PUT /tui/view-state (viewStatePut)', () => {
