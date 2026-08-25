@@ -180,7 +180,7 @@ async function fixture(
           tool: { name: 'cosign', version: '2.5' },
           valid: true,
           predicateType: 'https://slsa.dev/provenance/v1',
-          issuedAt: '2026-08-25T00:00:00.000Z',
+          issuedAt: new Date().toISOString(),
           attestationSha256: ATTESTATION_SHA256,
         },
       ],
@@ -238,7 +238,7 @@ async function uploadFixture(env: Env, value: Fixture): Promise<Response[]> {
   ]);
 }
 
-function finalize(env: Env, bundleSha256: string): Promise<Response> {
+async function finalize(env: Env, bundleSha256: string): Promise<Response> {
   return api.request(
     `/admin/artifacts/workspace-host/sha256/${bundleSha256}/finalize`,
     { method: 'POST', headers: { authorization: 'Bearer github-token' } },
@@ -401,6 +401,13 @@ describe('workspace-host artifact publication', () => {
 
     const markerKey = `${WORKSPACE_HOST_ARTIFACT_PREFIX}/${value.bundleSha256}/.finalized.json`;
     expect(r2.data.has(markerKey)).toBe(true);
+
+    // A marker is not a blanket success forever: an idempotent retry re-proves
+    // the finalized set and fails closed if a sibling object disappeared.
+    await r2.delete(`${WORKSPACE_HOST_ARTIFACT_PREFIX}/${value.bundleSha256}/server.tgz.minisig`);
+    const incompleteRetry = await finalize(env, value.bundleSha256);
+    expect(incompleteRetry.status).toBe(409);
+    expect(await incompleteRetry.json()).toMatchObject({ error: 'finalization_conflict' });
   });
 
   it('fails closed when finalized object metadata no longer matches the marker', async () => {
@@ -409,15 +416,27 @@ describe('workspace-host artifact publication', () => {
     await uploadFixture(env, value);
     expect((await finalize(env, value.bundleSha256)).status).toBe(201);
     const bundleKey = `${WORKSPACE_HOST_ARTIFACT_PREFIX}/${value.bundleSha256}/server.tgz`;
-    r2.customMetadata.get(bundleKey)!.fileSha256 = '0'.repeat(64);
+    const bundleMetadata = r2.customMetadata.get(bundleKey)!;
+    const originalBundleSha256 = bundleMetadata.fileSha256;
+    bundleMetadata.fileSha256 = '0'.repeat(64);
 
-    const response = await api.request(
+    const objectMismatch = await api.request(
+      `/artifacts/workspace-host/sha256/${value.bundleSha256}/server.tgz`,
+      {},
+      env,
+    );
+    expect(objectMismatch.status).toBe(404);
+
+    bundleMetadata.fileSha256 = originalBundleSha256;
+    const markerKey = `${WORKSPACE_HOST_ARTIFACT_PREFIX}/${value.bundleSha256}/.finalized.json`;
+    r2.customMetadata.get(markerKey)!.manifestSha256 = '0'.repeat(64);
+    const markerMismatch = await api.request(
       `/artifacts/workspace-host/sha256/${value.bundleSha256}/server.tgz`,
       {},
       env,
     );
 
-    expect(response.status).toBe(404);
+    expect(markerMismatch.status).toBe(404);
   });
 
   it('refuses a conflicting re-upload at the same bundle namespace', async () => {

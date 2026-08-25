@@ -179,7 +179,17 @@ const SECRET_VALUE = /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\b(?:AKI
 
 function secretMaterialError(value: unknown, path = 'manifest'): string | null {
   if (typeof value === 'string') {
-    return SECRET_VALUE.test(value) ? `${path} contains secret-shaped material` : null;
+    if (SECRET_VALUE.test(value)) return `${path} contains secret-shaped material`;
+    try {
+      const url = new URL(value);
+      if ((url.protocol === 'https:' || url.protocol === 'http:') && (url.username || url.password)) {
+        return `${path} contains URL credentials`;
+      }
+    } catch {
+      // Most manifest strings are not URLs; only successfully parsed HTTP(S)
+      // values participate in the userinfo guard.
+    }
+    return null;
   }
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) {
@@ -242,14 +252,17 @@ function validateTrustReport(
   }
 
   const policy = value.policy;
+  let maxAttestationAgeMs: number | null = null;
   if (
     !isRecord(policy) ||
     policy.maxSecretFindings !== 0 ||
-    typeof policy.denyVulnerabilitiesAtOrAbove !== 'string' ||
+    !['low', 'medium', 'high', 'critical'].includes(String(policy.denyVulnerabilitiesAtOrAbove)) ||
     !Number.isSafeInteger(policy.maxAttestationAgeMs) ||
     Number(policy.maxAttestationAgeMs) <= 0
   ) {
     errors.push('trustReport.policy must be explicit and require zero secret findings');
+  } else {
+    maxAttestationAgeMs = Number(policy.maxAttestationAgeMs);
   }
 
   if (!Array.isArray(value.evidence)) {
@@ -257,6 +270,8 @@ function validateTrustReport(
     return errors;
   }
   const seen = new Set<string>();
+  let sbomSha256: string | null = null;
+  let scannedSbomSha256: string | null = null;
   for (const candidate of value.evidence) {
     if (!isRecord(candidate) || typeof candidate.kind !== 'string') {
       errors.push('every trust evidence entry must be an object with a kind');
@@ -286,10 +301,14 @@ function validateTrustReport(
         Number(candidate.componentCount) < 0
       ) {
         errors.push('sbom evidence is malformed');
+      } else {
+        sbomSha256 = candidate.documentSha256;
       }
     } else if (kind === 'vulnerability-scan') {
       if (!isHexSha256(candidate.sbomSha256) || !Array.isArray(candidate.findings)) {
         errors.push('vulnerability-scan evidence is malformed');
+      } else {
+        scannedSbomSha256 = candidate.sbomSha256;
       }
     } else if (kind === 'secret-scan') {
       if (!Array.isArray(candidate.findings) || candidate.findings.length !== 0) {
@@ -305,6 +324,11 @@ function validateTrustReport(
         !Number.isFinite(Date.parse(candidate.issuedAt))
       ) {
         errors.push('provenance-attestation evidence is malformed or invalid');
+      } else if (maxAttestationAgeMs !== null) {
+        const ageMs = Date.now() - Date.parse(candidate.issuedAt);
+        if (ageMs < 0 || ageMs > maxAttestationAgeMs) {
+          errors.push('provenance-attestation evidence is outside the declared freshness policy');
+        }
       }
     }
   }
@@ -313,6 +337,9 @@ function validateTrustReport(
   }
   if (value.evidence.length !== REQUIRED_TRUST_EVIDENCE.length) {
     errors.push('trustReport.evidence must contain exactly the five required evidence classes');
+  }
+  if (sbomSha256 && scannedSbomSha256 && sbomSha256 !== scannedSbomSha256) {
+    errors.push('vulnerability-scan evidence is bound to a different SBOM');
   }
   return errors;
 }
@@ -453,10 +480,29 @@ async function readFinalizationRecord(env: Env, bundleSha256: string): Promise<F
   const object = await env.ARTIFACTS.get(finalizationKey(bundleSha256));
   if (!object) return null;
   try {
-    return parseFinalizationRecord(JSON.parse(await object.text()), bundleSha256);
+    const record = parseFinalizationRecord(JSON.parse(await object.text()), bundleSha256);
+    const metadata = object.customMetadata ?? {};
+    if (
+      !record ||
+      metadata.namespace !== 'workspace-host-v1' ||
+      metadata.bundleSha256 !== bundleSha256 ||
+      metadata.manifestSha256 !== record.manifestSha256 ||
+      metadata.finalizedByGithubUserId !== String(record.finalizedByGithubUserId)
+    ) {
+      return null;
+    }
+    return record;
   } catch {
     return null;
   }
+}
+
+async function finalizationObjectsMatch(env: Env, record: FinalizationRecord): Promise<boolean> {
+  for (const file of WORKSPACE_HOST_ARTIFACT_FILES) {
+    const object = await env.ARTIFACTS.head(artifactKey(record.bundleSha256, file));
+    if (!descriptorMatches(object, file, record.bundleSha256, record.files[file])) return false;
+  }
+  return true;
 }
 
 async function uploadArtifact(c: Context<{ Bindings: Env }>): Promise<Response> {
@@ -534,7 +580,9 @@ async function finalizeArtifact(c: Context<{ Bindings: Env }>): Promise<Response
   const markerHead = await c.env.ARTIFACTS.head(finalizationKey(bundleSha256));
   if (markerHead) {
     const existing = await readFinalizationRecord(c.env, bundleSha256);
-    if (!existing) return c.json({ error: 'finalization_conflict' }, 409);
+    if (!existing || !(await finalizationObjectsMatch(c.env, existing))) {
+      return c.json({ error: 'finalization_conflict' }, 409);
+    }
     return c.json({ ok: true, bundleSha256, manifestSha256: existing.manifestSha256, deduped: true });
   }
 
