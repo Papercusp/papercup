@@ -1373,6 +1373,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     resolve: async () => resolveDesignRegressions(),
   },
   'designEvidence.report': {
+    // File-backed CI/run artifact (resolveDesignEvidence above), deliberately no
+    // Postgres dependency and therefore no table-driven push invalidation.
+    backingTables: [] as const,
     resolve: async () => resolveDesignEvidence(),
   },
   'designMemos.list': {
