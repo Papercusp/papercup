@@ -361,15 +361,24 @@ const messagesRoute = defineTool({
       }
     }
 
-    // Append the user turn before streaming so a client reload sees it.
-    const userTurn: TranscriptTurn = { role: 'user', content: userContent, ts: new Date().toISOString() };
-    const baseTranscript = [...chat.transcript, userTurn];
-    try {
-      const db = dbForSlug(slug);
-      await db.prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
-        .run(JSON.stringify(baseTranscript), Date.now(), chatId);
-    } catch (e) {
-      return Response.json({ error: `failed to persist user turn: ${(e as Error).message}` }, { status: 500 });
+    // A retry after a dropped/preflight-failed stream sees the already-persisted
+    // trailing user turn. Reuse it instead of appending the same logical turn a
+    // second time; once an assistant follows, identical text is a legitimate new
+    // message and is appended normally.
+    const trailing = chat.transcript.at(-1);
+    const resumesPendingUser = trailing?.role === 'user' && trailing.content === userContent;
+    const userTurn: TranscriptTurn = resumesPendingUser
+      ? trailing
+      : { role: 'user', content: userContent, ts: new Date().toISOString() };
+    const baseTranscript = resumesPendingUser ? chat.transcript : [...chat.transcript, userTurn];
+    if (!resumesPendingUser) {
+      try {
+        const db = dbForSlug(slug);
+        await db.prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
+          .run(JSON.stringify(baseTranscript), Date.now(), chatId);
+      } catch (e) {
+        return Response.json({ error: `failed to persist user turn: ${(e as Error).message}` }, { status: 500 });
+      }
     }
 
     // Resolve the project dir IN-PROCESS (workspace-aware, live registry)
@@ -634,17 +643,21 @@ const messagesRoute = defineTool({
               // (tool detail survives across turns; usage/cost totals live
               // on harness_shared.agent_loop_sessions).
               sessions: pgLoopSessionStore(),
+              deferTerminalEvent: true,
             });
           } finally {
             await releaseAgentChatLock(chatLock);
           }
 
-          if (result.errorMessage) {
+          const terminalError = result.errorMessage ?? (
+            result.finalText.trim() ? null : 'agent loop completed without assistant content'
+          );
+          if (terminalError) {
             // Persist a failure-marker turn — same contract as the legacy
             // lane: a reload / second viewer must not see a silent gap.
             const failureTurn: TranscriptTurn = {
               role: 'assistant',
-              content: result.errorMessage,
+              content: terminalError,
               ts: new Date().toISOString(),
               tokens_in: result.tokensIn,
               tokens_out: result.tokensOut,
@@ -655,7 +668,8 @@ const messagesRoute = defineTool({
               const db = dbForSlug(slug);
               await db.prepare(`UPDATE agent_chats SET transcript = ?::jsonb, updated_at = ? WHERE id = ?`)
                 .run(JSON.stringify([...baseTranscript, failureTurn]), Date.now(), chatId);
-            } catch { /* best-effort — the error event already went out */ }
+            } catch { /* best-effort — still emit the terminal error below */ }
+            sink.event('error', { type: 'error', message: terminalError });
             sink.close();
             return;
           }
@@ -688,7 +702,22 @@ const messagesRoute = defineTool({
             );
           } catch (e) {
             sink.event('error', { type: 'error', message: `failed to persist assistant turn: ${(e as Error).message}` });
+            sink.close();
+            return;
           }
+          // Terminal success is emitted only AFTER the assistant transcript is
+          // durable. A reconnect on `done` can therefore read the same turn.
+          sink.event('done', {
+            type: 'done',
+            stopReason: result.stopReason ?? 'complete',
+            finalText: result.finalText,
+            usage: {
+              inputTokens: result.tokensIn,
+              outputTokens: result.tokensOut,
+              costUsd: result.costUsd,
+            },
+            stepCount: result.stepCount,
+          });
           sink.close();
         },
       });

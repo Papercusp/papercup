@@ -205,7 +205,10 @@ pub enum Event {
     /// One conversation's full detail (thread + topics + accepted answer + linked
     /// work-item) loaded on selection. Carries the id so a stale fetch never
     /// paints another conversation's detail (the TestingFiles/PluginConfig guard).
-    ConversationDetail { id: String, detail: ConvDetail },
+    ConversationDetail {
+        id: String,
+        detail: ConvDetail,
+    },
     /// A live `attention.notify` event (P8) — raise a toast + OS notification.
     Notify(Notif),
     /// Backfilled notification history from `/api/toast-log` (P8).
@@ -247,6 +250,8 @@ pub enum Event {
     /// A streamed `delta` chunk of the in-flight operator turn — appended to the
     /// streaming assistant bubble's raw buffer.
     ChatDelta(String),
+    ChatReasoning(String),
+    ChatFinal(String),
     /// A `tool_call` the operator made mid-turn — a chip on the streaming bubble.
     ChatToolCall(ChatToolCall),
     /// The in-flight operator turn finished (`done`) — finalize the bubble.
@@ -258,11 +263,20 @@ pub enum Event {
     /// so every later turn lands on the same PG-backed transcript instead of
     /// opening a fresh chat per message.
     AgentChatBound(String),
+    AgentChatLoaded {
+        harness: String,
+        chat_id: Option<String>,
+        messages: Vec<crate::models::ChatMessage>,
+        approvals: Vec<crate::models::PendingApproval>,
+    },
     /// A parked HITL request was decided — by US (the resolve POST succeeded) or
     /// by ANOTHER surface (the desktop operator), which reaches us as the loop's
     /// own `approval_resolved` frame. Both converge here, and the reducer arm is
     /// idempotent, so a decision made elsewhere still clears this pane's prompt.
-    AgentChatApprovalResolved { call_id: String, approved: bool },
+    AgentChatApprovalResolved {
+        call_id: String,
+        approved: bool,
+    },
     /// The full set of still-unresolved HITL requests for the bound chat, read
     /// back from `list_agent_chat_approvals`. REPLACES the pending set: a call
     /// parked before this pane attached (or during a disconnect) is otherwise
@@ -296,7 +310,9 @@ pub enum Event {
         exit_code: Option<i32>,
     },
     /// A pane was fully closed in the live session.
-    PaneClosed { pane_id: u32 },
+    PaneClosed {
+        pane_id: u32,
+    },
     // --- Voice mode (voice-mode-tui-port-2026-06-05) ---
     /// A terminal key RELEASE. Only delivered when the kitty keyboard protocol
     /// is active (most terminals never emit it); drives hold-to-talk PTT. Press

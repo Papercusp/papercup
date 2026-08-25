@@ -176,6 +176,7 @@ pub fn parse_transcript_line(line: &str) -> Option<ChatMessage> {
     Some(ChatMessage {
         role: kind.to_string(),
         content: text.to_string(),
+        reasoning: String::new(),
         tools: Vec::new(),
         streaming: false,
     })

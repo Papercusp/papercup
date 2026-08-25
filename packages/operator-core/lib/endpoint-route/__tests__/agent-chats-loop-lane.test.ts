@@ -122,9 +122,14 @@ async function loopLaneRoutes(
 }> {
   const updates: string[] = [];
   const updateArgs: unknown[][] = [];
-  const runLoopChatTurn = vi.fn(async (opts: { sink: { event: (n: string, d: unknown) => void } }) => {
+  const runLoopChatTurn = vi.fn(async (opts: {
+    sink: { event: (n: string, d: unknown) => void };
+    deferTerminalEvent?: boolean;
+  }) => {
     opts.sink.event('text_delta', { type: 'text_delta', stepIndex: 0, text: 'loop says hi' });
-    opts.sink.event('done', { type: 'done', stopReason: 'complete', finalText: 'loop says hi' });
+    if (!opts.deferTerminalEvent) {
+      opts.sink.event('done', { type: 'done', stopReason: 'complete', finalText: 'loop says hi' });
+    }
     return {
       stopReason: 'complete',
       finalText: 'loop says hi',
@@ -235,6 +240,7 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     expect(opts.model).toBe('m-override');
     expect(opts.chatId).toBe(CHAT);
     expect(opts.priority).toBe('interactive');
+    expect((mocks.runLoopChatTurn.mock.calls[0][0] as { deferTerminalEvent?: boolean }).deferTerminalEvent).toBe(true);
 
     // Persistence: user turn first (preflight), then the assistant turn with totals.
     expect(mocks.updates.length).toBeGreaterThanOrEqual(2);
@@ -281,6 +287,59 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     const finalUpdate = mocks.updateArgs.at(-1)!;
     const transcript = JSON.parse(finalUpdate[0] as string) as Array<{ role: string; content: string; error?: boolean }>;
     expect(transcript.at(-1)).toMatchObject({ role: 'assistant', content: 'gateway exploded', error: true });
+  });
+
+  it('a retry with the same trailing user turn does not append it twice', async () => {
+    const pendingUser = { role: 'user', content: 'retry me', ts: '2026-08-25T00:00:00Z' };
+    const { routes, mocks } = await loopLaneRoutes({
+      ...baseRow,
+      transcript: [pendingUser],
+    });
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const res = (await messages.handler(
+      postReq({ content: 'retry me', engine: 'loop' }),
+      ctxFor(CHAT),
+    )) as Response;
+    const { text, closed } = await drainSse(res.body, 8_000);
+    expect(closed).toBe(true);
+    expect(text).toContain('event: done');
+    expect(mocks.updates).toHaveLength(1);
+    const persisted = JSON.parse(mocks.updateArgs[0][0] as string) as Array<{ role: string; content: string }>;
+    expect(persisted.filter((turn) => turn.role === 'user')).toEqual([pendingUser]);
+    expect(persisted.at(-1)).toMatchObject({ role: 'assistant', content: 'loop says hi' });
+  });
+
+  it('empty final output becomes a persisted visible terminal error, never done', async () => {
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow }, {
+      finalText: '',
+      errorMessage: null,
+    });
+    // Suppress the mock's text delta too by replacing its implementation.
+    mocks.runLoopChatTurn.mockImplementationOnce(async () => ({
+      stopReason: 'complete',
+      finalText: '',
+      tokensIn: 1,
+      tokensOut: 0,
+      costUsd: 0,
+      errorMessage: null,
+      stepCount: 1,
+    }));
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const res = (await messages.handler(
+      postReq({ content: 'answer me', engine: 'loop' }),
+      ctxFor(CHAT),
+    )) as Response;
+    const { text, closed } = await drainSse(res.body, 8_000);
+    expect(closed).toBe(true);
+    expect(text).toContain('event: error');
+    expect(text).toContain('completed without assistant content');
+    expect(text).not.toContain('event: done');
+    const persisted = JSON.parse(mocks.updateArgs.at(-1)![0] as string) as Array<{ role: string; content: string; error?: boolean }>;
+    expect(persisted.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: 'agent loop completed without assistant content',
+      error: true,
+    });
   });
 
   it('without engine:"loop" the legacy lane is used (runLoopChatTurn untouched)', async () => {

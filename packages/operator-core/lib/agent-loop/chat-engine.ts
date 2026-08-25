@@ -80,6 +80,8 @@ export interface LoopChatTurnOpts {
    *  set + usage totals afterward. The ROUTE wires the PG store; omitting it
    *  (tests, one-shot callers) degrades to the text-transcript rebuild. */
   sessions?: LoopSessionStore;
+  /** Let the route persist the transcript before exposing done/error. */
+  deferTerminalEvent?: boolean;
 }
 
 export interface LoopChatTurnResult {
@@ -274,17 +276,21 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
           doneUsage = ev.usage;
           // Wire `done` = totals + finalText; the full messages snapshot is
           // NOT streamed (P-009 persists it — the pane re-reads the chat).
-          opts.sink.event('done', {
-            type: 'done',
-            stopReason: ev.stopReason,
-            finalText: ev.finalText,
-            usage: ev.usage,
-            stepCount: ev.steps.length,
-          });
+          if (!opts.deferTerminalEvent) {
+            opts.sink.event('done', {
+              type: 'done',
+              stopReason: ev.stopReason,
+              finalText: ev.finalText,
+              usage: ev.usage,
+              stepCount: ev.steps.length,
+            });
+          }
           break;
         case 'error':
           result.errorMessage = ev.message;
-          opts.sink.event('error', { type: 'error', message: ev.message });
+          if (!opts.deferTerminalEvent) {
+            opts.sink.event('error', { type: 'error', message: ev.message });
+          }
           break;
       }
     }
@@ -293,7 +299,9 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
     // degrade to the same error surface, never a broken stream with no event.
     const message = e instanceof Error ? e.message : String(e);
     result.errorMessage = result.errorMessage ?? message;
-    opts.sink.event('error', { type: 'error', message });
+    if (!opts.deferTerminalEvent) {
+      opts.sink.event('error', { type: 'error', message });
+    }
   }
 
   // ── P-009 persist: compact if over budget, then save the working set ────

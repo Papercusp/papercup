@@ -358,7 +358,11 @@ impl NativeSessionHandle {
                     // nothing there. Wrap with env exactly like the Codex arm
                     // wraps CODEX_HOME; bare only for legacy payloads without
                     // a configDir.
-                    match config_dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+                    match config_dir
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|d| !d.is_empty())
+                    {
                         Some(dir) => vec![
                             "env".to_string(),
                             format!("CLAUDE_CONFIG_DIR={dir}"),
@@ -1833,6 +1837,7 @@ pub struct PendingApproval {
 pub struct ChatMessage {
     pub role: String,
     pub content: String,
+    pub reasoning: String,
     pub tools: Vec<ChatToolCall>,
     pub streaming: bool,
 }
@@ -1842,6 +1847,7 @@ impl ChatMessage {
         Self {
             role: "user".into(),
             content: text.into(),
+            reasoning: String::new(),
             tools: Vec::new(),
             streaming: false,
         }
@@ -1850,6 +1856,7 @@ impl ChatMessage {
         Self {
             role: "assistant".into(),
             content: text.into(),
+            reasoning: String::new(),
             tools: Vec::new(),
             streaming: false,
         }
@@ -1859,6 +1866,7 @@ impl ChatMessage {
         Self {
             role: "assistant".into(),
             content: String::new(),
+            reasoning: String::new(),
             tools: Vec::new(),
             streaming: true,
         }

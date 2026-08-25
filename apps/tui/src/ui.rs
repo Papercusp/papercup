@@ -1747,6 +1747,12 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             who.to_string()
         };
         lines.push(Line::from(Span::styled(header, who_style)));
+        if m.role == "assistant" && !m.reasoning.trim().is_empty() {
+            lines.push(Line::from(Span::styled("  reasoning", Theme::dim())));
+            for line in wrap_text(m.reasoning.trim(), inner_w.saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(format!("  {line}"), Theme::dim())));
+            }
+        }
         let body = if m.streaming {
             let p = crate::chat_tags::live_preview(&m.content);
             if p.is_empty() {
@@ -1861,7 +1867,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         dock_focus,
         earlier,
         if app.chat_streaming {
-            " · …thinking"
+            " · …thinking · Ctrl+X cancel"
         } else {
             ""
         },

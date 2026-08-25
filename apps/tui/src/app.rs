@@ -114,6 +114,9 @@ pub enum Action {
     /// is the message text (the reducer has already appended it + a streaming
     /// assistant bubble before returning this).
     SendChat(String),
+    /// Abort the local native-chat stream; the dropped transport propagates
+    /// cancellation to the operator and the bubble becomes retryable.
+    CancelChat,
     /// Answer the oldest parked HITL request on the native agent-chat seam
     /// (P-005 slice 2). The run loop POSTs it via `resolve_agent_chat_approval`;
     /// until this lands the loop is blocked waiting for a decision, so the turn
@@ -1887,6 +1890,29 @@ impl App {
         if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
             m.content.push_str(text);
         }
+        self.chat_scroll = 0;
+    }
+
+    fn push_chat_reasoning(&mut self, text: &str) {
+        if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
+            m.reasoning.push_str(text);
+        }
+        self.chat_scroll = 0;
+    }
+
+    fn set_chat_final(&mut self, text: String) {
+        if !text.trim().is_empty() {
+            if let Some(m) = self.chat_messages.iter_mut().rev().find(|m| m.streaming) {
+                m.content = text;
+            }
+        }
+    }
+
+    pub fn reset_agent_chat_binding(&mut self) {
+        self.agent_chat_id = None;
+        self.chat_messages.clear();
+        self.pending_approvals.clear();
+        self.chat_streaming = false;
         self.chat_scroll = 0;
     }
 
@@ -4926,6 +4952,14 @@ impl App {
                 self.push_chat_delta(&t);
                 Action::Render
             }
+            Event::ChatReasoning(t) => {
+                self.push_chat_reasoning(&t);
+                Action::Render
+            }
+            Event::ChatFinal(text) => {
+                self.set_chat_final(text);
+                Action::Render
+            }
             Event::ChatToolCall(tc) => {
                 // Record the parked request BEFORE the chip renders. A call with
                 // needs_approval set has already stopped the loop server-side, so
@@ -4990,6 +5024,22 @@ impl App {
             }
             Event::AgentChatBound(id) => {
                 self.agent_chat_id = Some(id);
+                Action::Render
+            }
+            Event::AgentChatLoaded {
+                harness,
+                chat_id,
+                messages,
+                approvals,
+            } => {
+                // A slow fetch from the previously selected pot must never
+                // replace the newly selected pot's native chat.
+                if harness == self.harness && !self.chat_streaming {
+                    self.agent_chat_id = chat_id;
+                    self.chat_messages = messages;
+                    self.pending_approvals = approvals;
+                    self.chat_scroll = 0;
+                }
                 Action::Render
             }
             Event::ChatError(e) => {
@@ -5654,6 +5704,15 @@ impl App {
                     };
                 }
             }
+        }
+        // A native turn is locally cancellable even while the composer is
+        // focused. Ctrl+X cannot collide with ordinary message text.
+        if self.operator_input_active()
+            && self.chat_streaming
+            && code == KeyCode::Char('x')
+            && mods.contains(KeyModifiers::CONTROL)
+        {
+            return Action::CancelChat;
         }
         // Operator chat composer captures all input while focused (like the
         // palette) so digits/letters type into the message instead of switching
@@ -11310,15 +11369,47 @@ mod tests {
         a.begin_user_send("hi");
         a.update(Event::ChatDelta("plain ".into()));
         a.update(Event::ChatDelta("native text".into()));
+        a.update(Event::ChatReasoning("checked the store".into()));
+        // done.finalText is authoritative and may be the provider's ONLY text.
+        a.update(Event::ChatFinal("authoritative native text".into()));
         a.update(Event::ChatDone);
         assert!(!a.chat_streaming);
         assert!(!a.chat_messages[1].streaming);
-        assert_eq!(a.chat_messages[1].content, "plain native text");
+        assert_eq!(a.chat_messages[1].content, "authoritative native text");
+        assert_eq!(a.chat_messages[1].reasoning, "checked the store");
 
         // Re-announcing just moves the pane to the new chat — it never opens a
         // parallel transcript alongside the old one.
         a.update(Event::AgentChatBound("chat_43".into()));
         assert_eq!(a.agent_chat_id.as_deref(), Some("chat_43"));
+    }
+
+    #[test]
+    fn native_chat_resume_is_harness_guarded_and_ctrl_x_cancels() {
+        let mut a = App::new();
+        a.harness = "pot-a".into();
+        a.update(Event::AgentChatLoaded {
+            harness: "old-pot".into(),
+            chat_id: Some("wrong".into()),
+            messages: vec![ChatMessage::assistant("wrong")],
+            approvals: Vec::new(),
+        });
+        assert!(a.agent_chat_id.is_none());
+        a.update(Event::AgentChatLoaded {
+            harness: "pot-a".into(),
+            chat_id: Some("chat-a".into()),
+            messages: vec![ChatMessage::assistant("persisted")],
+            approvals: Vec::new(),
+        });
+        assert_eq!(a.agent_chat_id.as_deref(), Some("chat-a"));
+        assert_eq!(a.chat_messages[0].content, "persisted");
+
+        a.tab = Tab::Operator;
+        a.begin_user_send("cancel me");
+        assert_eq!(
+            a.update(key('x', KeyModifiers::CONTROL)),
+            Action::CancelChat
+        );
     }
 
     #[test]

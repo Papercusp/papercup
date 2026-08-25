@@ -122,6 +122,28 @@ describe('runLoopChatTurn', () => {
     expect(requests[0].model).toBe('m-test');
   });
 
+  it('can defer terminal events so the route persists before exposing done/error', async () => {
+    const { port } = scriptedPort([
+      textStop('durable first', { inputTokens: 2, outputTokens: 3 }),
+    ]);
+    const { sink, events } = recordingSink();
+    const result = await runLoopChatTurn({
+      chatId: 'c-deferred',
+      workspaceId: 'ws',
+      system: 's',
+      transcript: [turn('user', 'hi')],
+      sink,
+      port,
+      deferTerminalEvent: true,
+    });
+    expect(result.finalText).toBe('durable first');
+    expect(events.map((event) => event.name)).toEqual([
+      'step_start',
+      'text_delta',
+      'step_end',
+    ]);
+  });
+
   it('runs a gated tool through the ApprovalPort and forwards the round-trip', async () => {
     const { port } = scriptedPort([
       [
