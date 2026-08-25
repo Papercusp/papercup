@@ -116,6 +116,33 @@ export function isWorkspaceHostProvisioningDedupConflict(error: unknown): boolea
   );
 }
 
+function serializedProvisioningProblems(error: unknown, expectedName: string): readonly string[] | null {
+  if (typeof error !== 'object' || error === null) return null;
+  const candidate = error as { name?: unknown; problems?: unknown };
+  if (candidate.name !== expectedName || !Array.isArray(candidate.problems) || candidate.problems.length === 0) {
+    return null;
+  }
+  if (!candidate.problems.every((problem) => typeof problem === 'string' && problem.length > 0)) return null;
+  return candidate.problems;
+}
+
+function rehydrateWorkspaceHostProvisioningError(error: unknown): unknown {
+  if (
+    error instanceof WorkspaceHostProvisioningRequestError ||
+    error instanceof WorkspaceHostProvisioningConnectionError
+  ) {
+    return error;
+  }
+
+  const requestProblems = serializedProvisioningProblems(error, 'WorkspaceHostProvisioningRequestError');
+  if (requestProblems) return new WorkspaceHostProvisioningRequestError(requestProblems);
+
+  const connectionProblems = serializedProvisioningProblems(error, 'WorkspaceHostProvisioningConnectionError');
+  if (connectionProblems) return new WorkspaceHostProvisioningConnectionError(connectionProblems);
+
+  return error;
+}
+
 export async function startWorkspaceHostProvisioningWorkflow(
   input: StartWorkspaceHostProvisioningInput,
 ): Promise<WorkspaceHostProvisioningResult> {
@@ -137,6 +164,11 @@ export async function startWorkspaceHostProvisioningWorkflow(
     if (isWorkspaceHostProvisioningDedupConflict(error)) {
       throw new WorkspaceHostProvisioningConflictError(input.desired.hostId);
     }
-    throw error;
+    // DBOS serializes workflow errors through serialize-error. That preserves
+    // name + enumerable fields, but deliberately rebuilds a plain Error and
+    // therefore erases the custom prototype that the route uses for typed HTTP
+    // mapping. Rehydrate only the two validated terminal shapes at this durable
+    // boundary; unrelated/transient errors retain their original identity.
+    throw rehydrateWorkspaceHostProvisioningError(error);
   }
 }

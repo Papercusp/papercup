@@ -4,6 +4,7 @@ import type { WorkspaceHostDesiredSpec, WorkspaceHostProviderConnection } from '
 
 const control = vi.hoisted(() => ({
   dedupConflict: false,
+  resultError: null as unknown,
   startOptions: null as null | Record<string, unknown>,
   stepOptions: null as null | Record<string, unknown>,
   sleep: vi.fn(async (_ms: number) => {}),
@@ -43,7 +44,9 @@ vi.mock('@dbos-inc/dbos-sdk', () => {
           if (control.dedupConflict) {
             return Promise.reject(Object.assign(new Error('duplicate'), { dbosErrorCode: 28 }));
           }
-          return Promise.resolve({ getResult: () => workflow(input) });
+          return Promise.resolve({
+            getResult: () => (control.resultError === null ? workflow(input) : Promise.reject(control.resultError)),
+          });
         },
     },
   };
@@ -95,6 +98,7 @@ const plan = {
 
 beforeEach(() => {
   control.dedupConflict = false;
+  control.resultError = null;
   control.startOptions = null;
   control.stepOptions = null;
   control.sleep.mockClear();
@@ -187,6 +191,48 @@ describe('workspace-host provisioning DBOS admission', () => {
     expect(shouldRetry?.(terminal)).toBe(false);
     expect(shouldRetry?.(new WorkspaceHostProvisioningConnectionError(['connection unavailable']))).toBe(false);
     expect(shouldRetry?.(new Error('transient provider timeout'))).toBe(true);
+  });
+
+  it('rehydrates validated typed errors after DBOS serialization erases their prototypes', async () => {
+    const requestProblems = ['desired.zone must belong to desired.region'];
+    control.resultError = Object.assign(new Error('workspace-host provisioning request rejected'), {
+      name: 'WorkspaceHostProvisioningRequestError',
+      problems: requestProblems,
+    });
+
+    const requestError = await startWorkspaceHostProvisioningWorkflow(input).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(requestError).toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+    expect((requestError as WorkspaceHostProvisioningRequestError).problems).toEqual(requestProblems);
+
+    const connectionProblems = ['provider connection is not usable'];
+    control.resultError = Object.assign(new Error('workspace-host provider connection is unavailable'), {
+      name: 'WorkspaceHostProvisioningConnectionError',
+      problems: connectionProblems,
+    });
+
+    const connectionError = await startWorkspaceHostProvisioningWorkflow(input).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(connectionError).toBeInstanceOf(WorkspaceHostProvisioningConnectionError);
+    expect((connectionError as WorkspaceHostProvisioningConnectionError).problems).toEqual(connectionProblems);
+  });
+
+  it('does not reclassify malformed or unrelated DBOS errors', async () => {
+    const malformed = Object.assign(new Error('transient provider timeout'), {
+      name: 'WorkspaceHostProvisioningRequestError',
+      problems: [''],
+    });
+    control.resultError = malformed;
+
+    const received = await startWorkspaceHostProvisioningWorkflow(input).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(received).toBe(malformed);
   });
 
   it('maps a concurrent host-scoped dedup refusal to a typed conflict', async () => {
