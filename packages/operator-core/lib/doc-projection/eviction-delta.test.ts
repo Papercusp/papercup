@@ -69,9 +69,11 @@ describe("evictionDelta", () => {
   it("names the parts an edit newly pushes out, and nothing that was already cut", () => {
     // `stale` is over budget in BOTH projections: it was already cut, so it is not an
     // eviction caused by this edit. Only `victim` is.
+    // Ranks matter: the cut order drops the HIGHEST project_rank first, so `edited` is
+    // ranked low enough to survive and `stale` high enough to be gone in both passes.
     const before = [
-      row("edited", "a".repeat(10)),
-      row("victim", "b".repeat(10), 50),
+      row("edited", "a".repeat(10), 10),
+      row("victim", "b".repeat(10), 500),
       row("stale", "c".repeat(10), 900),
     ];
     const after = applyEditInMemory(
@@ -86,18 +88,40 @@ describe("evictionDelta", () => {
     expect(impact.restored).toEqual([]);
     // The already-cut part must never be reported as this edit's doing.
     expect(impact.evicted).not.toContain("stale");
-    expect(impact.headroomAfter).toBeLessThan(impact.headroomBefore);
   });
 
-  it("reports the reverse direction: a shrinking edit RESTORES parts", () => {
+  it("HEADROOM ALONE CANNOT DETECT AN EVICTION — the list is the load-bearing output", () => {
+    // Dropping a part frees more space than the edit consumed, so headroom after an
+    // eviction can hold steady or even RISE. An author (or a future guard) watching only
+    // the headroom number would read this edit as harmless while it silently removed a
+    // rule from every agent's context. This is why the gate keys on `evicted`, never on
+    // the sign of the headroom delta.
     const before = [
-      row("edited", "a".repeat(30)),
-      row("comeback", "b".repeat(10), 50),
+      row("edited", "a".repeat(10), 10),
+      row("victim", "b".repeat(10), 500),
+      row("stale", "c".repeat(10), 900),
     ];
     const after = applyEditInMemory(
       before,
       "edited",
-      row("edited", "a".repeat(5)),
+      row("edited", "a".repeat(20), 10),
+    );
+
+    const impact = impactFor(before, after, 25);
+
+    expect(impact.evicted).toEqual(["victim"]);
+    expect(impact.headroomAfter).toBeGreaterThanOrEqual(impact.headroomBefore);
+  });
+
+  it("reports the reverse direction: a shrinking edit RESTORES parts", () => {
+    const before = [
+      row("edited", "a".repeat(20), 10),
+      row("comeback", "b".repeat(10), 900),
+    ];
+    const after = applyEditInMemory(
+      before,
+      "edited",
+      row("edited", "a".repeat(5), 10),
     );
 
     const impact = impactFor(before, after, 25);
@@ -140,9 +164,11 @@ describe("evictionDelta", () => {
     // the real implementation ever regresses to reporting the absolute cut set, the
     // first test above fails while this one still passes — which is what makes that
     // test's assertion meaningful rather than merely satisfied.
+    // Ranks matter: the cut order drops the HIGHEST project_rank first, so `edited` is
+    // ranked low enough to survive and `stale` high enough to be gone in both passes.
     const before = [
-      row("edited", "a".repeat(10)),
-      row("victim", "b".repeat(10), 50),
+      row("edited", "a".repeat(10), 10),
+      row("victim", "b".repeat(10), 500),
       row("stale", "c".repeat(10), 900),
     ];
     const after = applyEditInMemory(
