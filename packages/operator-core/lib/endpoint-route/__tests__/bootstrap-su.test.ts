@@ -1140,7 +1140,7 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
 
   // ── the owner's default account (default-deploy-account-2026-08-08 P-004) ──
   // The two tests directly above are the CONTROL for this block: with no default set,
-  // ''/'default' skip the gateway entirely. Everything below is what changes once the
+  // an unspecified account skips the gateway entirely. Everything below is what changes once the
   // owner nominates one — and, just as importantly, what must NOT change.
 
   describe('with a default account set', () => {
@@ -1149,8 +1149,8 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
       readDefaultAccountIdMock.mockResolvedValue('aviynw2');
     });
 
-    it.each([null, '', '   ', 'default', 'DEFAULT'])(
-      'account %p routes through the gateway on the AUTO path, never as a pin (D-003)',
+    it.each([null, '', '   '])(
+      'unspecified account %p routes through the gateway on the AUTO path, never as a pin (D-003)',
       async (requested) => {
         // Reusing the `auto` path IS the mechanism: the gateway's resolveAccountPool already
         // returns the default first with the rest behind it, so this gets default-first
@@ -1165,6 +1165,18 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
         expect(r.accountId).toBeNull();
         expect(r.provider).toBe('claude');
         expect(r.error).toBeUndefined();
+      },
+    );
+
+    it.each(['default', 'DEFAULT', ' Default '])(
+      'explicit account %p selects the system route, even when a default account is configured',
+      async (requested) => {
+        const r = await pin(requested);
+        expect(r.env).toEqual({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' });
+        expect(r.accountId).toBeNull();
+        expect(r.provider).toBeNull();
+        expect(r.notice).toMatch(/default system account.*inference gateway skipped/i);
+        expect(readDefaultAccountIdMock).not.toHaveBeenCalled();
       },
     );
 
@@ -1366,6 +1378,21 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(json.accountNotice).toBeNull();
     expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+  });
+
+  it('POST with explicit account=default stays on the system route when a default account is configured', async () => {
+    getFlagMock.mockResolvedValue(true);
+    readDefaultAccountIdMock.mockResolvedValue('aviynw2');
+    try {
+      const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup', account: 'default' })).json();
+      expect(json.accountNotice).toMatch(/default system account.*inference gateway skipped/i);
+      expect(json.envelopeEnv).toEqual(expect.objectContaining({ PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' }));
+      expect(json.envelopeEnv.ANTHROPIC_BASE_URL).toBeUndefined();
+      expect(readDefaultAccountIdMock).not.toHaveBeenCalled();
+    } finally {
+      // This file's later POST tests intentionally exercise the no-default path.
+      readDefaultAccountIdMock.mockResolvedValue(undefined);
+    }
   });
 });
 
