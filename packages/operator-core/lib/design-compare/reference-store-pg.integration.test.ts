@@ -431,6 +431,55 @@ describe('discovering every reference under a feature', () => {
     });
   });
 
+  it('WI-41642 FALSIFIABILITY CONTROL: the pre-fix read-back really did report a retracted reference as active', async () => {
+    // The deliberately-wrong implementation, kept permanently here (CLAUDE.md's
+    // prescribed tier for an imported module — no tree mutation, no sweep race,
+    // and it re-proves itself on every CI run).
+    //
+    // `payloadOnlyToRow` is the OLD `toRow`, verbatim in behaviour: rebuild the
+    // reference from `payload` and ignore `metadata`. Without this control the
+    // test above is green and says nothing — a store that never had the bug and
+    // a store that was just fixed produce identical output, so "it passes"
+    // cannot distinguish a real fix from an assertion that could never fail.
+    //
+    // Both readings below come from the SAME real Postgres row, so this is a
+    // controlled comparison of two read strategies, not two fixtures.
+    const payloadOnlyToRow = (row: { payload: unknown; id: string; created_ts: string | number }) => ({
+      ...(typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload),
+      artifactId: row.id,
+      createdTs: Number(row.created_ts),
+    });
+
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+    await retractReference(store, scope, {
+      actor: 'su-integration',
+      reason: 'proving the old read-back was wrong',
+      at: '2026-08-25T00:00:00.000Z',
+    });
+
+    const raw = await sql<{ id: string; payload: unknown; metadata: unknown; created_ts: string }>`
+      SELECT id, payload, metadata, created_ts
+        FROM harness_shared.harness_design_artifacts
+       WHERE harness_slug = ${scope.harnessSlug}
+         AND id           = ${referenceArtifactId(scope.referenceId, 1)}
+    `;
+
+    // The metadata column — the durable truth — says retracted.
+    expect((raw[0]!.metadata as { state: string }).state).toBe('retracted');
+
+    // The OLD read-back disagrees with it, and that disagreement IS the bug:
+    // `activeRevision` filters on this state, so the retracted surface kept
+    // constraining completion forever.
+    const stale = payloadOnlyToRow(raw[0]!);
+    expect(stale.reference.state).toBe('active');
+    expect(activeRevision([stale])).toBeDefined();
+
+    // The CURRENT read-back gets it right, over the identical row.
+    expect(activeRevision(await store.listRevisions(scope))).toBeUndefined();
+  });
+
   it('WI-41642: a SUPERSEDED revision also reads back superseded, not active', async () => {
     // The half the existing supersede case cannot assert. Checked per-row rather
     // than via `activeRevision`, precisely because `activeRevision` picks the
