@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // pretooluse-control-bytes-content-guard.mjs
 //
-// PreToolUse (Edit|Write|MultiEdit and MCP capability writers) BLOCKING guard against
+// PreToolUse (apply_patch, Edit|Write|MultiEdit and MCP capability writers) BLOCKING guard against
 // EI-19478121013052934 —
 // a raw forbidden control byte written INTO a source file, caught today only by
 // the fleet-wide green-checkpoint leg `lint:no-control-bytes`.
@@ -30,16 +30,16 @@
 //   this guard          : is the content I am about to WRITE legal?
 //
 // CONTRACT
-//   - Scope: Edit | Write | MultiEdit and their MCP capability equivalents, on paths inside this repo that
-//     `lint:no-control-bytes` actually scans.
+//   - Scope: Codex apply_patch, Edit | Write | MultiEdit and their MCP capability
+//     equivalents, on paths inside this repo that `lint:no-control-bytes` actually scans.
 //   - Policy is IMPORTED from scripts/check-no-control-bytes.mjs
 //     (isForbiddenControlByte / isScannedPath) — never re-derived here. That
 //     import is what makes "safe by construction" below true, and it is why the
 //     lint's ALLOW_PREFIXES escape hatch keeps working with no second copy.
-//   - Trigger: the INCOMING content only — Write.content, Edit.new_string,
-//     MultiEdit.edits[].new_string. Pre-existing bytes in the file are NOT this
-//     guard's business (that is the sibling's), so it never blocks an edit that
-//     merely touches an already-dirty file.
+//   - Trigger: the INCOMING content only — apply_patch added lines, Write.content,
+//     Edit.new_string, MultiEdit.edits[].new_string. Pre-existing bytes in the file
+//     are NOT this guard's business (that is the sibling's), so it never blocks an
+//     edit that merely touches an already-dirty file.
 //   - On a hit: permissionDecision "deny" (JSON, exit 0), matching the
 //     secrets-guard / content-lint / nul-byte sibling contract.
 //   - FAIL-OPEN on any internal error (bad JSON, unreadable policy module,
@@ -53,25 +53,21 @@
 // while the cost of allowing is a fleet-wide red.
 //
 import process from 'node:process';
+import { existsSync } from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
-// REPO_ROOT is derived from THIS FILE's own location — never a hardcoded literal.
-// This file lives at <root>/apps/operator/scripts/hooks/cc/, so the root is five
-// levels up. That matches how the test resolves it (__dirname-relative), so the
-// two agree in EVERY worktree rather than only in one.
+// The hook is COPIED to ~/.papercusp/hooks/cc when installed, so its own location
+// is not normally inside a checkout. Resolve the policy from the live hook cwd;
+// keep the source-relative candidate only for direct in-tree execution/tests.
 //
 // WI-10811: it used to be a hardcoded absolute path to the staging checkout.
 // green-checkpoint runs the suite from a DIFFERENT worktree (papercusp-checkpoint),
-// where every incoming path failed `startsWith(REPO_ROOT)`, so toRepoRelative()
-// returned null, the hook treated real hits as "outside the repo" and FAILED OPEN.
-// Two costs, and the second is the worse one: it red-pinned the fleet gate on 7
-// deny-tests every run, AND the guard was silently inert in every non-staging
-// worktree — the exact "fails open and nothing reports it" mode this file's own
-// CONTRACT warns about, reached by a vector nobody was watching (the root path,
-// not the policy import). The allow-tests cannot catch it, because fail-open IS allow.
-const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
-const POLICY_MODULE = `${REPO_ROOT}/scripts/check-no-control-bytes.mjs`;
+// where every incoming path fell outside that literal and the guard failed open.
+// EI-21386458424818244: deriving only from import.meta.url reintroduced the SAME
+// failure after installation — five parents above ~/.papercusp/hooks/cc is `/`,
+// so the registered guard tried to import /scripts/check-no-control-bytes.mjs.
+const SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 main();
 
@@ -82,32 +78,80 @@ async function main() {
     const tool = hook.tool_name || '';
     if (!isFileWritingTool(tool)) return done();
 
-    const input = hook.tool_input || {};
-    const filePath = input.file_path || '';
-    if (!filePath) return done();
-
-    const rel = toRepoRelative(filePath);
-    if (rel === null) return done(); // outside the repo — not the gate's business
-
-    const policy = await loadPolicy();
+    const repoRoot = repoRootFrom(hook.cwd);
+    if (!repoRoot) return done();
+    const policy = await loadPolicy(repoRoot);
     if (!policy) return done(); // fail-open: cannot read the gate's own policy
-    if (!policy.isScannedPath(rel)) return done();
-
-    const hit = firstControlByte(incomingContent(tool, input), policy.isForbiddenControlByte);
-    if (hit) return deny(rel, hit);
+    for (const write of incomingWrites(tool, hook.tool_input || {})) {
+      const rel = toRepoRelative(write.filePath, hook.cwd, repoRoot);
+      if (rel === null || !policy.isScannedPath(rel)) continue;
+      const hit = firstControlByte(write.content, policy.isForbiddenControlByte);
+      if (hit) return deny(rel, hit);
+    }
   } catch {
     // fail-open: never wedge edits on a hook bug
   }
   done();
 }
 
-/** Every string this tool call would introduce into the file. */
-function incomingContent(tool, input) {
+/** Every path + string this tool call would introduce into a file. */
+function incomingWrites(tool, input) {
   const operation = capabilityOperation(tool) || String(tool).toLowerCase();
-  if (operation === 'write') return [input.content];
-  if (operation === 'edit') return [input.new_string];
-  if (operation === 'multiedit') return (input.edits || []).map((e) => (e || {}).new_string);
+  if (operation === 'apply_patch') return applyPatchWrites(input);
+  const filePath = input?.file_path || '';
+  if (!filePath) return [];
+  if (operation === 'write') return [{ filePath, content: [input.content] }];
+  if (operation === 'edit') return [{ filePath, content: [input.new_string] }];
+  if (operation === 'multiedit') {
+    return [{ filePath, content: (input.edits || []).map((e) => (e || {}).new_string) }];
+  }
   return [];
+}
+
+/** Codex may send apply_patch input as the raw patch string or wrap it under
+ * `input` / `patch`. Find the first string that carries the native patch frame. */
+function patchText(input) {
+  if (typeof input === 'string') return input;
+  if (!input || typeof input !== 'object') return '';
+  for (const value of Object.values(input)) {
+    if (typeof value === 'string' && value.includes('*** ')) return value;
+  }
+  return '';
+}
+
+/** Extract only ADDED patch content, grouped by destination path.
+ *
+ * Context/deleted lines are deliberately ignored: they may contain the raw byte
+ * an author is trying to repair. Scanning the whole patch would deny the repair
+ * and make the guard an obstacle to its own remediation. */
+function applyPatchWrites(input) {
+  const writes = new Map();
+  let currentPath = '';
+  for (const line of patchText(input).split('\n')) {
+    const file = /^\*\*\* (?:Add|Update) File: (.+)$/.exec(line);
+    if (file) {
+      currentPath = file[1].trim();
+      if (!writes.has(currentPath)) writes.set(currentPath, []);
+      continue;
+    }
+    if (/^\*\*\* Delete File: /.test(line)) {
+      currentPath = '';
+      continue;
+    }
+    const move = /^\*\*\* Move to: (.+)$/.exec(line);
+    if (move && currentPath) {
+      const nextPath = move[1].trim();
+      const content = writes.get(currentPath) || [];
+      writes.delete(currentPath);
+      currentPath = nextPath;
+      writes.set(currentPath, content);
+      continue;
+    }
+    if (currentPath && line.startsWith('+') && !line.startsWith('+++')) {
+      writes.get(currentPath).push(line.slice(1) + '\n');
+    }
+  }
+  return [...writes].map(([filePath, content]) => ({ filePath, content }));
 }
 
 /** Native and MCP-projected file writers share the same content contract. */
@@ -117,6 +161,7 @@ function isFileWritingTool(tool) {
     normalized === 'edit' ||
     normalized === 'write' ||
     normalized === 'multiedit' ||
+    normalized === 'apply_patch' ||
     capabilityOperation(tool) !== null
   );
 }
@@ -149,15 +194,33 @@ function excerptAround(s, i) {
   return raw.replace(/[\x00-\x1f]/g, (c) => `<0x${c.charCodeAt(0).toString(16).padStart(2, '0')}>`);
 }
 
-function toRepoRelative(filePath) {
-  const root = REPO_ROOT.endsWith('/') ? REPO_ROOT : `${REPO_ROOT}/`;
-  if (!filePath.startsWith(root)) return null;
-  return filePath.slice(root.length);
+function repoRootFrom(cwd) {
+  const candidates = [];
+  if (typeof cwd === 'string' && cwd) candidates.push(resolve(cwd));
+  candidates.push(SOURCE_ROOT);
+  for (const candidate of candidates) {
+    let dir = candidate;
+    while (true) {
+      if (existsSync(join(dir, 'scripts', 'check-no-control-bytes.mjs'))) return dir;
+      const parent = dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return null;
 }
 
-async function loadPolicy() {
+function toRepoRelative(filePath, cwd, repoRoot) {
+  if (typeof filePath !== 'string' || !filePath) return null;
+  const absolute = resolve(typeof cwd === 'string' && cwd ? cwd : repoRoot, filePath);
+  const root = repoRoot.endsWith('/') ? repoRoot : `${repoRoot}/`;
+  if (!absolute.startsWith(root)) return null;
+  return absolute.slice(root.length);
+}
+
+async function loadPolicy(repoRoot) {
   try {
-    const mod = await import(pathToFileURL(POLICY_MODULE).href);
+    const mod = await import(pathToFileURL(join(repoRoot, 'scripts', 'check-no-control-bytes.mjs')).href);
     if (typeof mod.isForbiddenControlByte !== 'function') return null;
     if (typeof mod.isScannedPath !== 'function') return null;
     return mod;
@@ -243,7 +306,8 @@ function readStdin(timeoutMs) {
 }
 
 async function selfTest() {
-  const policy = await loadPolicy();
+  const repoRoot = repoRootFrom(process.cwd());
+  const policy = repoRoot ? await loadPolicy(repoRoot) : null;
   if (!policy) {
     process.stdout.write('FAIL — could not import the gate policy module\n');
     process.exit(1);

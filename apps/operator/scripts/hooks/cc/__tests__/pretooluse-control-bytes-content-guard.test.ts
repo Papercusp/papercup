@@ -26,8 +26,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 // __dirname = <repo>/apps/operator/scripts/hooks/cc/__tests__ — six levels down.
 const ROOT = resolve(__dirname, '../../../../../..');
@@ -41,8 +42,8 @@ const ESC = '\x1b';
 type Decision = { permissionDecision?: string; permissionDecisionReason?: string };
 
 /** Drive the hook exactly as the CLI does: hook JSON on stdin, JSON or nothing out. */
-function runHook(payload: unknown): Decision | null {
-  const out = execFileSync('node', [HOOK], {
+function runHook(payload: unknown, hook = HOOK): Decision | null {
+  const out = execFileSync('node', [hook], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -68,6 +69,9 @@ function mcpWrite(relPath: string, content: string, server = 'papercusp-su') {
     tool_name: `mcp__${server}__capability_write`,
     tool_input: { file_path: resolve(ROOT, relPath), content },
   };
+}
+function applyPatch(patch: string | Record<string, string>) {
+  return { tool_name: 'apply_patch', tool_input: patch, cwd: ROOT };
 }
 
 describe('the policy it depends on', () => {
@@ -123,15 +127,29 @@ describe('it is worktree-portable (WI-10811)', () => {
   // all 10 negative cases stay green against a completely inert hook, and the
   // positive cases only pass in the one tree where the literal happened to match.
   // So the assertion has to be on the RESOLUTION MECHANISM itself.
-  it('derives REPO_ROOT from its own location, never a hardcoded absolute path', () => {
-    const rootLine = readFileSync(HOOK, 'utf8')
-      .split('\n')
-      .find((l) => l.includes('const REPO_ROOT'));
-    expect(rootLine, 'const REPO_ROOT = ... must exist').toBeDefined();
-    expect(rootLine, 'root must be derived from this file (import.meta.url)').toContain('import.meta.url');
+  it('resolves the live checkout from hook cwd, never a hardcoded absolute path', () => {
+    const source = readFileSync(HOOK, 'utf8');
+    expect(source).toContain('repoRootFrom(hook.cwd)');
+    const fallbackLine = source.split('\n').find((l) => l.includes('const SOURCE_ROOT'));
+    expect(fallbackLine, 'source-tree fallback must remain worktree-relative').toContain('import.meta.url');
     // A quoted absolute path here is the exact regression: it makes the guard
     // correct in one worktree and inert in every other.
-    expect(rootLine, 'root must not be a hardcoded path literal').not.toMatch(/['"`]\s*\//);
+    expect(fallbackLine, 'root must not be a hardcoded path literal').not.toMatch(/['"`]\s*\//);
+  });
+
+  it('still loads the shared policy after installation outside the repository', () => {
+    const installedDir = mkdtempSync(join(tmpdir(), 'control-byte-hook-installed-'));
+    const installedHook = join(installedDir, 'pretooluse-control-bytes-content-guard.mjs');
+    try {
+      copyFileSync(HOOK, installedHook);
+      const d = runHook(
+        { ...edit('packages/operator-core/lib/x.ts', `captured${ESC}`), cwd: ROOT },
+        installedHook,
+      );
+      expect(d?.permissionDecision).toBe('deny');
+    } finally {
+      rmSync(installedDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -186,6 +204,43 @@ describe('it fires on the real thing', () => {
     });
     expect(d?.permissionDecision).toBe('deny');
   });
+
+  it('DENIES a raw control byte in a Codex apply_patch added line', () => {
+    const d = runHook(
+      applyPatch(
+        [
+          '*** Begin Patch',
+          '*** Update File: packages/operator-core/lib/x.ts',
+          '@@',
+          `+const captured = '${ESC}[31m';`,
+          '*** End Patch',
+        ].join('\n'),
+      ),
+    );
+    expect(d?.permissionDecision).toBe('deny');
+    expect(d?.permissionDecisionReason).toContain('packages/operator-core/lib/x.ts');
+    expect(d?.permissionDecisionReason).toContain('0x1b');
+  });
+
+  it('DENIES wrapped Codex apply_patch input and checks every touched file', () => {
+    const d = runHook(
+      applyPatch({
+        patch: [
+          '*** Begin Patch',
+          '*** Update File: packages/operator-core/lib/clean.ts',
+          '@@',
+          '+const clean = true;',
+          '*** Update File: packages/operator-core/lib/dirty.ts',
+          '@@',
+          '+const dirty = "a\x00b";',
+          '*** End Patch',
+        ].join('\n'),
+      }),
+    );
+    expect(d?.permissionDecision).toBe('deny');
+    expect(d?.permissionDecisionReason).toContain('packages/operator-core/lib/dirty.ts');
+    expect(d?.permissionDecisionReason).toContain('0x00');
+  });
 });
 
 describe('it does not fire on ordinary edits', () => {
@@ -216,6 +271,31 @@ describe('it does not fire on ordinary edits', () => {
   it('ALLOWS tools it does not govern', () => {
     expect(runHook({ tool_name: 'Bash', tool_input: { command: 'ls' } })).toBeNull();
     expect(runHook({ tool_name: 'mcp__papercusp-su__capability_read', tool_input: { file_path: '/tmp/x.ts' } })).toBeNull();
+  });
+
+  it('ALLOWS apply_patch to REMOVE a raw byte when the added line uses its escape', () => {
+    const d = runHook(
+      applyPatch(
+        [
+          '*** Begin Patch',
+          '*** Update File: packages/operator-core/lib/x.ts',
+          '@@',
+          `-const captured = '${ESC}[31m';`,
+          "+const captured = '\\x1b[31m';",
+          '*** End Patch',
+        ].join('\n'),
+      ),
+    );
+    expect(d).toBeNull();
+  });
+
+  it('ALLOWS apply_patch raw bytes only in a path the gate does not scan', () => {
+    const d = runHook(
+      applyPatch(
+        ['*** Begin Patch', '*** Add File: fixtures/raw.bin', `+a${ESC}b`, '*** End Patch'].join('\n'),
+      ),
+    );
+    expect(d).toBeNull();
   });
 });
 
