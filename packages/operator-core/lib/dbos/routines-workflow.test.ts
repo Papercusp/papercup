@@ -96,6 +96,26 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     expect(ROUTINE_FIRE_QUEUES).toEqual(['routines', 'routines-critical', 'routines-loop', 'routines-triggers']);
   });
 
+  // Recurrence guard (WI-41662). Adding a lane is TWO edits — route to it in
+  // queueForRoutine, and register it here so DBOS listens. Doing only the first
+  // enqueues fires onto a queue nothing consumes: the routine then never runs at
+  // all, and — exactly like the starvation this lane was added to fix — nothing
+  // fails and last_fired_at keeps advancing, so it reads perfectly healthy.
+  // Drive the classifier over every routable target and assert its lane is registered.
+  it('registers EVERY lane queueForRoutine can return (no routable-but-unconsumed queue)', () => {
+    const routableTargets = [
+      LOOP_WAKE_TARGET_ROLE,
+      ...[...CRITICAL_ROUTINE_ACTIONS].map((a) => `system:${a}`),
+      ...[...TRIGGER_POLL_ACTIONS].map((a) => `system:${a}`),
+      'system:green-checkpoint',
+      'mug',
+      '',
+    ];
+    for (const target of routableTargets) {
+      expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine(target));
+    }
+  });
+
   it('checkpoints and returns the complete LoopFireResult from the DBOS step', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
