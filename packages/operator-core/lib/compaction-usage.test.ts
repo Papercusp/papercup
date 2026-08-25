@@ -328,7 +328,40 @@ describe('resolveSessionRefReconciled — rung 4: unlogged native-session transi
     expect(out).toEqual({ agent: 'omp', sessionId: 'omp-thread' });
   });
 
-  it('returns null when the DB has no session ref', async () => {
+  it('recovers a missing adv_sessions row from the owner event and marks the transcript owner unanchored', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: async () => null,
+      latestRespawn: (_owner, opts) => {
+        expect(opts).toEqual({ allowWithoutHost: true });
+        return '21dfdd94-current';
+      },
+      newestTranscript: never,
+      isFresh: never,
+    });
+    expect(out).toEqual({
+      agent: 'claude',
+      sessionId: '21dfdd94-current',
+      sessionKey: null,
+      transcriptOwner: null,
+    });
+  });
+
+  it('recovers a missing adv_sessions row from a fresh owner-local transcript when no event exists', async () => {
+    const out = await resolveSessionRefReconciled(OWNER, {
+      resolveRef: async () => null,
+      latestRespawn: () => null,
+      newestTranscript: () => '/iso/current-owner-native.jsonl',
+      isFresh: () => true,
+    });
+    expect(out).toEqual({
+      agent: 'claude',
+      sessionId: 'current-owner-native',
+      sessionKey: null,
+      transcriptOwner: OWNER,
+    });
+  });
+
+  it('returns null when the DB has no session ref AND neither reconciliation rung has evidence', async () => {
     const out = await resolveSessionRefReconciled(OWNER, {
       resolveRef: async () => null,
       latestRespawn: never,

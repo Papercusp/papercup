@@ -114,6 +114,7 @@ export interface ColdBootDrillHostEvent {
   drillId?: string;
   sessionClass?: string;
   nativeId?: string | null;
+  mode?: string;
   launchContextPath?: string | null;
   reason?: string;
   /** Wait budget the host stamped on a busy-gate / re-arm row, ms. Read by

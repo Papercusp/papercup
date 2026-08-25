@@ -39,7 +39,7 @@ import { readOwnerHostEvents, type ColdBootDrillHostEvent } from './cold-boot-dr
 /** Host event kinds that constitute the carry-respawn lifecycle, in the order a
  *  successful respawn emits them. Anything else in the log (wake deferrals,
  *  stale-fire drops, shutdown rows) is NOT a verdict about a respawn. */
-const RESPAWN_TERMINAL_OK = new Set(['respawned', 'respawn-carry-delivered']);
+const RESPAWN_TERMINAL_OK = new Set(['respawn-carry-delivered']);
 const RESPAWN_TERMINAL_FAIL = new Set(['respawn-carry-dropped']);
 /** Non-terminal: an attempt is still re-polling for an idle window. */
 const RESPAWN_IN_FLIGHT = new Set(['respawn-rearm-queued', 'respawn-rearm-superseded']);
@@ -85,6 +85,14 @@ export function deriveLastRespawnOutcome(
     let outcome: PriorRespawnOutcome | null = null;
     if (RESPAWN_TERMINAL_FAIL.has(kind)) outcome = 'dropped';
     else if (RESPAWN_TERMINAL_OK.has(kind)) outcome = 'delivered';
+    // WI-41504: `respawned` is a SHARED native-session event. A real requested
+    // carry cut stamps mode=carry-respawn, but Claude's same-process internal
+    // re-exec stamps mode=self-relaunch. Treating every `respawned` as carry
+    // success made a self-relaunch newer than `respawn-rearm-queued` mask the
+    // still-unresolved request as delivered. Only the mode that actually cuts
+    // into the deterministic carry is success; every other respawn mode is
+    // unrelated lifecycle noise, so scanning continues to the pending/drop row.
+    else if (kind === 'respawned' && row.mode === 'carry-respawn') outcome = 'delivered';
     else if (RESPAWN_IN_FLIGHT.has(kind)) outcome = 'pending';
     if (!outcome) continue;
     const ts = typeof row.ts === 'string' ? row.ts : undefined;

@@ -903,6 +903,23 @@ describe('latestRespawnNativeId (WI-5075 rung 3: reconcile a stale adv_sessions 
     expect(latestRespawnNativeId(owner, dir)).toBeNull();
   });
 
+  it('admits an owner-scoped respawn without discovery ONLY for a missing-primary recovery', () => {
+    const dir = tmpDir();
+    write(
+      dir,
+      [{ ts: at(1), kind: 'respawned', mode: 'self-relaunch', nativeId: 'recovered-without-adv-row' }],
+      null,
+    );
+    expect(latestRespawnNativeId(owner, dir)).toBeNull();
+    expect(latestRespawnNativeId(owner, dir, { allowWithoutHost: true })).toBe('recovered-without-adv-row');
+  });
+
+  it('still rejects a hostless carry row — only the self-relaunch hook is a hostless authority', () => {
+    const dir = tmpDir();
+    write(dir, [{ ts: at(1), kind: 'respawned', mode: 'carry-respawn', nativeId: 'stale-host-id' }], null);
+    expect(latestRespawnNativeId(owner, dir, { allowWithoutHost: true })).toBeNull();
+  });
+
   it('EI-151: a discovery file recorded for ANOTHER owner never reconciles this one', () => {
     const dir = tmpDir();
     write(dir, [{ ts: at(1), kind: 'respawned', nativeId: 'x-1' }], null);

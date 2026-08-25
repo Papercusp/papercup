@@ -31,6 +31,15 @@ export interface SessionRef {
   /** adv_sessions numeric key; Codex homes are keyed by this value rather than
    *  by the rollout UUID stored in sessionId. */
   sessionKey?: number | null;
+  /**
+   * Transcript isolation owner to use for the exact-id lookup. Undefined means
+   * the coord owner is authoritative (the normal adv_sessions path); null means
+   * the ref was recovered without a DB owner anchor and the exact native id must
+   * be resolved across isolation roots once (then the positive path cache makes
+   * later reads cheap). WI-41504: a Claude self-relaunch changed coord ownerId
+   * without moving its native transcript out of the predecessor's isolation dir.
+   */
+  transcriptOwner?: string | null;
 }
 
 export interface CodexContextSnapshot {
@@ -272,7 +281,8 @@ export async function estimateContextTokens(
     // FAST PATH (one owner-root readdir) instead of the full 12k-owner-dir sweep. Without it,
     // the compaction watchdog polling many owners on a cadence re-swept every isolation root
     // per call — the fs-churn that bloated the background host to tens of GB.
-    const p = await findSessionTranscript(ref.sessionId, { owner: owner ?? null });
+    const transcriptOwner = ref.transcriptOwner === undefined ? owner ?? null : ref.transcriptOwner;
+    const p = await findSessionTranscript(ref.sessionId, { owner: transcriptOwner });
     return p ? tokensFromFileSize(p) : null;
   } catch {
     return null;
@@ -390,7 +400,7 @@ export async function estimateContextWindowForOwner(
  *  prod, overridden in tests so the rung ordering is verifiable without a DB/FS. */
 export interface ResolveReconciledDeps {
   resolveRef?: (ownerId: string) => Promise<SessionRef | null>;
-  latestRespawn?: (ownerId: string) => string | null;
+  latestRespawn?: (ownerId: string, opts?: { allowWithoutHost?: boolean }) => string | null;
   newestTranscript?: (ownerId: string) => string | null;
   isFresh?: (p: string) => boolean;
 }
@@ -404,9 +414,8 @@ export async function resolveSessionRefReconciled(
   const isFresh = deps.isFresh ?? fallbackTranscriptFresh;
 
   const ref = await resolveRef(ownerId);
-  if (!ref) return null;
   // The rotation is a claude-only concept (--session-id); never touch omp/codex.
-  if (ref.agent === 'omp' || ref.agent === 'codex') return ref;
+  if (ref?.agent === 'omp' || ref?.agent === 'codex') return ref;
 
   // Rung 3: a respawn LOGGED since the current host started names the successor
   // authoritatively — the host log knows about a just-happened carry-respawn even
@@ -415,10 +424,16 @@ export async function resolveSessionRefReconciled(
   // id, trust it (and skip rung 4, which could otherwise re-pin to the frozen
   // predecessor whose transcript is still the newest on disk for a few seconds).
   try {
-    const latestRespawn =
-      deps.latestRespawn ?? (await import('./events/await/psu-pty-discovery')).latestRespawnNativeId;
-    const hostNativeId = latestRespawn(ownerId);
-    if (hostNativeId && hostNativeId !== ref.sessionId) return { ...ref, sessionId: hostNativeId };
+    const hostNativeId = deps.latestRespawn
+      ? deps.latestRespawn(ownerId, { allowWithoutHost: !ref })
+      : (await import('./events/await/psu-pty-discovery')).latestRespawnNativeId(ownerId, undefined, {
+          allowWithoutHost: !ref,
+        });
+    if (hostNativeId && hostNativeId !== ref?.sessionId) {
+      return ref
+        ? { ...ref, sessionId: hostNativeId }
+        : { agent: 'claude', sessionId: hostNativeId, sessionKey: null, transcriptOwner: null };
+    }
   } catch {
     /* fall through to rung 4 */
   }
@@ -442,7 +457,11 @@ export async function resolveSessionRefReconciled(
     const newest = newestTranscript(ownerId);
     if (newest && isFresh(newest)) {
       const id = path.basename(newest, '.jsonl');
-      if (id && id !== ref.sessionId) return { ...ref, sessionId: id };
+      if (id && id !== ref?.sessionId) {
+        return ref
+          ? { ...ref, sessionId: id }
+          : { agent: 'claude', sessionId: id, sessionKey: null, transcriptOwner: ownerId };
+      }
     }
   } catch {
     /* fall through */
@@ -647,7 +666,9 @@ async function resolveLiveTranscriptPath(ownerId: string): Promise<string | null
   let p: string | null = null;
   if (ref.sessionId) {
     try {
-      p = await findSessionTranscript(ref.sessionId, { owner: ownerId });
+      p = await findSessionTranscript(ref.sessionId, {
+        owner: ref.transcriptOwner === undefined ? ownerId : ref.transcriptOwner,
+      });
     } catch {
       p = null;
     }
@@ -883,7 +904,9 @@ export async function detectContextDeathForOwner(ownerId: string): Promise<boole
     const ref = await resolveSessionRefReconciled(ownerId);
     if (!ref?.sessionId || ref.agent === 'omp' || ref.agent === 'codex') return false;
     const { findSessionTranscript } = await import('./claude-sessions');
-    const p = await findSessionTranscript(ref.sessionId, { owner: ownerId });
+    const p = await findSessionTranscript(ref.sessionId, {
+      owner: ref.transcriptOwner === undefined ? ownerId : ref.transcriptOwner,
+    });
     if (!p) return false;
     const size = fs.statSync(p).size;
     const start = Math.max(0, size - DEATH_TAIL_BYTES);

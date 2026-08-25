@@ -56,6 +56,47 @@ describe('deriveLastRespawnOutcome', () => {
     expect(out.reason).toBeUndefined();
   });
 
+  it('counts only respawned mode=carry-respawn as a requested cut', () => {
+    const firstRealWindow = [
+      {
+        ts: '2026-08-22T20:00:35.220Z',
+        kind: 'respawned',
+        mode: 'carry-respawn',
+        nativeId: '895c7c97-6cf4-4585-837d-238c7fdd93e3',
+      },
+    ];
+    expect(deriveLastRespawnOutcome(firstRealWindow, { now: NOW }).outcome).toBe('delivered');
+  });
+
+  it('a newer Claude self-relaunch does NOT turn an unresolved requested cut into success', () => {
+    const rows = [
+      {
+        ts: '2026-08-23T13:30:52.272Z',
+        kind: 'respawn-rearm-queued',
+        mode: 'carry-respawn',
+        reason: 'busy-gate-expired',
+        capMs: 360_000,
+      },
+      {
+        ts: '2026-08-24T10:24:32.892Z',
+        kind: 'respawned',
+        mode: 'self-relaunch',
+        nativeId: '508c7f43-133b-4abf-9fcb-f9bf11f7a8fc',
+      },
+    ];
+    const out = deriveLastRespawnOutcome(rows, { now: Date.parse('2026-08-24T10:30:00.000Z') });
+    expect(out).toMatchObject({ outcome: 'pending', reason: 'busy-gate-expired', capMs: 360_000 });
+    expect(isOrphanedPendingRespawn(out)).toBe(true);
+  });
+
+  it('a self-relaunch with no carry request is not fabricated into carry history', () => {
+    const out = deriveLastRespawnOutcome(
+      [{ ts: '2026-08-24T21:36:04.643Z', kind: 'respawned', mode: 'self-relaunch', nativeId: '21dfdd94' }],
+      { now: NOW },
+    );
+    expect(out).toEqual({ outcome: 'none' });
+  });
+
   it('reports `pending` while a re-poll is still in flight, including after a supersede', () => {
     expect(
       deriveLastRespawnOutcome([{ ts: '2026-08-04T00:28:00.818Z', kind: 'respawn-rearm-queued' }], { now: NOW })

@@ -193,6 +193,17 @@ export interface PtyHostEvent {
   [k: string]: unknown;
 }
 
+export interface LatestRespawnNativeIdOptions {
+  /**
+   * Admit the newest owner-scoped respawn event when the discovery file is
+   * absent. This is intentionally opt-in: a normal DB-anchored reconcile must
+   * keep the current-host startedAt fence, while an owner with NO adv_sessions
+   * row has no primary anchor to protect and may only be recoverable from the
+   * self-relaunch hook's durable event (WI-41504).
+   */
+  allowWithoutHost?: boolean;
+}
+
 /**
  * The tail of an owner's lifecycle ledger, parsed, OLDEST-FIRST.
  *
@@ -270,19 +281,26 @@ export function readHostEventTail(
 export function latestRespawnNativeId(
   ownerId: string,
   dir: string = PSU_PTY_DIR,
+  opts: LatestRespawnNativeIdOptions = {},
 ): string | null {
   try {
     const startedAt = hostStartedAt(ownerId, dir);
-    if (startedAt == null) return null;
+    if (startedAt == null && !opts.allowWithoutHost) return null;
     // Scan backwards: the newest respawn wins.
     const events = readHostEventTail(ownerId, dir, RESPAWN_SCAN_TAIL_BYTES);
     for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i] as { kind?: unknown; nativeId?: unknown; ts?: unknown };
+      const ev = events[i] as { kind?: unknown; mode?: unknown; nativeId?: unknown; ts?: unknown };
       // Drill respawns rotate the native id exactly like a real one.
       if (ev.kind !== 'respawned' && ev.kind !== 'carry-drill-respawned') continue;
+      // With no discovery file, the ONLY trustworthy producer is the Claude
+      // recovery hook: it writes owner-scoped mode=self-relaunch after deriving
+      // the new coord identity and native id together. A carry/drill row without
+      // current-host metadata could belong to an older host incarnation, which
+      // is exactly what the normal startedAt fence prevents us from trusting.
+      if (startedAt == null && ev.mode !== 'self-relaunch') return null;
       // A respawn from a PREVIOUS host (and everything before it) is history.
       const ts = typeof ev.ts === 'string' ? Date.parse(ev.ts) : NaN;
-      if (!Number.isFinite(ts) || ts < startedAt) return null;
+      if (!Number.isFinite(ts) || (startedAt != null && ts < startedAt)) return null;
       return typeof ev.nativeId === 'string' && ev.nativeId ? ev.nativeId : null;
     }
     return null;

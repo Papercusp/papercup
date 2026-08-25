@@ -22,6 +22,7 @@ const {
   setLimitMock,
   deathMock,
   resolveSessionRefMock,
+  resolveSessionRefReconciledMock,
   resolveLaunchLimitMock,
   openEscalationMock,
   getFlagMock,
@@ -42,6 +43,15 @@ const {
   deathMock: vi.fn(async (_owner: string) => false),
   resolveSessionRefMock: vi.fn(
     async (_owner: string) => null as null | { agent: string | null; sessionId: string | null; sessionKey?: number | null },
+  ),
+  resolveSessionRefReconciledMock: vi.fn(
+    async (_owner: string) =>
+      null as null | {
+        agent: string | null;
+        sessionId: string | null;
+        sessionKey?: number | null;
+        transcriptOwner?: string | null;
+      },
   ),
   // P-005 per-member-declarative-launch-specs: an EXPLICIT psu --compaction-limit
   // on the recorded launch argv. Default null (no override) keeps every existing
@@ -75,7 +85,7 @@ vi.mock('../compaction-usage', () => ({
   // reasoning as resolveLiveTranscriptPath in compaction-usage.ts) — route it
   // to the SAME configurable mock so every existing resolveSessionRefMock
   // stub in this file keeps driving both import names identically.
-  resolveSessionRefReconciled: resolveSessionRefMock,
+  resolveSessionRefReconciled: resolveSessionRefReconciledMock,
   resolveLaunchCompactionLimitForOwner: resolveLaunchLimitMock,
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({
@@ -211,6 +221,7 @@ beforeEach(() => {
   // session-ref it falls back to newest-transcript-under-owner, so give it one.
   newestTranscriptMock.mockReturnValue('/tmp/live-session.jsonl');
   resolveSessionRefMock.mockResolvedValue(null);
+  resolveSessionRefReconciledMock.mockImplementation((owner: string) => resolveSessionRefMock(owner));
   buildOwnerRespawnMock.mockResolvedValue({
     systemPromptAddendum: 'deterministic carry',
     firstPrompt: null,
@@ -1310,6 +1321,28 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     for (let i = 0; i < 3; i++) last = await checkCompactionCompliance(fakeSql({ seeded: codexSeeded }));
     expect(last!.bootConfigAlerts).toEqual([
       { owner: 'codex-sess', kind: 'dark-telemetry', detail: '3 null sweeps' },
+    ]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT exempt a raw NULL adv_sessions owner when reconciliation recovers a real Claude session', async () => {
+    const recovered = [{ owner_id: 'recovered-no-row', owner_label: 'su · recovered', compaction_limit: 300_000 }];
+    estimateMock.mockResolvedValue(null);
+    // The incident shape: the primary DB row is absent, but the owner-scoped
+    // self-relaunch event recovered the live native id. The synthetic-principal
+    // exemption must consult the reconciled result or it clears a real session's
+    // null streak and leaves the context-death detector permanently dark.
+    resolveSessionRefMock.mockResolvedValue(null);
+    resolveSessionRefReconciledMock.mockResolvedValue({
+      agent: 'claude',
+      sessionId: '21dfdd94-current',
+      sessionKey: null,
+      transcriptOwner: null,
+    });
+    let last;
+    for (let i = 0; i < 3; i++) last = await checkCompactionCompliance(fakeSql({ seeded: recovered }));
+    expect(last!.bootConfigAlerts).toEqual([
+      { owner: 'recovered-no-row', kind: 'dark-telemetry', detail: '3 null sweeps' },
     ]);
     expect(openEscalationMock).toHaveBeenCalledTimes(1);
   });
