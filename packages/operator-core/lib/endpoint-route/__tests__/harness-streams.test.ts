@@ -1,5 +1,77 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+type CapturedSink = {
+  event(name: string, data: unknown): void;
+  done(data?: unknown): void;
+  close(): void;
+  onClose(fn: () => void): void;
+  readonly closed: boolean;
+};
+type CapturedSetup = (sink: CapturedSink) => Promise<void>;
+
+const routeProbe = vi.hoisted(() => ({
+  events: [] as Array<{ name: string; data: unknown }>,
+  setup: null as (() => Promise<void>) | null,
+}));
+const resolverProbe = vi.hoisted(() => ({
+  codexByUuid: vi.fn(async () => null as string | null),
+}));
+const dbSql = vi.hoisted(() => vi.fn((strings: TemplateStringsArray) => {
+  const query = strings.join('');
+  if (query.includes('session_turn_parts')) return Promise.resolve([]);
+  if (query.includes('session_turns') && query.includes('left(text')) {
+    return Promise.resolve([
+      { turn_idx: 0, ts: '2026-08-25T03:40:40.424Z', speaker: 'user', text: 'durable wake' },
+      { turn_idx: 1, ts: '2026-08-25T03:40:42.267Z', speaker: 'assistant', text: 'durable answer' },
+    ]);
+  }
+  if (query.includes('session_turns')) {
+    return Promise.resolve([
+      { turn_idx: 0, ts: '2026-08-25T03:40:40.424Z' },
+      { turn_idx: 1, ts: '2026-08-25T03:40:42.267Z' },
+    ]);
+  }
+  return Promise.resolve([]);
+}));
+
+vi.mock('@papercusp/sse', () => ({
+  sseResponse: (opts: { setup: CapturedSetup }) => {
+    routeProbe.events = [];
+    let closed = false;
+    const sink: CapturedSink = {
+      event(name, data) { routeProbe.events.push({ name, data }); },
+      done(data) { routeProbe.events.push({ name: 'done', data }); closed = true; },
+      close() { closed = true; },
+      onClose() {},
+      get closed() { return closed; },
+    };
+    routeProbe.setup = () => opts.setup(sink);
+    return new Response(null, { status: 200 });
+  },
+}));
+vi.mock('@papercusp/scheduled-registry', () => ({
+  managedSetInterval: () => ({ stop: vi.fn() }),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: dbSql }),
+}));
+vi.mock('../../claude-sessions', () => ({
+  resolveInteractiveTranscript: vi.fn(async () => null),
+  SESSION_THINKING_ACTIVE_MS: 30_000,
+}));
+vi.mock('../../session-transcript-resolvers', () => ({
+  findCodexRolloutPath: vi.fn(async () => null),
+  findCodexRolloutPathByUuid: resolverProbe.codexByUuid,
+  findOmpSessionPath: vi.fn(async () => null),
+}));
+vi.mock('../../session-timeline-parsers', () => ({
+  createCodexTimelineParser: vi.fn(() => ({ parseLine: () => [], flush: () => [] })),
+  createOmpTimelineParser: vi.fn(() => ({ parseLine: () => [], flush: () => [] })),
+}));
+
 import {
+  default as streamRoutes,
   parseAgentTimelineChunks,
   capEntryText,
   THINKING_ENTRY_TEXT_CAP,
@@ -22,6 +94,13 @@ import {
   HARNESS_STREAM_FEATURE_TEXT_CAP,
   HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES,
 } from '../routes/harness/streams';
+
+beforeEach(() => {
+  routeProbe.events = [];
+  routeProbe.setup = null;
+  resolverProbe.codexByUuid.mockClear();
+  dbSql.mockClear();
+});
 
 const utf8Bytes = (value: string) => new TextEncoder().encode(value).byteLength;
 
@@ -450,5 +529,32 @@ describe('DB-primary history backfill (session-turn-storage-2026-07-28 P-008/P-0
       expect(positionalScanLimit(200, true)).toBe(POSITIONAL_SCAN_CEILING);
       expect(positionalScanLimit(5000, true)).toBe(POSITIONAL_SCAN_CEILING);
     });
+  });
+});
+
+describe('live session DB fallback (WI-41527)', () => {
+  it('serves durable turns when a live session has no resolvable transcript file', async () => {
+    const route = streamRoutes.find((r) => r.path === '/adv/session/thinking');
+    expect(route).toBeDefined();
+
+    const response = await route!.handler(
+      new Request('http://localhost/api/adv/session/thinking?codexRolloutId=missing-transcript'),
+      {} as never,
+    );
+    expect(response.status).toBe(200);
+    expect(routeProbe.setup).not.toBeNull();
+
+    resolverProbe.codexByUuid.mockResolvedValueOnce(null);
+    await routeProbe.setup!();
+
+    expect(resolverProbe.codexByUuid).toHaveBeenCalledWith('missing-transcript');
+    expect(routeProbe.events).toContainEqual({
+      name: 'backfill',
+      data: [
+        { kind: 'prompt', text: 'durable wake', ts: '2026-08-25T03:40:40.424Z' },
+        { kind: 'text', text: 'durable answer', ts: '2026-08-25T03:40:42.267Z' },
+      ],
+    });
+    expect(routeProbe.events).toContainEqual({ name: 'thinking', data: { active: false } });
   });
 });

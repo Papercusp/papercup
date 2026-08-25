@@ -1642,12 +1642,15 @@ const sessionThinkingStream = defineTool({
           return;
         } else {
           // No transcript file YET — for a LIVE session that hasn't taken its
-          // first turn this is "waiting", NOT "run ended": send the empty
-          // backfill (the pane shows its waiting/stalled state, no eternal
-          // "connecting…") and keep the stream open — the tick below re-resolves
-          // until the file appears, then backfills + follows it. `done` here
-          // (the old behavior) misread every just-launched queen as ended.
-          sink.event('backfill', []);
+          // first turn this is "waiting", NOT "run ended": serve any durable
+          // history first, then keep the stream open. `fileAvailable:false`
+          // matters here because there is no file to fall back to; the DB copy
+          // is the only surviving history for a live session whose resolver
+          // cannot find its transcript. If the DB has no rows either, emit the
+          // honest empty snapshot (no eternal "connecting…") and let the tick
+          // below re-resolve until the file appears.
+          const served = await backfillFromDb({ fileAvailable: false });
+          if (!served) sink.event('backfill', []);
           emitThinking(false);
         }
 
