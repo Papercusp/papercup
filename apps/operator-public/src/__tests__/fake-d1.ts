@@ -479,33 +479,90 @@ export class FakeKV {
  */
 export class FakeR2 {
   data = new Map<string, Uint8Array>();
-  async head(key: string): Promise<{ size: number } | null> {
+  httpMetadata = new Map<string, R2HTTPMetadata>();
+  customMetadata = new Map<string, Record<string, string>>();
+  etags = new Map<string, string>();
+
+  private object(key: string, withBody: boolean) {
     const v = this.data.get(key);
-    return v ? { size: v.byteLength } : null;
+    if (!v) return null;
+    const etag = this.etags.get(key) ?? `fake-${v.byteLength}`;
+    const httpMetadata = this.httpMetadata.get(key);
+    const customMetadata = this.customMetadata.get(key);
+    const base = {
+      key,
+      version: '1',
+      size: v.byteLength,
+      etag,
+      httpEtag: `"${etag}"`,
+      checksums: { toJSON: () => ({}) },
+      uploaded: new Date(0),
+      httpMetadata,
+      customMetadata,
+      storageClass: 'Standard',
+      writeHttpMetadata(headers: Headers) {
+        if (httpMetadata?.contentType) headers.set('content-type', httpMetadata.contentType);
+        if (httpMetadata?.cacheControl) headers.set('cache-control', httpMetadata.cacheControl);
+        if (httpMetadata?.contentDisposition) headers.set('content-disposition', httpMetadata.contentDisposition);
+      },
+    };
+    if (!withBody) return base;
+    const copy = new Uint8Array(v);
+    return {
+      ...base,
+      body: new Response(copy).body as ReadableStream<Uint8Array>,
+      bodyUsed: false,
+      async arrayBuffer() {
+        return copy.buffer.slice(copy.byteOffset, copy.byteOffset + copy.byteLength) as ArrayBuffer;
+      },
+      async bytes() { return new Uint8Array(copy); },
+      async text() { return new TextDecoder().decode(copy); },
+      async json<T>() { return JSON.parse(new TextDecoder().decode(copy)) as T; },
+      async blob() { return new Blob([copy]); },
+    };
   }
-  async put(key: string, value: ArrayBuffer | Uint8Array | string, _opts?: unknown): Promise<{ size: number }> {
+
+  async head(key: string): Promise<ReturnType<FakeR2['object']>> {
+    return this.object(key, false);
+  }
+
+  async put(
+    key: string,
+    value: ArrayBuffer | Uint8Array | string,
+    opts: {
+      onlyIf?: { etagDoesNotMatch?: string };
+      httpMetadata?: R2HTTPMetadata | Headers;
+      customMetadata?: Record<string, string>;
+    } = {},
+  ): Promise<ReturnType<FakeR2['object']>> {
+    if (opts.onlyIf?.etagDoesNotMatch === '*' && this.data.has(key)) return null;
     const bytes =
       typeof value === 'string'
         ? new TextEncoder().encode(value)
         : value instanceof Uint8Array
           ? value
           : new Uint8Array(value);
-    this.data.set(key, bytes);
-    return { size: bytes.byteLength };
+    this.data.set(key, new Uint8Array(bytes));
+    const httpMetadata = opts.httpMetadata instanceof Headers
+      ? { contentType: opts.httpMetadata.get('content-type') ?? undefined }
+      : opts.httpMetadata;
+    if (httpMetadata) this.httpMetadata.set(key, httpMetadata);
+    else this.httpMetadata.delete(key);
+    if (opts.customMetadata) this.customMetadata.set(key, { ...opts.customMetadata });
+    else this.customMetadata.delete(key);
+    this.etags.set(key, `fake-${this.etags.size + 1}-${bytes.byteLength}`);
+    return this.object(key, false);
   }
-  async get(
-    key: string,
-  ): Promise<{ body: ReadableStream<Uint8Array>; size: number; writeHttpMetadata: (h: Headers) => void } | null> {
-    const v = this.data.get(key);
-    if (!v) return null;
-    return {
-      size: v.byteLength,
-      body: new Response(v).body as ReadableStream<Uint8Array>,
-      writeHttpMetadata: (_h: Headers) => {},
-    };
+
+  async get(key: string): Promise<ReturnType<FakeR2['object']>> {
+    return this.object(key, true);
   }
+
   async delete(key: string): Promise<void> {
     this.data.delete(key);
+    this.httpMetadata.delete(key);
+    this.customMetadata.delete(key);
+    this.etags.delete(key);
   }
 }
 
@@ -515,6 +572,7 @@ export function makeEnv(overrides: Partial<Env> = {}): { env: Env; store: FakeSt
   const env = {
     DB: db,
     COUNTERS: new FakeKV() as unknown as KVNamespace,
+    ARTIFACTS: r2 as unknown as R2Bucket,
     GITHUB_CLIENT_ID: 'test',
     GITHUB_CLIENT_SECRET: 'test',
     IP_HASH_PEPPER: 'test-pepper',
