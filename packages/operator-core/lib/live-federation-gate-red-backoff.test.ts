@@ -24,7 +24,7 @@
  * The TTL is longer than the downgrade TTL on purpose: a starvation downgrade is ENVIRONMENTAL
  * and may clear on its own, whereas a RED is a STABLE code fact that re-running cannot change.
  *
- * STATIC leg: pins the marker's single writer, its two clearers, and the ordering/nesting the
+ * STATIC leg: pins the marker's single writer, every non-red clearer, and the ordering/nesting the
  * three asymmetries above depend on.
  * BEHAVIORAL leg: evals the REAL fresh-exit block and the REAL stamp block out of the shipping
  * script under bash against a scratch state dir, proving each branch fires on the state it
@@ -132,13 +132,14 @@ describe('live-federation gate: a RED backs off instead of re-running the full h
     expect(gate.match(/red_tracked=0/g) ?? []).toHaveLength(1);
   });
 
-  it('clears last-red on every non-red outcome (green, starvation, build-lock and source-lock skip)', () => {
+  it('clears last-red on every non-red outcome (green, starvation, and all build-contention skips)', () => {
     // Otherwise the longer red TTL keeps governing after the state has moved on.
-    // 4 clear sites: the GREEN stamp, the starvation downgrade, the build-lock skip, and —
-    // since EI-21266997625575412 — the build-SOURCE-lock skip (an active source edit
-    // overlapped the build error: the same non-red-outcome shape as build-lock contention).
+    // 5 clear sites: the GREEN stamp, the starvation downgrade, the build-lock skip,
+    // the dependency-generation skip added by WI-40905, and — since
+    // EI-21266997625575412 — the build-SOURCE-lock skip (an active source edit overlapped
+    // the build error: the same non-red-outcome shape as build-lock contention).
     const clears = gate.match(/rm -f[^\n]*last-red/g) ?? [];
-    expect(clears).toHaveLength(4);
+    expect(clears).toHaveLength(5);
     const green = extractLine(/^\s*echo "\$\(now_s\)" >"\$STATE_DIR\/last-green"[^\n]*$/m, 'the GREEN stamp line');
     expect(green, 'the GREEN path must clear the red backoff').toContain('last-red');
 
@@ -148,6 +149,15 @@ describe('live-federation gate: a RED backs off instead of re-running the full h
     expect(buildLockBranch).toContain('>"$STATE_DIR/last-downgrade"');
     expect(buildLockBranch).toContain('rm -f "$STATE_DIR/last-red"');
     expect(buildLockBranch).toContain('GATE: SKIPPED-BUILD-LOCK-CONTENTION');
+
+    // Dependency snapshot churn is also contention, not a product verdict. It must
+    // invalidate any older red backoff so the shorter downgrade retry governs next.
+    const dependencyStart = gate.indexOf('if [ -n "$BUILD_DEPENDENCY_CONTENTION" ]; then');
+    const dependencyEnd = gate.indexOf('\n  fi', dependencyStart);
+    const dependencyBranch = gate.slice(dependencyStart, dependencyEnd);
+    expect(dependencyBranch).toContain('>"$STATE_DIR/last-downgrade"');
+    expect(dependencyBranch).toContain('rm -f "$STATE_DIR/last-red"');
+    expect(dependencyBranch).toContain('GATE: SKIPPED-DEPENDENCY-CONTENTION');
 
     // The build-SOURCE-lock skip is the same non-red outcome one layer down (an active
     // source edit overlapped the build error), so it must clear the red backoff the same
