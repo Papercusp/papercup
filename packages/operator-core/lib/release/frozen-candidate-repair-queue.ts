@@ -105,6 +105,13 @@ export type FrozenRepairQueueDecision =
       recordVerdict: false;
     }
   | {
+      kind: 'recover-dead-fixer';
+      fixerSpawnId: string;
+      repairHead: string;
+      runSuite: false;
+      recordVerdict: false;
+    }
+  | {
       kind: 'wait-for-fixer';
       fixerSpawnId: string;
       liveness: 'live' | 'unknown';
@@ -166,6 +173,30 @@ export interface FrozenRepairQueueObservation {
   fixerAlive?: boolean | null;
   /** Required only after a repair verified green. `null` means not measured yet. */
   stagingContainsRepair?: boolean | null;
+}
+
+export interface FrozenRepairQueueDiagnostic {
+  phase: FrozenCandidateRepairPhase;
+  candidate: string;
+  repairHead: string;
+  attempts: number;
+  openedAtMs: number;
+  updatedAtMs: number;
+  ageMs: number;
+  maxAgeMs: number;
+  ageExpired: boolean;
+  fixerSpawnId: string | null;
+  fixerAlive: boolean | null;
+  dispatchReservation: {
+    token: string;
+    claimedAtMs: number;
+    expiresAtMs: number;
+    active: boolean;
+  } | null;
+  decision: FrozenRepairQueueDecision['kind'];
+  retireAllowed: boolean;
+  retireRefusal: 'live-fixer' | 'liveness-unknown' | 'active-dispatch-reservation' | 'unsafe-phase' | null;
+  nextAction: string | null;
 }
 
 function nonBlank(value: unknown): value is string {
@@ -359,6 +390,25 @@ export function decideFrozenCandidateRepairQueue(
     };
   }
 
+  // A dispatch lease serializes launchers; it is not liveness authority for a fixer that
+  // already exists. Recover the definitively-dead fixer first so a stale lease cannot hide
+  // its finished worktree or wedge the queue until expiry. The caller persists the recovered
+  // state, then re-runs this policy so the normal age/attempt limits still decide whether a
+  // replacement may launch.
+  if (
+    queue.phase === 'awaiting-fixer' &&
+    queue.fixerSpawnId &&
+    observation.fixerAlive === false
+  ) {
+    return {
+      kind: 'recover-dead-fixer',
+      fixerSpawnId: queue.fixerSpawnId,
+      repairHead: queue.repairHead,
+      runSuite: false,
+      recordVerdict: false,
+    };
+  }
+
   const ageMs = Math.max(0, observation.nowMs - queue.openedAtMs);
   // Going green inside the budget satisfies D-001 even if promotion bookkeeping crosses the
   // boundary a moment later. The normal promotion freshness checks still apply downstream.
@@ -459,6 +509,56 @@ export function decideFrozenCandidateRepairQueue(
   };
 }
 
+/** One normalized, bounded read model shared by every release diagnostic surface. */
+export function diagnoseFrozenCandidateRepairQueue(
+  queue: FrozenCandidateRepairQueue | null,
+  observation: FrozenRepairQueueObservation,
+  limits: FrozenRepairQueueLimits = DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
+): FrozenRepairQueueDiagnostic | null {
+  if (!queue) return null;
+  const decision = decideFrozenCandidateRepairQueue(queue, observation, limits);
+  const ageMs = Math.max(0, observation.nowMs - queue.openedAtMs);
+  const reservation = queue.dispatchReservation
+    ? {
+        ...queue.dispatchReservation,
+        active: queue.dispatchReservation.expiresAtMs > observation.nowMs,
+      }
+    : null;
+  const fixerAlive = queue.fixerSpawnId ? (observation.fixerAlive ?? null) : null;
+  const safePhase = queue.phase === 'awaiting-fixer' || queue.phase === 'blocked';
+  const retireRefusal = !safePhase
+    ? 'unsafe-phase'
+    : reservation?.active
+      ? 'active-dispatch-reservation'
+      : queue.fixerSpawnId && fixerAlive === true
+        ? 'live-fixer'
+        : queue.fixerSpawnId && fixerAlive === null
+          ? 'liveness-unknown'
+          : null;
+  const retireAllowed = retireRefusal === null;
+  const nextAction = retireAllowed
+    ? `release:repair-queue { op: 'retire', expectedCandidate: '${queue.candidate}', expectedRepairHead: '${queue.repairHead}', expectedUpdatedAtMs: ${queue.updatedAtMs}, reason: '<why this exact non-live queue is terminal>', confirm: true }`
+    : null;
+  return {
+    phase: queue.phase,
+    candidate: queue.candidate,
+    repairHead: queue.repairHead,
+    attempts: queue.attempts,
+    openedAtMs: queue.openedAtMs,
+    updatedAtMs: queue.updatedAtMs,
+    ageMs,
+    maxAgeMs: limits.maxAgeMs,
+    ageExpired: ageMs >= limits.maxAgeMs,
+    fixerSpawnId: queue.fixerSpawnId,
+    fixerAlive,
+    dispatchReservation: reservation,
+    decision: decision.kind,
+    retireAllowed,
+    retireRefusal,
+    nextAction,
+  };
+}
+
 /** A first red transitions the already-persisted candidate into repair without changing C. */
 export function markFrozenCandidateVerificationRed(
   queue: FrozenCandidateRepairQueue,
@@ -511,6 +611,24 @@ export function markFrozenRepairFixerDispatched(
     attempts: queue.attempts + 1,
     updatedAtMs: input.nowMs,
     fixerSpawnId: input.spawnId,
+  };
+}
+
+/** Persist recovery of a definitively-dead fixer before age/reservation policy runs again. */
+export function markFrozenRepairFixerDead(
+  queue: FrozenCandidateRepairQueue,
+  input: { spawnId: string; nowMs: number },
+): FrozenCandidateRepairQueue {
+  requirePhase(queue, 'awaiting-fixer', 'mark fixer dead');
+  assertTimestamp(input.nowMs, 'nowMs');
+  if (queue.fixerSpawnId !== input.spawnId) {
+    throw new Error(`stale fixer death for ${input.spawnId}; queue expects ${queue.fixerSpawnId ?? 'none'}`);
+  }
+  const { dispatchReservation: _reservation, ...withoutReservation } = queue;
+  return {
+    ...withoutReservation,
+    fixerSpawnId: null,
+    updatedAtMs: input.nowMs,
   };
 }
 
