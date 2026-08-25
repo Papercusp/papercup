@@ -105,6 +105,35 @@ export function validateRatification(
       });
     }
     seen.add(c.caseId);
+
+    /**
+     * A required case must be contracted at the SAME environment as the
+     * reference itself (D-019, surfaced by P-007).
+     *
+     * A revision carries exactly one reference IMAGE, and `compare_render`
+     * refuses — before any engine — a capture whose environment does not match
+     * `referenceEnvironment`, because comparing a 1280x800 reference against a
+     * 390x844 render measures the viewport difference rather than fidelity. So
+     * a required case at any other environment can never be satisfied by any
+     * comparison: every attempt returns `invalid: environment-mismatch`.
+     *
+     * Left unchecked, that produced a reference which looked stricter than a
+     * single-case one and was in fact permanently unsatisfiable — a gate nobody
+     * could ever pass, discovered only when someone tried. Multi-viewport and
+     * multi-state coverage is expressed as SEVERAL references (one image each),
+     * which the feature-level evidence gate aggregates.
+     */
+    if (!environmentsMatch(c.environment, candidate.referenceEnvironment)) {
+      errors.push({
+        code: 'case-environment-mismatch',
+        message:
+          `required case '${c.caseId}' is contracted at ${describeEnvironment(c.environment)} but the ` +
+          `reference image is contracted at ${describeEnvironment(candidate.referenceEnvironment)}. ` +
+          'A revision carries one image, and a comparison across environments is refused as ' +
+          'environment-mismatch, so this case could never pass. Ratify a separate reference (with its ' +
+          'own image) for each viewport or state that must be covered.',
+      });
+    }
   }
 
   if (previous) {
