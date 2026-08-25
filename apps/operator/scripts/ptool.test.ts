@@ -19,10 +19,12 @@ import {
   stdoutDeliveryError,
   PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
+  PTOOL_COORD_ORIENT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_PLANS_GET_TIMEOUT_MS,
+  PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
@@ -134,7 +136,7 @@ describe('ptool bearer-token resolution', () => {
 
 describe('ptool call deadlines', () => {
   it('keeps the normal liveness ceiling while allowing durable continuations to return', () => {
-    expect(timeoutForTool('coord:send')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('coord:send')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('fleet:launch-on-plan')).toBe(300_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:launch-on-plan' })).toBe(300_000);
     // EI-21388931083718076: the respawn orchestration's client deadline must outlive
@@ -149,6 +151,8 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('plans:new')).toBe(PTOOL_PLANS_NEW_TIMEOUT_MS);
+    expect(PTOOL_PLANS_NEW_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
     expect(timeoutForTool('activity:recent')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
@@ -196,13 +200,17 @@ describe('ptool call deadlines', () => {
       name: 'work_items:checkpoint',
       args: { id: 'WI-41055', checkpoint: 'resume' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('coord:orient')).toBe(60_000);
+    expect(timeoutForTool('coord:orient')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
     expect(timeoutForTool('release:trace')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:presence')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:get',
       args: { slug: 'nonp2p-bug-drain-fleet-2026-08-16', harness: 'papercusp' },
     })).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:new',
+      args: { slug: 'anti-babysitting-monitor-enforcement-2026-08-25', title: 'monitor' },
+    })).toBe(PTOOL_PLANS_NEW_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'release:trace',
       args: { sha: '83805ce3' },
@@ -218,7 +226,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:orient',
       args: {},
-    })).toBe(60_000);
+    })).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'computer:provision_desktop',
       args: { pot: 'papercusp', apps: [] },
@@ -230,7 +238,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:send',
       args: {},
-    })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'templates:new-app',
       args: { template: 'papercusp-android-app', slug: 'demo' },
