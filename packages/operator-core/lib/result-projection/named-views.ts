@@ -44,9 +44,12 @@ export interface NamedViewDef {
   /** Pick paths, in `applyPick` notation (`results[].id`, `gate.stalled`). */
   fields: string[];
   /**
-   * Hard ceiling on the rendered capsule, in characters. Enforced AFTER
-   * selection. Sized well under the result-door's own cap so a capsule is not
-   * itself the thing that trips a spill.
+   * Hard ceiling on the DELIVERED capsule text, in UTF-8 BYTES (the name is
+   * historical; the unit is bytes — see the receipt's field docs). Enforced
+   * AFTER selection at the capsule stage, and RE-enforced at the delivery seam
+   * so the in-band receipt footer cannot push `content[0].text` past it
+   * (capsule + footer ≤ budgetChars). Sized well under the result-door's own
+   * cap so a capsule is not itself the thing that trips a spill.
    */
   budgetChars: number;
   /** One line: what this capsule is FOR. Surfaced when a name misses. */
@@ -315,7 +318,12 @@ export interface NamedViewReceipt {
   budgetChars: number;
   /** Serialized size BEFORE the view selected any fields, in UTF-8 bytes. */
   sourceChars: number;
-  /** Rendered size AFTER selection and any budget enforcement, in UTF-8 bytes. */
+  /**
+   * Rendered size of the CAPSULE text after selection and any budget
+   * enforcement, in UTF-8 bytes. The delivery seam's guarantee is on the SUM:
+   * capsule + '\n' + in-band footer ≤ budgetChars, so at that seam
+   * returnedChars alone reads under this number by at least the footer.
+   */
   returnedChars: number;
   /**
    * Set only when the budget actually bound. Carries the pre-enforcement size,
@@ -529,8 +537,48 @@ function attachNamedViewReceipt<T extends ViewableResult>(
 }
 
 /**
- * Apply a resolved view to a dispatched result: select, enforce the budget,
- * attach the receipt to `_meta.namedView`, and append the in-band footer.
+ * DELIVERY-BUDGET enforcement: the delivered unit is `capsule + '\n' + footer`
+ * — the footer lands in the SAME `content[0].text` the caller pays for, so the
+ * declared budget must bound the SUM, not just the capsule. (Pre-fix, the
+ * footer was appended AFTER budget enforcement, so a capsule trimmed to
+ * exactly the budget was delivered ~a footer's worth OVER it — even for pure
+ * ASCII.) Enforced by re-trimming the capsule AFTER the footer is rendered.
+ *
+ * The footer restates receipt numbers, so trimming changes the footer's own
+ * length; trimming only ever shrinks `returnedChars` (and setting
+ * `budgetEnforced` grows the footer exactly once), so the loop converges —
+ * 2 passes in practice, 4 as a hard bound. Floor: a budget too small to hold
+ * even the marker + footer delivers just those two; no registered view
+ * (budgets ≥ 700) is anywhere near that floor.
+ */
+function enforceDeliveredBudget(text: string, receipt: NamedViewReceipt): string {
+  for (let pass = 0; pass < 4; pass += 1) {
+    const footer = describeNamedView(receipt);
+    const deliveredBytes = utf8ByteLength(text) + 1 + utf8ByteLength(footer);
+    if (deliveredBytes <= receipt.budgetChars) break;
+    const keep = Math.max(
+      0,
+      receipt.budgetChars - utf8ByteLength(footer) - 1 - utf8ByteLength(VIEW_BUDGET_MARKER),
+    );
+    if (!receipt.budgetEnforced) {
+      receipt.budgetEnforced = true;
+      receipt.charsBeforeBudget = utf8ByteLength(text);
+    }
+    // Strip a marker a prior (capsule-stage) trim already appended, so the
+    // re-trim cannot leave a partial marker mid-capsule and never stacks two.
+    const base = text.endsWith(VIEW_BUDGET_MARKER)
+      ? text.slice(0, -VIEW_BUDGET_MARKER.length)
+      : text;
+    text = truncateToUtf8Bytes(base, keep) + VIEW_BUDGET_MARKER;
+    receipt.returnedChars = utf8ByteLength(text);
+  }
+  return text;
+}
+
+/**
+ * Apply a resolved view to a dispatched result: select, enforce the budget
+ * (including the delivered capsule + footer sum), attach the receipt to
+ * `_meta.namedView`, and append the in-band footer.
  *
  * FAIL-SOFT, like every other stage at this seam: a body that will not parse or
  * an error envelope keeps its ORIGINAL payload. It still receives an
@@ -548,10 +596,14 @@ export function applyNamedViewToResult<T extends ViewableResult>(
 
     // An error envelope is not a result being reduced. Preserve it whole, but
     // make the requested view's no-op explicit in both receipt channels.
+    // Receipt sizes are UTF-8 bytes everywhere — `raw.length` would count
+    // UTF-16 code units here, the exact unit bug the budget fix removed.
+    const rawBytes = utf8ByteLength(raw);
+
     if (result.isError) {
       return attachNamedViewReceipt(
         result,
-        namedViewReceipt(resolved, false, raw.length, raw.length),
+        namedViewReceipt(resolved, false, rawBytes, rawBytes),
         idx,
       );
     }
@@ -565,13 +617,17 @@ export function applyNamedViewToResult<T extends ViewableResult>(
     } catch {
       return attachNamedViewReceipt(
         result,
-        namedViewReceipt(resolved, false, raw.length, raw.length),
+        namedViewReceipt(resolved, false, rawBytes, rawBytes),
         idx,
       );
     }
 
-    const { text, receipt } = applyNamedView(body, resolved, raw.length);
-    return attachNamedViewReceipt(result, receipt, idx, receipt.applied ? text : undefined);
+    const { text, receipt } = applyNamedView(body, resolved, rawBytes);
+    if (!receipt.applied) {
+      return attachNamedViewReceipt(result, receipt, idx, undefined);
+    }
+    const bounded = enforceDeliveredBudget(text, receipt);
+    return attachNamedViewReceipt(result, receipt, idx, bounded);
   } catch {
     // Preserve fail-soft behavior even for an unexpected presentation error,
     // but never lose the R3 receipt: metadata-only is still distinguishable

@@ -26,7 +26,7 @@ import {
   takeNamedViewFromArgs,
   viewNamesFor,
 } from './named-views';
-import type { ViewableResult } from './named-views';
+import type { NamedViewDef, ViewableResult } from './named-views';
 
 /**
  * RECORDED SAMPLES — real payload shapes, read off live tool results on
@@ -514,6 +514,174 @@ describe('named result views — seeded registry integrity', () => {
   });
 });
 
+describe('named result views — version-bump guard (committed fingerprint manifest)', () => {
+  /**
+   * THE GUARD THE VERSION CONTRACT NEEDS. `NamedViewDef.version` promises a
+   * bump whenever `fields` or `budgetChars` changes — but the stability test
+   * above compares the registry to ITSELF, which cannot catch an unbumped
+   * change. This manifest is a COMMITTED snapshot keyed `tool/view@vN`: an
+   * unbumped shape change keeps the key but breaks the value (red here); a
+   * bumped change breaks the key (red here, fixed by ADDING the new @vN row —
+   * the deliberate act the contract asks for). Removing a view orphans its row
+   * (red in the reverse check).
+   *
+   * Unit note: `budgetChars` is UTF-8 BYTES. The 2026-08-25 unit fix changed
+   * the unit's MEANING, not the numeric values, so no version was bumped.
+   */
+  const shapeOf = (def: NamedViewDef) => ({
+    budgetChars: def.budgetChars,
+    fields: [...def.fields],
+  });
+
+  const MANIFEST: Record<string, { budgetChars: number; fields: string[] }> = {
+    'dev:pipeline_position/verdict@v1': {
+      budgetChars: 900,
+      fields: [
+        'blockedOn',
+        'nextAction',
+        'summary',
+        'positions.committedLocal',
+        'positions.onStaging',
+        'positions.inMain',
+        'positions.deployed',
+      ],
+    },
+    'dev:pipeline_position/gate@v1': {
+      budgetChars: 700,
+      fields: [
+        'gate.stalled',
+        'gate.consecutiveReds',
+        'gate.verdictStale',
+        'gate.verdictStaleReasonCode',
+        'gate.ownership.workItem',
+        'gate.ownership.claimState',
+        'changeInCandidate.judgingContainsPath',
+        'changeInCandidate.missingReason',
+      ],
+    },
+    'coord:orient/recovery-critical@v2': {
+      budgetChars: 4800,
+      fields: [
+        'self',
+        'recovery',
+        'instructionPrecedence.schemaVersion',
+        'instructionPrecedence.watermark',
+        'instructionPrecedence.effectiveMission',
+        'codexLocks',
+      ],
+    },
+    'coord:orient/monitor@v3': {
+      budgetChars: 2800,
+      fields: [
+        'self',
+        'recovery.loop',
+        'me.summary',
+        'me.agents[].agentId',
+        'me.agents[].alive',
+        'me.agents[].sessionState',
+        'me.agents[].selfWake',
+        'me.agents[].verdict',
+        'me.agents[].claims[].id',
+        'me.agents[].claims[].status',
+        'me.agents[].doing.id',
+        'me.agents[].doing.status',
+        'me.agents[].isSelf',
+        'inbox.summary',
+        'codexLocks.lockMode',
+        'codexLocks.generation',
+      ],
+    },
+    'work_items:get/recovery-critical@v1': {
+      budgetChars: 5400,
+      fields: [
+        'ok',
+        'results[].ok',
+        'results[].id',
+        'results[].workItem.state',
+        'results[].workItem.title',
+        'results[].workItem.assignee',
+        'results[].workItem.harness',
+        'results[].holder',
+        'results[].checkpoint',
+        'results[].checkpointAgeMs',
+        'results[].checkpointUpdatedAtMs',
+        'counts',
+      ],
+    },
+    'work_items:get/monitor@v1': {
+      budgetChars: 1400,
+      fields: [
+        'ok',
+        'results[].ok',
+        'results[].id',
+        'results[].workItem.state',
+        'results[].workItem.assignee',
+        'results[].workItem.lastProgressAt',
+        'results[].workItem.updatedAt',
+        'results[].holder',
+        'results[].checkpointAgeMs',
+        'results[].checkpointUpdatedAtMs',
+        'counts',
+      ],
+    },
+    'work_items:get/capsule@v1': {
+      budgetChars: 2400,
+      fields: [
+        'results[].id',
+        'results[].workItem.state',
+        'results[].workItem.title',
+        'results[].workItem.assignee',
+        'results[].workItem.harness',
+        'results[].checkpoint',
+      ],
+    },
+    'work_items:get/roster@v1': {
+      budgetChars: 1200,
+      fields: ['results[].id', 'results[].workItem.state', 'results[].workItem.assignee', 'counts'],
+    },
+    'plans:get/capsule@v1': {
+      budgetChars: 1800,
+      fields: [
+        'results[].slug',
+        'results[].frontmatter.status',
+        'results[].frontmatter.title',
+        'results[].now.state',
+        'results[].now.next',
+        'results[].counts',
+      ],
+    },
+  };
+
+  it('every registered view matches its committed fingerprint (change shape ⇒ bump the version)', () => {
+    for (const [tool, views] of Object.entries(NAMED_VIEWS)) {
+      for (const [name, def] of Object.entries(views)) {
+        const key = `${tool}/${name}@v${def.version}`;
+        expect(
+          MANIFEST[key],
+          `${key} has no committed fingerprint — a new view or a version bump must ADD its manifest row here`,
+        ).toBeDefined();
+        expect(
+          shapeOf(def),
+          `${key}: fields/budgetChars drifted WITHOUT a version bump — bump NamedViewDef.version and add the new @v row (the old row goes red as an orphan)`,
+        ).toEqual(MANIFEST[key]);
+      }
+    }
+  });
+
+  it('no orphan manifest rows: every committed fingerprint still names a live view@version', () => {
+    const live = new Set(
+      Object.entries(NAMED_VIEWS).flatMap(([tool, views]) =>
+        Object.entries(views).map(([name, def]) => `${tool}/${name}@v${def.version}`),
+      ),
+    );
+    for (const key of Object.keys(MANIFEST)) {
+      expect(live.has(key), `${key} is in the manifest but not the registry — remove the stale row`).toBe(
+        true,
+      );
+    }
+  });
+});
+
 describe('named result views — dispatch seam', () => {
   // Annotated as ViewableResult on purpose: an inferred literal has no `_meta`,
   // and since applyNamedViewToResult is <T extends ViewableResult> => T, the
@@ -605,7 +773,12 @@ describe('named result views — dispatch seam', () => {
     expect(receipt?.view).toBe('capsule');
     expect(receipt?.version).toBe(resolved.def.version);
     expect(receipt?.applied).toBe(true);
-    expect(receipt?.sourceChars).toBe(JSON.stringify(SAMPLE_WORK_ITEMS_GET).length);
+    // UTF-8 bytes, NOT `.length` (UTF-16 units): the sample title's em-dash
+    // makes the two differ (672 vs 670), so this line is a live falsifier for
+    // the dispatch-path unit bug fixed 2026-08-25.
+    expect(receipt?.sourceChars).toBe(
+      Buffer.byteLength(JSON.stringify(SAMPLE_WORK_ITEMS_GET), 'utf8'),
+    );
     expect(receipt?.returnedChars).toBeGreaterThan(0);
     expect(receipt?.fields).toEqual(resolved.def.fields);
 
@@ -615,6 +788,66 @@ describe('named result views — dispatch seam', () => {
     // And the capsule dropped what the view does not declare.
     expect(text).toContain('WI-39401');
     expect(text).not.toContain('"kind"');
+  });
+
+  it('DELIVERY BUDGET: delivered content text (capsule + footer) is bounded by budgetChars', () => {
+    const resolved = resolveNamedView('work_items:get', 'capsule');
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    const budget = resolved.def.budgetChars;
+
+    for (const filler of ['X'.repeat(50_000), '🟩'.repeat(20_000)]) {
+      const out = applyNamedViewToResult(
+        wrap({
+          ...SAMPLE_WORK_ITEMS_GET,
+          results: [{ ...SAMPLE_WORK_ITEMS_GET.results[0], checkpoint: filler }],
+        }),
+        resolved,
+      );
+      const text = (out.content[0] as { text: string }).text;
+      // The guarantee is on what the caller RECEIVES — footer included.
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(budget);
+      // The footer survived the re-trim: the receipt line is part of the
+      // delivered budget, never dropped to make room.
+      expect(text).toContain('view "capsule"');
+      expect(text).toContain('TRIMMED');
+      // Well-formed UTF-8 end to end: the delivery re-trim must not split a
+      // surrogate pair any more than the capsule-stage cut may.
+      const roundTripped = new TextDecoder().decode(new TextEncoder().encode(text));
+      expect(roundTripped).toBe(text);
+      expect(text.includes('�')).toBe(false);
+    }
+  });
+
+  it('DELIVERY BUDGET falsifier (footer-overflow gap): a capsule that FITS is re-trimmed when the footer would overflow', () => {
+    // Pre-fix escape: the footer was appended AFTER budget enforcement, so a
+    // capsule just under the budget was delivered a footer's worth OVER it —
+    // pure ASCII, no multibyte involved. This pins the delivered sum.
+    const resolved = resolveNamedView('work_items:get', 'capsule');
+    expect(resolved.ok).toBe(true);
+    if (!resolved.ok) return;
+    const budget = resolved.def.budgetChars;
+
+    const bodyWith = (checkpoint: string) => ({
+      ...SAMPLE_WORK_ITEMS_GET,
+      results: [{ ...SAMPLE_WORK_ITEMS_GET.results[0], checkpoint }],
+    });
+    // Measure the capsule's fixed overhead so the fill lands the capsule just
+    // UNDER the budget: it passes the capsule-stage ceiling untouched, and
+    // ONLY the appended footer pushes the delivered text over.
+    const overhead = Buffer.byteLength(applyNamedView(bodyWith(''), resolved).text, 'utf8');
+    const fill = budget - overhead - 40;
+    expect(fill).toBeGreaterThan(0);
+    // Control: the capsule alone genuinely fits (the gap needs this premise).
+    const capsuleOnly = applyNamedView(bodyWith('Y'.repeat(fill)), resolved);
+    expect(capsuleOnly.receipt.budgetEnforced).toBeUndefined();
+
+    const out = applyNamedViewToResult(wrap(bodyWith('Y'.repeat(fill))), resolved);
+    const text = (out.content[0] as { text: string }).text;
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(budget);
+    expect(text).toContain('view "capsule"');
+    const receipt = (out._meta as { namedView?: { budgetEnforced?: boolean } }).namedView;
+    expect(receipt?.budgetEnforced).toBe(true);
   });
 
   it('FAIL-SOFT: a non-JSON body stays intact and carries an unapplied receipt', () => {
