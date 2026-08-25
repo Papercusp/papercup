@@ -2218,7 +2218,12 @@ export default defineTool({
     let liveMembers = 0;
     let liveMemberOwnerIds: string[] = [];
     try {
-      const localLive = (await liveFleetMemberIds(fleetSlug, workspaceId)).filter((id) => id !== ownerId);
+      // The audience population intentionally keeps `recorded` owners for durable
+      // delivery; launch sizing needs the narrower runnable-state population so a
+      // warm-dead recorded session cannot suppress its replacement (EI-21406488340926352).
+      const localLive = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch')).filter(
+        (id) => id !== ownerId,
+      );
       let live = localLive;
       if (remotePlacement) {
         // WI-5211: remote members never register in LOCAL coord_presence — they announce
