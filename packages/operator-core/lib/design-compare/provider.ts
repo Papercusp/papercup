@@ -74,7 +74,6 @@ import {
   type CompareResult,
   type EngineCounts,
   type EngineIdentity,
-  type IgnoredRegion,
   type ImplementationTarget,
   type InvalidReason,
   type ReferenceIdentity,
@@ -179,7 +178,6 @@ export interface ComparisonRequest {
   readonly expectedDimensions?: PngDimensions;
 
   readonly capturedAt: string;
-  readonly ignoredRegions?: readonly IgnoredRegion[];
   /** Wall-clock budget for the engine call. Omitted ⇒ no adapter-imposed budget. */
   readonly timeoutMs?: number;
   readonly advisoryNotes?: string;
@@ -222,7 +220,6 @@ function refuse({ request, engine, reason, detail, counts, diffRatio }: RefusalI
     policy: request.policy,
     ...(counts ? { counts } : {}),
     ...(diffRatio !== undefined ? { diffRatio } : {}),
-    ...(request.ignoredRegions ? { ignoredRegions: request.ignoredRegions } : {}),
     capturedAt: request.capturedAt,
     ...(request.advisoryNotes ? { advisoryNotes: request.advisoryNotes } : {}),
   };
@@ -492,7 +489,6 @@ export async function compareAgainstReference(
     counts,
     diffRatio: outcome.diffRatio,
     artifacts,
-    ...(request.ignoredRegions ? { ignoredRegions: request.ignoredRegions } : {}),
     capturedAt: request.capturedAt,
     ...(request.advisoryNotes ? { advisoryNotes: request.advisoryNotes } : {}),
   };
