@@ -225,3 +225,100 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
     ]);
   });
 });
+
+/**
+ * ── P-008: OBLIGATIONS SORT FIRST ────────────────────────────────────────────────────
+ *
+ * Every other derived relation says "we are both near this". An obligation says someone
+ * is WAITING. Sorted alphabetically among dozens of symmetric peers — one live leader in
+ * this workspace supervises 234 — a four-hour-old unanswered consult from a counterpart
+ * who has since died carries the same visual weight as "recent coord exchange", and reads
+ * as "as expected". Ordering is what makes it unmissable.
+ *
+ * ⚠ EVERY CASE BELOW PUTS THE OBLIGATION PEER LATER IN THE ALPHABET ON PURPOSE. An
+ * assertion where the obligation peer also happens to sort first alphabetically would
+ * pass against the OLD purely-alphabetical sort, and would therefore prove nothing — the
+ * vacuous-green shape this file's own fixtures warn about. `su-zzz` before `su-aaa` can
+ * only be produced by the obligation hoist.
+ */
+describe('P-008 — obligations sort above symmetric relations', () => {
+  it('hoists an `owes-me` peer above a symmetric peer that sorts EARLIER alphabetically', () => {
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [
+        d('su-aaa', 'recent coord exchange', 'coord-exchange'),
+        d('su-zzz', 'they owe you a consult reply, open 14m, counterpart ended (conv-1)', 'owes-me'),
+      ],
+      [],
+    );
+    // Alphabetically this is backwards, which is exactly the point.
+    expect(peers.map((p) => p.ownerId)).toEqual(['su-zzz', 'su-aaa']);
+  });
+
+  it('hoists `i-owe` too — a debt YOU owe is equally unmissable', () => {
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [
+        d('su-aaa', 'both awaiting gate:1', 'awaits'),
+        d('su-zzz', 'you owe them a grade, open 2h, counterpart live (EI-1)', 'i-owe'),
+      ],
+      [],
+    );
+    expect(peers.map((p) => p.ownerId)).toEqual(['su-zzz', 'su-aaa']);
+  });
+
+  it('keeps ownerId as the tiebreaker WITHIN each group, so the order stays total', () => {
+    // A partial sort would let identical state render differently between reads, which
+    // the roster etag and every caller depend on not happening.
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [
+        d('su-sym-b', 'recent coord exchange', 'coord-exchange'),
+        d('su-ob-b', 'they owe you a consult reply, open 1h, counterpart live (c2)', 'owes-me'),
+        d('su-sym-a', 'both awaiting gate:1', 'awaits'),
+        d('su-ob-a', 'you owe them a grade, open 3h, counterpart live (c1)', 'i-owe'),
+      ],
+      [],
+    );
+    expect(peers.map((p) => p.ownerId)).toEqual(['su-ob-a', 'su-ob-b', 'su-sym-a', 'su-sym-b']);
+  });
+
+  it('hoists a peer carrying an obligation ALONGSIDE symmetric signals', () => {
+    // A peer can trip several derivations at once; carrying any obligation is enough.
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [
+        d('su-aaa', 'shared lock', 'holds-a-lock-on'),
+        d('su-zzz', 'recent coord exchange', 'coord-exchange'),
+        d('su-zzz', 'they owe you a consult reply, open 9m, counterpart unknown (c3)', 'owes-me'),
+      ],
+      [],
+    );
+    expect(peers[0]?.ownerId).toBe('su-zzz');
+    expect(peers[0]?.derivedRelations).toEqual(['coord-exchange', 'owes-me']);
+  });
+
+  it('leaves a purely symmetric set in plain alphabetical order', () => {
+    // The hoist must not perturb the ordering everyone already relies on when no
+    // obligation is present.
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [
+        d('su-c', 'recent coord exchange', 'coord-exchange'),
+        d('su-a', 'shared lock', 'holds-a-lock-on'),
+        d('su-b', 'both awaiting gate:1', 'awaits'),
+      ],
+      [],
+    );
+    expect(peers.map((p) => p.ownerId)).toEqual(['su-a', 'su-b', 'su-c']);
+  });
+
+  it('sorts a DECLARED-only peer below an obligation (declared carries no relation)', () => {
+    const peers = resolveCoupledPeers(
+      'su-me',
+      [d('su-zzz', 'they owe you a grade, open 5m, counterpart live (c4)', 'i-owe')],
+      [edge('su-me', 'su-aaa', { reason: 'same file' })],
+    );
+    expect(peers.map((p) => p.ownerId)).toEqual(['su-zzz', 'su-aaa']);
+  });
+});
