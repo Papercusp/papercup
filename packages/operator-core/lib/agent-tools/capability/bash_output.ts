@@ -617,22 +617,29 @@ export interface StrandedJobLogInspection {
 // The marker is written only after the child reaches a terminal state and the
 // spill stream is flushed. It is therefore the durable completion evidence for
 // a job whose in-memory BashJob entry was lost, even when the task ledger has not
-// observed the close yet. Anchor at the start of a line so ordinary command
-// output containing the marker prefix cannot become a false terminal verdict.
+// observed the close yet. A confined service runner can write a raw verdict first
+// so reader loss never strands the log; when the operator survives, it appends a
+// later normalized verdict after diagnostics. The LAST matching marker is
+// authoritative. Anchor at the start of a line so ordinary command output
+// containing the marker prefix cannot become a false terminal verdict.
 const JOB_LOG_END_MARKER_RE = new RegExp(
   '^' +
     JOB_LOG_END_MARKER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
     ': status=(completed|failed|killed|timed_out) exit=(null|-?\\d+) at [^\\n]*(?:\\n|$)',
-  'm',
+  'gm',
 );
 
 /** Parse the durable terminal marker from a stranded job log tail. */
 export function parseJobLogEndMarker(log: string): { status: RecoveredJobStatus; exitCode: number | null } | null {
-  const match = JOB_LOG_END_MARKER_RE.exec(log);
-  if (!match) return null;
+  JOB_LOG_END_MARKER_RE.lastIndex = 0;
+  let match: RegExpExecArray | null = null;
+  let latest: RegExpExecArray | null = null;
+  while ((match = JOB_LOG_END_MARKER_RE.exec(log)) !== null) latest = match;
+  JOB_LOG_END_MARKER_RE.lastIndex = 0;
+  if (!latest) return null;
   return {
-    status: match[1] as RecoveredJobStatus,
-    exitCode: match[2] === 'null' ? null : Number(match[2]),
+    status: latest[1] as RecoveredJobStatus,
+    exitCode: latest[2] === 'null' ? null : Number(latest[2]),
   };
 }
 
