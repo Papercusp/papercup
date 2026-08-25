@@ -261,6 +261,22 @@ export interface CaptureImprovementInput {
    * would re-mint a row per wake (D-005 of this plan records the split).
    */
   initialState?: 'done';
+  /**
+   * The agent-facing wrapper sets this for a fresh local change/feature capture so the
+   * durable row is parked before the post-create review enrollment can run. Watchdog and
+   * observation callers omit it; review enrollment is intentionally not a core-wide rule.
+   */
+  reviewRequired?: boolean;
+  /** Harness used by the review lifecycle state writer. */
+  reviewHarness?: string;
+}
+
+export type CaptureReviewFailurePhase = 'block' | 'enrollment' | 'reopen';
+
+export interface AgentReviewFailure {
+  phase: CaptureReviewFailurePhase;
+  message: string;
+  at: string;
 }
 
 export interface PossibleDuplicate {
@@ -430,6 +446,12 @@ export interface CaptureImprovementResult {
    * distinct) — it's recall, not a gate.
    */
   alreadyDecided?: AlreadyDecidedRecall[];
+  /** True only for a fresh agent-facing change/feature row that needs review enrollment. */
+  reviewRequired?: boolean;
+  /** The pre-enrollment lifecycle state that was durably applied. */
+  reviewState?: 'blocked';
+  /** A committed capture whose review lifecycle could not complete. */
+  agentReviewFailure?: AgentReviewFailure;
   hint?: string;
 }
 
@@ -506,6 +528,37 @@ export interface CaptureDeps {
     canonicalId: string;
     canonicalHarness?: string | null;
   }) => Promise<IssueAdmissionPressure | null>;
+  /**
+   * Lifecycle seam for the pre-enrollment review park. Kept injectable so the core's
+   * PG-free tests can prove ordering without importing the large work-items module.
+   */
+  setWorkItemStateWithAliasInfo?: CaptureLifecycleStateWriter;
+}
+
+export interface CaptureLifecycleStateResult {
+  workItem: { id: string; state: string } | null;
+  requestedState?: string;
+  appliedState?: string | null;
+}
+
+export type CaptureLifecycleStateWriter = (
+  id: string,
+  requestedState: 'blocked' | 'open',
+  opts?: { harness?: string; by?: string; reason?: string },
+) => Promise<CaptureLifecycleStateResult>;
+
+const defaultSetWorkItemStateWithAliasInfo: CaptureLifecycleStateWriter = async (id, requestedState, opts) => {
+  const { setWorkItemStateWithAliasInfo } = await import('../../work-items');
+  return setWorkItemStateWithAliasInfo(id, requestedState, opts);
+};
+
+/** Shared lifecycle writer used by the agent wrapper after capture-core returns. */
+export async function setCaptureReviewState(
+  id: string,
+  requestedState: 'blocked' | 'open',
+  opts: { harness?: string; by?: string; reason?: string } = {},
+): Promise<CaptureLifecycleStateResult> {
+  return defaultSetWorkItemStateWithAliasInfo(id, requestedState, opts);
 }
 
 // WI-4308: use the dedup-widened search (also checks the legacy DEFAULT_COORD_WORKSPACE
@@ -529,6 +582,7 @@ const defaultDeps: CaptureDeps = {
     const result = await linkWorkItem(srcId, dst, rel, by ? { by } : {});
     if ('error' in result) throw new Error(result.error);
   },
+  setWorkItemStateWithAliasInfo: defaultSetWorkItemStateWithAliasInfo,
 };
 
 function harnessFromScope(scope: string | undefined): string | null {
