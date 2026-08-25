@@ -70,11 +70,7 @@ export const monitorArmConfigSchema = z
       .min(1)
       .max(200)
       .describe('Canonical identity of the watched condition. Whitespace/case are normalized at admission.'),
-    stopCondition: z
-      .string()
-      .min(1)
-      .max(1000)
-      .describe('Concrete condition that ends this monitor.'),
+    stopCondition: z.string().min(1).max(1000).describe('Concrete condition that ends this monitor.'),
     noDeltaBudget: z
       .number()
       .int()
@@ -258,10 +254,7 @@ export function decideMonitorAdmission(input: {
       };
     }
     if (item.assignee !== ownerId) {
-      if (
-        item.assignee &&
-        isLiveProgressingWorkItem(item, evidence.workItemHolderPresence, nowMs)
-      ) {
+      if (item.assignee && isLiveProgressingWorkItem(item, evidence.workItemHolderPresence, nowMs)) {
         return {
           allowed: false,
           code: 'monitor_peer_owned_progress',
@@ -360,11 +353,7 @@ export async function listActiveMonitorOwnersForPredicate(
   return rows.map((row) => row.owner_id);
 }
 
-async function verifyOwnerTurn(
-  ownerId: string,
-  turnRef: string,
-  quote: string,
-): Promise<TurnRefVerdict | null> {
+async function verifyOwnerTurn(ownerId: string, turnRef: string, quote: string): Promise<TurnRefVerdict | null> {
   const refs = parseTurnRefs(turnRef);
   if (refs.length !== 1 || refs[0]!.raw !== turnRef) return null;
   const [verdict] = await verifyTurnRefs(ownerId, [{ ...refs[0]!, quote }], { scope: 'owner-chain' });
@@ -414,11 +403,7 @@ export async function admitMonitorArm(
           message: 'owner-turn authority requires exactly one canonical [turn:<session-prefix>@<timestamp>] ref.',
         };
       }
-      evidence.ownerTurn = await deps.verifyOwnerTurn(
-        input.ownerId,
-        config.authority.turnRef,
-        config.authority.quote,
-      );
+      evidence.ownerTurn = await deps.verifyOwnerTurn(input.ownerId, config.authority.turnRef, config.authority.quote);
     }
 
     const possibleDuplicates = await deps.listActiveMonitorOwners({

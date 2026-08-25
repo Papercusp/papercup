@@ -299,9 +299,12 @@ describe('monitor policy — resolved admission', () => {
           authority: { kind: 'work-item', workItem: 'WI-42' },
         },
       },
-      deps({ loadWorkItem: vi.fn(async () => { throw new Error('db unavailable'); }) }),
+      deps({
+        loadWorkItem: vi.fn(async () => {
+          throw new Error('db unavailable');
+        }),
+      }),
     );
     expect(out).toMatchObject({ allowed: false, code: 'monitor_admission_unavailable' });
   });
 });
-

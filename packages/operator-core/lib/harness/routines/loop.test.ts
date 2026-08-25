@@ -122,7 +122,7 @@ describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', (
     expect(prompt).toContain('never a bare "done" assertion');
   });
 
-  it('does not prescribe a specific mid-work state literal (delegated to work_items:set_state\'s own EI-7478 aliasing guidance)', () => {
+  it("does not prescribe a specific mid-work state literal (delegated to work_items:set_state's own EI-7478 aliasing guidance)", () => {
     // The prompt no longer mentions in_progress at all — it would be redundant with
     // (and risked drifting from) the tool's own description of issue-family state aliasing.
     expect(prompt).not.toContain("state:'in_progress'");
@@ -143,11 +143,11 @@ describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', (
 describe('buildLoopWakePrompt — kind guidance is not hardcoded to task (EI-7674)', () => {
   const prompt = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'do the thing' });
 
-  it('does NOT hardcode kind:\'task\' as the create example — task is NON-CODE only and most loop-driven work is code', () => {
+  it("does NOT hardcode kind:'task' as the create example — task is NON-CODE only and most loop-driven work is code", () => {
     expect(prompt).not.toContain("kind:'task'");
   });
 
-  it('tells the agent to pick kind by what the unit IS (fleet-member-native-guidance P-008: delegated to the persona\'s member-loop contract, not re-spelled per-wake)', () => {
+  it("tells the agent to pick kind by what the unit IS (fleet-member-native-guidance P-008: delegated to the persona's member-loop contract, not re-spelled per-wake)", () => {
     expect(prompt).toMatch(/pick `kind` by what it IS/);
     expect(prompt).toContain('Working as a fleet MEMBER — the member operating loop');
   });
@@ -178,9 +178,7 @@ describe('computeLoopStall (P2b — parked-healthy vs parked-dead)', () => {
   });
 
   it('not parked → never stalled', () => {
-    expect(
-      computeLoopStall({ ...parkedFor(99e9), parked: false }),
-    ).toEqual({ stalled: false, stalledSinceMs: null });
+    expect(computeLoopStall({ ...parkedFor(99e9), parked: false })).toEqual({ stalled: false, stalledSinceMs: null });
   });
   it('parked but recently (under the stuck threshold) → healthy in-flight', () => {
     expect(computeLoopStall(parkedFor(60_000)).stalled).toBe(false);
@@ -195,9 +193,7 @@ describe('computeLoopStall (P2b — parked-healthy vs parked-dead)', () => {
   });
   it('parked long but the session is active RIGHT NOW → NOT stalled (a legitimately long turn)', () => {
     // Presence is both after the fire and fresh — the exemption this guard exists for.
-    expect(
-      computeLoopStall(parkedFor(STUCK + 1000, { lastActiveAtMs: NOW - 60_000 })).stalled,
-    ).toBe(false);
+    expect(computeLoopStall(parkedFor(STUCK + 1000, { lastActiveAtMs: NOW - 60_000 })).stalled).toBe(false);
   });
 
   // ── WI-6639 regression: the frozen-liveness blind spot ──────────────────────
@@ -208,22 +204,16 @@ describe('computeLoopStall (P2b — parked-healthy vs parked-dead)', () => {
     // disarmed the park check — measured live as 12 loops parked at 'infinity' for
     // 49h–160h, every one of them reporting `stalled: false`.
     const parkedMs = 160 * 60 * 60_000;
-    const r = computeLoopStall(
-      parkedFor(parkedMs, { lastActiveAtMs: NOW - parkedMs + 60_000 }),
-    );
+    const r = computeLoopStall(parkedFor(parkedMs, { lastActiveAtMs: NOW - parkedMs + 60_000 }));
     expect(r.stalled).toBe(true);
     expect(r.stalledSinceMs).toBe(parkedMs);
   });
   it('WI-6639: presence after the fire but older than the floor → STALLED (liveness is judged against now)', () => {
-    expect(
-      computeLoopStall(parkedFor(STUCK * 3, { lastActiveAtMs: NOW - STUCK - 1000 })).stalled,
-    ).toBe(true);
+    expect(computeLoopStall(parkedFor(STUCK * 3, { lastActiveAtMs: NOW - STUCK - 1000 })).stalled).toBe(true);
   });
   it('WI-6639: presence BEFORE the fire is never an exemption, however fresh the clock', () => {
     // A beat that predates the fire says nothing about the wake turn that followed it.
-    expect(
-      computeLoopStall(parkedFor(STUCK + 1000, { lastActiveAtMs: NOW - STUCK - 2000 })).stalled,
-    ).toBe(true);
+    expect(computeLoopStall(parkedFor(STUCK + 1000, { lastActiveAtMs: NOW - STUCK - 2000 })).stalled).toBe(true);
   });
 
   it('the threshold scales to 4×interval for a long interval', () => {
@@ -278,9 +268,7 @@ describe('computeLoopFireStarvation (EI-21301493615546911 — no post-arm fire)'
   });
 
   it('stays quiet when the owner has recent activity (a legitimate long first turn)', () => {
-    expect(
-      computeLoopFireStarvation({ ...base, lastActiveAtMs: NOW - 1_000 }),
-    ).toBe(false);
+    expect(computeLoopFireStarvation({ ...base, lastActiveAtMs: NOW - 1_000 })).toBe(false);
   });
 
   it('allows a never-fired loop with no fire timestamp to be diagnosed once the floor is crossed', () => {
@@ -434,7 +422,7 @@ describe('computeTurnsStalled (EI-18712914572668391 — fires attempted vs turns
     ).toBe(false);
   });
 
-  it('the floor scales to 4×interval for a long-interval loop, mirroring computeLoopStall\'s own floor', () => {
+  it("the floor scales to 4×interval for a long-interval loop, mirroring computeLoopStall's own floor", () => {
     const longIntervalSec = 1200; // 4× = 80min > the 30min base floor
     expect(
       computeTurnsStalled({
@@ -683,15 +671,33 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
 
   it('a WARM loop (default / absent carry) is byte-identical — no cold addendum (su-cold-auto P-002)', () => {
     const warmDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
-    const warmExplicit = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'warm' });
+    const warmExplicit = buildLoopWakePrompt({
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      carry: 'warm',
+    });
     expect(warmExplicit).toBe(warmDefault); // explicit warm == absent
     expect(warmDefault).not.toContain('loop:checkpoint');
     expect(warmDefault).not.toContain('COLD loop');
   });
 
-  it("a COLD loop appends the bootstrap addendum instructing loop:checkpoint (so pre-anchor warm wakes seed the first carry-note)", () => {
-    const warm = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'warm' });
-    const cold = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'cold' });
+  it('a COLD loop appends the bootstrap addendum instructing loop:checkpoint (so pre-anchor warm wakes seed the first carry-note)', () => {
+    const warm = buildLoopWakePrompt({
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      carry: 'warm',
+    });
+    const cold = buildLoopWakePrompt({
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      carry: 'cold',
+    });
     // the cold prompt is the warm one PLUS the addendum (superset, no base text lost)
     expect(cold.startsWith(warm)).toBe(true);
     expect(cold.length).toBeGreaterThan(warm.length);
@@ -700,9 +706,13 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     expect(cold).toContain('COLD loop');
   });
 
-  it("a MONITOR loop gets the lean check/steer/checkpoint contract with NO work-item boilerplate (compaction-continuity P-001c)", () => {
+  it('a MONITOR loop gets the lean check/steer/checkpoint contract with NO work-item boilerplate (compaction-continuity P-001c)', () => {
     const monitor = buildLoopWakePrompt({
-      ownerId: 'su-x', intervalSec: 120, harness: 'papercusp', goal: 'watch the bug-drain fleet', mode: 'monitor',
+      ownerId: 'su-x',
+      intervalSec: 120,
+      harness: 'papercusp',
+      goal: 'watch the bug-drain fleet',
+      mode: 'monitor',
     });
     // The lean monitoring contract…
     expect(monitor).toContain('Monitor wake');
@@ -720,23 +730,38 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
 
   it("mode 'work' (default / absent) is byte-identical to the existing template", () => {
     const workDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
-    const workExplicit = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', mode: 'work' });
+    const workExplicit = buildLoopWakePrompt({
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      mode: 'work',
+    });
     expect(workExplicit).toBe(workDefault);
     expect(workDefault).toContain('Working as a fleet MEMBER — the member operating loop');
   });
 
   it('the monitor mode composes with the cold/gated addenda like the work mode does', () => {
     const coldMonitor = buildLoopWakePrompt({
-      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', mode: 'monitor', carry: 'cold',
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      mode: 'monitor',
+      carry: 'cold',
     });
     expect(coldMonitor).toContain('Monitor wake');
     expect(coldMonitor).toContain('COLD loop');
   });
 
-  it("a SETTLE loop (default / absent continuation) has no gated addendum (flush-to-proceed P-005)", () => {
+  it('a SETTLE loop (default / absent continuation) has no gated addendum (flush-to-proceed P-005)', () => {
     const settleDefault = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
     const settleExplicit = buildLoopWakePrompt({
-      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', continuation: 'settle',
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      continuation: 'settle',
     });
     expect(settleExplicit).toBe(settleDefault); // explicit settle == absent
     expect(settleDefault).not.toContain('GATED loop');
@@ -746,7 +771,11 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
   it('a GATED loop appends the continuation-gate addendum (superset of the base, no base text lost)', () => {
     const settle = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g' });
     const gated = buildLoopWakePrompt({
-      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', continuation: 'gated',
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      continuation: 'gated',
     });
     expect(gated.startsWith(settle)).toBe(true);
     expect(gated.length).toBeGreaterThan(settle.length);
@@ -758,7 +787,12 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
 
   it('cold + gated compose (both addenda appended)', () => {
     const both = buildLoopWakePrompt({
-      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'cold', continuation: 'gated',
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      carry: 'cold',
+      continuation: 'gated',
     });
     expect(both).toContain('COLD loop');
     expect(both).toContain('GATED loop');
@@ -766,16 +800,34 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
 
   it('WI-2429 fix A: a COLD loop driving a workItem names it concretely in the prompt (not the soft "if you hold one")', () => {
     const withItem = buildLoopWakePrompt({
-      ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'cold', workItem: 'WI-2339',
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      carry: 'cold',
+      workItem: 'WI-2339',
     });
-    const without = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'cold' });
+    const without = buildLoopWakePrompt({
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      carry: 'cold',
+    });
     expect(withItem.startsWith(without)).toBe(true); // superset — the concrete line is appended
     expect(withItem).toContain('DRIVING work-item WI-2339');
     expect(withItem).toContain("work_items:complete { id:'WI-2339'");
   });
 
   it('WI-2429 fix A: a WARM loop ignores workItem in the prompt (the concrete mandate is cold-only)', () => {
-    const warm = buildLoopWakePrompt({ ownerId: 'su-x', intervalSec: 60, harness: 'papercusp', goal: 'g', carry: 'warm', workItem: 'WI-2339' });
+    const warm = buildLoopWakePrompt({
+      ownerId: 'su-x',
+      intervalSec: 60,
+      harness: 'papercusp',
+      goal: 'g',
+      carry: 'warm',
+      workItem: 'WI-2339',
+    });
     expect(warm).not.toContain('DRIVING work-item');
   });
 });
@@ -881,10 +933,7 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
         // annotation the inferred type requires `customWakePrompt`, which makes the legacy row
         // below — a row that genuinely predates the marker — impossible to express. The point of
         // this test is that such rows exist, so the mock must be able to produce one.
-        payload_template: { kickoff: 'custom wake instruction', customWakePrompt: true } as Record<
-          string,
-          unknown
-        >,
+        payload_template: { kickoff: 'custom wake instruction', customWakePrompt: true } as Record<string, unknown>,
         fire_count: 2,
         armed_at: null,
       },
@@ -939,14 +988,24 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
 
   it('stamps continuation:"gated" onto payload_template only when armed gated (flush-to-proceed P-005)', async () => {
     await materializeLoop({
-      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', continuation: 'gated',
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+      continuation: 'gated',
     });
     expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({ kickoff: 'k', continuation: 'gated' });
   });
 
   it('a SETTLE (or absent) continuation leaves payload_template byte-identical to today (no continuation key)', async () => {
     await materializeLoop({
-      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', continuation: 'settle',
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+      continuation: 'settle',
     });
     const input = upsertRoutineSpy.mock.calls[0][1];
     expect(input.payloadTemplate).toEqual({ kickoff: 'k' });
@@ -969,7 +1028,12 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
 
   it("WI-5345: stamps mode:'monitor' onto payload_template only when armed with mode:'monitor'", async () => {
     await materializeLoop({
-      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', mode: 'monitor',
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+      mode: 'monitor',
     });
     expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({ kickoff: 'k', mode: 'monitor' });
   });
@@ -998,9 +1062,14 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     });
   });
 
-  it("WI-5345: a WORK (or absent) mode leaves payload_template byte-identical to today (no mode key)", async () => {
+  it('WI-5345: a WORK (or absent) mode leaves payload_template byte-identical to today (no mode key)', async () => {
     await materializeLoop({
-      workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', mode: 'work',
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+      mode: 'work',
     });
     const input = upsertRoutineSpy.mock.calls[0][1];
     expect(input.payloadTemplate).toEqual({ kickoff: 'k' });
@@ -1200,27 +1269,26 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
   });
 
   it('EI-21219642654072321: NOT parked → parkedForSec is null even when the fire-age column has a value', async () => {
-    const out = await getLoopStatuses(['su-x'], { sql: rowSql({ parked: false, parked_ms: 95_000 }) as unknown as Sql });
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({ parked: false, parked_ms: 95_000 }) as unknown as Sql,
+    });
     expect(out.get('su-x')!.parkedForSec).toBeNull();
   });
 
   it('EI-21301493615546911: marks a parked active loop stalled when its current arm has no post-arm fire', async () => {
     const now = Date.now();
     const armedAt = new Date(now - 10 * 60_000).toISOString();
-    const out = await getLoopStatuses(
-      ['su-x'],
-      {
-        sql: rowSql({
-          fire_count: 5,
-          fire_count_at_arm: 5,
-          armed_at: armedAt,
-          last_fired_at: new Date(now - 60 * 60_000).toISOString(),
-          parked: true,
-          next_fire_at: null,
-          presence_last_active_at: new Date(now - 60 * 60_000).toISOString(),
-        }) as unknown as Sql,
-      },
-    );
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        fire_count: 5,
+        fire_count_at_arm: 5,
+        armed_at: armedAt,
+        last_fired_at: new Date(now - 60 * 60_000).toISOString(),
+        parked: true,
+        next_fire_at: null,
+        presence_last_active_at: new Date(now - 60 * 60_000).toISOString(),
+      }) as unknown as Sql,
+    });
     const status = out.get('su-x')!;
 
     expect(status.firesSinceArm).toBe(0);
@@ -1231,20 +1299,17 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
 
   it('EI-21276782387845111: exposes cadenceDrift while keeping the filed parked slow-cadence shape quiet', async () => {
     const now = Date.now();
-    const out = await getLoopStatuses(
-      ['su-x'],
-      {
-        sql: rowSql({
-          fire_count: 1,
-          fire_count_at_arm: 0,
-          armed_at: new Date(now - 34 * 120_000).toISOString(),
-          last_fired_at: new Date(now - 216_000).toISOString(),
-          longest_observed_gap_sec: 2_400,
-          parked: true,
-          next_fire_at: null,
-        }) as unknown as Sql,
-      },
-    );
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        fire_count: 1,
+        fire_count_at_arm: 0,
+        armed_at: new Date(now - 34 * 120_000).toISOString(),
+        last_fired_at: new Date(now - 216_000).toISOString(),
+        longest_observed_gap_sec: 2_400,
+        parked: true,
+        next_fire_at: null,
+      }) as unknown as Sql,
+    });
     const status = out.get('su-x')!;
 
     expect(status.firesSinceArm).toBe(1);
@@ -1255,20 +1320,17 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
 
   it('EI-21276782387845111: flags sustained cadence drift only for an overdue scheduled fire', async () => {
     const now = Date.now();
-    const out = await getLoopStatuses(
-      ['su-x'],
-      {
-        sql: rowSql({
-          fire_count: 5,
-          fire_count_at_arm: 0,
-          armed_at: new Date(now - 70 * 60_000).toISOString(),
-          last_fired_at: new Date(now - 10 * 60_000).toISOString(),
-          longest_observed_gap_sec: 1_207.28,
-          parked: false,
-          next_fire_at: new Date(now - 10 * 60_000).toISOString(),
-        }) as unknown as Sql,
-      },
-    );
+    const out = await getLoopStatuses(['su-x'], {
+      sql: rowSql({
+        fire_count: 5,
+        fire_count_at_arm: 0,
+        armed_at: new Date(now - 70 * 60_000).toISOString(),
+        last_fired_at: new Date(now - 10 * 60_000).toISOString(),
+        longest_observed_gap_sec: 1_207.28,
+        parked: false,
+        next_fire_at: new Date(now - 10 * 60_000).toISOString(),
+      }) as unknown as Sql,
+    });
 
     expect(out.get('su-x')!.cadenceDrift).toBe(true);
   });
@@ -1426,9 +1488,21 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
 
     expect(out).toBe(1);
     const rendered = calls.flatMap((call) => call.strings).join(' ');
-    const values = calls.flatMap((call) => call.values.flatMap((value: unknown) => Array.isArray(value) ? value : [value]));
+    const values = calls.flatMap((call) =>
+      call.values.flatMap((value: unknown) => (Array.isArray(value) ? value : [value])),
+    );
     expect(rendered).toContain('IS NULL');
-    expect(values).toEqual(expect.arrayContaining(['call_origin', 'tool_name', 'agent', 'unknown', 'activity:report', 'coord:glance', 'coord:inbox']));
+    expect(values).toEqual(
+      expect.arrayContaining([
+        'call_origin',
+        'tool_name',
+        'agent',
+        'unknown',
+        'activity:report',
+        'coord:glance',
+        'coord:inbox',
+      ]),
+    );
   });
 
   it('EI-20543456503122446: binds the carry-note bookkeeping exclusion so the note-writing call cannot count itself', async () => {
