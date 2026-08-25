@@ -1711,10 +1711,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         vec![
             Constraint::Min(1),
             Constraint::Length(card_h),
-            Constraint::Length(3),
+            Constraint::Length(4),
         ]
     } else {
-        vec![Constraint::Min(1), Constraint::Length(3)]
+        vec![Constraint::Min(1), Constraint::Length(4)]
     };
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -1731,14 +1731,14 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     if app.chat_messages.is_empty() {
         lines.push(Line::from(Span::styled(
-            "No messages yet — press i to talk to the operator.",
+            "No messages yet — press i to talk to this agent, or s to choose a role/session.",
             Theme::dim(),
         )));
     }
     for m in &app.chat_messages {
         let (who, who_style) = match m.role.as_str() {
             "user" => ("you", Theme::selected()),
-            "assistant" => ("operator", Theme::notify()),
+            "assistant" => ("agent", Theme::notify()),
             other => (other, Theme::dim()),
         };
         let header = if m.streaming {
@@ -1863,7 +1863,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
         String::new()
     };
     let title = format!(
-        " {}Operator{}{} ",
+        " {}Agent Chat{}{} ",
         dock_focus,
         earlier,
         if app.chat_streaming {
@@ -1970,7 +1970,11 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             Theme::dim(),
         )
     };
-    let cpara = Paragraph::new(Line::from(Span::styled(ctext, cstyle))).block(
+    let cpara = Paragraph::new(vec![
+        Line::from(Span::styled(app.agent_chat_selection_label(), Theme::dim())),
+        Line::from(Span::styled(ctext, cstyle)),
+    ])
+    .block(
         Block::default()
             .borders(Borders::ALL)
             .title(Line::from(ctitle)),
@@ -2748,12 +2752,12 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     //     re-openable tutorial stay visible regardless of how long the status
     //     hint-string is (it would otherwise clip off the right edge).
     let right = app.workbench_summary().unwrap_or_else(|| {
-        // Advertise the operator dock when it's available but not yet shown, so
-        // it's discoverable without opening help (operator-always-visible-2026-06-05).
-        if app.tab != Tab::Operator && !app.operator_dock_open {
-            "o:operator · ?:help".to_string()
+        if app.tab != Tab::Operator {
+            // Must survive restored non-chat state and narrow layouts where the
+            // optional dock cannot render: one key always lands in the composer.
+            "o:Agent Chat · ?:help".to_string()
         } else {
-            "?:help · F1/:tutorial".to_string()
+            "s/m/e/a:select · i:compose · ?:help".to_string()
         }
     });
     let w = (right.chars().count() as u16 + 1).min(area.width);
@@ -2771,7 +2775,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Operator · 4 Fleet · 5 Pots · m Memory · c Cupboard)\n  /           search (Memory · Cupboard)\n  i / Enter   compose a message (Operator tab or focused dock) · Esc cancels\n  < / >       cycle tabs   ·   Tab  Fleet mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Fleet) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  o / O       focus / hide the operator dock (any tab) · Esc unfocus\n  V           realtime operator voice on/off (EL Conv-AI · any tab)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Operator)   ·   Esc  dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Agent Chat · 4 Fleet · 5 Pots · m Memory · c Cupboard)\n  o           open Agent Chat + focus its composer from any tab\n  i / Enter   compose/send a message · Esc cancels\n  s / m / e / a  choose role/session · model · effort · account route\n  /           search (Memory · Cupboard)\n  < / >       cycle tabs   ·   Tab  Fleet mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Fleet) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any tab)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)
@@ -3665,7 +3669,7 @@ mod tests {
     fn overview_renders_topbar_tiles_and_operator_strip() {
         use crate::models::{ActivityRow, ItemCounts};
         let mut app = App::new();
-        assert_eq!(app.tab, Tab::Overview); // the default landing surface (D-001)
+        app.tab = Tab::Overview;
         let mut p = plan("overview-dashboard", "active");
         p.item_counts = ItemCounts {
             todo: 1,
@@ -3729,7 +3733,7 @@ mod tests {
         assert!(text.contains("edited ui.rs"));
         // Operator strip at the bottom (Brief 24's render-only dock, D-008).
         assert!(
-            text.contains("press i to talk to the operator"),
+            text.contains("press i to talk to this agent"),
             "operator strip missing"
         );
     }
@@ -3737,6 +3741,7 @@ mod tests {
     #[test]
     fn overview_narrow_stack_and_short_terminal_drop_strip() {
         let mut app = App::new();
+        app.tab = Tab::Overview;
         app.set_plans(vec![plan("p1", "active")]);
         // Narrow (80 cols): the 1×4 stack still renders every tile.
         let narrow = render(&app, 80, 30);
@@ -3748,13 +3753,14 @@ mod tests {
         // tiles; the operator stays reachable via the tab / `o` dock.
         let short = render(&app, 120, 18);
         assert!(short.contains("Plans"));
-        assert!(!short.contains("press i to talk to the operator"));
+        assert!(!short.contains("press i to talk to this agent"));
     }
 
     #[test]
     fn overview_topbar_renders_live_fleet_rate() {
         use crate::models::{FleetRateFleet, FleetRateStatus, FleetRateUsageBucket};
         let mut app = App::new();
+        app.tab = Tab::Overview;
         // Before the read-model lands: dashes + the connecting hint.
         let connecting = render(&app, 120, 30);
         assert!(connecting.contains("connecting"));
@@ -4087,13 +4093,14 @@ mod tests {
         // narrow width the Tabs widget truncates the tail.)
         let app = App::new();
         let text = render(&app, 60, 8);
-        assert!(text.contains("Papercup")); // classic operator label (restore-pot-lexicon D-006)
+        assert!(text.contains("Agent Chat"));
         assert!(text.contains("Inbox"));
         assert!(text.contains("Plans"));
     }
 
     /// Hive lexicon (pui-hive-lexicon-2026-06-06): with the-hive active the tab
-    /// strip shows the internal skin labels (Operator→Sentinel, Fleet→Colony,
+    /// strip shows internal skin labels except Agent Chat, whose product name
+    /// stays explicit (Fleet→Colony,
     /// Pots→Hives, Nodes→Swarm, Cupboard→Comb); other tabs are unchanged.
     #[test]
     fn tab_strip_uses_the_hive_lexicon_when_active() {
@@ -4123,7 +4130,7 @@ mod tests {
         });
         // Wide enough that the Tabs widget doesn't truncate the renamed tabs.
         let text = render(&app, 200, 8);
-        assert!(text.contains("Sentinel"), "Operator→Sentinel");
+        assert!(text.contains("Agent Chat"), "Agent Chat stays explicit");
         assert!(text.contains("Colony"), "Fleet→Colony");
         assert!(text.contains("Hives"), "Pots→Hives");
         assert_eq!(Tab::Hives.label(&app.lexicon), "Swarms", "Nodes→Swarms");
@@ -4139,7 +4146,7 @@ mod tests {
     fn tab_strip_uses_classic_labels_by_default() {
         let app = App::new(); // empty lexicon = classic fallback
         let text = render(&app, 200, 8);
-        assert!(text.contains("Papercup")); // classic operator label (restore-pot-lexicon D-006)
+        assert!(text.contains("Agent Chat"));
         assert!(text.contains("Fleet"));
         assert!(text.contains("Pots"));
         assert!(text.contains("Cupboard"));
@@ -5273,19 +5280,20 @@ mod tests {
 
     #[test]
     fn operator_leads_strip_on_digit_one() {
-        let app = App::new(); // default tab = Operator, now on digit '1' (D-002)
+        let app = App::new();
         let text = render(&app, 220, 8);
-        assert!(text.contains("1:Papercup"));
+        assert!(text.contains("1:Agent Chat"));
     }
 
     #[test]
     fn chat_view_renders_transcript_and_composer() {
         let mut app = App::new();
-        app.tab = Tab::Operator; // chat view — Overview is the default landing now (Brief 23)
-                                 // Empty state prompts the user to compose.
+        app.tab = Tab::Operator;
+        // Empty state prompts the user to compose and names the product.
         let empty = render(&app, 100, 16);
-        assert!(empty.contains("Operator"));
-        assert!(empty.contains("press i to talk to the operator"));
+        assert!(empty.contains("Agent Chat"));
+        assert!(empty.contains("press i to talk to this agent"));
+        assert!(empty.contains("pot papercup"));
         // A seeded transcript renders both roles' bodies.
         app.set_chat_history(
             "c1".into(),
@@ -5299,7 +5307,7 @@ mod tests {
         let text = render(&app, 100, 20);
         assert!(text.contains("you"));
         assert!(text.contains("how is the carve"));
-        assert!(text.contains("operator"));
+        assert!(text.contains("agent"));
         assert!(text.contains("It landed green."));
         // Composing surfaces the input box.
         app.chat_composing = true;
@@ -5553,23 +5561,19 @@ mod tests {
     #[test]
     fn status_bar_shows_help_and_tutorial_hint() {
         // D-012: the footer always advertises the help overlay. On non-Operator
-        // tabs (incl. the default Overview landing, Brief 23) the right edge
-        // advertises the operator dock instead of the tutorial
-        // (operator-always-visible-2026-06-05).
+        // tabs the right edge advertises the one-action Agent Chat jump.
         let mut app = App::new();
+        app.tab = Tab::Plans;
         let text = render(&app, 100, 12);
         assert!(
-            text.contains("o:operator"),
-            "dock hint missing on the Overview landing"
+            text.contains("o:Agent Chat"),
+            "Agent Chat jump missing on a restored non-chat tab"
         );
         assert!(text.contains("?:help"), "help hint missing from status bar");
         app.tab = Tab::Operator;
         let text = render(&app, 100, 12);
         assert!(text.contains("?:help"), "help hint missing from status bar");
-        assert!(
-            text.contains("F1/:tutorial"),
-            "tutorial hint missing from status bar"
-        );
+        assert!(text.contains("s/m/e/a:select"));
     }
 
     #[test]
@@ -5612,8 +5616,8 @@ mod tests {
             "the Plans tab content still renders"
         );
         assert!(
-            text.contains("Operator"),
-            "the operator dock renders its title"
+            text.contains("Agent Chat"),
+            "the Agent Chat dock renders its title"
         );
         assert!(
             text.contains("docked reply here"),
@@ -5704,8 +5708,8 @@ mod tests {
         app.tab = Tab::Plans; // not the Operator tab, dock closed by default
         let text = render(&app, 120, 20);
         assert!(
-            text.contains("o:operator"),
-            "status bar advertises the dock when closed"
+            text.contains("o:Agent Chat"),
+            "status bar advertises Agent Chat when the dock is closed"
         );
     }
 
@@ -5715,7 +5719,8 @@ mod tests {
         // renders draw_operator_dock as its bottom strip, Brief 23), so the
         // right-dock carve must NOT also fire there — the chat renders exactly
         // once even with the dock explicitly opened.
-        let mut app = App::new(); // Overview is the default landing (Brief 23)
+        let mut app = App::new();
+        app.tab = Tab::Overview;
         assert_eq!(app.tab, Tab::Overview);
         app.operator_dock_open = true; // user-opened right-dock…
         let text = render(&app, 120, 30);

@@ -114,6 +114,11 @@ pub enum Action {
     /// is the message text (the reducer has already appended it + a streaming
     /// assistant bubble before returning this).
     SendChat(String),
+    /// Load one explicitly selected native agent-chat session.
+    LoadAgentChat {
+        harness: String,
+        chat_id: String,
+    },
     /// Abort the local native-chat stream; the dropped transport propagates
     /// cancellation to the operator and the bubble becomes retryable.
     CancelChat,
@@ -1008,7 +1013,9 @@ impl Tab {
             Tab::Harnesses => lex.lex_plural("pot"),
             Tab::Fleet => lex.lex("fleet"),
             Tab::Cupboard => lex.lex("cupboard"),
-            Tab::Operator => lex.lex("operator"),
+            // Stable identity remains `Operator` for persisted view-state, but
+            // the product surface is Agent Chat regardless of Hive lexicon.
+            Tab::Operator => "Agent Chat".to_string(),
             // The legacy Hives tab presents networked Papercusp installations,
             // which are Nodes in the public vocabulary.
             Tab::Hives => lex.lex_plural("node"),
@@ -1207,6 +1214,12 @@ pub struct App {
     /// Model override for THIS chat's turns. `None` ⇒ send no `model` at all and
     /// let the server apply the surface default.
     pub chat_model: Option<String>,
+    /// Explicit reasoning effort for the next turn. None keeps the model tier's
+    /// own suffix/provider default.
+    pub chat_effort: Option<String>,
+    /// Explicit per-request inference-gateway account. None = auto-routing.
+    pub chat_account: Option<String>,
+    pub account_rows: Vec<crate::session_config::AccountRow>,
     /// What the last picker action actually did — the SETTER's own report, never
     /// an echo of what was picked.
     pub session_note: Option<String>,
@@ -1502,6 +1515,9 @@ pub struct App {
     /// Distinct from `conversation_id`, which is the legacy operator-converse
     /// lane — kept alongside until native parity is proven.
     pub agent_chat_id: Option<String>,
+    /// The concrete role/persona and selectable sessions under the active pot.
+    pub agent_chat_role: String,
+    pub agent_chat_summaries: Vec<crate::agent_chats::AgentChatSummary>,
     /// HITL requests parked on the native seam, oldest first. Non-empty means a
     /// turn is STALLED waiting on a decision only this pane can supply — the
     /// composer swaps to the approve/deny prompt while any entry stands.
@@ -1627,12 +1643,11 @@ impl App {
     pub fn new() -> Self {
         Self {
             should_quit: false,
-            status: "pui · h overview · 1 operator · j/k move · [/] pot · ? help · q quit"
+            status: "pui · Agent Chat · s session · m model · e effort · a account · [/] pot · ? help"
                 .to_string(),
-            // The Overview dashboard is the default landing surface (Brief 23,
-            // overview-dashboard-2026-06-05 D-001); the operator chat stays
-            // always-on via the Overview's bottom strip + the `o` right dock.
-            tab: Tab::Overview,
+            // D-031 / P-019: Agent Chat is the product front door. `title()`
+            // remains Operator only as the stable persistence identity.
+            tab: Tab::Operator,
             pinned: None,
             plans: Vec::new(),
             plan_sel: 0,
@@ -1658,6 +1673,9 @@ impl App {
             pot_picker_sel: 0,
             session_picker: None,
             chat_model: None,
+            chat_effort: None,
+            chat_account: None,
+            account_rows: Vec::new(),
             session_note: None,
             active_harness: Arc::new(Mutex::new("papercup".to_string())),
             active_plan: Arc::new(Mutex::new(None)),
@@ -1782,6 +1800,8 @@ impl App {
             chat_streaming: false,
             conversation_id: None,
             agent_chat_id: None,
+            agent_chat_role: "operator".to_string(),
+            agent_chat_summaries: Vec::new(),
             pending_approvals: Vec::new(),
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
@@ -2634,6 +2654,49 @@ impl App {
         self.operator_config = c;
     }
 
+    pub fn set_account_rows(&mut self, rows: Vec<crate::session_config::AccountRow>) {
+        self.account_rows = rows;
+    }
+
+    /// Open the native agent/role/session picker. Existing PG-backed sessions
+    /// and new-role rows share the existing generic picker overlay.
+    pub fn open_agent_session_picker(&mut self) {
+        use crate::session_config::{PickerAxis, PickerOption, SessionPicker};
+        let mut roles = BTreeSet::from(["operator".to_string()]);
+        if let Some(agent) = &self.operator_config.agent {
+            roles.extend(agent.config.models.keys().cloned());
+        }
+        roles.extend(self.agent_chat_summaries.iter().map(|s| s.role.clone()));
+
+        let mut options: Vec<PickerOption> = roles
+            .into_iter()
+            .map(|role| PickerOption {
+                id: format!("new:{role}"),
+                label: format!("New {role} session"),
+                hint: Some(format!("Open a fresh {role} chat in pot {} on first send.", self.harness)),
+                disabled: false,
+            })
+            .collect();
+        options.extend(self.agent_chat_summaries.iter().map(|chat| {
+            let title = chat.title.as_deref().filter(|t| !t.is_empty()).unwrap_or("untitled");
+            let active = self.agent_chat_id.as_deref() == Some(chat.id.as_str());
+            PickerOption {
+                id: format!("session:{}", chat.id),
+                label: format!(
+                    "{}{} · {} · {} turn{}",
+                    if active { "● " } else { "" },
+                    chat.role,
+                    title,
+                    chat.turn_count,
+                    if chat.turn_count == 1 { "" } else { "s" }
+                ),
+                hint: Some(format!("{} · updated {}", chat.id, chat.updated_at)),
+                disabled: false,
+            }
+        }));
+        self.session_picker = Some(SessionPicker::new(PickerAxis::Session, options));
+    }
+
     /// Open the model picker over the SERVER'S tier menu (`/api/agent-config`:
     /// the workspace override, else the committed baseline). If agent-config has
     /// not loaded, the menu is just the inherit row — deliberately NOT a
@@ -2657,12 +2720,26 @@ impl App {
         ));
     }
 
+    pub fn open_effort_picker(&mut self) {
+        self.session_picker = Some(crate::session_config::SessionPicker::new(
+            crate::session_config::PickerAxis::Effort,
+            crate::session_config::effort_options(),
+        ));
+    }
+
+    pub fn open_account_picker(&mut self) {
+        self.session_picker = Some(crate::session_config::SessionPicker::new(
+            crate::session_config::PickerAxis::Account,
+            crate::session_config::chat_account_options(&self.account_rows),
+        ));
+    }
+
     /// Apply the highlighted row. A DISABLED row NEVER applies and the overlay
     /// STAYS OPEN carrying the reason — closing on a refusal would be
     /// indistinguishable from having applied it.
-    pub fn commit_session_picker(&mut self) {
+    pub fn commit_session_picker(&mut self) -> Action {
         let Some(p) = self.session_picker.as_ref() else {
-            return;
+            return Action::None;
         };
         let axis = p.axis;
         let picked = match p.commit() {
@@ -2670,9 +2747,38 @@ impl App {
             Err(reason) => Err(reason),
         };
         match picked {
-            Err(reason) => self.session_note = Some(reason),
+            Err(reason) => {
+                self.session_note = Some(reason);
+                return Action::Render;
+            }
             Ok((id, label)) => {
                 match axis {
+                    crate::session_config::PickerAxis::Session => {
+                        if let Some(role) = id.strip_prefix("new:") {
+                            self.agent_chat_role = role.to_string();
+                            self.reset_agent_chat_binding();
+                            self.session_note = Some(format!(
+                                "new {} session selected in {} — it opens on send",
+                                self.agent_chat_role, self.harness
+                            ));
+                        } else if let Some(chat_id) = id.strip_prefix("session:") {
+                            let role = self
+                                .agent_chat_summaries
+                                .iter()
+                                .find(|chat| chat.id == chat_id)
+                                .map(|chat| chat.role.clone())
+                                .unwrap_or_else(|| "operator".to_string());
+                            self.reset_agent_chat_binding();
+                            self.agent_chat_id = Some(chat_id.to_string());
+                            self.agent_chat_role = role;
+                            self.session_note = Some(format!("loading {label}"));
+                            self.session_picker = None;
+                            return Action::LoadAgentChat {
+                                harness: self.harness.clone(),
+                                chat_id: chat_id.to_string(),
+                            };
+                        }
+                    }
                     crate::session_config::PickerAxis::Model => {
                         self.chat_model = crate::session_config::model_pick(&id);
                         self.session_note = Some(match &self.chat_model {
@@ -2680,17 +2786,47 @@ impl App {
                             None => "next turn uses the server's configured model".to_string(),
                         });
                     }
+                    crate::session_config::PickerAxis::Effort => {
+                        self.chat_effort = crate::session_config::effort_pick(&id);
+                        self.session_note = Some(match &self.chat_effort {
+                            Some(effort) => format!("next turn uses {effort} effort"),
+                            None => "next turn keeps the model/default effort".to_string(),
+                        });
+                    }
                     crate::session_config::PickerAxis::Account => {
-                        // Not wired: `accounts:pin` targets an agent owner-id,
-                        // which an agent-chat payload does not carry. Reported
-                        // rather than silently no-op'd.
-                        self.session_note =
-                            Some(format!("account {label} not applied — no target agent id"));
+                        self.chat_account = crate::session_config::chat_account_pick(&id);
+                        self.session_note = Some(match &self.chat_account {
+                            Some(account) => format!("next turn routes through account {account}"),
+                            None => "next turn uses gateway auto-routing".to_string(),
+                        });
                     }
                 }
                 self.session_picker = None;
             }
         }
+        Action::Render
+    }
+
+    /// Concrete execution identity rendered next to the composer.
+    pub fn agent_chat_selection_label(&self) -> String {
+        let session = self
+            .agent_chat_id
+            .as_deref()
+            .map(|id| {
+                let short: String = id.chars().take(12).collect();
+                if id.chars().count() > 12 { format!("{short}…") } else { short }
+            })
+            .unwrap_or_else(|| "new".to_string());
+        let model = self.chat_model.as_deref().unwrap_or("server default");
+        let effort = self.chat_effort.as_deref().unwrap_or("model/default");
+        let account = self.chat_account.as_deref().unwrap_or("auto");
+        let backend = self
+            .backend_identity_status()
+            .unwrap_or_else(|| "backend loading".to_string());
+        format!(
+            "pot {} · role {} · session {} · model {} · effort {} · account {} · {}",
+            self.harness, self.agent_chat_role, session, model, effort, account, backend
+        )
     }
 
     /// Settings tab (P10): store the operator feature flags as a sorted Vec (the
@@ -4623,6 +4759,11 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::AccountRows(rows) => {
+                self.set_account_rows(rows);
+                self.last_error = None;
+                Action::Render
+            }
             Event::WorkItems(w) => {
                 self.fleet.set_work_items(w);
                 self.last_error = None;
@@ -5029,6 +5170,8 @@ impl App {
             Event::AgentChatLoaded {
                 harness,
                 chat_id,
+                role,
+                summaries,
                 messages,
                 approvals,
             } => {
@@ -5036,6 +5179,8 @@ impl App {
                 // replace the newly selected pot's native chat.
                 if harness == self.harness && !self.chat_streaming {
                     self.agent_chat_id = chat_id;
+                    self.agent_chat_role = role;
+                    self.agent_chat_summaries = summaries;
                     self.chat_messages = messages;
                     self.pending_approvals = approvals;
                     self.chat_scroll = 0;
@@ -5250,8 +5395,7 @@ impl App {
                     Action::Render
                 }
                 KeyCode::Enter => {
-                    self.commit_session_picker();
-                    Action::Render
+                    self.commit_session_picker()
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
                     if let Some(p) = self.session_picker.as_mut() {
@@ -5933,10 +6077,22 @@ impl App {
                 self.chat_composing = true;
                 Action::Render
             }
+            KeyCode::Char('s') if self.tab == Tab::Operator => {
+                self.open_agent_session_picker();
+                Action::Render
+            }
             // Model picker for the chat pane (P-005 final lane, WI-41189): which
             // model the NEXT turn runs at. The menu is the server's tier list.
             KeyCode::Char('m') if self.tab == Tab::Operator => {
                 self.open_model_picker();
+                Action::Render
+            }
+            KeyCode::Char('e') if self.tab == Tab::Operator => {
+                self.open_effort_picker();
+                Action::Render
+            }
+            KeyCode::Char('a') if self.tab == Tab::Operator => {
+                self.open_account_picker();
                 Action::Render
             }
             // Push-to-talk (voice-mode-tui-port-2026-06-05 P2). `v` on the
@@ -5975,9 +6131,13 @@ impl App {
             // tab; `o` again (or Esc) returns focus to the tab. `O` toggles the
             // dock's visibility (hide to reclaim width). On the Operator tab the
             // whole tab is already the chat, so both are no-ops there.
-            KeyCode::Char('o') if self.tab != Tab::Operator => {
-                self.operator_dock_open = true;
-                self.operator_dock_focused = !self.operator_dock_focused;
+            KeyCode::Char('o') => {
+                // P-019: one universal action reaches Agent Chat AND focuses
+                // the composer. This stays visible/useful even when a restored
+                // non-chat tab is too narrow to render the optional side dock.
+                self.tab = Tab::Operator;
+                self.operator_dock_focused = false;
+                self.chat_composing = true;
                 Action::Render
             }
             KeyCode::Char('O') if self.tab != Tab::Operator => {
@@ -9400,7 +9560,7 @@ mod tests {
         a.update(key('2', KeyModifiers::NONE));
         assert!(a.show_tutorial);
         assert_eq!(a.tutorial_step, 1);
-        assert_eq!(a.tab, Tab::Overview); // swallowed (default tab is Overview, Brief 23)
+        assert_eq!(a.tab, Tab::Operator); // swallowed (Agent Chat is the P-019 default)
         a.update(key(' ', KeyModifiers::NONE));
         assert_eq!(a.tutorial_step, 2);
         assert!(a.show_tutorial);
@@ -10817,12 +10977,10 @@ mod tests {
     }
 
     #[test]
-    fn overview_is_default_tab_and_leads_strip() {
+    fn agent_chat_is_default_while_overview_keeps_its_stable_strip_slot() {
         let a = App::new();
-        // Brief 23 (overview-dashboard-2026-06-05 D-001): the Overview
-        // dashboard is the landing surface; the operator stays always-on via
-        // the Overview bottom strip + the `o` dock.
-        assert_eq!(a.tab, Tab::Overview);
+        // D-031 / P-019: Agent Chat is the fresh-session landing surface.
+        assert_eq!(a.tab, Tab::Operator);
         assert_eq!(Tab::ALL[0], Tab::Overview); // leads the strip
         assert_eq!(Tab::Overview.switch_key(), 'h'); // home
         assert_eq!(Tab::Overview.title(), "Overview");
@@ -10972,6 +11130,7 @@ mod tests {
     #[test]
     fn overview_max_agents_nudge_clamps_and_emits_put() {
         let mut a = App::new();
+        a.tab = Tab::Overview;
         assert_eq!(a.tab, Tab::Overview);
         // No read-model yet → the editor keys are a no-op (can't edit what we
         // can't see; the host may predate the route).
@@ -11015,6 +11174,7 @@ mod tests {
         // j/k move the tile cursor (clamped to the 4 tiles); Enter opens the
         // selected tile's full tab (D-007).
         let mut a = App::new();
+        a.tab = Tab::Overview;
         assert_eq!(a.tab, Tab::Overview);
         assert_eq!(a.overview_sel, 0);
         a.update(ev(KeyCode::Char('j')));
@@ -11032,6 +11192,7 @@ mod tests {
         assert_eq!(App::overview_tile_target(3), Tab::Fleet);
         // Needs-you tile → Inbox.
         let mut c = App::new();
+        c.tab = Tab::Overview;
         c.update(ev(KeyCode::Char('j')));
         assert_eq!(c.overview_sel, 1);
         c.update(ev(KeyCode::Enter));
@@ -11391,6 +11552,8 @@ mod tests {
         a.update(Event::AgentChatLoaded {
             harness: "old-pot".into(),
             chat_id: Some("wrong".into()),
+            role: "operator".into(),
+            summaries: Vec::new(),
             messages: vec![ChatMessage::assistant("wrong")],
             approvals: Vec::new(),
         });
@@ -11398,10 +11561,13 @@ mod tests {
         a.update(Event::AgentChatLoaded {
             harness: "pot-a".into(),
             chat_id: Some("chat-a".into()),
+            role: "reviewer".into(),
+            summaries: Vec::new(),
             messages: vec![ChatMessage::assistant("persisted")],
             approvals: Vec::new(),
         });
         assert_eq!(a.agent_chat_id.as_deref(), Some("chat-a"));
+        assert_eq!(a.agent_chat_role, "reviewer");
         assert_eq!(a.chat_messages[0].content, "persisted");
 
         a.tab = Tab::Operator;
@@ -11610,6 +11776,9 @@ mod tests {
     #[test]
     fn memory_tab_lists_searches_and_clears() {
         let mut a = App::new();
+        // `m` is the model picker while Agent Chat owns focus; from another
+        // tab it remains the stable Memory-tab shortcut.
+        a.tab = Tab::Overview;
         a.update(key('m', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Memory);
         // The list lands from memory:list; availability follows the payload.
@@ -11923,32 +12092,32 @@ mod tests {
     // ─── Operator dock (operator-always-visible-2026-06-05, Brief 24) ───
 
     #[test]
-    fn operator_dock_o_opens_focuses_then_blurs() {
+    fn o_from_any_tab_opens_agent_chat_and_focuses_the_composer() {
         let mut a = App::new();
         a.tab = Tab::Plans;
         assert!(!a.operator_dock_open && !a.operator_dock_focused);
-        a.update(key('o', KeyModifiers::NONE)); // open + focus
-        assert!(a.operator_dock_open && a.operator_dock_focused);
-        a.update(key('o', KeyModifiers::NONE)); // blur, stays open/visible
-        assert!(a.operator_dock_open && !a.operator_dock_focused);
+        a.update(key('o', KeyModifiers::NONE));
+        assert_eq!(a.tab, Tab::Operator);
+        assert!(a.chat_composing);
+        assert!(!a.operator_dock_focused);
     }
 
     #[test]
     fn operator_dock_shift_o_toggles_visibility_and_clears_focus() {
         let mut a = App::new();
         a.tab = Tab::Plans;
-        a.update(key('o', KeyModifiers::NONE)); // open + focus
-        a.update(key('O', KeyModifiers::SHIFT)); // hide → clears focus
-        assert!(!a.operator_dock_open && !a.operator_dock_focused);
-        a.update(key('O', KeyModifiers::SHIFT)); // re-open (unfocused)
+        a.update(key('O', KeyModifiers::SHIFT)); // open (unfocused)
         assert!(a.operator_dock_open && !a.operator_dock_focused);
+        a.update(key('O', KeyModifiers::SHIFT)); // hide
+        assert!(!a.operator_dock_open && !a.operator_dock_focused);
     }
 
     #[test]
     fn operator_dock_esc_blurs_but_stays_visible() {
         let mut a = App::new();
         a.tab = Tab::Plans;
-        a.update(key('o', KeyModifiers::NONE));
+        a.operator_dock_open = true;
+        a.operator_dock_focused = true;
         assert!(a.operator_dock_focused);
         a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert!(!a.operator_dock_focused);
@@ -11956,18 +12125,20 @@ mod tests {
     }
 
     #[test]
-    fn operator_dock_o_is_noop_on_operator_tab() {
+    fn o_on_agent_chat_focuses_the_composer_without_opening_a_duplicate_dock() {
         let mut a = App::new();
         a.tab = Tab::Operator; // the whole tab is already the chat
         a.update(key('o', KeyModifiers::NONE));
         assert!(!a.operator_dock_open && !a.operator_dock_focused);
+        assert!(a.chat_composing);
     }
 
     #[test]
     fn operator_dock_focused_routes_compose_and_send() {
         let mut a = App::new();
         a.tab = Tab::Plans;
-        a.update(key('o', KeyModifiers::NONE)); // open + focus
+        a.operator_dock_open = true;
+        a.operator_dock_focused = true;
         a.update(key('i', KeyModifiers::NONE)); // compose into the dock
         assert!(a.chat_composing);
         a.update(key('h', KeyModifiers::NONE));
@@ -11986,7 +12157,8 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Plans;
         a.plans = vec![plan("one"), plan("two"), plan("three")];
-        a.update(key('o', KeyModifiers::NONE)); // focus the dock
+        a.operator_dock_open = true;
+        a.operator_dock_focused = true;
         let sel = a.plan_sel;
         a.update(key('k', KeyModifiers::NONE)); // into history
         assert_eq!(a.chat_scroll, 1);
@@ -12017,7 +12189,8 @@ mod tests {
         let mut a = App::new();
         a.tab = Tab::Plans;
         assert!(!a.voice_key_active()); // off on a plain tab
-        a.update(key('o', KeyModifiers::NONE)); // focus the dock
+        a.operator_dock_open = true;
+        a.operator_dock_focused = true;
         assert!(a.voice_key_active()); // v PTT now accepted in the dock
     }
 
@@ -12025,7 +12198,8 @@ mod tests {
     fn operator_dock_tab_switch_works_while_focused() {
         let mut a = App::new();
         a.tab = Tab::Plans;
-        a.update(key('o', KeyModifiers::NONE)); // focus the dock
+        a.operator_dock_open = true;
+        a.operator_dock_focused = true;
         a.update(key('2', KeyModifiers::NONE)); // '2' = Inbox — never trapped
         assert_eq!(a.tab, Tab::Inbox);
         assert!(a.operator_dock_focused); // focus follows the user across tabs
@@ -12035,7 +12209,7 @@ mod tests {
     fn operator_dock_open_persists_through_view_state() {
         let mut a = App::new();
         a.tab = Tab::Plans;
-        a.update(key('o', KeyModifiers::NONE)); // open
+        a.operator_dock_open = true;
         let vs = a.capture_view_state();
         assert!(vs.operator_dock_open);
         let mut b = App::new();

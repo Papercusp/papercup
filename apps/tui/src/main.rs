@@ -499,7 +499,7 @@ async fn run<B: Backend>(
     // Operator chat pane (tui-operator-surface-2026-06-04): load the workspace's
     // operator conversation on open so the transcript is seeded from the same
     // thread the desktop surface shares.
-    tokio::spawn(agent_chat_load(app.harness.clone(), tx.clone()));
+    tokio::spawn(agent_chat_load(app.harness.clone(), None, tx.clone()));
     // Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a):
     // subscribe the state-channel snapshot SSE so open `chat:ask_choice` cards
     // render inline in the operator pane (and resolve the active workspace once
@@ -588,7 +588,7 @@ async fn run<B: Backend>(
                 turn.abort();
             }
             app.reset_agent_chat_binding();
-            tokio::spawn(agent_chat_load(app.harness.clone(), tx.clone()));
+            tokio::spawn(agent_chat_load(app.harness.clone(), None, tx.clone()));
         }
         if plans_arrived && app.pinned == Some(app::Tab::PlansBoard) {
             if let Some((harness, plan)) = app.selected_board_plan() {
@@ -1064,14 +1064,21 @@ async fn run<B: Backend>(
                     text,
                     app.harness.clone(),
                     app.agent_chat_id.clone(),
+                    app.agent_chat_role.clone(),
                     // The model picker's choice (P-005 final lane, WI-41189).
                     // `None` still means "send no model", so the server applies
                     // its own default (PAPERCUSP_LOOP_CHAT_MODEL) exactly as
                     // before — the picker adds an override, it does not move
                     // the default into the client.
                     app.chat_model.clone(),
+                    app.chat_effort.clone(),
+                    app.chat_account.clone(),
                     tx.clone(),
                 )));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::LoadAgentChat { harness, chat_id } => {
+                tokio::spawn(agent_chat_load(harness, Some(chat_id), tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::CancelChat => {
@@ -3088,7 +3095,11 @@ fn native_turn_to_message(t: agent_chats::AgentChatTranscriptTurn) -> Option<mod
     })
 }
 
-async fn agent_chat_load(harness: String, tx: UnboundedSender<Event>) {
+async fn agent_chat_load(
+    harness: String,
+    selected_chat_id: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
         Err(error) => {
@@ -3107,16 +3118,27 @@ async fn agent_chat_load(harness: String, tx: UnboundedSender<Event>) {
             return;
         }
     };
-    let latest = summaries
-        .into_iter()
-        .filter(|chat| {
-            chat.role == "operator" && chat.feature_id.is_none() && chat.archived_at.is_none()
-        })
-        .max_by(|a, b| a.updated_at.cmp(&b.updated_at));
-    let Some(summary) = latest else {
+    let selected = selected_chat_id
+        .as_deref()
+        .and_then(|id| summaries.iter().find(|chat| chat.id == id))
+        .cloned()
+        .or_else(|| {
+            summaries
+                .iter()
+                .filter(|chat| {
+                    chat.role == "operator"
+                        && chat.feature_id.is_none()
+                        && chat.archived_at.is_none()
+                })
+                .max_by(|a, b| a.updated_at.cmp(&b.updated_at))
+                .cloned()
+        });
+    let Some(summary) = selected else {
         let _ = tx.send(Event::AgentChatLoaded {
             harness,
             chat_id: None,
+            role: "operator".to_string(),
+            summaries,
             messages: Vec::new(),
             approvals: Vec::new(),
         });
@@ -3137,6 +3159,8 @@ async fn agent_chat_load(harness: String, tx: UnboundedSender<Event>) {
             let _ = tx.send(Event::AgentChatLoaded {
                 harness,
                 chat_id: Some(chat.id),
+                role: chat.role,
+                summaries,
                 messages: chat
                     .transcript
                     .into_iter()
@@ -3174,7 +3198,10 @@ async fn stream_agent_chat_turn(
     text: String,
     harness: String,
     chat_id: Option<String>,
+    role: String,
     model: Option<String>,
+    effort: Option<String>,
+    account: Option<String>,
     tx: UnboundedSender<Event>,
 ) {
     use crate::agent_chats::{AgentChatEvent, AgentChatTurnRequest, NewAgentChat};
@@ -3194,7 +3221,7 @@ async fn stream_agent_chat_turn(
         Some(id) => id,
         None => {
             let request = NewAgentChat {
-                role: "operator".to_string(),
+                role,
                 feature_id: None,
                 title: None,
             };
@@ -3231,6 +3258,8 @@ async fn stream_agent_chat_turn(
     let request = AgentChatTurnRequest {
         content: text,
         model,
+        effort,
+        account,
     };
     let mut stream = match client
         .start_agent_chat_turn(&harness, &chat_id, &request)
@@ -4345,6 +4374,16 @@ async fn refetch_all(
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("operator-config: {e}")));
+        }
+    }
+    // Agent Chat account-route picker. The generic run-tool bridge returns
+    // live pool rows; an empty pool still leaves the Auto row available.
+    match client.accounts_status().await {
+        Ok(rows) => {
+            let _ = tx.send(Event::AccountRows(rows));
+        }
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("accounts-status: {e}")));
         }
     }
     // Plan-item assignment/claim/liveness for the SELECTED plan (P-005a). A per-plan
