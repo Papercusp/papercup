@@ -306,7 +306,10 @@ describe('invalid evidence', () => {
     // A capture that does not exist yields `invalid`, not `fail`.
     const compared = await compareRenderVerb(compareInput(), CALLER, {
       ...d,
-      comparison: { provider: fakeProvider(0), probe: () => ({ exists: false }) },
+      comparison: {
+        provider: fakeProvider(0),
+        probe: () => ({ exists: false, detail: 'no capture was produced' }),
+      },
     });
     expect(compared.ok && compared.result.verdict).toBe('invalid');
 
@@ -330,7 +333,12 @@ describe('invalid evidence', () => {
     await ratifyReferenceVerb(ratifyInput(), CALLER, d);
 
     const future: CompareResult = {
-      schemaVersion: COMPARE_RESULT_SCHEMA_VERSION + 1,
+      // The cast is the subject of the test, not a workaround: `schemaVersion`
+      // is typed to the literal this build understands, so a record written by
+      // a NEWER build is by construction unrepresentable in this type. That is
+      // exactly the record the gate has to survive reading from storage, where
+      // no type check stands between the bytes and the reader.
+      schemaVersion: (COMPARE_RESULT_SCHEMA_VERSION + 1) as typeof COMPARE_RESULT_SCHEMA_VERSION,
       verdict: 'pass',
       reference: {
         referenceId: REFERENCE,

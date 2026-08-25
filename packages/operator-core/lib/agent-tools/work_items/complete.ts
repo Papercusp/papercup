@@ -1898,7 +1898,10 @@ async function completeOne(
             {
               store: verbDeps.store,
               verbDeps,
-              caller: { actorId: ident.ownerId, role: COORD_ROLES.AGENT ?? 'agent' },
+              // The gate READS evidence; it never ratifies or records. The role
+              // is carried for provenance only, so it names what this caller
+              // actually is rather than borrowing an authoring role.
+              caller: { actorId: ident.ownerId, role: 'completion-gate' },
             },
           );
         },

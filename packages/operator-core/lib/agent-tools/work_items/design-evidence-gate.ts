@@ -14,6 +14,7 @@
  */
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { activeWorkspaceId } from '../../workspace-registry';
 import {
   DesignGateUnavailableError,
   evaluateFeatureDesignGate,
@@ -102,12 +103,15 @@ export async function designEvidenceCompletionGate(
   deps: DesignEvidenceGateDeps,
 ): Promise<DesignEvidenceGateOutcome> {
   const enabled = await flagOrFalse(
-    deps.isEnabled ?? (() => getFlag(FLAGS.DESIGN_EVIDENCE_GATE) as Promise<boolean>),
+    deps.isEnabled ??
+      (() => getFlag(FLAGS.DESIGN_EVIDENCE_GATE, activeWorkspaceId()) as Promise<boolean>),
   );
   if (!enabled || candidates.length === 0) return { status: 'not-applicable' };
 
   const enforced = await flagOrFalse(
-    deps.isEnforcing ?? (() => getFlag(FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING) as Promise<boolean>),
+    deps.isEnforcing ??
+      (() =>
+        getFlag(FLAGS.DESIGN_EVIDENCE_GATE_ENFORCING, activeWorkspaceId()) as Promise<boolean>),
   );
 
   for (const featureId of candidates) {
