@@ -96,6 +96,23 @@ describe('spec-test-adequacy per-clause evaluator', () => {
       rubricRef: 'spec-test-adequacy',
       subject: { kind: 'plan', ref: 'reconnect-plan#SPEC-003-01@1' },
       terminal: true,
+      rerunRecipe: {
+        schemaVersion: 1,
+        evaluator: 'plans:evaluate-spec-test-adequacy',
+        selection: {
+          planSlug: 'reconnect-plan',
+          specId: 'SPEC-003-01',
+          specRevision: 1,
+          specFingerprint: 'sha256:spec-v1',
+          evidence: [{ evidenceKind: 'coverage-census', evidenceRef: 'surface:reconnect' }],
+        },
+        current: { supplied: false, fingerprints: [] },
+        derivation: {
+          kind: 'listSpecEvidence.currentness',
+          classifier: 'classifySpecEvidenceCurrentness',
+          unknownWhenMissing: true,
+        },
+      },
     });
     expect(Object.keys(result.ratings)).toHaveLength(8);
     expect(result.ratings['correct-layer'].rating).toBe('pass');

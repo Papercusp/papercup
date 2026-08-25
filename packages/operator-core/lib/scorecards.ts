@@ -33,6 +33,7 @@ import {
   type ScorecardGradingAudit,
   type ScorecardProvisional,
   type ScorecardVetting,
+  type SpecTestAdequacyRerunRecipe,
 } from './harness/improvements/observation-types';
 import {
   getIssue,
@@ -88,6 +89,7 @@ export function scorecardEvidenceFingerprint(input: {
   ratings: ObservationRatings;
   instrumentSnapshots?: Record<string, ScorecardInstrumentSnapshot>;
   acceptance?: ScorecardAcceptance;
+  rerunRecipe?: SpecTestAdequacyRerunRecipe;
 }): string {
   // Keep the pre-D-001 byte shape unchanged when no acceptance verdict exists,
   // so historical stored fingerprints remain comparable without a migration.
@@ -97,6 +99,9 @@ export function scorecardEvidenceFingerprint(input: {
     instrumentSnapshots: input.instrumentSnapshots ?? {},
   };
   if (input.acceptance) material.acceptance = input.acceptance;
+  // Preserve every historical fingerprint when the optional replay contract is absent,
+  // while making a persisted spec-test-adequacy recipe part of the scorecard identity.
+  if (input.rerunRecipe) material.rerunRecipe = input.rerunRecipe;
   return createHash('sha256').update(canonicalJson(material)).digest('hex');
 }
 
@@ -248,6 +253,8 @@ export interface ScorecardRow {
    * absence as "not recorded", never as "graded nothing".
    */
   subject?: ObservationSubject;
+  /** Exact replay selector/currentness attestation for spec-test-adequacy cards. */
+  rerunRecipe?: SpecTestAdequacyRerunRecipe;
   /** The rubric graded against (a `rubrics.rubric_id`). */
   rubricRef: string;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
@@ -906,6 +913,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       createdBy: row.created_by,
       ...(observation.sourceHive ? { sourceHive: observation.sourceHive } : {}),
       ...(observation.subject ? { subject: observation.subject } : {}),
+      ...(observation.rerunRecipe ? { rerunRecipe: observation.rerunRecipe } : {}),
       rubricRef: observation.rubricRef,
       ratings,
       ...(observation.acceptance ? { acceptance: observation.acceptance } : {}),

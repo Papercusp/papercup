@@ -46,6 +46,23 @@ describe('scorecards:list correctness payload', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('keeps every criterion through an ambient trimmed dispatch', async () => {
+    const rerunRecipe = {
+      schemaVersion: 1,
+      evaluator: 'plans:evaluate-spec-test-adequacy',
+      selection: {
+        planSlug: 'reconnect-plan',
+        specId: 'SPEC-003-01',
+        specRevision: 1,
+        specFingerprint: 'sha256:spec-v1',
+        evidence: [{ evidenceKind: 'integration fixture', evidenceRef: 'surface:reconnect' }],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness',
+        classifier: 'classifySpecEvidenceCurrentness',
+        unknownWhenMissing: true,
+      },
+    };
     const ratings = Object.fromEntries(
       Array.from({ length: 7 }, (_, i) => [
         `criterion-${i + 1}`,
@@ -62,6 +79,7 @@ describe('scorecards:list correctness payload', () => {
       missingKeys: [],
       extraKeys: [],
       rubricResolved: true,
+      rerunRecipe,
       synthesized: false,
       score10: 7.9,
       linkedItems: [],
@@ -92,7 +110,12 @@ describe('scorecards:list correctness payload', () => {
     const payload = readJsonResult<{
       ok: boolean;
       count: number;
-      scorecards: Array<{ ratings: Record<string, unknown>; nKeys: number; missingKeys: string[] }>;
+      scorecards: Array<{
+        ratings: Record<string, unknown>;
+        nKeys: number;
+        missingKeys: string[];
+        rerunRecipe?: unknown;
+      }>;
       _projection?: unknown;
     }>(dispatched.result!);
     expect(payload?._projection).toBeUndefined();
@@ -100,5 +123,6 @@ describe('scorecards:list correctness payload', () => {
     expect(payload?.scorecards[0]?.nKeys).toBe(7);
     expect(Object.keys(payload?.scorecards[0]?.ratings ?? {})).toHaveLength(7);
     expect(payload?.scorecards[0]?.missingKeys).toEqual([]);
+    expect(payload?.scorecards[0]?.rerunRecipe).toEqual(rerunRecipe);
   });
 });

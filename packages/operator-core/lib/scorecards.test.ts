@@ -145,6 +145,31 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
     expect(accepted).not.toBe(legacy);
     expect(rejected).not.toBe(accepted);
   });
+
+  it('includes the optional spec-test-adequacy rerun recipe while preserving legacy hashes when absent', () => {
+    const ratings = { a: { rating: 'PASS', evidence: 'n=1' } };
+    const recipe = {
+      schemaVersion: 1 as const,
+      evaluator: 'plans:evaluate-spec-test-adequacy' as const,
+      selection: {
+        planSlug: 'p',
+        specId: 's',
+        specRevision: 1,
+        specFingerprint: 'spec-fingerprint',
+        evidence: [{ evidenceKind: 'test', evidenceRef: 'test:1' }],
+      },
+      current: { supplied: false, fingerprints: [] },
+      derivation: {
+        kind: 'listSpecEvidence.currentness' as const,
+        classifier: 'classifySpecEvidenceCurrentness' as const,
+        unknownWhenMissing: true as const,
+      },
+    };
+    const legacy = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings });
+    const withRecipe = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: recipe });
+    expect(withRecipe).not.toBe(legacy);
+    expect(scorecardEvidenceFingerprint({ rubricRef: 'r', ratings, rerunRecipe: recipe })).toBe(withRecipe);
+  });
 });
 
 describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () => {
