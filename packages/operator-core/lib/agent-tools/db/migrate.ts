@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
@@ -71,6 +71,9 @@ const LOCK_RETRY_MAX_ATTEMPTS = 5;
 // multi-minute timeout by 5 attempts and blow far past this tool's own budget.
 const MAX_LOCK_TIMEOUT_SQL_SEC = 300; // ceiling — mirrors MAX_DRAIN_SEC's magnitude
 const CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS = 2;
+// The MCP transport's idle cap is 300s. Keep an in-flight psql apply visibly
+// alive well inside that window while still avoiding a noisy progress stream.
+export const PSQL_PROGRESS_INTERVAL_MS = 30_000;
 
 /** Stable identity used by the workspace pg_dump hook. Keep this literal in
  * the migration guard so a backup transaction is recognizable even when the
@@ -188,20 +191,77 @@ export function isDuplicateMigrationLedgerFailure(stderr: string): boolean {
   return SCHEMA_MIGRATIONS_DUP_KEY_RE.test(stderr);
 }
 
+type PsqlResult = { status: number; stdout: string; stderr: string };
+
+type PsqlRunner = (
+  cmd: string,
+  args: string[],
+  opts: { input?: string; encoding: 'utf8'; onHeartbeat?: (elapsedSec: number) => void },
+) => Promise<PsqlResult>;
+
+/** Run a psql command asynchronously, optionally emitting a heartbeat while
+ * the child is still pending. `spawnSync` made a long lock wait block the
+ * operator event loop, so ctx.progress could never refresh the MCP idle
+ * deadline. The child receives its SQL through stdin just as the old sync
+ * path did. */
+const runPsql: PsqlRunner = (cmd, args, opts) =>
+  new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    let settled = false;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    const finish = (result: PsqlResult) => {
+      if (settled) return;
+      settled = true;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      resolve(result);
+    };
+    const fail = (error: unknown) => {
+      if (settled) return;
+      settled = true;
+      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      reject(error);
+    };
+
+    if (opts.onHeartbeat) {
+      heartbeatTimer = setInterval(() => {
+        if (settled) return;
+        try {
+          opts.onHeartbeat?.(Math.floor((Date.now() - startedAt) / 1000));
+        } catch {
+          // Progress is advisory; a disconnected transport must not abort psql.
+        }
+      }, PSQL_PROGRESS_INTERVAL_MS);
+    }
+
+    try {
+      const child = execFile(cmd, args, { encoding: opts.encoding }, (error, stdout, stderr) => {
+        const status = error == null ? 0 : typeof error.code === 'number' ? error.code : 1;
+        finish({
+          status,
+          stdout: stdout ?? '',
+          stderr: stderr ?? (error?.message ?? ''),
+        });
+      });
+      child.stdin?.end(opts.input);
+    } catch (error) {
+      fail(error);
+    }
+  });
+
 /** Query harness_shared.schema_migrations directly (a fresh psql
  *  invocation — NOT the pool that may have just dropped) for whether
  *  `filename` is already recorded as applied. Never throws: an unreadable
  *  result (psql itself fails, e.g. box is genuinely down) returns false
- *  rather than falsely claiming already-applied. `spawn` is injectable for
+ *  rather than falsely claiming already-applied. `run` is injectable for
  *  tests, matching runMigrationWithLockRetry's own pattern. */
-function checkSchemaMigrationsRecorded(
+async function checkSchemaMigrationsRecorded(
   url: string,
   filename: string,
-  spawn: (cmd: string, args: string[], opts: { encoding: 'utf8' }) => SpawnResult = spawnSync,
-): boolean {
+  run: PsqlRunner = runPsql,
+): Promise<boolean> {
   const escaped = filename.replace(/'/g, "''");
   const query = `SELECT 1 FROM harness_shared.schema_migrations WHERE filename = '${escaped}' LIMIT 1;`;
-  const r = spawn('psql', [url, '-tAc', query], { encoding: 'utf8' });
+  const r = await run('psql', [url, '-tAc', query], { encoding: 'utf8' });
   return r.status === 0 && r.stdout.trim() === '1';
 }
 
@@ -221,34 +281,33 @@ async function withConnectionRetry<T>(fn: () => Promise<T>, maxAttempts = CONNEC
   }
 }
 
-type SpawnResult = SpawnSyncReturns<string>;
-
 /** Run the migration script via psql, retrying ONLY on a retryable
  *  transaction-contention failure ({@link isRetryableLockFailure} — lock
  *  timeout, deadlock, or serialization failure), up to `maxAttempts`, with
- *  {@link lockRetryBackoffMs} backoff between attempts. `spawn` is injectable
+ *  {@link lockRetryBackoffMs} backoff between attempts. `run` is injectable
  *  for tests. */
 async function runMigrationWithLockRetry(
   url: string,
   script: string,
-  spawn: (cmd: string, args: string[], opts: { input: string; encoding: 'utf8' }) => SpawnResult = spawnSync,
+  run: PsqlRunner = runPsql,
   maxAttempts = LOCK_RETRY_MAX_ATTEMPTS,
   // EI-18769559897594065: fired once per attempt (including the first) so a
   // caller can surface retry progress instead of the whole multi-attempt,
   // backoff-retried apply going silent — see db:migrate's emitProgress wiring.
   onAttempt?: (attempt: number, maxAttempts: number) => void,
-): Promise<{ result: SpawnResult; attempts: number }> {
-  let result: SpawnResult;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  onHeartbeat?: (elapsedSec: number) => void,
+): Promise<{ result: PsqlResult; attempts: number }> {
+  for (let attempt = 1; ; attempt++) {
     onAttempt?.(attempt, maxAttempts);
-    result = spawn('psql', [url, '-v', 'ON_ERROR_STOP=1'], { input: script, encoding: 'utf8' });
+    const result = await run('psql', [url, '-v', 'ON_ERROR_STOP=1'], {
+      input: script,
+      encoding: 'utf8',
+      onHeartbeat,
+    });
     if (result.status === 0) return { result, attempts: attempt };
     if (attempt >= maxAttempts || !isRetryableLockFailure(result.stderr ?? '')) return { result, attempts: attempt };
     await sleep(lockRetryBackoffMs(attempt));
   }
-  // Unreachable — the loop above always returns by its last iteration — but
-  // keeps TS's control-flow analysis happy without a non-null assertion.
-  return { result: result!, attempts: maxAttempts };
 }
 
 const json = (payload: unknown) => ({
@@ -603,6 +662,17 @@ export default defineTool({
                 );
               }
             },
+            (elapsedSec) => {
+              emitProgress(
+                undefined,
+                JSON.stringify({
+                  phase: 'applying',
+                  file: path.basename(args.file),
+                  heartbeat: true,
+                  elapsed_sec: elapsedSec,
+                }),
+              );
+            },
           );
           if (r.status !== 0) {
             // WI-6002: before trusting this failure, check whether it's actually
@@ -613,7 +683,7 @@ export default defineTool({
             // error skips straight to the real failure report, unchanged.
             if (
               isDuplicateMigrationLedgerFailure(r.stderr ?? '') &&
-              checkSchemaMigrationsRecorded(url, path.basename(args.file))
+              (await checkSchemaMigrationsRecorded(url, path.basename(args.file)))
             ) {
               return json({
                 ok: true,
