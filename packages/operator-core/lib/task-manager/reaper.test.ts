@@ -195,15 +195,43 @@ describe('shared rails', () => {
     expect(v.spared.some((s) => s.taskId === 'e1' && /autoReapExempt/.test(s.why))).toBe(true);
   });
 
-  it('never counts a foreign cgroup — an unconfined row records its SPAWNER\'s cgroup (CONTROL — the 2026-08-25 live 0/12 bug)', () => {
-    const r = row({
+  // The 2026-08-25 live 0/12 bug was "the operator's own pids were counted as a
+  // dead session's survivors". It was first patched by FILTERING on cgroup_path
+  // (leaf must equal scopeUnit); that filter is gone, because the field it trusts
+  // is stale on ~30% of rows and the filter therefore also excluded genuine
+  // residue — including a session log-silent 10h with no heartbeat.
+  //
+  // The hazard is now excluded STRUCTURALLY instead: pids are resolved from the
+  // row's own scope unit, so a foreign cgroup_path has nothing to contribute.
+  // These two cases pin that property rather than the old mechanism — if anyone
+  // reintroduces a cgroup_path-derived filter or pid source, they fail.
+  it('cgroup_path CANNOT influence the verdict — identical rows differing only in it decide identically', () => {
+    const base = { state: 'ended_unobserved' as const, endedAt: new Date(NOW - HOUR).toISOString() };
+    const correct = row({
       taskId: 'f1',
-      state: 'ended_unobserved',
-      endedAt: new Date(NOW - HOUR).toISOString(),
+      ...base,
+      cgroupPath: '/user.slice/papercusp-agent-session.slice/pc-f1--test.scope',
+    });
+    const stale = row({
+      taskId: 'f2',
+      ...base,
+      // What the ledger actually recorded for 28 live rows whose processes were
+      // in fact sitting in their own correct scopes.
       cgroupPath: '/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-dev-api.service',
     });
-    // pids>0 here IS the operator's own process count — the exact live failure.
-    const v = decide([r], { pids: { f1: 40 }, logQuiet: { f1: 23 * HOUR } });
+    const v = decide([correct, stale], { pids: { f1: 6, f2: 6 } });
+    expect(v.reap.map((d) => d.taskId).sort()).toEqual(['f1', 'f2']);
+  });
+
+  it('a row whose OWN scope holds nothing is never reaped, however healthy its cgroup_path looks (CONTROL)', () => {
+    // This is what actually spares the phantom rows: their scope does not exist,
+    // so it reads a real zero and no stop is ever attempted against it.
+    const r = row({
+      taskId: 'f3',
+      state: 'ended_unobserved',
+      endedAt: new Date(NOW - HOUR).toISOString(),
+    });
+    const v = decide([r], { pids: { f3: 0 }, logQuiet: { f3: 23 * HOUR } });
     expect(v.reap).toHaveLength(0);
   });
 
@@ -278,6 +306,71 @@ describe('executeReaps', () => {
       closeAsReaped: async () => void calls.push('close'),
     });
     expect(calls).toEqual([]);
+  });
+});
+
+describe('addressability resolves from scopeUnit, never the ledger cgroup_path (WI-41607)', () => {
+  // Mirrors production: pids are resolved by SCOPE UNIT against the real cgroup
+  // tree, so a stale `cgroup_path` cannot influence the verdict either way.
+  const byScope = (existing: Record<string, number>) => (r: TaskRow) =>
+    r.scopeUnit && r.scopeUnit in existing ? existing[r.scopeUnit]! : 0;
+  const emptyCensus = censusAgentSessionProgress([], { statMtimeMs: () => null });
+
+  /** The ledger value measured on 27 live sessions whose processes were in fact
+   *  in their own correct scopes — the field was simply stale. */
+  const SPAWNER_CGROUP =
+    '/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-bg-host.service';
+
+  const terminalRow = (taskId: string) =>
+    row({
+      taskId,
+      state: 'exited',
+      endedAt: new Date(NOW - 30 * 60_000).toISOString(),
+      cgroupPath: SPAWNER_CGROUP,
+      logPath: null,
+    });
+
+  it('CAUGHT: reaps residue whose cgroup_path names the SPAWNER service, when the scope really exists', () => {
+    const r = terminalRow('stale-path');
+    const v = decideReaps({
+      rows: [r],
+      census: emptyCensus,
+      scopePidCount: byScope({ [r.scopeUnit!]: 7 }),
+      freshOwners: new Set(),
+      logQuietForMs: () => null,
+      now: NOW,
+    });
+    // Under the old cgroup_path leaf-match guard this row was skipped forever,
+    // which is how a session log-silent for 10h with no heartbeat survived.
+    expect(v.reap.map((d) => d.taskId)).toEqual(['stale-path']);
+  });
+
+  it('CONTROL: skips a PHANTOM row whose scope never existed — nothing is stopped', () => {
+    const r = terminalRow('phantom');
+    const v = decideReaps({
+      rows: [r],
+      census: emptyCensus,
+      scopePidCount: byScope({}), // scope absent ⇒ a real zero
+      freshOwners: new Set(),
+      logQuietForMs: () => null,
+      now: NOW,
+    });
+    // The 0/12 loop: 12 such rows were selected and their stops failed, every
+    // 5 minutes for an hour. Selecting nothing is the fix, not failing quietly.
+    expect(v.reap).toEqual([]);
+  });
+
+  it('CONTROL: an unreadable scope (null) is still never treated as "has processes"', () => {
+    const r = terminalRow('unreadable');
+    const v = decideReaps({
+      rows: [r],
+      census: emptyCensus,
+      scopePidCount: () => null,
+      freshOwners: new Set(),
+      logQuietForMs: () => null,
+      now: NOW,
+    });
+    expect(v.reap).toEqual([]);
   });
 });
 
