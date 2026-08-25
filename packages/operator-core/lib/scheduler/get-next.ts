@@ -86,7 +86,7 @@ import {
   type WorkItem,
 } from '../work-items';
 import { resolveIssuesScopeWorkspace } from '../issues-engineer';
-import { isIssueLocallyClaimableWhereSql } from '../work-items-admission';
+import { admittedWhereSqlWi, isIssueLocallyClaimableWhereSql } from '../work-items-admission';
 import { trackDetached } from '../detached-imports';
 import { agentReviewNormalExclusionSql } from '../harness/improvements/agent-review-policy';
 
@@ -874,6 +874,8 @@ export interface IssueClaimExclusionBreakdown {
      *  survivors while `scheduler:get_next` claimed 0, because N of them were
      *  remote-origin and only the real claim path refused them. */
     remoteOrigin: number;
+    /** Born-pending duplicate screening has not yet been adjudicated. */
+    admissionPending?: number;
   };
 }
 
@@ -910,7 +912,7 @@ export const ALL_ISSUE_CLAIM_FLOORS_PASS =
   `AND ok_agent_review AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
   `AND ok_completed AND ok_watchdog_recovery AND ok_rig AND ok_no_blocker ` +
-  `AND ok_cooldown AND ok_origin`;
+  `AND ok_cooldown AND ok_origin AND ok_admission`;
 
 /**
  * The SHARED inner subquery for issue-family claimability: every candidate issue-family
@@ -978,6 +980,7 @@ export function issueClaimCandidateSubquery(
       -- own author key) — previously absent from this shared subquery entirely, so a
       -- true-remote-origin row read as claimable here while the real claim refused it.
       (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                AS ok_origin,
+      (${admittedWhereSqlWi(sql)})                                      AS ok_admission,
       -- D-007: was the ONLY floor here that did not call a shared helper, and it drifted —
       -- it kept bi.workspace_id = 'default' (the hardcode migration 719 removed from every
       -- other reader) and left the feature leg unscoped entirely, while the real claim path
@@ -1087,7 +1090,8 @@ export async function aggregateIssueClaimExclusions(
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_rig)::int             AS cross_machine_rig,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_no_blocker)::int      AS blocked_dep,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_origin)::int          AS remote_origin
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_origin)::int          AS remote_origin,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_admission)::int       AS admission_pending
     FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
   `) as Array<{
     matched: number;
@@ -1107,6 +1111,7 @@ export async function aggregateIssueClaimExclusions(
     blocked_dep: number;
     cooldown: number;
     remote_origin: number;
+    admission_pending: number;
   }>;
   const r = rows[0];
   const claimable = r?.claimable ?? 0;
@@ -1135,6 +1140,7 @@ export async function aggregateIssueClaimExclusions(
       blockedDep: r?.blocked_dep ?? 0,
       cooldown: r?.cooldown ?? 0,
       remoteOrigin: r?.remote_origin ?? 0,
+      admissionPending: r?.admission_pending ?? 0,
     },
   };
 }
@@ -1160,6 +1166,7 @@ export interface IssueClaimExclusionSample {
   cooldown: string[];
   /** WI-6409: sampled ids of true-remote-origin rows — see {@link IssueClaimExclusionBreakdown.excluded}'s remoteOrigin. */
   remoteOrigin: string[];
+  admissionPending?: string[];
 }
 
 /**
@@ -1246,7 +1253,8 @@ export async function sampleIssueClaimExclusions(
       ${sampleOf('NOT ok_rig')}                 AS cross_machine_rig,
       ${sampleOf('NOT ok_no_blocker')}          AS blocked_dep,
       ${sampleOf('NOT ok_cooldown')}            AS cooldown,
-      ${sampleOf('NOT ok_origin')}              AS remote_origin
+      ${sampleOf('NOT ok_origin')}              AS remote_origin,
+      ${sampleOf('NOT ok_admission')}           AS admission_pending
   `) as Array<{
     taken: string[];
     claim_hold: string[];
@@ -1262,6 +1270,7 @@ export async function sampleIssueClaimExclusions(
     blocked_dep: string[];
     cooldown: string[];
     remote_origin: string[];
+    admission_pending: string[];
   }>;
   const r = rows[0];
   return {
@@ -1279,6 +1288,7 @@ export async function sampleIssueClaimExclusions(
     blockedDep: r?.blocked_dep ?? [],
     cooldown: r?.cooldown ?? [],
     remoteOrigin: r?.remote_origin ?? [],
+    admissionPending: r?.admission_pending ?? [],
   };
 }
 

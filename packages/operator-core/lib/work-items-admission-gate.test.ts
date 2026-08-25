@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { isAdmitted } from './work-items-admission';
+import { admittedWhereSql, isAdmitted } from './work-items-admission';
 
 /** CONTROL A — the naive `=== 'admitted'` reading. Quarantines every legacy row. */
 const wrongStrictEquals = (a: string | null | undefined): boolean => a === 'admitted';
@@ -62,5 +62,20 @@ describe('isAdmitted — the admission-gate predicate', () => {
       expect(wrongNullIsPending('pending')).toBe(isAdmitted('pending'));
       expect(wrongNullIsPending('admitted')).toBe(isAdmitted('admitted'));
     });
+  });
+});
+
+describe('admittedWhereSql — every relation shape shares NULL-safe semantics', () => {
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => ({ strings: [...strings], values })) as never;
+  (sql as unknown as { unsafe: (value: string) => string }).unsafe = (value: string) => value;
+
+  it('renders the feature view, base-table alias, and issue-view alias from one builder', () => {
+    const render = (value: unknown) => JSON.stringify(value);
+    expect(render(admittedWhereSql(sql))).toContain('admission');
+    expect(render(admittedWhereSql(sql, 'wi'))).toContain('wi.admission');
+    expect(render(admittedWhereSql(sql, 'ei'))).toContain('ei.admission');
+    for (const qualifier of [undefined, 'wi', 'ei'] as const) {
+      expect(render(admittedWhereSql(sql, qualifier))).toContain("IS DISTINCT FROM 'pending'");
+    }
   });
 });
