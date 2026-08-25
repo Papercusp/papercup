@@ -38,6 +38,7 @@ import {
   activeRevision,
   ratifyReference,
   referenceArtifactId,
+  retractReference,
   staleEvidence,
 } from './reference-store';
 import { createPgReferenceStore, readReferenceLifecycle, type SqlTag } from './reference-store-pg';
@@ -372,6 +373,79 @@ describe('discovering every reference under a feature', () => {
         featureId: scope.featureId,
       }),
     ).toEqual([]);
+  });
+
+  /**
+   * WI-41642 — the lifecycle READ-BACK, which is a property of the schema split
+   * and therefore cannot be proved in memory.
+   *
+   * ─── THE BUG THIS GUARDS, AND WHY EVERYTHING WAS GREEN ───────────────────
+   *
+   * `setLifecycle` writes `metadata` and deliberately leaves `payload` alone
+   * (provenance is written once). `toRow` used to rebuild the reference from
+   * `payload` ALONE, and `listRevisions` did not even SELECT `metadata`. So the
+   * state came back frozen at whatever it was at ratification — always
+   * `'active'` — and every lifecycle transition was silently discarded on read.
+   *
+   * Against real Postgres that meant a RETRACTED reference kept constraining
+   * completion forever: `activeRevision` filters on `reference.state`, and the
+   * retracted row still claimed to be active. That is this plan's own drift
+   * marker, "a surface remaining constrained after retraction", in production.
+   *
+   * Nothing caught it because the in-memory port has no payload/metadata split
+   * (it rewrites `row.reference` in place), and the supersede case above ends
+   * with `activeRevision(...) === 2` — with BOTH rows stuck `'active'`,
+   * `activeRevision` sorts revision DESC and still answers 2. That assertion is
+   * structurally incapable of failing on this bug. Retraction is where it shows,
+   * because there is no higher revision to mask the stale one.
+   */
+  it('WI-41642: retracting the only revision leaves NO active revision on read-back', async () => {
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+
+    // Precondition: it really is constraining before the retraction, so a
+    // vacuous "undefined either way" cannot pass this test.
+    expect(activeRevision(await store.listRevisions(scope))?.reference.identity.revision).toBe(1);
+
+    await retractReference(store, scope, {
+      actor: 'su-integration',
+      reason: 'surface withdrawn',
+      at: '2026-08-25T00:00:00.000Z',
+    });
+
+    // THE ASSERTION. Read back through the store, not through a raw metadata
+    // query — the gate reads it this way, so this is the path that has to be
+    // right.
+    const rows = await store.listRevisions(scope);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.reference.state).toBe('retracted');
+    expect(activeRevision(rows)).toBeUndefined();
+
+    // R3(a): the attribution survives the round-trip too. It lives in the
+    // metadata projection, so if the overlay regressed to reading payload only,
+    // this is gone even when the state happens to look right.
+    expect(rows[0]!.reference.retraction).toMatchObject({
+      actor: 'su-integration',
+      reason: 'surface withdrawn',
+    });
+  });
+
+  it('WI-41642: a SUPERSEDED revision also reads back superseded, not active', async () => {
+    // The half the existing supersede case cannot assert. Checked per-row rather
+    // than via `activeRevision`, precisely because `activeRevision` picks the
+    // highest active revision and would answer 2 whether or not revision 1 was
+    // correctly demoted.
+    const scope = freshScope();
+    const store = createPgReferenceStore({ sql, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 1), image: IMAGE, now: clock });
+    await ratifyReference(store, { scope, candidate: candidate(scope, 2), image: IMAGE, now: clock });
+
+    const rows = await store.listRevisions(scope);
+    const byRevision = new Map(rows.map((r) => [r.reference.identity.revision, r.reference]));
+    expect(byRevision.get(1)!.state).toBe('superseded');
+    expect(byRevision.get(1)!.supersededByRevision).toBe(2);
+    expect(byRevision.get(2)!.state).toBe('active');
   });
 
   it('still lists a reference whose only revision has been RETRACTED', async () => {
