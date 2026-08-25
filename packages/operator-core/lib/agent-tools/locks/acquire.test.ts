@@ -187,6 +187,24 @@ describe('locks:acquire — outcome branches', () => {
     expect(b).toMatchObject({ ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] });
   });
 
+  it('fast-path upsert race stays explicit and retryable even when busy is empty', async () => {
+    routeM.mockResolvedValue({
+      value: { ok: false, busy: [], reason: 'upsert_race', retryable: true },
+      via: 'local-authority',
+    });
+    const b = body(await call({}));
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'upsert_race',
+      transient: true,
+      retryable: true,
+      holder: 'unknown',
+      busy: [],
+    });
+    expect(String(b.advice)).toMatch(/retry/i);
+    expect(String(b.advice)).toMatch(/do NOT queue wake_on_grant/i);
+  });
+
   it('a WorkspaceContendedError degrades to a structured TRANSIENT workspace_contended (never a false holder, never a raw PG leak) — EI-9478', async () => {
     // Mirrors the real WorkspaceContendedError shape (`.name` set) so this
     // exercises the EI-13189 contention-retry path (below) before degrading —

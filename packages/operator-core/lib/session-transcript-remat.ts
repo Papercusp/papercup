@@ -43,7 +43,12 @@ import {
 /** How the caller identified the session it wants a transcript for. */
 export type TranscriptStreamKey =
   | { kind: 'claude'; sessionId: string; owner?: string }
-  | { kind: 'omp'; threadId: string }
+  /**
+   * `sessionKey` (WI-41496) is the omp session's adv-row id, which names its
+   * per-session home. Optional because a deep-link legitimately has only the
+   * thread id — the resolver's per-session-home sweep covers that case.
+   */
+  | { kind: 'omp'; threadId: string; sessionKey?: string | number }
   /** A codex session keyed by its rollout uuid (transcript-search deep-link). */
   | { kind: 'codex-rollout'; rolloutId: string }
   /** A codex session keyed by its adv-session row id (the roster/inactive list). */
@@ -90,7 +95,20 @@ export interface RematTranscriptDeps {
    * unrecoverable even though the restore just wrote it to disk.
    */
   resolveClaude: (sessionId: string, owner?: string, root?: string) => Promise<string | null>;
-  resolveOmp: (threadId: string) => Promise<string | null>;
+  /**
+   * WI-41496: `root` is the sessions root the restore actually wrote into
+   * (omp archives stamp `session_root` as the `…/agent/sessions` dir itself),
+   * and `sessionKey` names the per-session home for a live re-resolve. Both
+   * were missing — this leg called `findOmpSessionPath(threadId)` bare, which
+   * searches ONLY the shared `~/.omp` home, so a restored psu omp transcript
+   * was reported unresolvable while sitting on disk. The codex legs below
+   * already took the restored root for exactly this reason (EI-16982).
+   */
+  resolveOmp: (
+    threadId: string,
+    root?: string,
+    sessionKey?: string | number,
+  ) => Promise<string | null>;
   resolveCodexByUuid: (rolloutId: string, root: string) => Promise<string | null>;
   resolveCodexBySessionKey: (sessionKey: string, root: string) => Promise<string | null>;
   /** Optional override root — tests restore into a scratch dir. */
@@ -110,7 +128,13 @@ async function defaultDeps(): Promise<RematTranscriptDeps> {
     // where the bytes actually live on disk.
     resolveClaude: (sessionId, owner, root) =>
       resolveInteractiveTranscript(sessionId, { owner, ...(root ? { roots: [join(root, 'projects')] } : {}) }),
-    resolveOmp: (threadId) => findOmpSessionPath(threadId),
+    resolveOmp: (threadId, root, sessionKey) =>
+      findOmpSessionPath(threadId, {
+        // An omp archive stamps `session_root` as the sessions dir itself, so
+        // it is a rootOverride directly — no `agent/sessions` suffix to add.
+        ...(root ? { rootOverride: root } : {}),
+        ...(sessionKey != null ? { sessionKey } : {}),
+      }),
     // Point the by-uuid walk at the root the restore actually wrote to — its
     // default is the GLOBAL ~/.codex, where a per-session rollout never lives.
     resolveCodexByUuid: (rolloutId, root) =>
@@ -207,7 +231,7 @@ export async function rematerializeTranscript(
         path = await deps.resolveClaude(key.sessionId, key.owner, root);
         break;
       case 'omp':
-        path = await deps.resolveOmp(key.threadId);
+        path = await deps.resolveOmp(key.threadId, root, key.sessionKey);
         break;
       case 'codex-rollout':
         path = await deps.resolveCodexByUuid(key.rolloutId, root);

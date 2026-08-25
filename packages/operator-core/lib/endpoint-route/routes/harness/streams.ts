@@ -1257,6 +1257,19 @@ const sessionThinkingStream = defineTool({
     // tail-backfill + poll-follow machinery — only resolver + parser differ.
     const codexSessionKey = (url.searchParams.get('codexSessionKey') ?? '').replace(/[^A-Za-z0-9_-]/g, '');
     const ompThreadId = (url.searchParams.get('ompThreadId') ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+    /**
+     * WI-41496: the omp session's ADV-ROW id, which is what names its home.
+     *
+     * A psu-launched omp agent gets a per-session home
+     * (`~/.papercusp/su-omp-homes/session-<advId>/agent/sessions`) and never
+     * writes to the shared `~/.omp`; without this the route resolved against
+     * the shared home only and every such session's conversation popup was
+     * permanently empty — measured live against a 25 KB transcript that was
+     * being appended at the time. Optional: the resolver falls back to a
+     * bounded sweep of the per-session homes when it is absent, which is what
+     * keeps a deep-link (thread id only) working.
+     */
+    const ompSessionKey = (url.searchParams.get('ompSessionKey') ?? '').replace(/[^A-Za-z0-9_-]/g, '');
     // A codex session keyed by its ROLLOUT UUID (the session-turns index key) —
     // the transcript-search deep-link for codex sessions with no adv-row key.
     const codexRolloutId = (url.searchParams.get('codexRolloutId') ?? '').replace(/[^A-Za-z0-9-]/g, '');
@@ -1289,7 +1302,12 @@ const sessionThinkingStream = defineTool({
           : codexRolloutId
             ? { resolve: () => findCodexRolloutPathByUuid(codexRolloutId), newParser: createCodexTimelineParser }
           : ompThreadId
-            ? { resolve: () => findOmpSessionPath(ompThreadId), newParser: createOmpTimelineParser }
+            ? {
+                resolve: () => findOmpSessionPath(ompThreadId, {
+                  ...(ompSessionKey ? { sessionKey: ompSessionKey } : {}),
+                }),
+                newParser: createOmpTimelineParser,
+              }
             : sessionId
               // P-016 fallback (WI-2680): resolve the exact recorded session_id first,
               // then — on a miss — the newest transcript under the owner root, so a
@@ -1321,7 +1339,11 @@ const sessionThinkingStream = defineTool({
             : codexRolloutId
               ? ({ kind: 'codex-rollout', rolloutId: codexRolloutId } as const)
               : ompThreadId
-                ? ({ kind: 'omp', threadId: ompThreadId } as const)
+                ? ({
+                    kind: 'omp',
+                    threadId: ompThreadId,
+                    ...(ompSessionKey ? { sessionKey: ompSessionKey } : {}),
+                  } as const)
                 : sessionId
                   ? ({ kind: 'claude', sessionId, owner } as const)
                   : null;
