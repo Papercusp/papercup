@@ -26,9 +26,9 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, stat, statfs, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
-import { createWriteStream } from 'node:fs';
+import { mkdir, readdir, stat, statfs, unlink } from 'node:fs/promises';
+import { basename, dirname, join } from 'node:path';
+import { createWriteStream, type Dirent } from 'node:fs';
 import { appendFile } from 'node:fs/promises';
 
 interface HookContext {
@@ -203,6 +203,68 @@ export function allocateDumpTempPath(outPath: string): string {
   return `${outPath}.${process.pid}-${dumpAttemptSequence}.tmp`;
 }
 
+/**
+ * Return the writer PID encoded in one attempt-scoped transaction filename.
+ *
+ * Keep this parser exact. The dump directory can contain unrelated `.tmp`
+ * files, and cleanup authority comes only from the filename shape allocated
+ * above plus a dead-writer verdict.
+ */
+export function dumpTempOwnerPid(outPath: string, entryName: string): number | null {
+  const prefix = `${basename(outPath)}.`;
+  if (!entryName.startsWith(prefix) || !entryName.endsWith('.tmp')) return null;
+  const owner = entryName.slice(prefix.length, -'.tmp'.length);
+  const match = /^([1-9]\d*)-\d+$/.exec(owner);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) ? pid : null;
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM proves the process exists but belongs to another user. Unknown
+    // probe failures also fail closed; only ESRCH authorizes deletion.
+    return (error as NodeJS.ErrnoException)?.code !== 'ESRCH';
+  }
+}
+
+/**
+ * Reap transaction files whose encoded writer process is provably gone.
+ *
+ * Unique PID/sequence paths fixed the cross-process inode collision, but the
+ * former cleanup still removed only the retired `outPath.tmp` name. A killed
+ * operator therefore leaked every partial attempt forever. Do not age-reap:
+ * another process may be legitimately writing the same workspace dump, while
+ * an ESRCH verdict is an exact ownership boundary.
+ */
+export async function reapDeadDumpTempFiles(outPath: string): Promise<number> {
+  const dir = dirname(outPath);
+  let entries: Dirent<string>[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const pid = dumpTempOwnerPid(outPath, entry.name);
+    if (pid === null || processExists(pid)) continue;
+    try {
+      await unlink(join(dir, entry.name));
+      removed += 1;
+    } catch {
+      // A peer may have completed cleanup after readdir. Best-effort is enough;
+      // the next hook retries every still-present dead-writer transaction.
+    }
+  }
+  return removed;
+}
+
 export function runPreSnapshotHook(ctx: HookContext): Promise<PreSnapshotHookResult> {
   const run = dumpQueue.then(() => runPreSnapshotHookNow(ctx));
   dumpQueue = run.then(() => undefined, () => undefined);
@@ -220,12 +282,16 @@ async function runPreSnapshotHookNow(ctx: HookContext): Promise<PreSnapshotHookR
 
   const outPath = join(dumpDir, 'pg-embedded.sql.gz');
 
-  // A leftover `.tmp` from a crashed or timed-out run is never useful input,
-  // and its bytes are exactly the bytes the next dump needs. Reclaim it BEFORE
+  // A leftover transaction from a crashed writer is never useful input, and
+  // its bytes are exactly the bytes the next dump needs. Reclaim it BEFORE
   // measuring free space rather than leaving it to `dumpPg`: when the check
   // below refuses, `dumpPg` never runs, so the orphan outlives every skip and
-  // is re-captured by every snapshot. A 164MB orphan survived 26h of skips
-  // that way (EI-20109034777197353).
+  // is re-captured by every snapshot. The legacy single `.tmp` cleanup below
+  // remains for pre-PID/sequence artifacts; the reaper covers current names.
+  const reapedTransactions = await reapDeadDumpTempFiles(outPath);
+  if (reapedTransactions > 0) {
+    await log(`pg temp cleanup: reaped ${reapedTransactions} dead-writer transaction(s)`);
+  }
   await unlink(`${outPath}.tmp`).catch(() => {});
 
   // The dump is written beside the workspace, not in the Kopia repository.
