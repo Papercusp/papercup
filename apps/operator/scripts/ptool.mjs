@@ -892,6 +892,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // observes the orient result or its structured fallback instead of an
   // ambiguous client-side -32001 timeout.
   ['coord:orient', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // `release:trace` composes candidate, gate, deploy, and await reads. Under
+  // operator pressure that read-only bundle can outlive the ordinary 30s
+  // client budget even though it is still progressing; keep the typed trace
+  // result observable instead of surfacing an opaque MCP -32001.
+  ['release:trace', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21310243062797569: fleet:assignments fans out across presence,
   // claims, and liveness reads. During a BYOC live recheck that placement
   // read can outlive the ordinary 30s client deadline even though the
@@ -899,6 +904,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // ptool client outside the long-read budget so it reports the tool's
   // structured result instead of an ambiguous MCP -32001 timeout.
   ['fleet:assignments', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // `coord:presence` is the live roster read and may enrich rows with
+  // coordination/liveness/coupling state. Its bounded multi-leg read can
+  // exceed the ordinary 30s client budget during a busy fleet; preserve the
+  // server's structured roster or typed timeout instead of -32001.
+  ['coord:presence', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21276159817895096: `db:migrate` declares a 1020s server-side timeout,
   // but the client must stay above the MCP transport cap to observe its
   // structured verdict instead of cutting the request off at 30s. The

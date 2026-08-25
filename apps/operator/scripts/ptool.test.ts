@@ -138,10 +138,20 @@ describe('ptool call deadlines', () => {
       args: { id: 'EI-21281814895308307' },
     })).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
     expect(timeoutForTool('coord:orient')).toBe(60_000);
+    expect(timeoutForTool('release:trace')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('coord:presence')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:get',
       args: { slug: 'nonp2p-bug-drain-fleet-2026-08-16', harness: 'papercusp' },
     })).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'release:trace',
+      args: { sha: '83805ce3' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'coord:presence',
+      args: { owner: 'su-b215e3bd-66d1-42ce-8186-55df285710be' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:set-plan-status',
       args: { slug: 'some-plan', status: 'shipped', expectedCurrent: 'ready' },
