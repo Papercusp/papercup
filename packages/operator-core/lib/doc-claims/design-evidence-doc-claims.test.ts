@@ -87,7 +87,19 @@ function liveCodeFacts(): DesignEvidenceCodeFacts {
     ciRetentionDays: Number(retentionMatch![1]),
     npmScripts: NPM_SCRIPTS,
     knownElsewhere: knownElsewhereTokens(),
+    cliFlags: cliFlagsReadByReportCli(),
   };
+}
+
+/** Harvest the flags `report-cli.ts` actually reads, from its `argValue` calls. */
+function cliFlagsReadByReportCli(): readonly string[] {
+  const src = readFileSync(
+    join(ROOT, 'packages/operator-core/lib/design-compare/report-cli.ts'),
+    'utf8',
+  );
+  const flags = [...src.matchAll(/argValue\(\s*'([a-z][a-z-]*)'/g)].map((m) => m[1]);
+  expect(flags.length, 'report-cli must still parse its flags via argValue()').toBeGreaterThan(0);
+  return [...new Set(flags)];
 }
 
 /** A minimal page that satisfies every rule — the base every fixture mutates. */
@@ -111,6 +123,7 @@ function correctDoc(code: DesignEvidenceCodeFacts): string {
     code.flagNames.map((f) => `\`${f}\``).join(' and '),
     `retention-days: ${code.ciRetentionDays}`,
     code.npmScripts.map((s) => `npm run ${s}`).join('\n'),
+    code.cliFlags.map((f) => `\`--${f}=\``).join(' '),
   ].join('\n\n');
 }
 
@@ -211,6 +224,26 @@ describe('design-evidence doc claims', () => {
       );
       expect(verdict.ok).toBe(false);
       expect(verdict.violations.join('\n')).toMatch(/disable path cannot be followed/);
+    });
+
+    it('catches a CLI flag that exists only in the source', () => {
+      const doc = correctDoc(code);
+      const verdict = judgeDesignEvidenceDoc(
+        { docTokens: extractInlineCodeTokens(doc), docText: doc },
+        { ...code, cliFlags: [...code.cliFlags, 'shard'] },
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations.join('\n')).toMatch(/cannot discover a flag that only exists/);
+    });
+
+    it('catches a documented flag the CLI would silently ignore', () => {
+      const doc = `${correctDoc(code)}\n\nPass \`--strict=\` to fail hard.`;
+      const verdict = judgeDesignEvidenceDoc(
+        { docTokens: extractInlineCodeTokens(doc), docText: doc },
+        code,
+      );
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations.join('\n')).toMatch(/never reads it/);
     });
 
     it('catches a changed CI retention the doc still states the old value for', () => {

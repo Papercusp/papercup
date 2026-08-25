@@ -64,6 +64,14 @@ export interface DesignEvidenceCodeFacts {
   /** npm script names the page tells operators to run. */
   readonly npmScripts: readonly string[];
   /**
+   * Flag names `report-cli.ts` actually reads, harvested from its `argValue`
+   * calls. P-010 owes documentation validated against implemented CLI behavior,
+   * and an operator following a flag the CLI silently ignores gets a default
+   * they did not ask for with no error to tell them so — the worst shape of
+   * documentation drift, because the command appears to work.
+   */
+  readonly cliFlags: readonly string[];
+  /**
    * Every token that appears verbatim in the sources this page describes.
    *
    * This is what keeps the backward check honest without a growing allowlist.
@@ -186,6 +194,32 @@ export function judgeDesignEvidenceDoc(
   for (const script of code.npmScripts) {
     if (!doc.docText.includes(script)) {
       violations.push(`npm script '${script}' exists but the doc never tells an operator to run it.`);
+    }
+  }
+
+  // ── the CLI contract, both directions ────────────────────────────────────
+  const documentedFlags = new Set(
+    doc.docTokens
+      .map((t) => /^--([a-z][a-z-]*)=?$/.exec(t)?.[1])
+      .filter((f): f is string => f !== undefined),
+  );
+
+  for (const flag of code.cliFlags) {
+    if (!documentedFlags.has(flag)) {
+      violations.push(
+        `report-cli reads '--${flag}=' but the doc does not document it — an operator cannot ` +
+          'discover a flag that only exists in the source.',
+      );
+    }
+  }
+
+  for (const flag of documentedFlags) {
+    if (!code.cliFlags.includes(flag)) {
+      violations.push(
+        `the doc documents '--${flag}=' but report-cli never reads it. The CLI would silently ` +
+          'ignore it and apply a default, so the operator gets a run they did not ask for and ' +
+          'no error saying so.',
+      );
     }
   }
 
