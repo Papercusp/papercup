@@ -144,6 +144,13 @@ export function decideReaps(inputs: ReaperInputs): ReaperVerdict {
   for (const row of inputs.rows) {
     if (row.class !== 'agent-session') continue;
     if (!row.scopeUnit) continue;
+    // An UNCONFINED spawn (scope-launch fallback to direct) records its
+    // SPAWNER's cgroup in cgroup_path — e.g. papercup-dev-api.service, the
+    // operator itself (measured live 2026-08-25: the first deployed pass chose
+    // 12 such rows, counted the operator's own pids as "survivors", and failed
+    // 0/12 stopping scopes that never existed). A row is only reap-addressable
+    // when its cgroup path's LEAF is its own scope unit.
+    if (!row.cgroupPath || !row.cgroupPath.endsWith(`/${row.scopeUnit}`)) continue;
     if (isAutoReapExempt(row)) {
       spared.push({ taskId: row.taskId, why: 'autoReapExempt (D-001 terminal-psu-session-enrolment)' });
       continue;

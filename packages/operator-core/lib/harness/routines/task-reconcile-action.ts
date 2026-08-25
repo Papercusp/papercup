@@ -543,8 +543,14 @@ function nodeReapEffects(): ReapEffects {
     },
     async stopUnit(scopeUnit: string): Promise<boolean> {
       const { execFile } = await import('node:child_process');
-      return await new Promise<boolean>((resolve) => {
-        execFile('systemctl', ['--user', 'stop', scopeUnit], { timeout: 20_000 }, (err) => resolve(!err));
+      // Reject with the real stderr on failure so the outcome's `note` — and the
+      // broadcast — carries WHY (the first live pass's bare ✗s cost a diagnosis
+      // round-trip that this line would have answered).
+      return await new Promise<boolean>((resolve, reject) => {
+        execFile('systemctl', ['--user', 'stop', scopeUnit], { timeout: 20_000 }, (err, _stdout, stderr) => {
+          if (err) reject(new Error(`systemctl stop ${scopeUnit}: ${String(stderr || err.message).slice(0, 160)}`));
+          else resolve(true);
+        });
       });
     },
     async closeAsReaped(taskId: string, why: string): Promise<void> {

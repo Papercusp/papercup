@@ -40,6 +40,7 @@ function row(partial: Partial<TaskRow> & { taskId: string }): TaskRow {
     startedAt: new Date(NOW - 24 * HOUR).toISOString(),
     lastSeenAt: new Date(NOW).toISOString(),
     scopeUnit: `pc-${partial.taskId}--test.scope`,
+    cgroupPath: `/user.slice/papercusp-agent-session.slice/pc-${partial.taskId}--test.scope`,
     logPath: `/logs/${partial.taskId}.log`,
     detail: {},
     ...partial,
@@ -188,6 +189,18 @@ describe('shared rails', () => {
     const v = decide([r], { pids: { e1: 6 } });
     expect(v.reap).toHaveLength(0);
     expect(v.spared.some((s) => s.taskId === 'e1' && /autoReapExempt/.test(s.why))).toBe(true);
+  });
+
+  it('never counts a foreign cgroup — an unconfined row records its SPAWNER\'s cgroup (CONTROL — the 2026-08-25 live 0/12 bug)', () => {
+    const r = row({
+      taskId: 'f1',
+      state: 'ended_unobserved',
+      endedAt: new Date(NOW - HOUR).toISOString(),
+      cgroupPath: '/user.slice/user-1000.slice/user@1000.service/app.slice/papercup-dev-api.service',
+    });
+    // pids>0 here IS the operator's own process count — the exact live failure.
+    const v = decide([r], { pids: { f1: 40 }, logQuiet: { f1: 23 * HOUR } });
+    expect(v.reap).toHaveLength(0);
   });
 
   it('never touches a non-agent-session class (CONTROL)', () => {
