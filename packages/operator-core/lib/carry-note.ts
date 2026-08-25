@@ -244,6 +244,138 @@ const PENDING_MEASUREMENT_SUBJECT_PATTERN =
   /\b(?:re[-\s]?run|rerun|retest|verification|validation|probe|measurement|test|check|sample)\b/i;
 
 /**
+ * When a single evidence field reports several predicates, an unresolved marker
+ * only contradicts the row whose subject it describes. Keep generic prose and
+ * lifecycle vocabulary out of the subject comparison so a sentence such as
+ * `checkpoint-correction verified; stable-zero remains unverified` does not
+ * downgrade the checkpoint-correction row merely because both predicates share
+ * the same evidence field.
+ */
+const VERIFICATION_RELATION_STOP_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'because',
+  'by',
+  'claim',
+  'check',
+  'complete',
+  'completed',
+  'completion',
+  'compaction',
+  'currently',
+  'done',
+  'evidence',
+  'exact',
+  'final',
+  'finished',
+  'for',
+  'from',
+  'green',
+  'has',
+  'have',
+  'healthy',
+  'in',
+  'inactive',
+  'inflight',
+  'is',
+  'it',
+  'job',
+  'marker',
+  'measurement',
+  'never',
+  'no',
+  'none',
+  'not',
+  'of',
+  'on',
+  'or',
+  'outstanding',
+  'pending',
+  'predicate',
+  'process',
+  'queued',
+  'remain',
+  'remains',
+  'resolved',
+  'response',
+  'result',
+  'review',
+  'run',
+  'running',
+  'sample',
+  'snapshot',
+  'state',
+  'status',
+  'still',
+  'task',
+  'test',
+  'that',
+  'the',
+  'this',
+  'to',
+  'time',
+  'unverified',
+  'verified',
+  'was',
+  'were',
+  'while',
+  'with',
+  'work',
+  'yet',
+]);
+
+/** Return meaningful subject terms, including the pieces of hyphenated ids. */
+function verificationRelationTerms(text: string): Set<string> {
+  const terms = new Set<string>();
+  const rawTokens = text.toLowerCase().match(/[a-z0-9]+(?:[-_/][a-z0-9]+)*/g) ?? [];
+  for (const raw of rawTokens) {
+    const forms = [raw, ...raw.split(/[-_/]+/).filter(Boolean)];
+    for (const form of forms) {
+      if (form.length < 3 || VERIFICATION_RELATION_STOP_WORDS.has(form)) continue;
+      terms.add(form);
+      if (form.endsWith('ies') && form.length > 4) terms.add(`${form.slice(0, -3)}y`);
+      else if (form.endsWith('s') && form.length > 4) terms.add(form.slice(0, -1));
+    }
+  }
+  return terms;
+}
+
+/** Return the small predicate clause containing a contradiction marker. */
+function verificationEvidenceClause(text: string, match: RegExpExecArray): string {
+  let start = 0;
+  let end = text.length;
+  for (const separator of text.matchAll(/[.!?;,\n]|\b(?:but|while|whereas|although|though|however|and)\b/gi)) {
+    const index = separator.index ?? 0;
+    if (index < match.index) {
+      start = index + separator[0].length;
+      continue;
+    }
+    end = index;
+    break;
+  }
+  return text.slice(start, end);
+}
+
+/** Require a claim/evidence subject match when the claim is available. */
+function verificationConflictRelatesToClaim(
+  text: string,
+  match: RegExpExecArray,
+  claim: string | null | undefined,
+): boolean {
+  if (typeof claim !== 'string' || !claim.trim()) return true;
+  const claimTerms = verificationRelationTerms(claim);
+  if (!claimTerms.size) return true;
+  const evidenceTerms = verificationRelationTerms(verificationEvidenceClause(text, match));
+  if (!evidenceTerms.size) return true;
+  return [...claimTerms].some((term) => evidenceTerms.has(term));
+}
+
+/**
  * A conflict marker can be affirmative evidence when the claim itself is about
  * an unresolved lifecycle state. For example, "fresh typechecks remain queued"
  * is verified by evidence that both sessions are "still running and queued";
@@ -323,7 +455,8 @@ export function findVerificationConflict(evidence: string | null | undefined, cl
       match?.[0] &&
       !isNegatedVerificationConflict(text, match) &&
       !isHealthyPendingRegistration(text, match) &&
-      !claimAffirmsUnresolvedStatus(claim)
+      !claimAffirmsUnresolvedStatus(claim) &&
+      verificationConflictRelatesToClaim(text, match, claim)
     ) {
       return match[0];
     }
