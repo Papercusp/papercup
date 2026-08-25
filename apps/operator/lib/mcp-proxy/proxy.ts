@@ -192,6 +192,12 @@ export interface McpProxyOptions {
    * Defaults to `DEFAULT_MAX_HANDSHAKES_IN_FLIGHT`; non-positive disables the class cap.
    */
   maxHandshakeInFlight?: number;
+  /**
+   * EI-21395173692390816 — bounded FIFO waiters for ordinary session handshakes that reach
+   * `maxHandshakeInFlight`. A queued handshake consumes no upstream slot until granted; zero
+   * disables waiting and preserves the immediate 429 behavior.
+   */
+  maxHandshakeQueue?: number;
   /** Slots kept available for scheduler control-plane pulls when ordinary tool traffic fills
    * the proxy. Reserved traffic also gets a separate upstream socket pool so an admitted
    * recovery probe cannot sit behind the ordinary pool it is trying to diagnose. The hard
@@ -808,15 +814,24 @@ export function effectiveRetryWindowMs(url: string, windowMs: number): number {
 export const DEFAULT_MAX_IN_FLIGHT = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_IN_FLIGHT ?? 200);
 export const DEFAULT_CONTROL_PLANE_RESERVE = Number(process.env.PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE ?? 8);
 /**
- * EI-21391963810159383 — leave one socket in the reserved pool outside reconnect traffic so
- * the watchdog can still compare :9071 with direct :3070 while a fresh-proxy handshake herd is
- * active. This is a class cap, not a smaller global ceiling: long tools/call traffic retains the
- * existing admission contract. An explicit non-positive env/option value disables it.
+ * EI-21395174573687098 — the watchdog probe has its own upstream agent, so the full reserved
+ * control-plane pool is available to ordinary reconnect handshakes. This is a class cap, not a
+ * smaller global ceiling: long tools/call traffic retains the existing admission contract. An
+ * explicit non-positive env/option value disables it.
  */
 export const DEFAULT_MAX_HANDSHAKES_IN_FLIGHT = Number(
   process.env.PAPERCUSP_MCP_PROXY_MAX_HANDSHAKES_IN_FLIGHT ??
-    Math.max(1, DEFAULT_CONTROL_PLANE_RESERVE - 1),
+    Math.max(1, DEFAULT_CONTROL_PLANE_RESERVE),
 );
+/**
+ * EI-21395173692390816 — a reconnect burst should wait in a small FIFO instead of making every
+ * client independently retry the same handshake. The default absorbs a burst of roughly eight
+ * class caps while remaining a hard memory bound; set the env/option to 0 to retain shed-now.
+ */
+const configuredMaxHandshakeQueue = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_HANDSHAKE_QUEUE ?? 64);
+export const DEFAULT_MAX_HANDSHAKE_QUEUE = Number.isFinite(configuredMaxHandshakeQueue)
+  ? Math.max(0, Math.floor(configuredMaxHandshakeQueue))
+  : 64;
 /**
  * EI-19305299022434394 — see `McpProxyOptions.maxHoldMs`. 10 minutes is comfortably above any
  * legitimate tool's real runtime (`build:typecheck` ~160s, `capability:bash` ~120s) while still
@@ -1010,10 +1025,58 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     maxSockets: 1,
   });
   const maxHandshakeInFlight = opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
+  const configuredHandshakeQueue = opts.maxHandshakeQueue ?? DEFAULT_MAX_HANDSHAKE_QUEUE;
+  const maxHandshakeQueue = Number.isFinite(configuredHandshakeQueue)
+    ? Math.max(0, Math.floor(configuredHandshakeQueue))
+    : 0;
   let handshakeInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const inFlightStarts = new Map<number, number>();
   let nextInFlightId = 0;
+
+  /** A request waiting for a class-cap slot. It is resolved only after the slot is reserved. */
+  interface QueuedHandshake {
+    resolve: (granted: boolean) => void;
+    cancelled: boolean;
+    granted: boolean;
+  }
+  const handshakeQueue: QueuedHandshake[] = [];
+  // Resolve one waiter at a time so the async continuation can increment the live counters
+  // before another queued request is granted. This reservation also keeps the global hard cap
+  // true while the grant continuation is between the queue and the forwarding loop.
+  let handshakeGrantReservations = 0;
+  let pumpHandshakeQueue: () => void = () => {};
+
+  const handshakeQueueLength = (): number =>
+    handshakeQueue.reduce((count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1), 0);
+
+  const canGrantHandshake = (): boolean => {
+    if (shouldShedForInFlight(handshakeInFlight + handshakeGrantReservations, maxHandshakeInFlight)) {
+      return false;
+    }
+    return maxInFlight <= 0 || inFlightStarts.size + handshakeGrantReservations < maxInFlight;
+  };
+
+  const cancelQueuedHandshake = (waiter: QueuedHandshake): void => {
+    if (waiter.cancelled || waiter.granted) return;
+    waiter.cancelled = true;
+    waiter.resolve(false);
+    pumpHandshakeQueue();
+  };
+
+  pumpHandshakeQueue = (): void => {
+    while (handshakeQueue.length > 0) {
+      const waiter = handshakeQueue.shift();
+      if (!waiter || waiter.cancelled) continue;
+      if (!canGrantHandshake()) {
+        handshakeQueue.unshift(waiter);
+        return;
+      }
+      waiter.granted = true;
+      handshakeGrantReservations++;
+      waiter.resolve(true);
+    }
+  };
 
   // Half 2 of EI-19305299022434394: the proxy previously logged ONLY on completion/error, so a
   // stalled upstream that never completes anything produced total silence (106 minutes with zero
@@ -1149,6 +1212,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     // exactly the upstream-stall windows when capacity is scarcest.
     let clientGone = false;
     let abortAttempt: (() => void) | null = null;
+    let cancelQueuedAdmission: (() => void) | null = null;
     const noteClientGone = (source: 'response_close' | 'request_aborted'): void => {
       // 'close' also fires on NORMAL completion — `writableFinished` is what separates "the
       // response was fully sent" from "the peer vanished mid-flight". Without this guard
@@ -1156,6 +1220,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       if (clientGone || res.writableFinished) return;
       clientGone = true;
       recordInboundSocketReset(req.socket, source);
+      cancelQueuedAdmission?.();
       abortAttempt?.();
     };
     res.on('close', () => noteClientGone('response_close'));
@@ -1221,33 +1286,66 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // the herd it was trying to diagnose. Bound THIS write-free class before it opens an
         // upstream socket. The watchdog's exact named probe alone uses the socket deliberately
         // left outside the production cap, while the global hard ceiling above still binds it.
-        if (
-          sessionHandshake &&
-          !watchdogSessionProbe &&
-          shouldShedForInFlight(handshakeInFlight, maxHandshakeInFlight)
-        ) {
-          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
-          res.end(
-            JSON.stringify({
-              error: 'mcp_proxy_handshake_overloaded',
-              detail: `proxy already has ${handshakeInFlight} session handshake(s) in flight (class max ${maxHandshakeInFlight}) — shed before forwarding`,
-              retryAfterSec: 2,
-            }),
-          );
-          log(`shed session handshake — ${handshakeInFlight} already in flight (class max ${maxHandshakeInFlight})`);
-          record({
-            kind: 'shed_handshake_bulkhead',
-            method: req.method,
-            path: req.url,
-            inFlight: inFlightNow,
-            handshakeInFlight,
-            maxHandshakeInFlight,
-            reservedControlPlane,
-            watchdogSessionProbe,
-          });
-          return;
-        }
         const countsTowardHandshakeCap = sessionHandshake && !watchdogSessionProbe;
+        if (
+          countsTowardHandshakeCap &&
+          shouldShedForInFlight(handshakeInFlight + handshakeGrantReservations, maxHandshakeInFlight)
+        ) {
+          // Prune cancelled entries before enforcing the bounded FIFO length. A cancelled
+          // request is not capacity, even when its promise has not yet reached the async
+          // continuation that observes the false grant.
+          pumpHandshakeQueue();
+          if (maxHandshakeQueue <= handshakeQueueLength()) {
+            res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
+            res.end(
+              JSON.stringify({
+                error: 'mcp_proxy_handshake_overloaded',
+                detail: `proxy already has ${handshakeInFlight} session handshake(s) in flight (class max ${maxHandshakeInFlight}, queue max ${maxHandshakeQueue}) — shed before forwarding`,
+                retryAfterSec: 2,
+              }),
+            );
+            log(`shed session handshake — ${handshakeInFlight} already in flight (class max ${maxHandshakeInFlight}, queue full)`);
+            record({
+              kind: 'shed_handshake_queue_full',
+              method: req.method,
+              path: req.url,
+              inFlight: inFlightNow,
+              handshakeInFlight,
+              maxHandshakeInFlight,
+              maxHandshakeQueue,
+              reservedControlPlane,
+              watchdogSessionProbe,
+            });
+            return;
+          }
+
+          let queuedHandshake!: QueuedHandshake;
+          const granted = await new Promise<boolean>((resolve) => {
+            queuedHandshake = { resolve, cancelled: false, granted: false };
+            handshakeQueue.push(queuedHandshake);
+            cancelQueuedAdmission = (): void => cancelQueuedHandshake(queuedHandshake);
+            log(`queued session handshake — ${handshakeInFlight} in flight, ${handshakeQueueLength()} waiting (max ${maxHandshakeQueue})`);
+            record({
+              kind: 'queue_handshake',
+              method: req.method,
+              path: req.url,
+              inFlight: inFlightNow,
+              handshakeInFlight,
+              queueLength: handshakeQueueLength(),
+              maxHandshakeInFlight,
+              maxHandshakeQueue,
+            });
+          });
+          cancelQueuedAdmission = null;
+          if (!granted || clientGone) {
+            if (granted) {
+              handshakeGrantReservations = Math.max(0, handshakeGrantReservations - 1);
+              pumpHandshakeQueue();
+            }
+            return;
+          }
+          handshakeGrantReservations = Math.max(0, handshakeGrantReservations - 1);
+        }
         const inFlightId = nextInFlightId++;
         const inFlightStartedAt = Date.now();
         inFlightStarts.set(inFlightId, inFlightStartedAt);
@@ -1460,6 +1558,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             clearTimeout(stallTimer);
             stallTimers.delete(inFlightId);
           }
+          // A released ordinary slot can unblock a queued handshake even when the class cap
+          // itself was already available; pump after both counters are current so neither cap
+          // is oversubscribed during the grant continuation.
+          pumpHandshakeQueue();
         }
       })();
     });

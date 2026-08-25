@@ -25,7 +25,9 @@ import {
   CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
   shouldShedForInFlight,
   DEFAULT_MAX_IN_FLIGHT,
+  DEFAULT_CONTROL_PLANE_RESERVE,
   DEFAULT_MAX_HANDSHAKES_IN_FLIGHT,
+  DEFAULT_MAX_HANDSHAKE_QUEUE,
   isMcpSessionHandshakeCall,
   isMcpProxyWatchdogProbePath,
   isReservedControlPlaneCall,
@@ -309,6 +311,14 @@ function get(p: number, path: string): Promise<{ status: number; body: string }>
     r.on('error', reject);
     r.end();
   });
+}
+
+async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(`condition was not met within ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
 }
 
 describe('createMcpProxy — client-facing keep-alive policy (EI-21275891049298859)', () => {
@@ -1566,7 +1576,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
       listenPort: 0,
       targetHost: '127.0.0.1',
       targetPort: port(upstream),
-      retryWindowMs: 2_000,
+      retryWindowMs: 10_000,
       retryBackoffMs: 10,
       // Keep the first admitted class silent long enough for all 57 surplus loopback
       // clients to reach admission before any slot can recycle.
@@ -1576,6 +1586,9 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
       controlPlaneAgent,
       // Scaled-down production policy: reserve one diagnostic socket outside the class cap.
       maxHandshakeInFlight: handshakeLimit,
+      // Preserve the immediate-shed contract in this legacy bulkhead test; queue-on behavior
+      // is covered by the focused FIFO tests below.
+      maxHandshakeQueue: 0,
       log: () => {},
     }));
     await listen(proxy);
@@ -1693,6 +1706,234 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     controlPlaneAgent.destroy();
   });
 
+  it('EI-21395173692390816: admits a bounded FIFO handshake queue and sheds only once it is full', async () => {
+    const handshakeLimit = 2;
+    const queueLimit = 2;
+    let releaseInitial: () => void = () => {};
+    const initialGate = new Promise<void>((resolve) => {
+      releaseInitial = resolve;
+    });
+    const hits: number[] = [];
+    const logs: string[] = [];
+    let initialStarted: () => void = () => {};
+    const initialStartedGate = new Promise<void>((resolve) => {
+      initialStarted = resolve;
+    });
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('client') ?? '';
+      const id = Number(client.replace('handshake-', ''));
+      hits.push(id);
+      if (hits.length === handshakeLimit) initialStarted();
+      if (hits.length <= handshakeLimit) {
+        void initialGate.then(() => res.end(JSON.stringify({ result: { id } })));
+        return;
+      }
+      res.end(JSON.stringify({ result: { id } }));
+    }));
+    await listen(upstream);
+
+    const controlPlaneAgent = new http.Agent({ keepAlive: false, maxSockets: handshakeLimit });
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: '127.0.0.1',
+      targetPort: port(upstream),
+      retryWindowMs: 2_000,
+      retryBackoffMs: 5,
+      handshakeTimeoutMs: 5_000,
+      maxInFlight: 20,
+      controlPlaneReserve: handshakeLimit,
+      controlPlaneAgent,
+      maxHandshakeInFlight: handshakeLimit,
+      maxHandshakeQueue: queueLimit,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    const initial = [
+      request(port(proxy), body, '/api/mcp?client=handshake-1'),
+      request(port(proxy), body, '/api/mcp?client=handshake-2'),
+    ];
+    await initialStartedGate;
+
+    const queued = [
+      request(port(proxy), body, '/api/mcp?client=handshake-3'),
+      request(port(proxy), body, '/api/mcp?client=handshake-4'),
+    ];
+    await waitFor(() => logs.filter((line) => line.includes('queued session handshake')).length >= queueLimit);
+
+    const overflow = await request(port(proxy), body, '/api/mcp?client=handshake-5');
+    expect(overflow.status).toBe(429);
+    expect(JSON.parse(overflow.body).error).toBe('mcp_proxy_handshake_overloaded');
+    expect(hits).toHaveLength(handshakeLimit);
+
+    releaseInitial();
+    const results = await Promise.all([...initial, ...queued]);
+    controlPlaneAgent.destroy();
+
+    expect(results.every((result) => result.status === 200)).toBe(true);
+    expect(hits.slice(handshakeLimit)).toEqual([3, 4]);
+  }, 10_000);
+
+  it('EI-21395173692390816: cancels a queued handshake when its client disconnects', async () => {
+    let releaseInitial: () => void = () => {};
+    const initialGate = new Promise<void>((resolve) => {
+      releaseInitial = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('client') ?? '';
+      hits.push(client);
+      if (client === 'handshake-1') {
+        void initialGate.then(() => res.end('{"result":"first"}'));
+        return;
+      }
+      res.end('{"result":"unexpected"}');
+    }));
+    await listen(upstream);
+
+    const controlPlaneAgent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: '127.0.0.1',
+      targetPort: port(upstream),
+      retryWindowMs: 2_000,
+      retryBackoffMs: 5,
+      handshakeTimeoutMs: 1_000,
+      maxInFlight: 10,
+      controlPlaneReserve: 1,
+      controlPlaneAgent,
+      maxHandshakeInFlight: 1,
+      maxHandshakeQueue: 1,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    const first = request(port(proxy), body, '/api/mcp?client=handshake-1');
+    await waitFor(() => hits.length === 1);
+
+    const queuedClient = http.request({
+      host: '127.0.0.1',
+      port: port(proxy),
+      method: 'POST',
+      path: '/api/mcp?client=handshake-2',
+    });
+    const queuedOutcome = new Promise<'response' | 'error' | 'closed'>((resolve) => {
+      queuedClient.once('response', (response) => {
+        response.resume();
+        resolve('response');
+      });
+      queuedClient.once('error', () => resolve('error'));
+      queuedClient.once('close', () => resolve('closed'));
+    });
+    queuedClient.end(body);
+    await waitFor(() => logs.some((line) => line.includes('queued session handshake')));
+    queuedClient.destroy();
+    expect(await queuedOutcome).not.toBe('response');
+
+    releaseInitial();
+    expect((await first).status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    controlPlaneAgent.destroy();
+
+    expect(hits).toEqual(['handshake-1']);
+  }, 10_000);
+
+  it('EI-21395173692390816: queued grants preserve the global hard cap while ordinary traffic is held', async () => {
+    let releaseHandshake: () => void = () => {};
+    let releaseOrdinary: () => void = () => {};
+    const handshakeGate = new Promise<void>((resolve) => {
+      releaseHandshake = resolve;
+    });
+    const ordinaryGate = new Promise<void>((resolve) => {
+      releaseOrdinary = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    let firstHandshakeStarted: () => void = () => {};
+    const firstHandshakeGate = new Promise<void>((resolve) => {
+      firstHandshakeStarted = resolve;
+    });
+    let secondHandshakeStarted: () => void = () => {};
+    const secondHandshakeGate = new Promise<void>((resolve) => {
+      secondHandshakeStarted = resolve;
+    });
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('client') ?? '';
+      hits.push(client);
+      active++;
+      maxActive = Math.max(maxActive, active);
+      res.once('close', () => {
+        active = Math.max(0, active - 1);
+      });
+      if (client === 'handshake-1') {
+        firstHandshakeStarted();
+        void handshakeGate.then(() => res.end('{"result":"handshake-1"}'));
+      } else if (client === 'handshake-2') {
+        secondHandshakeStarted();
+        res.end('{"result":"handshake-2"}');
+      } else if (client.startsWith('ordinary-')) {
+        void ordinaryGate.then(() => res.end('{"result":"ordinary"}'));
+      } else {
+        res.end('{"result":"unexpected"}');
+      }
+    }));
+    await listen(upstream);
+
+    const controlPlaneAgent = new http.Agent({ keepAlive: false, maxSockets: 1 });
+    const upstreamAgent = new http.Agent({ keepAlive: false, maxSockets: 2 });
+    const proxy = track(createMcpProxy({
+      listenPort: 0,
+      targetHost: '127.0.0.1',
+      targetPort: port(upstream),
+      retryWindowMs: 10_000,
+      retryBackoffMs: 5,
+      handshakeTimeoutMs: 5_000,
+      maxInFlight: 3,
+      controlPlaneReserve: 0,
+      controlPlaneAgent,
+      upstreamAgent,
+      maxHandshakeInFlight: 1,
+      maxHandshakeQueue: 1,
+      log: (line) => logs.push(line),
+    }));
+    await listen(proxy);
+
+    const handshakeBody = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
+    // Keep the competing traffic genuinely ordinary. `work_items:list` is a reserved
+    // control-plane tool and would share the one-socket controlPlaneAgent with handshake-1,
+    // making it impossible for both ordinary hits to reach the upstream before release.
+    const ordinaryBody = JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'resources/read', params: { uri: 'test://ordinary' } });
+    expect(isReservedControlPlaneCall(Buffer.from(ordinaryBody))).toBe(false);
+    const firstHandshake = request(port(proxy), handshakeBody, '/api/mcp?client=handshake-1');
+    await firstHandshakeGate;
+    const secondHandshake = request(port(proxy), handshakeBody, '/api/mcp?client=handshake-2');
+    await waitFor(() => logs.some((line) => line.includes('queued session handshake')));
+
+    const ordinary = [
+      request(port(proxy), ordinaryBody, '/api/mcp?client=ordinary-1'),
+      request(port(proxy), ordinaryBody, '/api/mcp?client=ordinary-2'),
+    ];
+    await waitFor(() => hits.includes('ordinary-1') && hits.includes('ordinary-2'));
+    expect(active).toBe(3);
+
+    releaseHandshake();
+    await secondHandshakeGate;
+    expect(maxActive).toBeLessThanOrEqual(3);
+
+    releaseOrdinary();
+    const results = await Promise.all([firstHandshake, secondHandshake, ...ordinary]);
+    controlPlaneAgent.destroy();
+    upstreamAgent.destroy();
+
+    expect(results.every((result) => result.status === 200)).toBe(true);
+    expect(maxActive).toBeLessThanOrEqual(3);
+  }, 10_000);
+
   it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {
     expect(shouldShedForInFlight(4, 5)).toBe(false);
     expect(shouldShedForInFlight(5, 5)).toBe(true);
@@ -1709,6 +1950,12 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(Number.isFinite(DEFAULT_MAX_IN_FLIGHT)).toBe(true);
     expect(DEFAULT_MAX_HANDSHAKES_IN_FLIGHT).toBeGreaterThan(0);
     expect(Number.isFinite(DEFAULT_MAX_HANDSHAKES_IN_FLIGHT)).toBe(true);
+    expect(DEFAULT_MAX_HANDSHAKE_QUEUE).toBeGreaterThan(0);
+    expect(Number.isFinite(DEFAULT_MAX_HANDSHAKE_QUEUE)).toBe(true);
+  });
+
+  it('EI-21395174573687098: uses the full reserved pool because the watchdog has a separate agent', () => {
+    expect(DEFAULT_MAX_HANDSHAKES_IN_FLIGHT).toBe(Math.max(1, DEFAULT_CONTROL_PLANE_RESERVE));
   });
 
   it('sheds an EXCESS request with 429 the instant maxInFlight is reached, and admits the rest once slots free up', async () => {
