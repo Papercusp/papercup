@@ -98,8 +98,8 @@ export const OPERATOR_RUBRIC: JudgeRubric = {
  * Deliberately shares OPERATOR_RUBRIC's version: the judged INSTRUCTIONS are
  * identical and only the number of passes differs, so runs stay on one trend
  * line. Whether a single-pass and a two-pass run of the same rubric are truly
- * comparable is a separate question, tracked as its own observation rather than
- * silently re-decided here.
+ * comparable is a separate, unsettled question — filed as EI-21457442861164429
+ * rather than silently re-decided here.
  */
 export const OPERATOR_RUBRIC_HIGH_CRITICALITY: JudgeRubric = {
   ...OPERATOR_RUBRIC,
