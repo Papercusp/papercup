@@ -25,10 +25,16 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
-    getOrgPg: () => ({
-      sql: (strings: TemplateStringsArray, ...values: unknown[]) =>
-        dbMocks.planItemStatusRows(strings, ...values),
-    }),
+    getOrgPg: () => {
+      const sql = (strings: TemplateStringsArray, ...values: unknown[]) =>
+        dbMocks.planItemStatusRows(strings, ...values);
+      return {
+        sql: Object.assign(sql, {
+          begin: async <T>(callback: (tx: typeof sql) => Promise<T>): Promise<T> =>
+            callback(sql),
+        }),
+      };
+    },
   };
 });
 
