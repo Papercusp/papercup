@@ -146,6 +146,25 @@ export interface GitPipelineSnapshot {
      * skip it, is `PipelinePosition.verdictUnknown`.
      */
     countersUnknown: CellUnknown | null;
+    /**
+     * EI-21462211894072863: how many CONSECUTIVE green-checkpoint ticks exited without producing
+     * any verdict (status 'error' — no parseable result marker, and not a deadline-kill or an
+     * external SIGTERM, which have their own statuses). `0` on a gate that is producing verdicts.
+     *
+     * ⚠ READ THIS ALONGSIDE `consecutiveReds`, which it deliberately does NOT feed. These ticks
+     * used to be counted as reds, which is how a WEDGED gate presented as a merely-red one:
+     * measured 2026-08-25, `consecutiveReds` reached 42 while the last real verdict predated the
+     * last fire by 5.7h, and every surface offered a failing-test list that no run in that streak
+     * had named. A non-zero value here means the counters beside it describe an OLDER run — the
+     * last one that actually judged code — and that the question worth asking is why the runs are
+     * DYING, not which test is red.
+     *
+     * Distinct from `verdictStale`, which asks whether the recorded verdict is still trustworthy:
+     * this counts the ticks that produced nothing, so it is non-zero exactly when the gate is
+     * failing to render verdicts AT ALL. A gate can be verdict-stale without being wedged (a
+     * refire in flight), and this is what tells the two apart.
+     */
+    consecutiveNoVerdict: number;
     lastGreenAtMs: number | null;
     /**
      * EI-20706962612084953: the last verdict's OWN green-ness, as STATED by the writer
@@ -1244,6 +1263,12 @@ export async function gitPipelineSnapshot(
       recordedVerdict:
         gateHealth.lastVerdict === 'green' || gateHealth.lastVerdict === 'not-green' ? gateHealth.lastVerdict : null,
       firstRedAtMs: effectiveGate.firstRedAtMs,
+      // EI-21462211894072863: read straight off the blob and deliberately NOT routed through
+      // `pinProvenGateCorrection` above. That correction zeroes a RED streak once a pin-advance
+      // proves a green happened since — reasoning that does not transfer: a pin that moved is
+      // evidence about the CODE, never evidence that this gate's runs started producing verdicts.
+      // Zeroing this on that basis would hide a wedged writer behind someone else's green.
+      consecutiveNoVerdict: num(gateHealth.consecutiveNoVerdict) ?? 0,
       // A stalled-streak alert can't survive proof the streak it was raised on has already ended.
       stalled: effectiveGate.stalled,
       lastFiredAtMs: gcLastFiredMs,
