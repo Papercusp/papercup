@@ -382,12 +382,13 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     }
   }, 10_000);
 
-  it('keeps the holder diagnostic silent when fuser reports a pid that exits before /proc opens', async () => {
+  it('does not label an unverified fuser opener as a lock holder', async () => {
     const env = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0', PC_HEAVY_TIMEOUT_SEC: '3', PC_HEAVY_HEARTBEAT_SEC: '1' };
     const fakeBin = join(dir, 'fake-bin');
     mkdirSync(fakeBin);
-    // This stands in for the real fuser→/proc exit race: by the time the
-    // diagnostic reads this reported pid, no such /proc entry exists.
+    // This stands in for both the real fuser→/proc exit race and a queued
+    // opener: fuser reports a pid, but there is no kernel FLOCK WRITE record
+    // proving that the pid owns this inode.
     writeFileSync(join(fakeBin, 'fuser'), '#!/usr/bin/env bash\nprintf \'987654321\\n\'\n', { mode: 0o755 });
 
     const holder = spawn('bash', [PC_HEAVY, 'sleep', '60'], {
@@ -408,7 +409,8 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
 
       expect(await barrierExit).toBe(75);
       const err = barrierErr.text();
-      expect(err).toContain('pid 987654321 [(exited before its cmdline could be read)]');
+      expect(err).not.toContain('pid 987654321');
+      expect(err).toContain('holder could not be identified');
       expect(err).not.toContain('/proc/987654321/cmdline');
       expect(err).not.toContain('No such file or directory');
     } finally {
@@ -1188,6 +1190,17 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       const laterErr = createTextCollector(later.stderr);
       const laterExit = new Promise<number>((res) => later?.on('exit', (c) => res(c ?? -1)));
       await untilStderr(later, laterErr, (t) => t.includes('another exclusive materializer owns the writer lock'), 'the later writer queueing behind the gate');
+      await untilStderr(later, laterErr, (t) => t.includes('writer lock held by:'), 'the kernel-verified writer owner diagnostic');
+
+      // fuser sees all three wrappers because each opens the writer path before
+      // flocking it. Only the first has a kernel FLOCK WRITE record; queued
+      // gate/later openers must never be mislabeled as lock owners.
+      expect(first.pid).toBeDefined();
+      expect(gate.pid).toBeDefined();
+      expect(later.pid).toBeDefined();
+      expect(laterErr.peek()).toContain(`pid ${first.pid}`);
+      expect(laterErr.peek()).not.toContain(`pid ${gate.pid}`);
+      expect(laterErr.peek()).not.toContain(`pid ${later.pid}`);
 
       // The old polling/deadline path exited 75 here. The gate must remain
       // alive after its ordinary one-second budget because the existing writer
