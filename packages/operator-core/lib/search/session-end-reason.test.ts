@@ -23,6 +23,17 @@ describe('classifySessionEnd', () => {
     expect(r.evidence).toContain('disabled');
   });
 
+  it('classifies an OMP 402 insufficient-credit response as WEDGED', () => {
+    const r = classifySessionEnd({
+      lastAssistantText: '402 Insufficient credits. This account never purchased credits.',
+      lastTsMs: minsAgo(1),
+      nowMs: NOW,
+    });
+    expect(r.reason).toBe('auth_wall');
+    expect(r.wedged).toBe(true);
+    expect(r.evidence).toContain('Insufficient credits');
+  });
+
   it('classifies a usage/session limit as NOT wedged (it resets on its own)', () => {
     const r = classifySessionEnd({
       lastAssistantText: "You've hit your session limit · resets 4am (America/New_York)",
@@ -126,6 +137,12 @@ describe('classifyWedgeText', () => {
   it('detects an org auth wall', () => {
     const r = classifyWedgeText('Your organization has disabled Claude subscription access for Claude Code');
     expect(r?.reason).toBe('auth_wall');
+  });
+
+  it('detects an OMP 402 insufficient-credit provider wall', () => {
+    const r = classifyWedgeText('402 Insufficient credits. This account never purchased credits.');
+    expect(r?.reason).toBe('auth_wall');
+    expect(r?.evidence).toContain('Insufficient credits');
   });
 
   it('does NOT trip on ordinary text that merely mentions rate limits (the model_error clause is excluded)', () => {

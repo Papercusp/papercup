@@ -63,7 +63,7 @@ interface Pattern {
  * a usage limit resolves itself on reset; an auth wall never does.
  */
 const PATTERNS: readonly Pattern[] = [
-  { reason: 'auth_wall', re: /organization has disabled|subscription access.*disabled|disabled Claude subscription|use an Anthropic API key instead|ask your admin to enable/i },
+  { reason: 'auth_wall', re: /organization has disabled|subscription access.*disabled|disabled Claude subscription|use an Anthropic API key instead|ask your admin to enable|\b402\b[^\n]{0,120}\binsufficient credits\b|\binsufficient credits\b[^\n]{0,120}\b402\b/i },
   { reason: 'usage_limit', re: /hit your (?:session|usage) limit|usage limit reached|limit(?:\s|·|,)*resets|quota exceeded/i },
   { reason: 'context_limit', re: /prompt is too long|context (?:window )?(?:exceeded|overflow|too long)|maximum context length/i },
   { reason: 'model_error', re: /^\s*API Error:|does not support effort level|invalid_request_error|model .* not found|rate.?limit(?:ed)?\b|\b429\b/i },
