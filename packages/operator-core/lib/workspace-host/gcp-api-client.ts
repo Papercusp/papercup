@@ -38,7 +38,10 @@ import type {
   GcpSnapshotObservation,
   GcpSubnetworkInsertInput,
   GcpWorkspaceHostApiClient,
+  GcpWorkspaceHostInventoryRequest,
+  GcpWorkspaceHostInventorySnapshot,
 } from './gcp-provider';
+import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS, gcpWorkspaceHostLabelValue } from './gcp-safety';
 
 const COMPUTE_API = 'https://compute.googleapis.com/compute/v1';
 
@@ -511,6 +514,123 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
       observedAt: this.now(),
       confidence: 'unknown',
       lineItems: [{ kind: 'provider-pricing', description: 'Authoritative GCP pricing unavailable', hourlyAmount: 0 }],
+    };
+  }
+
+  async inventoryManagedResources(
+    request: GcpWorkspaceHostInventoryRequest,
+  ): Promise<GcpWorkspaceHostInventorySnapshot> {
+    const projectId = required(request.projectId, 'inventory_project_id');
+    const region = required(request.region, 'inventory_region');
+    const workspaceLabel = gcpWorkspaceHostLabelValue(required(request.workspaceId, 'inventory_workspace_id'));
+    for (const [kind, names] of Object.entries(request.deterministicNames)) {
+      if (names.length === 0) throw new Error(`gcp_workspace_host_inventory_${kind}_names_empty`);
+    }
+    const filter = encodeURIComponent(
+      `labels.${GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed} = true AND ` +
+        `labels.${GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId} = ${workspaceLabel}`,
+    );
+    const base = this.projectBase(projectId);
+    const instancesUrl = `${base}/aggregated/instances?filter=${filter}&maxResults=500&fields=items/*/instances(name,selfLink,labels)`;
+    const disksUrl = `${base}/aggregated/disks?filter=${filter}&maxResults=500&fields=items/*/disks(name,selfLink,labels)`;
+    const snapshotsUrl = `${base}/global/snapshots?filter=${filter}&maxResults=500&fields=items(name,selfLink,labels)`;
+    const [instances, disks, snapshots] = await Promise.all([
+      this.request<{ items?: Record<string, { instances?: RawResource[] }> }>(instancesUrl),
+      this.request<{ items?: Record<string, { disks?: RawResource[] }> }>(disksUrl),
+      this.request<{ items?: RawResource[] }>(snapshotsUrl),
+    ]);
+    const observedAt = this.now();
+    const observed: GcpWorkspaceHostInventorySnapshot['observed'][number][] = [];
+    const addListed = (
+      kind: 'vm' | 'disk',
+      groups: Record<string, { instances?: RawResource[]; disks?: RawResource[] }> | undefined,
+      collection: 'instances' | 'disks',
+    ) => {
+      for (const [scope, group] of Object.entries(groups ?? {})) {
+        const zone = scope.startsWith('zones/') ? scope.slice('zones/'.length) : undefined;
+        if (!zone) continue;
+        for (const raw of group[collection] ?? []) {
+          const item = observedResource(raw, observedAt);
+          observed.push({
+            resource: { target: 'gcp', kind, providerId: item.name, parentProviderId: projectId, zone },
+            labels: item.labels ?? {},
+            observedAt,
+          });
+        }
+      }
+    };
+    addListed('vm', instances.items, 'instances');
+    addListed('disk', disks.items, 'disks');
+    for (const raw of snapshots.items ?? []) {
+      const item = observedResource(raw, observedAt);
+      observed.push({
+        resource: { target: 'gcp', kind: 'snapshot', providerId: item.name, parentProviderId: projectId },
+        labels: item.labels ?? {},
+        observedAt,
+      });
+    }
+
+    const addDeterministic = (
+      kind: 'network' | 'subnetwork' | 'firewall' | 'router' | 'nat',
+      name: string,
+      item: GcpResourceObservation | undefined,
+    ) => {
+      if (!item) return;
+      observed.push({
+        resource: {
+          target: 'gcp',
+          kind,
+          providerId: name,
+          parentProviderId: projectId,
+          ...(kind === 'network' || kind === 'firewall' ? {} : { region }),
+        },
+        labels: item.labels ?? {},
+        observedAt: item.observedAt,
+      });
+    };
+    const deterministicReads = await Promise.all([
+      ...request.deterministicNames.networks.map(async (name) =>
+        addDeterministic('network', name, await this.getNetwork(projectId, name)),
+      ),
+      ...request.deterministicNames.subnetworks.map(async (name) =>
+        addDeterministic('subnetwork', name, await this.getSubnetwork(projectId, region, name)),
+      ),
+      ...request.deterministicNames.firewalls.map(async (name) =>
+        addDeterministic('firewall', name, await this.getFirewall(projectId, name)),
+      ),
+      ...request.deterministicNames.routers.map(async (name) =>
+        addDeterministic('router', name, await this.getRouter(projectId, region, name)),
+      ),
+      ...request.deterministicNames.nats.map(async ({ routerName, name }) =>
+        addDeterministic('nat', name, await this.getNat(projectId, region, routerName, name)),
+      ),
+    ]);
+    void deterministicReads;
+    const deterministicEvidence = (
+      kind: 'firewall' | 'subnetwork' | 'network' | 'router' | 'nat',
+      names: readonly string[],
+    ) => ({
+      kind,
+      strategy: 'deterministic-name' as const,
+      providerEvidenceRef: `gcp://compute/projects/${projectId}/${kind}-inventory/${names.join(',')}`,
+      deterministicNames: [...names],
+    });
+    return {
+      complete: true,
+      observed,
+      inventoryEvidence: [
+        { kind: 'vm', strategy: 'managed-labels', providerEvidenceRef: instancesUrl },
+        { kind: 'disk', strategy: 'managed-labels', providerEvidenceRef: disksUrl },
+        deterministicEvidence('firewall', request.deterministicNames.firewalls),
+        deterministicEvidence('subnetwork', request.deterministicNames.subnetworks),
+        deterministicEvidence('network', request.deterministicNames.networks),
+        { kind: 'snapshot', strategy: 'managed-labels', providerEvidenceRef: snapshotsUrl },
+        deterministicEvidence('router', request.deterministicNames.routers),
+        deterministicEvidence(
+          'nat',
+          request.deterministicNames.nats.map(({ name }) => name),
+        ),
+      ],
     };
   }
 

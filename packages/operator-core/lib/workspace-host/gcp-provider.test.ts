@@ -35,6 +35,8 @@ import {
   type GcpSnapshotObservation,
   type GcpSubnetworkInsertInput,
   type GcpWorkspaceHostApiClient,
+  type GcpWorkspaceHostInventoryRequest,
+  type GcpWorkspaceHostInventorySnapshot,
 } from './gcp-provider';
 
 const NOW = '2026-08-22T08:30:00.000Z';
@@ -215,6 +217,71 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
 
   async estimatePrice() {
     return { currency: 'USD', hourlyAmount: 0.11, observedAt: NOW, confidence: 'estimated' as const };
+  }
+
+  async inventoryManagedResources(
+    request: GcpWorkspaceHostInventoryRequest,
+  ): Promise<GcpWorkspaceHostInventorySnapshot> {
+    const observed: GcpWorkspaceHostInventorySnapshot['observed'][number][] = [];
+    const add = (
+      kind: string,
+      name: string,
+      item: GcpResourceObservation | undefined,
+      location: { region?: string; zone?: string } = {},
+    ) => {
+      if (!item) return;
+      observed.push({
+        resource: {
+          target: 'gcp',
+          kind,
+          providerId: name,
+          parentProviderId: request.projectId,
+          ...location,
+        },
+        labels: item.labels ?? {},
+        observedAt: item.observedAt,
+      });
+    };
+    for (const [name, item] of this.instances) add('vm', name, item, { zone: 'us-central1-a' });
+    for (const [name, item] of this.disks) add('disk', name, item, { zone: 'us-central1-a' });
+    for (const [name, item] of this.snapshots) add('snapshot', name, item);
+    request.deterministicNames.networks.forEach((name) => add('network', name, this.networks.get(name)));
+    request.deterministicNames.subnetworks.forEach((name) =>
+      add('subnetwork', name, this.subnetworks.get(name), { region: request.region }),
+    );
+    request.deterministicNames.firewalls.forEach((name) => add('firewall', name, this.firewalls.get(name)));
+    request.deterministicNames.routers.forEach((name) =>
+      add('router', name, this.routers.get(name), { region: request.region }),
+    );
+    request.deterministicNames.nats.forEach(({ routerName, name }) =>
+      add('nat', name, this.nats.get(`${routerName}:${name}`), { region: request.region }),
+    );
+    const deterministic = (
+      kind: 'firewall' | 'subnetwork' | 'network' | 'router' | 'nat',
+      names: readonly string[],
+    ) => ({
+      kind,
+      strategy: 'deterministic-name' as const,
+      providerEvidenceRef: `fake://inventory/${kind}`,
+      deterministicNames: [...names],
+    });
+    return {
+      complete: true,
+      observed,
+      inventoryEvidence: [
+        { kind: 'vm', strategy: 'managed-labels', providerEvidenceRef: 'fake://inventory/vm' },
+        { kind: 'disk', strategy: 'managed-labels', providerEvidenceRef: 'fake://inventory/disk' },
+        deterministic('firewall', request.deterministicNames.firewalls),
+        deterministic('subnetwork', request.deterministicNames.subnetworks),
+        deterministic('network', request.deterministicNames.networks),
+        { kind: 'snapshot', strategy: 'managed-labels', providerEvidenceRef: 'fake://inventory/snapshot' },
+        deterministic('router', request.deterministicNames.routers),
+        deterministic(
+          'nat',
+          request.deterministicNames.nats.map(({ name }) => name),
+        ),
+      ],
+    };
   }
 
   async getNetwork(_projectId: string, name: string) {
