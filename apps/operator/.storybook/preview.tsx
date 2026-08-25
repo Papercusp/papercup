@@ -1,5 +1,5 @@
 import type { Preview } from '@storybook/react-vite';
-import { useEffect } from 'react';
+import { useLayoutEffect } from 'react';
 import '../app/globals.css';
 
 /**
@@ -8,7 +8,10 @@ import '../app/globals.css';
  * override with richer mocks.
  */
 function BlockFetch() {
-  useEffect(() => {
+  // Install the mock during layout effects, before a story's passive effects
+  // can issue their first fetch. A passive effect here races components such
+  // as ApiKeyStatus and leaves Lost Pixel capturing their loading placeholder.
+  useLayoutEffect(() => {
     const original = window.fetch;
     window.fetch = async (input: any) => {
       const url = typeof input === 'string' ? input : input?.url ?? '';
@@ -17,9 +20,13 @@ function BlockFetch() {
       if (mocks) {
         for (const [pattern, body] of Object.entries(mocks)) {
           if (url.includes(pattern)) {
-            return new Response(JSON.stringify(body), {
+            // Promise-valued fixtures model pending requests (for example the
+            // ApiKeyStatus Loading story). Awaiting the fixture preserves that
+            // pending state; JSON.stringify would turn a Promise into `{}` and
+            // incorrectly make the component look loaded.
+            return Promise.resolve(body).then((resolvedBody) => new Response(JSON.stringify(resolvedBody), {
               status: 200, headers: { 'Content-Type': 'application/json' },
-            });
+            }));
           }
         }
       }
