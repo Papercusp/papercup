@@ -201,6 +201,20 @@ export interface CompareResult {
   readonly artifacts?: ComparisonArtifacts;
   readonly ignoredRegions?: readonly IgnoredRegion[];
 
+  /**
+   * The rendering host the implementation capture was produced on (P-011,
+   * D-023), as `render-host.ts`'s canonical string.
+   *
+   * Carried rather than measured here because `compare_render` receives an
+   * image path, not a browser: only the capture path has a page to measure. It
+   * is optional on the type because a reference may be an upload or a Figma
+   * export that no host ever rendered — but absence is NOT an exemption. For a
+   * reference whose own provenance records a host, evidence that reports none
+   * fails the gate as insufficient rather than passing it, or omitting the
+   * field would be a one-line way to turn a refusal into a notice.
+   */
+  readonly renderHost?: string;
+
   readonly capturedAt: string;
   /**
    * Advisory semantic explanation (D-004). Never affects the verdict; present
