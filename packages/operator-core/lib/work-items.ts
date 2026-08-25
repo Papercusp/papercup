@@ -1567,6 +1567,50 @@ export async function getWorkItemDetail(id: string, harness?: string): Promise<W
   };
 }
 
+/**
+ * WI-41477: the work-item counterpart of `readVettingConsultCritique`
+ * (consult/get-feedback-core.ts) — the scorecards:emit vetting gate's second
+ * evidence channel. A LAUNCHED independent reviewer cannot post into a consult
+ * (participants are router-assigned by consult:get_feedback), so critique
+ * recorded per D-049 (learning-loop-backlog-triage-2026-08-22) lands as
+ * work-item comments instead. Mirrors the consult predicate clause for clause:
+ * only posts with a non-null author OUTSIDE `excludeAuthors` (the emitter and
+ * the vetted rubric's author — the parties whose "critique" would be
+ * self-review) count; distinct qualifying authors become the critics list.
+ * Work-item threads have no 'decline' post kind, so there is no declinePosts
+ * half and no waiver path on this channel — zero third-party comments simply
+ * refuses at emit.
+ */
+export interface VettingWorkItemCritique {
+  /** false ⇒ no such work-item: a dangling link, not an un-commented item. */
+  exists: boolean;
+  /** Third-party comments that constitute critique. */
+  critiquePosts: number;
+  /** Distinct authors of those comments, so the stamp can name the critics. */
+  critics: string[];
+}
+
+export async function readVettingWorkItemCritique(
+  id: string,
+  excludeAuthors: readonly (string | null | undefined)[],
+  harness?: string,
+  // Seam for unit tests — production always takes the real default.
+  deps: { getWorkItemDetail?: typeof getWorkItemDetail } = {},
+): Promise<VettingWorkItemCritique> {
+  const detail = await (deps.getWorkItemDetail ?? getWorkItemDetail)(id, harness);
+  if (!detail) return { exists: false, critiquePosts: 0, critics: [] };
+  const excluded = new Set(excludeAuthors.filter((a): a is string => typeof a === 'string' && a.length > 0));
+  const critics = new Set<string>();
+  let critiquePosts = 0;
+  for (const post of detail.posts) {
+    const author = post.author_id;
+    if (!author || excluded.has(author)) continue;
+    critiquePosts += 1;
+    critics.add(author);
+  }
+  return { exists: true, critiquePosts, critics: [...critics].sort() };
+}
+
 /* The prose column width lives in `search/prose-vector-dims` (imported at the
  * top of this file). It used to be a hand-copied local const, justified because
  * importing embed-backfill's `EMBEDDER_DIM` would have pulled the whole embed

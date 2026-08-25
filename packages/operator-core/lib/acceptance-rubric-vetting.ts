@@ -40,6 +40,9 @@ export interface AcceptanceRubricVettingStatus {
   attestedRevisions: number[];
   attestationIssueId: string | null;
   consultId: string | null;
+  /** WI-41477: the review work-item channel — set when the attestation's critique
+   *  was recorded as work-item comments instead of a consult. */
+  workItemId: string | null;
   vettedUnderWaiver?: { consultId: string; reason?: string };
 }
 
@@ -72,6 +75,7 @@ function notRequired(
     attestedRevisions: [],
     attestationIssueId: null,
     consultId: null,
+    workItemId: null,
   };
 }
 
@@ -116,7 +120,9 @@ export async function getAcceptanceRubricVettingStatus(
   ]);
   const vettedCards = metaCards
     .filter((card) => card.rubricResolved && card.missingKeys.length === 0 && !card.synthesized)
-    .filter((card) => Boolean(card.vetting?.consultId))
+    // WI-41477: either critique channel counts — a get_feedback consult, or the
+    // review work-item a launched independent reviewer's comments land on.
+    .filter((card) => Boolean(card.vetting?.consultId || card.vetting?.workItemId))
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
   const attestedRevisions = [
     ...new Set(vettedCards.map((card) => card.vetting?.rubricRevision).filter((v): v is number => v != null)),
@@ -138,6 +144,7 @@ export async function getAcceptanceRubricVettingStatus(
       attestedRevisions,
       attestationIssueId: vettedCards[0]?.issueId ?? null,
       consultId: vettedCards[0]?.vetting?.consultId ?? null,
+      workItemId: vettedCards[0]?.vetting?.workItemId ?? null,
     };
   }
 
@@ -153,8 +160,11 @@ export async function getAcceptanceRubricVettingStatus(
     attestedRevision: vetting.rubricRevision ?? null,
     attestedRevisions,
     attestationIssueId: current.issueId,
-    consultId: vetting.consultId,
-    ...(vetting.unanswered
+    consultId: vetting.consultId ?? null,
+    workItemId: vetting.workItemId ?? null,
+    // The unanswered waiver exists only on the consult channel (WI-41477: a
+    // work-item link with no third-party comment is refused at emit, never waived).
+    ...(vetting.unanswered && vetting.consultId
       ? {
           vettedUnderWaiver: {
             consultId: vetting.consultId,

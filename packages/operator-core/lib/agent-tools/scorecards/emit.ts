@@ -9,6 +9,7 @@ import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readVettingConsultCritique } from '../../consult/get-feedback-core';
+import { readVettingWorkItemCritique } from '../../work-items';
 import {
   normalizeScorecardRatings,
   validateObservationRatings,
@@ -117,6 +118,14 @@ export const scorecardEmitArgs = z
       .optional()
       .describe(
         'Vetting linkage (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric (subject.ref names it). The rubric must exist AND the consult must carry at least one third-party critique reply (EI-20821478338037350) — an opened-but-unanswered consult is refused, not silently accepted. Stamped as observation.vetting with the critique count and critics.',
+      ),
+    vettingWorkItem: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        "Vetting linkage, work-item channel (WI-41477): the WI-/EI- work-item whose third-party COMMENTS carry the critique of the vetted rubric — the channel a LAUNCHED independent reviewer (D-049: certification goes to an agent with no history on the artifact) can actually write to, since consult participants are router-assigned and a launched reviewer is never enrolled. Same predicate as vettingConsult, mirrored clause for clause: the work-item must exist AND carry ≥1 comment authored by neither the emitter nor the vetted rubric's author. Stamped as observation.vetting { workItemId, critiquePosts, critics }. Pass EXACTLY ONE of vettingConsult / vettingWorkItem; the vettingUnanswered waiver is consult-only (a work-item with no third-party comment is not evidence — route a consult instead).",
       ),
     vettingUnanswered: z
       .boolean()
@@ -322,13 +331,35 @@ export async function emitScorecard(
     // link here would be a booby trap (same posture as the acceptance-kind link
     // guards in proposeRubric).
     let vetting: ScorecardVetting | undefined;
-    if (args.vettingConsult) {
+    // WI-41477: two alternate recording channels, one predicate. The consult channel
+    // is the router-assigned get_feedback flow; the work-item channel is where a
+    // LAUNCHED independent reviewer's critique actually lands (D-049 — consult
+    // participants are router-assigned, so a reviewer launched to certify a specific
+    // artifact can never post into a consult thread). Exactly one may be passed.
+    if (args.vettingConsult && args.vettingWorkItem) {
+      return {
+        ok: false as const,
+        error:
+          'pass EXACTLY ONE of vettingConsult / vettingWorkItem — they are alternate recording channels for the ' +
+          'same attestation, and a card stamped from both would be unreadable as evidence',
+      };
+    }
+    if (args.vettingWorkItem && args.vettingUnanswered) {
+      return {
+        ok: false as const,
+        error:
+          'vettingUnanswered is consult-only — it waives a consult nobody answered. A work-item with no ' +
+          'third-party comment is not attestable evidence; route a consult (vettingConsult) and waive THAT if no ' +
+          'reviewer can be had',
+      };
+    }
+    if (args.vettingConsult || args.vettingWorkItem) {
       const subjectRef = args.subject?.ref;
       if (!subjectRef) {
         return {
           ok: false as const,
           error:
-            "vettingConsult requires `subject` naming the vetted rubric — pass subject:{ kind:'rubric', ref:'<the acceptance rubricId>' }",
+            "vetting linkage requires `subject` naming the vetted rubric — pass subject:{ kind:'rubric', ref:'<the acceptance rubricId>' }",
         };
       }
       const vettedRubric = await getRubric(subjectRef);
@@ -338,6 +369,46 @@ export async function emitScorecard(
           error: `vetting subject '${subjectRef}' does not resolve to a rubric — the vetting stamp would be a dangling link`,
         };
       }
+      if (args.vettingWorkItem) {
+        // Mirror of the consult predicate below, clause for clause: the consult path
+        // excludes the emitter and the consult REQUESTER; here the analogous
+        // self-review parties are the emitter and the vetted rubric's author (the
+        // vetting requester in the launched-reviewer flow).
+        const critique = await readVettingWorkItemCritique(args.vettingWorkItem, [
+          input.createdBy,
+          vettedRubric.createdBy,
+          vettedRubric.proposedBy,
+        ]);
+        if (!critique.exists) {
+          return {
+            ok: false as const,
+            error:
+              `vetting work-item '${args.vettingWorkItem}' not found — the vetting stamp would be a dangling link. ` +
+              `Pass the WI-/EI- id of the review work-item whose comments carry the critique of rubric '${subjectRef}'`,
+          };
+        }
+        if (critique.critiquePosts === 0) {
+          return {
+            ok: false as const,
+            error:
+              `vetting work-item '${args.vettingWorkItem}' carries NO third-party critique: comments by the emitter ` +
+              `or the vetted rubric's author do not count — independent review means someone ELSE engaged with ` +
+              `rubric '${subjectRef}'. A vetting attestation over an un-critiqued work-item would make the ` +
+              `acceptance gate vacuously green. If no reviewer can be had at all, use the consult channel ` +
+              `(vettingConsult + vettingUnanswered) so the waiver is recorded visibly`,
+          };
+        }
+        const rubricRevision = await getRubricPlanRevision(subjectRef);
+        vetting = {
+          workItemId: args.vettingWorkItem,
+          ...(rubricRevision != null ? { rubricRevision } : {}),
+          critiquePosts: critique.critiquePosts,
+          ...(critique.critics.length > 0 ? { critics: critique.critics } : {}),
+        };
+      }
+    }
+    if (args.vettingConsult) {
+      const subjectRef = args.subject!.ref;
       const critique = await readVettingConsultCritique(
         getOrgPg().sql,
         activeWorkspaceId(),
@@ -520,6 +591,9 @@ export async function emitScorecard(
     // the recorded waiver is stuck on the card forever.
     const vettingChanged =
       (latest?.vetting?.consultId ?? null) !== (vetting?.consultId ?? null) ||
+      // WI-41477: the work-item channel is the same kind of move — a re-emit that
+      // switches channel or cites a different review work-item is a re-vetting step.
+      (latest?.vetting?.workItemId ?? null) !== (vetting?.workItemId ?? null) ||
       (latest?.vetting?.rubricRevision ?? null) !== (vetting?.rubricRevision ?? null) ||
       (latest?.vetting?.unanswered ?? false) !== (vetting?.unanswered ?? false);
     if (
