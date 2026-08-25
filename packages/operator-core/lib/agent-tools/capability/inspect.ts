@@ -583,6 +583,10 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Run detached; returns a bash_id immediately. Poll with capability:bash_output, stop with capability:bash_kill.'),
+    runInBackground: z
+      .boolean()
+      .optional()
+      .describe('Compatibility alias for run_in_background; the snake_case spelling is canonical.'),
     timeout: z
       .number()
       .int()
@@ -642,8 +646,11 @@ export default defineTool({
     // WI-6677: mode-dependent default, same as capability:bash. A detached suite is
     // exactly what run_in_background is FOR here, so it must not inherit the short
     // foreground default that exists to stay under the MCP transport cap.
+    // Keep the snake_case field canonical while accepting the camelCase spelling emitted by
+    // older model-facing surfaces. An explicitly supplied snake_case value wins.
+    const runInBackground = args.run_in_background ?? args.runInBackground;
     const requestedTimeoutMs =
-      args.timeout ?? (args.run_in_background ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+      args.timeout ?? (runInBackground ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
     // Reuse the capability:bash OS sandbox (P-022/D-008) on the operator-side exec.
     const sandboxEnabled = await capabilityExecSandboxEnabled();
 
@@ -653,7 +660,7 @@ export default defineTool({
     // own memory profile and is not the measured failure.
     const execEnv = args.check === 'typecheck' ? tscHeapEnv() : undefined;
 
-    if (args.run_in_background) {
+    if (runInBackground) {
       // Background is uncapped by the MCP transport (returns a bash_id immediately), so it
       // honors the full requested timeout.
       const job = startBackground({ command, cwd, stateDir: ctx.stateDir, sandboxEnabled, env: execEnv }, requestedTimeoutMs);

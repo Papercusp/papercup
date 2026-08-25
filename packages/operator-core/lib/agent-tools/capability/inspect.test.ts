@@ -349,10 +349,36 @@ describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
     expect(shape.path.description).toMatch(/one test file\/dir/);
     expect(shape.path.description).toMatch(/when omitted, it is repo-relative/);
     expect(shape.path.description).toMatch(/one capability:inspect call per path/);
+    expect(shape.runInBackground.description).toMatch(/Compatibility alias for run_in_background/);
   });
 });
 
 describe('capability:inspect — background launch response', () => {
+  it('accepts the camelCase compatibility alias for background runs', async () => {
+    vi.mocked(startBackground).mockReturnValue({
+      id: 'bash-camel-case-alias',
+      taskId: 'task-camel-case-alias',
+      logPath: '/tmp/bash-camel-case-alias.log',
+    } as never);
+
+    const result = await inspect.handler(
+      { check: 'test', package: 'pkg', runInBackground: true },
+      inspectCtx(),
+    );
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(payload).toMatchObject({
+      ok: true,
+      bash_id: 'bash-camel-case-alias',
+      task_id: 'task-camel-case-alias',
+      status: 'running',
+    });
+    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'npx vitest run', cwd: INSPECT_PACKAGE }),
+      expect.any(Number),
+    );
+  });
+
   it('returns the durable task_id alongside the in-memory bash_id', async () => {
     vi.mocked(startBackground).mockReturnValue({
       id: 'bash-response-probe',
