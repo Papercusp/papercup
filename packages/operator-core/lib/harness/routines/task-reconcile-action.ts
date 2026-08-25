@@ -519,7 +519,7 @@ async function reapAgentSessionResidue(ctx: SystemActionCtx): Promise<void> {
       atMs: passAtMs,
       scopesDead: residual,
     });
-    const floor = evaluateReaperFloor(floorRing, { nowMs: passAtMs });
+    const floor = evaluateReaperFloor(floorRing, {});
     await writeResidueSamples(
       reaperTarget,
       floorRing,

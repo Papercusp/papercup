@@ -279,10 +279,9 @@ export interface ReaperFloorSample {
 
 export interface ReaperFloorVerdict {
   alarm: boolean;
-  kind: 'stuck' | 'growing' | null;
+  kind: 'stuck' | null;
+  /** How many of the most recent passes, consecutively, left residue behind. */
   consecutiveNonZero: number;
-  recentFloor: number | null;
-  olderFloor: number | null;
   summary: string;
 }
 
@@ -311,85 +310,46 @@ export function residualAfterPass(
  */
 export function evaluateReaperFloor(
   samples: readonly ReaperFloorSample[],
-  opts: {
-    nowMs: number;
-    minConsecutive?: number;
-    recentWindowMs?: number;
-    lookbackMs?: number;
-  },
+  opts: { minConsecutive?: number },
 ): ReaperFloorVerdict {
   const minConsecutive = opts.minConsecutive ?? REAPER_FLOOR_MIN_CONSECUTIVE;
-  const recentWindowMs = opts.recentWindowMs ?? REAPER_FLOOR_RECENT_WINDOW_MS;
-  const lookbackMs = opts.lookbackMs ?? REAPER_FLOOR_LOOKBACK_MS;
-
   const ordered = [...samples].sort((a, b) => a.atMs - b.atMs);
 
-  // `stuck`: every one of the last N passes left something behind. Counted over
-  // the tail regardless of wall-clock window — N consecutive failures matter
-  // whatever the cadence.
-  const tail = ordered.slice(-minConsecutive);
+  // Counted over the sample TAIL, not a wall-clock window: N consecutive passes
+  // that each left residue is the same evidence whatever the tick cadence, and a
+  // window would silently stop judging if the interval were ever retuned.
   let consecutiveNonZero = 0;
   for (let i = ordered.length - 1; i >= 0 && ordered[i]!.scopesDead > 0; i--) consecutiveNonZero++;
-  const stuck = tail.length >= minConsecutive && tail.every((s) => s.scopesDead > 0);
 
-  const recentFrom = opts.nowMs - recentWindowMs;
-  const olderFrom = opts.nowMs - lookbackMs;
-  const recent: number[] = [];
-  const older: number[] = [];
-  for (const s of ordered) {
-    if (s.atMs >= recentFrom) recent.push(s.scopesDead);
-    else if (s.atMs >= olderFrom) older.push(s.scopesDead);
-  }
-  const recentFloor = recent.length ? Math.min(...recent) : null;
-  const olderFloor = older.length ? Math.min(...older) : null;
-  const growing =
-    recent.length >= minConsecutive &&
-    older.length >= minConsecutive &&
-    recentFloor !== null &&
-    olderFloor !== null &&
-    recentFloor > olderFloor;
-
-  if (stuck) {
+  const tail = ordered.slice(-minConsecutive);
+  if (tail.length >= minConsecutive && tail.every((s) => s.scopesDead > 0)) {
     return {
       alarm: true,
       kind: 'stuck',
       consecutiveNonZero,
-      recentFloor,
-      olderFloor,
       summary:
         `agent-session reaper has left residue behind on ${consecutiveNonZero} consecutive ` +
-        `pass(es) (last ${tail.length} all non-zero: ${tail.map((s) => s.scopesDead).join(',')}) — ` +
+        `pass(es) (last ${tail.length}: ${tail.map((s) => s.scopesDead).join(',')}) — ` +
         `enforcement is selecting scopes it cannot clear`,
     };
   }
-  if (growing) {
-    return {
-      alarm: true,
-      kind: 'growing',
-      consecutiveNonZero,
-      recentFloor,
-      olderFloor,
-      summary:
-        `agent-session residue floor is CLIMBING (recent ${recentFloor} vs earlier ${olderFloor}) — ` +
-        `scopes are arriving faster than the reaper clears them`,
-    };
-  }
+
   if (ordered.length < minConsecutive) {
+    // Thin history is NOT health. Same rule the dead-window trend follows: a
+    // detector that cannot yet judge must say so, or an empty/unreadable ring
+    // launders as green.
     return {
       alarm: false,
       kind: null,
       consecutiveNonZero,
-      recentFloor,
-      olderFloor,
       summary: `only ${ordered.length} sample(s) — no verdict yet, which is not the same as healthy`,
     };
   }
+
   return {
     alarm: false,
     kind: null,
     consecutiveNonZero,
-    recentFloor,
-    olderFloor,
     summary: `reaper floor clear (last ${tail.length} pass(es) left ${tail.map((s) => s.scopesDead).join(',')})`,
   };
 }

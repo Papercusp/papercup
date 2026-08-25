@@ -17,11 +17,15 @@ import {
 } from './agent-session-progress-census';
 import {
   decideReaps,
+  evaluateReaperFloor,
   executeReaps,
   REAP_MAX_PER_TICK,
   REAP_TERMINAL_GRACE_MS,
+  residualAfterPass,
   rowOwnerId,
   type ReapDecision,
+  type ReaperFloorSample,
+  type ReapOutcome,
 } from './reaper';
 import type { TaskRow } from './types';
 
@@ -274,5 +278,77 @@ describe('executeReaps', () => {
       closeAsReaped: async () => void calls.push('close'),
     });
     expect(calls).toEqual([]);
+  });
+});
+
+describe('the recurrence guard — residualAfterPass / evaluateReaperFloor (P-006)', () => {
+  const outcome = (ok: boolean): ReapOutcome => ({
+    taskId: 't',
+    scopeUnit: 's',
+    kind: 'terminal-residue',
+    ok,
+    archived: null,
+  });
+  /** Samples oldest→newest, one per pass. */
+  const ring = (...counts: number[]): ReaperFloorSample[] =>
+    counts.map((scopesDead, i) => ({ atMs: NOW - (counts.length - i) * 5 * 60_000, scopesDead }));
+
+  it('counts deferred candidates and failed stops as residue that survived the pass', () => {
+    expect(residualAfterPass({ deferred: 27 }, [outcome(false), outcome(false), outcome(true)])).toBe(29);
+  });
+
+  it('does NOT count spared rows — sparing is the rails working, not a failure', () => {
+    // A pass that spared a live successor and cleared everything it selected has
+    // left nothing behind. Counting spares here would make correct caution
+    // indistinguishable from broken enforcement and alarm forever on a healthy box.
+    expect(residualAfterPass({ deferred: 0 }, [outcome(true), outcome(true)])).toBe(0);
+  });
+
+  // ── THE REGRESSION CASE ────────────────────────────────────────────────────
+  // This is the exact shape of the 2026-08-25 incident: the reaper selected 12
+  // terminal-residue scopes and failed all 12, every five minutes, for an hour.
+  it('CAUGHT: fires on a FLAT non-zero floor — the shape a growth detector misses', () => {
+    const flat = ring(12, 12, 12, 12);
+    const v = evaluateReaperFloor(flat, {});
+    expect(v.alarm).toBe(true);
+    expect(v.kind).toBe('stuck');
+    expect(v.consecutiveNonZero).toBe(4);
+
+    // The control that justifies the design: this series has ZERO growth — its
+    // floor is identical in every window — so an accumulation/trend detector
+    // would report "steady" and stay silent through the whole outage.
+    expect(Math.min(...flat.map((s) => s.scopesDead))).toBe(
+      Math.max(...flat.map((s) => s.scopesDead)),
+    );
+  });
+
+  it('CONTROL: a healthy reaper (every pass clears) never alarms', () => {
+    const v = evaluateReaperFloor(ring(0, 0, 0, 0, 0), {});
+    expect(v.alarm).toBe(false);
+    expect(v.consecutiveNonZero).toBe(0);
+  });
+
+  it('CONTROL: a single pass that cleared resets the streak', () => {
+    // 3 bad passes then a clean one: enforcement is working again, so an alarm
+    // here would be a false positive that trains readers to ignore it.
+    const v = evaluateReaperFloor(ring(9, 9, 9, 0), {});
+    expect(v.alarm).toBe(false);
+    expect(v.consecutiveNonZero).toBe(0);
+  });
+
+  it('CONTROL: two bad passes is not yet three', () => {
+    expect(evaluateReaperFloor(ring(0, 4, 4), {}).alarm).toBe(false);
+  });
+
+  it('thin history is reported as NO VERDICT, never as healthy', () => {
+    // An empty or unreadable ring must not read green — the store is best-effort
+    // by contract and returns [] on failure.
+    const v = evaluateReaperFloor(ring(1, 1), {});
+    expect(v.alarm).toBe(false);
+    expect(v.summary).toContain('not the same as healthy');
+  });
+
+  it('respects a tightened minConsecutive', () => {
+    expect(evaluateReaperFloor(ring(0, 3, 3), { minConsecutive: 2 }).alarm).toBe(true);
   });
 });
