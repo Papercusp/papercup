@@ -29,6 +29,7 @@
 import type {
   ModelMessage,
   ModelPort,
+  ModelStreamEvent,
   ModelStopReason,
   ModelToolDef,
   ModelUsage,
@@ -316,8 +317,8 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
     let abortPromise: Promise<void> | undefined;
     if (opts.signal) {
       abortPromise = new Promise<void>((resolve) => {
-        abortHandler = resolve;
-        opts.signal!.addEventListener('abort', resolve, { once: true });
+        abortHandler = () => resolve();
+        opts.signal!.addEventListener('abort', abortHandler, { once: true });
       });
     }
     let sawStop = false;
