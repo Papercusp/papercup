@@ -5,7 +5,7 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Ratified design evidence — operating the comparison contract"
-description: "How a ratified mockup becomes an enforceable implementation obligation: the lifecycle, the three verbs, how to read pass/fail/invalid, how to run and recalibrate the comparison, what a green does NOT establish, and the tested non-destructive disable path."
+description: "How a ratified mockup becomes an enforceable implementation obligation: the lifecycle, the three verbs, how to read pass/fail/invalid, why enforcement is scoped to the machine the threshold was measured on, how to run and recalibrate the comparison, what a green does NOT establish, and the tested non-destructive disable path."
 type: Insight
 discovered: 2026-08-25
 tags: ["design", "visual-regression", "design-phase", "lost-pixel", "storybook", "gate"]
@@ -17,6 +17,8 @@ documents:
   - "packages/operator-core/lib/design-compare/policy-calibration.json"
   - "packages/operator-core/lib/design-compare/gate.ts"
   - "packages/operator-core/lib/design-compare/feature-gate.ts"
+  - "packages/operator-core/lib/design-compare/enforceability.ts"
+  - "packages/operator-core/lib/design-compare/render-host.ts"
   - "packages/operator-core/lib/design-compare/report-cli.ts"
   - "packages/operator-core/lib/design-compare/reference-store.ts"
   - "packages/operator-core/lib/design-compare/ratification.ts"
@@ -30,7 +32,7 @@ normative: true
 
 This is the operator manual for the ratified-design comparison contract. It is written so that someone who has never touched this subsystem can reproduce a comparison, read its verdict correctly, and turn the whole thing off without destroying anything.
 
-> **Status today: REPORT-ONLY.** `papercusp-design-evidence-gate` is ON and measures every terminal completion; `papercusp-design-evidence-gate-enforcing` is OFF, so nothing is refused yet. The `designEvidence` line on your `work_items:complete` result is the refusal you *will* get once enforcement lands. Treat it as one.
+> **Status today: ENFORCING, WITHIN A MEASURED SCOPE.** `papercusp-design-evidence-gate` is ON and measures every terminal completion; `papercusp-design-evidence-gate-enforcing` is now ON too. It does **not** follow that every failing reference is refused. The threshold was measured on ONE machine, so a refusal only happens for a reference ratified on that machine (D-023). Everything else is reported and never refused, and every non-enforcing outcome says so in words — see [Enforcement is scoped to the measured host](#enforcement-is-scoped-to-the-measured-host-d-023).
 
 ## The lifecycle
 
@@ -80,6 +82,7 @@ The gate reports a `reason` beneath each state, because two cases in the same st
 |---|---|---|
 | `no-evidence` | missing | no comparison was ever run for this case — run `compare_render` |
 | `wrong-surface` | missing | a comparison WAS run at this environment, but it captured a different surface. Capture the surface the case names and re-run |
+| `wrong-render-host` | invalid | the evidence passed, but it was produced on a different machine than the reference was ratified on — or it does not record one. Re-capture on the ratifying host and re-run (D-023) |
 | `superseded-revision` | stale | measured against a reference revision that is no longer active — re-run against the current one |
 | `unreadable-schema` | invalid | the stored record was written under a compare-result schema this build cannot read, so it is not evidence |
 | `engine-invalid` | invalid | the comparison returned `invalid` — resolve the precondition it names, then re-run |
@@ -87,6 +90,8 @@ The gate reports a `reason` beneath each state, because two cases in the same st
 | `no-required-cases` | invalid | the active revision declares no required cases, so there is nothing to verify — re-ratify it |
 
 **`wrong-surface` is the one worth reading twice.** Reported as `no-evidence` it would send you to run the comparison you already ran — and under the indistinguishable-capture case above, that comparison may well have *passed* at diff ratio 0. You would read the same green a second time and conclude the gate was broken. The remedy is not "compare"; it is "compare the right thing".
+
+**`wrong-render-host` is the other one.** It fires on evidence that *passed*, which makes it read like a bug the first time you see it. It is not: the implementation may be perfect and the engine may have behaved perfectly. What is wrong is the **measurement** — the threshold that judged it was never measured for that machine. The remedy is neither "compare" nor "fix the code"; it is "compare on the host this reference was ratified on".
 
 ### `invalid` reasons
 
@@ -114,6 +119,35 @@ Separate vocabulary, separate meaning: these are conditions under which nothing 
 
 **JPEG references are refused at ratification (D-013)** — the mandated engine decodes PNG only. Reference *media* may be PNG or JPEG, but only PNG is comparable, so the refusal happens at the ratification boundary rather than surfacing much later as a confusing `reference-unreadable`.
 
+## Enforcement is scoped to the measured host (D-023)
+
+The enforcing flag being ON is only half of what decides a refusal. The other half is whether the threshold was ever measured for the machine involved — and it usually was not.
+
+**Why.** The derived tolerance for `artifact-capture` is `0.000033816`, which is about **34 pixels of a 1280x800 render**. Every noise sample behind it was captured on one machine (D-021), so host-to-host variance — font rasterisation, GPU, driver — is entirely unmeasured and is plausibly far larger. Enforcing a same-host threshold across hosts fails correct work on the first runner whose fonts differ.
+
+**The gap that made this urgent.** `CaptureEnvironment` has seven fields — viewport, deviceScaleFactor, browser, theme, fontSet, fixture, state — and none of them carries host identity. So two captures taken on machines with entirely different fonts satisfy `environmentsMatch`, and `describeEnvironment` renders them identically. A cross-host comparison was not merely unmeasured; it was *indistinguishable* from a same-host one at every precondition the gate checks. `fontSet: 'system'` is the mechanism: it is an honest declaration that a capture asserts **nothing** about fonts, which means the one field naming fonts is satisfied identically by two hosts whose fonts differ.
+
+**What was added.** A render-host fingerprint, measured from the browser that produced the image:
+
+- It reuses the D-016 metric instrument already in `capture-playwright.ts` — canvas `measureText` widths for `monospace`, `sans-serif` and `serif` — rather than `process.platform`. Two Linux x64 boxes with different font packages are exactly the case D-021 fears, and platform+arch would call them identical. The generics resolve to whatever the host actually has, so the widths move.
+- Browser **major** version is included; the patch is not. Folding the full user-agent in would silently disable enforcement after a routine Chrome update — a gate that stops firing without anyone deciding it should.
+- It is recorded on the reference at ratification (`provenance.capturedOnRenderHost`), on each comparison (`CompareResult.renderHost`), and on the calibration artifact (`measuredOnRenderHost`).
+
+**The rule** (`enforceability.ts`), decided from facts a completing agent does not control:
+
+| situation | outcome |
+|---|---|
+| reference records no host (upload, Figma export, or ratified before the field existed) | **report-only** — `reference-host-unknown` |
+| reference's host ≠ the calibration's host | **report-only** — `uncalibrated-host` |
+| calibration records no host at all | **report-only everywhere** — an artifact that cannot say where it was measured enforces nowhere |
+| reference host = calibration host | **enforceable** |
+
+This also gives "enforcement applies to newly ratified design work only" for free, from a measured property rather than a date comparison: references ratified before this landed carry no host and are never refused.
+
+**Evidence cannot buy an exemption by staying silent.** For a reference that *does* record a host, evidence whose host is missing or different fails as `wrong-render-host` — it is insufficient evidence, not an exemption. If a missing host instead made the reference un-enforceable, omitting one field on a comparison would quietly downgrade every refusal to a notice.
+
+**A non-enforcing outcome always says so in words.** "The gate could not enforce" must never render identically to "the gate passed" — a gate that quietly stops enforcing is the failure this whole mechanism exists to prevent, arriving by a different door.
+
 ## What actually gates today
 
 Four reference classes exist: `artifact-capture`, `figma-export`, `raster-mockup`, and `derived-reference` (a gateable reference derived from an incommensurable one and approved, per D-007).
@@ -128,6 +162,8 @@ At policy `dcp-2026-08-25.1`, **only `artifact-capture` is gateable.**
 | `derived-reference` | not in the calibration artifact | `explainPolicy()` returns `undefined` |
 
 This is a finding to state plainly, not an omission to apologise for: this repo can produce a real cohort of HTML renders and cannot produce one of Figma exports. A class with only synthetic corpus evidence has **no measured noise floor and does not borrow another class's** (D-021).
+
+Class eligibility and host scope are **independent gates, and both must pass.** A gateable class on a reference ratified elsewhere is still report-only.
 
 ### Two traps when reading the policy
 
@@ -156,7 +192,7 @@ Read this section before you tell anyone the design is verified. A passing compa
 
 The consequence is not subtle: ratify a reference against surface A, implement surface B, and the comparison returns **pass at diff ratio 0**, with the engine behaving perfectly. No threshold tuning detects this, because there is nothing to threshold. The report surfaces such pairs loudly as `indistinguishablePairs`; **a non-empty list is a bypass, not a cohort defect to tidy away.** The calibration cohort therefore refuses to admit a zero-diff pair as a regression sample — a zero does not measure how small a real change can be, it measures that two captures are the same image, and admitting it would define the regression floor as 0.
 
-**Every noise sample is same-host (D-021).** Host-to-host variance — font rasterisation, GPU, driver — is entirely unmeasured, and is plausibly far larger than the same-host figure. This is the principal reason the gate stays report-only. A threshold derived from same-host noise and enforced across hosts fails correct work on the first runner whose fonts differ. The report-only CI run is precisely the instrument that will measure cross-host noise, and **P-011 must not enable enforcement until it has.**
+**Cross-host variance is still unmeasured (D-021).** Nothing here measured it; D-023 only stops it being *enforced* across. A green says the pixels match on the machine that ratified the reference. The report-only CI run remains the instrument that would measure cross-host noise, and until it does, enforcement stays scoped to one host rather than widened on an assumption.
 
 ## Running a comparison yourself
 
@@ -190,6 +226,8 @@ One step in `.github/workflows/test.yml`, deliberately placed **after** every `n
 
 Existing build-to-build visual regression is untouched and still gates. That is the point of the placement.
 
+CI is also, by construction, a **different rendering host** from the one that ratifies references locally, so a CI-produced comparison is report-only under D-023 even with the enforcing flag on. That is the intended shape: CI measures, the ratifying host enforces.
+
 ### Artifact retention
 
 `design-evidence-report/` is uploaded as an artifact with **`retention-days: 14`**, stated explicitly rather than inherited — an unstated retention is the repo default silently applied, which is a policy nobody chose and nobody can see. 14 days outlasts a PR review cycle without accumulating captures indefinitely. `if-no-files-found: warn`, because an absent report is a condition worth seeing, not a build failure.
@@ -202,10 +240,13 @@ Thresholds are **derived from measurement, never hand-edited.**
 2. Read the printed per-class summary: `noise n=… max=…`, `regression n=… min=…`, runtime percentiles, and any `⚠ INDISTINGUISHABLE pair(s)`.
 3. Commit the regenerated `policy-calibration.json`. `CURRENT_POLICY_VERSION` follows the artifact.
 
-The derivation refuses to produce a gateable threshold it cannot justify — that refusal is the feature. Two rules it enforces:
+The derivation refuses to produce a gateable threshold it cannot justify — that refusal is the feature. Three rules it enforces:
 
 - **Noise comes only from the real-surface cohort.** The synthetic corpus measures a *fidelity* difference between a reference and an implementation. That is a different quantity that happens to share units, and pooling the two is not a rounding error: it once produced a floor roughly 2600x too high, exceeded the smallest real regression, and silently demoted the one genuinely gateable class to advisory-only — with every number well-formed and nothing failing loudly.
 - **The one-pixel precision floor is scoped to the noise samples.** Taken from the cohort at large, a 320x240 corpus would set the precision floor for 1280x800 real captures, inflating it ~13x for a reason unconnected to the measurement it bounds.
+- **The render host is recorded from the captures, not assumed.** `measureCalibration` stamps `measuredOnRenderHost` only when every capture in the noise leg agreed about which machine it ran on. Zero or several distinct hosts both mean the artifact cannot name the domain its numbers describe, and the absence is read as "enforce nowhere".
+
+**Recalibrating on a new machine moves the enforcement scope with it.** The new artifact names that machine, so references ratified on the *old* one become report-only. That is correct — their threshold is gone — but it is a consequence worth knowing before you recalibrate somewhere unfamiliar.
 
 Old policy versions stay readable: evidence records which version judged them, and a stale-policy record is surfaced rather than silently re-accepted (`UnknownPolicyVersionError`).
 
@@ -213,7 +254,9 @@ Old policy versions stay readable: evidence records which version judged them, a
 
 | symptom | what it means | move |
 |---|---|---|
-| Gate says `unavailable` | The obligation could not be *established* — store or evidence read failed | Fix the infrastructure. Do **not** treat it as a pass; it is deliberately distinct from "unsatisfied" so an unavailable store can never become a silent pass. Report-only mode fails open, so completion still proceeds — the report says it could not establish the obligation. |
+| Gate says `unavailable` | The obligation could not be *established* — store or evidence read failed | Fix the infrastructure. Do **not** treat it as a pass; it is deliberately distinct from "unsatisfied" so an unavailable store can never become a silent pass. It fails open, so completion still proceeds — the report says it could not establish the obligation. |
+| A case reports `wrong-render-host` | The evidence passed, on a machine the threshold was never measured for | Re-capture on the host the reference was ratified on. Do not "fix" the implementation; nothing said it was wrong. |
+| The gate reports a failure but does not refuse | The reference is outside the measured host scope (D-023) | Read the `NOT ENFORCED (...)` line, which names which of the three conditions failed. This is the designed outcome, not a malfunction. |
 | `engine-unavailable` | Host published no verbs (D-017) | Not a code fault in your feature. Check host install. |
 | CI step failed | Harness failure, not a verdict | `continue-on-error` means the build is unaffected. Read the annotation; the report distinguishes a harness failure from a comparison verdict. |
 | Storybook index missing | Real-surface leg empty | Build Storybook first, or accept a corpus-only run — it is reported, not fatal. |
@@ -222,6 +265,7 @@ Old policy versions stay readable: evidence records which version judged them, a
 ## Reviewer responsibilities
 
 - **Ratify deliberately.** Ratification creates a binding obligation on everyone implementing that surface. One image, one environment.
+- **Ratify on the machine that will implement**, or expect report-only. The ratifying host is what the threshold is measured against (D-023).
 - **Read `eligibility` before any threshold number.** See the two traps above.
 - **Treat a non-empty `indistinguishablePairs` as a bypass**, and go look at the captures.
 - **Never let advisory prose close a deterministic failure** (D-004). If the design changed, retract the reference — that is the sanctioned exit, and it is recorded.
@@ -234,9 +278,11 @@ Turning the contract off is **one flag, non-destructive, and tested.**
 | flag | default | effect |
 |---|---|---|
 | `papercusp-design-evidence-gate` | **ON** | Measures and reports on terminal completion. Fail-open when reporting. |
-| `papercusp-design-evidence-gate-enforcing` | **OFF** | Turns the report into a refusal. Registered as a `cutover` dark case; P-011 owns the flip. |
+| `papercusp-design-evidence-gate-enforcing` | **ON** | Turns the report into a refusal, for references within the measured host scope (D-023). Graduated from its `cutover` dark entry by P-011. |
 
 Set `papercusp-design-evidence-gate` to OFF and **completion becomes byte-identical to today** — the gate is never consulted at all. Nothing is deleted: ratified references, evidence records and calibration artifacts all remain, and flipping the flag back on resumes reporting against the same data.
+
+To stop refusals while keeping the measurement, turn OFF `papercusp-design-evidence-gate-enforcing` alone. Reporting continues unchanged, and no evidence is discarded.
 
 This is pinned by a test that asserts inertness rather than merely asserting a return value — `design-evidence-gate.test.ts`, *"is inert when the gate flag is off"*, injects an evaluator that **throws if it is called at all**:
 
@@ -253,7 +299,7 @@ A test that only checked the status would still pass if the gate ran the whole e
 
 Both flags fail **open**, by design: a flag-service blip must not block completions. Failing closed on the enforcing flag would be a far worse outcome than a missed report during an outage.
 
-> Turning off the *reporting* flag also turns off the instrument that D-021 says must measure cross-host noise before enforcement is possible. Disabling is safe; just note that it pauses the calibration evidence P-011 is waiting on.
+> Turning off the *reporting* flag also turns off the instrument that D-021 says must measure cross-host noise before enforcement can be widened beyond one host. Disabling is safe; just note that it pauses that evidence.
 
 ## Where the code lives
 
@@ -265,6 +311,8 @@ All under `packages/operator-core/lib/design-compare/`:
 | `verbs.ts` | The three design-phase verbs and their refusal vocabulary |
 | `ratification.ts`, `reference-store.ts`, `reference-store-pg.ts` | Reference lifecycle and persistence |
 | `capture.ts`, `capture-playwright.ts` | Implementation capture at a contracted environment |
+| `render-host.ts` | The rendering-host fingerprint — what makes "same machine" expressible |
+| `enforceability.ts` | Whether a verdict may refuse, as opposed to report (D-023) |
 | `provider.ts` | The engine seam — the only sanctioned path to an engine (D-012) |
 | `policy.ts`, `policy-shape.ts`, `policy-calibration.json` | Threshold derivation and the calibration artifact |
 | `gate.ts`, `feature-gate.ts` | One reference; then composed across a feature |
