@@ -197,6 +197,31 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       expect(typo.stdout).not.toContain('AFFECTED_TESTS_SCHEDULER');
     });
 
+    it('routes Vitest-style --run intent to the exact-file runner instead of suggesting --all', () => {
+      const testPath = 'packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts';
+      const result = runAffected(['--run', testPath]);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('unrecognized flag(s): --run');
+      expect(result.stderr).not.toContain('did you mean --all?');
+      expect(result.stderr).toContain(`For exact files use: npm run test:file -- ${testPath}`);
+      expect(result.stderr).toContain('additional Vitest arguments after a second `--`');
+      expect(result.stdout).not.toContain('AFFECTED_TESTS_SCHEDULER');
+    });
+
+    it('routes positional test files to test:file while retaining --changed-paths advice for other operands', () => {
+      const testPath = 'packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts';
+      const exactFile = runAffected([testPath]);
+      expect(exactFile.status).toBe(1);
+      expect(exactFile.stderr).toContain(`For exact files use: npm run test:file -- ${testPath}`);
+      expect(exactFile.stderr).not.toContain('pass --changed-paths as one comma-delimited value');
+
+      const nonTest = runAffected(['scripts/affected-tests.mjs']);
+      expect(nonTest.status).toBe(1);
+      expect(nonTest.stderr).toContain('pass --changed-paths as one comma-delimited value');
+      expect(nonTest.stderr).not.toContain('For exact files use:');
+    });
+
     it('refuses trailing positional paths instead of silently narrowing --changed-paths', () => {
       const narrowed = runAffected([
         '--changed-paths',
