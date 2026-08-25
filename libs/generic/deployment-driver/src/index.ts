@@ -218,6 +218,12 @@ export {
   canonicalWorkspaceHostBuildManifestPayload,
   buildWorkspaceHostBuildManifest,
   verifyWorkspaceHostBuildManifest,
+  verifyWorkspaceHostReleaseProvenance,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+} from "./workspace-host-build-manifest";
+export type {
+  WorkspaceHostReleasePins,
+  WorkspaceHostReleaseProvenanceResult,
 } from "./workspace-host-build-manifest";
 export type {
   WorkspaceHostImageAction,
