@@ -124,10 +124,10 @@ function epochEncryptScope(handle: BootedHarnessHandle): string {
  * caller should continue into normal first-time wiring); true means the
  * controller existed and the refresh attempt completed.
  *
- * Null is NOT allowed to erase a previously-good capability. The boot composer
- * is deliberately best-effort and returns null on transient resolution faults;
- * downgrading a live encrypted drain to plaintext because one refresh missed
- * would violate the read cut. Initial private-harness null still stays absent.
+ * Null is NOT allowed to erase a previously-good capability. Null means the
+ * composer definitively resolved an off/non-Hive scope; readiness ambiguity
+ * rejects. Either way, a live encrypted drain is never downgraded to plaintext.
+ * Initial private-harness null still stays absent.
  */
 export async function refreshOutboxEpochEncryptForHarness(handle: BootedHarnessHandle): Promise<boolean> {
   const state = epochEncryptByHandle.get(handle) ?? epochEncryptByScope.get(epochEncryptScope(handle));
@@ -205,7 +205,15 @@ export async function wireOutboxForHarness(
   epochEncryptByHandle.set(handle, rekeyState);
   const scope = epochEncryptScope(handle);
   epochEncryptByScope.set(scope, rekeyState);
-  await rekeyState.refresh();
+  try {
+    await rekeyState.refresh();
+  } catch (e) {
+    // No drain exists yet, so this controller must not remain discoverable as if
+    // a live wire-outbox had been created. A later boot pass will retry cleanly.
+    if (epochEncryptByHandle.get(handle) === rekeyState) epochEncryptByHandle.delete(handle);
+    if (epochEncryptByScope.get(scope) === rekeyState) epochEncryptByScope.delete(scope);
+    throw e;
+  }
 
   const start = deps.startOutboxDrain ?? realStartOutboxDrain;
   const startOpts: StartDrainOptions = {

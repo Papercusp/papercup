@@ -642,6 +642,21 @@ impl OperatorClient {
             .await
     }
 
+    pub async fn fleet_leader_brief(
+        &self,
+        fleet: &str,
+        harness: &str,
+    ) -> Result<crate::models::FleetLeaderBrief> {
+        let envelope = self
+            .run_tool(
+                "fleet:leader-brief",
+                serde_json::json!({ "fleet": fleet, "harness": harness }),
+            )
+            .await?;
+        let inner = run_tool_inner_json(&envelope)?;
+        serde_json::from_value(inner).context("decode fleet:leader-brief")
+    }
+
     /// The inference-gateway account pool, for the chat pane's account picker
     /// (P-005, WI-41189). `accounts:status` is the row shape the menu reads
     /// (id/label/provider/available + the freshness fields); `accounts:list` is
@@ -877,7 +892,9 @@ impl OperatorClient {
                 row.native_session
                     .as_ref()
                     .and_then(|native| {
-                        models::ConversationContextProjectionTarget::from_native_session(native, None)
+                        models::ConversationContextProjectionTarget::from_native_session(
+                            native, None,
+                        )
                     })
                     .is_some_and(|target| {
                         target.source_kind == source && target.session_id == session_id

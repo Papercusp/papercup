@@ -804,7 +804,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     emergency.admissionBlockedAction = clip(source.admissionBlockedAction, 220) ?? source.admissionBlockedAction;
   }
   addCappedArray(emergency, source, 'customInvariants', 0, compactInvariant);
-  addCappedArray(emergency, source, 'announcedGates', 1, compactAnnouncedGate);
+  // The emergency tier is already at the byte ceiling before dynamic gates;
+  // `leaderBriefProjection.emergency` is the explicit signal that detail was
+  // shed. Normal monitor tiers retain 4/8 actionable rows and a recovery pointer.
   if (source.specFilter !== undefined) {
     emergency.specFilterOmitted = {
       reason: 'bounded for monitor transport',

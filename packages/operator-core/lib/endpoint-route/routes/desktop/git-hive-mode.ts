@@ -31,7 +31,7 @@
  * git mode.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { getPotGitMode, setPotGitMode, POT_GIT_MODES, type PotGitMode } from '../../../harness/git-sync/hive-git-mode';
+import { readPotGitMode, setPotGitMode, POT_GIT_MODES, type PotGitMode } from '../../../harness/git-sync/hive-git-mode';
 
 const JSON_HEADERS: Record<string, string> = { 'content-type': 'application/json' };
 
@@ -50,8 +50,11 @@ export default [
       if (!slug) return json({ ok: false, error: 'missing_slug' }, 400);
       const ws = (url.searchParams.get('workspace') ?? '').trim();
       if (!ws) return json({ ok: false, error: 'missing_workspace' }, 400);
-      const mode = await getPotGitMode(ws, slug);
-      return json({ ok: true, slug, workspaceId: ws, mode }, 200);
+      const read = await readPotGitMode(ws, slug);
+      if (read.source === 'error') {
+        return json({ ok: false, error: 'mode_read_failed', slug, workspaceId: ws }, 503);
+      }
+      return json({ ok: true, slug, workspaceId: ws, mode: read.mode, source: read.source }, 200);
     },
   }),
   defineTool({
@@ -89,8 +92,30 @@ export default [
         );
       }
 
-      const after = await getPotGitMode(ws, slug);
-      return json({ ok: true, slug, workspaceId: ws, mode: after, cleared: clearing }, 200);
+      const after = await readPotGitMode(ws, slug);
+      if (after.source === 'error') {
+        return json(
+          { ok: false, error: 'mode_verify_failed', slug, workspaceId: ws, writeApplied: true },
+          503,
+        );
+      }
+      const expected = clearing ? 'legacy' : rawMode;
+      if (after.mode !== expected || (!clearing && after.source !== 'set')) {
+        return json(
+          {
+            ok: false,
+            error: 'mode_verify_mismatch',
+            slug,
+            workspaceId: ws,
+            expected,
+            actual: after.mode,
+            source: after.source,
+            writeApplied: true,
+          },
+          409,
+        );
+      }
+      return json({ ok: true, slug, workspaceId: ws, mode: after.mode, source: after.source, cleared: clearing }, 200);
     },
   }),
 ];

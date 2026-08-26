@@ -94,10 +94,13 @@ describe('coord:feed — lossless composite pagination cursor', () => {
       tokens: 0,
     });
 
-    const result = await tool.handler({
-      before_ts: '2026-08-26T12:00:00.000Z',
-      before_msg_id: 'm-boundary',
-    } as never);
+    const result = (await tool.handler(
+      {
+        before_ts: '2026-08-26T12:00:00.000Z',
+        before_msg_id: 'm-boundary',
+      } as never,
+      {} as never,
+    )) as { content: { text: string }[] };
 
     expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({
       before_ts: '2026-08-26T12:00:00.000Z',

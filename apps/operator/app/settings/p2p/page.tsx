@@ -7,9 +7,9 @@
  * Sections: Identity & devices (attestation state per device — missing/stale =
  * RED badge, never silent) · Peers (capability matrix; store = Lane A's P-001,
  * renders a LOUD pending state until its resolver lands) · Work opt-in
- * (per-fleet / any-fleet, concurrency cap, schedule windows) · Budgets (P-201
- * shape, informational until Phase 2) · Live foreign work NOW (m24; goes live
- * with P-104) · Audit · the GLOBAL KILL-SWITCH (M10: stop new claims + graceful
+ * (per-fleet / any-fleet, concurrency cap, schedule windows) · Budgets (the
+ * live P-201 allotment board) · Live foreign work NOW (the P-104 host-local
+ * registry) · Audit · the GLOBAL KILL-SWITCH (M10: stop new claims + graceful
  * wind-down with receipts, never freeze; X13: bounded — grace T then mechanical
  * kill) · the m18 one-click starter profile.
  *
@@ -25,6 +25,7 @@
  * FLAGS.P2P (default ON — the fleet kill-switch; inertness is structural:
  * opt-in off + zero grants by default).
  */
+import Link from 'next/link';
 import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import { useSyncQuery, useSyncMutate } from '@papercusp/sync';
@@ -64,6 +65,16 @@ interface P2pSettingsLayers {
   defaultLayer: Partial<P2pSettings> | null;
   overrideLayer: Partial<P2pSettings> | null;
   effective: P2pSettings;
+  unavailable?: true;
+  unavailableKind?: 'pre-migration' | 'read-failed';
+  unavailableReason?: string;
+}
+
+interface UnavailableRow {
+  kind: 'unavailable';
+  unavailable: true;
+  unavailableKind: 'pre-migration' | 'read-failed';
+  unavailableReason: string;
 }
 
 type DeviceRow =
@@ -78,7 +89,8 @@ type DeviceRow =
       revoked: boolean;
       isThisDevice: boolean;
     }
-  | { kind: 'missing'; potHomeSlug: string };
+  | { kind: 'missing'; potHomeSlug: string }
+  | UnavailableRow;
 
 /* Wire type — mirrors PeerGrant (operator-core/lib/p2p/grant-store.ts), kept
  * local per the client wire-type decoupling convention. */
@@ -135,6 +147,28 @@ interface AuditRow {
   action: string;
   subject: string;
   details: Record<string, unknown> | null;
+}
+
+function isUnavailableRow(row: unknown): row is UnavailableRow {
+  return Boolean(
+    row
+      && typeof row === 'object'
+      && (row as { kind?: unknown }).kind === 'unavailable'
+      && (row as { unavailable?: unknown }).unavailable === true,
+  );
+}
+
+/** Host-local execution registry row — mirrors p2p/foreign-workspaces.ts.
+ * Paths stay server-side: the owner surface needs lifecycle identity/status,
+ * not a disclosure of local filesystem layout. */
+interface ForeignWorkspaceRow {
+  workspaceId: string;
+  offerId: string;
+  fleetSlug: string;
+  sessionId: string | null;
+  state: 'provisioning' | 'active' | 'winding-down' | 'parked' | 'reaped';
+  parkReason: string | null;
+  updatedAt: number;
 }
 
 interface SetArgs {
@@ -203,6 +237,11 @@ const redBadge: CSSProperties = {
   background: 'color-mix(in srgb, var(--bad), transparent 86%)',
 };
 const okBadge: CSSProperties = { ...redBadge, color: 'var(--good, #2c9c46)', background: 'color-mix(in srgb, var(--good, #2c9c46), transparent 86%)' };
+const pendingBadge: CSSProperties = {
+  ...redBadge,
+  color: 'var(--fg-mute)',
+  background: 'color-mix(in srgb, var(--fg-mute), transparent 88%)',
+};
 const btnStyle: CSSProperties = { fontSize: 12.5, padding: '6px 14px', cursor: 'pointer', borderRadius: 6, border: '1px solid var(--border)', background: 'var(--bg-2)', color: 'var(--fg)' };
 const pendingNote: CSSProperties = {
   fontSize: 12.5,
@@ -433,22 +472,44 @@ export default function P2pSettingsPage() {
     queryName: 'p2p.settings',
   });
   const layers = settingsData?.[0] ?? null;
+  const settingsUnavailable = layers?.unavailable === true ? layers : null;
+  const settingsReadError = settingsError?.message ?? settingsUnavailable?.unavailableReason ?? null;
+  const settingsReadable = Boolean(layers) && settingsReadError === null;
 
   const { data: deviceData, error: devicesError } = useSyncQuery<DeviceRow>({ queryName: 'p2p.devices' });
   const deviceRows = useMemo<DeviceRow[]>(() => deviceData ?? [], [deviceData]);
+  const deviceUnavailable = useMemo(() => deviceRows.find(isUnavailableRow) ?? null, [deviceRows]);
+  const visibleDeviceRows = useMemo(() => deviceRows.filter((row) => !isUnavailableRow(row)), [deviceRows]);
+  const deviceReadError = devicesError?.message ?? deviceUnavailable?.unavailableReason ?? null;
 
-  const { data: auditData } = useSyncQuery<AuditRow>({ queryName: 'p2p.audit', args: { limit: 50 } });
-  const auditRows = useMemo<AuditRow[]>(() => auditData ?? [], [auditData]);
+  const { data: auditData, error: auditError } = useSyncQuery<AuditRow | UnavailableRow>({ queryName: 'p2p.audit', args: { limit: 50 } });
+  const auditUnavailable = useMemo(() => auditData?.find(isUnavailableRow) ?? null, [auditData]);
+  const auditRows = useMemo<AuditRow[]>(
+    () => (auditData ?? []).filter((row): row is AuditRow => !isUnavailableRow(row)),
+    [auditData],
+  );
+  const auditReadError = auditError?.message ?? auditUnavailable?.unavailableReason ?? null;
+
+  const {
+    data: foreignWorkspaceData,
+    error: foreignWorkspacesError,
+    loading: foreignWorkspacesLoading,
+    invalidate: invalidateForeignWorkspaces,
+  } = useSyncQuery<ForeignWorkspaceRow>({ queryName: 'p2p.foreignWorkspaces' });
+  const foreignWorkspaceRows = useMemo(
+    () => (foreignWorkspaceData ?? []).filter((row) => row.state !== 'reaped'),
+    [foreignWorkspaceData],
+  );
 
   // Hive selector for the Peers matrix — grants federate per hive home slug.
   // Options derive from this identity's hive memberships (the devices read).
   const hiveOptions = useMemo(() => {
     const slugs = new Set<string>();
-    for (const r of deviceRows) {
+    for (const r of visibleDeviceRows) {
       if (r.kind === 'device' || r.kind === 'missing') slugs.add(r.potHomeSlug);
     }
     return [...slugs].sort();
-  }, [deviceRows]);
+  }, [visibleDeviceRows]);
   const [hiveParam, setHiveParam] = useQueryState('hive', parseAsString);
   const hive = hiveParam ?? hiveOptions[0] ?? null;
 
@@ -458,12 +519,17 @@ export default function P2pSettingsPage() {
   // identity with no memberships), so without the gate this fetches
   // `{potSlug:''}` on every poll — a round-trip that can never resolve to a
   // hive (no-http-anywhere-2026-07-28 P-027).
-  const { data: grantsData, error: grantsError } = useSyncQuery<PeerGrant>({
+  const { data: grantsData, error: grantsError } = useSyncQuery<PeerGrant | UnavailableRow>({
     queryName: 'p2p.grants',
     args: { potSlug: hive ?? '' },
     enabled: Boolean(hive),
   });
-  const grantRows = useMemo<PeerGrant[]>(() => (hive ? (grantsData ?? []) : []), [grantsData, hive]);
+  const grantsUnavailable = useMemo(() => grantsData?.find(isUnavailableRow) ?? null, [grantsData]);
+  const grantRows = useMemo<PeerGrant[]>(
+    () => (hive ? (grantsData ?? []).filter((row): row is PeerGrant => !isUnavailableRow(row)) : []),
+    [grantsData, hive],
+  );
+  const grantsReadError = grantsError?.message ?? grantsUnavailable?.unavailableReason ?? null;
   const setGrant = useSyncMutate<GrantSetArgs, { ok: boolean; error?: string }>('p2p.grantSet', p2pGrantSetRest);
 
   const [layer, setLayer] = useQueryState(
@@ -489,12 +555,12 @@ export default function P2pSettingsPage() {
     [setP2p],
   );
 
-  const identity = deviceRows.find((r): r is Extract<DeviceRow, { kind: 'identity' }> => r.kind === 'identity');
-  const devices = deviceRows.filter((r): r is Extract<DeviceRow, { kind: 'device' }> => r.kind === 'device');
-  const missing = deviceRows.filter((r): r is Extract<DeviceRow, { kind: 'missing' }> => r.kind === 'missing');
+  const identity = visibleDeviceRows.find((r): r is Extract<DeviceRow, { kind: 'identity' }> => r.kind === 'identity');
+  const devices = visibleDeviceRows.filter((r): r is Extract<DeviceRow, { kind: 'device' }> => r.kind === 'device');
+  const missing = visibleDeviceRows.filter((r): r is Extract<DeviceRow, { kind: 'missing' }> => r.kind === 'missing');
   const identityUnresolved = !identity || identity.githubUserId === null || identity.devicePubkey === null;
 
-  const ks = layers?.effective.killSwitch;
+  const ks = settingsReadable ? layers?.effective.killSwitch : null;
   const storedOptIn = (layer === 'workspace' ? layers?.overrideLayer : layers?.defaultLayer)?.optIn;
 
   return (
@@ -507,9 +573,10 @@ export default function P2pSettingsPage() {
         sovereignty; grants federate, your opt-in does not.
       </p>
 
-      {settingsError && (
+      {settingsReadError && (
         <p role="alert" style={{ color: 'var(--bad)', fontSize: 13 }}>
-          Couldn&apos;t load P2P settings: {settingsError.message}
+          Couldn&apos;t load P2P settings
+          {settingsUnavailable?.unavailableKind ? ` (${settingsUnavailable.unavailableKind})` : ''}: {settingsReadError}. Mutations are disabled until a verified snapshot loads.
         </p>
       )}
 
@@ -519,7 +586,7 @@ export default function P2pSettingsPage() {
         aria-label="Global kill-switch"
         style={{
           ...sectionStyle,
-          border: `1px solid ${ks?.engaged ? 'var(--bad)' : 'var(--border)'}`,
+          border: `1px solid ${ks?.engaged || settingsReadError ? 'var(--bad)' : 'var(--border)'}`,
           borderRadius: 8,
           padding: 14,
           background: ks?.engaged ? 'color-mix(in srgb, var(--bad), transparent 92%)' : 'var(--bg)',
@@ -527,7 +594,15 @@ export default function P2pSettingsPage() {
       >
         <h2 style={h2Style}>
           Global kill-switch{' '}
-          {ks?.engaged ? <span style={redBadge}>ENGAGED — all foreign work paused</span> : <span style={okBadge}>clear</span>}
+          {settingsReadError ? (
+            <span style={redBadge}>STATE UNKNOWN — settings unavailable</span>
+          ) : !layers ? (
+            <span style={pendingBadge}>loading…</span>
+          ) : ks?.engaged ? (
+            <span style={redBadge}>ENGAGED — all foreign work paused</span>
+          ) : (
+            <span style={okBadge}>clear</span>
+          )}
         </h2>
         <p style={{ ...muteStyle, margin: '0 0 10px' }}>
           Engaging stops NEW foreign claims immediately and winds down in-flight foreign work
@@ -543,7 +618,7 @@ export default function P2pSettingsPage() {
             </span>
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || !settingsReadable}
               style={{ ...btnStyle, fontWeight: 600 }}
               onClick={() => void mutate({ action: 'kill-switch', engage: false }, 'Kill-switch disengaged — foreign work may resume.')}
             >
@@ -554,6 +629,7 @@ export default function P2pSettingsPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <input
               type="text"
+              disabled={busy || !settingsReadable}
               value={ksReason}
               onChange={(e) => setKsReason(e.target.value)}
               placeholder="reason (lands on receipts + audit)"
@@ -562,7 +638,7 @@ export default function P2pSettingsPage() {
             />
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || !settingsReadable}
               style={{ ...btnStyle, color: 'var(--bad)', fontWeight: 600 }}
               onClick={() =>
                 toast(`Pause ALL foreign work on this host?`, {
@@ -586,12 +662,12 @@ export default function P2pSettingsPage() {
       {/* ── Identity & devices ── */}
       <section className="pc-settings-section" aria-label="Identity and devices" style={sectionStyle}>
         <h2 style={h2Style}>Identity &amp; devices</h2>
-        {devicesError && (
+        {deviceReadError ? (
           <p role="alert" style={{ color: 'var(--bad)', fontSize: 13 }}>
-            Couldn&apos;t load device state: {devicesError.message}
+            Device and membership state unavailable
+            {deviceUnavailable?.unavailableKind ? ` (${deviceUnavailable.unavailableKind})` : ''}: {deviceReadError}. No membership or attestation conclusion is available.
           </p>
-        )}
-        {identityUnresolved ? (
+        ) : identityUnresolved ? (
           <p style={{ fontSize: 13 }}>
             <span style={redBadge}>IDENTITY UNRESOLVED</span>{' '}
             <span style={muteStyle}>
@@ -653,14 +729,19 @@ export default function P2pSettingsPage() {
           wake) · Operator (+spawn). A capability downgrade is revocation-class and bumps your
           grantor epoch.
         </p>
-        {!hive ? (
+        {deviceReadError ? (
+          <div style={pendingNote} role="alert">
+            Memberships are unavailable because device state could not be read: {deviceReadError}. Grant state is not inferred from this absence.
+          </div>
+        ) : !hive ? (
           <div style={pendingNote} role="status">
             No {t('pot', { lower: true })} memberships resolved for this identity — join or create a {t('pot', { lower: true })} first; grants
             attach to a {t('pot', { lower: true })}.
           </div>
-        ) : grantsError ? (
+        ) : grantsReadError ? (
           <div style={pendingNote} role="alert">
-            Couldn&apos;t read grants for {t('pot', { lower: true })} {hive}: {grantsError.message} — nothing is granted while
+            Couldn&apos;t read grants for {t('pot', { lower: true })} {hive}
+            {grantsUnavailable?.unavailableKind ? ` (${grantsUnavailable.unavailableKind})` : ''}: {grantsReadError} — nothing is granted while
             this read is unavailable (structurally inert).
           </div>
         ) : (
@@ -769,7 +850,7 @@ export default function P2pSettingsPage() {
           />
           <button
             type="button"
-            disabled={busy}
+            disabled={busy || !settingsReadable}
             style={btnStyle}
             onClick={() =>
               void mutate(
@@ -786,7 +867,7 @@ export default function P2pSettingsPage() {
           {layers ? ` · cap ${layers.effective.optIn.maxConcurrentForeign} · ${layers.effective.optIn.windows.length === 0 ? 'no schedule limits' : `${layers.effective.optIn.windows.length} window(s)`}` : ''}
           {' '}(field-level merge: baked ← default ← workspace override)
         </p>
-        {layers && (
+        {layers && settingsReadable && (
           <OptInEditor
             key={`${layer}:${JSON.stringify(storedOptIn ?? null)}`}
             layer={layer}
@@ -799,31 +880,78 @@ export default function P2pSettingsPage() {
         )}
       </section>
 
-      {/* ── Budgets (P-201 two-axis — Phase 2) ── */}
+      {/* ── Budgets (P-201 two-axis — live on /res) ── */}
       <section className="pc-settings-section" aria-label="Budgets" style={sectionStyle}>
         <h2 style={h2Style}>Budgets — per-fleet allotments</h2>
-        <div style={pendingNote} role="status">
-          Two-axis allotments per fleet — a REMOTE axis (dollars / model-class weights, never bare
-          tokens) and a LOCAL axis (GPU slots / local-inference capacity) — land with Phase 2 (plan
-          item P-201). Until then no budget means no foreign spend: admission is already refused
-          without an explicit opt-in above.
-        </div>
+        <p style={{ ...muteStyle, margin: '0 0 10px' }}>
+          Two-axis allotments are live: a REMOTE axis (account pools / model-class capacity) and a
+          LOCAL axis (GPU and agent slots). An explicit allotment and the opt-in above are both
+          required before this host contributes capacity.
+        </p>
+        <Link href="/res" style={{ color: 'var(--accent)', fontSize: 13, fontWeight: 600 }}>
+          Manage allotments in Resources
+        </Link>
       </section>
 
-      {/* ── Live foreign work NOW (m24) ── */}
+      {/* ── Live foreign work NOW (P-104 host-local registry) ── */}
       <section className="pc-settings-section" aria-label="Foreign work running now" style={sectionStyle}>
         <h2 style={h2Style}>Foreign work running now</h2>
-        <div style={pendingNote} role="status">
-          No foreign work is running — P2P execution (local-authority spawn) lands with Phase 1
-          (plan item P-104); this live view and its per-session kill button go live then. History
-          lives in the audit trail below.
-        </div>
+        {foreignWorkspacesError ? (
+          <div role="alert" style={{ ...pendingNote, borderColor: 'var(--bad)', color: 'var(--bad)' }}>
+            <div>Couldn&apos;t load the host&apos;s foreign-work registry: {foreignWorkspacesError.message}</div>
+            <button
+              type="button"
+              style={{ ...btnStyle, marginTop: 8 }}
+              onClick={() => void invalidateForeignWorkspaces()}
+            >
+              Retry
+            </button>
+          </div>
+        ) : foreignWorkspacesLoading && foreignWorkspaceData === undefined ? (
+          <div style={pendingNote} role="status" aria-live="polite">
+            Loading foreign work…
+          </div>
+        ) : foreignWorkspaceRows.length === 0 ? (
+          <div style={pendingNote} role="status">
+            No foreign work is registered on this host. New accepted offers appear here automatically;
+            completed and reaped history stays in the audit trail below.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <Table<ForeignWorkspaceRow>
+              style={{ minWidth: 700 }}
+              rows={foreignWorkspaceRows}
+              getRowKey={(row) => row.offerId}
+              columns={[
+                {
+                  key: 'state',
+                  header: 'state',
+                  render: (row) => (
+                    <span style={row.state === 'active' ? okBadge : row.state === 'winding-down' ? redBadge : pendingBadge}>
+                      {row.state}
+                    </span>
+                  ),
+                },
+                { key: 'fleet', header: 'fleet', render: (row) => row.fleetSlug },
+                { key: 'offer', header: 'offer', render: (row) => <code style={{ fontSize: 11.5 }}>{row.offerId}</code> },
+                { key: 'session', header: 'session', render: (row) => row.sessionId ?? 'not bound' },
+                { key: 'updated', header: 'updated', cellStyle: { whiteSpace: 'nowrap' }, render: (row) => fmtTs(row.updatedAt) },
+                { key: 'reason', header: 'reason', render: (row) => row.parkReason ?? '—' },
+              ]}
+            />
+          </div>
+        )}
       </section>
 
       {/* ── Audit ── */}
       <section className="pc-settings-section" aria-label="P2P audit trail" style={sectionStyle}>
         <h2 style={h2Style}>Audit</h2>
-        {auditRows.length === 0 ? (
+        {auditReadError ? (
+          <div style={pendingNote} role="alert">
+            P2P audit history unavailable
+            {auditUnavailable?.unavailableKind ? ` (${auditUnavailable.unavailableKind})` : ''}: {auditReadError}. An unavailable trail is not an empty trail.
+          </div>
+        ) : auditRows.length === 0 ? (
           <p style={muteStyle}>No P2P audit events yet. Kill-switch flips, starter-profile applies, grant changes and refusal receipts land here.</p>
         ) : (
           <div style={{ overflowX: 'auto' }}>

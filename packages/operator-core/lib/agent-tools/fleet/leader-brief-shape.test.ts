@@ -130,23 +130,51 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       line: expect.stringContaining('monitoring blind'),
       arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },
     });
-    expect(out.announcedGates).toHaveLength(4);
-    expect((out.announcedGates as Array<Record<string, unknown>>)[0]).toMatchObject({
-      event: 'fleet:large-fleet:gate-0',
-      scope: 'fleet:large-fleet',
-      fired: true,
-      awaiters: 0,
+    expect(out.announcedGates).toBeUndefined();
+    expect(out.leaderBriefProjection).toMatchObject({
+      tier: 'trimmed',
+      emergency: true,
     });
-    expect(out.announcedGatesTruncated).toEqual({
-      total: 12,
-      shown: 4,
-      more: 'fleet:leader-brief { payloadTier:"full" }',
-    });
-    expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed' });
     expect(out.campaign).toMatchObject({
       boundary: { source: 'fleet-created-at' },
       axes: { speaking: { available: true, writer: 'writer:speaking' } },
     });
+  });
+
+  it('keeps four announced gates in the ordinary trimmed tier and bounds the rest truthfully', () => {
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: { fleet: 'gate-fleet', members: 1 },
+        announcedGates: Array.from({ length: 7 }, (_, index) => ({
+          event: `fleet:gate-fleet:gate-${index}`,
+          note: `gate ${index}`,
+          scope: 'fleet:gate-fleet',
+          announcedBy: 'su-leader',
+          fired: index === 0,
+          firedAt: index === 0 ? '2026-08-26T20:00:00.000Z' : null,
+          awaiters: index + 1,
+        })),
+      },
+      'trimmed',
+    ) as Record<string, unknown>;
+
+    expect(out.announcedGates).toHaveLength(4);
+    expect(out.announcedGatesTruncated).toEqual({
+      total: 7,
+      shown: 4,
+      more: 'fleet:leader-brief { payloadTier:"full" } or a narrow follow-up',
+    });
+    expect((out.announcedGates as Array<Record<string, unknown>>)[0]).toEqual({
+      event: 'fleet:gate-fleet:gate-0',
+      note: 'gate 0',
+      scope: 'fleet:gate-fleet',
+      announcedBy: 'su-leader',
+      fired: true,
+      firedAt: '2026-08-26T20:00:00.000Z',
+      awaiters: 1,
+    });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
   });
 
   it('retains the dark-fleet verdict, reason, and independent falsifier at the normal monitor tier', () => {

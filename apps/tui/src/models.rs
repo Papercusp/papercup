@@ -390,10 +390,101 @@ pub struct RosterEntry {
     /// Drives the Fleet-tab roster grouping.
     #[serde(default)]
     pub fleet_slug: Option<String>,
+    /// Registry role inside `fleet_slug`; the leader cockpit binds only to the
+    /// active row explicitly marked `leader`, never an arbitrary fleet member.
+    #[serde(default)]
+    pub fleet_role: Option<String>,
     /// The fleet's bound color-scheme ACCENT (hex, e.g. "#38bdf8") for the colored
     /// group header; None when no fleet / unresolved (the pui draws it neutral).
     #[serde(default)]
     pub fleet_color: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetLeaderBrief {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub summary: FleetLeaderSummary,
+    #[serde(default)]
+    pub members: Vec<FleetLeaderMember>,
+    /// None means the server's bounded discovery leg was unavailable; Some([])
+    /// is a measured empty gate set.
+    #[serde(default)]
+    pub announced_gates: Option<Vec<FleetLeaderGate>>,
+    #[serde(default)]
+    pub custom_invariants: Option<Vec<serde_json::Value>>,
+    #[serde(default)]
+    pub admission_blocked: Vec<serde_json::Value>,
+    #[serde(default)]
+    pub spec_revision: Option<i64>,
+    #[serde(default)]
+    pub spec_matched: Option<i64>,
+    #[serde(default)]
+    pub harness_wide_pool: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct FleetLeaderSummary {
+    #[serde(default)]
+    pub fleet: String,
+    #[serde(default)]
+    pub members: i64,
+    #[serde(default)]
+    pub speaking: i64,
+    #[serde(default)]
+    pub stalled: i64,
+    #[serde(default)]
+    pub dead: i64,
+    #[serde(default)]
+    pub high_context: i64,
+    #[serde(default)]
+    pub critical_context: i64,
+    #[serde(default)]
+    pub claimable_now: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetLeaderMember {
+    #[serde(default)]
+    pub agent_id: String,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub session_state: Option<String>,
+    #[serde(default)]
+    pub verdict: Option<String>,
+    #[serde(default)]
+    pub context_pressure: Option<String>,
+    #[serde(default)]
+    pub last_tool_call_age_ms: Option<i64>,
+    #[serde(default)]
+    pub work_item_ids: Vec<String>,
+    #[serde(default)]
+    pub queued_count: i64,
+    #[serde(default)]
+    pub load: i64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetLeaderGate {
+    #[serde(default)]
+    pub event: String,
+    #[serde(default)]
+    pub note: Option<String>,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub announced_by: String,
+    #[serde(default)]
+    pub fired: bool,
+    #[serde(default)]
+    pub fired_at: Option<String>,
+    #[serde(default)]
+    pub awaiters: i64,
 }
 
 impl RosterEntry {

@@ -11,9 +11,8 @@
  *   - Identity is LOUD when unresolved (IDENTITY UNRESOLVED badge) and when a
  *     hive attestation is MISSING (never a silent gap);
  *   - Peers renders a LOUD pending state when no hive is resolved;
- *   - the P-104-gated live foreign-work view + the P-201-gated budgets both
- *     render their explicit "lands with Phase N" pending copy (gating is
- *     structural + visible, not a blank);
+ *   - the shipped P-201 budget surface links to Resources and the shipped
+ *     P-104 host-local registry renders loading/error/empty/populated states;
  *   - Audit shows the empty state and a populated row;
  *   - a settings load error surfaces an alert (never a silent blank).
  *
@@ -22,7 +21,7 @@
  * Radix pointer mechanics are exercised by the Tauri e2e surface, not jsdom.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
 /* ── Hoisted mutable holder the sync factory closes over ── */
 const h = vi.hoisted(() => ({
@@ -30,8 +29,11 @@ const h = vi.hoisted(() => ({
   devices: undefined as unknown,
   audit: undefined as unknown,
   grants: undefined as unknown,
+  foreignWorkspaces: undefined as unknown,
   errors: {} as Record<string, Error | null>,
+  loadings: {} as Record<string, boolean>,
   lastArgs: {} as Record<string, unknown>,
+  invalidate: vi.fn(),
   mutate: vi.fn(async (_args: unknown) => ({ ok: true })),
 }));
 
@@ -48,8 +50,16 @@ vi.mock('@papercusp/sync', () => ({
             ? h.audit
             : q.queryName === 'p2p.grants'
               ? h.grants
+              : q.queryName === 'p2p.foreignWorkspaces'
+                ? h.foreignWorkspaces
               : undefined;
-    return { data, error: h.errors[q.queryName] ?? null, loading: false, fetching: false };
+    return {
+      data,
+      error: h.errors[q.queryName] ?? null,
+      loading: h.loadings[q.queryName] ?? false,
+      fetching: false,
+      invalidate: h.invalidate,
+    };
   },
   useSyncMutate: () => h.mutate,
 }));
@@ -126,15 +136,24 @@ const mkLayers = (over: Partial<typeof baseSettings> = {}) => {
 };
 
 const identityRow = { kind: 'identity', githubUserId: 279242982, devicePubkey: 'IXfGu216EIz1gNQabcdefgh0123456789ZZ' };
+const unavailable = (reason: string, kind: 'pre-migration' | 'read-failed' = 'read-failed') => ({
+  kind: 'unavailable',
+  unavailable: true,
+  unavailableKind: kind,
+  unavailableReason: reason,
+});
 
 beforeEach(() => {
   h.settings = mkLayers();
   h.devices = [];
   h.audit = [];
   h.grants = [];
+  h.foreignWorkspaces = [];
   h.errors = {};
+  h.loadings = {};
   h.lastArgs = {};
   h.mutate.mockClear();
+  h.invalidate.mockClear();
 });
 afterEach(cleanup);
 
@@ -173,10 +192,32 @@ describe('/settings/p2p render', () => {
     expect(within(ks).getByRole('button', { name: /Disengage/i })).toBeTruthy();
   });
 
+  it('shows kill-switch STATE UNKNOWN and disables settings mutations for a degraded snapshot', () => {
+    h.settings = [{ ...mkLayers()[0], ...unavailable('relation "p2p_settings" does not exist', 'pre-migration') }];
+    render(<P2pSettingsPage />);
+    const ks = screen.getByRole('region', { name: 'Global kill-switch' });
+    expect(within(ks).getByText(/STATE UNKNOWN — settings unavailable/i)).toBeTruthy();
+    expect(within(ks).queryByText(/^clear$/i)).toBeNull();
+    expect((within(ks).getByRole('button', { name: /Engage kill-switch/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', { name: /Apply starter profile/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('alert').textContent).toMatch(/relation "p2p_settings" does not exist/i);
+  });
+
   it('is LOUD when identity is unresolved (no attested identity)', () => {
     h.devices = []; // no identity row at all
     render(<P2pSettingsPage />);
     expect(screen.getByText(/IDENTITY UNRESOLVED/i)).toBeTruthy();
+  });
+
+  it('renders device-read unavailability as unknown rather than no memberships', () => {
+    h.devices = [unavailable('membership replica unavailable')];
+    render(<P2pSettingsPage />);
+    const identity = screen.getByRole('region', { name: 'Identity and devices' });
+    expect(within(identity).getByRole('alert').textContent).toMatch(/membership replica unavailable/i);
+    expect(within(identity).queryByText(/IDENTITY UNRESOLVED/i)).toBeNull();
+    const peers = screen.getByRole('region', { name: 'Peers' });
+    expect(within(peers).getByRole('alert').textContent).toMatch(/Memberships are unavailable/i);
+    expect(within(peers).queryByText(/No pot memberships resolved/i)).toBeNull();
   });
 
   it('surfaces the resolved GitHub identity + a MISSING attestation badge', () => {
@@ -196,12 +237,70 @@ describe('/settings/p2p render', () => {
     expect(within(peers).getByText(/No pot memberships resolved/i)).toBeTruthy();
   });
 
-  it('renders the P-104-gated live foreign-work view + P-201-gated budgets as explicit pending copy', () => {
+  it('renders grant-read unavailability instead of an empty capability matrix', () => {
+    h.devices = [identityRow, { kind: 'missing', potHomeSlug: 'papercusp' }];
+    h.grants = [unavailable('peer_grants unavailable', 'pre-migration')];
+    render(<P2pSettingsPage />);
+    const peers = screen.getByRole('region', { name: 'Peers' });
+    expect(within(peers).getByRole('alert').textContent).toMatch(/peer_grants unavailable/i);
+    expect(within(peers).queryByText(/No capability grants/i)).toBeNull();
+  });
+
+  it('links shipped budgets to Resources and renders a truthful foreign-work empty state', () => {
     render(<P2pSettingsPage />);
     const live = screen.getByRole('region', { name: 'Foreign work running now' });
-    expect(within(live).getByText(/lands with Phase 1 \(plan item P-104\)/i)).toBeTruthy();
+    expect(within(live).getByText(/No foreign work is registered on this host/i)).toBeTruthy();
     const budgets = screen.getByRole('region', { name: 'Budgets' });
-    expect(within(budgets).getByText(/land with Phase 2 \(plan\s+item P-201\)/i)).toBeTruthy();
+    const resources = within(budgets).getByRole('link', { name: /Manage allotments in Resources/i });
+    expect(resources.getAttribute('href')).toBe('/res');
+    expect(budgets.textContent).not.toMatch(/lands? with Phase 2/i);
+    expect(live.textContent).not.toMatch(/lands? with Phase 1/i);
+  });
+
+  it('renders non-reaped host-local foreign work with lifecycle identity and status', () => {
+    h.foreignWorkspaces = [
+      {
+        workspaceId: 'ws1',
+        offerId: 'offer-live',
+        fleetSlug: 'fleet-east',
+        sessionId: 'session-7',
+        state: 'active',
+        parkReason: null,
+        updatedAt: 1_700_000_000_000,
+      },
+      {
+        workspaceId: 'ws1',
+        offerId: 'offer-finished',
+        fleetSlug: 'fleet-old',
+        sessionId: null,
+        state: 'reaped',
+        parkReason: null,
+        updatedAt: 1_699_000_000_000,
+      },
+    ];
+    render(<P2pSettingsPage />);
+    const live = screen.getByRole('region', { name: 'Foreign work running now' });
+    expect(within(live).getByText('active')).toBeTruthy();
+    expect(within(live).getByText('fleet-east')).toBeTruthy();
+    expect(within(live).getByText('offer-live')).toBeTruthy();
+    expect(within(live).getByText('session-7')).toBeTruthy();
+    expect(within(live).queryByText('offer-finished')).toBeNull();
+  });
+
+  it('shows loading and exposes a retry action on foreign-work registry failure', () => {
+    h.foreignWorkspaces = undefined;
+    h.loadings['p2p.foreignWorkspaces'] = true;
+    render(<P2pSettingsPage />);
+    expect(screen.getByText(/Loading foreign work/i)).toBeTruthy();
+    cleanup();
+
+    h.loadings = {};
+    h.errors['p2p.foreignWorkspaces'] = new Error('registry unavailable');
+    render(<P2pSettingsPage />);
+    const live = screen.getByRole('region', { name: 'Foreign work running now' });
+    expect(within(live).getByRole('alert').textContent).toMatch(/registry unavailable/i);
+    fireEvent.click(within(live).getByRole('button', { name: /Retry/i }));
+    expect(h.invalidate).toHaveBeenCalledTimes(1);
   });
 
   it('renders the audit empty state, then a populated row', () => {
@@ -216,6 +315,14 @@ describe('/settings/p2p render', () => {
     const populated = screen.getByRole('region', { name: 'P2P audit trail' });
     expect(within(populated).getByText('p2p:kill-switch')).toBeTruthy();
     expect(within(populated).getByText('owner')).toBeTruthy();
+  });
+
+  it('renders audit-read unavailability instead of the empty-history claim', () => {
+    h.audit = [unavailable('audit_log unavailable')];
+    render(<P2pSettingsPage />);
+    const audit = screen.getByRole('region', { name: 'P2P audit trail' });
+    expect(within(audit).getByRole('alert').textContent).toMatch(/audit_log unavailable/i);
+    expect(within(audit).queryByText(/No P2P audit events yet/i)).toBeNull();
   });
 
   it('surfaces a settings load error as an alert (never a silent blank)', () => {

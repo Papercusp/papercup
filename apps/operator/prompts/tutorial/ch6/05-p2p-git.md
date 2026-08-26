@@ -8,17 +8,20 @@ docSlugs: system/pot-git-sync
 
 ## Brief
 
-**Under construction — not yet a dependable feature.** The aim: the shared
-working tree that git-sync commits (chapter 5) replicates directly between
-the machines in a Pot over the p2p channel — every peer holds the code, no GitHub or
-central server required for the Pot to function.
+**Wired behind an explicit per-Pot mode, but not yet public-release-ready.**
+The shared working tree that git-sync commits (chapter 5) can replicate
+directly between a Pot's machines over the encrypted p2p channel. The current
+signed release verdict remains **NO-GO** until the physical-rig acceptance
+sequence and its 72-hour soak are green.
 
 ## Details
 
-Honest labeling first: **p2p git replication is still being built.** Today
-the canonical flow runs through a conventional git remote; the p2p path
-exists in early form (the git-sync design describes it) but is not
-what's keeping your code safe right now.
+Honest labeling first: the production replication legs are wired, but the
+feature is still release-gated. Today a Pot with no explicit setting runs in
+`legacy` mode, where each member's git-sync pushes the configured remote.
+Operators can instead choose `bridged` (p2p replication plus a GitHub mirror)
+or `p2p-only` (p2p replication with no GitHub egress). Do not read a successful
+single-box drill or one clean peer transfer as a public-release sign-off.
 
 The design extends git-sync's existing rhythm. You've seen that agents never
 commit — a background routine sweeps the tree on a schedule. In the p2p
@@ -34,5 +37,7 @@ the green gate — with no internet, and code never has to leave machines you
 own. A conventional remote becomes an optional mirror rather than a
 dependency.
 
-Until it ships, nothing changes for you: git-sync commits, the remote holds
-history, and the pipeline you learned in chapter 5 is the real one.
+Until the signed gate turns green, new Pots remain on the conventional remote
+path unless an operator deliberately changes `hiveGit.mode`. The day-2 mode,
+rollback, and evidence checks live in the hive-git P2P ops runbook; the signed
+GO/NO-GO map remains the authority for release claims.

@@ -8,10 +8,10 @@
 
 use crate::models::{
     ActivityRow, AttentionItem, BeeAssignment, BeeMailPayload, ChatMessage, ChatToolCall,
-    ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse, FleetRateStatus,
-    HarnessFeature, HarnessIssue, HarnessRef, LexiconPackPayload, Notif, OperatorConfig,
-    PlanItemStates, PlanSummary, RosterEntry, TestingDomain, TuiPaneContribution, ViewState,
-    WorkItem,
+    ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
+    FleetLeaderBrief, FleetRateStatus, HarnessFeature, HarnessIssue, HarnessRef,
+    LexiconPackPayload, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
+    TestingDomain, TuiPaneContribution, ViewState, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -149,6 +149,11 @@ pub enum Event {
     /// Swarm dossier (pui-dock-consolidation-2026-06-07 #2). The reducer stores
     /// them in `fleet.all_assignments`.
     FleetAssignments(Vec<BeeAssignment>),
+    /// Acting-leader cockpit snapshot. The fleet slug guards stale async reads.
+    FleetLeaderBrief {
+        fleet: String,
+        result: Result<FleetLeaderBrief, String>,
+    },
     /// A manual-mode agent's staged wakes (hive-agent-tabs P-009) — the result of
     /// `FetchWakeQueue` (and the auto-refresh after a release/skip). Carries the
     /// agent so a stale response never paints another agent's review overlay.

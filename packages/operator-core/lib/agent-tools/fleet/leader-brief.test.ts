@@ -33,6 +33,7 @@ import {
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
+  readLeaderAnnouncedGates,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
   selectLeaderBriefMembers,
@@ -46,6 +47,81 @@ import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('fleet:leader-brief announced gate projection (P-027)', () => {
+  const announcement = (overrides: Record<string, unknown> = {}) =>
+    ({
+      eventKey: 'fleet:alpha:ready',
+      note: 'ready gate',
+      scopeKind: 'fleet',
+      scopeRef: 'alpha',
+      subscriberId: 'su-leader',
+      firedAt: null,
+      firedReason: null,
+      ...overrides,
+    }) as never;
+
+  it('keeps only visible gates, includes fired latches, and joins live awaiters', async () => {
+    const out = await readLeaderAnnouncedGates(
+      { fleetSlug: 'alpha', planSlug: 'plan-a', harnessSlug: 'papercusp' },
+      {
+        listAnnouncements: async () => [
+          announcement(),
+          announcement({
+            eventKey: 'plan:plan-a:shipped',
+            scopeKind: 'plan',
+            scopeRef: 'plan-a',
+            firedAt: '2026-08-26T20:00:00.000Z',
+            firedReason: 'event',
+          }),
+          announcement({ eventKey: 'fleet:other:hidden', scopeRef: 'other' }),
+        ],
+        listAwaits: async (key) => Array.from({ length: key.includes('shipped') ? 2 : 1 }, () => ({}) as never),
+      },
+    );
+
+    expect(out).toEqual([
+      {
+        event: 'fleet:alpha:ready',
+        note: 'ready gate',
+        scope: 'fleet:alpha',
+        announcedBy: 'su-leader',
+        fired: false,
+        firedAt: null,
+        awaiters: 1,
+      },
+      {
+        event: 'plan:plan-a:shipped',
+        note: 'ready gate',
+        scope: 'plan:plan-a',
+        announcedBy: 'su-leader',
+        fired: true,
+        firedAt: '2026-08-26T20:00:00.000Z',
+        awaiters: 2,
+      },
+    ]);
+  });
+
+  it('distinguishes measured-empty from an unavailable read', async () => {
+    await expect(
+      readLeaderAnnouncedGates(
+        { fleetSlug: 'alpha' },
+        { listAnnouncements: async () => [], listAwaits: async () => [] },
+      ),
+    ).resolves.toEqual([]);
+    await expect(
+      readLeaderAnnouncedGates(
+        { fleetSlug: 'alpha' },
+        {
+          listAnnouncements: async () => {
+            throw new Error('store unavailable');
+          },
+          listAwaits: async () => [],
+        },
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
 
 describe('leader-brief leadership refresh boundary (EI-21355781180893454)', () => {
   const activeLeader = {

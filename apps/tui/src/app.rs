@@ -44,6 +44,11 @@ pub enum Action {
     /// Re-read the canonical Context projection for the currently bound native
     /// session. Used by `g`; SSE invalidations also refresh it automatically.
     FetchContextProjection,
+    /// Refresh the global Ctrl-S session switcher from the live/ended roster and
+    /// owner-scoped indexed transcripts (`sessions:search`).
+    FetchSessionSwitcher {
+        query: String,
+    },
     /// Fetch the per-item assignment/claim/liveness for one plan
     /// (pui-plans-status-board-2026-06-14 P-008) so the plans board's right-side
     /// work-items detail updates the instant the selection moves — the active-
@@ -1097,6 +1102,16 @@ pub enum PlansFocus {
     Items,
 }
 
+/// Global session switcher (D-009). It is deliberately an overlay rather than
+/// a tab: opening, filtering, and routing never change the current destination.
+#[derive(Debug, Clone, Default)]
+pub struct SessionSwitcher {
+    pub query: String,
+    pub rows: Vec<RosterEntry>,
+    pub sel: usize,
+    pub loading: bool,
+}
+
 impl PlansFocus {
     /// The other pane (List ↔ Items) — the ←/→ / browse toggle.
     pub fn toggle(self) -> PlansFocus {
@@ -1172,6 +1187,13 @@ pub struct App {
     /// or None until fetched. Rendered in the Plans detail pane; the draw guards on
     /// `plan == selected_plan().slug` so a stale fetch never paints the wrong plan.
     pub plan_item_states: Option<PlanItemStates>,
+    /// P-028 scheduling overlay: the plan selected when `K` opened the modal and
+    /// its matching state snapshot. Kept separate from `plan_item_states` because
+    /// the Plans-tab poller can refresh a different selection while the Fleet
+    /// leader cockpit is displaying this modal.
+    pub critical_path_open: bool,
+    pub critical_path_target: Option<(String, String)>,
+    pub critical_path_states: Option<PlanItemStates>,
     pub roster: Vec<RosterEntry>,
     /// adv_session ids the pui has already opened a reactive work-area pane for
     /// this run (pui-reactive-session-panes D-003/D-006). Dedups against the
@@ -1213,6 +1235,10 @@ pub struct App {
     /// pattern): open flag + cursor over ["All Pots", ...harnesses].
     pub pot_picker_open: bool,
     pub pot_picker_sel: usize,
+    /// Ctrl-S session switcher + bounded MRU keys. The rows are disposable
+    /// read-model data; MRU is process-local muscle memory, not durable state.
+    pub session_switcher: Option<SessionSwitcher>,
+    pub session_mru: Vec<String>,
     /// The open model/account picker overlay (P-005 final lane, WI-41189).
     pub session_picker: Option<crate::session_config::SessionPicker>,
     /// Model override for THIS chat's turns. `None` ⇒ send no `model` at all and
@@ -1667,6 +1693,9 @@ impl App {
             plans_entered: false,
             plan_items_sel: 0,
             plan_item_states: None,
+            critical_path_open: false,
+            critical_path_target: None,
+            critical_path_states: None,
             roster: Vec::new(),
             tracked_panes: crate::session_panes::TrackedPanes::new(),
             reactive_launch_panes: false,
@@ -1682,6 +1711,8 @@ impl App {
             all_pots: true,
             pot_picker_open: false,
             pot_picker_sel: 0,
+            session_switcher: None,
+            session_mru: Vec::new(),
             session_picker: None,
             chat_model: None,
             chat_effort: None,
@@ -2274,6 +2305,16 @@ impl App {
 
     pub fn set_roster(&mut self, roster: Vec<RosterEntry>) {
         self.roster = roster;
+        let leader_fleet = self
+            .roster
+            .iter()
+            .find(|row| row.fleet_role.as_deref() == Some("leader") && row.is_live())
+            .and_then(|row| row.fleet_slug.clone());
+        if leader_fleet != self.fleet.leader_fleet {
+            self.fleet.leader_fleet = leader_fleet;
+            self.fleet.leader_brief = None;
+            self.fleet.leader_brief_error = None;
+        }
         if !self.context_projection_target_explicit {
             let next = self
                 .roster
@@ -3536,6 +3577,13 @@ impl App {
 
     /// Store merged plan-item assignment/claim/liveness for the selected plan (P-005a).
     pub fn set_plan_item_states(&mut self, s: PlanItemStates) {
+        if self
+            .critical_path_target
+            .as_ref()
+            .is_some_and(|(harness, plan)| *harness == s.harness && *plan == s.plan)
+        {
+            self.critical_path_states = Some(s.clone());
+        }
         self.plan_item_states = Some(s);
     }
 
@@ -3810,6 +3858,13 @@ impl App {
         let Some(entry) = self.selected_session().cloned() else {
             return Action::Render;
         };
+        self.activate_session_entry(entry)
+    }
+
+    /// Route one switcher/Fleet row through the exact existing agent-location
+    /// resolver. Keeping the action arm shared prevents the global overlay from
+    /// growing a second focus/resume/menu contract.
+    fn activate_session_entry(&mut self, entry: RosterEntry) -> Action {
         match self.resolve_agent_route(&entry) {
             AgentRoute::LocalPane { pane_id } => {
                 self.push_notif(Notif {
@@ -3852,6 +3907,130 @@ impl App {
                 self.fleet_action_menu = Some(menu);
                 Action::Render
             }
+        }
+    }
+
+    fn session_key(entry: &RosterEntry) -> String {
+        if let Some(id) = entry.adv_session_id {
+            return format!("adv:{id}");
+        }
+        if let Some(native) = &entry.native_session {
+            if let Ok(value) = serde_json::to_string(native) {
+                return format!("native:{value}");
+            }
+        }
+        format!("{}:{}:{}", entry.source, entry.owner_id, entry.label)
+    }
+
+    /// Rows shown by the overlay. Server search order supplies recency; local
+    /// fuzzy score is primary when text is present and original order breaks
+    /// ties, yielding match-quality × recency without another data path.
+    pub fn visible_session_switcher(&self) -> Vec<&RosterEntry> {
+        let Some(sw) = &self.session_switcher else {
+            return Vec::new();
+        };
+        let query = sw.query.trim().to_lowercase();
+        let mut rows: Vec<(usize, i32, &RosterEntry)> = sw
+            .rows
+            .iter()
+            .enumerate()
+            .filter_map(|(recency, row)| {
+                let hay = format!(
+                    "{} {} {} {} {} {}",
+                    row.label,
+                    row.owner_id,
+                    row.source,
+                    row.role.as_deref().unwrap_or(""),
+                    row.current_plan_slug.as_deref().unwrap_or(""),
+                    row.intent.as_deref().unwrap_or("")
+                )
+                .to_lowercase();
+                fuzzy_score(&hay, &query).map(|score| (recency, score, row))
+            })
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        rows.into_iter().map(|(_, _, row)| row).collect()
+    }
+
+    fn session_switcher_key(&mut self, code: KeyCode) -> Action {
+        match code {
+            KeyCode::Esc => {
+                self.session_switcher = None;
+                Action::Render
+            }
+            KeyCode::Enter => {
+                let entry = self
+                    .visible_session_switcher()
+                    .get(self.session_switcher.as_ref().map_or(0, |s| s.sel))
+                    .copied()
+                    .cloned();
+                self.session_switcher = None;
+                match entry {
+                    Some(entry) => {
+                        let key = Self::session_key(&entry);
+                        self.session_mru.retain(|old| old != &key);
+                        self.session_mru.insert(0, key);
+                        self.session_mru.truncate(8);
+                        self.activate_session_entry(entry)
+                    }
+                    None => Action::Render,
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let len = self.visible_session_switcher().len();
+                if let Some(sw) = &mut self.session_switcher {
+                    sw.sel = (sw.sel + 1).min(len.saturating_sub(1));
+                }
+                Action::Render
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(sw) = &mut self.session_switcher {
+                    sw.sel = sw.sel.saturating_sub(1);
+                }
+                Action::Render
+            }
+            KeyCode::Tab => {
+                let rows = self.visible_session_switcher();
+                let mru: Vec<usize> = self
+                    .session_mru
+                    .iter()
+                    .filter_map(|key| rows.iter().position(|row| Self::session_key(row) == *key))
+                    .collect();
+                if !mru.is_empty() {
+                    let current = self.session_switcher.as_ref().map_or(0, |s| s.sel);
+                    let next = mru
+                        .iter()
+                        .position(|idx| *idx == current)
+                        .map_or(mru[0], |pos| mru[(pos + 1) % mru.len()]);
+                    if let Some(sw) = &mut self.session_switcher {
+                        sw.sel = next;
+                    }
+                }
+                Action::Render
+            }
+            KeyCode::Backspace => {
+                let query = if let Some(sw) = &mut self.session_switcher {
+                    sw.query.pop();
+                    sw.sel = 0;
+                    sw.loading = true;
+                    sw.query.clone()
+                } else {
+                    String::new()
+                };
+                Action::FetchSessionSwitcher { query }
+            }
+            KeyCode::Char(c) => {
+                let query = if let Some(sw) = &mut self.session_switcher {
+                    sw.query.push(c);
+                    sw.sel = 0;
+                    sw.loading = true;
+                    sw.query.clone()
+                } else {
+                    String::new()
+                };
+                Action::FetchSessionSwitcher { query }
+            }
+            _ => Action::None,
         }
     }
 
@@ -4269,6 +4448,54 @@ impl App {
         }
     }
 
+    /// Open P-028's dependency-depth scheduling view for the plan under the
+    /// current Plans cursor or the Fleet leader cockpit's PlanProgress cursor.
+    /// The existing plan-item-states transport supplies the graph + claim owner;
+    /// no second data path or stored topology is introduced.
+    fn open_critical_path(&mut self) -> Action {
+        let target = match self.tab {
+            Tab::Plans => self.selected_plan().map(|p| {
+                (
+                    p.harness
+                        .clone()
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| self.harness.clone()),
+                    p.slug.clone(),
+                )
+            }),
+            Tab::Fleet if self.fleet.fleet_focus == crate::fleet::FleetPanel::PlanProgress => {
+                let plans = crate::fleet::plan_progress_list(self);
+                plans
+                    .get(
+                        self.fleet
+                            .plan_progress_sel
+                            .min(plans.len().saturating_sub(1)),
+                    )
+                    .map(|p| {
+                        (
+                            p.harness
+                                .clone()
+                                .filter(|value| !value.is_empty())
+                                .unwrap_or_else(|| self.harness.clone()),
+                            p.slug.clone(),
+                        )
+                    })
+            }
+            _ => None,
+        };
+        let Some((harness, plan)) = target else {
+            return Action::Render;
+        };
+        self.critical_path_states = self
+            .plan_item_states
+            .as_ref()
+            .filter(|states| states.harness == harness && states.plan == plan)
+            .cloned();
+        self.critical_path_target = Some((harness.clone(), plan.clone()));
+        self.critical_path_open = true;
+        Action::FetchPlanItemStates { harness, plan }
+    }
+
     /// ↑/↓ on the in-app Plans tab (two-level nav, owner ask 2026-06-16): BROWSE
     /// between the plans-list and work-items panes when not entered, else move
     /// WITHIN the focused pane — the plans LIST moves `plan_sel` and refetches the
@@ -4571,6 +4798,22 @@ impl App {
                     }
                 }
             }
+            Event::SessionSwitcher { query, result } => {
+                if let Some(sw) = &mut self.session_switcher {
+                    if sw.query == query {
+                        sw.loading = false;
+                        match result {
+                            Ok(rows) => {
+                                sw.rows = rows;
+                                sw.sel = sw.sel.min(sw.rows.len().saturating_sub(1));
+                                self.last_error = None;
+                            }
+                            Err(error) => self.last_error = Some(format!("sessions: {error}")),
+                        }
+                    }
+                }
+                Action::Render
+            }
             Event::FleetRate(s) => {
                 self.fleet_rate = Some(s);
                 Action::Render
@@ -4826,6 +5069,22 @@ impl App {
             Event::FleetAssignments(agents) => {
                 // Whole-fleet task list landed (the default Swarm dossier, #2).
                 self.fleet.all_assignments = agents;
+                Action::Render
+            }
+            Event::FleetLeaderBrief { fleet, result } => {
+                if self.fleet.leader_fleet.as_deref() != Some(fleet.as_str()) {
+                    return Action::Render;
+                }
+                match result {
+                    Ok(brief) => {
+                        self.fleet.leader_brief = Some(brief);
+                        self.fleet.leader_brief_error = None;
+                    }
+                    Err(error) => {
+                        self.fleet.leader_brief = None;
+                        self.fleet.leader_brief_error = Some(error);
+                    }
+                }
                 Action::Render
             }
             Event::Hives(rows) => {
@@ -5365,6 +5624,20 @@ impl App {
             self.show_notifs = false;
             return Action::Render;
         }
+        // D-009: Ctrl-S opens the session switcher from every ordinary surface.
+        // Once open it is modal and owns text/nav keys until Enter/Esc.
+        if self.session_switcher.is_some() {
+            return self.session_switcher_key(code);
+        }
+        if code == KeyCode::Char('s') && mods.contains(KeyModifiers::CONTROL) {
+            self.session_switcher = Some(SessionSwitcher {
+                loading: true,
+                ..SessionSwitcher::default()
+            });
+            return Action::FetchSessionSwitcher {
+                query: String::new(),
+            };
+        }
         // Inline card modal (sentinel-tui-shared-backend-and-cards Phase 2a):
         // when an open `chat:ask_choice` card is focused on the operator surface,
         // it's a BLOCKING prompt (the brain's tool call is awaiting) — capture
@@ -5373,6 +5646,18 @@ impl App {
         let ctrl_c_global = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
         if self.operator_input_active() && self.card_state.has_card() && !ctrl_c_global {
             return self.card_key(code);
+        }
+        // P-028 critical-path view: scheduling modal, not an always-on board.
+        // It owns the keyboard while visible so a close key cannot mutate the
+        // Plans/Fleet surface underneath it.
+        if self.critical_path_open {
+            return match code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('K') => {
+                    self.critical_path_open = false;
+                    Action::Render
+                }
+                _ => Action::Render,
+            };
         }
         // Comms detail popup (owner ask 2026-06-14): modal while open. Esc/`q`
         // close; `j`/`k` (↓/↑) step to the next/prev item WITHIN the focused
@@ -6365,6 +6650,15 @@ impl App {
             KeyCode::Char('-') if self.tab == Tab::Overview => self.nudge_max_agents(-1),
             KeyCode::Enter if self.tab == Tab::Overview => self.overview_activate(),
             KeyCode::Enter if self.tab == Tab::Conversations => self.conv_open_detail(),
+            // P-028: one discoverable key from both scheduling surfaces. Uppercase
+            // `K` is intentionally distinct from `k` navigation.
+            KeyCode::Char('K')
+                if self.tab == Tab::Plans
+                    || (self.tab == Tab::Fleet
+                        && self.fleet.fleet_focus == crate::fleet::FleetPanel::PlanProgress) =>
+            {
+                self.open_critical_path()
+            }
             KeyCode::Char('i') if self.tab == Tab::Conversations => self.conv_promote(),
             KeyCode::Char('f') if self.tab == Tab::Cupboard => {
                 self.cupboard_kind = (self.cupboard_kind + 1) % CUPBOARD_KINDS.len();
@@ -7385,6 +7679,26 @@ fn claude_transcript_on_disk(r: &crate::models::RosterEntry) -> bool {
         Ok(entries) => entries.flatten().any(|e| e.path().join(&file).is_file()),
         Err(_) => false, // no projects dir yet → nothing to resume yet
     }
+}
+
+/// Compact subsequence scorer for the switcher. Contiguous/prefix matches win;
+/// `Some(0)` for an empty query preserves the server's recency order.
+fn fuzzy_score(haystack: &str, query: &str) -> Option<i32> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    if let Some(at) = haystack.find(query) {
+        return Some(10_000 - at as i32);
+    }
+    let mut score = 0_i32;
+    let mut cursor = 0_usize;
+    let bytes = haystack.as_bytes();
+    for needle in query.bytes() {
+        let rel = bytes[cursor..].iter().position(|b| *b == needle)?;
+        score += 100 - rel.min(99) as i32;
+        cursor += rel + 1;
+    }
+    Some(score)
 }
 
 #[cfg(test)]
