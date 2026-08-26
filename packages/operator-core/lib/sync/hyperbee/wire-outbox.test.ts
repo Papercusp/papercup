@@ -19,6 +19,14 @@ import type { EpochEncryptCapability, OutboxDrainHandle, StartDrainOptions } fro
 import type { HiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { listManaged } from '@papercusp/scheduled-registry';
 
+// Unit default: model a definitively non-Hive scope. Dedicated lifecycle cases
+// below inject their own active/null/rejecting composer sequence. Without this
+// seam the unit suite reaches the real registry/PG and used to appear green only
+// because the product composer swallowed that isolation error as plaintext mode.
+vi.mock('./hive-epoch-boot-deps', () => ({
+  buildHiveRekeyBootDeps: vi.fn(async () => null),
+}));
+
 /** A fake handle that records registered close-hooks + can run them. */
 function makeHandle(): {
   handle: BootedHarnessHandle;
@@ -111,6 +119,28 @@ describe('wireOutboxForHarness (Stage 5)', () => {
     } finally {
       errSpy.mockRestore();
     }
+  });
+
+  it('fails closed before backfill or drain start when initial re-key readiness is ambiguous', async () => {
+    const backfill = vi.fn(async () => ({ skipped: true, enqueued: 0, dropped: 0 }));
+    const start = vi.fn(() => ({ stop: vi.fn(async () => {}) }) as OutboxDrainHandle);
+    const buildRekeyDeps = vi
+      .fn<() => Promise<HiveRekeyBootDeps | null>>()
+      .mockRejectedValue(new Error('Hive re-key boot dependencies failed closed'));
+
+    const { handle, hookCount } = makeHandle();
+    await expect(
+      wireOutboxForHarness(handle, fakePg, {
+        backfillLocalState: backfill,
+        startOutboxDrain: start,
+        buildHiveRekeyBootDeps: buildRekeyDeps,
+      }),
+    ).rejects.toThrow(/failed closed/);
+
+    expect(backfill).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    expect(hookCount()).toBe(0);
+    expect(await refreshOutboxEpochEncryptForHarness(handle)).toBe(false);
   });
 
   it('returns the drain handle so callers can stop it directly if needed', async () => {

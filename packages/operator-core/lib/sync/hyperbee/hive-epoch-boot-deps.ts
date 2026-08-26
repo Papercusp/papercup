@@ -32,11 +32,7 @@ import { isCanonicalHiveOwner } from '../../hive-identity';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { resolveDeviceKeychainId } from '../../identity/device-keychain-id';
 import { loadOrGenerateDeviceKeypair } from '../../identity/attest';
-import {
-  buildEpochKeyResolver,
-  buildEpochDecryptGate,
-  buildEpochEncryptCapability,
-} from './hive-epoch-op-gate';
+import { buildEpochKeyResolver, buildEpochDecryptGate, buildEpochEncryptCapability } from './hive-epoch-op-gate';
 import { recordBootEvent, type BootHistoryKind } from './boot-history';
 import type { OpEnvelope } from './op-envelope-types';
 import type { EpochEncryptCapability } from './outbox-drain';
@@ -73,16 +69,22 @@ function tryBuildBundledSeedProvider(): EpochKeyProvider | null {
 
 /**
  * Build the re-key apply/capture deps for a harness boot, or null when the re-key is NOT
- * active for it (flag off / not a hive / no key source — neither a local device identity NOR
- * a bundled seed key). undefined-equivalent (null) ⇒ the callers do today's plaintext path,
- * byte-for-byte.
+ * active for it (flag off / definitively not a hive). Once re-key is enabled, an ambiguous
+ * Hive-scope lookup or a confirmed Hive without a usable dependency set FAILS CLOSED: callers
+ * must not confuse temporary key/identity/PG unavailability with permission to emit plaintext.
  */
 export async function buildHiveRekeyBootDeps(opts: {
   workspaceId: string;
   harnessSlug: string;
 }): Promise<HiveRekeyBootDeps | null> {
-  // 1. Flag FIRST — the cheapest off-path (cached read). Default-off ⇒ null ⇒ unchanged.
-  if (!(await getFlag(FLAGS.POT_REKEY, 'system'))) {
+  // 1. Flag FIRST — the cheapest off-path (cached read). Explicitly OFF ⇒ null ⇒ unchanged.
+  let rekeyEnabled: boolean;
+  try {
+    rekeyEnabled = await getFlag(FLAGS.POT_REKEY, 'system');
+  } catch (e) {
+    throwRekeyBootUnavailable(opts, 'resolve POT_REKEY state', e);
+  }
+  if (!rekeyEnabled) {
     // seed-57-drop diagnostic: this bail is BEFORE the try/dbg below, so it needs its own
     // guarded log — a flag off on the shipped build silently disables the whole decrypt gate.
     if (process.env.PAPERCUSP_EPOCH_BOOT_DEBUG)
@@ -92,15 +94,9 @@ export async function buildHiveRekeyBootDeps(opts: {
       });
     return null;
   }
-  // Steps 2-4 are wrapped fail-open (WI-755): this whole composition is BEST-EFFORT by
-  // contract (see the docstring above — null always means "callers do today's plaintext
-  // path, byte-for-byte"), so any resolution hiccup along the way — a transient PG error,
-  // a harness-composition-rig test scope that doesn't wire a cell around this boot-time
-  // call the way it does per-op cell-scoped calls, a missing local device identity —
-  // degrades to null rather than failing the whole harness boot. This mirrors the
-  // `ownPotHomeSlug` resolution immediately above this function's boot.ts call site,
-  // which wraps the SAME `potHomeSlugForHarness` call in an identical fail-open try/catch
-  // for the identical reason.
+  // Steps 2-4 are fail-closed for ambiguity. POT_REKEY is default-ON, so a transient PG /
+  // identity / keychain failure cannot mean "plaintext is allowed". The two explicit null
+  // paths are the only safe off-paths: flag OFF, or a definitive non-Hive lookup.
   try {
     // seed-57-drop diagnostic (env-gated, off by default): the gate keys on the
     // workspace-resolved potHomeSlug — a fresh packaged install booting under the
@@ -130,14 +126,14 @@ export async function buildHiveRekeyBootDeps(opts: {
     //    is fine ONLY when the bundled seed provider can serve the key (the offline pot).
     const { resolveLocalGithubIdentity } = await import('../../identity/resolve-local-github-identity');
     const ident = await resolveLocalGithubIdentity();
-    // No member key source AND no bundled key ⇒ this box can resolve no epoch key; return
-    // null so the callers keep today's plaintext path, byte-for-byte (the cheap off-path —
-    // no crypto/keychain touched below).
+    // No member key source AND no bundled key ⇒ this CONFIRMED Hive can resolve no epoch
+    // key. Failing open here would let wire-outbox start without an encryptor and append
+    // eligible content plaintext, violating the forward read cut.
     if (ident.kind !== 'ok' && !bundledProvider) {
-      dbg('GATE NOT BUILT: no member identity AND no bundled provider (no epoch-key source)', {
+      dbg('GATE FAILED CLOSED: no member identity AND no bundled provider (no epoch-key source)', {
         identKind: ident.kind,
       });
-      return null;
+      throw new Error(`no epoch-key source for confirmed Hive (identity=${ident.kind})`);
     }
 
     // 4. Compose the (already unit-tested) crypto / provider / resolver / gate / capability.
@@ -190,8 +186,7 @@ export async function buildHiveRekeyBootDeps(opts: {
       pending,
       // WI-808: surface the gate's otherwise-silent per-op verdict into boot-history so a
       // joiner content drop names its cause (decrypt-fail vs defer) instead of vanishing.
-      onTrace: (phase, detail) =>
-        recordBootEvent(opts.workspaceId, opts.harnessSlug, phase as BootHistoryKind, detail),
+      onTrace: (phase, detail) => recordBootEvent(opts.workspaceId, opts.harnessSlug, phase as BootHistoryKind, detail),
     });
     const epochEncrypt = buildEpochEncryptCapability({
       crypto,
@@ -220,26 +215,33 @@ export async function buildHiveRekeyBootDeps(opts: {
     });
     return { potHomeSlug, epochGate, epochEncrypt, pending };
   } catch (e) {
-    // Fail-open: today's behavior (plaintext path, byte-for-byte) — same silent-catch
-    // pattern as `ownPotHomeSlug`'s `potHomeSlugForHarness` call at this function's
-    // boot.ts call site (no console.error: a caught, expected-degradation path here
-    // must not trip a fail-on-console test harness — WI-755).
-    // WI-2009 / wake-#5742 (v3 instrumentation, leg c): the fail-open was fully
-    // SILENT — a hive whose re-key deps throw boots PLAINTEXT with no signal,
-    // indistinguishable from flag-off (6b811's "no drain attempt at all" boots).
-    // Record it in boot-history (not console — WI-755-safe).
-    try {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'epoch_gate_skipped' as BootHistoryKind,
-        `buildHiveRekeyBootDeps fail-open: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    } catch {
-      /* best-effort */
-    }
-    return null;
+    throwRekeyBootUnavailable(opts, 'compose confirmed Hive dependencies', e);
   }
+}
+
+/**
+ * Preserve WI-755's console-safe diagnostic channel while making the security verdict
+ * unambiguous to every caller: dependency ambiguity is an error, never a plaintext mode.
+ */
+function throwRekeyBootUnavailable(
+  opts: { workspaceId: string; harnessSlug: string },
+  phase: string,
+  cause: unknown,
+): never {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  try {
+    recordBootEvent(
+      opts.workspaceId,
+      opts.harnessSlug,
+      'epoch_gate_skipped' as BootHistoryKind,
+      `buildHiveRekeyBootDeps failed closed (${phase}): ${detail}`,
+    );
+  } catch {
+    /* diagnostics must never mask the fail-closed verdict */
+  }
+  const error = new Error(`Hive re-key boot dependencies failed closed (${phase}): ${detail}`);
+  (error as Error & { cause?: unknown }).cause = cause;
+  throw error;
 }
 
 /**
