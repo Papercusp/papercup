@@ -38,8 +38,13 @@ import {
   emitTerminalCheckpointResult,
   GREEN_CHECKPOINT_RESULT_MARKER,
   hasNpmScript,
+  acquireCheckpointRunLock,
+  beginCheckpointPreflight,
+  checkpointRunLockDir,
   ensureCheckpointDependencyGeneration,
   realCheckpointDeps,
+  runCmd,
+  runGreenCheckpoint,
   retireInFlightCandidateAfterResult,
   startMaterializationHeartbeat,
   writeCheckpointRunPhase,
@@ -59,6 +64,7 @@ import {
   RELEASE_NOT_GREEN_ESCALATION_CLASS,
   isReleaseNotGreenEscalation,
   type CheckpointExec,
+  type CheckpointDeps,
 } from "./green-checkpoint";
 import { releaseConfig, type ReleaseConfig } from "./release-config";
 import {
@@ -2261,6 +2267,195 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       identity: `setup-release-checkout:${candidate}:deps=${generationId}`,
     });
   });
+
+  it("D-081 joined guard: unseen exact inputs traverse the real prelock publisher and materializer to a normal candidate-bound verdict", async () => {
+    const root = mkdtempSync(join(tmpdir(), "green-cp-d081-joined-"));
+    const integration = join(root, "integration");
+    const checkpoint = join(root, "checkpoint");
+    const logDir = join(root, "logs");
+    mkdirSync(join(integration, "node_modules", "fixture-dep"), {
+      recursive: true,
+    });
+    writeFileSync(
+      join(integration, "node_modules", "fixture-dep", "index.js"),
+      "module.exports = 'joined';\n",
+    );
+    writeFileSync(
+      join(integration, "package.json"),
+      JSON.stringify({ name: "d081-joined-fixture", private: true }),
+    );
+    writeFileSync(
+      join(integration, "package-lock.json"),
+      '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{}}\n',
+    );
+    const git = (...args: string[]): string => {
+      const result = spawnSync("git", args, {
+        cwd: integration,
+        encoding: "utf8",
+      });
+      if (result.status !== 0) {
+        throw new Error(
+          `git ${args.join(" ")} failed: ${result.stderr || result.stdout}`,
+        );
+      }
+      return result.stdout.trim();
+    };
+
+    let lock: ReturnType<typeof acquireCheckpointRunLock> | undefined;
+    const priorAfterCopyHook =
+      process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK;
+    try {
+      git("init", "-q", "-b", "staging");
+      git("config", "user.email", "fixture@example.invalid");
+      git("config", "user.name", "fixture");
+      git("add", "package.json", "package-lock.json");
+      git("commit", "-qm", "base");
+      const base = git("rev-parse", "HEAD");
+      git("branch", "main", base);
+      writeFileSync(
+        join(integration, "package-lock.json"),
+        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/joined":{}}}\n',
+      );
+      writeFileSync(
+        join(integration, "node_modules", "fixture-dep", "index.js"),
+        "module.exports = 'joined-v2';\n",
+      );
+      git("add", "package-lock.json");
+      git("commit", "-qm", "candidate with unseen dependency inputs");
+      const candidate = git("rev-parse", "HEAD");
+      const joinedCfg = releaseConfig({
+        integrationRoot: integration,
+        releaseRoot: integration,
+        checkpointRoot: checkpoint,
+        checkpointLogDir: logDir,
+        integrationBranch: "staging",
+        releaseRef: "main",
+      });
+      const lockDir = checkpointRunLockDir(logDir, integration);
+      expect(existsSync(lockDir)).toBe(false);
+
+      // NEGATIVE: a live tree whose lockfiles drifted past the exact commit may
+      // publish its OWN key, but it cannot conjure the candidate's selector and
+      // must fail before the checkpoint serializer exists.
+      writeFileSync(
+        join(integration, "package-lock.json"),
+        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/live-drift":{}}}\n',
+      );
+      await expect(
+        beginCheckpointPreflight(joinedCfg, candidate, runCmd),
+      ).rejects.toThrow(/no prewarmed dependency generation/i);
+      expect(existsSync(lockDir)).toBe(false);
+      writeFileSync(
+        join(integration, "package-lock.json"),
+        '{"name":"d081-joined-fixture","lockfileVersion":3,"packages":{"node_modules/joined":{}}}\n',
+      );
+      writeFileSync(
+        join(integration, "node_modules", "fixture-dep", "index.js"),
+        "module.exports = 'joined-v3';\n",
+      );
+
+      // NEGATIVE / ordering control: the publisher's real after-copy hook runs
+      // while the selector is still unseen. If acquireCheckpointRunLock moves
+      // above publication, this hook makes the test fail inside the publisher.
+      const prelockTrace = join(root, "publisher-ran-before-lock");
+      process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK =
+        `test ! -e ${JSON.stringify(lockDir)} && printf prelock > ${JSON.stringify(prelockTrace)}`;
+
+      // The actual install-mutex wrapper + dependency-generation.sh run here.
+      // With no selector on disk, this must publish/index the exact committed
+      // fingerprint before the checkpoint serializer exists.
+      const preflight = await beginCheckpointPreflight(
+        joinedCfg,
+        candidate,
+        runCmd,
+      );
+      const prewarmed = preflight.prewarmedDependencyGeneration;
+      lock = preflight.lock;
+      expect(lock.acquired).toBe(true);
+      expect(readFileSync(prelockTrace, "utf8")).toBe("prelock");
+      expect(prewarmed.candidate).toBe(candidate);
+      expect(prewarmed.inputFingerprint).toMatch(/^[0-9a-f]{64}$/);
+      const real = realCheckpointDeps(
+        joinedCfg,
+        runCmd,
+        "d081-joined-run",
+        undefined,
+        undefined,
+        undefined,
+        prewarmed,
+      );
+      const deps: CheckpointDeps = {
+        prepareSource: real.prepareSource,
+        setupTree: real.setupTree,
+        runGreen: async (treeDir) => {
+          expect(
+            readFileSync(
+              join(treeDir, "node_modules", "fixture-dep", "index.js"),
+              "utf8",
+            ),
+          ).toBe("module.exports = 'joined-v3';\n");
+          return {
+            green: true,
+            summary: "joined production-path fixture passed",
+            failingTests: [],
+          };
+        },
+        advance: real.advance,
+        push: async () => {},
+        broadcast: async () => {},
+        escalate: async () => {},
+        clearEscalation: async () => {},
+        emitEvent: async () => {},
+        log: () => {},
+      };
+      const verdict = await runGreenCheckpoint(joinedCfg, deps, {
+        candidate,
+        candidateSource: "tip",
+        noPush: true,
+      });
+
+      expect(verdict).toMatchObject({
+        advanced: true,
+        candidate,
+        from: base,
+        green: true,
+        reason: "advanced",
+        candidateSource: "tip",
+      });
+      expect(
+        readFileSync(
+          join(checkpoint, "node_modules", ".papercusp-dependency-generation"),
+          "utf8",
+        ),
+      ).toContain(`identity=${prewarmed.identity}`);
+
+      // NEGATIVE: transport does not authorize token drift. Mutating the
+      // immutable marker changes its stat token; the real consumer must refuse
+      // before it can materialize a replacement under the stale prelock token.
+      const generationMarker = join(
+        integration,
+        ".papercusp",
+        "dependency-generations",
+        prewarmed.identity,
+        ".papercusp-dependency-generation",
+      );
+      writeFileSync(
+        generationMarker,
+        `${readFileSync(generationMarker, "utf8")}tampered=1\n`,
+      );
+      await expect(
+        real.setupTree(candidate, { preparedSource: true }),
+      ).rejects.toThrow(/replaced after validation/i);
+    } finally {
+      if (priorAfterCopyHook === undefined)
+        delete process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK;
+      else
+        process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK =
+          priorAfterCopyHook;
+      if (lock?.acquired) lock.release();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   function expectMutexGuardedGenerationSelector(
     call: { cmd: string; args: string[] },
