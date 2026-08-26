@@ -32,6 +32,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { readIssueClaimability } from '../../scheduler/get-next';
+import { filingGraceSec } from '../../work-items';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
@@ -240,6 +241,7 @@ export default defineTool({
     // undefined states ⇒ the oracle/lister apply their own ISSUE_FAMILY_CLAIMABLE_STATES default.
     const states = args.states ?? specStates;
     const limit = args.limit ?? 20;
+    const filingGraceSeconds = filingGraceSec();
 
     // ONE read-only REPEATABLE READ snapshot for the counts, the row list, AND the
     // excluded sample (WI-5947). Issued as separate round-trips these observe different
@@ -258,6 +260,14 @@ export default defineTool({
       ok: true as const,
       harness,
       claimableHarnessScope,
+      /** Claimability includes caller-relative release cooldown and filing grace. A fleet
+       * leader must not treat this caller's count as every peer's immediately-ready count. */
+      claimableCallerScope: {
+        assignee,
+        callerRelative: true,
+        filingGraceSeconds,
+        peerReadinessMayDiffer: filingGraceSeconds > 0,
+      },
       /** The authoritative count: rows passing spec_match AND every claim floor. */
       claimableCount: breakdown.claimable,
       /** EI-18835176695181727: alias of `claimableCount`. Sibling read tools (e.g.
@@ -289,7 +299,8 @@ export default defineTool({
       spec: specProvenance,
       states: states ? [...states] : null,
       note:
-        '`claimableCount` is the authoritative claimable total (spec_match AND all ~12 floors — the SAME oracle scheduler:get_next runs). excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.' +
+        '`claimableCount` is authoritative for THIS CALLER (spec_match AND all ~12 floors — the SAME oracle scheduler:get_next runs). Caller-relative release cooldown and filing grace mean another fleet member may have a different total; a fresh row is visible to its filer before peers for up to ' +
+        `${filingGraceSeconds}s. excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.` +
         (breakdown.affinityCoverage.belowFloor
           ? ` ⚠ AFFINITY PATH COVERAGE WARNING: ${breakdown.affinityCoverage.nonEmptyPaths}/${breakdown.affinityCoverage.denominator} claimable row(s) carry non-empty payload.paths, below the ${Math.round(breakdown.affinityCoverage.floor * 100)}% floor; affinity ranking is under-informed (EI-16028).`
           : '') +
