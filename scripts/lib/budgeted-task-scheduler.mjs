@@ -551,6 +551,10 @@ export async function runBudgetedTasks(tasks, options) {
   const runTask = options.runTask;
   if (typeof runTask !== "function")
     throw new Error("runTask must be a function");
+  const onTaskSettled = options.onTaskSettled;
+  if (onTaskSettled != null && typeof onTaskSettled !== "function") {
+    throw new Error("onTaskSettled must be a function when provided");
+  }
   // EI-20801764054303492 route (a): an OPT-IN live reading. Absent ⇒ every allocation below is
   // byte-identical to the pre-clamp scheduler, which is the back-compat contract every existing
   // caller and test relies on. Present ⇒ admission re-checks memory and may only ever admit LESS.
@@ -643,12 +647,18 @@ export async function runBudgetedTasks(tasks, options) {
     const allocation = { lane, workers, memoryMb };
     try {
       const value = await runTask(entry.task, allocation, entry.index);
-      results[entry.index] = {
+      const scheduled = {
         task: entry.task,
         index: entry.index,
         allocation,
         value,
       };
+      results[entry.index] = scheduled;
+      // Settlement is the durable-observation seam: callers that need to retain a completed
+      // task before a long sibling (or the parent process) disappears can do so here, while
+      // declaration-order result replay remains unchanged. Await the callback so a following
+      // admission never outruns that persistence.
+      if (onTaskSettled) await onTaskSettled(scheduled);
     } catch (error) {
       firstError ??= error;
       throw error;

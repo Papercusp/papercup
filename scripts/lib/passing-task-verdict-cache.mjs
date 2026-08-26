@@ -54,6 +54,19 @@ export function passingTaskVerdictIdentityEnvironment(environment) {
       ? rawProofGroup
       : null;
   delete identityEnvironment.AFFECTED_TASK_VERDICT_PROOF_GROUP;
+  // These values describe the pc-heavy wrapper process, not the test task. Every fresh retry gets
+  // a new ready-marker path, caller PID/start tick, and notify fd; hashing them would make the
+  // explicitly shared proof group miss on environment identity and silently defeat resumability.
+  // They remain untouched in the REAL child environment — this clone is cache identity only.
+  for (const transportName of [
+    "PC_HEAVY_PREEMPT_READY_FILE",
+    "PC_HEAVY_PREEMPT_RESULT_FILE",
+    "PC_HEAVY_CALLER_PID",
+    "PC_HEAVY_CALLER_START_TICKS",
+    "PC_HEAVY_PREEMPT_NOTIFY_FD",
+  ]) {
+    delete identityEnvironment[transportName];
+  }
   if (proofGroup !== null) {
     identityEnvironment.PAPERCUSP_TEST_RUN_GROUP = proofGroup;
   }

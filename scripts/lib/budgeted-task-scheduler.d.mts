@@ -230,6 +230,7 @@ export function runBudgetedTasks<Task, Value>(
      */
     readMemAvailableMb?: () => number | null | undefined;
     runTask: (task: Task, allocation: TaskAllocation, index: number) => Value | Promise<Value>;
+    onTaskSettled?: (entry: ScheduledTaskResult<Task, Awaited<Value>>) => void | Promise<void>;
   },
 ): Promise<BudgetedTaskRun<Task, Value>>;
 
@@ -239,6 +240,7 @@ export function runBudgetedTaskShards<Task, Value>(
     estimateMs?: (task: Task, index: number) => number | null | undefined;
     readMemAvailableMb?: () => number | null | undefined;
     runTask: (task: Task, allocation: TaskAllocation, index: number) => Value | Promise<Value>;
+    onTaskSettled?: (entry: ScheduledTaskResult<Task, Awaited<Value>>) => void | Promise<void>;
   },
 ): Promise<
   BudgetedTaskRun<Task, Value> & {
