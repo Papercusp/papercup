@@ -21,6 +21,7 @@ function task(overrides: Partial<SessionTask> = {}): SessionTask {
     position: 0,
     createdAt: NOW,
     updatedAt: NOW,
+    links: [],
     ...overrides,
   };
 }
@@ -59,7 +60,7 @@ describe('acquireSessionTaskLock', () => {
     await acquireSessionTaskLock(sql as never, 'ws-1', 'session-1');
     expect(sql).toHaveBeenCalledTimes(1);
     expect(sql.mock.calls[0]?.[1]).toBe('ws-1\u0000session-1');
-    expect(sql.mock.calls[0]?.[2]).toBe(981);
+    expect((sql.mock.calls[0]?.[0] as unknown as string[]).join('')).toContain('981');
 
     await expect(acquireSessionTaskLock(sql as never, ' ', 'session-1')).rejects.toMatchObject({
       code: 'workspace_id_required',

@@ -39,6 +39,7 @@ describe('tasks:ops handler', () => {
       op: 'block',
       changedTaskId: 'task-a',
       tasks: [],
+      links: [],
     });
     const { emit, tx, promise } = call({
       task_id: 'task-a',
@@ -69,7 +70,7 @@ describe('tasks:ops handler', () => {
   });
 
   it('uses the owned-loop chat run id, but not a generic per-call run id', async () => {
-    applyM.mockResolvedValue({ op: 'view', changedTaskId: null, tasks: [] });
+    applyM.mockResolvedValue({ op: 'view', changedTaskId: null, tasks: [], links: [] });
 
     await call({}, { runId: 'chat-77', spawnId: 'agent-loop-chat-77' }).promise;
     expect(applyM).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
@@ -83,7 +84,7 @@ describe('tasks:ops handler', () => {
   });
 
   it('does not emit for view and returns precise validation failures', async () => {
-    applyM.mockResolvedValueOnce({ op: 'view', changedTaskId: null, tasks: [] });
+    applyM.mockResolvedValueOnce({ op: 'view', changedTaskId: null, tasks: [], links: [] });
     const viewed = call({ op: 'view' });
     expect(body(await viewed.promise)).toMatchObject({ ok: true, op: 'view' });
     expect(viewed.emit).not.toHaveBeenCalled();
