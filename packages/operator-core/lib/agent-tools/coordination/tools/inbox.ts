@@ -263,6 +263,22 @@ async function emitReadReceipt(
  *  MCP transport and silently break them), and the hooks call WITHOUT ctx_tier
  *  so they always read full-tier defaults. The `injection` block is already
  *  server-clipped by coord-schema and stays verbatim on every tier. */
+/** Keep a truncation pointer inside the text the recipient actually sees. The
+ * entry-level `*_truncated` metadata is easy to miss, while a clipped message
+ * otherwise looks complete until it simply stops. The pointer is deliberately
+ * short enough for the normal 250/400/600-char caps; an explicitly tiny cap may
+ * not have room for it, in which case the existing metadata remains authoritative. */
+function truncationPointer(msgId: unknown): string | null {
+  if (typeof msgId !== "string" || msgId.length === 0) return null;
+  return `… [clipped; read full message: coord:read { msg_id: ${JSON.stringify(msgId)} }]`;
+}
+
+function clipWithTruncationPointer(value: string, maxChars: number, msgId: unknown): string {
+  const pointer = truncationPointer(msgId);
+  if (!pointer || pointer.length >= maxChars) return value.slice(0, maxChars);
+  return value.slice(0, maxChars - pointer.length) + pointer;
+}
+
 /** Bound the COMBINED `text` across one entry's `sections[]` to a single shared
  *  `maxChars` budget, preserving every other section key. Returns null when there
  *  is nothing to do (not an array, or already within budget) so the caller can
@@ -274,6 +290,7 @@ async function emitReadReceipt(
 function boundSectionsText(
   raw: unknown,
   maxChars: number,
+  msgId: unknown,
 ): { sections: unknown[]; fullChars: number } | null {
   if (!Array.isArray(raw)) return null;
   let fullChars = 0;
@@ -282,18 +299,27 @@ function boundSectionsText(
     if (typeof t === "string") fullChars += t.length;
   }
   if (fullChars <= maxChars) return null;
-  let remaining = maxChars;
+  // Reserve the pointer before distributing text across sections. Without this
+  // reservation, an early section could consume all but a few characters of the
+  // budget and leave the later clipped section with no room to identify the
+  // recovery path at all.
+  const pointer = truncationPointer(msgId);
+  const pointerChars = pointer && pointer.length < maxChars ? pointer.length : 0;
+  let remaining = maxChars - pointerChars;
+  let truncated = false;
   const sections = raw.map((s) => {
     if (!s || typeof s !== "object") return s;
     const rec = s as Record<string, unknown>;
     const t = rec["text"];
     if (typeof t !== "string") return s;
+    if (truncated) return { ...rec, text: "" };
     if (t.length <= remaining) {
       remaining -= t.length;
       return s;
     }
-    const kept = t.slice(0, remaining);
+    const kept = t.slice(0, remaining) + (pointer ?? "");
     remaining = 0;
+    truncated = true;
     return { ...rec, text: kept };
   });
   return { sections, fullChars };
@@ -332,13 +358,13 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
       if (typeof v === "string" && v.length > maxChars) {
         out = {
           ...out,
-          [field]: v.slice(0, maxChars),
+          [field]: clipWithTruncationPointer(v, maxChars, e["msg_id"]),
           [`${field}_truncated`]: true,
           [`${field}_full_chars`]: v.length,
         };
       }
     }
-    const bounded = boundSectionsText(e["sections"], maxChars);
+    const bounded = boundSectionsText(e["sections"], maxChars, e["msg_id"]);
     if (bounded) {
       out = {
         ...out,

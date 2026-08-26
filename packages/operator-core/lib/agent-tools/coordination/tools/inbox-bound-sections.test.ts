@@ -188,6 +188,32 @@ describe("boundInboxEntries — sections[].text (EI-19423034419710126)", () => {
     expect(row!["summary_truncated"]).toBe(true);
     expect(row!["body_full_chars"]).toBe(50);
   });
+
+  it("puts a coord:read pointer inside clipped message text", () => {
+    const [row] = boundInboxEntries(
+      [{ msg_id: "m-long", body: "x".repeat(900) }],
+      600,
+    );
+
+    expect(row!["body"]).toHaveLength(600);
+    expect(row!["body"]).toContain('coord:read { msg_id: "m-long" }');
+    expect(row!["body_truncated"]).toBe(true);
+    expect(row!["body_full_chars"]).toBe(900);
+  });
+
+  it("puts the same pointer on the clipped section text", () => {
+    const [row] = boundInboxEntries(
+      [{ msg_id: "m-sections", sections: [{ text: "x".repeat(700) }, { text: "tail" }] }],
+      600,
+    );
+    const sections = sectionsOf(row!);
+
+    expect(sections[0]!["text"]).toHaveLength(600);
+    expect(sections[0]!["text"]).toContain('coord:read { msg_id: "m-sections" }');
+    expect(sections[1]!["text"]).toBe("");
+    expect(row!["sections_truncated"]).toBe(true);
+    expect(row!["sections_full_chars"]).toBe(704);
+  });
 });
 
 describe("control — the pre-fix implementation must FAIL these pins", () => {
