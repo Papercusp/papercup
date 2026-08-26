@@ -113,7 +113,9 @@ function authenticatedHeader(
 }
 
 function nonce(prefix: Buffer, chunkIndex: number): Buffer {
-  if (chunkIndex >= 0xffff_ffff) throw new Error('personal_vault_import_chunk_index_overflow');
+  // 0xffffffff is reserved for the authenticated manifest header; data chunks
+  // remain bounded below it by writeChunk's monotonically increasing index.
+  if (chunkIndex > 0xffff_ffff) throw new Error('personal_vault_import_chunk_index_overflow');
   const out = Buffer.alloc(12);
   prefix.copy(out, 0);
   out.writeUInt32BE(chunkIndex, NONCE_PREFIX_BYTES);
