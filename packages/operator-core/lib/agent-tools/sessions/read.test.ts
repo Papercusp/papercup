@@ -80,7 +80,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
   });
 
-  it('accepts a canonical ref directly and reads the exact turn by default', async () => {
+  it('accepts a canonical ref with optional window controls and reads the exact turn', async () => {
     refreshTargetSessionBeforeRead.mockClear();
     const tx = makeTx([{
       source_kind: 'codex',
@@ -94,7 +94,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     const dispatched = await dispatchProjectedTool(
       projected,
       'sessions:read',
-      { ref: 'session_turn:codex:sess-with:colon:44' },
+      { ref: 'session_turn:codex:sess-with:colon:44', context: 0, limit: 1, order: 'desc' },
       {
         log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
         workspaceId: 'default', runId: 'read-ref-test', role: 'operator',
@@ -113,11 +113,14 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
   });
 
-  it('rejects malformed or mixed canonical-ref inputs at the schema boundary', () => {
+  it('rejects malformed or conflicting canonical-ref inputs while accepting window controls', () => {
     expect(readArgsSchema.safeParse({ ref: 'not-a-turn-ref' }).success).toBe(false);
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', session: 'sess' }).success).toBe(false);
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', around: 4 }).success).toBe(false);
+    expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', source_kind: 'codex' }).success).toBe(false);
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3 }).success).toBe(true);
+    expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3, limit: 4, order: 'asc' }).success).toBe(true);
+    expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3, limit: 4, order: 'desc' }).success).toBe(true);
   });
 
   it('rejects stale search-only mode/query arguments instead of silently accepting them', () => {

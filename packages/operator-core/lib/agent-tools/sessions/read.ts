@@ -30,7 +30,7 @@ const readArgsSchema = z
       .max(500)
       .optional()
       .describe(
-        'Canonical session-turn reference from sessions:search/read: session_turn:<source-kind>:<full-session-id>:<turn-index>. Pass directly to retrieve that exact turn; add context for surrounding turns.',
+        'Canonical session-turn reference from sessions:search/read: session_turn:<source-kind>:<full-session-id>:<turn-index>. Pass directly to retrieve that exact turn; add context for surrounding turns, and optionally use limit/order to choose a bounded side of that window.',
       ),
     session: z.string().min(1).max(200).optional().describe("Session id, '<source-kind>:<session-id>', or 'self' for the calling agent's current session."),
     source_kind: z.enum(SESSION_SOURCE_KINDS).optional().describe('Disambiguates when the same id exists under two sources; usually unnecessary.'),
@@ -57,11 +57,11 @@ const readArgsSchema = z
     if (args.ref && !args.ref.startsWith(SESSION_TURN_REF_PREFIX)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['ref'], message: `ref must start with ${SESSION_TURN_REF_PREFIX}` });
     }
-    if (args.ref && (args.source_kind || args.around != null || args.from_idx != null || args.to_idx != null || args.order)) {
+    if (args.ref && (args.source_kind || args.around != null || args.from_idx != null || args.to_idx != null)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['ref'],
-        message: '`ref` already fixes source/session/turn; combine it only with `context` and/or `limit`',
+        message: '`ref` already fixes source/session/turn; combine it only with `context`, `limit`, and/or `order`',
       });
     }
   });
@@ -79,7 +79,7 @@ export default defineTool({
       "Following a sessions:search hit: pass its `ref` directly (plus optional `context`). Or read where a session left off; use order:'asc' for the opening turns.",
     notWhen:
       'Finding WHERE something was said — sessions:search (which owns `query` and `mode`). Raw un-indexed files — dev:claude_session op=read (being absorbed here).',
-    chaining: 'sessions:search result.ref → sessions:read { ref, context? }.',
+    chaining: 'sessions:search result.ref → sessions:read { ref, context?, limit?, order? }.',
     // EI-10882: the RESPONSE shape, stated up front. Arg schemas were published
     // but return shapes were not, so the only way to learn the shape was to call
     // once and introspect — one guaranteed wasted round-trip per tool, per agent.
