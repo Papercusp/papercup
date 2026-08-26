@@ -226,10 +226,10 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 ///     selecting a row drills into an on-demand per-hive tab (`hive_tab_kdl`).
 ///   * tab **"context"** — `pui context-pane`, the shared projection for the
 ///     live Sentinel (the former plans board refitted in place for P-006).
-///   The tab-bar + status-bar move into a `default_tab_template` shared by all
-///   tabs; "this hive" is the FIRST tab + focus=true so the dock opens where it
-///   always did (and tier-1 `GoToTab(1)` lands on it). The workbench swap presets
-///   are untouched.
+///     The tab-bar + status-bar move into a `default_tab_template` shared by all
+///     tabs; "this hive" is the FIRST tab + focus=true so the dock opens where it
+///     always did (and tier-1 `GoToTab(1)` lands on it). The workbench swap presets
+///     are untouched.
 ///
 /// Pane DISPLAY names route through the active Hive lexicon (`lex`): the
 /// operator pane is the `operator` term (Queen). The pinned-pane ARGS

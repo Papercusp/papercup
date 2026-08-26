@@ -15,10 +15,10 @@
 //!   - `OpenCardSnapshot`  — `libs/generic/tooldef/src/types.ts` (~L990)
 //!   - `CardPresentation`  — same file (~L908)
 //!   - submit payload      — `{ picks: [option_id, …] }` for radio/checkbox,
-//!    `{ value: … }` for text/date/slider
-//!    (`apps/operator/app/_components/chat/PendingCardsBar.tsx`)
+//!     `{ value: … }` for text/date/slider
+//!     (`apps/operator/app/_components/chat/PendingCardsBar.tsx`)
 //!   - `/card-response` body — `{ correlationId, workspaceId, action, payload? }`
-//!    (`packages/operator-core/lib/post-card-response.ts`)
+//!     (`packages/operator-core/lib/post-card-response.ts`)
 
 use serde::Deserialize;
 
