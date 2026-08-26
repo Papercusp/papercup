@@ -714,7 +714,7 @@ impl OperatorClient {
         // wires the desktop webview's `@papercusp/sync` rest-query path, which
         // this call never touches, so the flag being ON can't help this traffic.
         // The remaining structural waste is duplicate fetches: several `pui`
-        // processes (Fleet/PlansBoard/Plans/Inbox panes, …) react to the SAME
+        // processes (Fleet/Plans/Inbox panes, …) react to the SAME
         // SSE-invalidate push and each independently re-fetch within
         // milliseconds of each other. A short shared-disk cache (`shared_cache`)
         // collapses that burst into one real call + N-1 free local reads.

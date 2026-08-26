@@ -38,15 +38,9 @@ impl ConversationContextProjectionTarget {
         harness: Option<String>,
     ) -> Option<Self> {
         let (source, id) = match handle {
-            NativeSessionHandle::Claude { session_id, .. } => {
-                ("claude", session_id.as_deref())
-            }
-            NativeSessionHandle::Codex { rollout_id, .. } => {
-                ("codex", rollout_id.as_deref())
-            }
-            NativeSessionHandle::Omp { omp_thread_id, .. } => {
-                ("omp", omp_thread_id.as_deref())
-            }
+            NativeSessionHandle::Claude { session_id, .. } => ("claude", session_id.as_deref()),
+            NativeSessionHandle::Codex { rollout_id, .. } => ("codex", rollout_id.as_deref()),
+            NativeSessionHandle::Omp { omp_thread_id, .. } => ("omp", omp_thread_id.as_deref()),
         };
         id.map(str::trim)
             .filter(|id| !id.is_empty())
@@ -81,6 +75,22 @@ pub struct ConversationContextEntry {
     pub state: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationTaskLinkRelation {
+    For,
+    Relates,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationTaskWorkItemLink {
+    pub work_item_id: String,
+    #[serde(default)]
+    pub work_item_harness: Option<String>,
+    pub relation: ConversationTaskLinkRelation,
+}
+
 /// Rust mirror of the server-normalized frame union. Conversational frames
 /// intentionally carry only identity here: this pane renders context/tasks/
 /// approvals while the chat renderer consumes message/tool frames.
@@ -111,6 +121,8 @@ pub enum ConversationContextFrame {
         position: u32,
         #[serde(rename = "updatedAt")]
         updated_at: String,
+        #[serde(default)]
+        links: Vec<ConversationTaskWorkItemLink>,
     },
     Context {
         id: String,

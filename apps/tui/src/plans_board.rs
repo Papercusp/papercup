@@ -31,15 +31,31 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
     let mut lines = vec![Line::from(vec![
         Span::styled("Capabilities  ", Theme::dim()),
         Span::styled(
-            if projection.capabilities.live_frames { "live frames" } else { "snapshot" },
+            if projection.capabilities.live_frames {
+                "live frames"
+            } else {
+                "snapshot"
+            },
             Theme::info(),
         ),
         Span::styled(
-            if projection.capabilities.task_write { " · task write" } else { " · tasks read-only" },
-            if projection.capabilities.task_write { Theme::success() } else { Theme::dim() },
+            if projection.capabilities.task_write {
+                " · task write"
+            } else {
+                " · tasks read-only"
+            },
+            if projection.capabilities.task_write {
+                Theme::success()
+            } else {
+                Theme::dim()
+            },
         ),
         Span::styled(
-            if projection.capabilities.approval_write { " · approval write" } else { "" },
+            if projection.capabilities.approval_write {
+                " · approval write"
+            } else {
+                ""
+            },
             Theme::success(),
         ),
     ])];
@@ -72,8 +88,14 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
         )));
         for (index, frame) in tasks.into_iter().enumerate() {
             if let ConversationContextFrame::Task {
-                content, active_form, status, blocker_ref, explanation, ..
-            } = frame {
+                content,
+                active_form,
+                status,
+                blocker_ref,
+                explanation,
+                ..
+            } = frame
+            {
                 let selected = index == app.context_task_sel;
                 let (marker, style) = task_marker(status);
                 let label = if status == "in_progress" {
@@ -86,26 +108,43 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
                     Span::styled(format!("{marker} "), style),
                     Span::styled(
                         label,
-                        if selected { Theme::selected() } else { Theme::panel() },
+                        if selected {
+                            Theme::selected()
+                        } else {
+                            Theme::panel()
+                        },
                     ),
                 ];
                 if let Some(blocker) = blocker_ref {
-                    spans.push(Span::styled(format!("  blocked on {blocker}"), Theme::warn()));
+                    spans.push(Span::styled(
+                        format!("  blocked on {blocker}"),
+                        Theme::warn(),
+                    ));
                 }
                 lines.push(Line::from(spans));
                 if let Some(note) = explanation {
-                    lines.push(Line::from(Span::styled(format!("      {note}"), Theme::dim())));
+                    lines.push(Line::from(Span::styled(
+                        format!("      {note}"),
+                        Theme::dim(),
+                    )));
                 }
             }
         }
     }
 
-    let approvals = projection.frames.iter().filter_map(|frame| match frame {
-        ConversationContextFrame::Approval { tool_name, status, reason, .. } => {
-            Some((tool_name, status, reason))
-        }
-        _ => None,
-    }).collect::<Vec<_>>();
+    let approvals = projection
+        .frames
+        .iter()
+        .filter_map(|frame| match frame {
+            ConversationContextFrame::Approval {
+                tool_name,
+                status,
+                reason,
+                ..
+            } => Some((tool_name, status, reason)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     if !approvals.is_empty() {
         lines.push(Line::from(Span::styled(
             format!("\nNeeds you ({})", approvals.len()),
@@ -119,7 +158,13 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
                     Theme::panel(),
                 ),
                 Span::styled(format!(" · {status}"), Theme::dim()),
-                Span::styled(reason.as_deref().map(|r| format!(" · {r}")).unwrap_or_default(), Theme::dim()),
+                Span::styled(
+                    reason
+                        .as_deref()
+                        .map(|r| format!(" · {r}"))
+                        .unwrap_or_default(),
+                    Theme::dim(),
+                ),
             ]));
         }
     }
@@ -129,9 +174,15 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
 pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
         .split(body);
-    let tier = app.context_projection.as_ref()
+    let tier = app
+        .context_projection
+        .as_ref()
         .map(|projection| projection.session.capability_tier.as_str())
         .unwrap_or("unavailable");
     f.render_widget(
@@ -158,14 +209,19 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
             .wrap(Wrap { trim: false }),
         outer[1],
     );
-    let writable = app.context_projection.as_ref()
+    let writable = app
+        .context_projection
+        .as_ref()
         .is_some_and(|projection| projection.capabilities.task_write);
     let footer = if writable {
         " ↑/↓ task · Enter/x check · d drop · u clear blocker · Shift-P promote · g refresh "
     } else {
         " g refresh · unavailable sections stay absent "
     };
-    f.render_widget(Paragraph::new(Line::from(Span::styled(footer, Theme::dim()))), outer[2]);
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(footer, Theme::dim()))),
+        outer[2],
+    );
 }
 
 #[cfg(test)]
@@ -180,35 +236,58 @@ mod tests {
     fn render(app: &App) -> String {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|frame| draw_plans_board(frame, app, frame.area())).unwrap();
+        terminal
+            .draw(|frame| draw_plans_board(frame, app, frame.area()))
+            .unwrap();
         let buf = terminal.backend().buffer();
-        (0..buf.area.height).map(|y| {
-            (0..buf.area.width).map(|x| buf.cell((x, y)).unwrap().symbol()).collect::<String>()
-        }).collect::<Vec<_>>().join("\n")
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn projection(task_write: bool) -> ConversationContextProjection {
         ConversationContextProjection {
             schema_version: "conversation-context-v1".into(),
             session: ConversationContextSession {
-                source_kind: "agent_chat".into(), session_id: "chat-1".into(),
-                harness: Some("papercusp".into()), role: Some("sentinel".into()),
-                linked_work_item_id: Some("WI-1".into()), capability_tier: "owned-loop".into(),
+                source_kind: "agent_chat".into(),
+                session_id: "chat-1".into(),
+                harness: Some("papercusp".into()),
+                role: Some("sentinel".into()),
+                linked_work_item_id: Some("WI-1".into()),
+                capability_tier: "owned-loop".into(),
             },
             capabilities: ConversationContextCapabilities {
-                live_frames: true, task_write, approval_write: true,
+                live_frames: true,
+                task_write,
+                approval_write: true,
             },
             frames: vec![
                 ConversationContextFrame::Context {
-                    id: "context:identity".into(), section: "identity".into(), title: "Identity".into(),
+                    id: "context:identity".into(),
+                    section: "identity".into(),
+                    title: "Identity".into(),
                     entries: vec![ConversationContextEntry {
-                        label: "Session".into(), value: "chat-1".into(), state: None,
+                        label: "Session".into(),
+                        value: "chat-1".into(),
+                        state: None,
                     }],
                 },
                 ConversationContextFrame::Task {
-                    id: "task:t1".into(), task_id: "t1".into(), content: "Ship the pane".into(),
-                    active_form: "Shipping the pane".into(), status: "in_progress".into(),
-                    blocker_ref: None, explanation: None, position: 0, updated_at: "now".into(),
+                    id: "task:t1".into(),
+                    task_id: "t1".into(),
+                    content: "Ship the pane".into(),
+                    active_form: "Shipping the pane".into(),
+                    status: "in_progress".into(),
+                    blocker_ref: None,
+                    explanation: None,
+                    position: 0,
+                    updated_at: "now".into(),
+                    links: vec![],
                 },
             ],
         }
@@ -230,7 +309,9 @@ mod tests {
     fn absent_projection_is_an_explicit_degradation() {
         let mut app = App::new();
         app.context_projection_target = Some(ConversationContextProjectionTarget::new(
-            "codex", "rollout-1", None,
+            "codex",
+            "rollout-1",
+            None,
         ));
         let output = render(&app);
         assert!(output.contains("unavailable"));

@@ -4357,16 +4357,12 @@ fn parse_attention_notify(data: Option<&serde_json::Value>) -> Option<models::No
 /// payloads only OTHER tabs render (EI-7028: 8+ pinned dock panes × ~1.6MB of
 /// plans:list + plans:attention per SSE-invalidate/60s tick ≈ tens of GB/day of
 /// loopback traffic for data none of them could ever draw). `app.plans` is
-/// consumed by Plans / Fleet (progress) / PlansBoard / the plan-filter panel
-/// (Inbox|Fleet) / Overview; a pinned Wake / AgentCtx / Network pane never
-/// reads it.
+/// consumed by Plans / Fleet (progress) / the plan-filter panel (Inbox|Fleet) /
+/// Overview; pinned Wake / AgentCtx / Network / Context panes never read it.
 fn pane_fetches_plans(pinned: Option<app::Tab>) -> bool {
     match pinned {
         None => true, // full workbench: every tab reachable
-        Some(t) => matches!(
-            t,
-            app::Tab::Plans | app::Tab::Fleet | app::Tab::PlansBoard | app::Tab::Inbox
-        ),
+        Some(t) => matches!(t, app::Tab::Plans | app::Tab::Fleet | app::Tab::Inbox),
     }
 }
 
@@ -4627,20 +4623,20 @@ mod tests {
         assert!(pane_fetches_plans(None));
         assert!(pane_fetches_attention(None));
         // Plans consumers keep the plans list.
-        for t in [
-            app::Tab::Plans,
-            app::Tab::Fleet,
-            app::Tab::PlansBoard,
-            app::Tab::Inbox,
-        ] {
+        for t in [app::Tab::Plans, app::Tab::Fleet, app::Tab::Inbox] {
             assert!(pane_fetches_plans(Some(t)), "{t:?} renders plans");
         }
         // The current dock panes that never read app.plans skip it.
-        for t in [app::Tab::Wake, app::Tab::AgentCtx, app::Tab::Network] {
+        for t in [
+            app::Tab::Wake,
+            app::Tab::AgentCtx,
+            app::Tab::Network,
+            app::Tab::PlansBoard,
+        ] {
             assert!(!pane_fetches_plans(Some(t)), "{t:?} never renders plans");
         }
         // attention (the ~1.1MB feed) is Inbox-only; NO current pinned pane
-        // (Fleet/Wake/AgentCtx/Network/PlansBoard) fetches it.
+        // (Fleet/Wake/AgentCtx/Network/Context) fetches it.
         assert!(pane_fetches_attention(Some(app::Tab::Inbox)));
         for t in [
             app::Tab::Fleet,

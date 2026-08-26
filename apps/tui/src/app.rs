@@ -6,8 +6,8 @@
 use crate::event::Event;
 use crate::fleet::FleetState;
 use crate::models::{
-    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, DocsResponse,
-    ConversationContextFrame, ConversationContextProjection, ConversationContextProjectionTarget,
+    ActivityRow, AttentionItem, ChatMessage, ChatToolCall, ConversationContextFrame,
+    ConversationContextProjection, ConversationContextProjectionTarget, CrewMember, DocsResponse,
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
     HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
     TuiPaneContribution, ViewState, WorkItem,
@@ -1090,8 +1090,7 @@ pub enum TestingFocus {
 /// Which pane of the Plans master-detail surface holds keyboard focus (owner ask
 /// 2026-06-16): the plans LIST (left) or the selected plan's work-ITEMS (bottom
 /// right). ←/→ (or ↑/↓ while browsing) switch the two; Enter drills in; ↑/↓ then
-/// move within. Shared by the in-app Plans tab AND the dock's pinned plans-pane
-/// (`Tab::Plans` / `Tab::PlansBoard`).
+/// move within the in-app Plans tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlansFocus {
     List,
@@ -1155,9 +1154,6 @@ pub struct App {
     pub pinned: Option<Tab>,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
-    /// Highlight cursor for the pinned plans status board (`pui plans-pane`,
-    /// pui-plans-status-board-2026-06-14). Indexes `plans_board::board_rows`.
-    pub plans_board_sel: usize,
     /// The one shared context-projection address and snapshot rendered by the
     /// refitted plans-board pane. An explicit CLI target stays pinned; otherwise
     /// each roster snapshot resolves the live Sentinel's native session id.
@@ -1165,13 +1161,10 @@ pub struct App {
     pub context_projection_target_explicit: bool,
     pub context_projection: Option<ConversationContextProjection>,
     pub context_task_sel: usize,
-    /// Two-level pane nav for the Plans master-detail surface (owner ask
-    /// 2026-06-16) — shared by `Tab::Plans` + `Tab::PlansBoard` (only one is the
-    /// active tab at a time, so they share the cursor/focus/entered state):
-    /// which pane is focused (plans list ↔ work items), whether we've drilled in
-    /// (↑/↓ move WITHIN vs switch panes), and the work-items cursor. Reset on tab
-    /// entry. The items come from `plan_item_states` (fetched for the selected
-    /// plan), so the cursor is shared too.
+    /// Two-level pane nav for the in-app Plans master-detail surface (owner ask
+    /// 2026-06-16): which pane is focused (plans list ↔ work items), whether
+    /// we've drilled in (↑/↓ move WITHIN vs switch panes), and the work-items
+    /// cursor. Reset on tab entry. Context owns separate task-selection state.
     pub plans_focus: PlansFocus,
     pub plans_entered: bool,
     pub plan_items_sel: usize,
@@ -1666,7 +1659,6 @@ impl App {
             pinned: None,
             plans: Vec::new(),
             plan_sel: 0,
-            plans_board_sel: 0,
             context_projection_target: None,
             context_projection_target_explicit: false,
             context_projection: None,
@@ -3251,35 +3243,12 @@ impl App {
         self.visible_plans().get(self.plan_sel).copied()
     }
 
-    /// The (harness, slug) of the plan the plans BOARD has highlighted
-    /// (`plans_board_sel` indexes the sorted `plans_board::board_rows`). Drives
-    /// the board's right-side detail + the active-plan publish for the poller
-    /// (pui-plans-status-board-2026-06-14 P-008). Resolves the harness the same
-    /// way `publish_active_plan` does (the plan's own, else the session's).
-    pub fn selected_board_plan(&self) -> Option<(String, String)> {
-        let plans = self.visible_plans();
-        plans
-            .get(self.plans_board_sel.min(plans.len().saturating_sub(1)))
-            .map(|plan| {
-                let h = plan
-                    .harness
-                    .clone()
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| self.harness.clone());
-                (h, plan.slug.clone())
-            })
-    }
-
     /// The work items backing the Plans surface's Items pane (owner ask
     /// 2026-06-16) — the fetched `plan_item_states` for the currently-selected
     /// plan, guarded so a stale fetch for a PRIOR plan never leaks the wrong
-    /// items. Empty until the fetch lands (or when no plan is selected). Shared by
-    /// `Tab::Plans` + `Tab::PlansBoard` (whichever is active).
+    /// items. Empty until the fetch lands (or when no plan is selected).
     pub(crate) fn plans_items(&self) -> &[crate::models::PlanItemState] {
-        let want = match self.tab {
-            Tab::PlansBoard => self.selected_board_plan().map(|(_, slug)| slug),
-            _ => self.selected_plan().map(|p| p.slug.clone()),
-        };
+        let want = self.selected_plan().map(|plan| plan.slug.clone());
         match (&self.plan_item_states, want) {
             (Some(s), Some(slug)) if s.plan == slug => s.items.as_slice(),
             _ => &[],
@@ -4232,7 +4201,7 @@ impl App {
     /// Keymap for the refitted Context pane. Task mutations return a typed
     /// Action and never touch task state locally; P-010 owns the route that
     /// applies the mutation and returns a fresh canonical projection.
-    fn plans_board_key(&mut self, code: KeyCode) -> Action {
+    fn context_key(&mut self, code: KeyCode) -> Action {
         match code {
             KeyCode::Char('g') => Action::FetchContextProjection,
             KeyCode::Char('j') | KeyCode::Down => {
@@ -4269,10 +4238,7 @@ impl App {
         }
     }
 
-    fn context_task_action(
-        &self,
-        action: crate::agent_chats::AgentChatTaskAction,
-    ) -> Action {
+    fn context_task_action(&self, action: crate::agent_chats::AgentChatTaskAction) -> Action {
         let Some(target) = &self.context_projection_target else {
             return Action::None;
         };
@@ -4300,29 +4266,6 @@ impl App {
                 active_form: None,
                 explanation: None,
             },
-        }
-    }
-
-    /// ↑/↓ within the focused Plans-board pane (entered): the plans LIST moves the
-    /// board cursor + fetches the new plan's items (resetting the items cursor);
-    /// the ITEMS pane moves the work-item cursor. Clamped (no fall-through).
-    fn plans_board_within_move(&mut self, delta: isize) -> Action {
-        match self.plans_focus {
-            PlansFocus::List => {
-                let count = self
-                    .context_projection
-                    .as_ref()
-                    .map(|projection| projection.tasks().len())
-                    .unwrap_or(0);
-                self.plans_board_sel = step_clamped(self.plans_board_sel, delta, count);
-                self.plan_items_sel = 0; // a new plan → its own items
-                self.fetch_selected_board_item_states()
-            }
-            PlansFocus::Items => {
-                let len = self.plans_items().len();
-                self.plan_items_sel = step_clamped(self.plan_items_sel, delta, len);
-                Action::Render
-            }
         }
     }
 
@@ -4368,13 +4311,11 @@ impl App {
     }
 
     /// Enter on the focused (entered) Plans pane: the plans LIST opens the plan
-    /// detail popup; the ITEMS pane opens the selected work item's detail. Shared
-    /// by `Tab::Plans` + `Tab::PlansBoard`. No-op on an empty list.
+    /// detail popup; the ITEMS pane opens the selected work item's detail.
+    /// No-op on an empty list.
     fn plans_open_focused_detail(&mut self) -> Action {
         let has = match self.plans_focus {
-            PlansFocus::List => {
-                self.selected_plan().is_some() || self.selected_board_plan().is_some()
-            }
+            PlansFocus::List => self.selected_plan().is_some(),
             PlansFocus::Items => self.selected_plan_item().is_some(),
         };
         if has {
@@ -4382,16 +4323,6 @@ impl App {
             self.fleet_detail_scroll = 0;
         }
         Action::Render
-    }
-
-    /// Kick an immediate plan-item-states fetch for the board's now-selected
-    /// plan so the right-side work-items detail updates promptly on j/k; a
-    /// no-selection board just redraws (pui-plans-status-board-2026-06-14 P-008).
-    fn fetch_selected_board_item_states(&self) -> Action {
-        match self.selected_board_plan() {
-            Some((harness, plan)) => Action::FetchPlanItemStates { harness, plan },
-            None => Action::Render,
-        }
     }
 
     /// Is this topology pane the pui HUD? (dockview D-008) — pui's own pane id
@@ -5487,11 +5418,10 @@ impl App {
         if self.tab == Tab::Network {
             return self.network_key(code);
         }
-        // The pinned plans-pane (pui-plans-status-board-2026-06-14): the board
-        // owns the whole keymap — j/k move the highlight, g refreshes; there is
-        // no tab strip to navigate in a pinned dock pane.
+        // The pinned Context pane owns the whole keymap — j/k move the task
+        // highlight, mutation keys act through the bridge, and g refreshes.
         if self.tab == Tab::PlansBoard {
-            return self.plans_board_key(code);
+            return self.context_key(code);
         }
         // The pinned agent-context panes (dock 4-pane split): j/k scroll,
         // N opens the notifications history, everything else is swallowed
@@ -6478,8 +6408,7 @@ impl App {
                 }
             }
             // ←/→ switch the focused pane (list ↔ items). Arrow-only here — `h`
-            // stays the global "return to Overview" key on the in-app tab strip
-            // (unlike the pinned plans-pane, which has no tab strip so binds h/l).
+            // stays the global "return to Overview" key on the in-app tab strip.
             KeyCode::Left | KeyCode::Right if self.tab == Tab::Plans => {
                 self.plans_focus = self.plans_focus.toggle();
                 Action::Render
@@ -7231,10 +7160,8 @@ impl App {
                 cur.saturating_sub(1)
             }
         };
-        // Both Plans surfaces reuse this popup; j/k step the FOCUSED pane's
-        // cursor (owner ask 2026-06-16) so closing it leaves the list where you
-        // navigated — the work-items list when the Items pane is focused, else
-        // the plan list.
+        // The Plans surface reuses this popup; j/k step the FOCUSED pane's cursor
+        // so closing it leaves the list where you navigated.
         if self.tab == Tab::Plans {
             if self.plans_focus == PlansFocus::Items {
                 let len = self.plans_items().len();
@@ -7244,20 +7171,6 @@ impl App {
                 self.plan_sel = step(self.plan_sel, delta, len);
                 self.plan_items_sel = 0;
             }
-            return Action::Render;
-        }
-        if self.tab == Tab::PlansBoard {
-            if self.plans_focus == PlansFocus::Items {
-                let len = self.plans_items().len();
-                self.plan_items_sel = step(self.plan_items_sel, delta, len);
-                return Action::Render;
-            }
-            let len = self
-                .context_projection
-                .as_ref()
-                .map(|projection| projection.tasks().len())
-                .unwrap_or(0);
-            self.context_task_sel = step(self.context_task_sel, delta, len);
             return Action::Render;
         }
         match self.fleet.fleet_focus {
@@ -12954,55 +12867,87 @@ mod tests {
     }
 
     #[test]
-    fn plans_board_two_level_nav_list_and_items_with_detail() {
-        // Owner ask 2026-06-16: the dock's plans-pane (Tab::PlansBoard) — the
-        // "plans tab" the user sees in the dock — gains the same two-level nav.
-        use crate::app::PlansFocus;
-        let mut a = App::new();
-        a.tab = Tab::PlansBoard;
-        let mut p1 = plan("board-a");
-        p1.item_counts = crate::models::ItemCounts {
-            todo: 2,
-            done: 1,
-            ..Default::default()
+    fn context_task_selection_routes_promote_through_the_agent_chat_bridge() {
+        use crate::agent_chats::AgentChatTaskAction;
+        use crate::models::{
+            ConversationContextCapabilities, ConversationContextFrame,
+            ConversationContextProjection, ConversationContextProjectionTarget,
+            ConversationContextSession,
         };
-        a.set_plans(vec![p1, plan("board-b")]);
-        assert_eq!(a.plans_focus, PlansFocus::List);
-        assert!(!a.plans_entered);
-        // ↑/↓ while browsing switch panes (list ↔ items).
-        a.update(ev(KeyCode::Char('j')));
-        assert_eq!(a.plans_focus, PlansFocus::Items);
-        a.update(ev(KeyCode::Char('j')));
-        assert_eq!(a.plans_focus, PlansFocus::List);
-        // Enter drills into the list pane (no popup yet).
-        a.update(ev(KeyCode::Enter));
-        assert!(a.plans_entered);
-        assert!(!a.fleet_detail_open);
-        // Inside the list: ↓ moves the board cursor.
-        let before = a.plans_board_sel;
-        a.update(ev(KeyCode::Char('j')));
-        assert_eq!(a.plans_board_sel, before + 1);
-        // Enter opens the plan detail popup; Esc closes it.
-        a.update(ev(KeyCode::Enter));
-        assert!(a.fleet_detail_open);
-        a.update(ev(KeyCode::Esc));
-        assert!(!a.fleet_detail_open);
-        // ←/→ to the items pane; with the selected board plan's items loaded, ↓
-        // moves the work-item cursor and Enter opens the item detail.
-        let slug = a.selected_board_plan().unwrap().1;
-        a.plan_item_states = Some(item_states(&slug, &["P-001", "P-002"]));
-        a.update(ev(KeyCode::Char('l')));
-        assert_eq!(a.plans_focus, PlansFocus::Items);
-        a.update(ev(KeyCode::Char('j')));
-        assert_eq!(a.plan_items_sel, 1);
-        a.update(ev(KeyCode::Enter));
-        assert!(a.fleet_detail_open);
-        assert_eq!(a.selected_plan_item().unwrap().item_id, "P-002");
-        a.update(ev(KeyCode::Esc));
-        assert!(!a.fleet_detail_open);
-        // Esc steps out of the entered pane.
-        a.update(ev(KeyCode::Esc));
-        assert!(!a.plans_entered);
+
+        let mut app = App::new();
+        app.tab = Tab::PlansBoard;
+        app.context_projection_target = Some(ConversationContextProjectionTarget::new(
+            "agent_chat",
+            "chat-1",
+            Some("papercusp".into()),
+        ));
+        app.context_projection = Some(ConversationContextProjection {
+            schema_version: "conversation-context-v1".into(),
+            session: ConversationContextSession {
+                source_kind: "agent_chat".into(),
+                session_id: "chat-1".into(),
+                harness: Some("papercusp".into()),
+                role: Some("sentinel".into()),
+                linked_work_item_id: None,
+                capability_tier: "owned-loop".into(),
+            },
+            capabilities: ConversationContextCapabilities {
+                live_frames: true,
+                task_write: true,
+                approval_write: true,
+            },
+            frames: vec![
+                ConversationContextFrame::Task {
+                    id: "task:first".into(),
+                    task_id: "first".into(),
+                    content: "First".into(),
+                    active_form: "Doing first".into(),
+                    status: "pending".into(),
+                    blocker_ref: None,
+                    explanation: None,
+                    position: 0,
+                    updated_at: "now".into(),
+                    links: vec![],
+                },
+                ConversationContextFrame::Task {
+                    id: "task:second".into(),
+                    task_id: "second".into(),
+                    content: "Second".into(),
+                    active_form: "Doing second".into(),
+                    status: "pending".into(),
+                    blocker_ref: None,
+                    explanation: None,
+                    position: 1,
+                    updated_at: "now".into(),
+                    links: vec![],
+                },
+            ],
+        });
+
+        assert_eq!(app.update(ev(KeyCode::Char('j'))), Action::Render);
+        assert_eq!(app.context_task_sel, 1);
+        assert_eq!(
+            app.update(ev(KeyCode::Char('P'))),
+            Action::MutateAgentChatTask {
+                harness: "papercusp".into(),
+                chat_id: "chat-1".into(),
+                mutation: crate::agent_chats::AgentChatTaskMutation {
+                    action: AgentChatTaskAction::Promote,
+                    task_id: Some("second".into()),
+                    content: None,
+                    active_form: None,
+                    explanation: None,
+                },
+            }
+        );
+
+        app.context_projection
+            .as_mut()
+            .unwrap()
+            .capabilities
+            .task_write = false;
+        assert_eq!(app.update(ev(KeyCode::Enter)), Action::None);
     }
 
     #[test]

@@ -965,11 +965,11 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_is_a_three_tab_session_this_hive_network_plans() {
-        // P-007 (hive-network-surface B-10) + pui-plans-status-board: the dock
+    fn chat_dock_is_a_three_tab_session_this_hive_network_context() {
+        // P-007 (hive-network-surface B-10) + Context P-006: the dock
         // is a THREE-tab zellij session. Tab 1 "this hive" holds the dock
-        // VERBATIM; tab 2 "network" hosts `pui network-pane`; tab 3 "plans"
-        // hosts `pui plans-pane`. The bars live in a `default_tab_template`
+        // VERBATIM; tab 2 "network" hosts `pui network-pane`; tab 3 "context"
+        // hosts `pui context-pane`. The bars live in a `default_tab_template`
         // shared by all tabs. The workbench swap presets never appear here.
         let kdl = chat_dock_kdl(
             &[
@@ -998,18 +998,18 @@ mod tests {
             1,
             "status-bar declared once in the template"
         );
-        // All three tabs, in order: "this pot" (focus) → "network" → "plans".
+        // All three tabs, in order: "this pot" (focus) → "network" → "context".
         assert!(
             kdl.contains("tab name=\"this pot\" focus=true"),
             "missing focused this-pot tab"
         );
         assert!(kdl.contains("tab name=\"network\""), "missing network tab");
-        assert!(kdl.contains("tab name=\"plans\""), "missing plans tab");
+        assert!(kdl.contains("tab name=\"context\""), "missing context tab");
         let th = kdl.find("tab name=\"this pot\"").unwrap();
         let nw = kdl.find("tab name=\"network\"").unwrap();
-        let pl = kdl.find("tab name=\"plans\"").unwrap();
+        let context = kdl.find("tab name=\"context\"").unwrap();
         assert!(
-            th < nw && nw < pl,
+            th < nw && nw < context,
             "this pot must be the FIRST tab so tier-1 GoToTab(1) lands on it"
         );
         // The dock body lives inside the this-pot tab (the sentinel pane — the
@@ -1019,14 +1019,17 @@ mod tests {
             th < body && body < nw,
             "the dock body must live inside the this-pot tab"
         );
-        // The network + plans tabs host their respective pinned pui boards.
+        // The network + Context tabs host their respective pinned pui boards.
         let net_pane = kdl.find("args \"network-pane\"").unwrap();
         assert!(
-            net_pane > nw && net_pane < pl,
+            net_pane > nw && net_pane < context,
             "network-pane must be inside the network tab"
         );
-        let plans_pane = kdl.find("args \"plans-pane\"").unwrap();
-        assert!(plans_pane > pl, "plans-pane must be inside the plans tab");
+        let context_pane = kdl.find("args \"context-pane\"").unwrap();
+        assert!(
+            context_pane > context,
+            "context-pane must be inside the context tab"
+        );
         // The dock is never the workbench.
         assert!(
             !kdl.contains("swap_tiled_layout"),
@@ -1035,29 +1038,29 @@ mod tests {
     }
 
     #[test]
-    fn chat_dock_plans_tab_hosts_the_plans_board_pane() {
-        // pui-plans-status-board-2026-06-14: the third dock tab "plans" hosts
-        // the pinned `pui plans-pane` board. It is the LAST tab (after network)
+    fn chat_dock_context_tab_hosts_the_shared_projection_pane() {
+        // Context P-006: the third dock tab "context" hosts the canonical
+        // `pui context-pane` projection. It is the LAST tab (after network)
         // so it never displaces tab-1 "this pot" (tier-1 GoToTab(1)).
         let kdl = chat_dock_kdl(
             &["psu".to_string(), "--brain".to_string()],
             &Lexicon::default(),
         );
         assert!(
-            kdl.contains("tab name=\"plans\""),
-            "missing plans tab: {kdl}"
+            kdl.contains("tab name=\"context\""),
+            "missing context tab: {kdl}"
         );
         assert!(
-            kdl.contains("args \"plans-pane\""),
-            "plans tab must run `pui plans-pane`: {kdl}"
+            kdl.contains("args \"context-pane\""),
+            "context tab must run `pui context-pane`: {kdl}"
         );
-        // The plans tab is last (this pot < network < plans).
-        let pl = kdl.find("tab name=\"plans\"").unwrap();
-        assert!(kdl.find("tab name=\"this pot\"").unwrap() < pl);
-        assert!(kdl.find("tab name=\"network\"").unwrap() < pl);
-        // The board pane runs from inside the plans tab, lexicon-independent
+        // The Context tab is last (this pot < network < context).
+        let context = kdl.find("tab name=\"context\"").unwrap();
+        assert!(kdl.find("tab name=\"this pot\"").unwrap() < context);
+        assert!(kdl.find("tab name=\"network\"").unwrap() < context);
+        // The projection pane runs inside Context, lexicon-independent
         // (the args are internal identifiers — never renamed by the lexicon).
-        assert!(kdl.find("args \"plans-pane\"").unwrap() > pl);
+        assert!(kdl.find("args \"context-pane\"").unwrap() > context);
     }
 
     #[test]
@@ -1146,10 +1149,10 @@ mod tests {
         assert!(on.contains("name=\"⏸ wakes\""));
         // queen transcript-view + overwatch transcript-view (D-003) + queen
         // prompt/wakes/mail/work + driver + fleet-wakes + the network tab's
-        // network-pane + the plans tab's plans-pane = 10.
+        // network-pane + the Context tab's context-pane = 10.
         assert_eq!(on.matches("command \"pui\"").count(), 10);
         assert!(on.contains("args \"network-pane\""));
-        assert!(on.contains("args \"plans-pane\""));
+        assert!(on.contains("args \"context-pane\""));
         // Order: brain precedes her side column; the queen split precedes the
         // cups stack; the dock-driver is inside that cups stack.
         let queen_at = on.find("name=\"☕ mug\"").expect("queen container");
