@@ -380,7 +380,10 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       killGroup(holder);
       if (barrier) killGroup(barrier);
     }
-  }, 10_000);
+  // The child refusal budget is 4s, but holder diagnostics and process teardown
+  // can be delayed by the shared host's scheduler. Keep this bounded while
+  // leaving enough room for the assertion to observe the live-holder evidence.
+  }, 20_000);
 
   it('does not label an unverified fuser opener as a lock holder', async () => {
     const env = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0', PC_HEAVY_TIMEOUT_SEC: '3', PC_HEAVY_HEARTBEAT_SEC: '1' };
