@@ -29,6 +29,7 @@ import {
   FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
   assertFacebookPersonalVaultOwnerUserId,
   provisionOwnedFacebookPersonalVaultSource,
+  resolveFacebookPersonalVaultProviderAccount,
 } from '../../../external-triggers/facebook';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -118,7 +119,11 @@ export default defineTool({
       workspaceId: string;
       reconnectProviderAccountId: string | null;
     } | null = null;
-    let facebookOwner: { ownerUserId: string; workspaceId: string } | null = null;
+    let facebookOwner: {
+      ownerUserId: string;
+      workspaceId: string;
+      reconnectProviderAccountId: string | null;
+    } | null = null;
     if (connectsGoogleWorkspace) {
       try {
         const ownerUserId = assertGoogleWorkspaceOwnerUserId(verified.privateContext?.ownerUserId);
@@ -139,7 +144,11 @@ export default defineTool({
         const ownerUserId = assertFacebookPersonalVaultOwnerUserId(verified.privateContext?.ownerUserId);
         const workspaceId = verified.privateContext?.workspaceId?.trim() ?? '';
         if (!workspaceId) throw new Error('facebook_personal_vault_workspace_id_required');
-        facebookOwner = { ownerUserId, workspaceId };
+        facebookOwner = {
+          ownerUserId,
+          workspaceId,
+          reconnectProviderAccountId: verified.privateContext?.reconnectProviderAccountId?.trim() || null,
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return Response.json({ ok: false, error: message }, { status: 400 });
@@ -194,6 +203,48 @@ export default defineTool({
       }
     }
 
+    let facebookProviderAccount: { providerAccountId: string; displayName: string } | null = null;
+    let facebookPreviousFields: string[] = [];
+    if (facebookOwner) {
+      try {
+        facebookProviderAccount = await resolveFacebookPersonalVaultProviderAccount(tokens.accessToken);
+        const expected = facebookOwner.reconnectProviderAccountId;
+        if (expected && expected !== facebookProviderAccount.providerAccountId) {
+          const provisional =
+            expected.startsWith(`${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`) || expected.startsWith('legacy-owner:');
+          if (!provisional) {
+            return redirectWith(req.url, returnPath, 'oauth_error', 'facebook_personal_vault_account_mismatch');
+          }
+          await renameOwnedExternalTriggerSourceAccount(getOrgPg().sql, {
+            workspaceId: facebookOwner.workspaceId,
+            ownerUserId: facebookOwner.ownerUserId,
+            previousProviderAccountId: expected,
+            providerAccountId: facebookProviderAccount.providerAccountId,
+          });
+        }
+        const owned = await listOwnedExternalTriggerSources(
+          getOrgPg().sql,
+          facebookOwner.workspaceId,
+          facebookOwner.ownerUserId,
+        );
+        facebookPreviousFields = [
+          ...new Set(
+            owned
+              .filter(
+                (source) =>
+                  source.kind === 'facebook' &&
+                  source.providerAccountId === facebookProviderAccount!.providerAccountId &&
+                  source.credentialRef !== null,
+              )
+              .map((source) => source.credentialRef!.slice(`${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`.length)),
+          ),
+        ];
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return redirectWith(req.url, returnPath, 'oauth_error', message);
+      }
+    }
+
     const patch: Record<string, unknown> = { [field]: tokens.accessToken };
     if (tokens.refreshToken) patch[`${field}_refresh`] = tokens.refreshToken;
     if (tokens.expiresAt !== undefined) patch[`${field}_expires_at`] = tokens.expiresAt;
@@ -240,9 +291,21 @@ export default defineTool({
         await provisionOwnedFacebookPersonalVaultSource(getOrgPg().sql, {
           workspaceId: facebookOwner.workspaceId,
           ownerUserId: facebookOwner.ownerUserId,
+          providerAccountId: facebookProviderAccount!.providerAccountId,
+          displayName: facebookProviderAccount!.displayName,
           field,
           createdBy: `owner:${facebookOwner.ownerUserId}`,
         });
+        for (const previousField of facebookPreviousFields) {
+          if (previousField === field) continue;
+          await fsTokenStorage.update(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, harness, {
+            [previousField]: null,
+            [previousField + '_refresh']: null,
+            [previousField + '_expires_at']: null,
+            [previousField + '_scopes']: null,
+            [previousField + '_expired']: true,
+          });
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return redirectWith(req.url, returnPath, 'oauth_error', message);

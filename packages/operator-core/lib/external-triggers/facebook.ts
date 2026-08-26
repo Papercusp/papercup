@@ -41,6 +41,11 @@ export interface FacebookProfile {
   [key: string]: unknown;
 }
 
+export interface FacebookProviderAccount {
+  providerAccountId: string;
+  displayName: string;
+}
+
 export interface FacebookPost {
   id?: string;
   message?: string;
@@ -162,18 +167,26 @@ export async function provisionOwnedFacebookPersonalVaultSource(
   input: {
     workspaceId: string;
     ownerUserId: string;
+    providerAccountId: string;
+    displayName?: string;
     field: string;
     createdBy?: string | null;
   },
 ): Promise<ExternalTriggerSourceRow> {
   const ownerUserId = assertFacebookPersonalVaultOwnerUserId(input.ownerUserId);
+  const providerAccountId = nonEmpty(input.providerAccountId);
+  if (!providerAccountId) throw new Error('facebook_personal_vault_provider_account_id_required');
   return upsertOwnedExternalTriggerSource(sql, {
     workspaceId: input.workspaceId,
     kind: 'facebook',
     ownerUserId,
+    providerAccountId,
     credentialRef: facebookPersonalVaultCredentialRef(input.field),
     status: 'connected',
-    config: { coverage: ['profile', 'posts', 'photo-metadata'] },
+    config: {
+      coverage: ['profile', 'posts', 'photo-metadata'],
+      ...(nonEmpty(input.displayName) ? { displayName: nonEmpty(input.displayName) } : {}),
+    },
     createdBy: input.createdBy ?? 'owner:' + ownerUserId,
   });
 }
@@ -286,6 +299,28 @@ async function graphGet<T>(
     },
   });
   return parseResponse<T>(response, operation);
+}
+
+/** Resolve the provider-native identity before assigning a durable source account. */
+export async function resolveFacebookPersonalVaultProviderAccount(
+  accessToken: string,
+  provided: Pick<FacebookSyncDeps, 'fetch' | 'apiOrigin'> = {},
+): Promise<FacebookProviderAccount> {
+  if (!accessToken.trim()) throw new Error('facebook_personal_vault_access_token_required');
+  const profile = await graphGet<FacebookProfile>(
+    provided.fetch ?? fetch,
+    (provided.apiOrigin ?? FACEBOOK_GRAPH_ORIGIN).replace(/\/$/, ''),
+    accessToken,
+    '/me',
+    'profile_identity',
+    { fields: 'id,name' },
+  );
+  const providerAccountId = nonEmpty(profile.id);
+  if (!providerAccountId) throw new Error('facebook_personal_vault_provider_account_id_required');
+  return {
+    providerAccountId,
+    displayName: nonEmpty(profile.name) ?? providerAccountId,
+  };
 }
 
 async function deliver(

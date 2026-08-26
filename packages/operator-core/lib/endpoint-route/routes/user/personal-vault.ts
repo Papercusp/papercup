@@ -60,6 +60,7 @@ const PRINCIPAL_TYPES: readonly PersonalPrincipalType[] = ['plan-template', 'bin
 
 interface SafeIntegrationSource {
   kind: string;
+  providerAccountId: string | null;
   status: string;
   lastConnectedAt: string | null;
   lastSyncAt: string | null;
@@ -72,7 +73,7 @@ interface SafeIntegrationStatus {
   status: 'needs-app-config' | 'available' | 'connected' | 'degraded' | 'error';
   sources: SafeIntegrationSource[];
   capabilities?: SafeGoogleCapability[];
-  accounts?: SafeGoogleAccountStatus[];
+  accounts?: Array<SafeGoogleAccountStatus | SafeFacebookAccountStatus>;
 }
 
 type GoogleCapabilityId = 'gmail' | 'calendar' | 'contacts' | 'youtube';
@@ -94,6 +95,14 @@ interface SafeGoogleAccountStatus {
   sources: SafeIntegrationSource[];
   grantedScopes: string[];
   capabilities: SafeGoogleCapability[];
+}
+
+interface SafeFacebookAccountStatus {
+  providerAccountId: string;
+  displayName: string;
+  connected: boolean;
+  status: SafeIntegrationStatus['status'];
+  sources: SafeIntegrationSource[];
 }
 
 const GOOGLE_CAPABILITY_DEFS: ReadonlyArray<{
@@ -156,39 +165,6 @@ function importError(err: unknown): Response {
 function safeLastSyncAt(source: OwnedExternalTriggerSourceRow): string | null {
   const value = source.cursor.lastSyncAt ?? source.cursor.last_sync_at;
   return typeof value === 'string' && value.trim() ? value : null;
-}
-
-function safeIntegrationStatus(
-  provider: SafeIntegrationStatus['provider'],
-  configured: boolean,
-  providerLoadFailed: boolean,
-  owned: OwnedExternalTriggerSourceRow[],
-  kinds: readonly string[],
-): SafeIntegrationStatus {
-  const sources = owned.filter((source) => kinds.includes(source.kind));
-  const connected = sources.some((source) => source.credentialRef !== null && source.status !== 'disabled');
-  const status =
-    providerLoadFailed || sources.some((source) => source.status === 'error')
-      ? 'error'
-      : sources.some((source) => source.status === 'degraded')
-        ? 'degraded'
-        : connected
-          ? 'connected'
-          : configured
-            ? 'available'
-            : 'needs-app-config';
-  return {
-    provider,
-    configured,
-    connected,
-    status,
-    sources: sources.map((source) => ({
-      kind: source.kind,
-      status: source.status,
-      lastConnectedAt: source.lastConnectedAt,
-      lastSyncAt: safeLastSyncAt(source),
-    })),
-  };
 }
 
 function scopeList(value: unknown): string[] {
@@ -289,10 +265,57 @@ function googleCapabilities(
 function safeSources(owned: OwnedExternalTriggerSourceRow[]): SafeIntegrationSource[] {
   return owned.map((source) => ({
     kind: source.kind,
+    providerAccountId: source.providerAccountId,
     status: source.status,
     lastConnectedAt: source.lastConnectedAt,
     lastSyncAt: safeLastSyncAt(source),
   }));
+}
+
+function facebookOwnedSources(owned: OwnedExternalTriggerSourceRow[]): OwnedExternalTriggerSourceRow[] {
+  return owned.filter(
+    (source) =>
+      FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS.includes(
+        source.kind as (typeof FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS)[number],
+      ) &&
+      (source.credentialRef?.startsWith(`${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`) ||
+        source.providerAccountId !== null),
+  );
+}
+
+function facebookAccountStatus(
+  providerAccountId: string,
+  configured: boolean,
+  providerLoadFailed: boolean,
+  owned: OwnedExternalTriggerSourceRow[],
+  tokenConfig: Readonly<Record<string, unknown>>,
+): SafeFacebookAccountStatus {
+  const source = owned.find((candidate) => candidate.credentialRef !== null);
+  const field = source?.credentialRef ? facebookPersonalVaultOAuthField(source.credentialRef) : null;
+  const token = field ? tokenConfig[field] : null;
+  const connected =
+    source?.status !== 'disabled' &&
+    (typeof token === 'string' ? Boolean(token.trim()) : token !== null && token !== undefined && token !== false);
+  const status: SafeIntegrationStatus['status'] =
+    providerLoadFailed || owned.some((candidate) => candidate.status === 'error')
+      ? 'error'
+      : connected && owned.some((candidate) => candidate.status === 'degraded')
+        ? 'degraded'
+        : connected
+          ? 'connected'
+          : configured
+            ? 'available'
+            : 'needs-app-config';
+  const displayName = owned
+    .map((candidate) => candidate.config.displayName)
+    .find((candidate): candidate is string => typeof candidate === 'string' && Boolean(candidate.trim()));
+  return {
+    providerAccountId,
+    displayName: displayName?.trim() || providerAccountId,
+    connected,
+    status,
+    sources: safeSources(owned),
+  };
 }
 
 function googleAccountStatus(
@@ -377,7 +400,10 @@ async function integrationStatuses(
   const owned = await listOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, ownerUserId);
   const googleConfigured = !providerLoadFailed && getProvider('google') !== null;
   const googleSources = googleOwnedSources(owned);
-  const tokenConfig = await fsTokenStorage.read(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp');
+  const [tokenConfig, facebookTokenConfig] = await Promise.all([
+    fsTokenStorage.read(GOOGLE_WORKSPACE_OAUTH_PLUGIN, 'papercusp'),
+    fsTokenStorage.read(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp'),
+  ]);
   const accounts = [
     ...new Set(googleSources.map((source) => source.providerAccountId?.trim() ?? '').filter(Boolean)),
   ].map((providerAccountId) =>
@@ -400,6 +426,30 @@ async function integrationStatuses(
           : googleConfigured
             ? 'available'
             : 'needs-app-config';
+  const facebookConfigured = !providerLoadFailed && getProvider('facebook') !== null;
+  const facebookSources = facebookOwnedSources(owned);
+  const facebookAccounts = [
+    ...new Set(facebookSources.map((source) => source.providerAccountId?.trim() ?? '').filter(Boolean)),
+  ].map((providerAccountId) =>
+    facebookAccountStatus(
+      providerAccountId,
+      facebookConfigured,
+      providerLoadFailed,
+      facebookSources.filter((source) => source.providerAccountId === providerAccountId),
+      facebookTokenConfig,
+    ),
+  );
+  const facebookConnected = facebookAccounts.some((account) => account.connected);
+  const facebookStatus: SafeIntegrationStatus['status'] =
+    providerLoadFailed || facebookAccounts.some((account) => account.status === 'error')
+      ? 'error'
+      : facebookAccounts.some((account) => account.status === 'degraded')
+        ? 'degraded'
+        : facebookConnected
+          ? 'connected'
+          : facebookConfigured
+            ? 'available'
+            : 'needs-app-config';
   return {
     google: {
       provider: 'google',
@@ -410,13 +460,14 @@ async function integrationStatuses(
       accounts,
       ...(accounts.length === 1 ? { capabilities: accounts[0]!.capabilities } : {}),
     },
-    facebook: safeIntegrationStatus(
-      'facebook',
-      !providerLoadFailed && getProvider('facebook') !== null,
-      providerLoadFailed,
-      owned,
-      FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
-    ),
+    facebook: {
+      provider: 'facebook',
+      configured: facebookConfigured,
+      connected: facebookConnected,
+      status: facebookStatus,
+      sources: safeSources(facebookSources),
+      accounts: facebookAccounts,
+    },
   };
 }
 

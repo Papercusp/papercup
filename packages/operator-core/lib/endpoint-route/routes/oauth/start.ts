@@ -20,7 +20,10 @@ import {
   googleWorkspaceOAuthField,
 } from '../../../external-triggers/google-workspace';
 import { listOwnedExternalTriggerSources } from '../../../external-triggers/source-store';
-import { FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN } from '../../../external-triggers/facebook';
+import {
+  FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN,
+  facebookPersonalVaultOAuthField,
+} from '../../../external-triggers/facebook';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
@@ -102,35 +105,47 @@ export default defineTool({
     if (connectsGoogleWorkspace || connectsFacebookPersonalVault) {
       const owner = await getSessionUserOrDefault(req.headers);
       let reconnectProviderAccountId: string | undefined;
-      if (connectsGoogleWorkspace) {
-        let reconnectField: string | null = null;
-        if (requestedProviderAccountId) {
-          const owned = await listOwnedExternalTriggerSources(getOrgPg().sql, activeWorkspaceId(), owner.id);
-          const accountSources = owned.filter(
-            (source) =>
-              source.providerAccountId === requestedProviderAccountId &&
-              GOOGLE_WORKSPACE_SOURCE_KINDS.includes(source.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number]),
+      let reconnectField: string | null = null;
+      if (requestedProviderAccountId) {
+        const owned = await listOwnedExternalTriggerSources(getOrgPg().sql, activeWorkspaceId(), owner.id);
+        const accountSources = owned.filter(
+          (source) =>
+            source.providerAccountId === requestedProviderAccountId &&
+            (connectsGoogleWorkspace
+              ? GOOGLE_WORKSPACE_SOURCE_KINDS.includes(
+                  source.kind as (typeof GOOGLE_WORKSPACE_SOURCE_KINDS)[number],
+                )
+              : source.kind === 'facebook'),
+        );
+        if (!accountSources.length) {
+          return Response.json(
+            {
+              ok: false,
+              error: connectsGoogleWorkspace
+                ? 'google_workspace_account_not_found'
+                : 'facebook_personal_vault_account_not_found',
+            },
+            { status: 404 },
           );
-          if (!accountSources.length) {
-            return Response.json({ ok: false, error: 'google_workspace_account_not_found' }, { status: 404 });
-          }
-          reconnectProviderAccountId = requestedProviderAccountId;
-          const credentialRef = accountSources.find((source) => source.credentialRef)?.credentialRef ?? null;
-          reconnectField = credentialRef ? googleWorkspaceOAuthField(credentialRef) : null;
         }
-        field = reconnectField ?? `owner-${owner.id}-${randomBytes(8).toString('hex')}`;
-      } else {
-        field = 'owner-' + owner.id;
+        reconnectProviderAccountId = requestedProviderAccountId;
+        const credentialRef = accountSources.find((source) => source.credentialRef)?.credentialRef ?? null;
+        reconnectField = credentialRef
+          ? connectsGoogleWorkspace
+            ? googleWorkspaceOAuthField(credentialRef)
+            : facebookPersonalVaultOAuthField(credentialRef)
+          : null;
       }
+      field = reconnectField ?? `owner-${owner.id}-${randomBytes(8).toString('hex')}`;
       privateContext = {
         ...privateContext,
         ownerUserId: owner.id,
         workspaceId: activeWorkspaceId(),
         returnPath: '/settings/personal-vault',
+        ...(reconnectProviderAccountId ? { reconnectProviderAccountId } : {}),
         ...(connectsGoogleWorkspace
           ? {
               requestedScopes: JSON.stringify(scopes),
-              ...(reconnectProviderAccountId ? { reconnectProviderAccountId } : {}),
             }
           : {}),
       };
