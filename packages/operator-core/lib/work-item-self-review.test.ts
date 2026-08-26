@@ -14,6 +14,7 @@ import {
   lastEditAtMs,
   normalizeToolName,
   selfReviewLedgerQuery,
+  toPersistedSelfReviewJudgement,
   toSelfReviewLedgerRow,
   type SelfReviewLedgerRow,
 } from './work-item-self-review';
@@ -408,6 +409,77 @@ describe('native-client review corroboration', () => {
       });
       expect(v.reviewCalls).toHaveLength(2);
     });
+  });
+});
+
+/**
+ * WI-41769 — the judgement used to be computed and thrown away, so the arm-B pilot's only
+ * measurements reached no store and D-022's comparison had nothing to read.
+ */
+describe('toPersistedSelfReviewJudgement — what the pilot can actually read back', () => {
+  const judged = (ledger: SelfReviewLedgerRow[], evidence = REVIEWED) =>
+    toPersistedSelfReviewJudgement(judgeSelfReview({ evidence, ledger }));
+
+  it('carries every measurement D-022 compares arms on', () => {
+    const p = judged([{ toolName: 'Read', invokedAtMs: T(5), source: 'turn-parts' }]);
+    expect(p).toEqual({
+      verdict: 'corroborated',
+      rubberStampRisk: false,
+      yieldedChange: false,
+      ledgerVisible: true,
+      reviewCallCount: 1,
+      reviewSources: ['turn-parts'],
+    });
+  });
+
+  it('records HOW corroboration was obtained — deduped and sorted', () => {
+    // D-026: an arm whose passes come entirely from one ledger is measuring tool routing
+    // again, so the pilot has to be able to see the split rather than infer it.
+    const p = judged([
+      { toolName: 'Read', invokedAtMs: T(5), source: 'turn-parts' },
+      { toolName: 'capability:git', invokedAtMs: T(6), source: 'invocations' },
+      { toolName: 'Grep', invokedAtMs: T(7), source: 'turn-parts' },
+    ]);
+    expect(p.reviewSources).toEqual(['invocations', 'turn-parts']);
+    expect(p.reviewCallCount).toBe(3);
+  });
+
+  it('omits reviewSources entirely when nothing corroborated', () => {
+    // Rather than an empty array, which reads as "we looked and found sources".
+    const p = judged([row('coord:send', 1)]);
+    expect(p.verdict).toBe('uncorroborated');
+    expect(p.reviewSources).toBeUndefined();
+    expect(p.reviewCallCount).toBe(0);
+  });
+
+  it('preserves the two measurements that are NOT pass/fail', () => {
+    const stamped = judged([row('Read', 5)], { lookedAt: 'the diff', findings: [] });
+    expect(stamped.verdict).toBe('corroborated'); // still a pass
+    expect(stamped.rubberStampRisk).toBe(true);
+
+    const yielded = judged([row('Read', 5)], {
+      ...REVIEWED,
+      changedAsResult: ['clamped the bound'],
+    });
+    expect(yielded.yieldedChange).toBe(true);
+  });
+
+  it('distinguishes an unobservable close from an uncorroborated one in the stored record', () => {
+    expect(judged([]).verdict).toBe('unobservable');
+    expect(judged([]).ledgerVisible).toBe(false);
+    expect(judged([row('coord:send', 1)]).ledgerVisible).toBe(true);
+  });
+
+  it('does NOT carry the raw ledger rows into every completed row', () => {
+    const p = judged([row('Read', 5)]) as Record<string, unknown>;
+    expect(p.reviewCalls).toBeUndefined();
+    expect(Object.keys(p).sort()).toEqual([
+      'ledgerVisible',
+      'reviewCallCount',
+      'rubberStampRisk',
+      'verdict',
+      'yieldedChange',
+    ]);
   });
 });
 

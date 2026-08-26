@@ -466,6 +466,53 @@ export function judgeSelfReview(args: {
 }
 
 /**
+ * The judgement as it is STORED on a completed item — the arm-B pilot's actual data.
+ *
+ * WI-41769: before this existed the judgement was computed and thrown away (passed inline
+ * into `selfReviewRefusal` and never bound), so `rubberStampRisk` and `yieldedChange` —
+ * both documented as pilot MEASUREMENTS — reached no store and D-022's per-arm comparison
+ * had nothing to read. Note the asymmetry that hid it: the REFUSAL path is fully observable
+ * because the agent sees the message, so the gate looked like it was working. It is the
+ * PASSING path, the one that generates the pilot's data, that recorded nothing.
+ *
+ * Deliberately NOT the full `SelfReviewJudgement`: the raw `reviewCalls` rows are ledger
+ * detail that would bloat every completed row without answering a question D-022 asks. The
+ * COUNT and the SOURCES are kept, because D-026 established that HOW corroboration was
+ * obtained is itself a confound the pilot must be able to see — an arm whose passes come
+ * entirely from one ledger is measuring tool routing again.
+ */
+export interface PersistedSelfReviewJudgement {
+  readonly verdict: SelfReviewVerdict;
+  readonly rubberStampRisk: boolean;
+  readonly yieldedChange: boolean;
+  readonly ledgerVisible: boolean;
+  readonly reviewCallCount: number;
+  /** Which ledgers corroborated, deduped and sorted. Absent when nothing corroborated. */
+  readonly reviewSources?: readonly ('invocations' | 'turn-parts')[];
+}
+
+/** Project a judgement onto the shape stored with the completion. */
+export function toPersistedSelfReviewJudgement(
+  judgement: SelfReviewJudgement,
+): PersistedSelfReviewJudgement {
+  const sources = [
+    ...new Set(
+      judgement.reviewCalls
+        .map((r) => r.source)
+        .filter((s): s is 'invocations' | 'turn-parts' => s !== undefined),
+    ),
+  ].sort();
+  return {
+    verdict: judgement.verdict,
+    rubberStampRisk: judgement.rubberStampRisk,
+    yieldedChange: judgement.yieldedChange,
+    ledgerVisible: judgement.ledgerVisible,
+    reviewCallCount: judgement.reviewCalls.length,
+    ...(sources.length ? { reviewSources: sources } : {}),
+  };
+}
+
+/**
  * One MCP call lands in BOTH ledgers — as `capability:read` and as
  * `mcp__papercusp-su__capability_read` — so a naive union double-counts every review an
  * MCP-routing agent performs. The verdict would survive that, but `reviewCalls` is recorded

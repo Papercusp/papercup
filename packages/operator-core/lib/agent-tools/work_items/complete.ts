@@ -110,7 +110,9 @@ import {
   judgeSelfReview,
   selfReviewLedgerQuery,
   selfReviewRefusal,
+  toPersistedSelfReviewJudgement,
   toSelfReviewLedgerRow,
+  type SelfReviewJudgement,
   type SelfReviewLedgerRow,
 } from '../../work-item-self-review.js';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -2104,6 +2106,11 @@ async function completeOne(
   // EI-20962416980274656 records: a late rejection produced a recorded completion plus a
   // still-open item — a non-atomic half-write needing a second call to repair.
   let selfReviewError: string | undefined;
+  // WI-41769: BOUND, not passed inline. The judgement carries the arm-B pilot's only
+  // measurements (rubberStampRisk / yieldedChange / ledgerVisible); discarding it here left
+  // D-022's per-arm comparison with nothing to read, and the gap was invisible because the
+  // REFUSAL path is observable while the PASSING path — which generates the data — was not.
+  let selfReviewJudgement: SelfReviewJudgement | undefined;
   if (closeIntentRequested && itemIsArmB(existing)) {
     // Scope the ledger to this item's work window. `takenAt` is null only when the item
     // was never claimed, in which case there is no window to read; fall back to a bounded
@@ -2130,10 +2137,8 @@ async function completeOne(
     // being closed. `rubberStampRisk` and `yieldedChange` are pilot MEASUREMENTS and never
     // block (D-020) — that rule lives in `selfReviewRefusal` so it is unit-testable rather
     // than reachable only through a live ledger query.
-    selfReviewError = selfReviewRefusal(
-      judgeSelfReview({ evidence: it.completion.selfReview, ledger }),
-      it.id,
-    );
+    selfReviewJudgement = judgeSelfReview({ evidence: it.completion.selfReview, ledger });
+    selfReviewError = selfReviewRefusal(selfReviewJudgement, it.id);
   }
   if (selfReviewError) {
     return {
@@ -2175,6 +2180,12 @@ async function completeOne(
   if (it.completion.whatLanded?.length) completionNarrative.whatLanded = it.completion.whatLanded;
   if (it.completion.deferred?.length) completionNarrative.deferred = it.completion.deferred;
   if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
+  // WI-41769. Only reachable on the PASSING path: a refusing verdict returned above, before
+  // any persistence — which is correct, since a refused close records no completion at all.
+  // So what lands here is exactly the population D-022 needs: the arm-B closes that passed.
+  if (selfReviewJudgement) {
+    completionNarrative.selfReviewJudgement = toPersistedSelfReviewJudgement(selfReviewJudgement);
+  }
   const hasCompletionNarrative = Object.keys(completionNarrative).length > 0;
   const completionEvidenceBeforeStamp: PersistedCompletionEvidence | undefined =
     summaryText || hasCompletionNarrative

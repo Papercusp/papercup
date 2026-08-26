@@ -22,6 +22,8 @@ import { z } from 'zod';
 // about the stored shape without a compile error — and so no runtime import cycle
 // is created between this module and the facts substrate.
 import type { ResolvedAssumption } from '../agent-facts/assumptions';
+// A leaf module with no imports of its own, so this edge cannot form a cycle.
+import type { PersistedSelfReviewJudgement } from '../work-item-self-review';
 
 /** The lifecycle categories this layer renders (the D-003 automation table). */
 export const LIFECYCLE_CATEGORIES = [
@@ -276,6 +278,16 @@ export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
   whatLanded?: string[];
   deferred?: string[];
   coordNotes?: string;
+  /**
+   * WI-41769 — the arm-B self-review verdict, SERVER-computed rather than caller-supplied.
+   *
+   * Same reason `whatLanded`/`deferred`/`coordNotes` live here (EI-21478999218933285): it
+   * otherwise survives only in this call's transient return value, so a later
+   * `work_items:get` gives a confident but false "nothing recorded" for a close the gate
+   * genuinely judged. Stored on the narrative side deliberately — like those fields, it
+   * describes the close and must NEVER promote an evidence-free completion to `committed`.
+   */
+  selfReviewJudgement?: PersistedSelfReviewJudgement;
 };
 
 /**
