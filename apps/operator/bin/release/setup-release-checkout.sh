@@ -437,15 +437,24 @@ extract_submodule_source() {  # <repo-relative path> <pinned sha>
   # failing closed converts an invisible, unreproducible verdict into a loud,
   # diagnosable infra fault. Return 2 (not 1) so the caller can distinguish
   # "materialization is impossible here" from "materialized, but drifted".
-  if [ "$SOURCE_INTEGRITY_MODE" = "object-sourced" ]; then
+  # `:-` keeps this function self-contained: setup-release-checkout-deps.test.ts
+  # sed-extracts it and sources it under `set -u` with none of the script's globals
+  # defined, so a bare $SOURCE_INTEGRITY_MODE would abort the extracted function
+  # rather than exercise it. Defaulting here also makes allow-live-tree the
+  # behaviour of any caller that never heard of this flag.
+  if [ "${SOURCE_INTEGRITY_MODE:-allow-live-tree}" = "object-sourced" ]; then
     log "FATAL git archive $rel_path@$sha failed or incomplete and --source-integrity=object-sourced forbids the live-tree rsync fallback — the pinned objects for this submodule are unreadable, so this candidate cannot be materialized from git objects. Refusing to splice the integration tree's uncommitted working directory into a tree that will be judged."
     return 2
   fi
   log "WARN git archive $rel_path@$sha failed or incomplete; rsync'ing integration HEAD (pin may drift)"
   rsync -a --exclude='node_modules' --exclude='.git' "$INTEGRATION_ROOT/$rel_path/" "$RELEASE_ROOT/$rel_path/"
-  # Signal DRIFT distinctly from a clean object-sourced extraction so the caller's
-  # integrity marker can count it. Only reachable in allow-live-tree mode.
-  return 1
+  # Drift is reported through a variable, NOT the return code: this function's
+  # documented contract is "self-heals — never fails the caller" (pinned by two
+  # tests in setup-release-checkout-deps.test.ts), and the rsync path really did
+  # produce complete content. Only the REFUSAL above is a new non-zero status, and
+  # it is unreachable in the default mode.
+  _LAST_EXTRACT_USED_LIVE_TREE=1
+  return 0
 }
 
 # EI-19299565558496583: clone a REAL submodule repository at the pinned sha. This
@@ -517,19 +526,18 @@ while IFS= read -r P; do
   else
     _sub_fallback=$((_sub_fallback + 1))
     log "WARN clone failed for $P@${S:0:10} — falling back to git archive extraction (that submodule gets NO .git, so tracked-files guards will not see inside it)"
-    # P-008: capture the status instead of letting `set -e` act on it — the
-    # function now reports WHICH source it used, and the two non-zero cases mean
-    # opposite things (1 = materialized from the live tree, 2 = refused).
+    # P-008: capture the status instead of letting `set -e` act on it. A non-zero
+    # return is now reachable (the object-sourced REFUSAL); drift on the healed
+    # path is reported out-of-band via _LAST_EXTRACT_USED_LIVE_TREE so the
+    # function's "never fails the caller" contract stays intact.
+    _LAST_EXTRACT_USED_LIVE_TREE=0
     _extract_rc=0
     extract_submodule_source "$P" "$S" || _extract_rc=$?
-    case "$_extract_rc" in
-      0) ;;
-      1) _sub_live_tree=$((_sub_live_tree + 1)) ;;
-      *)
-        log "FATAL candidate source for $P@${S:0:10} is not materializable from git objects; aborting rather than judging a tree that matches no commit"
-        exit 3
-        ;;
-    esac
+    if [ "$_extract_rc" -ne 0 ]; then
+      log "FATAL candidate source for $P@${S:0:10} is not materializable from git objects; aborting rather than judging a tree that matches no commit"
+      exit 3
+    fi
+    [ "$_LAST_EXTRACT_USED_LIVE_TREE" -eq 0 ] || _sub_live_tree=$((_sub_live_tree + 1))
   fi
 # P-009: read the submodule list from the TARGET commit's .gitmodules blob, NOT the
 # integration tree's current working copy — a submodule added/removed on staging while
