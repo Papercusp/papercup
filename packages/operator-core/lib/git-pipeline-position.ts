@@ -4198,6 +4198,13 @@ export async function gitPipelinePosition(
   const root = deploy.integrationRoot;
   const deployedSha = deploy.deployed?.sha ?? null;
 
+  // EI-21544761852770720: these path-independent probes used to start only after
+  // every git containment read had completed. Start them as soon as `root` exists;
+  // their values are still consumed at the original semantic boundary below.
+  const checkpointRunCachedPromise = (deps.readCheckpointRunSnapshot ?? realReadCheckpointRunSnapshot)();
+  const checkpointRunLockLivePromise = (deps.readCheckpointRunLock ?? realReadCheckpointRunLock)(root);
+  const gateOwnershipPromise = (deps.readGateOwnership ?? readGateOwnership)();
+
   // Resolve a submodule, if the path is inside one.
   let submodule: string | null = null;
   let gitDir = root;
@@ -4217,6 +4224,14 @@ export async function gitPipelinePosition(
       );
     }
   }
+
+  // Candidate discovery is independent of target-sha and position containment.
+  // Avoid the systemd-backed probe for sha-only, missing-path, and submodule reads,
+  // exactly as before, but overlap it with the remaining path work when applicable.
+  const gateCandidatesPromise =
+    relPath && !submodule
+      ? (deps.resolveGateCandidates ?? realResolveGateCandidates)(root)
+      : null;
 
   // Dirty (uncommitted) check for a path.
   let dirtyUncommitted = false;
@@ -4343,8 +4358,8 @@ export async function gitPipelinePosition(
     positionsUnknown.push('committedLocal', 'onStaging', 'inMain', 'deployed');
   }
   if (targetSha) {
-    positions.committedLocal = readLeg('committedLocal', await refContains(git, gitDir, 'HEAD', targetSha));
     if (submodule) {
+      positions.committedLocal = readLeg('committedLocal', await refContains(git, gitDir, 'HEAD', targetSha));
       // The release gate judges the SUPERPROJECT candidate. Its submodule
       // version is the gitlink pinned by origin/staging, so nested origin/HEAD
       // is not evidence that this commit is in the candidate. Compare the
@@ -4367,15 +4382,36 @@ export async function gitPipelinePosition(
         );
       }
     } else {
-      positions.onStaging = readLeg('onStaging', await refContains(git, root, 'origin/staging', targetSha));
+      // All four local containment reads are independent once targetSha is known.
+      // Start them together, then preserve the existing result interpretation and
+      // conditional read-only remote rescues below.
+      const [committedLocalRead, onStagingRead, inMainRead, deployedRead] = await Promise.all([
+        refContains(git, gitDir, 'HEAD', targetSha),
+        refContains(git, root, 'origin/staging', targetSha),
+        refContains(git, root, 'origin/main', targetSha),
+        deployedSha ? refContains(git, root, deployedSha, targetSha) : Promise.resolve(null),
+      ]);
+      positions.committedLocal = readLeg('committedLocal', committedLocalRead);
+      positions.onStaging = readLeg('onStaging', onStagingRead);
+      positions.inMain = readLeg('inMain', inMainRead);
+      positions.deployed = deployedSha
+        ? readLeg('deployed', deployedRead)
+        : readLeg('deployed', null);
       // EI-18694888339365359 / WI-38372: the local ref said "not present" — before
       // believing that (and letting a caller block/park on it), check the actual
       // remote tip via ls-remote (no fetch, no local mutation). Exact-tip equality
       // is the degenerate case; when the target is behind the current tip, a local
       // ancestry read corrects the stale remote-tracking ref for the common case.
-      const remoteStagingContains = !positions.onStaging
-        ? await isRemoteTipContaining(git, root, 'refs/heads/staging', targetSha)
-        : null;
+      const remoteStagingContainsPromise = !positions.onStaging
+        ? isRemoteTipContaining(git, root, 'refs/heads/staging', targetSha)
+        : Promise.resolve(null);
+      const remoteMainContainsPromise = !positions.inMain
+        ? isRemoteTipContaining(git, root, 'refs/heads/main', targetSha)
+        : Promise.resolve(null);
+      const [remoteStagingContains, remoteMainContains] = await Promise.all([
+        remoteStagingContainsPromise,
+        remoteMainContainsPromise,
+      ]);
       if (!positions.onStaging && remoteStagingContains === true) {
         positions.onStaging = true;
         // ls-remote is a DIRECT measurement of the remote tip, so it supersedes an
@@ -4389,14 +4425,10 @@ export async function gitPipelinePosition(
             'commit IS contained in the current remote tip, so onStaging was corrected to true.',
         );
       }
-      positions.inMain = readLeg('inMain', await refContains(git, root, 'origin/main', targetSha));
       // WI-38372: origin/main is subject to the same stale remote-tracking-ref
       // failure as origin/staging. Apply the same read-only tip-containment rescue
       // so an older commit already in the remote main history is not reported as
       // waiting at the gate merely because the local ref has not been fetched.
-      const remoteMainContains = !positions.inMain
-        ? await isRemoteTipContaining(git, root, 'refs/heads/main', targetSha)
-        : null;
       if (!positions.inMain && remoteMainContains === true) {
         positions.inMain = true;
         const staleIdx = positionsUnknown.indexOf('inMain');
@@ -4420,10 +4452,6 @@ export async function gitPipelinePosition(
       // thirty lines below the hoist built to prevent exactly that — the same axis-2
       // defect P-006 fixed in `refContains`, surviving in the same function because a
       // comment asserted the reading instead of checking it. Name the leg.
-      positions.deployed = deployedSha
-        ? readLeg('deployed', await refContains(git, root, deployedSha, targetSha))
-        : readLeg('deployed', null);
-
       /* --------------------------------------------------------------------- *
        * WI-6646 — the newer-commit correction for the two lagging legs.
        *
@@ -4633,9 +4661,9 @@ export async function gitPipelinePosition(
   // probe, and an indexed ownership lookup.  Keep their individual fail-soft
   // semantics while paying only the slowest leg's latency.
   const [checkpointRunCached, checkpointRunLockLive, gateOwnership] = await Promise.all([
-    (deps.readCheckpointRunSnapshot ?? realReadCheckpointRunSnapshot)(),
-    (deps.readCheckpointRunLock ?? realReadCheckpointRunLock)(root),
-    (deps.readGateOwnership ?? readGateOwnership)(),
+    checkpointRunCachedPromise,
+    checkpointRunLockLivePromise,
+    gateOwnershipPromise,
   ]);
   // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by
   // git-pipeline-stats (parseInFlightRetriage) — it was simply never consulted here, so the
@@ -5048,10 +5076,7 @@ export async function gitPipelinePosition(
      * after would leave the headline correct and its own falsifier measuring the abandoned
      * candidate — a worse state than before, because the two would look corroborating.
      */
-    const candidates = reconcileGateCandidates(
-      await (deps.resolveGateCandidates ?? realResolveGateCandidates)(root),
-      checkpointRunInFlight,
-    );
+    const candidates = reconcileGateCandidates(await gateCandidatesPromise!, checkpointRunInFlight);
     const shas = [candidates.judgingSha, candidates.nextCandidateSha].filter((s): s is string => !!s);
     const gitRead = gitReadForRepo(git, root);
     const byShaEntries = await Promise.all(

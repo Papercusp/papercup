@@ -417,6 +417,56 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
     resolveOwnership(null as never);
     await expect(pending).resolves.toMatchObject({ repoRoot: '/repo' });
   });
+
+  it('starts candidate, lock, ownership, and all local containment reads before consuming containment', async () => {
+    const started: string[] = [];
+    const containmentResolvers: Array<(value: string | null) => void> = [];
+    let resolveCandidates!: (value: { judgingSha: null; nextCandidateSha: null }) => void;
+    const candidatesPending = new Promise<{ judgingSha: null; nextCandidateSha: null }>((resolve) => {
+      resolveCandidates = resolve;
+    });
+    const inner = fakeGit({ pathCommit: 'abc1234567', subject: 'ordered fan-out' });
+    const git: GitRunner = async (repo, args) => {
+      if (args[0] === 'rev-list' && args[1] === '--count') {
+        started.push(`contain:${args[2]}`);
+        return new Promise<string | null>((resolve) => containmentResolvers.push(resolve));
+      }
+      return inner(repo, args);
+    };
+
+    const pending = gitPipelinePosition(
+      { path: 'packages/operator-core/lib/example.ts' },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+        readCheckpointRunSnapshot: async () => {
+          started.push('checkpoint');
+          return null;
+        },
+        readCheckpointRunLock: async () => {
+          started.push('lock');
+          return null;
+        },
+        readGateOwnership: async () => {
+          started.push('ownership');
+          return null;
+        },
+        resolveGateCandidates: () => {
+          started.push('candidates');
+          return candidatesPending;
+        },
+      },
+    );
+
+    for (let i = 0; i < 12 && containmentResolvers.length < 4; i += 1) await Promise.resolve();
+    expect(started.slice(0, 4)).toEqual(['checkpoint', 'lock', 'ownership', 'candidates']);
+    expect(containmentResolvers).toHaveLength(4);
+
+    for (const resolve of containmentResolvers) resolve('0');
+    resolveCandidates({ judgingSha: null, nextCandidateSha: null });
+    await expect(pending).resolves.toMatchObject({ repoRoot: '/repo' });
+  });
 });
 
 describe('gitPipelinePosition (P-002)', () => {
