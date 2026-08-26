@@ -1558,12 +1558,80 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const prior = await lastStored();
 
       withPrior(prior);
-      const r = await one({ id: 'WI-7', checks: [], rowsMode: 'replace' });
+      const r = await one({ id: 'WI-7', checks: [], rowsMode: 'replace', confirmRetire: true });
       expect(r.ok).toBe(true);
       const stored = await lastStored();
       expect(stored).toContain('the body worth keeping');
       expect(stored).not.toContain('## Checks');
       expect(r.checks).toBe(0);
+    });
+
+    describe("WI-42106 rowsMode:'replace' retirement confirmation", () => {
+      const THREE = [
+        { claim: 'gate is green', recheck: 'state:read' },
+        { claim: 'main is at abc123', recheck: 'git rev-parse main' },
+        { claim: 'deploy landed', recheck: 'release:trace' },
+      ];
+
+      async function seedThree() {
+        withPrior(null);
+        await one({ id: 'WI-7', checkpoint: 'prior body', checks: THREE });
+        return lastStored();
+      }
+
+      it('refuses an unconfirmed replace before storing and names every retired check', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const before = setWorkItemCheckpointWithPrior.mock.calls.length;
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'new body',
+          checks: [{ claim: 'a brand new claim' }],
+          rowsMode: 'replace',
+        });
+        expect(r).toMatchObject({
+          ok: false,
+          errorCode: 'checkpoint_replace_would_drop_rows',
+          retryable: true,
+          checksDropped: ['gate is green', 'main is at abc123', 'deploy landed'],
+        });
+        expect(r.message).toContain('confirmRetire');
+        expect(setWorkItemCheckpointWithPrior.mock.calls.length).toBe(before + 1);
+        expect(await lastStored()).toBe(await prior);
+      });
+
+      it('accepts the same retirement with confirmRetire:true and still reports the dropped rows', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'new body',
+          checks: [{ claim: 'a brand new claim' }],
+          rowsMode: 'replace',
+          confirmRetire: true,
+        });
+        expect(r.ok).toBe(true);
+        expect(r.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
+      });
+
+      it('refuses an unconfirmed explicit [] clear', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const r = await one({ id: 'WI-7', checks: [], rowsMode: 'replace' });
+        expect(r).toMatchObject({
+          ok: false,
+          errorCode: 'checkpoint_replace_would_drop_rows',
+          checksDropped: ['gate is green', 'main is at abc123', 'deploy landed'],
+        });
+      });
+
+      it('does not require confirmation when replace keeps every carried row', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const r = await one({ id: 'WI-7', checkpoint: 'new body', checks: THREE, rowsMode: 'replace' });
+        expect(r.ok).toBe(true);
+        expect(r.checksDropped).toBeUndefined();
+      });
     });
 
     it('EI-20232161144151845: a dependency-only patch preserves the body and bypasses shrink protection', async () => {
