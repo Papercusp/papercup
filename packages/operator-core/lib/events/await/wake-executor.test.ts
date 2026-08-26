@@ -239,6 +239,104 @@ describe('executeWake — durable fleet release latch (EI-203843)', () => {
   });
 });
 
+describe('executeWake — delivery-time fleet claim-release freshness (EI-21555327100993502)', () => {
+  const claimReleasedWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
+    work({
+      eventKey: 'fleet:claim-released:pui-cockpit',
+      payload: { id: 'WI-42197', harness: 'papercusp' },
+      wakeHandle: advHandle(),
+      ...overrides,
+    });
+
+  it('fresh unclaimed item still follows the normal wake ladder', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-fresh' }));
+    const write = vi.fn(() => true);
+    const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42197', assignee: null })) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    const out = await executeWake(claimReleasedWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-42197', 'papercusp');
+    expect(findPty).toHaveBeenCalledWith(9999, 'su-abc');
+    expect(write).toHaveBeenCalled();
+    expect(d.sendCoordMessage).not.toHaveBeenCalled();
+  });
+
+  it('re-claimed item is downgraded to the coord inbox before any wake side effect', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-reclaimed' }));
+    const write = vi.fn(() => true);
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42197', assignee: 'su-worker' })) as never;
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentWorkItem,
+    });
+
+    const out = await executeWake(claimReleasedWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-42197', 'papercusp');
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    expect(opts.summary).toContain('already claimed by su-worker');
+    expect(opts.body).toContain('fleet:claim-released:pui-cockpit');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+    expect(d.resumePlanRun).not.toHaveBeenCalled();
+  });
+
+  it('missing or unreadable current item fails open and preserves the normal wake', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const lookups = [
+      vi.fn(async () => null),
+      vi.fn(async () => {
+        throw new Error('work-item store unavailable');
+      }),
+    ];
+
+    for (const getCurrentWorkItem of lookups) {
+      const findPty = vi.fn(() => ({ id: 'pty-fail-open' }));
+      const write = vi.fn(() => true);
+      const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem: getCurrentWorkItem as never });
+
+      await expect(executeWake(claimReleasedWork(), d)).resolves.toEqual({
+        kind: 'delivered',
+        channel: 'pty-inject',
+      });
+      expect(findPty).toHaveBeenCalled();
+      expect(write).toHaveBeenCalled();
+      expect(d.sendCoordMessage).not.toHaveBeenCalled();
+    }
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('work-item store unavailable'));
+  });
+
+  it('malformed fleet claim-release payload skips the lookup and preserves the normal wake', async () => {
+    const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42197', assignee: 'su-worker' })) as never;
+    const findPty = vi.fn(() => ({ id: 'pty-malformed' }));
+    const write = vi.fn(() => true);
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      getCurrentWorkItem,
+    });
+
+    const out = await executeWake(
+      claimReleasedWork({ payload: { id: 'WI-42197', harness: 42 } }),
+      d,
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(getCurrentWorkItem).not.toHaveBeenCalled();
+    expect(findPty).toHaveBeenCalled();
+    expect(write).toHaveBeenCalled();
+  });
+});
+
 describe('executeWake ambient-push seam (P-003, DEFAULT-OFF)', () => {
   const OLD_FLAG = process.env.PAPERCUSP_AMBIENT_CURSOR;
   afterEach(() => {
