@@ -954,10 +954,12 @@ export default defineTool({
                       `${FACTS_PER_SCOPE_CAP}-fact cap. They will never be FOLDED again — ` +
                       `evicted by the cap, not expired and not retracted by their author. Your ` +
                       `next assert into this scope will cost another one. THE BODY IS NOT ` +
-                      `DESTROYED: eviction is a soft-delete (it stamps evicted_at), so each ` +
-                      `key above is still readable in full via ` +
-                      `facts:list { scope, key, versions:true, full:true } — read it BEFORE ` +
-                      `deciding whether it still matters, and re-assert it if it does. ` +
+                      `DESTROYED: eviction is a soft-delete (it stamps evicted_at). Each ` +
+                      `entry above carries a bodyExcerpt so you can judge whether it ` +
+                      `mattered without a second call; where bodyTruncated is true, the ` +
+                      `FULL text is still readable via ` +
+                      `facts:list { scope, key, versions:true, full:true } — and re-assert ` +
+                      `it if it does still matter. ` +
                       `Ranking: victims are chosen by confidence tier first ('verified' safest), ` +
                       `then by the REMAINING FRACTION of the author's declared TTL. That ` +
                       `fraction is scale-invariant, so TTL LENGTH is not what puts a fact at ` +

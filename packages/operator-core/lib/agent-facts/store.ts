@@ -560,6 +560,55 @@ export interface FactEviction {
   expiresAt: string;
   /** WHOSE fact this was — the actionable field ("I just cost a peer their note"). */
   createdBy: string;
+  /**
+   * EI-21393210182770949: a bounded excerpt of what was displaced, so the writer
+   * can judge whether it mattered WITHOUT a second round-trip.
+   *
+   * The receipt used to report only key/confidence/expiresAt/createdBy and then
+   * instruct "if a listed fact still matters, re-assert it" — un-honourable
+   * advice, because nothing in the receipt said what the fact SAID. That gap is
+   * why EI-21393210182770949 was filed believing the body had been destroyed; it
+   * had not (eviction is a soft-delete), but the receipt gave no way to see it.
+   *
+   * An EXCERPT rather than the full body on purpose: every assert into a
+   * saturated scope evicts, so this is a hot path, and bodies run to
+   * {@link FACT_BODY_MAX_CHARS}. Inlining them in full would push the receipt
+   * itself against the result budget — the failure mode where the fix for a
+   * missing field truncates the fields that were already working. The full text
+   * stays one call away via `facts:list { scope, key, versions:true, full:true }`,
+   * which the receipt note names.
+   */
+  bodyExcerpt: string;
+  /** True when {@link bodyExcerpt} was cut — tells the reader an excerpt is not the whole body. */
+  bodyTruncated: boolean;
+}
+
+/**
+ * How much of an evicted body the receipt inlines. Enough to identify the fact
+ * and judge relevance; short enough that N victims cannot crowd out the rest of
+ * the receipt.
+ */
+export const FACT_EVICTION_EXCERPT_CHARS = 240;
+
+/**
+ * Build the excerpt fields for one evicted row.
+ *
+ * Shared by BOTH producers ({@link assertFact}'s real eviction and the
+ * would-evict preview) so the preview cannot promise a shape the real eviction
+ * reports differently — a drift that would be invisible, since the preview is
+ * what a caller uses to decide whether to write at all.
+ *
+ * A null/absent body degrades to an empty excerpt rather than throwing: the
+ * column is NOT NULL today, and a receipt is the wrong place to discover
+ * otherwise.
+ */
+export function excerptEvictedBody(body: string | null | undefined): {
+  bodyExcerpt: string;
+  bodyTruncated: boolean;
+} {
+  const text = typeof body === 'string' ? body : '';
+  if (text.length <= FACT_EVICTION_EXCERPT_CHARS) return { bodyExcerpt: text, bodyTruncated: false };
+  return { bodyExcerpt: text.slice(0, FACT_EVICTION_EXCERPT_CHARS), bodyTruncated: true };
 }
 
 /**
@@ -1643,7 +1692,9 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // need a COUNT on every assert, which is why that is not reported: a non-empty
   // `evicted` already implies at-cap (the sweep fires only past CAP-1).
   const writtenId = rows[0].id ?? null;
-  const evictedRows = await sql<{ key: string; confidence: string | null; expires_at: string; created_by: string }[]>`
+  const evictedRows = await sql<
+    { key: string; confidence: string | null; expires_at: string; created_by: string; body: string | null }[]
+  >`
     UPDATE harness_shared.agent_facts SET retracted_at = now(), evicted_at = now()
      WHERE source_hive IS NULL
        AND superseded_at IS NULL
@@ -1691,7 +1742,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                  FROM harness_shared.agent_facts
                 WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', capPartition)}
                   AND id = ${writtenId}))
-    RETURNING key, confidence, expires_at, created_by`;
+    RETURNING key, confidence, expires_at, created_by, body`;
   const row = rows[0];
   if (!row) throw new Error('facts:assert — write returned no row');
   const fact = rowToFact(row) as AssertFactResult;
@@ -1740,6 +1791,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
         // Passed through raw, matching rowToFact's `expiresAt: r.expires_at`.
         expiresAt: r.expires_at,
         createdBy: r.created_by,
+        ...excerptEvictedBody(r.body),
       });
     }
     // Only attach when non-empty — `evicted: []` would make `if (r.evicted)`
@@ -2240,9 +2292,10 @@ export async function previewFactCapImpact(
       expires_at: string | Date;
       created_at: string | Date;
       updated_at: string | Date;
+      body: string | null;
     }[]
   >`
-    SELECT id, key, confidence, created_by, expires_at, created_at, updated_at
+    SELECT id, key, confidence, created_by, expires_at, created_at, updated_at, body
       FROM harness_shared.agent_facts
      WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', capPartition)}`;
 
@@ -2289,6 +2342,10 @@ export async function previewFactCapImpact(
     confidence: parseFactConfidence(r.confidence),
     expiresAt: typeof r.expires_at === 'string' ? r.expires_at : r.expires_at.toISOString(),
     createdBy: r.created_by,
+    // Same helper the real eviction uses — a preview that excerpted differently
+    // from the write it previews would be a silent lie about what you are about
+    // to destroy.
+    ...excerptEvictedBody(r.body),
   }));
 
   let survival: FactSurvival | null = null;
