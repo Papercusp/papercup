@@ -83,6 +83,23 @@ import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 export const CONTINUATION_READ_BUDGET_MS = 5_000;
 
 /**
+ * EI-21503907176334936 — a `rowsMode:'replace'` write computed, INSIDE the locked
+ * transform, that it would retire carried rows the caller did not explicitly confirm.
+ * Thrown BEFORE anything is stored so the loss is avoidable, not merely visible after
+ * the fact — the exact gap P-013 left open ("the report lands AFTER the write"). The
+ * handler converts this into a typed retryable refusal naming every row that would
+ * have been dropped; the transaction rolls back, so the carry-note is untouched.
+ */
+class ReplaceWouldDropError extends Error {
+  constructor(
+    readonly droppedWalls: string[],
+    readonly droppedChecks: string[],
+  ) {
+    super('checkpoint_replace_would_drop_rows');
+  }
+}
+
+/**
  * Can the CURRENT loop row actually deliver one more wake if this turn settles now?
  *
  * `active` alone is insufficient. The dead-man guard runs immediately before delivery
@@ -421,6 +438,15 @@ export default defineTool({
             "'replace' makes the list the new set and is the only retirement path. Under 'merge' a [] list is a " +
             'no-op, never a clear.',
         ),
+      confirmRetire: z
+        .boolean()
+        .optional()
+        .describe(
+          "rowsMode:'replace' safety (EI-21503907176334936): when the supplied lists would RETIRE carried rows, " +
+            'the write is REFUSED before anything is stored unless this is true — the refusal names every row ' +
+            'that would have been dropped. Set it only for a deliberate retirement (or a deliberate [] clear); ' +
+            "the default rowsMode:'merge' never needs it.",
+        ),
       expectedHash: z
         .string()
         .regex(/^[0-9a-f]{12}$/i)
@@ -734,7 +760,7 @@ export default defineTool({
             const hasOmittedPriorNarrativeField = (['did', 'left', 'insight', 'next'] as const).some(
               (key) => priorNarrative[key] !== undefined && fields[key] === undefined,
             );
-            captured.merged = mergeCarryRows({
+            const merged = mergeCarryRows({
               priorNote,
               baseNote,
               walls: effectiveWalls,
@@ -743,7 +769,20 @@ export default defineTool({
               narrativeFields: hasStructured && hasOmittedPriorNarrativeField ? fields : undefined,
               mode: rowsMode,
             });
-            return captured.merged.note;
+            captured.merged = merged;
+            // EI-21503907176334936: under replace, retirement must be CONFIRMED, not
+            // merely reported afterwards. A monitor loop that re-sends its whole note
+            // each wake from a stale view was silently retiring carried walls/checks
+            // behind an ok:true. Refuse here — inside the locked txn, so nothing is
+            // written — unless the caller asked for the retirement explicitly.
+            if (
+              rowsMode === 'replace' &&
+              args.confirmRetire !== true &&
+              (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0)
+            ) {
+              throw new ReplaceWouldDropError(merged.droppedWalls, merged.droppedChecks);
+            }
+            return merged.note;
           },
         },
       );
@@ -799,6 +838,33 @@ export default defineTool({
         };
       }
     } catch (error) {
+      // EI-21503907176334936: the confirmed-retirement refusal — thrown by the
+      // transform BEFORE any store write, so nothing was committed. Surface the
+      // exact drop set so one retry can fix it (full re-send, merge default, or
+      // explicit confirmRetire:true).
+      if (error instanceof ReplaceWouldDropError) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'checkpoint_replace_would_drop_rows',
+                retryable: true,
+                harness,
+                ownerId,
+                wallsDropped: error.droppedWalls,
+                checksDropped: error.droppedChecks,
+                message:
+                  "rowsMode:'replace' would RETIRE the carried rows named above and confirmRetire was not true — " +
+                  'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
+                  "rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       // The loop carry-note is the cold successor's only durable anchor. A
       // transient lock wait or admin-pool acquisition deadline must be visible
       // as a retryable result, not bubble into an MCP transport timeout.

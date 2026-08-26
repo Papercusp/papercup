@@ -994,7 +994,7 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
   it("walls:[] under rowsMode:'replace' is the one true clear — with a blank note the whole row clears", async () => {
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
     setLoopCarryNote.mockResolvedValue(null);
-    const b = body(await call({ note: '', walls: [], rowsMode: 'replace' }));
+    const b = body(await call({ note: '', walls: [], rowsMode: 'replace', confirmRetire: true }));
     expect(setLoopCarryNote).toHaveBeenCalledWith(expect.anything(), '');
     expect(b).toMatchObject({ ok: true, cleared: true, walls: 0 });
   });
@@ -1012,7 +1012,9 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
 
   it("a walls-ONLY write keeps the prior narrative body and, under rowsMode:'replace', replaces the walls set", async () => {
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
-    const b = body(await call({ walls: [{ claim: 'new wall', recheck: 'check-it' }], rowsMode: 'replace' }));
+    const b = body(
+      await call({ walls: [{ claim: 'new wall', recheck: 'check-it' }], rowsMode: 'replace', confirmRetire: true }),
+    );
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
     expect(written).toContain('## Next action\nold next step'); // body carried forward
     expect(written).toContain('- new wall — re-check: check-it');
@@ -1506,12 +1508,19 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
         { claim: 'deploy landed', recheck: 'curl :3070/api/health' },
       ]),
     );
-    // Post-P-013 the drop only happens under an EXPLICIT replace — which is exactly when
-    // it still has to be announced: an agent that asked to retire one stale row must be
-    // told which others went with it.
-    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }], rowsMode: 'replace' }));
+    // Post-P-013 / EI-21503907176334936 the drop only happens under an EXPLICIT,
+    // CONFIRMED replace — which is exactly when it still has to be announced: an
+    // agent that asked to retire one stale row must be told which others went with it.
+    const b = body(
+      await call({
+        did: 'progress',
+        checks: [{ claim: 'a brand new claim' }],
+        rowsMode: 'replace',
+        confirmRetire: true,
+      }),
+    );
 
-    expect(b.ok).toBe(true); // the write SUCCEEDS — this reports a loss, never a refusal
+    expect(b.ok).toBe(true); // CONFIRMED retirement proceeds — and reports the loss
     expect(b.checks).toBe(1);
     expect(b.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
     expect(b.checksDroppedNote).toContain('REPLACES');
@@ -1522,7 +1531,12 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
       buildPrior([], [{ claim: 'owner must ratify the cutover' }, { claim: 'awaiting capital arming' }]),
     );
     const b = body(
-      await call({ did: 'progress', walls: [{ claim: 'awaiting capital arming' }], rowsMode: 'replace' }),
+      await call({
+        did: 'progress',
+        walls: [{ claim: 'awaiting capital arming' }],
+        rowsMode: 'replace',
+        confirmRetire: true,
+      }),
     );
 
     expect(b.walls).toBe(1);
@@ -1542,6 +1556,78 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
     expect(b.checksDropped).toBeUndefined();
     expect(b.checksDroppedNote).toBeUndefined();
     expect(b.wallsDropped).toBeUndefined();
+  });
+});
+
+/**
+ * EI-21503907176334936 — under rowsMode:'replace', retiring carried rows is now a
+ * CONFIRMED operation, not an accepted-then-reported one. The transform refuses
+ * BEFORE any store write unless `confirmRetire: true`, so a monitor loop re-sending
+ * its whole note each wake from a stale view loses nothing. This pins the TOOL
+ * wiring of that refusal: it must name the exact drop set and leave the prior
+ * carry-note untouched (the store spy never fires).
+ */
+describe('loop:checkpoint — replace-mode retirement is CONFIRMED, never silent (EI-21503907176334936)', () => {
+  const buildPrior = (
+    checks: { claim: string; recheck?: string; verified?: string }[],
+    walls: { claim: string; recheck?: string }[] = [],
+  ) => mergeCarryRows({ priorNote: null, baseNote: 'prior body', checks, walls, hasNoteWrite: true }).note;
+
+  const THREE = [
+    { claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30 @2026-08-03T10:00:00.000Z' },
+    { claim: 'main is at abc123', recheck: 'git rev-parse main' },
+    { claim: 'deploy landed', recheck: 'curl :3070/api/health' },
+  ];
+
+  it('REFUSES an unconfirmed replace that would retire carried checks — and stores NOTHING', async () => {
+    getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }], rowsMode: 'replace' }));
+
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('checkpoint_replace_would_drop_rows');
+    expect(b.retryable).toBe(true);
+    expect(b.checksDropped).toEqual(['gate is green', 'main is at abc123', 'deploy landed']);
+    // The transaction rolled back: nothing was written at all.
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+    expect(b.message).toContain('confirmRetire');
+  });
+
+  it('the SAME write passes with confirmRetire:true and still reports what retired', async () => {
+    getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
+    const b = body(
+      await call({
+        did: 'progress',
+        checks: [{ claim: 'a brand new claim' }],
+        rowsMode: 'replace',
+        confirmRetire: true,
+      }),
+    );
+
+    expect(b.ok).toBe(true);
+    expect(b.checks).toBe(1);
+    expect(b.checksDropped).toHaveLength(3);
+  });
+
+  it('a [] clear without confirmRetire is refused too — clearing every wall stays deliberate', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior([], [{ claim: 'zombie PIDs await owner OK', recheck: 'ps -p 95902' }]),
+    );
+    setLoopCarryNote.mockResolvedValue(null);
+    const b = body(await call({ note: '', walls: [], rowsMode: 'replace' }));
+
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('checkpoint_replace_would_drop_rows');
+    expect(b.wallsDropped).toEqual(['zombie PIDs await owner OK']);
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  it('a replace whose lists already cover the carried set needs NO confirmation', async () => {
+    getLoopCarryNote.mockResolvedValue(buildPrior([{ claim: 'gate is green', recheck: 'state:read' }]));
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'gate is green' }], rowsMode: 'replace' }));
+
+    expect(b.ok).toBe(true);
+    expect(b.checks).toBe(1);
+    expect(b.checksDropped).toBeUndefined();
   });
 });
 
@@ -1628,7 +1714,14 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     // Guards the OTHER direction: a change that made merge unconditional would make the
     // test above pass while silently removing the only way to retire a stale row.
     getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
-    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }], rowsMode: 'replace' }));
+    const b = body(
+      await call({
+        did: 'progress',
+        checks: [{ claim: 'a brand new claim' }],
+        rowsMode: 'replace',
+        confirmRetire: true,
+      }),
+    );
 
     expect(b.checks).toBe(1);
     expect(b.checksDropped).toHaveLength(3);
