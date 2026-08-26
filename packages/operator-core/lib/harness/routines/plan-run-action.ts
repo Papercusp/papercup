@@ -31,6 +31,12 @@ import { evaluatePlanStartReadiness } from '../../agent-tools/plans/plan-input-v
 import { routineStorageSlug } from '../../pot-membership';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
+import {
+  deriveIndexFromContent,
+  type PlanIndexDecision,
+  type PlanIndexItem,
+} from '../../agent-tools/plans/source';
+import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
 import { hashPlanContent } from '@papercusp/plan-parser';
 import {
   promotePlanItems,
@@ -150,14 +156,15 @@ async function runScheduledPlanFireTx(
       content: string;
       content_hash: string;
       title: string | null;
-      items: unknown;
+      items: PlanIndexItem[] | null;
+      decisions: PlanIndexDecision[] | null;
       schedule: { executorKind?: string; execution?: unknown } | null;
       template: string | null;
       template_data: unknown;
       input_schema: unknown;
     }>
   >`
-    SELECT content, content_hash, title, items, schedule, template, template_data, input_schema
+    SELECT content, content_hash, title, items, decisions, schedule, template, template_data, input_schema
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${planStorageSlug}
        AND plan_slug = ${templateSlug}
@@ -335,19 +342,42 @@ async function runScheduledPlanFireTx(
   // (and imported plans) may have a populated index even when their markdown
   // predates strict item-line syntax, and silently dropping it would turn a
   // valid run into a zero-work promotion.
-  const itemsJson = JSON.stringify(Array.isArray(template.items) ? template.items : []);
   const instanceContent = setFrontmatterScalar(template.content, 'slug', instanceSlug);
   const instanceContentHash = hashPlanContent(instanceContent);
+  const contentIndex = deriveIndexFromContent(instanceContent);
+  // `content` is canonical for current plans, but imported/legacy plans may
+  // carry a populated derived JSON index even when their markdown predates the
+  // strict structured item/decision syntax. Preserve that same compatibility
+  // contract the promotion reader uses: prefer the stored index when present,
+  // otherwise derive it from the cloned content.
+  const instanceItems =
+    Array.isArray(template.items) && template.items.length > 0 ? template.items : contentIndex.items;
+  const instanceDecisions =
+    Array.isArray(template.decisions) && template.decisions.length > 0
+      ? template.decisions
+      : contentIndex.decisions;
+  const itemsJson = JSON.stringify(instanceItems);
+  const decisionsJson = JSON.stringify(instanceDecisions);
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
-       items, template_slug, run_seq, origin, template, template_data, input_schema)
+       items, decisions, template_slug, run_seq, origin, template, template_data, input_schema)
     VALUES (${workspaceId}, ${appPlanStorageSlug}, ${instanceSlug}, ${template.title}, 'active',
-            ${instanceContent}, ${instanceContentHash}, ${itemsJson}::text::jsonb,
+            ${instanceContent}, ${instanceContentHash}, ${itemsJson}::text::jsonb, ${decisionsJson}::text::jsonb,
             ${templateSlug}, ${runSeq}, 'local',
             ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb)
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
   `;
+  // Raw instance creation is a plan WRITE and therefore owes the same derived
+  // relational index as with-plan-lock and the built-in external-trigger plan
+  // writers. Keep it in this transaction, after the parent row exists and while
+  // the fire advisory lock is held, so work_items:complete can reflect the root
+  // plan item without ever observing a plan whose normalized index is missing.
+  await writePlanIndexRows(
+    sql as unknown as Parameters<typeof writePlanIndexRows>[0],
+    { workspaceId, harnessSlug: appPlanStorageSlug, planSlug: instanceSlug },
+    { items: instanceItems, decisions: instanceDecisions },
+  );
 
   // 6. The plan_runs ledger row (run_type='scheduled'). plan_slug = the TEMPLATE so
   //    "all runs of X" = WHERE plan_slug=X (D-003); instance_plan_slug names the copy.
