@@ -5,7 +5,7 @@
  * shared behavior predicate: active loop owners only, `infinity` as the parked sentinel, recent
  * agent-authored calls as activity, and carry-note bookkeeping / automatic calls excluded.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/stalled-loops-population.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

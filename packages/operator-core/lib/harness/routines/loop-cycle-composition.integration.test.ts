@@ -14,7 +14,7 @@
  * — through listDueCronRoutines/rowToRoutine (B-LOOP-1, which must normalize 'infinity'),
  * so a drift between claim's park representation and reconcile's selector would FAIL here.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/loop-cycle-composition.integration.test.ts
  *
  * Plan: loop-routines-interval-recurrence-2026-06-20 (Phase A composition).

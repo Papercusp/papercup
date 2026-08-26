@@ -3,7 +3,7 @@
  * the calendar-window expansion across templates — recurring + one-shot, armed +
  * disarmed, expiry-bounded, with last-run outcome — excluding instance plans.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/scheduled-occurrences.integration.test.ts
  *
  * Plan: scheduled-recurring-plans-2026-06-16 (P-018/P-019/P-026).

@@ -19,7 +19,7 @@
  * behaviour. Mirrors the compaction-presence-store rig (own database, own schema) so it
  * does not depend on the shared baseline container's migration state.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *   packages/operator-core/lib/presence-current-files.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

@@ -18,7 +18,7 @@
  * Drives the REAL handler through Postgres via withPlanLock + the shared
  * baseline-schema fixture, mirroring set-content-terminal-status.integration.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/agent-tools/plans/__tests__/set-plan-status-terminal-clear.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

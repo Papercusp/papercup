@@ -15,7 +15,7 @@
  * to alarm and the new one must alarm. A guard that only asserts the new column is "correct"
  * would pass just as happily if the bug had never existed.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/release/routines-active-changed-at.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

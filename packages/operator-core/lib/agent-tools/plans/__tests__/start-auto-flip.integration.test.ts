@@ -12,7 +12,7 @@
  *   - re-start (now ready) → autoApproved:false, no second flip;
  *   - a non-draft (ready) start → autoApproved:false, frontmatter unchanged.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';

@@ -5,7 +5,7 @@
  * spend READ is injected here (it is the documented fail-open best-effort seam — see
  * loop-cost-cap.ts); this test pins the routine-table WRITES the cost-cap performs.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/loop-cost-cap.integration.test.ts
  *
  * Plan: loop-routines-interval-recurrence-2026-06-20 (B-LOOP-3, on su-d5a84's mig 323 schema).

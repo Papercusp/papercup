@@ -3,7 +3,7 @@
  * REAL migrated Postgres (testcontainer, so migration 323's reschedule_interval_sec +
  * target_owner_id columns are present).
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/reconcile-loop-routines.integration.test.ts
  *
  * Plan: loop-routines-interval-recurrence-2026-06-20 (B-LOOP-2). Covers: re-arms N sec

@@ -5,7 +5,7 @@
  * coord_presence and read back via get(); a later write preserves the limit; setters
  * no-op on an unknown owner. Mirrors the coord-capability-pg-stores rig.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *   packages/operator-core/lib/compaction-presence-store.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';

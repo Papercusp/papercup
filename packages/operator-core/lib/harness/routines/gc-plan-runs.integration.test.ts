@@ -3,7 +3,7 @@
  * Postgres: keep the plan_runs ledger; sweep instance plans + transcripts + work_items
  * past the last-N / older-than-T bound.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/gc-plan-runs.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

@@ -3,7 +3,7 @@
  * migrated Postgres: a scheduled run's spend is summed across its work_items' spawns'
  * usage samples; a run over the per-plan costCapCents auto-disarms the schedule.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/plan-run-cost.integration.test.ts
  *
  * Plan: scheduled-recurring-plans-2026-06-16 (P-013 / D-018).

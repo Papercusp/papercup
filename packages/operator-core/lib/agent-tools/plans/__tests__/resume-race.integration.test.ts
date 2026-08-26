@@ -13,7 +13,7 @@
  * baseline schema) — only the agent turn + context bundle are stubbed, so the
  * row-level race is exercised exactly as production hits it.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/agent-tools/plans/__tests__/resume-race.integration.test.ts
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';

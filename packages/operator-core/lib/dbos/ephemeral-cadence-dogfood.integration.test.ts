@@ -21,7 +21,7 @@
  * Also proves the P-013 FLAG GATE: with papercusp-ephemeral-cadence OFF, materialize writes
  * NO ephemeral row (the kill-switch), so the executor arms nothing.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/dbos/ephemeral-cadence-dogfood.integration.test.ts
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';

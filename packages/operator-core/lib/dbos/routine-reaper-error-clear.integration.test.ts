@@ -14,7 +14,7 @@
  * reaper-sourced marker and PRESERVES a genuine `runner`-sourced action error and
  * git-sync's own no-source error, so a real wedge still surfaces.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/dbos/routine-reaper-error-clear.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

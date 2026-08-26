@@ -8,7 +8,7 @@
  * UPDATE` serializes the read-modify-write, so the counter can't be double-spent). That last one
  * is the property a pure-in-memory test can't show; it's the whole point of going to PG.
  *
- * Run: npx vitest run --config vitest.integration.config.ts apps/operator/lib/agent-governor-pg-store.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts apps/operator/lib/agent-governor-pg-store.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';

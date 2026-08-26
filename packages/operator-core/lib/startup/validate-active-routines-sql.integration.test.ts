@@ -17,7 +17,7 @@
  * The test drives the PRODUCTION statement through the exported `pauseUnregisteredRoutine`
  * seam rather than a copy of the SQL, so it cannot drift away from what boot runs.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/startup/validate-active-routines-sql.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

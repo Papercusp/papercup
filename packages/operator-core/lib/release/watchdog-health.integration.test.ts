@@ -11,7 +11,7 @@
  * "silently wrote nothing", so shipping this guarded by a mock would reproduce the very bug it
  * closes, one layer down.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/release/watchdog-health.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';

@@ -2,7 +2,7 @@
  * reconcileScheduledPlanRuns — settling a scheduled run's outcome/finished_at once its
  * work_items terminate, proven against a REAL migrated Postgres (testcontainer).
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/reconcile-plan-runs.integration.test.ts
  *
  * Plan: scheduled-recurring-plans-2026-06-16 (Phase 5 data; unblocks P-012/P-013).

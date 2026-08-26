@@ -4,7 +4,7 @@
  * getLoopStatus reads it (incl. the 'infinity' parked sentinel) and deactivateLoop
  * stops it. Exercises the raw SQL the mocked unit test (loop.test.ts) cannot.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/loop.integration.test.ts
  *
  * Plan: loop-routines-interval-recurrence-2026-06-20 (B-LOOP-5).

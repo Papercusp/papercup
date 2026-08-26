@@ -12,7 +12,7 @@
  * Drives the REAL setPlanStatusTool.handler through Postgres via withPlanLock +
  * captureImprovement → createIssue, on the shared baseline-schema fixture.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/agent-tools/plans/__tests__/set-plan-status-deprecate-learnings.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

@@ -10,7 +10,7 @@
  * row has not been written yet, and above all anything that is not a loop at all.
  * Each of those is a separate test below.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/gc-dead-loops.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

@@ -3,7 +3,7 @@
  * rollup/cost from listPlanRuns (against a real migrated Postgres), and the pure
  * computePlanRunRollup aggregate.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/agent-tools/plans/__tests__/run-enrichment.integration.test.ts
  *
  * Plan: scheduled-recurring-plans-2026-06-16 (P-022 / P-023).

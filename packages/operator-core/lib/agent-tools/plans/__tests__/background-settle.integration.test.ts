@@ -14,7 +14,7 @@
  * to yield an `error` event, exactly the shape a backend failure produces. We
  * then poll getPlanRun until the row settles, asserting it reaches `failed`.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/agent-tools/plans/__tests__/background-settle.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';

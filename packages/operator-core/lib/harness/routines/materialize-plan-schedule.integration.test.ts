@@ -2,7 +2,7 @@
  * materialize-plan-schedule — a scheduled plan's authored schedule projected onto a
  * harness_shared.routines row, proven against a REAL migrated Postgres (testcontainer).
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/materialize-plan-schedule.integration.test.ts
  *
  * Plan: scheduled-recurring-plans-2026-06-16 (P-007 sub-step 7b).

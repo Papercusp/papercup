@@ -3,7 +3,7 @@
  * REAL migrated Postgres (testcontainer). Authoring does NOT arm (schedule_active stays
  * false — arming is the autonomy-gated flow, Phase 3).
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/agent-tools/plans/__tests__/set-plan-schedule.integration.test.ts
  *
  * Plan: scheduled-recurring-plans-2026-06-16 (P-014).

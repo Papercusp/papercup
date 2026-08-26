@@ -5,7 +5,7 @@
  * (it uses drizzle/getOrgPg, mocked elsewhere); this test validates the raw-sql legs the unit
  * test (loop-turn-outcome.test.ts) mocked. loop-wake-rate-limit-robustness-2026-06-23 P0b/P1a.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/loop-turn-outcome.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';

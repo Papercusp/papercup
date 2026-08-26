@@ -22,7 +22,7 @@
  * locks the identity contract that makes that true: the fire wakes the SAME owner_id the
  * rebase queries.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/loop-e2e-handshake.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';

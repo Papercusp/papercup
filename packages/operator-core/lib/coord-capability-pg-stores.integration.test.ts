@@ -18,7 +18,7 @@
  * The five tables are created once via `ensureCoordCapabilityTables` (the
  * package's standalone schema rig, mirroring migration 123).
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *   packages/operator-core/lib/coord-capability-pg-stores.integration.test.ts
  */
 import { afterAll, beforeAll, test, expect } from 'vitest';

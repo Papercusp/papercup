@@ -2,7 +2,7 @@
  * arm/disarm a scheduled plan, proven against a REAL migrated Postgres (testcontainer):
  * arming sets schedule_active + materializes the routine; disarming clears + deactivates.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/arm-plan-schedule.integration.test.ts
  *
  * Plan: scheduled-recurring-plans-2026-06-16 (P-016/P-017).

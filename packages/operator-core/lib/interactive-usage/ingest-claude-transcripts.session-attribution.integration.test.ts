@@ -10,7 +10,7 @@
  * the session id (it equals adv_sessions.session_id), so populating `session_id` makes the
  * existing join work — no schema change. This test pins that session_id is now written.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/interactive-usage/ingest-claude-transcripts.session-attribution.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
