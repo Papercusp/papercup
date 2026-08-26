@@ -423,6 +423,32 @@ export async function evaluateCriterionTestChecks(input: {
           `would be exactly the silent pass D-006 forbids.`,
       };
     }
+    // A reported file can still be UNJUDGED: Vitest exits zero when every test in a
+    // collected file is skipped (for example, a portable suite guarded by
+    // `describe.skipIf(!config)`). Checking only the batch aggregate is insufficient —
+    // one genuinely-running sibling file would hide the vacuous file. Every named file
+    // must execute at least one test before it may support a deterministic criterion.
+    const unexecuted = files.filter((f) => {
+      const counts = byFile[f]!;
+      return counts.passed + counts.failed === 0;
+    });
+    if (unexecuted.length > 0) {
+      return {
+        ok: false,
+        error: 'check_run_failed',
+        criterionKey: key,
+        detail:
+          `criterion '${key}' names test file(s) that were reported but executed ZERO tests: ` +
+          unexecuted
+            .map((f) => {
+              const counts = byFile[f]!;
+              return `${f} (${counts.skipped} skipped${counts.collectionFailed ? ', collection failed' : ''})`;
+            })
+            .join(', ') +
+          `. An exit-zero skip-only suite is unjudged, not a deterministic pass. Supply the ` +
+          `required test configuration or bind the criterion to a non-skipping authority test, then re-emit.`,
+      };
+    }
     const passed = files.reduce((n, f) => n + (byFile[f]?.passed ?? 0), 0);
     const failed = files.reduce((n, f) => n + (byFile[f]?.failed ?? 0), 0);
     const record: CriterionCheckRun = {

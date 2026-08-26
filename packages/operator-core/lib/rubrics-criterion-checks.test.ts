@@ -24,7 +24,11 @@ import {
   type CoverageReader,
 } from './rubrics-criterion-checks';
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
-import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
+import {
+  rubricCriterionSchema,
+  rubricTemplateDataSchema,
+  rubricCriterionCheckSchema,
+} from './agent-tools/plans/rubric-template';
 import { effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
 
 // ── scratch tree ──────────────────────────────────────────────────────────────
@@ -45,7 +49,9 @@ for (const f of MANY) writeFileSync(join(root, f), 'export {};\n');
 describe('rubricCriterionCheckSchema (P-011 schema)', () => {
   it('accepts a tests check and an instrument check; refuses unknown fields and unknown kinds', () => {
     expect(rubricCriterionCheckSchema.safeParse(testsCheck(['a.test.ts'])).success).toBe(true);
-    expect(rubricCriterionCheckSchema.safeParse({ kind: 'instrument', instrumentKey: 'gate-verdict' }).success).toBe(true);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'instrument', instrumentKey: 'gate-verdict' }).success).toBe(
+      true,
+    );
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: ['a.test.ts'], extra: 1 }).success).toBe(false);
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'vibes' }).success).toBe(false);
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'tests', files: [] }).success).toBe(false);
@@ -61,14 +67,24 @@ describe('rubricCriterionCheckSchema (P-011 schema)', () => {
     const data = (check: unknown, instrumentKey?: string) => ({
       characteristic: 'c',
       criteria: [
-        { key: 'k', title: 't', model: 'm', method: 'm', driftMarkers: 'd', ...(instrumentKey ? { instrumentKey } : {}), check },
+        {
+          key: 'k',
+          title: 't',
+          model: 'm',
+          method: 'm',
+          driftMarkers: 'd',
+          ...(instrumentKey ? { instrumentKey } : {}),
+          check,
+        },
       ],
       ratingScale: ['healthy', 'broken'],
     });
     const conflicting = rubricTemplateDataSchema.safeParse(data({ kind: 'instrument', instrumentKey: 'a' }, 'b'));
     expect(conflicting.success).toBe(false);
     expect(JSON.stringify(conflicting.success ? '' : conflicting.error.issues)).toContain('two different instruments');
-    expect(rubricTemplateDataSchema.safeParse(data({ kind: 'instrument', instrumentKey: 'a' }, 'a')).success).toBe(true);
+    expect(rubricTemplateDataSchema.safeParse(data({ kind: 'instrument', instrumentKey: 'a' }, 'a')).success).toBe(
+      true,
+    );
     // tests-check beside an instrumentKey is two DIFFERENT bindings — legal.
     expect(rubricTemplateDataSchema.safeParse(data(testsCheck(['a.test.ts']), 'a')).success).toBe(true);
   });
@@ -109,19 +125,16 @@ describe('rubricCriterionCheckSchema (P-011 schema)', () => {
     ).toBe('structured');
     expect(effectiveCriterionInstrumentKey({ instrumentKey: 'legacy-field' })).toBe('legacy-field');
     // a tests-check is NOT an instrument binding — falls through to the legacy chain.
-    expect(
-      effectiveCriterionInstrumentKey({ check: testsCheck(['a.test.ts']), instrumentKey: 'legacy-field' }),
-    ).toBe('legacy-field');
+    expect(effectiveCriterionInstrumentKey({ check: testsCheck(['a.test.ts']), instrumentKey: 'legacy-field' })).toBe(
+      'legacy-field',
+    );
   });
 });
 
 // ── propose-time path validation (REFUSING — D-006) ──────────────────────────
 describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () => {
   it('passes a resolving repo-root-relative file and returns it normalized', () => {
-    const v = validateCriterionCheckPaths(
-      [{ key: 'k', check: testsCheck(['packages/x/real.test.ts']) }],
-      { root },
-    );
+    const v = validateCriterionCheckPaths([{ key: 'k', check: testsCheck(['packages/x/real.test.ts']) }], { root });
     expect(v.ok).toBe(true);
     expect(v.checked).toBe(1);
     expect(v.normalizedByKey.k).toEqual(['packages/x/real.test.ts']);
@@ -143,10 +156,7 @@ describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () =>
 
   it('ignores fuzzy criteria and instrument checks entirely (checked stays 0)', () => {
     const v = validateCriterionCheckPaths(
-      [
-        { key: 'fuzzy' },
-        { key: 'inst', check: { kind: 'instrument', instrumentKey: 'x' } },
-      ],
+      [{ key: 'fuzzy' }, { key: 'inst', check: { kind: 'instrument', instrumentKey: 'x' } }],
       { root },
     );
     expect(v.ok).toBe(true);
@@ -245,7 +255,9 @@ describe('selectCriterionCheckRoot (WI-41394 phantom-root fallback)', () => {
 // grain a real report does (WI-39848) — the batched evaluator attributes verdicts from
 // it. Totals are DERIVED from byFile rather than hand-written beside it, so a stub can
 // never drift into an internally-inconsistent shape the real distiller could not produce.
-const totalsOf = (byFile: Record<string, { passed: number; failed: number; skipped: number; collectionFailed: boolean }>) => ({
+const totalsOf = (
+  byFile: Record<string, { passed: number; failed: number; skipped: number; collectionFailed: boolean }>,
+) => ({
   passed: Object.values(byFile).reduce((n, b) => n + b.passed, 0),
   failed: Object.values(byFile).reduce((n, b) => n + b.failed, 0),
   skipped: Object.values(byFile).reduce((n, b) => n + b.skipped, 0),
@@ -372,6 +384,54 @@ describe('evaluateCriterionTestChecks (grading time)', () => {
     if (!res.ok) expect(res.error).toBe('check_run_failed');
   });
 
+  it('REFUSES an exit-zero file whose entire suite is skipped as unjudged, never passed', async () => {
+    const runner: CriterionCheckRunner = async ({ files }) => {
+      const byFile = Object.fromEntries(
+        files.map((f) => [f, { passed: 0, failed: 0, skipped: 3, collectionFailed: false }]),
+      );
+      return { ...passRun(files), ...totalsOf(byFile), byFile } as never;
+    };
+    const res = await evaluateCriterionTestChecks({
+      criteria: CRITERIA,
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('check_run_failed');
+      expect(res.criterionKey).toBe('det');
+      expect(res.detail).toContain('executed ZERO tests');
+      expect(res.detail).toContain('3 skipped');
+    }
+  });
+
+  it('REFUSES one skip-only file even when a sibling file executed and made the batch green', async () => {
+    const runner: CriterionCheckRunner = async ({ files }) => {
+      const byFile = Object.fromEntries(
+        files.map((f, i) => [
+          f,
+          i === 0
+            ? { passed: 3, failed: 0, skipped: 0, collectionFailed: false }
+            : { passed: 0, failed: 0, skipped: 4, collectionFailed: false },
+        ]),
+      );
+      return { ...passRun(files), ...totalsOf(byFile), byFile } as never;
+    };
+    const res = await evaluateCriterionTestChecks({
+      criteria: [{ key: 'det', check: testsCheck([MANY[0], MANY[1]]) }],
+      ratings: { det: { rating: 'healthy' } },
+      root,
+      runner,
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error).toBe('check_run_failed');
+      expect(res.detail).toContain(MANY[1]);
+      expect(res.detail).not.toContain(`${MANY[0]} (`);
+    }
+  });
+
   it('skips unrated tests-check criteria (emit completeness governs rating coverage separately)', async () => {
     let ran = false;
     const runner: CriterionCheckRunner = async ({ files }) => {
@@ -488,15 +548,17 @@ const coverageCheck = (
 
 /** A census reading. Defaults describe a healthy, fully-covered, DECLARED population,
  *  so each test perturbs exactly the one field it is about. */
-const measurement = (over: {
-  surfaces?: number;
-  meets?: number;
-  belowUnwaived?: number;
-  verdict?: 'measured' | 'not-measured';
-  censusUnknown?: string[] | null;
-  rows?: string[];
-  weakest?: string | null;
-} = {}): CoverageMeasurement => {
+const measurement = (
+  over: {
+    surfaces?: number;
+    meets?: number;
+    belowUnwaived?: number;
+    verdict?: 'measured' | 'not-measured';
+    censusUnknown?: string[] | null;
+    rows?: string[];
+    weakest?: string | null;
+  } = {},
+): CoverageMeasurement => {
   const surfaces = over.surfaces ?? 10;
   const meets = over.meets ?? 10;
   return {
@@ -513,7 +575,8 @@ const measurement = (over: {
   };
 };
 
-const reader = (m: CoverageMeasurement, spy?: (a: Parameters<CoverageReader>[0]) => void): CoverageReader =>
+const reader =
+  (m: CoverageMeasurement, spy?: (a: Parameters<CoverageReader>[0]) => void): CoverageReader =>
   async (a) => {
     spy?.(a);
     return m;
@@ -524,9 +587,9 @@ describe('rubricCriterionCheckSchema — the coverage arm (P-006)', () => {
     expect(rubricCriterionCheckSchema.safeParse(coverageCheck({ surfaceKind: 'mcp-tool' })).success).toBe(true);
     expect(rubricCriterionCheckSchema.safeParse(coverageCheck({ planTouched: true }, 'l3')).success).toBe(true);
     expect(rubricCriterionCheckSchema.safeParse(coverageCheck({})).success).toBe(true);
-    expect(
-      rubricCriterionCheckSchema.safeParse({ kind: 'coverage', scope: {}, floor: 'l1', extra: 1 }).success,
-    ).toBe(false);
+    expect(rubricCriterionCheckSchema.safeParse({ kind: 'coverage', scope: {}, floor: 'l1', extra: 1 }).success).toBe(
+      false,
+    );
     expect(rubricCriterionCheckSchema.safeParse({ kind: 'coverage', scope: {}, floor: 'l9' }).success).toBe(false);
     expect(rubricCriterionCheckSchema.safeParse(coverageCheck({ sourceFiles: [] })).success).toBe(false);
     // scope is strict too — a typo'd key must not silently widen the scope to everything
@@ -545,7 +608,12 @@ describe('validateCriterionCheckPaths — coverage scopes', () => {
     );
     expect(v.ok).toBe(false);
     expect(v.scopeFailures[0]?.criterionKey).toBe('cov');
-    expect(() => assertCriterionCheckPathsResolve([{ key: 'cov', check: coverageCheck({ planTouched: true, sourceFiles: ['a.ts'] }) }], { root })).toThrow(/invalid_args/);
+    expect(() =>
+      assertCriterionCheckPathsResolve(
+        [{ key: 'cov', check: coverageCheck({ planTouched: true, sourceFiles: ['a.ts'] }) }],
+        { root },
+      ),
+    ).toThrow(/invalid_args/);
   });
 
   it('CONTROL: either one alone is accepted, and a coverage check never counts as a tests path', () => {
@@ -615,7 +683,7 @@ describe('evaluateCriterionCoverageChecks (grading time)', () => {
     expect(res.ok).toBe(true);
   });
 
-  it("REFUSES a not-measured verdict even if a count sneaked through — the words and the number are both honoured", async () => {
+  it('REFUSES a not-measured verdict even if a count sneaked through — the words and the number are both honoured', async () => {
     const res = await evaluateCriterionCoverageChecks({
       criteria: [{ key: 'cov', check: coverageCheck({}) }],
       ratings: rated('healthy'),
@@ -682,7 +750,7 @@ describe('evaluateCriterionCoverageChecks (grading time)', () => {
   });
 
   // ── plan-touched: the reverse map ───────────────────────────────────────────
-  it('resolves planTouched to the plan\'s changed files and measures over THEM', async () => {
+  it("resolves planTouched to the plan's changed files and measures over THEM", async () => {
     let seen: Parameters<CoverageReader>[0] | undefined;
     const res = await evaluateCriterionCoverageChecks({
       criteria: [{ key: 'cov', check: coverageCheck({ planTouched: true }) }],
