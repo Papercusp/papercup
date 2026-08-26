@@ -18,6 +18,7 @@ import { runControlMutation } from '../../gateway-control/control-harness';
 import { readQualificationAdmission } from '../../release-checkpoint-config';
 import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
 import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
+import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 
 /**
@@ -81,7 +82,11 @@ function deepMergePlain(
  * serializer-owned. Other routines, installs, and active:false pauses retain the
  * generic routines:set behavior.
  */
-async function assertGreenCheckpointResumeAdmission(slug: string, name: string): Promise<void> {
+async function assertGreenCheckpointResumeAdmission(
+  slug: string,
+  name: string,
+  callerOwnerId: string,
+): Promise<void> {
   if (name !== 'green-checkpoint' || slug !== operatorHomeHarnessSlug()) return;
 
   let root: string;
@@ -110,6 +115,31 @@ async function assertGreenCheckpointResumeAdmission(slug: string, name: string):
   }
   if (serializer.status === 'unreadable') {
     throw new Error(`green-checkpoint resume refused: serializer authority is unreadable (${serializer.error})`);
+  }
+
+  // EI-21526695715087245: the structured D-012/D-016 fence is deliberately a
+  // separate, stronger authority, but it is not atomic with every ownership
+  // transfer. A consequence-reclaim clears the stale holder's liveness-bound
+  // hold_open lease, then a successor's ordinary claim lands before that
+  // successor can restore the fence. During that short window the serializer
+  // reader correctly reports `none` even though the live gate-red-streak owner
+  // is already the only peer allowed to decide the transition.
+  //
+  // Reuse the gate ownership cell's condition + liveness resolver here rather
+  // than inventing another WI-40086 query. Direct routine resume stands down
+  // only for a positively-live PEER; the owner itself can still repair/encode
+  // the canonical fence, and ambiguous/dead ownership follows the existing
+  // recovery path instead of wedging the release indefinitely.
+  const gateOwnership = await readGateOwnership({ harness: slug });
+  if (gateOwnership.claimState === null) {
+    throw new Error(
+      `green-checkpoint resume refused: gate ownership is unreadable (${gateOwnership.unknown?.detail ?? 'unknown resolver failure'})`,
+    );
+  }
+  if (shouldStandDownForLivePeer(gateOwnership, callerOwnerId)) {
+    throw new Error(
+      `green-checkpoint resume refused: live gate owner ${gateOwnership.takenBy} holds ${gateOwnership.workItem ?? gateOwnership.eventKey}`,
+    );
   }
 
   let activeRun: ReturnType<typeof checkActiveCheckpointRun>;
@@ -220,7 +250,7 @@ export default defineTool({
     // Guard before runControlMutation itself so dryRun cannot be used to probe or
     // bypass the same serializer-owned resume admission as a real write.
     if (args.active === true) {
-      await assertGreenCheckpointResumeAdmission(slug, args.name);
+      await assertGreenCheckpointResumeAdmission(slug, args.name, pausedByFrom(ctx, ctx.role));
     }
 
     const readSnap = async (): Promise<RoutineSnap> => {

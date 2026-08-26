@@ -41,6 +41,23 @@ vi.mock('../../release-checkpoint-config', () => ({
 vi.mock('../../release/checkpoint-serializer-authority', () => ({
   readCheckpointSerializerAuthority: vi.fn(async () => ({ status: 'none' as const, reason: 'routine-not-paused' as const })),
 }));
+vi.mock('../../coord/gate-ownership', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  readGateOwnership: vi.fn(async () => ({
+    assessment: 'unowned' as const,
+    eventKey: 'gate-red-streak:home-harness',
+    workItem: null,
+    claimState: 'no-object' as const,
+    unknown: null,
+    takenBy: null,
+    takenAt: null,
+    lastProgressAt: null,
+    expiresAt: null,
+    holderSessionState: null,
+    duplicates: [],
+    thread: { status: 'not-applicable' as const, reason: 'no owner' },
+  })),
+}));
 vi.mock('../../release-checkpoint-launch', () => ({
   checkActiveCheckpointRun: vi.fn(() => ({
     active: false,
@@ -57,11 +74,13 @@ import { readQualificationAdmission } from '../../release-checkpoint-config';
 import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
 import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
 import { resolveIntegrationRoot } from '../../harness/routines/release-actions';
+import { readGateOwnership } from '../../coord/gate-ownership';
 const cronM = vi.mocked(computeNextFireAt);
 const admissionM = vi.mocked(readQualificationAdmission);
 const serializerM = vi.mocked(readCheckpointSerializerAuthority);
 const activeRunM = vi.mocked(checkActiveCheckpointRun);
 const rootM = vi.mocked(resolveIntegrationRoot);
+const gateOwnershipM = vi.mocked(readGateOwnership);
 
 const listModule = await import('./list');
 const listTool = listModule.default;
@@ -81,6 +100,20 @@ beforeEach(() => {
   cronM.mockReturnValue(new Date('2030-01-01T00:00:00Z'));
   admissionM.mockResolvedValue({ status: 'clear' });
   serializerM.mockResolvedValue({ status: 'none', reason: 'routine-not-paused' });
+  gateOwnershipM.mockResolvedValue({
+    assessment: 'unowned',
+    eventKey: 'gate-red-streak:home-harness',
+    workItem: null,
+    claimState: 'no-object',
+    unknown: null,
+    takenBy: null,
+    takenAt: null,
+    lastProgressAt: null,
+    expiresAt: null,
+    holderSessionState: null,
+    duplicates: [],
+    thread: { status: 'not-applicable', reason: 'no owner' },
+  } as never);
   activeRunM.mockReturnValue({
     active: false,
     unit: 'papercusp-green-checkpoint',
@@ -846,6 +879,31 @@ describe('routines:set', () => {
     await expect(
       setTool.handler({ name: 'green-checkpoint', active: true } as never, { role: 'operator' } as never),
     ).rejects.toThrow(/serializer hold.*WI-40086.*su-serializer/i);
+    expect(controlMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks a peer resume in the reclaim-to-hold window when the live gate owner already claimed the incident', async () => {
+    gateOwnershipM.mockResolvedValue({
+      assessment: 'held-live',
+      eventKey: 'gate-red-streak:home-harness',
+      workItem: 'WI-40086',
+      claimState: 'held',
+      unknown: null,
+      takenBy: 'su-gate-owner',
+      takenAt: '2026-08-26T14:30:17.000Z',
+      lastProgressAt: null,
+      expiresAt: null,
+      holderSessionState: 'live',
+      duplicates: [],
+      thread: { status: 'not-read', reason: 'not needed by resume guard' },
+    } as never);
+
+    await expect(
+      setTool.handler(
+        { name: 'green-checkpoint', active: true, dryRun: true } as never,
+        { role: 'operator', ownerId: 'su-peer' } as never,
+      ),
+    ).rejects.toThrow(/live gate owner su-gate-owner holds WI-40086/i);
     expect(controlMock).not.toHaveBeenCalled();
   });
 
