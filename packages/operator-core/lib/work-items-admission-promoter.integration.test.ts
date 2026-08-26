@@ -8,8 +8,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { runWorkItemAdmissionFailOpen, runWorkItemAdmissionPromoter, WORK_ITEM_ADMISSION_PROMOTER } =
-  await import('./work-items-admission-promoter');
+const {
+  readWorkItemAdmissionSnapshot,
+  runWorkItemAdmissionFailOpen,
+  runWorkItemAdmissionPromoter,
+  WORK_ITEM_ADMISSION_PROMOTER,
+} = await import('./work-items-admission-promoter');
 
 const WS = 'default';
 const HARNESS = 'papercusp';
@@ -33,6 +37,7 @@ const DDL = `
     item_kind text,
     admission text,
     admitted_at timestamptz,
+    first_claimed_at timestamptz,
     admitted_by text,
     condition_key text,
     lane text,
@@ -263,5 +268,59 @@ describe('work-item admission promoter (real Postgres)', () => {
       { feature_id: 'WI-fresh', admission: 'pending' },
       { feature_id: 'WI-old', admission: 'unreviewed' },
     ]);
+  });
+
+  it('serves the owner snapshot with real SQL filters, percentiles, trend, and latest-rise evidence', async () => {
+    await seedItem({ id: 'WI-pending', admission: 'pending' });
+    await seedItem({ id: 'WI-unreviewed', admission: 'unreviewed' });
+    await seedItem({ id: 'WI-claimed-fast', admission: 'admitted' });
+    await seedItem({ id: 'WI-claimed-slow', admission: 'admitted' });
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET admitted_at = CASE feature_id
+               WHEN 'WI-claimed-fast' THEN '2026-08-26T10:00:00Z'::timestamptz
+               WHEN 'WI-claimed-slow' THEN '2026-08-26T11:00:00Z'::timestamptz
+             END,
+             first_claimed_at = CASE feature_id
+               WHEN 'WI-claimed-fast' THEN '2026-08-26T10:00:01Z'::timestamptz
+               WHEN 'WI-claimed-slow' THEN '2026-08-26T11:00:05Z'::timestamptz
+             END
+       WHERE workspace_id = ${WS}
+         AND harness_slug = ${HARNESS}
+         AND feature_id IN ('WI-claimed-fast', 'WI-claimed-slow')`;
+    await db.sql`
+      INSERT INTO harness_shared.admission_runs
+        (id, workspace_id, harness_slug, run_kind, started_at, finished_at,
+         batch_size, promoted, merged, held, census_before, census_after,
+         model_id, tokens_in, tokens_out, latency_ms, detail)
+      VALUES
+        ('census-old', ${WS}, ${HARNESS}, 'census', '2026-08-26T13:00:00Z', '2026-08-26T13:00:01Z',
+         10, 0, 0, 0, 10, 7, NULL, 0, 0, 1000, '{"status":"complete"}'::jsonb),
+        ('promoter-rise', ${WS}, ${HARNESS}, 'promoter-tick', '2026-08-26T14:00:00Z', '2026-08-26T14:00:02Z',
+         4, 2, 1, 1, 7, 8, 'model-a', 100, 20, 2000, '{"status":"complete"}'::jsonb)`;
+
+    const snapshot = await readWorkItemAdmissionSnapshot({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      kind: 'promoter-tick',
+      state: 'complete',
+      sql: db.sql,
+    });
+
+    expect(snapshot.runs).toHaveLength(1);
+    expect(snapshot.runs[0]).toMatchObject({
+      id: 'promoter-rise',
+      tokensIn: 100,
+      tokensOut: 20,
+      censusDelta: 1,
+    });
+    expect(snapshot.summary).toMatchObject({
+      pending: 1,
+      unreviewed: 1,
+      promotedToFirstClaim: { sampleSize: 2, p50Ms: 3000, p95Ms: 4800 },
+      latestCensus: { runId: 'promoter-rise', after: 8 },
+      latestCensusRise: { runId: 'promoter-rise', delta: 1 },
+    });
+    expect(snapshot.censusTrend.map((point) => point.runId)).toEqual(['census-old', 'promoter-rise']);
   });
 });
