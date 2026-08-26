@@ -562,4 +562,24 @@ describe("real-account canary safety harness", () => {
       }),
     ).toThrow("Secret-shaped field");
   });
+
+  it("allows public secret-scanning policy keys without weakening credential detection", () => {
+    expect(() =>
+      assertWorkspaceHostSecretIsolation({
+        maxSecretFindings: 0,
+        allowSecretFindings: false,
+        secretScanEnabled: true,
+        secretScanPolicy: "deny",
+      }),
+    ).not.toThrow();
+
+    expect(() =>
+      assertWorkspaceHostSecretIsolation({ secretScanToken: "plaintext" }),
+    ).toThrow("Secret-shaped field 'metadata.secretScanToken'");
+    expect(() =>
+      assertWorkspaceHostSecretIsolation({
+        maxSecretFindings: "-----BEGIN PRIVATE KEY-----",
+      }),
+    ).toThrow("Secret material is forbidden");
+  });
 });

@@ -4,6 +4,7 @@ import {
   buildBoundedTimelineResponse,
   groupRepeatedTimelineEntries,
   SESSION_TIMELINE_RESPONSE_BUDGET_CHARS,
+  timelineResultSchema,
   type TimelineEntry,
 } from './timeline';
 
@@ -62,6 +63,21 @@ describe('sessions:timeline automatic-versus-agent audit summary', () => {
 });
 
 describe('sessions:timeline response-door shaping', () => {
+  it('advertises both successful pages and structured error pages', () => {
+    expect(timelineResultSchema.safeParse({
+      ok: false,
+      error: 'invalid_cursor',
+      message: 'Cursor belongs to another query.',
+    }).success).toBe(true);
+    expect(timelineResultSchema.safeParse({
+      ok: false,
+      error: 'owner_ambiguous',
+      owner: 'su-peer',
+      matches: ['su-a', 'su-b'],
+      message: 'Pass the full ownerId.',
+    }).success).toBe(true);
+  });
+
   it('returns valid bounded JSON and a cursor for an oversized page', () => {
     const rows: TimelineEntry[] = Array.from({ length: 100 }, (_, index) => ({
       kind: 'tool',

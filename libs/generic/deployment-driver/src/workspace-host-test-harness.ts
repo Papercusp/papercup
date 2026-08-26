@@ -44,10 +44,15 @@ export class WorkspaceHostContractAssertionError extends Error {
 const SECRET_KEY =
   /(?:^|[_-])(api[_-]?key|access[_-]?key|secret|token|password|passphrase|private[_-]?key)(?:$|[_-])/i;
 const SECRET_VALUE = /-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----/;
+const SECRET_POLICY_SEGMENT = /(^|[_-])secret(?=[_-](?:scan|scanning|finding|findings|policy)(?:$|[_-]))/gi;
 
 function isSecretShapedKey(key: string): boolean {
   const normalized = key.replace(/([a-z\d])([A-Z])/g, "$1_$2");
-  return SECRET_KEY.test(normalized);
+  // `secret` also names the thing a public scanning policy detects. Mask only
+  // that policy noun before applying the credential-key heuristic; any real
+  // credential segment elsewhere in the key (for example secretScanToken)
+  // remains visible and is still rejected.
+  return SECRET_KEY.test(normalized.replace(SECRET_POLICY_SEGMENT, "$1policy_subject"));
 }
 
 /**
