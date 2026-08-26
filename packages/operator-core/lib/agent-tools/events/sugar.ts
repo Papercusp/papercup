@@ -302,7 +302,6 @@ defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
-    harness: harnessArg,
     sha: z
       .string()
       .min(4)
@@ -841,6 +840,7 @@ defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
+    harness: harnessArg,
     sha: z
       .string()
       .min(4)
