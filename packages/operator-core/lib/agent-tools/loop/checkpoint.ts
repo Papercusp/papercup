@@ -13,7 +13,9 @@
  * (P-002 delivered the substrate; this writes it).
  *
  * SHAPE (the shared D-004 contract): pass the structured fields { did, left, insight,
- * next } (with `goal` accepted as an alias for `next`; rendered to renderCarryNote's canonical `## Heading` template a cold successor
+ * next } (with `goal` accepted as an alias for `next`, and the historical
+ * `keyInsight`/`nextAction` spellings accepted as compatibility aliases; rendered to
+ * renderCarryNote's canonical `## Heading` template a cold successor
  * knows how to read) OR a raw { note } string. Replace-on-write; a blank/null note (or
  * all-blank fields) CLEARS. Journaling ON (the loop trajectory ring, like the Queen) —
  * recent wakes' notes survive a clear so a cold successor still sees the trajectory.
@@ -205,8 +207,8 @@ export default defineTool({
   profile: 'engineer',
   description:
     'Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with ' +
-    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal aliases next), { note }, ' +
-    'or compatibility alias { checkpoint }; note wins and blank/null clears. Keyed by ownerId. walls/checks default ' +
+    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, and nextAction are compatibility aliases), { note }, ' +
+    'or compatibility alias { checkpoint }; canonical fields win and blank/null clears. Keyed by ownerId. walls/checks default ' +
     "to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' " +
     'retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL ' +
     'contention returns retryable timeout data, not a transport hang.',
@@ -285,6 +287,16 @@ export default defineTool({
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .optional()
         .describe('The single concrete next action for the next wake.'),
+      keyInsight: z
+        .string()
+        .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
+        .optional()
+        .describe('Compatibility alias for `insight`; explicit `insight` wins when both are supplied.'),
+      nextAction: z
+        .string()
+        .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
+        .optional()
+        .describe('Compatibility alias for `next`; explicit `next` wins when both are supplied.'),
       goal: z
         .string()
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
@@ -438,6 +450,8 @@ export default defineTool({
         a.left !== undefined ||
         a.insight !== undefined ||
         a.next !== undefined ||
+        a.keyInsight !== undefined ||
+        a.nextAction !== undefined ||
         a.goal !== undefined ||
         a.walls !== undefined ||
         a.checks !== undefined,
@@ -569,12 +583,22 @@ export default defineTool({
     // its prose has left/insight/next set, so it is never touched. rescueTaggedCarryNote-
     // Blob applies the second half of the guard (the full close-tag signature).
     const rescued =
-      args.did !== undefined && args.left === undefined && args.insight === undefined && args.next === undefined
+      args.did !== undefined &&
+      args.left === undefined &&
+      args.insight === undefined &&
+      args.next === undefined &&
+      args.keyInsight === undefined &&
+      args.nextAction === undefined
         ? rescueTaggedCarryNoteBlob(args.did)
         : null;
     const fields = rescued
       ? { did: rescued.did, left: rescued.left, insight: rescued.insight, next: rescued.next }
-      : { did: args.did, left: args.left, insight: args.insight, next: args.next ?? args.goal };
+      : {
+          did: args.did,
+          left: args.left,
+          insight: args.insight ?? args.keyInsight,
+          next: args.next ?? args.nextAction ?? args.goal,
+        };
 
     // WI-7264: enforce the SOFT caps by truncation, here, after the schema's backstop
     // let the call through. The cap's job is to bound what re-injects into every future

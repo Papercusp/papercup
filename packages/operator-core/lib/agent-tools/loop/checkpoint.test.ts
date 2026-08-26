@@ -352,6 +352,45 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  it('accepts historical keyInsight/nextAction aliases, while canonical fields win', async () => {
+    const b = body(
+      await call({
+        did: 'made progress',
+        keyInsight: 'the stale caller vocabulary is still recoverable',
+        nextAction: 'retry with the canonical field names',
+      }),
+    );
+
+    expect(b).toMatchObject({ ok: true, cleared: false });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe(
+      'RENDERED:' +
+        JSON.stringify({
+          did: 'made progress',
+          left: undefined,
+          insight: 'the stale caller vocabulary is still recoverable',
+          next: 'retry with the canonical field names',
+        }),
+    );
+
+    setLoopCarryNote.mockClear();
+    await call({
+      insight: 'canonical insight',
+      keyInsight: 'stale insight alias',
+      next: 'canonical next',
+      nextAction: 'stale next alias',
+      goal: 'older goal alias',
+    });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe(
+      'RENDERED:' +
+        JSON.stringify({
+          did: undefined,
+          left: undefined,
+          insight: 'canonical insight',
+          next: 'canonical next',
+        }),
+    );
+  });
+
   it('accepts the generic checkpoint field as a lossless compatibility alias for raw note', async () => {
     const b = body(await call({ checkpoint: 'legacy generic carry note' }));
 
