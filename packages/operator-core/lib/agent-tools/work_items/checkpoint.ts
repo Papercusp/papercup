@@ -1145,8 +1145,13 @@ export default defineTool({
         let appendChecksOverflowDiagnostics: AppendChecksOverflowRow[] = [];
         /** Set by the overflow guard when it absorbs a legacy over-cap prior instead of
          *  refusing (EI-21534719386975911), so the reply can name the real cause of the
-         *  eviction rather than reporting it as an ordinary caller-caused cap cut. */
-        let legacyOverCapNormalization: { legacyExcess: number } | null = null;
+         *  eviction rather than reporting it as an ordinary caller-caused cap cut.
+         *
+         *  A mutated CONST holder rather than a reassigned `let`: the guard runs inside a
+         *  closure the store invokes under its lock, which control-flow analysis cannot
+         *  see, so a `let … | null = null` narrows to `never` at the read below and the
+         *  branch fails to compile. `0` means "no legacy excess absorbed". */
+        const legacyOverCapNormalization = { legacyExcess: 0 };
         const overflowGuard: CheckpointGuard | null = !wantsConfirmShrink && suppliedChecks !== undefined
           ? (_priorNote) => {
               // An explicitly empty list is the documented additive no-op for both
@@ -1182,7 +1187,7 @@ export default defineTool({
                */
               const legacyExcess = priorChecksOverCapCount(_priorNote);
               if (legacyExcess > 0) {
-                legacyOverCapNormalization = { legacyExcess };
+                legacyOverCapNormalization.legacyExcess = legacyExcess;
                 return null;
               }
               appendChecksOverflowDiagnostics = appendChecksOverflowRows(_priorNote, suppliedChecks);
@@ -1436,7 +1441,7 @@ export default defineTool({
           ...(droppedCheckClaims.length
             ? {
                 checksDropped: droppedCheckClaims.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
-                checksDroppedNote: legacyOverCapNormalization
+                checksDroppedNote: legacyOverCapNormalization.legacyExcess > 0
                   ? `LEGACY CAP NORMALIZATION, not a replace and not your mistake: this checkpoint was already ` +
                     `carrying ${legacyOverCapNormalization.legacyExcess} row(s) MORE than the ${CARRY_NOTE_MAX_CHECKS}-row cap before ` +
                     `your write — a pre-existing state that used to make every additive write to this note refuse ` +
