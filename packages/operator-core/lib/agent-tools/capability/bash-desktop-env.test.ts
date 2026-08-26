@@ -126,6 +126,7 @@ describe('capability:bash — durable task provenance', () => {
       resolveIdentity: (() => ({ ownerId: 'su-owner' })) as never,
       readStamp: (() => ({ intentEventId: 1, assumptionSetId: null, goalRef: 'EI-21192501620501693' })) as never,
       resolveGoal,
+      readHeldWorkItems: (async () => []) as never,
     });
 
     expect(result).toEqual({
@@ -144,6 +145,7 @@ describe('capability:bash — durable task provenance', () => {
       resolveIdentity: (() => ({ ownerId: 'su-owner' })) as never,
       readStamp: (() => ({ intentEventId: null, assumptionSetId: null, goalRef: null })) as never,
       resolveGoal: (async () => ({ ref: 'plan:host-pressure-hardening#P-014' })) as never,
+      readHeldWorkItems: (async () => []) as never,
     });
 
     expect(result).toMatchObject({
@@ -165,6 +167,7 @@ describe('capability:bash — durable task provenance', () => {
         }) as never,
         readStamp: vi.fn() as never,
         resolveGoal: vi.fn() as never,
+        readHeldWorkItems: (async () => []) as never,
       },
     );
 
