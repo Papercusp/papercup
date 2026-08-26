@@ -8,11 +8,29 @@
  * createdBy, severity/provenance passthrough, and per-instance in-flight
  * isolation.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const { listIssuesMock, setIssueStateMock, setWorkItemStateMock } = vi.hoisted(() => ({
+  listIssuesMock: vi.fn(),
+  setIssueStateMock: vi.fn(),
+  setWorkItemStateMock: vi.fn(),
+}));
+
+// The production collapse deps load both modules lazily. Keep this test at the
+// default-dependency boundary so it catches a regression back to the legacy
+// issues-engineer writer rather than only testing an injected fake seam.
+vi.mock('../issues-engineer', () => ({
+  listIssues: listIssuesMock,
+  setIssueState: setIssueStateMock,
+}));
+vi.mock('../work-items', () => ({ setWorkItemState: setWorkItemStateMock }));
+
 import {
   collapseDuplicateOpenEis,
   cooldownLookbackFilter,
   createEpisodicEscalator,
+  defaultCollapseDeps,
+  DUPLICATE_COLLAPSE_OWNER,
   unionPopulation,
   type CollapsibleOpenEi,
   type DuplicateCollapseDeps,
@@ -220,6 +238,19 @@ describe('createEpisodicEscalator config plumbing', () => {
 
 describe('collapseDuplicateOpenEis (WI-6986)', () => {
   const NOTE = 'duplicate of an identical stable title';
+
+  it('routes default duplicate retirement through the unified lifecycle writer', async () => {
+    setWorkItemStateMock.mockResolvedValue(null);
+
+    const deps = await defaultCollapseDeps();
+    await deps.drop('EI-2', NOTE);
+
+    expect(setWorkItemStateMock).toHaveBeenCalledWith('EI-2', 'dropped', {
+      by: DUPLICATE_COLLAPSE_OWNER,
+      completionRef: NOTE,
+    });
+    expect(setIssueStateMock).not.toHaveBeenCalled();
+  });
 
   function collapseDeps(open: CollapsibleOpenEi[], unmutable: string[] = []) {
     const dropped: Array<{ id: string; note: string }> = [];

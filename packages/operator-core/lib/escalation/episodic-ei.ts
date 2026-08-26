@@ -330,8 +330,9 @@ export async function collapseDuplicateOpenEis(
 }
 
 /** Lazy-imported production deps for `collapseDuplicateOpenEis`. */
-async function defaultCollapseDeps(titlePrefix?: string): Promise<DuplicateCollapseDeps> {
+export async function defaultCollapseDeps(titlePrefix?: string): Promise<DuplicateCollapseDeps> {
   const m = await import('../issues-engineer');
+  const workItems = await import('../work-items');
   return {
     listOpenByTopic: async (topic) => {
       // Bounded like the orphan sweep: a single pass covers the current
@@ -347,7 +348,14 @@ async function defaultCollapseDeps(titlePrefix?: string): Promise<DuplicateColla
       return rows.map((r) => ({ id: r.id, title: r.title, createdAt: r.createdAt }));
     },
     drop: async (id, note) => {
-      await m.setIssueState(id, 'dropped', DUPLICATE_COLLAPSE_OWNER, note);
+      // Route duplicate retirement through the unified lifecycle writer so the
+      // drop is visible in work_items' status/lifecycle event, audit ledger, and
+      // tool-invocation trace. The duplicate note is completion evidence for the
+      // terminal transition, not merely an untracked legacy state-write arg.
+      await workItems.setWorkItemState(id, 'dropped', {
+        by: DUPLICATE_COLLAPSE_OWNER,
+        completionRef: note,
+      });
     },
   };
 }
