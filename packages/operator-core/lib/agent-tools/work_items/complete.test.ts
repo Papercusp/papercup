@@ -333,8 +333,10 @@ describe('work_items:complete (keyed-array)', () => {
     // `_completionEvidence` before the terminal clear wipes it — "see the checkpoint"
     // citations must land on a surface that survives the close.
     it('folds non-empty checkpoint checks into _completionEvidence before clearing', async () => {
-      getWorkItem.mockResolvedValue(item);
-      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      // The attach seam fires on the ALREADY-TERMINAL re-attestation path (no `state`
+      // passed) — exactly the close shape whose evidence cites the checkpoint.
+      const settled = { ...item, state: 'passed' };
+      getWorkItem.mockResolvedValue(settled);
       getWorkItemCheckpoint.mockResolvedValue(
         [
           '## Did',
@@ -346,7 +348,7 @@ describe('work_items:complete (keyed-array)', () => {
           '- [ ] main is at abc123 — re-check: git rev-parse main',
         ].join('\n'),
       );
-      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      const r = await one({ id: 'F-12', completion: { summary: 'shipped' } });
       expect(r.ok).toBe(true);
       expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
         expect.objectContaining({ workItemId: 'F-12' }),
@@ -362,9 +364,8 @@ describe('work_items:complete (keyed-array)', () => {
     });
 
     it('writes no checkpointChecksCarried when the checkpoint is empty or absent', async () => {
-      getWorkItem.mockResolvedValue(item);
-      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
-      await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      getWorkItem.mockResolvedValue({ ...item, state: 'passed' });
+      await one({ id: 'F-12', completion: { summary: 'shipped' } });
       expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
       expect(JSON.stringify(attachCompletionEvidenceToSettledItem.mock.calls)).not.toContain(
         'checkpointChecksCarried',
