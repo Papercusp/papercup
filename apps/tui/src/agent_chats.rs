@@ -83,6 +83,8 @@ pub struct AgentChatTask {
     pub position: u32,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub links: Vec<crate::models::ConversationTaskWorkItemLink>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -972,7 +974,12 @@ mod tests {
                 "explanation": "Checked in Context",
                 "position": 0,
                 "createdAt": "2026-08-26T00:00:00.000Z",
-                "updatedAt": "2026-08-26T00:00:01.000Z"
+                "updatedAt": "2026-08-26T00:00:01.000Z",
+                "links": [{
+                    "workItemId": "WI-9",
+                    "workItemHarness": "papercusp",
+                    "relation": "for"
+                }]
             }],
             "projection": {
                 "schemaVersion": "conversation-context-v1",
@@ -989,14 +996,41 @@ mod tests {
                     "taskWrite": true,
                     "approvalWrite": true
                 },
-                "frames": []
+                "frames": [{
+                    "id": "task:task-1",
+                    "kind": "task",
+                    "taskId": "task-1",
+                    "content": "Ship it",
+                    "activeForm": "Shipping it",
+                    "status": "completed",
+                    "blockerRef": null,
+                    "explanation": "Checked in Context",
+                    "position": 0,
+                    "updatedAt": "2026-08-26T00:00:01.000Z",
+                    "links": [{
+                        "workItemId": "WI-9",
+                        "workItemHarness": "papercusp",
+                        "relation": "for"
+                    }]
+                }]
             }
         }))
         .expect("decode task mutation response");
         assert_eq!(response.action, AgentChatTaskAction::Check);
         assert_eq!(response.op, "done");
         assert_eq!(response.tasks[0].status, "completed");
+        assert_eq!(response.tasks[0].links[0].work_item_id, "WI-9");
+        assert_eq!(
+            response.tasks[0].links[0].relation,
+            crate::models::ConversationTaskLinkRelation::For
+        );
         assert_eq!(response.projection.session.session_id, "chat-1");
+        assert!(matches!(
+            &response.projection.frames[0],
+            crate::models::ConversationContextFrame::Task { links, .. }
+                if links[0].work_item_id == "WI-9"
+                    && links[0].relation == crate::models::ConversationTaskLinkRelation::For
+        ));
     }
 
     #[test]
