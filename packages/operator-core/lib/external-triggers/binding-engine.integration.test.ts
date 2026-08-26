@@ -430,8 +430,16 @@ describe('external trigger durable dispatch', () => {
   });
 
   it('terminalizes retry residue after a binding is disarmed and reaps stale running rows', async () => {
-    const failedId = await seedTriggerRun({ status: 'failed', attempts: 23 });
-    const runningId = await seedTriggerRun({ status: 'running', attempts: 21 });
+    const triggerArgs = (suffix: string) => ({
+      trigger: {
+        key: 'ext:gmail:message.received', source: 'gmail', event: 'message.received',
+        sourceId: 'source-fixture', externalId: `disarmed-${suffix}`, occurredAt: null,
+        datatypeId: 'email-message', dedupeKey: `gmail:disarmed-${suffix}`,
+        payload: { id: `disarmed-${suffix}`, subject: 'Do not retry this' },
+      },
+    });
+    const failedId = await seedTriggerRun({ status: 'failed', attempts: 23, args: triggerArgs('failed') });
+    const runningId = await seedTriggerRun({ status: 'running', attempts: 21, args: triggerArgs('running') });
     await sql`
       UPDATE harness_shared.trigger_runs
          SET error = 'external_trigger_agentic_dispatch_failed:target_unwakeable',
