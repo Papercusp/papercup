@@ -46,9 +46,7 @@ function repoRoot(): string {
     if (parent === dir) break;
     dir = parent;
   }
-  throw new Error(
-    'could not locate the repo root (no papercusp-desktop/bin/live-federation-gate.sh above this test)',
-  );
+  throw new Error('could not locate the repo root (no papercusp-desktop/bin/live-federation-gate.sh above this test)');
 }
 
 const ROOT = repoRoot();
@@ -171,19 +169,16 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
   });
 
   it('protects the run only until its first federation leg is decided', () => {
-    // EI-21412456902012315: five consecutive pc-heavy preemptions killed the gate during
-    // rebuild and banked content-matrix/from-repo/local-matrix all as '?'. Reuse pc-heavy's
-    // after-ready barrier instead of disabling cooperative preemption for the whole multi-hour
-    // gate: the marker is active through content-matrix, then removed before the long tail.
-    const wrapper = gate
-      .split('\n')
-      .find((line) => line.includes('PC_HEAVY_PREEMPT_AFTER_READY='));
+    // EI-21412456902012315 / D-084: five consecutive pc-heavy preemptions killed the gate and
+    // banked content-matrix/from-repo/local-matrix all as '?'. The first repair published the
+    // after-ready marker at gate entry, so a materializer spent 7m21s of the 600s lease waiting
+    // for build/repack and killed the retry before content-matrix decided. Keep preparation
+    // ordinarily preemptible + exactly retryable; publish only around the first real leg.
+    const wrapper = gate.split('\n').find((line) => line.includes('PC_HEAVY_PREEMPT_AFTER_READY='));
     expect(wrapper, 'the gate wrapper no longer opts into pc-heavy after-ready protection').toBeTruthy();
     expect(wrapper).toContain('${PC_HEAVY_PREEMPT_AFTER_READY:-1}');
 
-    const retry = gate
-      .split('\n')
-      .find((line) => line.includes('PC_HEAVY_RETRY_PREEMPTIONS='));
+    const retry = gate.split('\n').find((line) => line.includes('PC_HEAVY_RETRY_PREEMPTIONS='));
     expect(retry, 'the gate wrapper no longer retries an exact typed preemption').toBeTruthy();
     expect(retry).toContain('${PC_HEAVY_RETRY_PREEMPTIONS:-1}');
 
@@ -193,23 +188,27 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     // because the unit supplied only PC_HEAVY_PREEMPTIBLE=1.
     expect(gateSystemdUnit).toContain('Environment=PC_HEAVY_PREEMPT_AFTER_READY=1');
     expect(gateSystemdUnit).toContain('Environment=PC_HEAVY_RETRY_PREEMPTIONS=1');
-    expect(gateSystemdUnit).toMatch(
-      /^ExecStart=.*\/scripts\/pc-heavy\.sh -- .*live-federation-gate\.sh$/m,
-    );
+    expect(gateSystemdUnit).toMatch(/^ExecStart=.*\/scripts\/pc-heavy\.sh -- .*live-federation-gate\.sh$/m);
 
-    const protectCalls = [...gate.matchAll(/^gate_preempt_protect_until_first_verdict$/gm)];
-    const releaseCalls = [...gate.matchAll(/^gate_preempt_release_after_first_verdict$/gm)];
+    const protectCalls = [...gate.matchAll(/^[\t ]*gate_preempt_protect_until_first_verdict[\t ]*$/gm)];
+    const releaseCalls = [...gate.matchAll(/^[\t ]*gate_preempt_release_after_first_verdict[\t ]*$/gm)];
     expect(protectCalls, 'the protection helper must be called exactly once').toHaveLength(1);
     expect(releaseCalls, 'the release helper must be called exactly once').toHaveLength(1);
 
-    const protectAt = protectCalls[0].index!;
     const firstFreshExit = gate.indexOf('# ── fresh-exit:');
+    const postRepackBoundary = gate.indexOf('memory_phase_guard "post-repack/pre-smokes"');
     const matrixInit = gate.indexOf('MATRIX_RES="${ATTESTATION_WALL_TOKEN:-SKIPPED}"');
+    const matrixBranch = gate.indexOf('if [ "$SKIP_MATRIX" != 1 ]; then', matrixInit);
+    const protectAt = protectCalls[0].index!;
+    const matrixRun = gate.indexOf('MATRIX_RES="$(run_smoke content-matrix', protectAt);
     const releaseAt = releaseCalls[0].index!;
     const fromRepoInit = gate.indexOf('FROMREPO_RES="${ATTESTATION_WALL_TOKEN:-SKIPPED}"');
-    expect(protectAt).toBeLessThan(firstFreshExit);
-    expect(firstFreshExit).toBeLessThan(matrixInit);
-    expect(releaseAt).toBeGreaterThan(matrixInit);
+    expect(firstFreshExit).toBeLessThan(postRepackBoundary);
+    expect(postRepackBoundary).toBeLessThan(matrixInit);
+    expect(matrixInit).toBeLessThan(matrixBranch);
+    expect(matrixBranch).toBeLessThan(protectAt);
+    expect(protectAt).toBeLessThan(matrixRun);
+    expect(matrixRun).toBeLessThan(releaseAt);
     expect(releaseAt).toBeLessThan(fromRepoInit);
     expect(gate.slice(matrixInit, releaseAt)).toContain('log "content-matrix → $MATRIX_RES"');
 
@@ -235,9 +234,7 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
   });
 
   it('retains stamped run evidence without counting immutable self-snapshots as runs', () => {
-    const retentionLine = gate
-      .split('\n')
-      .find((line) => line.includes('GATE_KEEP_RUNS + 1'));
+    const retentionLine = gate.split('\n').find((line) => line.includes('GATE_KEEP_RUNS + 1'));
     expect(retentionLine, 'could not find the run-retention command').toBeTruthy();
 
     // Permanent pre-fix control: the former broad glob matches BOTH populations. Enough
@@ -339,12 +336,12 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     expect(rows[0].verdict).toBe('FRESH');
   }, 60_000);
 
-  it('publishes the real after-ready marker at the path the wrapper handed it', () => {
+  it('does not spend the after-ready lease on FRESH exit, while the real helper still publishes', () => {
     const stateDir = freshStateDir('last-green');
     const readyDir = mkdtempSync(join(tmpdir(), 'lfg-preempt-ready-'));
-    // pc-heavy allocates a unique path and exports it as PC_HEAVY_PREEMPT_READY_FILE; the
-    // CHILD owns publication. Supplying that variable directly tests the half this gate owns,
-    // without re-entering pc-heavy from inside an already-wrapped suite (see runGate above).
+    // A FRESH window exits before build/repack/content-matrix. D-084 requires that it never
+    // publish the marker or consume any of the bounded lease merely because pc-heavy handed
+    // it a unique path.
     const marker = join(readyDir, 'ready.probe');
     const { stdout, stderr, status } = runGate({
       GATE_STATE_DIR: stateDir,
@@ -353,17 +350,37 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
 
     expect(status, `${stdout}\n${stderr}`).toBe(0);
     expect(stdout).toMatch(/^GATE: FRESH /m);
-    // Asserting the PATH too, not just the sentence: a gate that logged the line while
-    // publishing somewhere else would satisfy a bare substring match.
-    expect(stderr).toContain(
+    expect(stderr).not.toContain('pc-heavy protection ACTIVE');
+    expect(existsSync(marker)).toBe(false);
+
+    // Positive control: invoke the exact shipping helper in isolation at the point the static
+    // ordering guard places it. This proves delayed publication did not become no publication,
+    // and asserts the actual path bytes rather than accepting a log-only imitation.
+    const publishFn = gate.match(/^gate_preempt_protect_until_first_verdict\(\) \{[\s\S]*?^\}$/m)?.[0];
+    expect(publishFn, 'could not extract the real protection helper').toBeTruthy();
+    const publishProbe = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          'set -uo pipefail',
+          `PC_HEAVY_PREEMPT_READY_FILE=${JSON.stringify(marker)}`,
+          'GATE_PC_HEAVY_PROTECTED=0',
+          `log() { printf '%s\\n' "$*" >&2; }`,
+          `verdict() { printf '%s\\n' "$*"; }`,
+          publishFn!,
+          'gate_preempt_protect_until_first_verdict',
+          `printf 'protected=%s\\n' "$GATE_PC_HEAVY_PROTECTED"`,
+        ].join('\n'),
+      ],
+      { encoding: 'utf8' },
+    );
+    expect(publishProbe.status, `${publishProbe.stdout}\n${publishProbe.stderr}`).toBe(0);
+    expect(publishProbe.stdout).toContain('protected=1');
+    expect(publishProbe.stderr).toContain(
       `pc-heavy protection ACTIVE until content-matrix has a concrete state (marker=${marker})`,
     );
     expect(existsSync(marker)).toBe(true);
-    // This FRESH path exits BEFORE the in-script release boundary, so the marker is still
-    // published at exit — by design. pc-heavy's monitor is the last-resort cleanup owner
-    // (`scripts/pc-heavy.sh`, the `_preempt_ready_file` rm at its terminal boundary), and that
-    // half is pinned by its own suites, not from here.
-    expect(stderr).not.toContain('protection RELEASED');
   }, 60_000);
 
   it('CONTROL: publishes nothing when the wrapper handed it no marker path', () => {
