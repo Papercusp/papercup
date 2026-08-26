@@ -1298,7 +1298,11 @@ export const SHUTDOWN_ACK_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SHUTDO
  *  1. `launchedBy` — set from `PAPERCUSP_LAUNCHED_BY`, which `injectLaunchedByArg`
  *     (agent-launch-core) stamps onto EVERY tool-driven psu launch and which an
  *     owner-typed `psu` never carries. This is a STRUCTURAL discriminator, not a
- *     heuristic: absence means a human started this session by hand.
+ *     heuristic. A structurally headless host bound to a named fleet is the one
+ *     equivalent discriminator: it has no human TTY to own and the fleet stamp is
+ *     injected by bootstrap. This covers operator-spawned headless members whose
+ *     launch path predates `PAPERCUSP_LAUNCHED_BY` without weakening interactive
+ *     sessions, which still fail closed when the marker is absent.
  *  2. `lastInputAt` — real stdin bytes on a bridged TTY (makeActivityTracker's
  *     touchInput; socket-injected agent wakes never reach stdin). ANY human
  *     keystroke, ever, makes this session the owner's. A headless member has no
@@ -1314,12 +1318,17 @@ export const SHUTDOWN_ACK_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SHUTDO
  */
 export function shutdownRefusalReason({
   launchedBy = '',
+  headless = false,
+  fleetSlug = '',
   lastInputAt = 0,
   agentQuietMs = Infinity,
   force = false,
   quietMs = OUTPUT_QUIET_MS,
 } = {}) {
-  if (!String(launchedBy || '').trim()) return 'not-agent-launched';
+  const structurallyAgentOwned =
+    Boolean(String(launchedBy || '').trim()) ||
+    (headless === true && Boolean(String(fleetSlug || '').trim()));
+  if (!structurallyAgentOwned) return 'not-agent-launched';
   if (Number(lastInputAt) > 0) return 'human-attended';
   if (!force && Number(agentQuietMs) < quietMs) return 'agent-busy';
   return null;
@@ -4196,6 +4205,8 @@ export function hostThroughPty(o) {
         if (shuttingDown) return { ok: true, reason: 'already-shutting-down' };
         const refusal = shutdownRefusalReason({
           launchedBy: env.PAPERCUSP_LAUNCHED_BY,
+          headless: bridgeTty === false,
+          fleetSlug: env.PAPERCUSP_FLEET_SLUG,
           lastInputAt: activity.snapshot().lastInputAt ?? 0,
           agentQuietMs: agentBusyGate.quietForMs(),
           force: msg.force === true,

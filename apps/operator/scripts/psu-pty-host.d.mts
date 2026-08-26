@@ -463,7 +463,11 @@ export function makeActivityTracker({ now }?: {
  *  1. `launchedBy` — set from `PAPERCUSP_LAUNCHED_BY`, which `injectLaunchedByArg`
  *     (agent-launch-core) stamps onto EVERY tool-driven psu launch and which an
  *     owner-typed `psu` never carries. This is a STRUCTURAL discriminator, not a
- *     heuristic: absence means a human started this session by hand.
+ *     heuristic. A structurally headless host bound to a named fleet is the one
+ *     equivalent discriminator: it has no human TTY to own and the fleet stamp is
+ *     injected by bootstrap. This covers operator-spawned headless members whose
+ *     launch path predates `PAPERCUSP_LAUNCHED_BY` without weakening interactive
+ *     sessions, which still fail closed when the marker is absent.
  *  2. `lastInputAt` — real stdin bytes on a bridged TTY (makeActivityTracker's
  *     touchInput; socket-injected agent wakes never reach stdin). ANY human
  *     keystroke, ever, makes this session the owner's. A headless member has no
@@ -477,8 +481,10 @@ export function makeActivityTracker({ now }?: {
  * exit. Nothing here loosens `terminalWindowAlive`/`cgroupWindowProtects` — this
  * path never signals a process it does not own.
  */
-export function shutdownRefusalReason({ launchedBy, lastInputAt, agentQuietMs, force, quietMs, }?: {
+export function shutdownRefusalReason({ launchedBy, headless, fleetSlug, lastInputAt, agentQuietMs, force, quietMs, }?: {
     launchedBy?: string | undefined;
+    headless?: boolean | undefined;
+    fleetSlug?: string | undefined;
     lastInputAt?: number | undefined;
     agentQuietMs?: number | undefined;
     force?: boolean | undefined;
