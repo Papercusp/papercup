@@ -1993,6 +1993,37 @@ export async function endedRecordedOwnerIds(coordOwnerIds: string[]): Promise<Se
     return new Set();
   }
 }
+/**
+ * Batch: the LATEST ended adv_session per owner, for owners whose
+ * coord_presence row has been reaped (EI-21488009366204518). The read-side
+ * authority for "this agent existed and is dead" when the presence door has no
+ * row left to enrich — coord:presence's targeted `{ owner }` lookup synthesizes
+ * an `ended` roster row from these so a reaped-but-recorded session never reads
+ * as "never existed".
+ *
+ * Fail-soft like every adv_sessions leg: on query failure it returns [] and the
+ * caller renders its ordinary empty result instead of fabricating liveness.
+ */
+export async function listEndedAdvSessionsByOwners(coordOwnerIds: string[]): Promise<AdvSessionRow[]> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
+  if (ids.length === 0) return [];
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+      SELECT DISTINCT ON (coord_owner_id)
+             id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+        FROM harness_shared.adv_sessions
+       WHERE ended_at IS NOT NULL
+         AND coord_owner_id = ANY(${ids}::text[])
+       ORDER BY coord_owner_id, started_at DESC
+    `;
+    return rows.map(mapAdvSessionRow);
+  } catch (e) {
+    warnUnlessMissingTable(e, 'listEndedAdvSessionsByOwners');
+    return [];
+  }
+}
 
 /**
  * Batch: which of `coordOwnerIds` have POSITIVE live-session evidence even if
