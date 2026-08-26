@@ -1,0 +1,193 @@
+import { describe, expect, it } from 'vitest';
+import {
+  inferSessionTaskOp,
+  reduceSessionTasks,
+  SessionTaskValidationError,
+  type SessionTask,
+} from './session-tasks';
+
+const NOW = '2026-08-26T12:00:00.000Z';
+const NEXT = '2026-08-26T12:01:00.000Z';
+
+function task(overrides: Partial<SessionTask> = {}): SessionTask {
+  return {
+    id: 'task-a',
+    content: 'Inspect the engine',
+    activeForm: 'Inspecting the engine',
+    status: 'pending',
+    blockerRef: null,
+    explanation: null,
+    position: 0,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
+function reduce(current: readonly SessionTask[], args: Parameters<typeof reduceSessionTasks>[1]) {
+  let serial = 0;
+  return reduceSessionTasks(current, args, {
+    now: NEXT,
+    idFactory: () => `task-new-${++serial}`,
+  });
+}
+
+function expectCode(fn: () => unknown, code: string) {
+  try {
+    fn();
+    throw new Error('expected validation failure');
+  } catch (error) {
+    expect(error).toBeInstanceOf(SessionTaskValidationError);
+    expect((error as SessionTaskValidationError).code).toBe(code);
+  }
+}
+
+describe('inferSessionTaskOp', () => {
+  it('infers only unambiguous shapes', () => {
+    expect(inferSessionTaskOp({ tasks: [] })).toBe('init');
+    expect(inferSessionTaskOp({ content: 'New task' })).toBe('append');
+    expect(inferSessionTaskOp({ taskId: 'task-a', blockerRef: 'wi:WI-1' })).toBe('block');
+    expect(inferSessionTaskOp({})).toBe('view');
+    expectCode(() => inferSessionTaskOp({ taskId: 'task-a' }), 'op_ambiguous');
+  });
+});
+
+describe('reduceSessionTasks', () => {
+  it('initializes normalized tasks and enforces one active task', () => {
+    const out = reduce([], {
+      op: 'init',
+      explanation: 'Initial execution plan',
+      tasks: [
+        { id: 'task-a', content: ' First ', activeForm: ' Doing first ', status: 'in_progress' },
+        { content: 'Second' },
+      ],
+    });
+
+    expect(out.tasks).toEqual([
+      expect.objectContaining({
+        id: 'task-a',
+        content: 'First',
+        activeForm: 'Doing first',
+        status: 'in_progress',
+        explanation: 'Initial execution plan',
+        position: 0,
+      }),
+      expect.objectContaining({
+        id: 'task-new-1',
+        content: 'Second',
+        activeForm: 'Second',
+        status: 'pending',
+        explanation: 'Initial execution plan',
+        position: 1,
+      }),
+    ]);
+
+    expectCode(
+      () => reduce([], {
+        op: 'init',
+        tasks: [
+          { content: 'One', status: 'in_progress' },
+          { content: 'Two', status: 'in_progress' },
+        ],
+      }),
+      'multiple_in_progress',
+    );
+  });
+
+  it('start demotes the prior active task without mutating the input', () => {
+    const current = [
+      task({ id: 'task-a', status: 'in_progress' }),
+      task({ id: 'task-b', content: 'Build it', position: 1 }),
+    ];
+    const snapshot = structuredClone(current);
+
+    const out = reduce(current, {
+      op: 'start',
+      taskId: 'task-b',
+      activeForm: 'Building the keystone',
+      explanation: 'Keystone ready',
+    });
+
+    expect(current).toEqual(snapshot);
+    expect(out.changedTaskId).toBe('task-b');
+    expect(out.tasks.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'task-a', status: 'pending' },
+      { id: 'task-b', status: 'in_progress' },
+    ]);
+    expect(out.tasks[0]).toMatchObject({ explanation: 'Keystone ready', updatedAt: NEXT });
+    expect(out.tasks[1]).toMatchObject({
+      activeForm: 'Building the keystone',
+      explanation: 'Keystone ready',
+      updatedAt: NEXT,
+    });
+  });
+
+  it('supports append, block, unblock, done, and drop transitions', () => {
+    const appended = reduce([], {
+      content: ' Write tests ',
+      activeForm: ' Writing tests ',
+      explanation: 'Acceptance guard',
+    });
+    expect(appended).toMatchObject({ op: 'append', changedTaskId: 'task-new-1' });
+    expect(appended.tasks[0]).toMatchObject({
+      content: 'Write tests',
+      activeForm: 'Writing tests',
+      status: 'pending',
+      explanation: 'Acceptance guard',
+    });
+
+    const blocked = reduce(appended.tasks, {
+      op: 'block',
+      taskId: 'task-new-1',
+      blockerRef: 'event:fleet:contract-ready',
+    });
+    expect(blocked.tasks[0]).toMatchObject({
+      status: 'blocked',
+      blockerRef: 'event:fleet:contract-ready',
+    });
+
+    const unblocked = reduce(blocked.tasks, { op: 'unblock', taskId: 'task-new-1' });
+    expect(unblocked.tasks[0]).toMatchObject({ status: 'pending', blockerRef: null });
+
+    const done = reduce(unblocked.tasks, { op: 'done', taskId: 'task-new-1' });
+    expect(done.tasks[0]).toMatchObject({ status: 'completed' });
+
+    const dropped = reduce([task()], { op: 'drop', taskId: 'task-a' });
+    expect(dropped.tasks[0]).toMatchObject({ status: 'dropped' });
+  });
+
+  it('returns precise validation codes for invalid transitions and fields', () => {
+    expectCode(
+      () => reduce([task({ status: 'completed' })], { op: 'start', taskId: 'task-a' }),
+      'task_terminal',
+    );
+    expectCode(
+      () => reduce([task()], { op: 'unblock', taskId: 'task-a' }),
+      'task_not_blocked',
+    );
+    expectCode(
+      () => reduce([task()], { op: 'block', taskId: 'task-a' }),
+      'blocker_ref_required',
+    );
+    expectCode(
+      () => reduce([task()], { op: 'view', explanation: 'not allowed' }),
+      'view_fields_unexpected',
+    );
+    expectCode(
+      () => reduce([task()], { op: 'done', taskId: 'missing' }),
+      'task_not_found',
+    );
+    expectCode(
+      () => reduce([task()], { op: 'done', taskId: 'task-a', content: 'silently ignored before' }),
+      'done_fields_unexpected',
+    );
+    expectCode(
+      () => reduce([task()], {
+        taskId: 'task-a',
+        blockerRef: 'wi:WI-1',
+        content: 'ambiguous extra field',
+      }),
+      'block_fields_unexpected',
+    );
+  });
+});
