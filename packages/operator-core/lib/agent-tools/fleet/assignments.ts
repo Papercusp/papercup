@@ -435,7 +435,16 @@ export function deriveMemberVerdict(
   // EI-21125380796386851: a suspect owner with a live inbox-wake await is
   // recoverable by waking it before any claim takeover. A suspect owner without
   // that delivery path remains terminal and must be reclaimed/relaunched.
-  if (a.sessionState === 'suspect') return a.wakeable === true ? 'suspect' : 'dead';
+  //
+  // EI-21557715307606072: `wakeable:false` is also the transient shape while an
+  // active member is already inside a turn (there is no inbox-wake await to
+  // inject into). A fresh tool call is stronger evidence than that momentary
+  // delivery gap, so preserve the member as speaking instead of putting it in
+  // `dead_member_ids` and inviting a duplicate relaunch.
+  if (a.sessionState === 'suspect') {
+    if (speakingNow) return 'speaking';
+    return a.wakeable === true ? 'suspect' : 'dead';
+  }
   // EI-20980974612370508: a cold loop can be between wakes long enough for its
   // coord_presence heartbeat to disappear. The loop engine (and, below, a
   // registered event-await) is the stronger intentional-parking signal in that

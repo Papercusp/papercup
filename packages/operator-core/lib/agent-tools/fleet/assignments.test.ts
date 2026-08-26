@@ -245,6 +245,22 @@ describe('deriveMemberVerdict (EI-8995)', () => {
     expect(deriveMemberVerdict(verdictInput({ sessionState: 'suspect' }), NOW)).toBe('dead');
   });
 
+  it('EI-21557715307606072: suspect + momentarily-unwakeable but freshly tool-calling → speaking', () => {
+    const last = NOW - 60_000;
+    expect(
+      deriveMemberVerdict(
+        verdictInput({
+          alive: false,
+          sessionState: 'suspect',
+          wakeable: false,
+          load: 1,
+          lastToolCallAtMs: last,
+        }),
+        NOW,
+      ),
+    ).toBe('speaking');
+  });
+
   it('heartbeat-dead → dead', () => {
     expect(deriveMemberVerdict(verdictInput({ alive: false, sessionState: null }), NOW)).toBe('dead');
   });
