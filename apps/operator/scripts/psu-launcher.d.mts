@@ -1936,20 +1936,27 @@ export function startSupervisorBeat(ownerId: any, { fetchImpl, intervalMs, opera
  */
 export function pendingSessionEndWitnessPath(advSessionId: number | string | null, home?: string): string;
 export function readPendingSessionEndWitness(advSessionId: any, home?: string): any;
-export function reportSessionEnded(advSessionId: any, exitCode: any, { fetchImpl, operatorUrl, token, timeoutMs, connectBudgetMs, timeoutRetries, killedBySignal, launchFailed, endAttemptKey, sleep, now, home, }?: {
-    fetchImpl?: typeof fetch | undefined;
-    operatorUrl?: any;
-    token?: null | undefined;
-    timeoutMs?: number | undefined;
-    connectBudgetMs?: number | undefined;
-    timeoutRetries?: number | undefined;
-    killedBySignal?: null | undefined;
-    launchFailed?: boolean | undefined;
-    endAttemptKey?: `${string}-${string}-${string}-${string}-${string}` | undefined;
-    sleep?: ((ms: any) => Promise<any>) | undefined;
-    now?: (() => number) | undefined;
-    home?: string | undefined;
-}): Promise<{
+/**
+ * @typedef {object} SessionEndReportOptions
+ * @property {(input:any, init?:any)=>Promise<any>} [fetchImpl]
+ * @property {string} [operatorUrl]
+ * @property {string|null} [token]
+ * @property {number} [timeoutMs]
+ * @property {number} [connectBudgetMs]
+ * @property {number} [timeoutRetries]
+ * @property {string|null} [killedBySignal]
+ * @property {boolean} [launchFailed]
+ * @property {string} [endAttemptKey]
+ * @property {(ms:number)=>Promise<void>} [sleep]
+ * @property {()=>number} [now]
+ * @property {string} [home]
+ */
+/**
+ * @param {number|string|null} advSessionId
+ * @param {number|null|undefined} exitCode
+ * @param {SessionEndReportOptions} [opts]
+ */
+export function reportSessionEnded(advSessionId: number | string | null, exitCode: number | null | undefined, opts?: SessionEndReportOptions): Promise<{
     reported: boolean;
     reason: string;
     status?: undefined;
@@ -1959,11 +1966,11 @@ export function reportSessionEnded(advSessionId: any, exitCode: any, { fetchImpl
     reported: boolean;
     reason: string;
     status: number;
-    endAttemptKey: `${string}-${string}-${string}-${string}-${string}`;
+    endAttemptKey: string;
     detail?: undefined;
 } | {
     reported: boolean;
-    endAttemptKey: `${string}-${string}-${string}-${string}-${string}`;
+    endAttemptKey: string;
     reason?: undefined;
     status?: undefined;
     detail?: undefined;
@@ -1971,7 +1978,7 @@ export function reportSessionEnded(advSessionId: any, exitCode: any, { fetchImpl
     reported: boolean;
     reason: string;
     detail: string;
-    endAttemptKey: `${string}-${string}-${string}-${string}-${string}`;
+    endAttemptKey: string;
     status?: undefined;
 }>;
 /**
@@ -2004,26 +2011,23 @@ export function reportSessionEnded(advSessionId: any, exitCode: any, { fetchImpl
  *       detail?: string, status?: 'reserved' | 'live' | 'missing',
  *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
  * } ResumeClaimOutcome
+ * @typedef {object} ResumeClaimOptions
+ * @property {(input:any, init?:any)=>Promise<any>} [fetchImpl]
+ * @property {string} [operatorUrl]
+ * @property {string|null} [token]
+ * @property {number} [timeoutMs]
+ * @property {number} [connectBudgetMs]
+ * @property {number} [timeoutRetries]
+ * @property {(ms:number)=>Promise<void>} [sleep]
+ * @property {()=>number} [now]
+ * @property {(message:string)=>any} [onNotice]
+ * @property {string} [resumeClaimKey]
  *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
- * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
- *           timeoutMs?: number, connectBudgetMs?: number, timeoutRetries?: number,
- *           sleep?: (ms:number) => Promise<void>, now?: () => number,
- *           onNotice?: (message:string) => void, resumeClaimKey?: string }} [opts]
+ * @param {ResumeClaimOptions} [opts]
  * @returns {Promise<ResumeClaimOutcome>}
  */
-export function reportSessionResumed(advSessionId: number | string | null, { fetchImpl, operatorUrl, token, timeoutMs, connectBudgetMs, timeoutRetries, sleep, now, onNotice, resumeClaimKey, }?: {
-    fetchImpl?: typeof fetch;
-    operatorUrl?: string;
-    token?: string | null;
-    timeoutMs?: number;
-    connectBudgetMs?: number;
-    timeoutRetries?: number;
-    sleep?: (ms: number) => Promise<void>;
-    now?: () => number;
-    onNotice?: (message: string) => void;
-    resumeClaimKey?: string;
-}): Promise<ResumeClaimOutcome>;
+export function reportSessionResumed(advSessionId: number | string | null, opts?: ResumeClaimOptions): Promise<ResumeClaimOutcome>;
 export function reportSessionResumeFinalized(advSessionId: any, resumeClaimKey: any, opts?: {}): Promise<{
     [x: string]: string | boolean;
     reason: string;
@@ -3116,6 +3120,20 @@ export namespace AGENT_LABELS {
     let codex: string;
     let omp: string;
 }
+export type SessionEndReportOptions = {
+    fetchImpl?: ((input: any, init?: any) => Promise<any>) | undefined;
+    operatorUrl?: string | undefined;
+    token?: string | null | undefined;
+    timeoutMs?: number | undefined;
+    connectBudgetMs?: number | undefined;
+    timeoutRetries?: number | undefined;
+    killedBySignal?: string | null | undefined;
+    launchFailed?: boolean | undefined;
+    endAttemptKey?: string | undefined;
+    sleep?: ((ms: number) => Promise<void>) | undefined;
+    now?: (() => number) | undefined;
+    home?: string | undefined;
+};
 /**
  * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
  * `psu --resume` revives the agent process, but launchResume takes the no-POST
@@ -3154,6 +3172,42 @@ export type ResumeClaimOutcome = {
     retryAfterMs?: number;
     leaseExpiresAt?: string;
     resumeClaimKey?: string;
+};
+/**
+ * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
+ * `psu --resume` revives the agent process, but launchResume takes the no-POST
+ * path (it reuses the original coord identity + adv row), so the row keeps the
+ * ended_at/exit_code from the prior exit and the running agent stays recorded as
+ * DEAD → invisible to the roster + presence-as-a-view. This clears that stamp
+ * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
+ * instant it resumes, before it ever touches coord. psu is the live parent of
+ * the resumed child (same property the supervisor beat + the end-report ride).
+ * The endpoint's explicit `reactivated:true` response is the single-winner claim:
+ * a manual resume must not spawn unless it successfully re-activates the ended row.
+ * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
+ * Exported with injectables for tests.
+ *
+ * RETURNS A DISCRIMINATED OUTCOME, not a bare boolean (EI-21414979137146784).
+ * Four independent conditions refuse the claim — no row, an HTTP/body failure, a
+ * genuinely lost race, and a thrown transport error — and collapsing them into
+ * `false` made the ONE call site assert contention for all four. A headless
+ * consult revival then reported "its resume claim was not acquired" (i.e. someone
+ * else won) when the truth was an unreachable operator, sending whoever debugged
+ * it hunting a racing process that never existed. `claimed` remains the ONLY gate
+ * on spawning — the fail-closed property is unchanged; `reason` exists so the
+ * refusal can say WHICH of the four happened.
+ */
+export type ResumeClaimOptions = {
+    fetchImpl?: ((input: any, init?: any) => Promise<any>) | undefined;
+    operatorUrl?: string | undefined;
+    token?: string | null | undefined;
+    timeoutMs?: number | undefined;
+    connectBudgetMs?: number | undefined;
+    timeoutRetries?: number | undefined;
+    sleep?: ((ms: number) => Promise<void>) | undefined;
+    now?: (() => number) | undefined;
+    onNotice?: ((message: string) => any) | undefined;
+    resumeClaimKey?: string | undefined;
 };
 import { spawn } from "node:child_process";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];

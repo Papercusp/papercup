@@ -94,8 +94,16 @@ export function jsonSourceKind(args: any): "file" | "stdin" | "inline" | null;
  * @returns {string}
  */
 export function escapeJsonStringControls(text: string): string;
-/** Parse a ptool JSON payload after normalizing heredoc-friendly string controls. Pure. */
-export function parseJsonInput(text: any): any;
+/**
+ * Parse a ptool JSON payload after normalizing heredoc-friendly string controls.
+ * An empty stdin stream is equivalent to omitting JSON args, which lets callers
+ * use the standard quoting-safe `--json -` shape for zero-argument tools. Files
+ * and inline payloads remain strict so an accidentally empty payload still
+ * fails loudly. Pure.
+ */
+export function parseJsonInput(text: any, { emptyAsObject }?: {
+    emptyAsObject?: boolean | undefined;
+}): any;
 /**
  * Decide where a direct `code:run` script comes from. The file/stdin forms
  * carry JavaScript as data, so the caller's shell never has to quote nested

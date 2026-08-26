@@ -47,6 +47,32 @@ const CONTENT_INDEX_EXCLUSIVITY =
 const EVIDENCE_CLASS_EXCLUSIVITY =
   'Mutually exclusive with content_indexes, line windows (offset, limit, tail), and byte windows (byte_offset, byte_limit).';
 
+const CAPABILITY_READ_SEE_ALSO = [
+  'capability:edit (exact-string edit)',
+  'capability:write (overwrite / create)',
+  'capability:bash (grep / rg to search across files)',
+] as const;
+
+/**
+ * Machine-oriented read modes promise an exact or structured payload. Appending
+ * human guidance to those results corrupts raw JSON recovered from a result-door
+ * spill and base64/selection envelopes alike. Keep cross-links on the ordinary
+ * human-readable line view only.
+ */
+export function capabilityReadSeeAlso(
+  _result: unknown,
+  args: { raw?: boolean; byte_offset?: number; byte_limit?: number; content_indexes?: number[]; evidence_class?: string },
+): readonly string[] {
+  if (
+    args.raw ||
+    args.byte_offset !== undefined ||
+    args.byte_limit !== undefined ||
+    args.content_indexes !== undefined ||
+    args.evidence_class !== undefined
+  ) return [];
+  return CAPABILITY_READ_SEE_ALSO;
+}
+
 /** base64 encodes 3 bytes as 4 chars, padded up to the next multiple of 4. */
 function base64Chars(byteCount: number): number {
   return Math.ceil(byteCount / 3) * 4;
@@ -208,11 +234,7 @@ export default defineTool({
     when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
     chaining: 'capability:read → capability:edit (exact string replace) or capability:write (overwrite).',
-    seeAlso: [
-      'capability:edit (exact-string edit)',
-      'capability:write (overwrite / create)',
-      'capability:bash (grep / rg to search across files)',
-    ],
+    seeAlso: capabilityReadSeeAlso,
   },
   capability: 'capability:fs-read',
   requirePrincipal: false,

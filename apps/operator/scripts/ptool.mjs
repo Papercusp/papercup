@@ -304,8 +304,15 @@ export function escapeJsonStringControls(text) {
   return changed ? repaired : text;
 }
 
-/** Parse a ptool JSON payload after normalizing heredoc-friendly string controls. Pure. */
-export function parseJsonInput(text) {
+/**
+ * Parse a ptool JSON payload after normalizing heredoc-friendly string controls.
+ * An empty stdin stream is equivalent to omitting JSON args, which lets callers
+ * use the standard quoting-safe `--json -` shape for zero-argument tools. Files
+ * and inline payloads remain strict so an accidentally empty payload still
+ * fails loudly. Pure.
+ */
+export function parseJsonInput(text, { emptyAsObject = false } = {}) {
+  if (emptyAsObject && String(text).trim() === '') return {};
   return JSON.parse(escapeJsonStringControls(text));
 }
 
@@ -1938,7 +1945,7 @@ async function main() {
         process.exit(1);
       }
       try {
-        callArgs = parseJsonInput(jsonText);
+        callArgs = parseJsonInput(jsonText, { emptyAsObject: jsonKind === 'stdin' });
       } catch (e) {
         console.error(`ptool: --json${jsonKind === 'inline' ? '' : ` (${jsonKind})`} is not valid JSON: ${e.message}`);
         process.exit(1);

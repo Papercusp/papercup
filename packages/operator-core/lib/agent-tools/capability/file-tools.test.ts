@@ -15,7 +15,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { toJsonSchema } from '@papercusp/tooldef';
-import readTool from './read';
+import readTool, { capabilityReadSeeAlso } from './read';
 import writeTool from './write';
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
@@ -37,6 +37,14 @@ function parse(r: { content: Array<{ text: string }> }): Record<string, unknown>
 }
 
 describe('capability:read', () => {
+  it('does not append human guidance to machine-oriented read modes', () => {
+    expect(capabilityReadSeeAlso({}, { raw: true })).toEqual([]);
+    expect(capabilityReadSeeAlso({}, { byte_offset: 0, byte_limit: 512 })).toEqual([]);
+    expect(capabilityReadSeeAlso({}, { content_indexes: [0] })).toEqual([]);
+    expect(capabilityReadSeeAlso({}, { evidence_class: 'test-verdict' })).toEqual([]);
+    expect(capabilityReadSeeAlso({}, {})).toContain('capability:edit (exact-string edit)');
+  });
+
   it('recovers a project-relative read from a phantom root through the canonical integration checkout', async () => {
     const phantom = mkNonRepoTmpDir('cap-read-phantom-');
     const canonical = mkNonRepoTmpDir('cap-read-canonical-');
