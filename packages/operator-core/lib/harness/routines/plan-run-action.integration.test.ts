@@ -15,6 +15,17 @@ import { hashPlanContent } from '@papercusp/plan-parser';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { runScheduledPlanFire } from './plan-run-action';
+import {
+  assignAndWakeActionableWorkItems,
+  type ActionableWorkItemDispatchDeps,
+  type StableAgentTargetState,
+} from '../../agent-tools/coordination/actionable-work-item-dispatch';
+import { inboxWakeKey, wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
+import { planItemLaneBlockReason, planItemLiveClaimReason } from '../../scheduler/plan-item-lane-guard';
+import { claimWorkItem, observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
+import { drainDetached } from '../../detached-imports';
+import { setAutoPumpEnabledForTests } from '../../events/await/engine';
+import { listRecentDeliveries, upsertInboxWakeAwait } from '../../events/await/store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 
@@ -53,6 +64,13 @@ vi.mock('../../agent-tools/plans/plan-spec-quality-gate', () => ({
   })),
 }));
 
+// work_items:complete reflects a linked plan item and releases its lane through
+// the ordinary reaction dispatcher. Load those projected definitions exactly as
+// the operator host does so this integration test exercises the real finish saga.
+await import('../../agent-tools/plans/set-status');
+await import('../../agent-tools/plan-items/release');
+const { default: completeWorkItemTool } = await import('../../agent-tools/work_items/complete');
+
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-planrun';
@@ -85,6 +103,22 @@ beforeAll(async () => {
     VALUES (${WS}, ${HARNESS}, ${Buffer.from([0])}, 'kc-plan-run-it', 0),
            (${WS}, ${APP_HARNESS}, ${Buffer.from([1])}, 'kc-plan-run-app-it', 0)
     ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING
+  `;
+  // The real work_items:complete finish saga resolves the plan scope before
+  // reflecting the root plan item to done. Register both fixture harnesses as
+  // real Hive homes so that lookup is production-faithful rather than mocked.
+  await sql`
+    INSERT INTO harness_shared.harness_registry (workspace_id, payload)
+    VALUES (
+      ${WS},
+      ${JSON.stringify({
+        projects: [
+          { slug: HARNESS, path: '/tmp/plan-run-it', harness_kind: 'hive' },
+          { slug: APP_HARNESS, path: '/tmp/email-plan-run-it', harness_kind: 'hive' },
+        ],
+      })}::text::jsonb
+    )
+    ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload
   `;
 });
 afterAll(async () => {
@@ -121,6 +155,48 @@ async function stampClaim(at: Date): Promise<void> {
        SET last_fired_at = ${at.toISOString()}::timestamptz
      WHERE install_slug = ${HARNESS} AND name = ${planScheduleRoutineName(TEMPLATE)}
   `;
+}
+
+/**
+ * Exercise every direct-dispatch seam against the migrated test DB while
+ * injecting only the live target boundary. Assignment remains keyed to the
+ * stable agent name; the wake targets the ephemeral owner id below.
+ */
+function realDispatchForTarget(
+  target: Omit<StableAgentTargetState, 'requested'>,
+): typeof assignAndWakeActionableWorkItems {
+  const deps: ActionableWorkItemDispatchDeps = {
+    observe: (id, opts) => observeWorkItem(id, opts),
+    claim: (id, assignee, opts) => claimWorkItem(id, assignee, opts),
+    blockers: (id, harness) => readUnresolvedDepBlockers(id, harness),
+    planBlock: (workItem) => planItemLaneBlockReason(workItem),
+    planClaim: (workItem) => planItemLiveClaimReason(workItem),
+    resolveTarget: async ({ targetAgent }) => ({ requested: targetAgent, ...target }),
+    wake: wakeRecipients,
+  };
+  return (args) => assignAndWakeActionableWorkItems(args, deps);
+}
+
+/** Complete through the real agent-facing saga so plan-item reflection and the
+ * settled dependency event are both part of the acceptance boundary. */
+async function completeExecutionWorkItem(id: string, actor: string): Promise<Record<string, unknown>> {
+  const parsed = (completeWorkItemTool.args as { parse: (value: unknown) => unknown }).parse({
+    id,
+    state: 'done',
+    assumptions: 'none',
+    completion: {
+      summary: 'Acceptance fixture root completed',
+      testsRun: 'plan-run-action.integration.test.ts real shared-seam acceptance',
+      testResult: 'root execution completed successfully',
+      verifiedHow: 'integration',
+    },
+  });
+  const response = (await completeWorkItemTool.handler(parsed as never, {
+    uiClientId: actor,
+    isSuperuser: true,
+    workspaceId: WS,
+  } as never)) as { data?: { results?: Record<string, unknown>[] } };
+  return response.data?.results?.[0] ?? {};
 }
 
 describe('runScheduledPlanFire (system:plan-run)', () => {
@@ -179,78 +255,159 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(edges).toHaveLength(1);
   });
 
-  it('inherits schedule execution, promotes in the app harness, and dispatches only the actionable frontier', async () => {
+  it('drives template instance → canonical promotion → stable assignment/wake across replay and dependency release', async () => {
     const execution = { appHarnessSlug: APP_HARNESS, agentName: 'email-agent' };
+    const wakeOwner = 'su-email-plan-run-it';
     await sql`
       UPDATE harness_shared.harness_plans
          SET schedule = ${JSON.stringify({ kind: 'rrule', rrule: 'FREQ=DAILY', execution })}::text::jsonb
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
     await stampClaim(new Date('2026-06-16T10:00:00.000Z'));
-    const dispatch = vi.fn(async (args: { workItemIds: readonly string[]; targetAgent: string }) => ({
-      ok: true,
-      target: {
-        requested: args.targetAgent,
-        ownerId: 'su-email-live',
+    await upsertInboxWakeAwait({
+      subscriberId: wakeOwner,
+      eventKey: inboxWakeKey(wakeOwner),
+      note: 'real plan-run acceptance wake target',
+      minSleepSec: 0,
+    });
+    setAutoPumpEnabledForTests(false);
+    try {
+      const dispatch = realDispatchForTarget({
+        ownerId: wakeOwner,
         present: true,
         sessionState: 'parked',
         wakeable: true,
-      },
-      assignment: {
-        ok: true,
-        targetAgent: args.targetAgent,
-        requested: [...args.workItemIds],
-        actionable: [...args.workItemIds],
-        assigned: [...args.workItemIds],
-        retained: [],
-        skipped: [],
-        failed: [],
-        executionWorkItemIds: [...args.workItemIds],
-      },
-      wake: {
-        targets: ['su-email-live'],
-        keys: ['coord:inbox-wake:su-email-live'],
-        queued: 1,
-        woken: 1,
-        pickupConfirmed: false,
-        staged: 0,
-        stagedTargets: [],
-        fanoutCapped: [],
-        timedOutTargets: [],
-      },
-    }));
+      });
+      const result = await runScheduledPlanFire(
+        sql,
+        { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE },
+        { dispatch },
+      );
 
+      expect(result).toMatchObject({
+        execution,
+        replayed: false,
+        minted: 2,
+        dispatch: {
+          ok: true,
+          target: { ownerId: wakeOwner },
+          assignment: { assigned: result!.actionableWorkItemIds, retained: [] },
+          wake: { queued: 1 },
+        },
+      });
+      expect(result!.actionableWorkItemIds).toHaveLength(1);
+      expect(result!.workItemIds).toHaveLength(2);
+
+      const appRows = await sql<
+        Array<{
+          id: string;
+          harness: string;
+          status: string;
+          assignee: string | null;
+          plan_item_id: string;
+          payload: Record<string, any>;
+        }>
+      >`
+        SELECT feature_id AS id, harness_slug AS harness, status, taken_by AS assignee,
+               payload -> 'plan_item' ->> 'item_id' AS plan_item_id, payload
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${WS}
+           AND payload -> 'plan_run' ->> 'runId' = ${String(result!.runId)}
+         ORDER BY plan_item_id`;
+      expect(appRows).toHaveLength(2);
+      expect(appRows.every((row) => row.harness === APP_HARNESS)).toBe(true);
+      expect(appRows.every((row) => row.payload.plan_run.execution.agentName === 'email-agent')).toBe(true);
+      const root = appRows.find((row) => row.plan_item_id === 'P-001')!;
+      const child = appRows.find((row) => row.plan_item_id === 'P-003')!;
+      expect(root).toMatchObject({ status: 'open', assignee: 'email-agent' });
+      expect(child).toMatchObject({ status: 'blocked', assignee: null });
+      expect(await readUnresolvedDepBlockers(child.id, APP_HARNESS)).toEqual([
+        expect.objectContaining({ ref: `${APP_HARNESS}#${root.id}` }),
+      ]);
+
+      // A deterministic replay reuses the same run and execution records. It
+      // may re-wake the retained root to heal a crash, but never duplicates rows.
+      const replay = await runScheduledPlanFire(
+        sql,
+        { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE },
+        { dispatch },
+      );
+      expect(replay).toMatchObject({
+        runId: result!.runId,
+        replayed: true,
+        minted: 0,
+        workItemIds: result!.workItemIds,
+        dispatch: { ok: true, assignment: { assigned: [], retained: [root.id] } },
+      });
+      const count = await sql<{ n: number }[]>`
+        SELECT count(*)::int AS n
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${WS}
+           AND payload -> 'plan_run' ->> 'runId' = ${String(result!.runId)}`;
+      expect(count[0].n).toBe(2);
+
+      const beforeSuccessorWake = (await listRecentDeliveries(wakeOwner)).length;
+      const completed = await completeExecutionWorkItem(root.id, 'email-agent');
+      expect(completed, JSON.stringify(completed, null, 2)).toMatchObject({
+        ok: true,
+        finish: { complete: true, planItem: 'done' },
+      });
+      await drainDetached();
+
+      const rootAfter = await observeWorkItem(root.id, { harness: APP_HARNESS });
+      const childAfter = await observeWorkItem(child.id, { harness: APP_HARNESS });
+      expect(rootAfter?.item).toMatchObject({ state: 'passed', assignee: null });
+      expect(await readUnresolvedDepBlockers(child.id, APP_HARNESS)).toEqual([]);
+      expect(childAfter?.item).toMatchObject({ state: 'open', assignee: 'email-agent' });
+
+      const successorDeliveries = await listRecentDeliveries(wakeOwner);
+      expect(successorDeliveries).toHaveLength(beforeSuccessorWake + 1);
+      expect(successorDeliveries[0]).toMatchObject({
+        eventKey: inboxWakeKey(wakeOwner),
+        payload: { kind: 'actionable-work-item-dispatch', workItemIds: [child.id] },
+      });
+
+      const ledger = await sql<Array<{ harness: string }>>`
+        SELECT harness_slug AS harness FROM harness_shared.plan_runs
+         WHERE workspace_id = ${WS} AND id = ${result!.runId}`;
+      expect(ledger[0].harness).toBe(APP_HARNESS);
+    } finally {
+      setAutoPumpEnabledForTests(true);
+    }
+  });
+
+  it('fails loudly for an absent stable target while preserving assigned queue state', async () => {
+    const execution = { appHarnessSlug: APP_HARNESS, agentName: 'missing-email-agent' };
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET schedule = ${JSON.stringify({ kind: 'rrule', rrule: 'FREQ=DAILY', execution })}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
+    await stampClaim(new Date('2026-06-16T10:30:00.000Z'));
+
+    const dispatch = realDispatchForTarget({
+      ownerId: 'su-email-absent',
+      present: false,
+      sessionState: null,
+      wakeable: false,
+    });
     const result = await runScheduledPlanFire(
       sql,
       { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE },
       { dispatch },
     );
 
-    expect(result).toMatchObject({ execution, dispatch: { ok: true } });
-    expect(dispatch).toHaveBeenCalledOnce();
-    expect(dispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        workItemIds: result!.actionableWorkItemIds,
-        targetAgent: 'email-agent',
-        workspaceId: WS,
-        harness: APP_HARNESS,
-      }),
-    );
-    expect(result!.actionableWorkItemIds).toHaveLength(1);
-    expect(result!.workItemIds).toHaveLength(2);
-
-    const appRows = await sql<Array<{ harness: string; payload: Record<string, any> }>>`
-      SELECT harness_slug AS harness, payload
-        FROM harness_shared.work_items
-       WHERE workspace_id = ${WS}
-         AND payload -> 'plan_run' ->> 'runId' = ${String(result!.runId)}
-       ORDER BY feature_id`;
-    expect(appRows).toHaveLength(2);
-    expect(appRows.every((row) => row.harness === APP_HARNESS)).toBe(true);
-    expect(appRows.every((row) => row.payload.plan_run.execution.agentName === 'email-agent')).toBe(true);
-    const ledger = await sql<Array<{ harness: string }>>`
-      SELECT harness_slug AS harness FROM harness_shared.plan_runs
-       WHERE workspace_id = ${WS} AND id = ${result!.runId}`;
-    expect(ledger[0].harness).toBe(APP_HARNESS);
+    expect(result?.dispatch).toMatchObject({
+      ok: false,
+      failure: {
+        code: 'target_absent',
+        target: 'su-email-absent',
+        recoverable: true,
+        queuePreserved: true,
+      },
+      assignment: { assigned: result!.actionableWorkItemIds },
+      wake: { queued: 0 },
+    });
+    const assigned = await observeWorkItem(result!.actionableWorkItemIds[0], { harness: APP_HARNESS });
+    expect(assigned?.item.assignee).toBe('missing-email-agent');
   });
 
   it('is replay-safe: re-firing the same claim is a no-op (no duplicate run)', async () => {
