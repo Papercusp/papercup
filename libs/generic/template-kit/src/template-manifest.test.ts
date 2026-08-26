@@ -194,6 +194,36 @@ describe("REFERENCE_TEMPLATES (the retro-fitted quartermaster manifests — P-00
       "agentic-plan-work-plane",
     );
   });
+
+  it("pins the agentic plan/work-item/assignment/wake rules as executable authority", () => {
+    const aspectMusts = new Map(
+      PAPERCUSP_OPS_HIVES_TEMPLATE.musts?.map((must) => [must.id, must.rule]),
+    );
+    expect(aspectMusts.get("canonical-plan-work-plane")).toContain("app-owned plan template");
+    expect(aspectMusts.get("canonical-plan-work-plane")).toContain("canonical plan-item promotion");
+    expect(aspectMusts.get("canonical-plan-work-plane")).toContain("never raw work-item inserts");
+
+    expect(aspectMusts.get("stable-agent-direct-dispatch")).toContain(
+      "execution { appHarnessSlug, agentName }",
+    );
+    expect(aspectMusts.get("stable-agent-direct-dispatch")).toContain("assigns and durably wakes");
+    expect(aspectMusts.get("stable-agent-direct-dispatch")).toContain("actionable frontier only");
+    expect(aspectMusts.get("stable-agent-direct-dispatch")).toContain(
+      "blocked descendants remain unassigned",
+    );
+
+    expect(aspectMusts.get("target-failure-is-loud")).toContain("structured retryable failure");
+    expect(aspectMusts.get("target-failure-is-loud")).toContain("queue state preserved");
+
+    const appMusts = new Map(PAPERCUSP_APP_TEMPLATE.musts?.map((must) => [must.id, must.rule]));
+    expect(appMusts.get("agentic-plan-work-plane")).toContain("app-owned plan template");
+    expect(appMusts.get("agentic-plan-work-plane")).toContain("blocked-by DAG");
+    expect(appMusts.get("agentic-plan-work-plane")).toContain(
+      "execution { appHarnessSlug, agentName }",
+    );
+    expect(appMusts.get("agentic-plan-work-plane")).toContain("actionable-only assignment plus required wake");
+    expect(appMusts.get("agentic-plan-work-plane")).toContain("never an app-local orchestration loop");
+  });
 });
 
 describe("P-015 schema extensions — category / requires / docs", () => {
