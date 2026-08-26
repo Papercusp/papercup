@@ -1715,6 +1715,21 @@ export function classifyGateStallStatus(
    * `consecutiveReds` — a count of actual code verdicts — alone. Loud, and true.
    */
   if (status === 'error') return 'no-verdict';
+  /**
+   * P-007 — the same 'no-verdict' class as 'error', for the same load-bearing reason: the gate
+   * refused BEFORE running a test (no prewarmed dependency generation for the candidate's input
+   * fingerprint), so it established nothing about the code and must not touch `consecutiveReds`.
+   *
+   * ⚠ This line is not optional bookkeeping. `classifyGateStallStatus` ends in `return 'red'`, so
+   * WITHOUT it a typed prerequisite outage falls through to the default and fabricates a code red
+   * — strictly worse than the untyped crash it replaced. Producer vocabulary and consumer class
+   * list must land together; that drift is what EI-21465187777146773 exists to guard.
+   *
+   * It stays COUNTED (no-verdict, not noop) on purpose: unlike the self-clearing infra aborts,
+   * a missing prewarm persists until the producer publishes, so silencing it would let the gate
+   * render nothing indefinitely with gate_health untouched.
+   */
+  if (status === 'dependency-prewarm-missing') return 'no-verdict';
   // WI-39450: a pass whose own re-triage watched the failing files PASS at tip produced no
   // verdict about the code — see isProvenStaleCandidate. Its diagnostics are still written
   // (EI-13288); only the streak is left alone.
