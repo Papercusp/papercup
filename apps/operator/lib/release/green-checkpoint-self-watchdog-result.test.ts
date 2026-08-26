@@ -249,3 +249,125 @@ describe('WI-41740: the self-watchdog kill publishes a no-verdict result, never 
     expect('crashed' in parsed).toBe(false);
   });
 });
+
+/**
+ * ⭐ CLASS-LEVEL RECURRENCE GUARD.
+ *
+ * WI-41740 is the FOURTH instance of one defect, not a new bug: a green-checkpoint terminal path
+ * that rendered NO verdict published `reason: 'not-green'`, which release-actions reads as a RED
+ * — usually a red naming no failing tests at all, which then drives the held-gate alarm and the
+ * release-fixer dispatch. The prior three were WI-39841 (deadline-exceeded),
+ * EI-21462211894072863 (unreported crash) and EI-21465187777146773 (caught crash). Each was
+ * fixed as an INSTANCE, which is precisely why a fourth existed to find.
+ *
+ * So this block guards the CLASS instead of the site. The invariant is the one sentence all four
+ * bugs violated:
+ *
+ *     a result asserting `green === null` ("no verdict was rendered") must never be
+ *     classified as a red by the consumer that decides the streak.
+ *
+ * It runs every exported terminal-result builder through the REAL classifier, so a fifth
+ * builder — or a revert of any existing one to 'not-green' — fails here rather than being
+ * discovered months later from a fabricated red on a frozen `main`. Note it deliberately does
+ * NOT demand one particular reason: 'error' (no-verdict, counted) and 'cancelled' /
+ * 'infra-inconclusive' (noop, uncounted) are both legitimate answers with different meanings.
+ * The only forbidden answer is 'red'.
+ *
+ * ⚠ A new terminal builder MUST be added to this census. The census cannot enumerate itself —
+ * that is its one weakness, and it is why the list below names each builder explicitly rather
+ * than looping over something clever that would silently cover nothing.
+ */
+describe('CLASS GUARD: no terminal builder that rendered no verdict may be classified red', () => {
+  const NO_VERDICT_BUILDERS: ReadonlyArray<readonly [string, () => CheckpointResult]> = [
+    [
+      'self-watchdog kill (WI-41740)',
+      () => build(),
+    ],
+    [
+      'self-watchdog kill WITH a rescued failing-file list (WI-41740, the race half)',
+      () => build(['apps/operator/lib/release/some.test.ts']),
+    ],
+    [
+      'caught crash (EI-21465187777146773)',
+      () =>
+        buildCrashCheckpointResult({
+          candidate: 'abc123',
+          error: new Error('boom'),
+          runId: 'run-class-guard',
+        }),
+    ],
+    [
+      'managed SIGTERM/SIGINT cancellation',
+      () =>
+        buildTerminationCheckpointResult({
+          candidate: 'abc123',
+          signal: 'SIGTERM',
+          runId: 'run-class-guard',
+        }),
+    ],
+    [
+      'generic terminal failure (falls through to the crash path)',
+      () =>
+        buildTerminalFailureCheckpointResult({
+          candidate: 'abc123',
+          error: new Error('unrecognized failure'),
+          runId: 'run-class-guard',
+        }),
+    ],
+    [
+      'measured pre-suite infra refusal (WI-40916)',
+      () =>
+        buildTerminalFailureCheckpointResult({
+          candidate: 'abc123',
+          error: new Error(
+            'bash /repo/scripts/pc-heavy.sh --exclusive-all-slots -- bash setup-release-checkout.sh ' +
+              'exited 75: [pc-heavy] REFUSED materialization after 900s: only 13/16 heavy slots drained',
+          ),
+          runId: 'run-class-guard',
+        }),
+    ],
+    [
+      'missing prewarmed dependency generation (P-007)',
+      () =>
+        buildTerminalFailureCheckpointResult({
+          candidate: 'abc123',
+          error: new Error(
+            'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo ' +
+              '--select-inputs-from /repo-checkpoint exited 74: [dependency-generation] FATAL: ' +
+              'no prewarmed dependency generation for input fingerprint b0ea5991',
+          ),
+          runId: 'run-class-guard',
+        }),
+    ],
+  ];
+
+  it.each(NO_VERDICT_BUILDERS)(
+    'never fabricates a red verdict: %s',
+    (_label, make) => {
+      const r = make();
+      // Precondition: these builders exist precisely because no verdict was rendered. If one
+      // ever starts claiming a verdict, this assertion — not the next — is the one to read.
+      expect(r.green).toBeNull();
+      // THE INVARIANT.
+      expect(classifyGateStallStatus(r.reason, false)).not.toBe('red');
+      // …and it must not be reached by the classifier's `return 'red'` DEFAULT either, which is
+      // how an unmapped new reason would silently rejoin the class this guard exists to close.
+      expect(['no-verdict', 'noop']).toContain(
+        classifyGateStallStatus(r.reason, false),
+      );
+      // A moved pin still wins, for every one of them.
+      expect(classifyGateStallStatus(r.reason, true)).toBe('reset');
+    },
+  );
+
+  /**
+   * CONTROL for the guard itself: a guard that has never failed is a guard nobody has tested.
+   * This is the exact shape of all four historical bugs — a no-verdict result carrying
+   * 'not-green' — and it must be caught, or every assertion above is decorative.
+   */
+  it('CONTROL: the historical defect shape IS caught by the invariant above', () => {
+    const defective = { ...build(), reason: 'not-green' as const };
+    expect(defective.green).toBeNull();
+    expect(classifyGateStallStatus(defective.reason, false)).toBe('red');
+  });
+});
