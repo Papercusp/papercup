@@ -9749,7 +9749,7 @@
           "POST"
         ]
       },
-      "description": "Create or replace a manual / agent-insights doc the right way, in one call. THE ONLY supported way to author one: Postgres (harness_docs.content) is canonical and the <section>/<slug>.mdx file is a projection of it, so hand-writing that file does not durably create a doc. Stamps the full frontmatter convention (title/description/discovered/tags/status/documents/plans), writes the canonical row, projects the file, and AUTO-anchors + verifies so it ships drift-tracked. Returns { ok, path, slug, section, surface, anchored, status, subjectRef, warnings }.",
+      "description": "Create or replace a manual / agent-insights doc the right way, in one call. THE ONLY supported way to author one: Postgres (harness_docs.content) is canonical and the <section>/<slug>.mdx file is a projection of it, so hand-writing that file does not durably create a doc. Stamps the full frontmatter convention (title/description/discovered/tags/status/documents/plans), writes the canonical row, projects the file, and AUTO-anchors + verifies so it ships drift-tracked. Returns { ok, ref, path, slug, section, harness, storageHarness, surface, read: { slugs, harness }, anchored, status, subjectRef, warnings }; pass `read` directly to docs:get.",
       "capabilities": [
         "docs:write"
       ],
