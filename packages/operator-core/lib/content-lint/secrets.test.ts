@@ -14,13 +14,14 @@
  * adding another exemption — an exemption is a permanent security waiver, and
  * this is a formatting choice.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   findCommitBlockingSecrets,
   describeCommitBlockingSecrets,
   cachedExemptionLoader,
   EXEMPTION_CACHE_TTL_MS,
 } from './secrets';
+import { secretsDetector, setContentLintExemptionLoader, DEFAULT_CONTENT_DETECTORS } from './registry';
 
 /** An AWS-access-key-shaped value, assembled so this file's own text never
  *  carries the contiguous shape. Deliberately NOT suffixed `EXAMPLE`: the
@@ -163,5 +164,78 @@ describe('cachedExemptionLoader', () => {
     // A failed read caches nothing, so the very next call retries — it must not
     // be pinned to the empty set for a whole TTL.
     expect(await cached()).toEqual(new Set(['x/']));
+  });
+});
+
+/**
+ * The WIRING tests. The block above proves the detection LOGIC; these prove the
+ * detector is actually reachable from the list git-sync consumes. That is the
+ * half worth testing explicitly, because a correct detector nobody registered is
+ * indistinguishable from no detector at all — and it is silent.
+ */
+describe('secretsDetector (registry wiring)', () => {
+  afterEach(() => setContentLintExemptionLoader());
+
+  it('is registered in the list the git-sync content guard runs', () => {
+    expect(DEFAULT_CONTENT_DETECTORS).toContain(secretsDetector);
+  });
+
+  it('is ordered FIRST, ahead of every build-guarding detector', () => {
+    // Not cosmetic: a file can trip several detectors, and the first offender is
+    // the message that gets recorded and escalated. An unrecoverable egress
+    // freeze must not be reported behind a smart-quote.
+    expect(DEFAULT_CONTENT_DETECTORS[0]).toBe(secretsDetector);
+  });
+
+  it('scopes to the whole tracked tree, not a suffix set', () => {
+    // The three historical instances were a .test.ts, a .mjs hook and a test
+    // harness — no suffix filter would have caught all three.
+    expect(secretsDetector.matches('libs/generic/x/harness.test.ts')).toBe(true);
+    expect(secretsDetector.matches('apps/operator/scripts/hooks/cc/thing.mjs')).toBe(true);
+    expect(secretsDetector.matches('docs/whatever.md')).toBe(true);
+  });
+
+  it('honours the shared exclusions (retired trees, vendored code, build output)', () => {
+    expect(secretsDetector.matches('packages/x/node_modules/pkg/index.js')).toBe(false);
+    expect(secretsDetector.matches('_retired/old.ts')).toBe(false);
+    expect(secretsDetector.matches('packages/x/dist/bundle.js')).toBe(false);
+  });
+
+  it('still matches a TOP-LEVEL node_modules path — documented, and harmless here', () => {
+    // `isExcludedPath` tests for '/node_modules/' WITH a leading slash, so a
+    // repo-root `node_modules/...` path is not excluded. Recorded as a real
+    // assertion rather than quietly avoided, because this detector is the first
+    // in the registry scoped to `**/*` — every other one also carries a suffix or
+    // prefix filter, so it is the first for which that quirk is load-bearing.
+    //
+    // Deliberately NOT "fixed" in the shared helper: nine other detectors consume
+    // it, and the case is moot at the only seam that matters — the content guard
+    // scans DIRTY files from `git status`, and node_modules is gitignored, so a
+    // top-level vendored path never reaches this predicate in production.
+    expect(secretsDetector.matches('node_modules/pkg/index.js')).toBe(true);
+  });
+
+  it('returns an actionable error through detect() when a credential shape is present', async () => {
+    setContentLintExemptionLoader(async () => new Set());
+    const error = await secretsDetector.detect('apps/operator/lib/thing.ts', `const id = '${awsShape()}';\n`);
+    expect(error).toMatch(/credential-shaped content would enter git history/);
+    expect(error).toMatch(/aws-access-key-id/);
+  });
+
+  it('returns null through detect() for clean text', async () => {
+    setContentLintExemptionLoader(async () => new Set());
+    expect(await secretsDetector.detect('a/b.ts', 'export const x = 1;\n')).toBeNull();
+  });
+
+  it('consults the RUNTIME exemption loader from detect()', async () => {
+    // Proves the loader is actually threaded through the registry rather than
+    // the detector quietly falling back to static exemptions only — which would
+    // quarantine an exempted file from commit forever.
+    setContentLintExemptionLoader(async () => new Set(['apps/operator/lib/']));
+    expect(await secretsDetector.detect('apps/operator/lib/thing.ts', `const id = '${awsShape()}';\n`)).toBeNull();
+  });
+
+  it('declares NO autoFix — a credential-shaped repair is never applied unread', () => {
+    expect(secretsDetector.autoFix).toBeUndefined();
   });
 });
