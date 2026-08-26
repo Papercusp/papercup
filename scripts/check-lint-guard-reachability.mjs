@@ -131,6 +131,8 @@ import {
   findUnreachableModules,
   NEW_MODULE_GRACE_DAYS,
   partitionByGracePeriod,
+  detectEntrypointMarkers,
+  findInaccurateAcknowledgements,
   selectDetectorModules,
   selfExclusionPaths,
 } from './lib/module-reachability.mjs';
@@ -458,15 +460,15 @@ export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
   // clears most of the rest, so these are one decision, not eleven.
   ['apps/operator/lib/release/record-release-cli.ts', '2 tests; reached only from dead publication siblings — wire-or-retire with the family'],
   ['apps/operator/lib/release/finalize-release-publication.ts', '1 test; reached only from dead publication siblings'],
-  ['apps/operator/lib/release/release-completeness.ts', 'no test, no caller — strongest retire candidate in the family'],
+  ['apps/operator/lib/release/release-completeness.ts', 'no test; imported by preflight-build-set + record-release-cli, both themselves dead — retire the family ROOT, never this leaf'],
   ['apps/operator/lib/release/patch-artifact-provenance.ts', 'no test, no caller — strongest retire candidate in the family'],
   ['apps/operator/lib/release/preflight-build-set.ts', '1 test; reached only from dead publication siblings'],
-  ['apps/operator/lib/release/changelog-generate.ts', '1 test, 0 callers — wire-or-retire'],
+  ['apps/operator/lib/release/changelog-generate.ts', '1 test; reached only from record-release-cli, itself dead — wire-or-retire with the publication family'],
   ['apps/operator/lib/release/gate-release-site.ts', '1 test, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/seed-release-routines.ts', '1 test, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/verify-seed-payload-cli.ts', '1 test, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/retrofit-hive-to-gate.ts', '1 test, 0 callers — one-shot migration tool; likely retire'],
-  ['apps/operator/lib/release/runtime-workspace-build-coverage.ts', '2 tests, 0 callers — wire-or-retire'],
+  ['apps/operator/lib/release/runtime-workspace-build-coverage.ts', '2 tests; reached only from gitignored-asset-coverage, itself dead — wire-or-retire as a pair'],
   ['apps/operator/lib/release/rollback.ts', '3 tests, 0 callers. ⚠ NAME IS LOAD-BEARING: verify the live rollback path before retiring'],
   ['apps/operator/lib/release/preview-data-plane.ts', 'no test, no caller — wire-or-retire'],
 ]);
@@ -1665,9 +1667,50 @@ function main() {
             `       reached only from module(s) that are themselves dead: ${r.productionImporters.slice(0, 3).join(', ')}`,
           );
         }
+        // An import-edge graph cannot see the caller of a module a human runs as
+        // `tsx <path>`. Saying "called by NO production path" about one of those, with
+        // no further qualification, reads as "delete me" — and deletes a working tool.
+        const entrypoint = detectEntrypointMarkers(readIfExists(resolve(ROOT, r.module)) ?? '');
+        if (entrypoint.length) {
+          console.error(
+            `       ⚠ CLI ENTRYPOINT (${entrypoint.join(', ')}) — its caller is a person running \`tsx ${r.module}\`,`,
+          );
+          console.error(
+            '         which this axis structurally cannot see. Retiring it removes operator tooling;',
+          );
+          console.error(
+            '         "wire it" is usually wrong too. Prefer invoking it from a script/package.json so it is reachable.',
+          );
+        }
       }
       console.error('   WIRE it (call it from a blocking path) or DELETE it. A unit test is not a caller,');
       console.error('   and a plan code-truth citation proves the code EXISTS, never that anything RUNS it.');
+    }
+
+    // ── The acknowledgement REASONS must match what was measured ────────────────
+    // The list above pairs a path with prose a human typed, and that prose is what a
+    // burn-down reads when it decides what to delete. Measured 2026-08-26: 3 of 20
+    // reasons claimed "no caller" for modules with real production importers, and the
+    // falsest of them nominated a leaf that two siblings import as the "strongest retire
+    // candidate". Prose describing code is derived, pinned, or attested — never trusted.
+    const inaccurateAcks = findInaccurateAcknowledgements({
+      rows: moduleAxis.rows ?? [],
+      acknowledgements: ACKNOWLEDGED_UNREACHABLE_MODULES,
+    });
+    if (inaccurateAcks.length) {
+      failed = true;
+      console.error(
+        `\n❌ ${inaccurateAcks.length} acknowledged-unreachable REASON(s) contradict the measured import graph:`,
+      );
+      for (const v of inaccurateAcks) {
+        console.error(`     ${v.module}`);
+        console.error(`       reason claims: "${v.reason}"`);
+        console.error(
+          `       but ${v.claim === 'no-caller' ? 'it IS imported by' : 'it IS imported by test(s)'}: ${v.contradictedBy.slice(0, 3).join(', ')}`,
+        );
+      }
+      console.error('   Correct the reason to match the measurement. These strings drive retire decisions,');
+      console.error('   so a false one gets working code deleted — see plan green-main-fast-2026-08-25 D-018.');
     }
 
     if (moduleAxis.staleAcknowledged.length) {
