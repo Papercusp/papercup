@@ -379,7 +379,14 @@ defineTool({
     // We ARM anyway rather than refuse — "wake me on the next deploy" is a legitimate
     // thing to want, and refusing would break it. What was missing is that the caller
     // was never TOLD, and by the time the silence is informative the window is gone.
-    const armed = await armAwaits(ctx, keys, note, args.timeout_sec);
+    // EI-21537066270866278: deploy:await is a thin sugar over events:await, so
+    // renewing it must preserve the primitive's EI-14225 one-shot semantics.
+    // Retire this caller's prior pending success/failure pair before arming the
+    // replacement; otherwise every idle-loop renewal leaks two registrations
+    // and one deploy produces duplicate wakes.
+    const armed = await armAwaits(ctx, keys, note, args.timeout_sec, {
+      supersedeKeys: keys,
+    });
     if (!args.sha) {
       const flight = await withBoundedTimeout(readDeployInFlight(), {
         fallback: null,

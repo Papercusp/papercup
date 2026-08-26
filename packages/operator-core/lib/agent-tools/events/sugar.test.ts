@@ -449,6 +449,42 @@ describe("deploy:await already-deployed latch (EI-18676050719521433 — was pure
     ).toEqual(["release:deployed", "release:deploy-failed"]);
   });
 
+  it("supersedes this subscriber's prior deploy outcome pair before renewing the wait", async () => {
+    const callOrder: string[] = [];
+    vi.mocked(cancelAwaitsForSubscribersOnKeys).mockImplementationOnce(async () => {
+      callOrder.push("supersede");
+      return 2;
+    });
+    vi.mocked(registerAwait).mockImplementationOnce(async (i) => {
+      callOrder.push("register");
+      return {
+        id: 99,
+        eventKey: i.eventKey,
+        expiresTs: "2030-01-01",
+        timeoutBehavior: i.timeoutBehavior,
+      } as never;
+    });
+
+    const out = await callDeploy({});
+
+    expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
+      ["su-awaiter"],
+      ["release:deployed", "release:deploy-failed"],
+      { excludeNotePrefix: "[fleet:bench] " },
+    );
+    expect(callOrder[0]).toBe("supersede");
+    expect(callOrder).toContain("register");
+    expect(out.superseded).toBe(2);
+  });
+
+  it("reports zero superseded when a deploy renewal finds no prior pair", async () => {
+    vi.mocked(cancelAwaitsForSubscribersOnKeys).mockResolvedValueOnce(0);
+
+    const out = await callDeploy({ sha: "abc123" });
+
+    expect(out.superseded).toBe(0);
+  });
+
   /**
    * EI-19448585641887174 — the reported loss, at the arm site.
    *
