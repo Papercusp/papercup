@@ -71,6 +71,11 @@ const PREVIEW: FactCapPreview = {
       confidence: 'verified',
       expiresAt: '2026-09-01T00:00:00.000Z',
       createdBy: 'su-somebody-else',
+      // EI-21393210182770949: the preview carries the same bounded body excerpt
+      // the real eviction reports, so a caller can judge what a write would cost
+      // before making it — not just which keys it would name.
+      bodyExcerpt: 'a peer measured this and it is not yet acted on',
+      bodyTruncated: false,
     },
   ],
   survival: { rank: 200, liveCount: 200, nextVictim: true, survivingFractionFloor: 0.9 },
