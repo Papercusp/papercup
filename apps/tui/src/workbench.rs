@@ -10,7 +10,7 @@
 //! stays mechanical.
 #![allow(dead_code)]
 
-use crate::models::{CrewMember, CrewRow};
+use crate::models::{CrewMember, CrewRow, RosterEntry};
 use crate::mux::PaneSpec;
 
 /// A stable per-user owner key for workbench rows. Prefers an explicit override
@@ -64,6 +64,62 @@ pub fn crew_pane_specs(crew: &CrewRow) -> Vec<PaneSpec> {
     crew.members.iter().map(member_pane_spec).collect()
 }
 
+/// The liveness partition of a crew RESTORE (P-031 — crews are the multi-
+/// session switch, not a blind pane spawner): each saved member is routed by
+/// what its session is doing RIGHT NOW instead of unconditionally spawning a
+/// pane per row. `fresh` members spawn as before; `live` members get focused;
+/// `parked` members get a `coord:wake`; `ended` members surface a prompt in
+/// the reducer rather than silently returning a smaller workspace (D-009).
+#[derive(Debug, Clone, Default)]
+pub struct CrewRestorePartition {
+    /// No (parseable) resume handle → spawn the pane spec unchanged.
+    pub fresh: Vec<PaneSpec>,
+    /// Session is LIVE → focus it, never respawn (double-spawn guard, D-001).
+    pub live: Vec<RosterEntry>,
+    /// Session parked/draining/suspect → wake it via `coord:wake`.
+    pub parked: Vec<RosterEntry>,
+    /// Session ended/recorded, or absent from the active roster → ask before
+    /// resuming (the reducer's crew-restore prompt).
+    pub ended: Vec<CrewMember>,
+}
+
+/// Partition a crew's members against the ACTIVE roster (P-031). Match key:
+/// the saved `resume_id` (an adv_sessions row id) parsed as i64 against
+/// `RosterEntry.adv_session_id`. The session-state oracle verdict picks the
+/// bucket; an entry without a verdict falls back to the legacy `is_live()`
+/// heartbeat read (present-but-not-live ⇒ parked — a wake is safe, a silent
+/// drop is not), and a member whose session is missing from the active roster
+/// entirely is ENDED.
+pub fn partition_crew(members: &[CrewMember], roster: &[RosterEntry]) -> CrewRestorePartition {
+    let mut part = CrewRestorePartition::default();
+    for m in members {
+        let resume_id: Option<i64> = m.resume_id.as_deref().and_then(|r| r.trim().parse().ok());
+        let Some(rid) = resume_id else {
+            // No numeric resume handle — unchanged spawn path (a non-numeric
+            // resume_id still rides in the spec's `--resume` argv).
+            part.fresh.push(member_pane_spec(m));
+            continue;
+        };
+        let Some(entry) = roster.iter().find(|r| r.adv_session_id == Some(rid)) else {
+            part.ended.push(m.clone());
+            continue;
+        };
+        match entry.session_state.as_deref() {
+            Some("live") => part.live.push(entry.clone()),
+            Some("parked") | Some("draining") | Some("suspect") => part.parked.push(entry.clone()),
+            Some("ended") | Some("recorded") => part.ended.push(m.clone()),
+            _ => {
+                if entry.is_live() {
+                    part.live.push(entry.clone());
+                } else {
+                    part.parked.push(entry.clone());
+                }
+            }
+        }
+    }
+    part
+}
+
 /// Derive a `CrewMember` from a launched `PaneSpec`, if it's a `psu` agent
 /// session (the thing a crew restores). Non-agent panes (git/plugin) → None.
 /// The inverse of `member_pane_spec`; handles both `--resume X` and `--k=v`.
@@ -110,7 +166,7 @@ pub fn capture_zellij_layout() -> Option<String> {
     }
 }
 
-fn member_pane_spec(m: &CrewMember) -> PaneSpec {
+pub fn member_pane_spec(m: &CrewMember) -> PaneSpec {
     let mut argv = vec!["psu".to_string()];
     match (&m.resume_id, &m.agent) {
         (Some(rid), _) => {
@@ -273,5 +329,79 @@ mod tests {
         };
         let rb = crew_member_from_spec(&member_pane_spec(&r)).unwrap();
         assert_eq!(rb.resume_id.as_deref(), Some("rid"));
+    }
+
+    #[test]
+    fn partition_crew_routes_members_by_liveness() {
+        let m = |rid: &str| CrewMember {
+            resume_id: Some(rid.to_string()),
+            ..Default::default()
+        };
+        let entry = |id: i64, state: &str| RosterEntry {
+            owner_id: format!("su-{id}"),
+            adv_session_id: Some(id),
+            session_state: Some(state.to_string()),
+            ..Default::default()
+        };
+        let fresh = CrewMember {
+            agent: Some("claude".into()),
+            ..Default::default()
+        };
+        let roster = vec![entry(11, "live"), entry(22, "parked"), entry(33, "recorded")];
+        let members = vec![fresh, m("11"), m("22"), m("33"), m("44")];
+        let p = partition_crew(&members, &roster);
+        assert_eq!(p.fresh.len(), 1, "no-resume member spawns fresh");
+        assert_eq!(
+            p.fresh[0].argv,
+            vec!["psu".to_string(), "--agent=claude".to_string()]
+        );
+        assert_eq!(p.live.len(), 1);
+        assert_eq!(p.live[0].owner_id, "su-11");
+        assert_eq!(p.parked.len(), 1);
+        assert_eq!(p.parked[0].owner_id, "su-22");
+        // ended: the recorded session AND the absent-from-roster one.
+        assert_eq!(p.ended.len(), 2);
+        assert_eq!(p.ended[0].resume_id.as_deref(), Some("33"));
+        assert_eq!(p.ended[1].resume_id.as_deref(), Some("44"));
+    }
+
+    #[test]
+    fn partition_crew_falls_back_to_legacy_liveness_without_oracle_verdict() {
+        // No session_state verdict: a PRESENT entry routes live/parked by the
+        // legacy heartbeat read — never ended (ended means gone/recorded).
+        let m = CrewMember {
+            resume_id: Some("5".to_string()),
+            ..Default::default()
+        };
+        let unverdicted = RosterEntry {
+            owner_id: "su-stale".into(),
+            adv_session_id: Some(5),
+            stale: true,
+            ..Default::default()
+        };
+        let p = partition_crew(&[m], &[unverdicted]);
+        assert!(p.ended.is_empty(), "present-but-unverdicted is never ended");
+        assert!(p.fresh.is_empty());
+        assert_eq!(p.live.len() + p.parked.len(), 1);
+    }
+
+    #[test]
+    fn partition_crew_draining_and_suspect_are_parked() {
+        let m = |rid: &str| CrewMember {
+            resume_id: Some(rid.to_string()),
+            ..Default::default()
+        };
+        let entry = |id: i64, state: &str| RosterEntry {
+            owner_id: format!("su-{id}"),
+            adv_session_id: Some(id),
+            session_state: Some(state.to_string()),
+            ..Default::default()
+        };
+        let p = partition_crew(
+            &[m("1"), m("2")],
+            &[entry(1, "draining"), entry(2, "suspect")],
+        );
+        assert_eq!(p.parked.len(), 2);
+        assert!(p.live.is_empty() && p.ended.is_empty() && p.fresh.is_empty());
     }
 }

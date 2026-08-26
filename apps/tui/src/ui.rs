@@ -157,6 +157,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_session_picker(f, picker);
     } else if let Some(menu) = &app.fleet_action_menu {
         draw_fleet_menu(f, menu);
+    } else if let Some(prompt) = &app.crew_restore_prompt {
+        draw_crew_restore_prompt(f, prompt);
     } else if let Some(rev) = &app.wake_review {
         draw_wake_review(f, rev);
     }
@@ -3485,6 +3487,62 @@ fn draw_fleet_menu(f: &mut Frame, menu: &crate::app::FleetActionMenu) {
     );
 }
 
+/// The crew-restore ended-members prompt (P-031): restoring a crew focuses
+/// live members and wakes parked ones; this modal asks before resuming the
+/// ENDED ones instead of silently returning a smaller workspace (D-009).
+fn draw_crew_restore_prompt(f: &mut Frame, prompt: &crate::app::CrewRestorePrompt) {
+    let n = prompt.members.len();
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!("{n} member(s) of this crew have ENDED sessions"),
+            Theme::dim(),
+        )),
+        Line::from(""),
+    ];
+    for m in &prompt.members {
+        let agent = m.agent.clone().unwrap_or_else(|| "agent".to_string());
+        let handle = m
+            .resume_id
+            .clone()
+            .map(|r| format!("resume {r}"))
+            .unwrap_or_else(|| "no resume handle".to_string());
+        lines.push(Line::from(Span::raw(format!("  {agent} · {handle}"))));
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("[y]", Theme::title_active()),
+        Span::raw(" resume them too"),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("[n]", Theme::title_active()),
+        Span::raw(" restore without them"),
+    ]));
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled("Esc to skip", Theme::dim())));
+
+    // Height: note + blank + members + blank + 2 choices + blank + esc, +2 borders.
+    let h = (lines.len() as u16 + 2).min(f.area().height);
+    let full = f.area();
+    let w = (full.width as u32 * 56 / 100).clamp(36, 72) as u16;
+    let area = Rect {
+        x: full.x + (full.width.saturating_sub(w)) / 2,
+        y: full.y + (full.height.saturating_sub(h)) / 2,
+        width: w.max(1),
+        height: h,
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .style(Theme::popup())
+            .block(Theme::popup_block(Line::from(format!(
+                " crew '{}' · resume ended members? ",
+                trunc(&prompt.crew, 24)
+            )))),
+        area,
+    );
+}
+
 /// The staged-wake review overlay (hive-agent-tabs P-009 / D-005): a manual-mode
 /// agent's pending wakes, oldest-first, with per-wake release / edit & release /
 /// skip. The edit layer swaps the footer for a live input line.
@@ -3605,7 +3663,7 @@ fn draw_palette(f: &mut Frame, app: &App) {
         Line::from(Span::styled(format!("> {}", app.palette_input), Theme::input())),
         Line::from(""),
         Line::from(Span::styled(
-            "tutorial · layouts · crews · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public] · theme <name> · themes",
+            "tutorial · layouts · crews (saved session sets — restore focuses live · wakes parked · asks on ended) · save/restore-crew|layout · create <slug> <path|gh-url> · share <slug> [public] · theme <name> · themes",
             Theme::dim(),
         )),
         Line::from(Span::styled(
