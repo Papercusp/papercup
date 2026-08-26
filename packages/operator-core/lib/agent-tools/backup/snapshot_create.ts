@@ -38,7 +38,7 @@ export default defineTool({
   capability: 'backup:write',
   guidance: {
     when: `Create a new backup snapshot of the workspace. Use before risky migrations or major state changes.`,
-    notWhen: `For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead.`,
+    notWhen: `For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead. To reconcile a still-running receipt returned by an earlier call, pass that row as resumeSnapshotId instead of creating another snapshot.`,
     seeAlso: [
       'backup:snapshot_list (list existing snapshots)',
       'backup:settings_set (schedule recurring backups instead of one-shot)',
@@ -56,11 +56,16 @@ export default defineTool({
       'pre_destructive', 'post_run', 'plugin_install', 'secret_change', 'manual',
     ]).default('pre_destructive'),
     note: softText(LIMITS.ANNOTATION).optional(),
+    resumeSnapshotId: z.number().int().positive().optional(),
   }),
   async handler(args) {
     const ws = activeWorkspaceId();
     const note = clampText(args.note, LIMITS.ANNOTATION);
     const context = note ? { note } : undefined;
+    if (args.resumeSnapshotId !== undefined) {
+      const receipt = await workspaceBackupFor(ws).reconcileSnapshotReceipt(args.resumeSnapshotId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
+    }
     // Deliberately does NOT route through `triggerSnapshotEvent`, so it bypasses the
     // per-workspace `eventTriggers` gate. That gate answers "should this AUTOMATIC
     // event snapshot?"; this tool is an EXPLICIT request to snapshot now, and `reason`
@@ -116,8 +121,10 @@ export default defineTool({
               stillRunning: true,
               snapshotId: startedId ?? null,
               note: 'Snapshot is still running in the background — this routinely takes minutes on a large workspace. '
-                + 'Poll backup:snapshot_list to confirm completion (status \'ok\'/\'failed\'). Do NOT retry this call or '
-                + 'treat this response as a failure — the snapshot is proceeding.',
+                + 'Poll backup:snapshot_list to confirm completion (status \'ok\'/\'failed\'). If the receipt remains '
+                + 'running after its progress heartbeat stops, re-call backup:snapshot_create with resumeSnapshotId set '
+                + 'to this snapshotId; the row-id tag recovers the exact completed Kopia artifact without starting a '
+                + 'second snapshot. Do NOT retry without resumeSnapshotId or treat this response as a failure.',
             }),
           }],
         };

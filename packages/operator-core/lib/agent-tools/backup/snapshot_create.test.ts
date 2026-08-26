@@ -14,8 +14,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ snapshot: vi.fn() }));
-vi.mock('../../backup', () => ({ workspaceBackupFor: vi.fn(() => ({ snapshot: h.snapshot })) }));
+const h = vi.hoisted(() => ({ snapshot: vi.fn(), reconcileSnapshotReceipt: vi.fn() }));
+vi.mock('../../backup', () => ({
+  workspaceBackupFor: vi.fn(() => ({
+    snapshot: h.snapshot,
+    reconcileSnapshotReceipt: h.reconcileSnapshotReceipt,
+  })),
+}));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
 vi.mock('../../dbos/dbos-flags', () => ({ dbosBackupActive: vi.fn(() => false) }));
 vi.mock('../../dbos/bootstrap', () => ({ dbosStarted: vi.fn(() => false) }));
@@ -26,7 +31,8 @@ const mod = await import('./snapshot_create');
 const tool = mod.default;
 
 type Out = { content: { text: string }[] };
-const call = () => tool.handler({ reason: 'manual' } as never, {} as never) as Promise<Out>;
+const call = (args: Record<string, unknown> = { reason: 'manual' }) =>
+  tool.handler(args as never, {} as never) as Promise<Out>;
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 
 beforeEach(() => {
@@ -38,6 +44,26 @@ afterEach(() => {
 });
 
 describe('backup:snapshot_create handler — deadline race', () => {
+  it('reconciles an exact prior receipt without starting a second snapshot', async () => {
+    h.reconcileSnapshotReceipt.mockResolvedValue({
+      snapshotId: 99,
+      reconciled: true,
+      stillRunning: false,
+      status: 'ok',
+      kopiaSnapshotId: 'kopia-recovered',
+    });
+
+    const out = await call({ reason: 'pre_destructive', resumeSnapshotId: 99 });
+
+    expect(h.reconcileSnapshotReceipt).toHaveBeenCalledWith(99);
+    expect(h.snapshot).not.toHaveBeenCalled();
+    expect(body(out)).toMatchObject({
+      snapshotId: 99,
+      reconciled: true,
+      kopiaSnapshotId: 'kopia-recovered',
+    });
+  });
+
   it('returns the real result when the snapshot finishes before the deadline', async () => {
     h.snapshot.mockImplementation(async (_reason, _ctx, opts) => {
       opts?.onStarted?.(11);
