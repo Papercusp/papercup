@@ -86,6 +86,17 @@ const WS = 'ws-planrun';
 const HARNESS = 'plan-run-it-fixture';
 const APP_HARNESS = 'email-plan-run-it-fixture';
 const TEMPLATE = 'monitor-x';
+const TEMPLATE_CONTENT = `# Monitor X
+
+## Now
+**State:** recurring.
+**Next:** run.
+
+## Phase 1
+
+- **P-001** \`todo\` check campaign stats
+- **P-002** \`done\` already handled
+- **P-003** \`todo\` post the summary blocked-by: P-001`;
 
 const ITEMS = [
   { id: 'P-001', text: 'check campaign stats', status: 'todo' },
@@ -135,8 +146,8 @@ beforeEach(async () => {
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items)
     VALUES (${WS}, ${HARNESS}, ${TEMPLATE}, 'Monitor X', 'active',
-            ${'# Monitor X\n\n## Now\n**State:** recurring.\n**Next:** run.'},
-            ${'hash-monitor-x-v1'}, ${JSON.stringify(ITEMS)}::text::jsonb)
+            ${TEMPLATE_CONTENT}, ${hashPlanContent(TEMPLATE_CONTENT)},
+            ${JSON.stringify(ITEMS)}::text::jsonb)
   `;
   // Materialize its schedule → the plan-schedule routine (7b).
   await materializePlanSchedule({
