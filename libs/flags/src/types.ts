@@ -1818,6 +1818,18 @@ export const FLAGS = {
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the counter.
   RETRIEVAL_DEGRADATION_WATCHDOG: "papercusp-retrieval-degradation-watchdog",
+  // EI-21491088289861649: gates the embed-latency watchdog — reads the
+  // trailing-window per-caller embed-latency samples that the hybrid engine's
+  // embed choke point records (libs/generic/search/src/embed-latency.ts), and
+  // escalates when a caller's p99 breaches ITS OWN budget. The sibling
+  // RETRIEVAL_DEGRADATION_WATCHDOG sees only leg OUTCOMES, so an embed that is
+  // SLOW but still succeeds — measured on this box: 1.92s cold vs ~1ms warm,
+  // under search's 4000ms budget while blowing the mid-turn corpus's 1200ms —
+  // never trips it, and the breach keeps surfacing indirectly as a wrong
+  // consult verdict or a degraded semantic leg instead of AS a breach.
+  // DEFAULT ON (advisory-only escalations). OFF = the kill-switch: the timer
+  // still ticks but every sweep no-ops before reading the buffer.
+  EMBED_LATENCY_WATCHDOG: "papercusp-embed-latency-watchdog",
   // deterministic-context-carry P-019 (D-010 live leg 2): gates the residual
   // carry SAMPLER — at each REAL compaction boundary the gateway's deterministic
   // maintenance-carry branch serves, fire-and-forget one reserved-lane residual
