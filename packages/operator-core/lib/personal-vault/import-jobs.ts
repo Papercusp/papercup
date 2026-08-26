@@ -1,6 +1,6 @@
-import { createHash } from 'node:crypto';
-import { realpath, unlink } from 'node:fs/promises';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdir, open, realpath, unlink } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type postgres from 'postgres';
 import { papercuspPathForWorkspace } from '../papercusp-root';
 import {
@@ -20,6 +20,7 @@ const DEFAULT_BATCH_SIZE = 100;
 const DEFAULT_LEASE_SECONDS = 600;
 const MAX_BATCH_SIZE = 1_000;
 const MAX_LEASE_SECONDS = 3_600;
+export const MAX_PERSONAL_VAULT_IMPORT_BYTES = 16 * 1024 * 1024 * 1024;
 
 export type PersonalVaultImportStatus =
   | 'queued'
@@ -59,6 +60,38 @@ export interface PersonalVaultImportJob {
   completedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+export type PublicPersonalVaultImportJob = Pick<
+  PersonalVaultImportJob,
+  | 'id'
+  | 'sourceId'
+  | 'providerAccountId'
+  | 'filename'
+  | 'contentType'
+  | 'sizeBytes'
+  | 'status'
+  | 'bytesProcessed'
+  | 'entriesProcessed'
+  | 'documentsSeen'
+  | 'documentsImported'
+  | 'warnings'
+  | 'cancelRequested'
+  | 'attemptCount'
+  | 'maxAttempts'
+  | 'nextAttemptAt'
+  | 'retainedUntil'
+  | 'lastError'
+  | 'startedAt'
+  | 'completedAt'
+  | 'createdAt'
+  | 'updatedAt'
+>;
+
+export interface StoredPersonalVaultImportArchive {
+  storagePath: string;
+  contentSha256: string;
+  sizeBytes: number;
 }
 
 interface PersonalVaultImportJobRow {
@@ -205,6 +238,79 @@ function normalizedFilename(value: string): string {
 
 export function personalVaultImportStorageDir(workspaceId: string): string {
   return papercuspPathForWorkspace(workspaceId, 'personal-vault-imports');
+}
+
+/** Persist an upload incrementally so multi-GB provider exports never enter memory as one buffer. */
+export async function storePersonalVaultImportArchive(
+  workspaceId: string,
+  body: AsyncIterable<Uint8Array>,
+  options: { maxBytes?: number } = {},
+): Promise<StoredPersonalVaultImportArchive> {
+  const maxBytes = finiteInteger(
+    options.maxBytes,
+    MAX_PERSONAL_VAULT_IMPORT_BYTES,
+    1,
+    MAX_PERSONAL_VAULT_IMPORT_BYTES,
+  );
+  const root = personalVaultImportStorageDir(workspaceId);
+  await mkdir(root, { recursive: true, mode: 0o700 });
+  const storagePath = join(root, `${randomUUID()}.archive`);
+  const handle = await open(storagePath, 'wx', 0o600);
+  const hash = createHash('sha256');
+  let sizeBytes = 0;
+  let complete = false;
+  try {
+    for await (const value of body) {
+      const chunk = Buffer.from(value);
+      if (!chunk.length) continue;
+      sizeBytes += chunk.length;
+      if (sizeBytes > maxBytes) throw new Error('personal_archive_too_large');
+      hash.update(chunk);
+      let offset = 0;
+      while (offset < chunk.length) {
+        const result = await handle.write(chunk, offset, chunk.length - offset, null);
+        if (result.bytesWritten <= 0) throw new Error('personal_vault_import_write_incomplete');
+        offset += result.bytesWritten;
+      }
+    }
+    if (sizeBytes === 0) throw new Error('personal_archive_empty');
+    await handle.sync();
+    complete = true;
+    return { storagePath, contentSha256: hash.digest('hex'), sizeBytes };
+  } finally {
+    await handle.close();
+    if (!complete) await unlink(storagePath).catch(() => undefined);
+  }
+}
+
+/** Deliberately omit filesystem paths, leases, and content fingerprints from owner-facing reads. */
+export function publicPersonalVaultImportJob(
+  job: PersonalVaultImportJob,
+): PublicPersonalVaultImportJob {
+  return {
+    id: job.id,
+    sourceId: job.sourceId,
+    providerAccountId: job.providerAccountId,
+    filename: job.filename,
+    contentType: job.contentType,
+    sizeBytes: job.sizeBytes,
+    status: job.status,
+    bytesProcessed: job.bytesProcessed,
+    entriesProcessed: job.entriesProcessed,
+    documentsSeen: job.documentsSeen,
+    documentsImported: job.documentsImported,
+    warnings: job.warnings,
+    cancelRequested: job.cancelRequested,
+    attemptCount: job.attemptCount,
+    maxAttempts: job.maxAttempts,
+    nextAttemptAt: job.nextAttemptAt,
+    retainedUntil: job.retainedUntil,
+    lastError: job.lastError,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+  };
 }
 
 function assertSyntacticImportPath(workspaceId: string, storagePath: string): string {
