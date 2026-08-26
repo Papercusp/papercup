@@ -207,6 +207,22 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     }
   });
 
+  it('merges every discriminated-union literal instead of advertising only the first op', () => {
+    const compact = compactSchemaForResult({
+      oneOf: [
+        { type: 'object', required: ['op'], properties: { op: { const: 'get' }, stallReds: { type: 'integer' } } },
+        { type: 'object', required: ['op'], properties: { op: { const: 'set' }, enabled: { type: 'boolean' } } },
+        { type: 'object', required: ['op'], properties: { op: { const: 'hold' }, reason: { type: 'string' } } },
+        { type: 'object', required: ['op'], properties: { op: { const: 'unhold' } } },
+      ],
+    });
+
+    expect(compact).toContain('op:enum(get|set|hold|unhold)');
+    expect(compact).toContain('stallReds?:integer');
+    expect(compact).toContain('enabled?:boolean');
+    expect(compact).toContain('reason?:string');
+  });
+
   it('keeps work_items:complete assumptions visible in the bounded discovery schema', () => {
     expect(complete.name).toBe('work_items:complete');
     const { corpus, schemaByTool } = buildCorpus();

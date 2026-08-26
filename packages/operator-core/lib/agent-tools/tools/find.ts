@@ -266,6 +266,30 @@ type TopLevelSchemaProjection = {
   unionHint: string;
 };
 
+function scalarSchemaValues(raw: unknown): Array<string | number | boolean | null> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const node = raw as JsonSchemaNode;
+  if (Object.prototype.hasOwnProperty.call(node, 'const')) {
+    const value = node.const;
+    return value === null || ['string', 'number', 'boolean'].includes(typeof value)
+      ? [value as string | number | boolean | null]
+      : null;
+  }
+  if (!Array.isArray(node.enum)) return null;
+  const values = node.enum.filter(
+    (value): value is string | number | boolean | null =>
+      value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean',
+  );
+  return values.length === node.enum.length ? values : null;
+}
+
+function mergeRepeatedPropertySchema(prior: unknown, next: unknown): unknown {
+  const left = scalarSchemaValues(prior);
+  const right = scalarSchemaValues(next);
+  if (!left || !right) return prior;
+  return { enum: [...new Set([...left, ...right])] };
+}
+
 function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjection | null {
   const directProps = root.properties;
   if (directProps && typeof directProps === 'object' && !Array.isArray(directProps)) {
@@ -297,6 +321,11 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
       if (prior) {
         prior.presentIn += 1;
         prior.requiredInAll = prior.requiredInAll && required.has(name);
+        // A discriminated union repeats the discriminator in every branch with
+        // a different literal. Keeping only branch one's raw schema makes a
+        // multi-op tool look get-only. Merge scalar const/enum values while
+        // retaining the conservative first-branch behavior for complex fields.
+        prior.raw = mergeRepeatedPropertySchema(prior.raw, raw);
       } else {
         merged.set(name, { raw, presentIn: 1, requiredInAll: required.has(name) });
       }
