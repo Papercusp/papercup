@@ -46,6 +46,8 @@ vi.mock('../coordination/directive-effect', async (importOriginal) => ({
 
 import requireCheckpointTool from './require-checkpoint';
 import {
+  MAX_WAIT_SEC,
+  REQUIRE_CHECKPOINT_TIMEOUT_SEC,
   classifyDelivery,
   resolveMemberGroup,
   deliveryEvidence,
@@ -58,6 +60,15 @@ import type { DirectiveActuation, DirectiveEffectVerdict } from '../coordination
 const MEMBER = 'su-member-1';
 
 const presenceOnlyGroup = (agentId: string) => ({ agentId, claims: [] });
+
+describe('fleet:require-checkpoint dispatch timeout budget', () => {
+  it('outlives the maximum waitSec with an explicit margin', () => {
+    const timeoutSec = (requireCheckpointTool as unknown as { timeoutSec?: number }).timeoutSec;
+
+    expect(timeoutSec).toBe(REQUIRE_CHECKPOINT_TIMEOUT_SEC);
+    expect(timeoutSec).toBeGreaterThan(MAX_WAIT_SEC);
+  });
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

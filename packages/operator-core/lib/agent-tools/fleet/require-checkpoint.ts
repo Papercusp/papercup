@@ -69,6 +69,8 @@ export const DEFAULT_FRESH_SEC = 180;
 /** Default: fire the directive and report the probe, don't block the leader's turn. */
 export const DEFAULT_WAIT_SEC = 0;
 export const MAX_WAIT_SEC = 300;
+/** The dispatch budget must outlive the maximum ledger-polling wait plus a small margin. */
+export const REQUIRE_CHECKPOINT_TIMEOUT_SEC = MAX_WAIT_SEC + 30;
 /** How often the wait loop re-probes the ledger. */
 export const POLL_INTERVAL_MS = 2_000;
 
@@ -303,6 +305,8 @@ export default defineTool({
     ],
   },
   capability: 'coord:write',
+  // waitSec can block for MAX_WAIT_SEC; leave margin for the final probe and response.
+  timeoutSec: REQUIRE_CHECKPOINT_TIMEOUT_SEC,
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
