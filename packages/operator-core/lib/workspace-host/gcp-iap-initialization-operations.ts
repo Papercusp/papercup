@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto';
 
 import {
   WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
-  WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
   WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
   WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS,
   assertWorkspaceHostSecretIsolation,
@@ -310,6 +309,8 @@ function parseResponse(stdout: string, stepId: string): WorkspaceHostInitializat
 
 /** Concrete capability-declaring adapter for the signed remote initializer. */
 export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHostInitializationHostOperations {
+  // The legacy initialization seam narrows this property to its six initialization kinds, while
+  // the concrete adapter also serves lifecycle runners and must advertise the full wire union.
   readonly supportedStepKinds =
     WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS as readonly WorkspaceHostInitializationStepKind[];
 
