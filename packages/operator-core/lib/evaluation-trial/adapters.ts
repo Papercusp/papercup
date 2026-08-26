@@ -468,16 +468,10 @@ export function trialFromLlmTestRun(row: LlmTestRunRow): EvaluationTrial {
  * the task, and `evidenceFingerprint` — the canonical evidence identity filed
  * through `scorecards:emit` — is the task revision.
  *
- * The finding this projection makes mechanical: **`ScorecardRow` carries
- * `rubricRef` but no rubric REVISION**. The row names WHICH rubric graded it and
- * not WHICH VERSION of that rubric, so a rubric edit leaves older and newer cards
- * indistinguishable — the same failure D-014 fixed one level down for rubric
- * versions themselves. `grader.version` is therefore left unrecorded and surfaces
- * in `missingBindings` rather than being back-filled from whatever the rubric
- * happens to say today, which would assert that the card was graded under the
- * CURRENT rubric — the exact false comparability this contract exists to refuse.
- * (`vetting.rubricRevision` exists, but only on a vetting card, so it cannot serve
- * as the general binding.)
+ * `ScorecardRow.rubricRevision` is the plan-row revision captured by the writer for
+ * cards emitted after the revision-tracking fix. Historical rows without that field
+ * remain incomplete: the adapter never back-fills from the rubric's current text,
+ * which would falsely assert that an old card was graded under today's criteria.
  */
 export function trialFromScorecard(card: ScorecardRow): EvaluationTrial {
   const subject = card.subject;
@@ -535,8 +529,9 @@ export function trialFromScorecard(card: ScorecardRow): EvaluationTrial {
     grader: {
       kind: 'rubric',
       family: card.rubricRef,
-      // See the doc comment above: the row does not carry the graded revision.
-      version: undefined,
+      // TrialGrader.version is a string binding; preserve the numeric plan revision
+      // without inventing one for pre-fix scorecards.
+      version: card.rubricRevision == null ? undefined : String(card.rubricRevision),
       judgeModel: null,
     },
     outcome: {

@@ -412,16 +412,16 @@ describe('adapters', () => {
     expect(id.missingBindings).toContain('subject.taskRevision');
   });
 
-  it('scorecard reports that the row records no rubric REVISION it was graded under', () => {
-    // The row names WHICH rubric graded it, never WHICH VERSION — so a rubric
-    // edit leaves older and newer cards indistinguishable. Back-filling from the
-    // rubric's current text would assert comparability that was never recorded.
+  it('scorecard projects its recorded rubric revision into the grader binding', () => {
+    // The writer records the plan-row revision at emit time. The adapter must
+    // preserve it as the grader version, while legacy rows remain unrecorded.
     const card = {
       issueId: 'EI-1',
       createdAt: '2026-08-26T00:00:00.000Z',
       createdBy: 'su-1',
       subject: { ref: 'plan-x', kind: 'plan' as const },
       rubricRef: 'plan-class-feature-ship',
+      rubricRevision: 7,
       ratings: {},
       nKeys: 3,
       missingKeys: [],
@@ -435,11 +435,15 @@ describe('adapters', () => {
 
     const trial = trialFromScorecard(card);
     expect(trial.subject.taskRevision).toBe('ev-fp');
+    expect(trial.grader.version).toBe('7');
     expect(trial.outcome.score).toBe(0.8);
 
     const id = computeTrialIdentity(trial);
     expect(id.bindingComplete).toBe(false);
-    expect(id.missingBindings).toContain('grader.version');
+    expect(id.missingBindings).not.toContain('grader.version');
+
+    const legacyId = computeTrialIdentity(trialFromScorecard({ ...card, rubricRevision: undefined }));
+    expect(legacyId.missingBindings).toContain('grader.version');
   });
 
   it('classifies evidence privacy as unclassified rather than guessing', () => {

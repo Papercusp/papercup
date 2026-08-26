@@ -43,7 +43,7 @@ vi.mock('../../acceptance-author-identity', () => ({
   isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
 }));
 
-import { getRubric } from '../../rubrics';
+import { getRubric, getRubricPlanRevision } from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { getIssue } from '../../issues-engineer';
 import { listScorecards } from '../../scorecards';
@@ -51,6 +51,7 @@ import { emitScorecard, scorecardEmitArgs } from './emit';
 import { evaluateScorecard } from './evaluate';
 
 const getRubricM = vi.mocked(getRubric);
+const getRubricPlanRevisionM = vi.mocked(getRubricPlanRevision);
 const captureM = vi.mocked(captureImprovement);
 const listM = vi.mocked(listScorecards);
 const getIssueM = vi.mocked(getIssue);
@@ -122,6 +123,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   sameAuthorM.mockImplementation(async (author, candidate) => author === candidate);
   getRubricM.mockResolvedValue(RUBRIC);
+  getRubricPlanRevisionM.mockResolvedValue(7);
   listM.mockResolvedValue([]);
   captureM.mockResolvedValue({ created: true, issue: { id: 'ISS-1' } } as never);
   getIssueM.mockResolvedValue(null);
@@ -166,6 +168,16 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('stamps the graded rubric revision server-side and passes the rubric ref to the revision reader', async () => {
+    getRubricPlanRevisionM.mockResolvedValue(11);
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+    expect(r).toMatchObject({ ok: true, created: true });
+    expect(getRubricPlanRevisionM).toHaveBeenCalledWith('test-rubric');
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { rubricRef: 'test-rubric', rubricRevision: 11 } },
+    });
+  });
+
   it('accepts, persists, and fingerprints the spec-test-adequacy rerun recipe', async () => {
     const parsed = scorecardEmitArgs.safeParse({
       rubricRef: 'test-rubric',
@@ -196,6 +208,7 @@ describe('emitScorecard', () => {
         rubricRef: 'test-rubric',
         ratings: RATINGS,
         rerunRecipe: RERUN_RECIPE,
+        rubricRevision: 7,
         missingKeys: [],
         rubricResolved: true,
         synthesized: false,
@@ -234,6 +247,7 @@ describe('emitScorecard', () => {
         ratings: RATINGS,
         missingKeys: [],
         rubricResolved: true,
+        rubricRevision: 7,
         evidenceFingerprint: firstFingerprint.evidenceFingerprint,
         synthesized: false,
         score10: null,
@@ -244,6 +258,32 @@ describe('emitScorecard', () => {
     const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
     expect(r).toMatchObject({ ok: true, created: false, reason: 'unchanged-evidence', previousIssueId: 'ISS-1' });
     expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('CHANGED rubric revision vs the latest scorecard files a new card even when evidence is unchanged', async () => {
+    const fingerprint = scorecardEvidenceFingerprint({ rubricRef: 'test-rubric', ratings: RATINGS });
+    listM.mockResolvedValue([
+      {
+        issueId: 'ISS-OLD-REVISION',
+        rubricRef: 'test-rubric',
+        rubricRevision: 6,
+        ratings: RATINGS,
+        missingKeys: [],
+        rubricResolved: true,
+        evidenceFingerprint: fingerprint,
+        synthesized: false,
+        score10: null,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
+    getRubricPlanRevisionM.mockResolvedValue(7);
+
+    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' });
+    expect(r).toMatchObject({ ok: true, created: true });
+    expect(captureM).toHaveBeenCalledTimes(1);
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { rubricRef: 'test-rubric', rubricRevision: 7 } },
+    });
   });
 
   it('CHANGED evidence vs the latest scorecard files a new one even with a latest on record', async () => {

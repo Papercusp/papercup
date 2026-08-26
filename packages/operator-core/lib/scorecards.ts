@@ -257,6 +257,8 @@ export interface ScorecardRow {
   rerunRecipe?: SpecTestAdequacyRerunRecipe;
   /** The rubric graded against (a `rubrics.rubric_id`). */
   rubricRef: string;
+  /** The graded rubric's plan-row revision at emit time; absent on historical cards. */
+  rubricRevision?: number;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
   ratings: ObservationRatings;
   /** The acceptance-rubric author's post-independent-grading verdict, when recorded. */
@@ -920,6 +922,7 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
       ...(observation.subject ? { subject: observation.subject } : {}),
       ...(observation.rerunRecipe ? { rerunRecipe: observation.rerunRecipe } : {}),
       rubricRef: observation.rubricRef,
+      ...(observation.rubricRevision != null ? { rubricRevision: observation.rubricRevision } : {}),
       ratings,
       ...(observation.acceptance ? { acceptance: observation.acceptance } : {}),
       nKeys: ratedKeys.size,

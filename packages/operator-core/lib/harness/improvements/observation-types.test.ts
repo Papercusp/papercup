@@ -228,6 +228,17 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
   // interface but NOT taught here persists to payload.observation and then reads
   // back undefined forever. Nothing throws; the data is simply invisible, which is
   // exactly how the five v1 goal-mode-e2e scorecards ended up unattributable.
+  it('round-trips the graded rubric revision without confusing it with vetting revision', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'goal-mode-e2e',
+      rubricRevision: 7,
+      vetting: { consultId: 'conv-1', rubricRevision: 3 },
+    });
+    expect(out?.rubricRevision).toBe(7);
+    expect(out?.vetting?.rubricRevision).toBe(3);
+    expect(asStructuredObservation({ rubricRef: 'goal-mode-e2e', rubricRevision: '7' })?.rubricRevision).toBeUndefined();
+  });
+
   it('round-trips the graded subject (the drill parameter binding)', () => {
     const out = asStructuredObservation({
       rubricRef: 'goal-mode-e2e',

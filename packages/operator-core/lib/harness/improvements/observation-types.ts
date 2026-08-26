@@ -151,6 +151,8 @@ export interface StructuredObservation {
    * `ratings` must be present + each rating backed by evidence.
    */
   rubricRef?: string;
+  /** The graded rubric's plan-row revision at emit time; absent on historical cards. */
+  rubricRevision?: number;
   /** Per-criterion ratings against `rubricRef` — each carries MANDATORY evidence. */
   ratings?: ObservationRatings;
   /** Post-grading implementer verdict; valid only for acceptance-kind rubrics. */
@@ -598,6 +600,9 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (typeof o.sourceHive === 'string' && o.sourceHive.trim()) out.sourceHive = o.sourceHive;
   if (typeof o.targetHive === 'string' && o.targetHive.trim()) out.targetHive = o.targetHive;
   if (typeof o.rubricRef === 'string' && o.rubricRef.trim()) out.rubricRef = o.rubricRef;
+  if (typeof o.rubricRevision === 'number' && Number.isFinite(o.rubricRevision)) {
+    out.rubricRevision = o.rubricRevision;
+  }
   if (o.ratings && typeof o.ratings === 'object' && !Array.isArray(o.ratings)) {
     const rawRatings = o.ratings as Record<string, unknown>;
     const ratings: ObservationRatings = {};

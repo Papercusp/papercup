@@ -312,6 +312,10 @@ export async function emitScorecard(
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   try {
+    // Bind every scorecard to the exact rubric plan-row revision used for grading.
+    // A failed read remains unrecorded; historical cards must not be back-filled
+    // from whatever the rubric says today.
+    const rubricRevision = await getRubricPlanRevision(args.rubricRef);
     const acceptance = args.acceptance as ScorecardAcceptance | undefined;
     const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
     if (acceptance && rubric.kind !== 'acceptance') {
@@ -336,7 +340,7 @@ export async function emitScorecard(
       // trigger this narrow refusal; another critic still independently challenged
       // the rubric in that case.
       if (!callerIsImplementer) {
-        const currentRevision = await getRubricPlanRevision(rubric.rubricId);
+        const currentRevision = rubricRevision;
         const vettingCards = await listScorecards({
           rubricRef: META_ACCEPTANCE_RUBRIC_ID,
           subjectRef: rubric.rubricId,
@@ -758,10 +762,15 @@ export async function emitScorecard(
       (latest?.vetting?.workItemId ?? null) !== (vetting?.workItemId ?? null) ||
       (latest?.vetting?.rubricRevision ?? null) !== (vetting?.rubricRevision ?? null) ||
       (latest?.vetting?.unanswered ?? false) !== (vetting?.unanswered ?? false);
+    // The rubric revision is part of the grading binding but deliberately remains
+    // outside the historical evidence fingerprint. A rubric edit must therefore
+    // escape unchanged-evidence deduplication and create a new auditable card.
+    const rubricRevisionChanged = (latest?.rubricRevision ?? null) !== (rubricRevision ?? null);
     if (
       !args.force &&
       !finalityChanged &&
       !vettingChanged &&
+      !rubricRevisionChanged &&
       latestFingerprint === evidenceFingerprint &&
       (!args.supersedes || sameCorrectionAlreadyExists)
     ) {
@@ -873,6 +882,7 @@ export async function emitScorecard(
       payloadExtra: {
         observation: {
           rubricRef: args.rubricRef,
+          ...(rubricRevision != null ? { rubricRevision } : {}),
           ratings,
           ...(acceptance ? { acceptance } : {}),
           ...(args.rerunRecipe ? { rerunRecipe: args.rerunRecipe } : {}),
