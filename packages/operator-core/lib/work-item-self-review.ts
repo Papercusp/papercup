@@ -210,6 +210,44 @@ export function lastEditAtMs(ledger: readonly SelfReviewLedgerRow[]): number | u
  * in the module docstring. Passing an over-broad selection makes every verdict meaningless in
  * the permissive direction, which is why this takes rows rather than doing its own query.
  */
+/**
+ * The verdicts that REFUSE a close. Everything else — notably `rubberStampRisk` and
+ * `yieldedChange` — is a pilot MEASUREMENT and must never block (D-020).
+ *
+ * Declared as data rather than an inline conditional so the rule is testable without a
+ * database, and so a verdict added later fails a test instead of silently defaulting to
+ * "allowed" at the one call site.
+ */
+export const SELF_REVIEW_REFUSING_VERDICTS: ReadonlySet<SelfReviewVerdict> = new Set([
+  'not-claimed',
+  'uncorroborated',
+  'stale-review',
+]);
+
+/**
+ * The refusal message for an arm-B close, or `undefined` to allow it.
+ *
+ * Extracted from the `work_items:complete` gate so the load-bearing rule — which verdicts
+ * refuse — can be exercised directly. Inline at the call site it was reachable only through
+ * a live ledger query, which is precisely how a gate ends up never being tested against the
+ * case it was written to permit.
+ */
+export function selfReviewRefusal(
+  judgement: SelfReviewJudgement,
+  itemId: string,
+): string | undefined {
+  if (!SELF_REVIEW_REFUSING_VERDICTS.has(judgement.verdict)) return undefined;
+  return (
+    `REJECTED — ${itemId} is assigned to pilot arm B, which requires a corroborated ` +
+    `self-review before it can close. Verdict: ${judgement.verdict}` +
+    (judgement.reason ? ` — ${judgement.reason}` : '') +
+    `. Re-read the diff as it now stands (capability:git / capability:read), then re-send ` +
+    `the completion with completion.selfReview: { lookedAt: "<what you re-read>", ` +
+    `findings: [...], changedAsResult: [...] }. An EMPTY findings array is accepted and ` +
+    `recorded — do not invent findings.`
+  );
+}
+
 export function judgeSelfReview(args: {
   evidence: SelfReviewEvidence | null | undefined;
   ledger: readonly SelfReviewLedgerRow[];
