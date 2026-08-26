@@ -14,7 +14,7 @@
  * domain, the agent calls bare `locks:heartbeat` from the canonical tree, gets
  * `not_found_or_not_yours_or_expired`, and its lock silently expires mid-edit.
  *
- * Run: npx vitest run lib/agent-tools/locks/__tests__/heartbeat-cross-domain.integration.test.ts
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/__tests__/heartbeat-cross-domain.integration.test.ts
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';

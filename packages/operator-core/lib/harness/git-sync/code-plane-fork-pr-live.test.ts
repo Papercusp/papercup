@@ -20,7 +20,7 @@
  * shared-hive-test repo"); the box's gh tokens lack `delete_repo` scope so the
  * repos themselves are left in place for reuse.
  *
- * Run: PAPERCUSP_LIVE_FORK_PR=1 npx vitest run lib/harness/git-sync/code-plane-fork-pr-live.test.ts
+ * Run: cd packages/operator-core && PAPERCUSP_LIVE_FORK_PR=1 npx vitest run lib/harness/git-sync/code-plane-fork-pr-live.test.ts
  */
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

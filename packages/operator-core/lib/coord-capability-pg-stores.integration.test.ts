@@ -19,7 +19,7 @@
  * package's standalone schema rig, mirroring migration 123).
  *
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
- *   packages/operator-core/lib/coord-capability-pg-stores.integration.test.ts
+ *   lib/coord-capability-pg-stores.integration.test.ts
  */
 import { afterAll, beforeAll, test, expect } from 'vitest';
 import postgres from 'postgres';

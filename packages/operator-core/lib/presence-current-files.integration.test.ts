@@ -20,7 +20,7 @@
  * does not depend on the shared baseline container's migration state.
  *
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
- *   packages/operator-core/lib/presence-current-files.integration.test.ts
+ *   lib/presence-current-files.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';

@@ -6,7 +6,7 @@
  * no-op on an unknown owner. Mirrors the coord-capability-pg-stores rig.
  *
  * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
- *   packages/operator-core/lib/compaction-presence-store.integration.test.ts
+ *   lib/compaction-presence-store.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres from 'postgres';

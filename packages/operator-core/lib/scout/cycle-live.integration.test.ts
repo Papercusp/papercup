@@ -35,7 +35,7 @@
  *   - transport: the stateless path resolves anthropic-direct off the live
  *     Claude OAuth session (EI-399: anthropic-direct is the only transport).
  *
- * Run:  SCOUT_LIVE_CYCLE=1 npx vitest run -c vitest.integration.config.ts \
+ * Run:  cd packages/operator-core && SCOUT_LIVE_CYCLE=1 npx vitest run -c vitest.integration.config.ts \
  *         lib/scout/cycle-live.integration.test.ts
  *
  * Artifacts (committed):
