@@ -951,11 +951,18 @@ export default defineTool({
                     facts: evictedFacts,
                     note:
                       `Seating this write EVICTED the fact(s) above: this scope is AT its ` +
-                      `${FACTS_PER_SCOPE_CAP}-fact cap. They are GONE from every future fold — ` +
+                      `${FACTS_PER_SCOPE_CAP}-fact cap. They will never be FOLDED again — ` +
                       `evicted by the cap, not expired and not retracted by their author. Your ` +
-                      `next assert into this scope will cost another one. If a listed fact still ` +
-                      `matters, re-assert it; note that a SHORT TTL is what makes a fact cheap ` +
-                      `for the cap to choose, so an urgent short-lived fact is the most likely victim.`,
+                      `next assert into this scope will cost another one. THE BODY IS NOT ` +
+                      `DESTROYED: eviction is a soft-delete (it stamps evicted_at), so each ` +
+                      `key above is still readable in full via ` +
+                      `facts:list { scope, key, versions:true, full:true } — read it BEFORE ` +
+                      `deciding whether it still matters, and re-assert it if it does. ` +
+                      `Ranking: victims are chosen by confidence tier first ('verified' safest), ` +
+                      `then by the REMAINING FRACTION of the author's declared TTL. That ` +
+                      `fraction is scale-invariant, so TTL LENGTH is not what puts a fact at ` +
+                      `risk: a short-TTL fact just written ranks among the SAFEST and only ` +
+                      `yields as it approaches its own expiry.`,
                   },
                 }
               : {}),
