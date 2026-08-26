@@ -1160,9 +1160,13 @@ export function buildSelfWatchdogCheckpointResult(opts: {
  * fabricates a code-red verdict and increments the red streak. Keep generic
  * crashes loud/counting via `buildCrashCheckpointResult`; only exact signatures
  * receive the existing infra-inconclusive no-verdict classification. Dependency
- * generation has the same contract: exit 75 plus its torn-snapshot marker means
- * the live dependency source changed while it was being copied, before any code
- * suite ran. Treating that as `not-green` leaves no inconclusive record and lets
+ * generation reserves exit 75 for its three live-input drift refusals: an existing
+ * generation changed while being pinned, node_modules changed while being copied,
+ * or dependency inputs changed before an exact-ref selector could be published.
+ * All three happen before any code suite runs. Classify that writer-owned exit-code
+ * contract rather than its hand-maintained prose; the stale-selector wording added
+ * a third site and otherwise fell back to an anonymous crash on candidate 208265f0.
+ * Treating any of these as `not-green` leaves no inconclusive record and lets
  * release:trace inherit a historical red streak for the new candidate (D-066).
  */
 export function buildTerminalFailureCheckpointResult(opts: {
@@ -1180,11 +1184,7 @@ export function buildTerminalFailureCheckpointResult(opts: {
     detail.includes("[pc-heavy] REFUSED materialization");
   const dependencySnapshotChanged =
     detail.includes("dependency-generation.sh") &&
-    detail.includes("exited 75") &&
-    (detail.includes("refusing a torn snapshot") ||
-      detail.includes(
-        "live node_modules changed while pinning an existing generation",
-      ));
+    detail.includes("exited 75");
   // P-006: dependency-generation.sh reserves exit 74 for ONE condition — the immutable
   // dependency generation the gate needs is absent or unusable. All eight `return 74` sites are
   // that family (missing selector, no immutable token, replaced after validation, invalid marker,
@@ -1267,7 +1267,8 @@ export function buildTerminalFailureCheckpointResult(opts: {
         "heavy holders for isolated dependency materialization. No code verdict was rendered; " +
         `the next run retries after the admission window clears. ${detail}`
       : "green-checkpoint aborted before the suite: live dependency inputs changed while " +
-        "pinning an immutable dependency generation, so the publisher refused a torn snapshot. " +
+        "pinning an immutable dependency generation, so the publisher refused a torn snapshot " +
+        "or stale exact-ref selector. " +
         "No code verdict was rendered; wait for dependency writers to settle before the next " +
         `authorized run. ${detail}`,
   };
