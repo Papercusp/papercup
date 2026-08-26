@@ -399,7 +399,18 @@ describe('D-016 / WI-38048 — profiles bind by launch SLOT, never by psu --role
     // Guards the count too: the contract lists SEVEN slots and goals:start uses
     // an eighth (`goal`). WI-38048's own prose said "six" — building to that
     // number silently refuses two slots that are already in use.
-    expect(GOAL_LAUNCH_ROLES).toHaveLength(8);
+    //
+    // 8 → 12 (P-005 of goal-launch-headless-and-fleet-type-2026-08-26): a paired
+    // fleet splits each family into directors and implementers whose knobs are
+    // independent by design, so `plan-` and `drain-fleet-{director,implementer}`
+    // are four MORE real slots. Without them a goal could declare
+    // fleetType:'paired' and have nothing to say about either half.
+    //
+    // The number is asserted rather than derived on purpose: this guard's whole
+    // job is to make growing the closed set a DELIBERATE act. Every launch door
+    // looks profiles up by these keys, so a slot added without a binding site is
+    // the WI-38048 failure again — configured in the panel, binding nothing.
+    expect(GOAL_LAUNCH_ROLES).toHaveLength(12);
     for (const slot of GOAL_LAUNCH_ROLES) {
       const r = goalLaunchSettingsSchema.safeParse({ roles: { [slot]: { model: 'opus' } } });
       expect(r.success, `slot ${slot} should be storable`).toBe(true);
@@ -463,6 +474,11 @@ describe('readGoalLaunchSettings', () => {
       // P-006: budget truth rides the same row read; a goal with nothing
       // declared resolves an all-null truth, not an absent one.
       budget: { budgetCents: null, spentCents: null, spentCentsAt: null },
+      // P-006 (goal-launch-headless-and-fleet-type): the drain-fleet declaration
+      // rides that same row too, for the same reason — the launch boundary needs
+      // it to pick a slot family, and a second round-trip per launch to read one
+      // jsonb key would be pure overhead.
+      drainFleetSlug: null,
     });
   });
 
