@@ -24,6 +24,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CARRY_NOTE_MAX_CHECKS,
+  normalizeCheckEntries,
   parseCheckLine,
   splitCarryNoteChecks,
   withCarryNoteChecks,
@@ -87,6 +88,23 @@ describe('WI-41774: flight-record telemetry is not a check row', () => {
 
     expect(checks).toHaveLength(1);
     expect(checks[0]?.claim).toBe('the gate is green');
+  });
+
+  it('refuses telemetry supplied through structured checks while preserving real claims', () => {
+    const emittedTelemetryClaim = realFlightRecord()
+      .split('\n')
+      .find((line) => line.startsWith('- at='))
+      ?.slice(2);
+
+    expect(emittedTelemetryClaim).toBeTruthy();
+
+    const normalized = normalizeCheckEntries(
+      [{ claim: emittedTelemetryClaim! }, { claim: 'the gate is green' }],
+      [],
+      Date.parse('2026-08-26T07:30:00.000Z'),
+    );
+
+    expect(normalized.map((entry) => entry.claim)).toEqual(['the gate is green']);
   });
 
   it('does NOT eat a legitimate claim that merely mentions tool= or at=', () => {
