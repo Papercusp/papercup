@@ -8,8 +8,39 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const promoteMock = vi.fn();
+const sweepMocks = vi.hoisted(() => ({
+  sql: vi.fn(),
+  resolveMugOwner: vi.fn(),
+  routineStorageSlug: vi.fn(),
+  deliverScoutNudge: vi.fn(),
+  claimWatchdogFire: vi.fn(),
+  recentWatchdogFires: vi.fn(),
+}));
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sweepMocks.sql }),
+}));
+
 vi.mock('../plan-workitem-promotion-run', () => ({
   promotePlanItems: (...args: unknown[]) => promoteMock(...args),
+}));
+
+vi.mock('../pot-membership', () => ({
+  routineStorageSlug: (...args: unknown[]) => sweepMocks.routineStorageSlug(...args),
+}));
+
+vi.mock('../pot/placement-watchdog', () => ({
+  resolveMugOwner: (...args: unknown[]) => sweepMocks.resolveMugOwner(...args),
+}));
+
+vi.mock('../pot/watchdog', () => ({
+  claimWatchdogFire: (...args: unknown[]) => sweepMocks.claimWatchdogFire(...args),
+  recentWatchdogFires: (...args: unknown[]) => sweepMocks.recentWatchdogFires(...args),
+}));
+
+vi.mock('./nudge-recipient', () => ({
+  deliverScoutNudge: (...args: unknown[]) => sweepMocks.deliverScoutNudge(...args),
 }));
 
 // P-070: the retirement gate is read through this module. Mocked so the unit tier
@@ -132,6 +163,55 @@ describe('scoutReadyAutostartSweep population', () => {
       }),
     ).resolves.toEqual([]);
   });
+
+  it('nudges the steward with the missing legs and repair item when promotion is triad-blocked', async () => {
+    maintenanceScopesMock.mockReset().mockResolvedValueOnce([
+      { workspaceId: 'papercusp-workspace', installSlug: 'papercusp' },
+    ]);
+    axisEnabledMock.mockReset().mockResolvedValueOnce(true);
+    sweepMocks.routineStorageSlug.mockReset().mockResolvedValueOnce('papercusp');
+    sweepMocks.resolveMugOwner.mockReset().mockResolvedValueOnce('steward-1');
+    sweepMocks.deliverScoutNudge.mockReset().mockResolvedValueOnce({ kind: 'su', ownerId: 'steward-1' });
+    sweepMocks.sql
+      .mockReset()
+      .mockResolvedValueOnce([{ plan_slug: 'scout-gate-resilience', title: 'Gate resilience', has_open_items: true }])
+      .mockResolvedValueOnce([{ prev_op_status: null }]);
+    promoteMock.mockReset().mockResolvedValueOnce({
+      promoted: 0,
+      skipped: 1,
+      specTriadBlocked: true,
+      specTriadMissing: ['requirements', 'design'],
+      specTriadWorkItem: 'EI-TRIAD-REPAIR',
+    });
+
+    const results = await scoutReadyAutostartSweep();
+
+    expect(results).toEqual([
+      {
+        workspaceId: 'papercusp-workspace',
+        installSlug: 'papercusp',
+        outcome: 'spec-triad-blocked',
+        planSlug: 'scout-gate-resilience',
+        promoted: 0,
+        reason: 'promotion refused by spec triad (missing: requirements, design); repair EI-TRIAD-REPAIR',
+      },
+    ]);
+    expect(sweepMocks.deliverScoutNudge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'papercusp-workspace',
+        mugOwner: 'steward-1',
+        source: 'scout-ready-spec-triad',
+        harnessSlug: 'papercusp',
+        summary: expect.stringContaining('scout-gate-resilience'),
+        payload: {
+          kind: 'scout-ready-spec-triad-blocked',
+          planSlug: 'scout-gate-resilience',
+          missing: ['requirements', 'design'],
+          repairWorkItem: 'EI-TRIAD-REPAIR',
+        },
+      }),
+    );
+  });
 });
 
 describe('startReadyScoutPlan', () => {
@@ -206,6 +286,27 @@ describe('startReadyScoutPlan', () => {
     promoteMock.mockResolvedValueOnce({ promoted: 0, skipped: 0, flagOff: true });
     const r = await startReadyScoutPlan(sql, args, axis(true));
     expect(r).toEqual({ outcome: 'started', promoted: 0, flagOff: true, axisWritten: true });
+  });
+
+  it('carries the spec-triad refusal details to the ready-plan sweep', async () => {
+    const { sql } = fakeSql([{ prev_op_status: null }]);
+    promoteMock.mockResolvedValueOnce({
+      promoted: 0,
+      skipped: 1,
+      specTriadBlocked: true,
+      specTriadMissing: ['requirements', 'design'],
+      specTriadWorkItem: 'EI-TRIAD-REPAIR',
+    });
+
+    await expect(startReadyScoutPlan(sql, args, axis(false))).resolves.toMatchObject({
+      outcome: 'promoted',
+      promoted: 0,
+      flagOff: false,
+      axisWritten: false,
+      specTriadBlocked: true,
+      specTriadMissing: ['requirements', 'design'],
+      specTriadWorkItem: 'EI-TRIAD-REPAIR',
+    });
   });
 
   // ── P-070: the op_status axis retires with the Mug/Kettle tier ──────────────
