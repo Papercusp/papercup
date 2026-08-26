@@ -14,6 +14,10 @@ import {
   parseFrozenCandidateRepairQueue,
   type FrozenCandidateRepairQueue,
 } from './frozen-candidate-repair-queue';
+import {
+  parseCheckpointEligibilitySnapshot,
+  type CheckpointEligibilitySnapshot,
+} from './checkpoint-eligibility-snapshot';
 
 export const CHECKPOINT_QUALIFICATION_METADATA_KEY = 'qualificationTransaction';
 export const CHECKPOINT_QUALIFICATION_SCHEMA_VERSION = 1 as const;
@@ -76,6 +80,7 @@ export interface QualificationPhysicalRun extends QualificationPhysicalRunner {
 
 export type QualificationSafeNextAction =
   | { code: 'launch-physical-run'; reason: string; waitEvents: string[] }
+  | { code: 'launch-preflight-runner'; reason: string; waitEvents: string[] }
   | { code: 'await-blocker-events'; reason: string; waitEvents: string[] }
   | { code: 'await-current-run'; reason: string; waitEvents: string[] }
   | { code: 'recover-expired-runner'; reason: string; waitEvents: string[] }
@@ -99,6 +104,7 @@ export interface CheckpointQualificationState {
   blockers: QualificationBlocker[];
   phaseDurationsMs: Partial<Record<QualificationPhase, number>>;
   consumedPhysicalRuns: QualificationPhysicalRun[];
+  eligibilitySnapshot: CheckpointEligibilitySnapshot | null;
   safeNextAction: QualificationSafeNextAction;
   unknown: { code: 'resolver-failed'; detail: string } | null;
 }
@@ -124,6 +130,7 @@ export interface CheckpointQualificationTransaction {
   consumedPhysicalRuns?: QualificationPhysicalRun[];
   evidenceRefs: string[];
   previousAttemptId: string | null;
+  eligibilitySnapshot?: CheckpointEligibilitySnapshot | null;
 }
 
 export interface BeginQualificationInput {
@@ -226,6 +233,7 @@ export function projectCheckpointQualificationState(
     return {
       status: 'none', attemptId: null, candidate: null, phase: null, outcome: null, owner,
       lease: null, blockers: [], phaseDurationsMs: {}, consumedPhysicalRuns: [], unknown: null,
+      eligibilitySnapshot: null,
       safeNextAction: {
         code: 'read-release-control',
         reason: 'no logical qualification attempt exists; read current serializer/manual-run authority before starting one',
@@ -238,6 +246,7 @@ export function projectCheckpointQualificationState(
     return {
       status: 'unreadable', attemptId: null, candidate: null, phase: null, outcome: null, owner,
       lease: null, blockers: [], phaseDurationsMs: {}, consumedPhysicalRuns: [],
+      eligibilitySnapshot: null,
       safeNextAction: {
         code: 'read-release-control',
         reason: 'qualification metadata is malformed; repair the durable record before launching',
@@ -257,7 +266,9 @@ export function projectCheckpointQualificationState(
     : null;
   const waitEvents = uniqueStrings(transaction.blockers.flatMap((blocker) => blocker.clearEvents));
   let safeNextAction: QualificationSafeNextAction;
-  if (transaction.outcome.kind === 'green') {
+  if (transaction.eligibilitySnapshot && !isTerminalQualificationOutcome(transaction.outcome)) {
+    safeNextAction = transaction.eligibilitySnapshot.safeNextAction;
+  } else if (transaction.outcome.kind === 'green') {
     safeNextAction = { code: 'read-release-control', reason: 'qualification is green; read promotion/deploy authority before acting', waitEvents: [] };
   } else if (transaction.outcome.kind === 'red') {
     safeNextAction = { code: 'repair-code', reason: 'a real red is terminal for this logical attempt; repair code before starting a successor', waitEvents: [] };
@@ -283,6 +294,7 @@ export function projectCheckpointQualificationState(
     blockers: transaction.blockers,
     phaseDurationsMs: qualificationPhaseDurations(transaction, nowMs),
     consumedPhysicalRuns: transaction.consumedPhysicalRuns ?? [],
+    eligibilitySnapshot: transaction.eligibilitySnapshot ?? null,
     safeNextAction,
     unknown: null,
   };
@@ -333,7 +345,8 @@ export function parseCheckpointQualificationTransaction(
             typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0,
         ))) ||
     (row.consumedPhysicalRuns != null &&
-      (!Array.isArray(row.consumedPhysicalRuns) || row.consumedPhysicalRuns.some((run) => !isPhysicalRun(run))))
+      (!Array.isArray(row.consumedPhysicalRuns) || row.consumedPhysicalRuns.some((run) => !isPhysicalRun(run)))) ||
+    (row.eligibilitySnapshot != null && !parseCheckpointEligibilitySnapshot(row.eligibilitySnapshot))
   ) return null;
   if (!isQualificationOutcome(row.outcome)) return null;
   if (
@@ -383,12 +396,16 @@ export function parseCheckpointQualificationTransaction(
             : row.currentPhysicalRunner.reservedAtMs,
       }
     : null;
+  const eligibilitySnapshot = row.eligibilitySnapshot == null
+    ? null
+    : parseCheckpointEligibilitySnapshot(row.eligibilitySnapshot);
   return {
     ...(row as CheckpointQualificationTransaction),
     phaseEnteredAtMs,
     phaseDurationsMs,
     currentPhysicalRunner,
     consumedPhysicalRuns,
+    eligibilitySnapshot,
   };
 }
 
@@ -427,8 +444,44 @@ export function beginQualificationTransaction(
     consumedPhysicalRuns: [],
     evidenceRefs: uniqueStrings(input.evidenceRefs ?? []),
     previousAttemptId: current?.attemptId ?? null,
+    eligibilitySnapshot: null,
   };
   return { status: 'updated', transaction };
+}
+
+export function recordQualificationEligibilitySnapshot(
+  current: CheckpointQualificationTransaction,
+  input: {
+    attemptId: string;
+    snapshot: CheckpointEligibilitySnapshot;
+    nowMs?: number;
+  },
+): QualificationTransition {
+  if (
+    current.attemptId !== input.attemptId ||
+    input.snapshot.attemptId !== input.attemptId
+  ) return { status: 'conflict', transaction: current };
+  if (isTerminalQualificationOutcome(current.outcome)) {
+    return { status: 'terminal', transaction: current };
+  }
+  const parsed = parseCheckpointEligibilitySnapshot(input.snapshot);
+  if (!parsed) return { status: 'conflict', transaction: current };
+  if (JSON.stringify(current.eligibilitySnapshot ?? null) === JSON.stringify(parsed)) {
+    return { status: 'idempotent', transaction: current };
+  }
+  const evidenceRefs = uniqueStrings([
+    ...current.evidenceRefs,
+    ...parsed.predicates.flatMap((predicate) => predicate.evidenceRefs),
+  ]);
+  return {
+    status: 'updated',
+    transaction: {
+      ...current,
+      updatedAtMs: input.nowMs ?? Date.now(),
+      eligibilitySnapshot: parsed,
+      evidenceRefs,
+    },
+  };
 }
 
 export function waitQualificationTransaction(
@@ -779,6 +832,16 @@ export function reserveStoredQualificationRunner(
 ): Promise<StoredQualificationMutation> {
   return mutateStoredQualification(target, (current) =>
     current ? reserveQualificationRunner(current, input) : { status: 'unreadable', error: 'missing attempt' });
+}
+
+export function recordStoredQualificationEligibility(
+  target: GateVerdictTarget,
+  input: Parameters<typeof recordQualificationEligibilitySnapshot>[1],
+): Promise<StoredQualificationMutation> {
+  return mutateStoredQualification(target, (current) =>
+    current
+      ? recordQualificationEligibilitySnapshot(current, input)
+      : { status: 'unreadable', error: 'missing attempt' });
 }
 
 export async function readStoredQualification(
