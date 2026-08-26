@@ -72,26 +72,19 @@ beforeEach(async () => {
   deliveryId = deliveries[0].id;
 });
 
-async function seedTriggerRun(
-  over: {
-    status?: string;
-    attempts?: number;
-    startedAt?: string;
-    args?: Record<string, unknown>;
-    outcome?: Record<string, unknown>;
-    bindingId?: string;
-  } = {},
-): Promise<string> {
+async function seedTriggerRun(over: {
+  status?: string;
+  attempts?: number;
+  startedAt?: string;
+  args?: Record<string, unknown>;
+  outcome?: Record<string, unknown>;
+  bindingId?: string;
+} = {}): Promise<string> {
   const args = over.args ?? {
     trigger: {
-      key: 'ext:gmail:message.received',
-      source: 'gmail',
-      event: 'message.received',
-      sourceId: 'source-fixture',
-      externalId: 'dispatch-1',
-      occurredAt: null,
-      datatypeId: 'email-message',
-      dedupeKey: 'gmail:dispatch-1',
+      key: 'ext:gmail:message.received', source: 'gmail', event: 'message.received',
+      sourceId: 'source-fixture', externalId: 'dispatch-1', occurredAt: null,
+      datatypeId: 'email-message', dedupeKey: 'gmail:dispatch-1',
       payload: { id: 'dispatch-1', subject: 'Triage this' },
     },
   };
@@ -121,18 +114,16 @@ describe('external trigger durable dispatch', () => {
 
     expect(result).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
     expect(result.triggerRunIds).toEqual([triggerRunId]);
-    const triggerRuns = await sql<
-      Array<{
-        status: string;
-        attempts: number;
-        plan_run_ref: string;
-        outcome: {
-          instancePlanSlug: string;
-          planRunId: number;
-          runWithLastEvent: typeof audit.runWithLastEvent;
-        };
-      }>
-    >`
+    const triggerRuns = await sql<Array<{
+      status: string;
+      attempts: number;
+      plan_run_ref: string;
+      outcome: {
+        instancePlanSlug: string;
+        planRunId: number;
+        runWithLastEvent: typeof audit.runWithLastEvent;
+      };
+    }>>`
       SELECT status, attempts, plan_run_ref, outcome FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
     expect(triggerRuns[0].status).toBe('succeeded');
@@ -166,16 +157,10 @@ describe('external trigger durable dispatch', () => {
       });
     const announceRunWork = vi.fn(async () => undefined);
 
-    expect(await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork })).toMatchObject({
-      claimed: 1,
-      succeeded: 0,
-      failed: 1,
-    });
-    expect(await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork })).toMatchObject({
-      claimed: 1,
-      succeeded: 1,
-      failed: 0,
-    });
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 1 });
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork }))
+      .toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
     const rows = await sql<Array<{ status: string; attempts: number }>>`
       SELECT status, attempts FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
@@ -195,13 +180,11 @@ describe('external trigger durable dispatch', () => {
       minted: 0,
       replayed: true,
     });
-    expect(
-      await dispatchPendingTriggerRuns(sql, {
-        runPlan,
-        announceRunWork,
-        staleAfterSeconds: 60,
-      }),
-    ).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(await dispatchPendingTriggerRuns(sql, {
+      runPlan,
+      announceRunWork,
+      staleAfterSeconds: 60,
+    })).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
     const recovered = await sql<Array<{ status: string; attempts: number }>>`
       SELECT status, attempts FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
@@ -310,29 +293,17 @@ describe('external trigger durable dispatch', () => {
     const failedDispatch = {
       ok: false,
       target: {
-        requested: 'email-agent',
-        ownerId: 'email-agent',
-        present: false,
-        sessionState: null,
-        wakeable: null,
+        requested: 'email-agent', ownerId: 'email-agent', present: false,
+        sessionState: null, wakeable: null,
       },
       assignment: {
-        ok: true,
-        targetAgent: 'email-agent',
-        requested: ['WI-EMAIL'],
-        actionable: ['WI-EMAIL'],
-        assigned: ['WI-EMAIL'],
-        retained: [],
-        skipped: [],
-        failed: [],
-        executionWorkItemIds: ['WI-EMAIL'],
+        ok: true, targetAgent: 'email-agent', requested: ['WI-EMAIL'], actionable: ['WI-EMAIL'],
+        assigned: ['WI-EMAIL'], retained: [], skipped: [], failed: [], executionWorkItemIds: ['WI-EMAIL'],
       },
       wake: { queued: 0, woken: 0, staged: 0, timedOutTargets: [] },
       failure: {
         code: 'target_absent' as const,
-        target: 'email-agent',
-        recoverable: true as const,
-        queuePreserved: true,
+        target: 'email-agent', recoverable: true as const, queuePreserved: true,
         message: 'no live adopting session',
       },
     };
@@ -340,43 +311,23 @@ describe('external trigger durable dispatch', () => {
       .fn()
       .mockResolvedValueOnce({
         instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
-        runId: 9002,
-        runSeq: 0,
-        minted: 1,
-        workItemIds: ['WI-EMAIL'],
-        actionableWorkItemIds: ['WI-EMAIL'],
-        replayed: false,
-        execution,
-        dispatch: failedDispatch,
+        runId: 9002, runSeq: 0, minted: 1, workItemIds: ['WI-EMAIL'],
+        actionableWorkItemIds: ['WI-EMAIL'], replayed: false, execution, dispatch: failedDispatch,
       })
       .mockResolvedValueOnce({
         instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
-        runId: 9002,
-        runSeq: 0,
-        minted: 0,
-        workItemIds: ['WI-EMAIL'],
-        actionableWorkItemIds: ['WI-EMAIL'],
-        replayed: true,
-        execution,
+        runId: 9002, runSeq: 0, minted: 0, workItemIds: ['WI-EMAIL'],
+        actionableWorkItemIds: ['WI-EMAIL'], replayed: true, execution,
         dispatch: { ...failedDispatch, ok: true, failure: undefined },
       });
     const openEscalation = vi.fn(async () => ({ msg_id: 'esc-trigger-retry-1' }) as any);
     const resolveEscalation = vi.fn(async () => 'already_resolved' as const);
 
-    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation })).toMatchObject({
-      claimed: 1,
-      succeeded: 0,
-      failed: 1,
-      deferred: 1,
-    });
-    const parked = await sql<
-      Array<{
-        status: string;
-        attempts: number;
-        next_attempt_at: Date;
-        outcome: Record<string, any>;
-      }>
-    >`
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 1, deferred: 1 });
+    const parked = await sql<Array<{
+      status: string; attempts: number; next_attempt_at: Date; outcome: Record<string, any>;
+    }>>`
       SELECT status, attempts, next_attempt_at, outcome
         FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
@@ -391,28 +342,20 @@ describe('external trigger durable dispatch', () => {
 
     // Parked means paced: an immediate routine tick does not hot-loop or consume
     // the queued successful replay.
-    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation })).toMatchObject({
-      claimed: 0,
-    });
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation }))
+      .toMatchObject({ claimed: 0 });
     await sql`
       UPDATE harness_shared.trigger_runs SET next_attempt_at = now() - interval '1 second'
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
-    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation })).toMatchObject({
-      claimed: 1,
-      succeeded: 1,
-      failed: 0,
-      deferred: 0,
-    });
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation }))
+      .toMatchObject({ claimed: 1, succeeded: 1, failed: 0, deferred: 0 });
     const recovered = await sql<Array<{ status: string; attempts: number }>>`
       SELECT status, attempts FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
     expect(recovered[0]).toEqual({ status: 'succeeded', attempts: 6 });
-    expect(resolveEscalation).toHaveBeenCalledWith(
-      expect.objectContaining({
-        msg_id: 'esc-trigger-retry-1',
-        choice: 'recovered',
-      }),
-    );
+    expect(resolveEscalation).toHaveBeenCalledWith(expect.objectContaining({
+      msg_id: 'esc-trigger-retry-1', choice: 'recovered',
+    }));
   });
 
   it('gives a pre-metadata capped target_absent row one rescue claim', async () => {
@@ -424,19 +367,11 @@ describe('external trigger durable dispatch', () => {
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
     const runPlan = vi.fn(async () => ({
       instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
-      runId: 9003,
-      runSeq: 0,
-      minted: 0,
-      workItemIds: [],
-      actionableWorkItemIds: [],
-      replayed: true,
+      runId: 9003, runSeq: 0, minted: 0, workItemIds: [], actionableWorkItemIds: [], replayed: true,
     }));
 
-    expect(await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork: vi.fn() })).toMatchObject({
-      claimed: 1,
-      succeeded: 1,
-      failed: 0,
-    });
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork: vi.fn() }))
+      .toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
     const recovered = await sql<Array<{ status: string; attempts: number }>>`
       SELECT status, attempts FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
@@ -480,18 +415,12 @@ describe('external trigger durable dispatch', () => {
     }));
     const announceRunWork = vi.fn(async () => undefined);
 
-    await expect(dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork })).resolves.toMatchObject({
-      claimed: 1,
-      succeeded: 1,
-      failed: 0,
-    });
-    expect(runPlan).toHaveBeenCalledWith(
-      sql,
-      expect.objectContaining({
-        trigger: 'event',
-        inputs: args,
-      }),
-    );
+    await expect(dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork }))
+      .resolves.toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+    expect(runPlan).toHaveBeenCalledWith(sql, expect.objectContaining({
+      trigger: 'event',
+      inputs: args,
+    }));
   });
 });
 
@@ -524,15 +453,13 @@ describe('start-goal trigger dispatch (P-020)', () => {
     outcome: Record<string, unknown> | null;
     error: string | null;
   }> {
-    const rows = await sql<
-      Array<{
-        status: string;
-        attempts: number;
-        plan_run_ref: string | null;
-        outcome: Record<string, unknown> | null;
-        error: string | null;
-      }>
-    >`
+    const rows = await sql<Array<{
+      status: string;
+      attempts: number;
+      plan_run_ref: string | null;
+      outcome: Record<string, unknown> | null;
+      error: string | null;
+    }>>`
       SELECT status, attempts, plan_run_ref, outcome, error
         FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
@@ -575,30 +502,20 @@ describe('start-goal trigger dispatch (P-020)', () => {
     const triggerRunId = await seedTriggerRun({ bindingId: goalBindingId });
     const refused: StartGoalByIdResult = { ok: false, reason: 'not-ready', detail: 'blockers pending: 2' };
     const activated: StartGoalByIdResult = {
-      ok: true,
-      goalId: GOAL,
-      ownerId: 'su-goal-holder-2',
-      warnings: [],
-      startBlockedOverride: null,
+      ok: true, goalId: GOAL, ownerId: 'su-goal-holder-2', warnings: [], startBlockedOverride: null,
     };
-    const startGoal = vi.fn().mockResolvedValueOnce(refused).mockResolvedValueOnce(activated);
+    const startGoal = vi.fn()
+      .mockResolvedValueOnce(refused)
+      .mockResolvedValueOnce(activated);
 
-    expect(await dispatchPendingTriggerRuns(sql, { startGoal })).toMatchObject({
-      claimed: 1,
-      succeeded: 0,
-      failed: 1,
-      skipped: 0,
-    });
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 1, skipped: 0 });
     const failed = await readRun(triggerRunId);
     expect(failed.status).toBe('failed');
     expect(failed.error).toContain('external_trigger_goal_start_refused:not-ready');
 
-    expect(await dispatchPendingTriggerRuns(sql, { startGoal })).toMatchObject({
-      claimed: 1,
-      succeeded: 1,
-      failed: 0,
-      skipped: 0,
-    });
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 1, succeeded: 1, failed: 0, skipped: 0 });
     const done = await readRun(triggerRunId);
     expect(done.status).toBe('succeeded');
     expect(done.attempts).toBe(2);
@@ -609,25 +526,20 @@ describe('start-goal trigger dispatch (P-020)', () => {
   it('closes a terminal refusal (already-held) as skipped and never re-claims it', async () => {
     const triggerRunId = await seedTriggerRun({ bindingId: goalBindingId });
     const refused: StartGoalByIdResult = {
-      ok: false,
-      reason: 'already-held',
-      detail: 'goal has a live holder su-elsewhere',
+      ok: false, reason: 'already-held', detail: 'goal has a live holder su-elsewhere',
     };
     const startGoal = vi.fn(async () => refused);
 
-    expect(await dispatchPendingTriggerRuns(sql, { startGoal })).toMatchObject({
-      claimed: 1,
-      succeeded: 0,
-      failed: 0,
-      skipped: 1,
-    });
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 0, skipped: 1 });
     const run = await readRun(triggerRunId);
     expect(run.status).toBe('skipped');
     expect(run.outcome).toEqual({ goalId: GOAL, refusal: 'already-held' });
     expect(run.error).toBe('goal has a live holder su-elsewhere');
 
     // Terminal: the claim query only takes pending/failed/stale-running rows.
-    expect(await dispatchPendingTriggerRuns(sql, { startGoal })).toMatchObject({ claimed: 0 });
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 0 });
     expect(startGoal).toHaveBeenCalledTimes(1);
   });
 
@@ -645,12 +557,8 @@ describe('start-goal trigger dispatch (P-020)', () => {
     const triggerRunId = await seedTriggerRun({ bindingId: mismatched[0].id });
     const startGoal = vi.fn();
 
-    expect(await dispatchPendingTriggerRuns(sql, { startGoal })).toMatchObject({
-      claimed: 1,
-      succeeded: 0,
-      failed: 1,
-      skipped: 0,
-    });
+    expect(await dispatchPendingTriggerRuns(sql, { startGoal }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 1, skipped: 0 });
     const run = await readRun(triggerRunId);
     expect(run.status).toBe('failed');
     expect(run.error).toBe('external_trigger_missing_goal_target');
@@ -663,9 +571,8 @@ describe('start-goal trigger dispatch (P-020)', () => {
         (workspace_id, source_id, plan_harness_slug, plan_slug, goal_id, event_pattern,
          event_filter, action, armed, storm_policy)
       VALUES (${WS}, ${sourceId}, ${HARNESS}, ${PLAN}, ${GOAL}, 'ext:gmail:message.*',
-              '{}'::jsonb, '{"type":"start-goal"}'::jsonb, TRUE, '{}'::jsonb)`).rejects.toThrow(
-      /trigger_bindings_exactly_one_target/,
-    );
+              '{}'::jsonb, '{"type":"start-goal"}'::jsonb, TRUE, '{}'::jsonb)`,
+    ).rejects.toThrow(/trigger_bindings_exactly_one_target/);
     await expect(seedGoalBinding(null)).rejects.toThrow(/trigger_bindings_exactly_one_target/);
   });
 });
@@ -752,16 +659,16 @@ describe('social platform dispatch (P-028 simulated acceptance)', () => {
     expect(result).toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
     expect(result.triggerRunIds).toEqual([triggerRunId]);
 
-    const triggerRuns = await sql<
-      Array<{
-        status: string;
-        outcome: { instancePlanSlug: string; planRunId: number };
-      }>
-    >`
+    const triggerRuns = await sql<Array<{
+      status: string;
+      outcome: { instancePlanSlug: string; planRunId: number };
+    }>>`
       SELECT status, outcome FROM harness_shared.trigger_runs
        WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
     expect(triggerRuns[0].status).toBe('succeeded');
-    expect(triggerRuns[0].outcome.instancePlanSlug).toBe(`${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`);
+    expect(triggerRuns[0].outcome.instancePlanSlug).toBe(
+      `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
+    );
 
     // The plan run carries the SOCIAL payload verbatim — an agent drafting a
     // reply reads it from here, so a lossy hand-off would surface as a missing

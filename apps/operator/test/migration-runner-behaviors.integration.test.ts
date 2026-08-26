@@ -48,13 +48,17 @@ const tempDirs: string[] = [];
 async function makeSqlDir(files: Record<string, string>): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'mrb-sql-'));
   tempDirs.push(dir);
-  await Promise.all(Object.entries(files).map(([name, contents]) => writeFile(join(dir, name), contents, 'utf8')));
+  await Promise.all(
+    Object.entries(files).map(([name, contents]) => writeFile(join(dir, name), contents, 'utf8')),
+  );
   return dir;
 }
 
 /** Tracker rows as plain objects (filename-sorted) so toEqual sees no RowList extras. */
 async function recorded(): Promise<Array<{ filename: string; sha256: string }>> {
-  const rows = await sql.unsafe(`SELECT filename, sha256 FROM harness_shared.schema_migrations ORDER BY filename`);
+  const rows = await sql.unsafe(
+    `SELECT filename, sha256 FROM harness_shared.schema_migrations ORDER BY filename`,
+  );
   return rows.map((r) => ({ filename: r.filename, sha256: r.sha256 }));
 }
 
@@ -156,9 +160,7 @@ describe('migration runner — failure paths + recording contract (synthetic sql
   it('second run skips already-recorded files (non-idempotent DDL is NOT re-executed)', async () => {
     // Deliberately no IF NOT EXISTS — if the runner re-executed this, the second
     // run would throw 42P07 (duplicate_table) instead of cleanly skipping.
-    const dir = await makeSqlDir({
-      '001-once.sql': 'CREATE TABLE mrb2_once (id int);\n',
-    });
+    const dir = await makeSqlDir({ '001-once.sql': 'CREATE TABLE mrb2_once (id int);\n' });
 
     const first = await applyPendingMigrations({ client: sql, sqlDir: dir });
     expect(first.appliedCount).toBe(1);
@@ -187,11 +189,7 @@ describe('migration runner — failure paths + recording contract (synthetic sql
 
     let thrown: Error | undefined;
     try {
-      await applyPendingMigrations({
-        client: sql,
-        sqlDir: dir,
-        dataDirWasReused: true,
-      });
+      await applyPendingMigrations({ client: sql, sqlDir: dir, dataDirWasReused: true });
     } catch (error) {
       thrown = error instanceof Error ? error : new Error(String(error));
     }
@@ -205,10 +203,7 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     expect(thrown?.message).not.toContain('PERFORM 1');
     expect(thrown?.message).toContain('reused an existing Postgres data directory');
     expect(thrown?.message).toContain('operator cannot start until this migration applies');
-    expect(thrown?.cause).toMatchObject({
-      code: '42601',
-      position: expect.any(String),
-    });
+    expect(thrown?.cause).toMatchObject({ code: '42601', position: expect.any(String) });
 
     // Earlier file in the SAME run was applied + recorded; the bad file and the
     // later file (loop halted at the throw) were not.
@@ -254,11 +249,7 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     // Unrecorded → still pending: fix the file and the next run picks it up.
     const fixed = 'CREATE TABLE mrb4_fixed (id int);\n';
     await writeFile(join(dir, '002-bad.sql'), fixed, 'utf8');
-    const second = await applyPendingMigrations({
-      client: sql,
-      sqlDir: dir,
-      continueOnError: true,
-    });
+    const second = await applyPendingMigrations({ client: sql, sqlDir: dir, continueOnError: true });
     expect(second.appliedCount).toBe(1);
     expect(second.failed).toEqual([]);
     await expect(tableExists('mrb4_fixed')).resolves.toBe(true);
@@ -293,9 +284,7 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     expect(thrown?.message).toContain('created a fresh Postgres data directory');
     expect(thrown?.message).toContain('operator cannot start until this migration applies');
     expect(thrown?.message).not.toContain('Offending statement');
-    expect(thrown?.cause).toMatchObject({
-      message: 'synthetic pre-apply guard failure',
-    });
+    expect(thrown?.cause).toMatchObject({ message: 'synthetic pre-apply guard failure' });
   });
 
   it('strips psql metacommand lines from execution but hashes the RAW contents', async () => {
@@ -343,18 +332,14 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     expect((await recorded()).map((r) => r.filename)).toEqual(['001-normal.sql']);
 
     // A custom skipFile REPLACES the default (it does not compose with it).
-    const res2 = await applyPendingMigrations({
-      client: sql,
-      sqlDir: dir,
-      skipFile: () => false,
-    });
+    const res2 = await applyPendingMigrations({ client: sql, sqlDir: dir, skipFile: () => false });
     expect(res2.totalKnown).toBe(3);
     expect(res2.appliedCount).toBe(2); // 001 was already recorded
     await expect(tableExists('mrb6_manual')).resolves.toBe(true);
     await expect(tableExists('mrb6_template')).resolves.toBe(true);
   });
 
-  it("EI-19366138707071397: a `.DRAFT`-suffixed file (db:next-migration's write target) is never applied — even a syntactically BROKEN one, and even a `skipFile` override cannot bring it back", async () => {
+  it('EI-19366138707071397: a `.DRAFT`-suffixed file (db:next-migration\'s write target) is never applied — even a syntactically BROKEN one, and even a `skipFile` override cannot bring it back', async () => {
     // db:next-migration now hands callers a `<NNN>-<slug>.sql.DRAFT` path to
     // write + iterate at (including a deliberate temporary both-ways
     // guard-test mutation) so it can never race the boot auto-apply while
@@ -378,16 +363,12 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     // filename-shape fact (endsWith('.sql')), not a skip-set entry — a custom
     // skipFile that returns false for everything still cannot make it apply,
     // because it's filtered out before `skip()` is ever consulted.
-    const res2 = await applyPendingMigrations({
-      client: sql,
-      sqlDir: dir,
-      skipFile: () => false,
-    });
+    const res2 = await applyPendingMigrations({ client: sql, sqlDir: dir, skipFile: () => false });
     expect(res2.totalKnown).toBe(1);
     expect(res2.appliedCount).toBe(0); // 001 already recorded; the .DRAFT stays invisible
   });
 
-  it('records a filename containing a single quote correctly (SQL escaping)', async () => {
+  it("records a filename containing a single quote correctly (SQL escaping)", async () => {
     const raw = 'CREATE TABLE mrb7_quoted (id int);\n';
     const name = "001-o'brien.sql";
     const dir = await makeSqlDir({ [name]: raw });
@@ -395,9 +376,10 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     const res = await applyPendingMigrations({ client: sql, sqlDir: dir });
     expect(res.appliedCount).toBe(1);
 
-    const rows = await sql.unsafe(`SELECT filename, sha256 FROM harness_shared.schema_migrations WHERE filename = $1`, [
-      name,
-    ]);
+    const rows = await sql.unsafe(
+      `SELECT filename, sha256 FROM harness_shared.schema_migrations WHERE filename = $1`,
+      [name],
+    );
     expect(rows.length).toBe(1);
     expect(rows[0].sha256).toBe(sha256(raw));
 
@@ -409,7 +391,8 @@ describe('migration runner — failure paths + recording contract (synthetic sql
   it('applies files in plain lexicographic filename order (zero-padding is a naming convention, not a numeric sort)', async () => {
     // '002-a.sql' sorts first, so it creates the log table the others insert into.
     const dir = await makeSqlDir({
-      '002-a.sql': "CREATE TABLE mrb8_log (n serial, tag text);\nINSERT INTO mrb8_log (tag) VALUES ('002');\n",
+      '002-a.sql':
+        "CREATE TABLE mrb8_log (n serial, tag text);\nINSERT INTO mrb8_log (tag) VALUES ('002');\n",
       '010-b.sql': "INSERT INTO mrb8_log (tag) VALUES ('010');\n",
       '100-c.sql': "INSERT INTO mrb8_log (tag) VALUES ('100');\n",
       '10-ten.sql': "INSERT INTO mrb8_log (tag) VALUES ('10');\n",
