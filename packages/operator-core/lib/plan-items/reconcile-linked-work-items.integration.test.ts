@@ -85,21 +85,12 @@ const h4 = vi.hoisted(() => ({
 vi.mock('../work-items', async () => {
   const actual = await vi.importActual<typeof import('../work-items')>('../work-items');
   return {
-    isSettledWorkItemState: actual.isSettledWorkItemState,
-    SETTLED_WORK_ITEM_STATES: actual.SETTLED_WORK_ITEM_STATES,
-    readWorkItemHeldOpenBy: actual.readWorkItemHeldOpenBy,
-    // ISSUE_FAMILY_KINDS: this mock factory lists named exports EXPLICITLY (no
-    // `...actual` spread), so it silently goes stale whenever the source starts
-    // importing a NEW named export from '../work-items' — exactly what happened
-    // here: findAllLinkedWorkItems's issue-family query (the "Read the UNIFIED
-    // base table" comment above it) started importing ISSUE_FAMILY_KINDS, and
-    // this mock was never updated, so every test exercising that query path threw
-    // "No 'ISSUE_FAMILY_KINDS' export is defined on the mock" — silently swallowed
-    // by the reconciler's own catch-all, so every affected test just saw an empty
-    // `reconciled: []` with no hint why. Found live while adding the decision-
-    // citation tests below (EI-19319970920449941); fixed here rather than worked
-    // around, since it broke the WHOLE file, not just the new tests.
-    ISSUE_FAMILY_KINDS: actual.ISSUE_FAMILY_KINDS,
+    // P-006: the ungate path dynamically imports work-items-events, which in turn
+    // imports additional pure work-items exports. Spread the real module first,
+    // then override only the stateful I/O seams this fixture owns. A hand-listed
+    // export mock turns every newly imported helper into a swallowed `noop` and
+    // makes lane-sync assertions fail without revealing the missing export.
+    ...actual,
     getWorkItem: (id: string) => h2.items.get(id) ?? null,
     setWorkItemState: h2.setWorkItemState,
     setWorkItemStateWithAliasInfo: h2.setWorkItemStateWithAliasInfo,
