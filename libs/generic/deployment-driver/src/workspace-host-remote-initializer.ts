@@ -3,7 +3,7 @@
  *
  * WHAT WAS MISSING. The controller already knows how to reach a workspace host: it opens one
  * non-interactive OpenSSH invocation over an IAP tunnel and writes
- * `{"protocolVersion":"papercusp-gcp-iap-initialization-v1","step":<step>}` to the remote
+ * `{"protocolVersion":"papercusp-gcp-iap-initialization-v2","step":<step>}` to the remote
  * program's stdin, expecting `{protocolVersion, stepId, status:"succeeded", observedAt,
  * publicEvidence?}` back on stdout. That remote program did not exist anywhere in the tree — the
  * protocol string matched only the controller-side command builder — so every initialization step
