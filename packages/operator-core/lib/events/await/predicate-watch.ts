@@ -275,11 +275,23 @@ export function extractToolPayload(result: unknown): unknown {
     | { structuredContent?: unknown; content?: Array<{ type?: string; text?: string }>; data?: unknown }
     | null;
   if (r == null) return null;
-  if (r.structuredContent !== undefined) return r.structuredContent;
+  const unwrapDataEnvelope = (value: unknown): unknown => {
+    if (
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.keys(value).length === 1 &&
+      Object.hasOwn(value, 'data')
+    ) {
+      return (value as { data: unknown }).data;
+    }
+    return value;
+  };
+  if (r.structuredContent !== undefined) return unwrapDataEnvelope(r.structuredContent);
   const text = r.content?.[0]?.text;
   if (typeof text === 'string') {
     try {
-      return JSON.parse(text);
+      return unwrapDataEnvelope(JSON.parse(text));
     } catch {
       return text;
     }
@@ -289,10 +301,7 @@ export function extractToolPayload(result: unknown): unknown {
   // structuredContent/text above, but this boundary has neither. Only unwrap the
   // exact one-key envelope: a domain payload may legitimately contain a `data`
   // field alongside other fields and must remain intact.
-  if (typeof r === 'object' && !Array.isArray(r) && Object.keys(r).length === 1 && Object.hasOwn(r, 'data')) {
-    return r.data;
-  }
-  return r;
+  return unwrapDataEnvelope(r);
 }
 
 /* ── Store ─────────────────────────────────────────────────────────────────── */

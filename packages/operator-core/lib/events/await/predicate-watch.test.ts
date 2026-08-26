@@ -110,6 +110,12 @@ describe('extractToolPayload', () => {
     });
   });
 
+  it('unwraps a data envelope after structured or text serialization', () => {
+    const payload = { changeInCandidate: { judgingSha: null } };
+    expect(extractToolPayload({ structuredContent: { data: payload } })).toEqual(payload);
+    expect(extractToolPayload({ content: [{ type: 'text', text: JSON.stringify({ data: payload }) }] })).toEqual(payload);
+  });
+
   it('preserves a domain payload that has data alongside other fields', () => {
     expect(extractToolPayload({ data: { n: 1 }, status: 'value' })).toEqual({
       data: { n: 1 },

@@ -228,6 +228,7 @@ start_verify_process() { printf '%s\\n' "$$"; }
 WORK="$1"
 DESKTOP_DIR="$1"
 ISOLATED_DB=0
+NATIVE_TERMINAL=0
 DISPLAY_NUM=90
 TAURI_OWNER_SID=probe-owner
 TAURI_LAUNCH_PROVENANCE=agent:probe-owner

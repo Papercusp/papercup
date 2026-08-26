@@ -70,10 +70,16 @@ export interface FleetLivenessComposition {
   /** `live / counted`, 0 when nothing was counted. */
   liveShare: number;
   /**
-   * True when fewer than half the counted rows are `live` — i.e. exactly when
-   * reading this count as a measure of activity would overstate it. Named for
-   * the misreading rather than the data so a caller cannot render the number
-   * without the caveat being in reach.
+   * True when the `live` rows are not a MAJORITY of the counted ones — i.e.
+   * exactly when reading this count as a measure of activity would overstate it.
+   * Named for the misreading rather than the data so a caller cannot render the
+   * number without the caveat being in reach.
+   *
+   * The boundary is `live * 2 <= counted`, not `<`: at exactly half, the total
+   * still overstates activity twofold, which is material. `unknown` rows count
+   * against liveness for the same reason they get their own bucket — an
+   * unresolved verdict is not evidence of work, and crediting it to `live` would
+   * silence the caveat on precisely the reads that are least certain.
    */
   overstatesActivity: boolean;
 }
@@ -104,7 +110,7 @@ export function composeLiveness<T>(
     unknown,
     live,
     liveShare: rows.length > 0 ? live / rows.length : 0,
-    overstatesActivity: rows.length > 0 && live * 2 < rows.length,
+    overstatesActivity: rows.length > 0 && live * 2 <= rows.length,
   };
 }
 
@@ -163,6 +169,7 @@ export function selectFleetPopulation<T>(
   candidates: readonly T[],
   keep: (row: T) => boolean,
   meta: FleetPopulationMeta,
+  sessionStateOf?: SessionStateOf<T>,
 ): { rows: T[]; census: FleetPopulationCensus } {
   const rows = candidates.filter((row) => keep(row));
   const withheld = candidates.length - rows.length;
@@ -176,8 +183,26 @@ export function selectFleetPopulation<T>(
       withheld,
       withheldReason: withheld > 0 ? meta.withheldReason : null,
       reveal: withheld > 0 ? meta.reveal : null,
+      ...(sessionStateOf ? { liveness: composeLiveness(rows, sessionStateOf) } : {}),
     },
   };
+}
+
+/**
+ * Attach the liveness composition to a census whose rows only learned their
+ * verdict later.
+ *
+ * Mirrors {@link withShownCount}: returns a NEW census and leaves the original a
+ * faithful record of the filter's verdict. `rows` must be the rows the census
+ * counted — passing a different array is the drift this module exists to
+ * prevent, so callers apply it to the same array they are about to publish.
+ */
+export function withLivenessComposition<T>(
+  census: FleetPopulationCensus,
+  rows: readonly T[],
+  sessionStateOf: SessionStateOf<T>,
+): FleetPopulationCensus {
+  return { ...census, liveness: composeLiveness(rows, sessionStateOf) };
 }
 
 /**
@@ -198,6 +223,30 @@ export function withShownCount(
 }
 
 /**
+ * Render the liveness split as the clause a reader would otherwise supply from
+ * assumption.
+ *
+ * The `overstatesActivity` caveat is spelled out rather than left to the
+ * numbers because the failure this guards against is not arithmetic — the agent
+ * who reported "415 members saturating the proxy" could see 415 and would have
+ * seen `4 live, 411 parked` too. What was missing was the sentence saying the
+ * count does not measure activity.
+ */
+function renderLiveness(counted: number, liveness: FleetLivenessComposition): string {
+  const split = [
+    ...Object.entries(liveness.byState).map(([state, n]) => `${n} ${state}`),
+    ...(liveness.unknown > 0 ? [`${liveness.unknown} unknown`] : []),
+  ];
+  const head = `of the ${counted} counted: ${split.join(', ')}`;
+  if (!liveness.overstatesActivity) return head;
+  const pct = Math.round(liveness.liveShare * 100);
+  return (
+    `${head} — only ${liveness.live} of ${counted} (${pct}%) are live, so this count does ` +
+    `NOT measure activity; parked sessions are indistinguishable from working ones in a total`
+  );
+}
+
+/**
  * One line for a human/agent reading the response — the reconciliation sentence
  * a leader otherwise has to assemble from two tool calls.
  */
@@ -211,6 +260,12 @@ export function renderPopulationCensus(census: FleetPopulationCensus): string {
   }
   if (census.shown != null) {
     parts.push(`only ${census.shown} shown in this payload: ${census.shownReason}`);
+  }
+  if (census.liveness && census.counted > 0) {
+    parts.push(renderLiveness(census.counted, census.liveness));
+  } else if (census.counted > 0) {
+    // Silence here would read as "all live". Say which question went unasked.
+    parts.push('liveness composition not resolved for this read — the count is not an activity measure');
   }
   parts.push(census.basis);
   return parts.join('. ') + '.';

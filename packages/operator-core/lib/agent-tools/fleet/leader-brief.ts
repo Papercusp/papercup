@@ -104,10 +104,12 @@ import { fetchFleetAdmissionBlocks, type FleetAdmissionBlock } from '../coordina
 import type { InvariantEvaluation } from './invariants';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import {
+  listActiveAnnouncements,
   listActiveAwaitsForKey,
   listVerifiedWaitTakeoversForSubscribers,
   type VerifiedWaitTakeoverAlert,
 } from '../../events/await/store';
+import { announcementVisibleTo } from '../../events/await/announce-key';
 import type { TimeoutBehavior } from '../../events/await/types';
 import type { FilterNode } from '../../scheduler/claim-spec';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -205,6 +207,70 @@ export async function readLeaderMonitoringBlindAdvisory(
   } catch {
     return undefined;
   }
+}
+
+export interface LeaderBriefAnnouncedGate {
+  event: string;
+  note: string | null;
+  scope: string;
+  announcedBy: string;
+  fired: boolean;
+  firedAt: string | null;
+  awaiters: number;
+}
+
+/**
+ * P-027: the acting leader cockpit must not reassemble its gate panel from a
+ * second events:catalog call. Read every live announcement generation visible
+ * to this fleet/plan/harness, including fired latches, and join the current
+ * waiter count onto the same row. A successful empty read is `[]`; an absent
+ * field means the discovery/count leg was unavailable and must never render as
+ * "no gates".
+ */
+export async function readLeaderAnnouncedGates(
+  input: {
+    fleetSlug: string;
+    planSlug?: string | null;
+    harnessSlug?: string | null;
+  },
+  deps: {
+    listAnnouncements?: typeof listActiveAnnouncements;
+    listAwaits?: typeof listActiveAwaitsForKey;
+  } = {},
+): Promise<LeaderBriefAnnouncedGate[] | undefined> {
+  const listAnnouncements = deps.listAnnouncements ?? listActiveAnnouncements;
+  const listAwaits = deps.listAwaits ?? listActiveAwaitsForKey;
+  const probe = await withBoundedTimeout(
+    async () => {
+      const announcements = await listAnnouncements({ unfiredOnly: false, limit: 100 });
+      const visible = announcements.filter((announcement) =>
+        announcementVisibleTo(announcement, {
+          fleetSlug: input.fleetSlug,
+          planSlug: input.planSlug ?? null,
+          harnessSlug: input.harnessSlug ?? null,
+        }),
+      );
+      return Promise.all(
+        visible.map(async (announcement) => ({
+          event: announcement.eventKey,
+          note: announcement.note,
+          scope: announcement.scopeKind
+            ? `${announcement.scopeKind}${announcement.scopeRef ? ':' + announcement.scopeRef : ''}`
+            : 'global',
+          announcedBy: announcement.subscriberId,
+          fired: !!announcement.firedAt && announcement.firedReason === 'event',
+          firedAt: announcement.firedReason === 'event' ? announcement.firedAt : null,
+          awaiters: (await listAwaits(announcement.eventKey)).length,
+        })),
+      );
+    },
+    {
+      fallback: null,
+      timeoutMs: 1_500,
+      label: 'leader-brief:announced-gates',
+    },
+  );
+  return probe.degraded || probe.value == null ? undefined : probe.value;
 }
 
 export interface LeaderBriefMember {
@@ -2450,16 +2516,25 @@ export function selectLeaderBriefMembers(
   includeStale = false,
 ): { rows: DecoratedAgent[]; census: FleetPopulationCensus } {
   const ofThisFleet = entries.filter((entry) => entry.fleetSlug === fleet);
-  return selectFleetPopulation(ofThisFleet, (entry) => includeStale || entry.claims.length > 0 || entry.alive, {
-    population: `member(s) of fleet '${fleet}'`,
-    basis:
-      'A row is on the roster if presence records it in this fleet; it is shown here if it holds ' +
-      'a claim or is alive (heartbeat-fresh), or unconditionally under include_stale.',
-    withheldReason:
-      'idle AND not heartbeat-fresh (stale-idle) — note this hides members precisely when they ' +
-      'are dying, which is when the count matters most',
-    reveal: 'include_stale: true',
-  });
+  return selectFleetPopulation(
+    ofThisFleet,
+    (entry) => includeStale || entry.claims.length > 0 || entry.alive,
+    {
+      population: `member(s) of fleet '${fleet}'`,
+      basis:
+        'A row is on the roster if presence records it in this fleet; it is shown here if it holds ' +
+        'a claim or is alive (heartbeat-fresh), or unconditionally under include_stale.',
+      withheldReason:
+        'idle AND not heartbeat-fresh (stale-idle) — note this hides members precisely when they ' +
+        'are dying, which is when the count matters most',
+      reveal: 'include_stale: true',
+    },
+    // EI-21550192883916303: the filter above keeps on `alive` (heartbeat
+    // FRESHNESS), so the resulting total says nothing about how many members are
+    // actually taking turns. These rows arrive already decorated, so the
+    // composition is derived in the same pass as the filter.
+    (entry) => entry.sessionState ?? null,
+  );
 }
 
 /**
@@ -3328,6 +3403,7 @@ export async function buildLeaderBrief(
   let specAuthorshipAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
   let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert>;
   let fleetHeadcountVsExecutableFrontierAlert: FleetHeadcountVsExecutableFrontierEvaluation | undefined;
+  let leaderPlanSlug: string | null = null;
   // P-006: always in-band. A missing/exploded dependency read is UNKNOWN,
   // never an omitted field that a leader can mistake for a measured empty view.
   let dependencyBottlenecks: LeaderDependencyBottleneckView = {
@@ -3380,6 +3456,7 @@ export async function buildLeaderBrief(
     // P-011: continuously re-run launch admission's executable-width definition
     // for a provably exact one-plan lane. Every unknown suppresses the detector.
     const exactPlanSlug = exactPositiveSinglePlanSlugFromFilter(rec.spec.view?.filter);
+    leaderPlanSlug = exactPlanSlug;
     const planHarness = args.harness ?? rec.harnessSlug ?? fleetLaneHealth?.spec.harness ?? null;
     if (!exactPlanSlug) {
       dependencyBottlenecks = { status: 'unknown', reason: 'claim-spec-not-exact-plan' };
@@ -3435,6 +3512,11 @@ export async function buildLeaderBrief(
   } catch {
     /* best-effort — never block the brief on a spec-effect preview failure */
   }
+  const announcedGates = await readLeaderAnnouncedGates({
+    fleetSlug: fleet,
+    planSlug: leaderPlanSlug,
+    harnessSlug: args.harness ?? null,
+  });
   // P-009: detector-only projection over P-006's existing graph/liveness/
   // progress rows. Do not re-read any of those sources here: one measured view
   // feeds both the ranked table and this tri-state alarm.
@@ -3613,6 +3695,10 @@ export async function buildLeaderBrief(
       // reader can tell an unmeasured axis from a quiet one.
       ...(delta ? { delta, deltaSummary } : {}),
       ...(campaign ? { campaign } : {}),
+      // P-027: successful-empty is explicit; absence means the bounded event
+      // discovery leg was unavailable. The payload shaper caps verbose rows and
+      // retains a truthful recovery pointer rather than clipping JSON.
+      ...(announcedGates ? { announcedGates } : {}),
       // P-023: counts by cause. A cause that never fired is ABSENT, not 0 — a zero row
       // invites reading an unpopulated cause as a measured absence.
       idleCauses,

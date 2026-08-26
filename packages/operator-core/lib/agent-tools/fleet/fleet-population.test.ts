@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   selectFleetPopulation,
   withShownCount,
+  withLivenessComposition,
   renderPopulationCensus,
   type FleetPopulationCensus,
 } from './fleet-population';
@@ -117,5 +118,136 @@ describe('renderPopulationCensus', () => {
     expect(line).toContain('4 member(s) (of 4 on the roster)');
     expect(line).not.toContain('withheld');
     expect(line).not.toContain('shown in this payload');
+  });
+});
+
+/**
+ * EI-21550192883916303 — the SECOND way a headcount misleads.
+ *
+ * Reproduces the measured shape: fleet `nonp2p-bug-drain`, 2026-08-26. 415
+ * processes carried the fleet's slug and were reported to the owner as "415
+ * members saturating the MCP proxy". 411 were parked; zero were in a running
+ * state. Saying which population was counted (the tests above) would not have
+ * caught it — every one of the 415 genuinely was a member. What was missing is
+ * what they were DOING.
+ */
+describe('liveness composition', () => {
+  /** 4 live + 411 parked = the 415 that got reported as active. */
+  const fleet415 = [
+    ...Array.from({ length: 4 }, (_, i) => ({ id: `live-${i}`, alive: true, state: 'live' as const })),
+    ...Array.from({ length: 411 }, (_, i) => ({
+      id: `parked-${i}`,
+      // THE TRAP, in the data: heartbeat-fresh (so the filter keeps them) while
+      // the oracle says they are not taking turns. `alive` and
+      // `sessionState:'live'` are different facts, which is why the filter that
+      // produces the count cannot answer what the count gets read for.
+      alive: true,
+      state: 'parked' as const,
+    })),
+  ];
+
+  it('splits the counted rows by sessionState instead of publishing one total', () => {
+    const { census } = selectFleetPopulation(fleet415, (r) => r.alive, META, (r) => r.state);
+    expect(census.counted).toBe(415);
+    expect(census.withheld).toBe(0); // the P-010 census alone reports a clean 415
+    expect(census.liveness?.byState).toEqual({ live: 4, parked: 411 });
+    expect(census.liveness?.live).toBe(4);
+    expect(census.liveness?.overstatesActivity).toBe(true);
+  });
+
+  it('states in the rendered line that the count is NOT an activity measure', () => {
+    const line = renderPopulationCensus(
+      selectFleetPopulation(fleet415, (r) => r.alive, META, (r) => r.state).census,
+    );
+    expect(line).toContain('411 parked');
+    expect(line).toContain('NOT measure activity');
+    expect(line).toContain('1%');
+  });
+
+  /**
+   * CONTROL (falsifiability): the assertions above must fail on the PRE-FIX
+   * behaviour, not merely pass on the new one. A census built without a
+   * resolver is exactly what both call sites published before this change.
+   */
+  it('CONTROL: the pre-fix census renders 415 with nothing contradicting "active"', () => {
+    const preFix = selectFleetPopulation(fleet415, (r) => r.alive, META).census;
+    expect(preFix.counted).toBe(415);
+    expect(preFix.liveness).toBeUndefined();
+    const line = renderPopulationCensus(preFix);
+    expect(line).not.toContain('411 parked');
+    // ...and the absence is now stated rather than reading as a clean bill of
+    // health, which is the only honest thing to say when nobody asked.
+    expect(line).toContain('liveness composition not resolved');
+  });
+
+  it('counts an unresolved verdict as unknown rather than assuming it is live', () => {
+    const { census } = selectFleetPopulation(
+      [
+        { id: 'a', alive: true, state: 'live' as const },
+        { id: 'b', alive: true, state: null },
+      ],
+      (r) => r.alive,
+      META,
+      (r) => r.state,
+    );
+    expect(census.liveness?.unknown).toBe(1);
+    expect(census.liveness?.live).toBe(1);
+    // 1 of 2 live is not a majority-live population, so the caveat stands: an
+    // unknown row must never be silently credited to the live column.
+    expect(census.liveness?.overstatesActivity).toBe(true);
+  });
+
+  it('stays quiet when the population really is live — the caveat must not be boilerplate', () => {
+    const allLive = [
+      { id: 'a', alive: true, state: 'live' as const },
+      { id: 'b', alive: true, state: 'live' as const },
+      { id: 'c', alive: true, state: 'parked' as const },
+    ];
+    const { census } = selectFleetPopulation(allLive, (r) => r.alive, META, (r) => r.state);
+    expect(census.liveness?.overstatesActivity).toBe(false);
+    const line = renderPopulationCensus(census);
+    expect(line).toContain('2 live, 1 parked');
+    expect(line).not.toContain('NOT measure activity');
+  });
+
+  it('reports no composition for an empty population rather than a 0% caveat', () => {
+    const { census } = selectFleetPopulation(
+      [] as { alive: boolean; state: 'live' }[],
+      (r) => r.alive,
+      META,
+      (r) => r.state,
+    );
+    expect(census.liveness?.overstatesActivity).toBe(false);
+    expect(census.liveness?.liveShare).toBe(0);
+    expect(renderPopulationCensus(census)).not.toContain('NOT measure activity');
+  });
+});
+
+describe('withLivenessComposition', () => {
+  it('attaches the composition when rows learn their verdict AFTER the filter ran', () => {
+    // The fleet:assignments path: `sessionState` is stamped by
+    // decorateMemberVerdicts, which runs after selectFleetPopulation.
+    const base = selectFleetPopulation(rows, (r) => r.live, META).census;
+    expect(base.liveness).toBeUndefined();
+    const decorated = [
+      { id: 'a', sessionState: 'live' as const },
+      { id: 'b', sessionState: 'ended' as const },
+    ];
+    const out = withLivenessComposition(base, decorated, (r) => r.sessionState);
+    expect(out.liveness?.byState).toEqual({ live: 1, ended: 1 });
+    // The filter's verdict is untouched, exactly as withShownCount leaves it.
+    expect(out.counted).toBe(base.counted);
+    expect(out.withheld).toBe(base.withheld);
+    expect(base.liveness).toBeUndefined();
+  });
+
+  it('composes cleanly with withShownCount in either order', () => {
+    const base = selectFleetPopulation(rows, () => true, META).census;
+    const decorated = rows.map((r) => ({ sessionState: r.live ? ('live' as const) : ('parked' as const) }));
+    const a = withShownCount(withLivenessComposition(base, decorated, (r) => r.sessionState), 1, 'budget');
+    const b = withLivenessComposition(withShownCount(base, 1, 'budget'), decorated, (r) => r.sessionState);
+    expect(a).toEqual(b);
+    expect(a.shown).toBe(1);
+    expect(a.liveness?.byState).toEqual({ live: 2, parked: 2 });
   });
 });

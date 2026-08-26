@@ -43,6 +43,12 @@ pub enum Event {
         active: Vec<RosterEntry>,
         pending: Vec<RosterEntry>,
     },
+    /// Rows for the global session-switcher overlay. `query` guards against a
+    /// slower, older fuzzy search painting over newer input.
+    SessionSwitcher {
+        query: String,
+        result: Result<Vec<RosterEntry>, String>,
+    },
     /// Fresh inbox (attention) items from the backend poller.
     Inbox(Vec<AttentionItem>),
     /// Fresh fleet rate/usage read-model (Overview top-bar, Brief 23 P-005).

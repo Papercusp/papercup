@@ -54,7 +54,7 @@ const openConversationCore = (
   identity: Parameters<typeof openConversationCoreRaw>[1],
   input: Omit<OpenArg, 'producer'> & Partial<Pick<OpenArg, 'producer'>>,
 ) => openConversationCoreRaw(deps, identity, { producer: 'test', ...input } as OpenArg);
-import { runKnowledgeTier } from './ask-knowledge-tier';
+import { runKnowledgeTier, type KnowledgeTierDeps } from './ask-knowledge-tier';
 import { scopesOf, type MemoryBackend } from '../../memory/backend';
 
 const WS = 'default';
@@ -474,15 +474,26 @@ describe('knowledge tier (injected stub memory backend)', () => {
     };
   }
 
+  // This suite exercises the real PG-backed search engine's BM25 fallback and
+  // the injected memory backend. Query-embedder acquisition has its own focused
+  // tests; letting a host-local sidecar cold-start here spent the full 4s
+  // interactive budget per case and made this unrelated coordination suite
+  // cross Vitest's 5s timeout under ordinary runner contention.
+  function knowledgeDeps(backend: MemoryBackend): KnowledgeTierDeps {
+    return { sql, backend, buildEmbedder: async () => null };
+  }
+
   it('returns a mem0 candidate with a cited source on a hit', async () => {
     const backend = stubBackend({
       'workspace:default': [{ id: 'm1', text: 'Q: why freeze? A: zero-cache down', score: 0.9 }],
     });
     const res = await runKnowledgeTier(
       { query: 'why does the shop freeze', workspaceId: WS, asker_id: 'agA' },
-      { sql, backend },
+      knowledgeDeps(backend),
     );
+    expect(res.searched).toContain('search:semantic');
     expect(res.searched).toContain('mem0');
+    expect(res.embedder_available).toBe(false);
     const mem = res.candidates.find((c) => c.source === 'mem0');
     expect(mem).toBeDefined();
     expect(mem?.excerpt).toContain('zero-cache down');
@@ -491,7 +502,7 @@ describe('knowledge tier (injected stub memory backend)', () => {
   it('returns no candidates on a miss (degrades cleanly with absent search tables + empty store)', async () => {
     const res = await runKnowledgeTier(
       { query: 'nothing matches this', workspaceId: WS, asker_id: 'agA' },
-      { sql, backend: stubBackend({}) },
+      knowledgeDeps(stubBackend({})),
     );
     expect(res.candidates).toHaveLength(0);
   });
@@ -500,7 +511,7 @@ describe('knowledge tier (injected stub memory backend)', () => {
     const backend = stubBackend({ 'harness:papercup': [{ id: 'h1', text: 'harness fact', score: 0.8 }] });
     const res = await runKnowledgeTier(
       { query: 'q', workspaceId: WS, asker_id: 'agA', harness_slug: 'papercup' },
-      { sql, backend },
+      knowledgeDeps(backend),
     );
     expect(res.candidates.some((c) => c.excerpt === 'harness fact')).toBe(true);
   });

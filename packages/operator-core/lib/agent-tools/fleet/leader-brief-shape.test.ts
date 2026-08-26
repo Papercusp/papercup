@@ -62,6 +62,15 @@ function largeBrief() {
     members,
     unownedCriticals: members,
     customInvariants: members,
+    announcedGates: Array.from({ length: 12 }, (_, index) => ({
+      event: `fleet:large-fleet:gate-${index}`,
+      note: 'gate note '.repeat(80),
+      scope: 'fleet:large-fleet',
+      announcedBy: `su-${index}`,
+      fired: index % 2 === 0,
+      firedAt: index % 2 === 0 ? '2026-08-26T20:00:00.000Z' : null,
+      awaiters: index,
+    })),
     specFilter: { nested: 'x'.repeat(2000) },
     idleCauses: { 'genuinely-idle': 22 },
     strandedFleetAlertReason: 'x'.repeat(1000),
@@ -120,6 +129,18 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.monitoringBlindAdvisory).toMatchObject({
       line: expect.stringContaining('monitoring blind'),
       arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },
+    });
+    expect(out.announcedGates).toHaveLength(4);
+    expect((out.announcedGates as Array<Record<string, unknown>>)[0]).toMatchObject({
+      event: 'fleet:large-fleet:gate-0',
+      scope: 'fleet:large-fleet',
+      fired: true,
+      awaiters: 0,
+    });
+    expect(out.announcedGatesTruncated).toEqual({
+      total: 12,
+      shown: 4,
+      more: 'fleet:leader-brief { payloadTier:"full" }',
     });
     expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed' });
     expect(out.campaign).toMatchObject({

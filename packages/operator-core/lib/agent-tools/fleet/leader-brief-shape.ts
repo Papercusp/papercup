@@ -21,11 +21,12 @@ const TIER_CAPS: Record<
     members: number;
     advisories: number;
     invariants: number;
+    announcedGates: number;
     reservationMembers: number;
   }
 > = {
-  trimmed: { memberVerdicts: 6, members: 3, advisories: 2, invariants: 2, reservationMembers: 2 },
-  standard: { memberVerdicts: 10, members: 6, advisories: 3, invariants: 3, reservationMembers: 3 },
+  trimmed: { memberVerdicts: 6, members: 3, advisories: 2, invariants: 2, announcedGates: 4, reservationMembers: 2 },
+  standard: { memberVerdicts: 10, members: 6, advisories: 3, invariants: 3, announcedGates: 8, reservationMembers: 3 },
 };
 
 const clip = (value: unknown, max = 180): string | null => {
@@ -84,6 +85,12 @@ function compactMonitoringBlindAdvisory(value: unknown): unknown {
     out.arm = compactArm;
   }
   return out;
+}
+
+function compactAnnouncedGate(value: unknown): unknown {
+  return (
+    pick(value, ['event', 'note', 'scope', 'announcedBy', 'fired', 'firedAt', 'awaiters'], 180) ?? value
+  );
 }
 
 /** P-002 / D-004: compact the claimable aggregate as one atomic unit. The
@@ -632,6 +639,9 @@ function buildProjection(
   if (Array.isArray(data.customInvariants)) {
     addCappedArray(out, data, 'customInvariants', caps.invariants, compactInvariant);
   }
+  if (Array.isArray(data.announcedGates)) {
+    addCappedArray(out, data, 'announcedGates', caps.announcedGates, compactAnnouncedGate);
+  }
   addAlertFields(out, data, decisionStringCap);
 
   for (const key of [
@@ -686,11 +696,11 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   const attempts = [
     { caps: initial, campaignRecentRows: tier === 'trimmed' ? 1 : 2 },
     {
-      caps: { ...initial, memberVerdicts: 4, members: 2, advisories: 1, invariants: 1, reservationMembers: 1 },
+      caps: { ...initial, memberVerdicts: 4, members: 2, advisories: 1, invariants: 1, announcedGates: 2, reservationMembers: 1 },
       campaignRecentRows: 1,
     },
     {
-      caps: { memberVerdicts: 2, members: 1, advisories: 1, invariants: 1, reservationMembers: 1 },
+      caps: { memberVerdicts: 2, members: 1, advisories: 1, invariants: 1, announcedGates: 1, reservationMembers: 1 },
       // Preserve every campaign axis and its exact aggregates before sacrificing
       // the pre-existing truthful truncation pointers. Recent rows remain
       // available from a standard/full follow-up and are the only lossy field.
@@ -700,7 +710,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       // Last normal projection: retain one actionable member row plus truthful
       // zero-shown pointers for every other high-fanout family. This is still
       // materially richer than the emergency tier and keeps campaign aggregates.
-      caps: { memberVerdicts: 1, members: 1, advisories: 0, invariants: 0, reservationMembers: 0 },
+      caps: { memberVerdicts: 1, members: 1, advisories: 0, invariants: 0, announcedGates: 1, reservationMembers: 0 },
       campaignRecentRows: 0,
     },
     {
@@ -709,7 +719,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       // the ceiling, keep the complete compact exceptional indexes + campaign
       // aggregates and truthfully report zero verbose rows before falling all
       // the way to the emergency projection (which drops campaign entirely).
-      caps: { memberVerdicts: 0, members: 0, advisories: 0, invariants: 0, reservationMembers: 0 },
+      caps: { memberVerdicts: 0, members: 0, advisories: 0, invariants: 0, announcedGates: 1, reservationMembers: 0 },
       campaignRecentRows: 0,
     },
   ];
@@ -794,6 +804,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     emergency.admissionBlockedAction = clip(source.admissionBlockedAction, 220) ?? source.admissionBlockedAction;
   }
   addCappedArray(emergency, source, 'customInvariants', 0, compactInvariant);
+  addCappedArray(emergency, source, 'announcedGates', 1, compactAnnouncedGate);
   if (source.specFilter !== undefined) {
     emergency.specFilterOmitted = {
       reason: 'bounded for monitor transport',

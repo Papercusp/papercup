@@ -30,6 +30,9 @@ import { activeWorkspaceId } from '../../workspace-registry';
 export interface KnowledgeTierDeps {
   sql?: Sql;
   backend?: MemoryBackend;
+  /** Test/host seam for the bounded embedder acquisition. The real search
+   *  engine still runs when this returns null, using its BM25 fallback. */
+  buildEmbedder?: typeof buildQueryEmbedder;
 }
 
 export interface KnowledgeCandidate {
@@ -69,6 +72,7 @@ export async function runKnowledgeTier(
   const limit = input.limit ?? 5;
   const sql = deps.sql ?? getOrgPg().sql;
   const backend = deps.backend ?? getMemoryBackend();
+  const buildEmbedder = deps.buildEmbedder ?? buildQueryEmbedder;
   const candidates: KnowledgeCandidate[] = [];
   const searched: string[] = [];
   let embedderAvailable = false;
@@ -79,7 +83,7 @@ export async function runKnowledgeTier(
     // (previously fully unbounded here — worse than the other 3 call sites
     // this WI fixes, which at least bounded acquisition via WI-3922) and the
     // ACTUAL per-query embed call inside runHybridSearch.
-    const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
+    const embedder = await buildEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
     const { results, embedderAvailable: ea } = await runHybridSearch(SEARCH_SOURCES, {
       caller: 'ask-knowledge-tier',
       sql,
