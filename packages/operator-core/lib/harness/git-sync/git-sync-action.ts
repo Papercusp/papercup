@@ -1255,6 +1255,10 @@ async function recordOutcome(
   consecutiveContentErrorTicks: number,
   /** EI-18812945811758018: 'push' | 'commit-only:<reason>' — see effectivePushMode. */
   pushMode: string,
+  /** EI-21230011589307899: the own-head-publish freeze point THIS tick's escalation
+   *  decision acted on, persisted so the NEXT tick can tell a new freeze from a
+   *  persisting one and broadcast only on the transition. */
+  publishBlockedAtCommit: string | null,
 ): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
@@ -1304,6 +1308,7 @@ async function recordOutcome(
     // EI-18 counters: ticks-of-uninterrupted-error + the oversized set (scope:path keys).
     consecutive_error_ticks: consecutiveErrorTicks,
     last_oversized: outcome.oversized.map(oversizedKey),
+    last_publish_blocked_at: publishBlockedAtCommit,
     // EI-438 content-guard counters: consecutive ticks with a quarantined file + the set.
     consecutive_content_error_ticks: consecutiveContentErrorTicks,
     last_content_errors: outcome.contentErrors.map((c) => `${c.scope}/${c.file} [${c.detectorKey}]`),
@@ -2005,6 +2010,10 @@ async function handleGitSync(
         contentTicks,
         prevContentTicks: prev.contentTicks,
         prevOversizedKeys: prev.oversizedKeys,
+        // EI-21230011589307899: surface a frozen own-head publish. Read from the
+        // previous tick's publish leg — see readEscalationCounters.
+        publishRefusal: prev.publishRefusal,
+        prevPublishBlockedAtCommit: prev.prevPublishBlockedAtCommit,
         cfgBranch: cfg.branch,
         maxBlobBytes: cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES,
         maxCommitTotalBytes: cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES,
@@ -4464,6 +4473,10 @@ async function recordAndEscalateTick(a: {
   contentTicks: number;
   prevContentTicks: number;
   prevOversizedKeys: string[];
+  /** EI-21230011589307899: the previous tick's own-head-publish refusal (or null when
+   *  publishing cleanly), and the freeze point seen one tick before that. */
+  publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
+  prevPublishBlockedAtCommit: string | null;
   cfgBranch: string | undefined;
   maxBlobBytes: number;
   maxCommitTotalBytes: number;
@@ -4473,7 +4486,15 @@ async function recordAndEscalateTick(a: {
 }): Promise<void> {
   const { slug, workspaceId, outcome, errTicks, contentTicks } = a;
   const mergeCompleted = outcome.mergeCompleted ?? [];
-  await recordOutcome(slug, workspaceId, outcome, errTicks, contentTicks, a.pushMode);
+  await recordOutcome(
+    slug,
+    workspaceId,
+    outcome,
+    errTicks,
+    contentTicks,
+    a.pushMode,
+    a.publishRefusal?.blockedAtCommit ?? null,
+  );
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
   // sync/conflict/error rates over time (routines.metadata only keeps the LAST).
@@ -4610,6 +4631,8 @@ async function recordAndEscalateTick(a: {
     maxBlobBytes: a.maxBlobBytes,
     maxCommitTotalBytes: a.maxCommitTotalBytes,
     prevOversizedKeys: a.prevOversizedKeys,
+    publishRefusal: a.publishRefusal,
+    prevPublishBlockedAtCommit: a.prevPublishBlockedAtCommit,
   });
   if (decision.escalate) {
     await writeGitSyncErrorEscalation(slug, workspaceId, {
