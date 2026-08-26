@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   getFleet: (...a: unknown[]) => h.getFleet(...a),
 }));
 // Real split helpers (pure) + a mocked roster/bee-count IO seam. status.ts now calls

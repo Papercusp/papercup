@@ -36,6 +36,7 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
 // must exist here or that single import edge throws into its fail-soft catch).
 const getFleetMock = vi.fn(async (_ws: string, _slug: string) => null as unknown);
 vi.mock('../../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   getFleet: (ws: string, slug: string) => getFleetMock(ws, slug),
   getFleetScheme: vi.fn(async () => null),
   fleetSlugFromName: (n: string) => n,

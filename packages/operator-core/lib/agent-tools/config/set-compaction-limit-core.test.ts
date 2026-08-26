@@ -38,7 +38,10 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   classifyAgentPane: (...a: unknown[]) => classifyAgentPane(...a),
 }));
-vi.mock('../../agent-fleets-store', () => ({ getFleet: (...a: unknown[]) => getFleet(...a) }));
+vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
+  getFleet: (...a: unknown[]) => getFleet(...a),
+}));
 vi.mock('../coordination/presence', () => ({
   setCompactionLimit: (...a: unknown[]) => setCompactionLimit(...a),
   getPresence: (...a: unknown[]) => getPresence(...a),

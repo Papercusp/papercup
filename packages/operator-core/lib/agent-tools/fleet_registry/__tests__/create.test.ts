@@ -8,6 +8,7 @@ const recolorCallerTerminalMock = vi.fn();
 const ensureFleetLeaderControlMock = vi.fn();
 
 vi.mock('../../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
 }));
