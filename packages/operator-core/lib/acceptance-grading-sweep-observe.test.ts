@@ -56,6 +56,21 @@ describe('graderTaskLabel reads the ONE place a label is stored', () => {
     expect(graderTaskLabel(topLevelOnly)).toBe('');
   });
 
+  it('CALIBRATION: the pre-fix read really does come up empty on these exact fixtures', () => {
+    // Falsifiability, proven rather than asserted. A regression test is only worth its
+    // line count if the bug it names would actually trip it, and for an imported
+    // module the way to show that is to keep the wrong implementation here as a
+    // control. This is the read the adapter used to perform, verbatim.
+    const preFixRead = (t: unknown) => String((t as { label?: unknown }).label ?? '');
+    const row = task({ label: `${PREFIX}e5bbe9989f15` });
+
+    expect(preFixRead(row)).toBe(''); // ← blind on every row, which is what shipped
+    expect(graderTaskLabel(row)).toBe(`${PREFIX}e5bbe9989f15`);
+    // And so the prefix match — the thing the probe actually branches on — inverts.
+    expect(preFixRead(row).startsWith(PREFIX)).toBe(false);
+    expect(graderTaskLabel(row).startsWith(PREFIX)).toBe(true);
+  });
+
   it('survives a detail bag that arrived undecoded or absent', () => {
     expect(graderTaskLabel({ detail: undefined })).toBe('');
     expect(graderTaskLabel({ detail: '{"label":"x"}' })).toBe('');
