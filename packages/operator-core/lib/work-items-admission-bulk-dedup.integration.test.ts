@@ -234,4 +234,49 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(stage[0]?.state).toBe('failed');
     expect(stage[0]?.error).toMatch(/ratchet violated/);
   }, 60_000);
+
+  it('judges independent shards concurrently while keeping each shard internally ordered', async () => {
+    await seed();
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET summary = repeat(feature_id, 180)
+       WHERE feature_id = ANY(ARRAY['a', 'b', 'c']::text[])`;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', ${'d'.repeat(180)}, 'open', NULL, '{}'::jsonb,
+              'change', 'watch:other', 4, 4, '[0,0.999,0.04]'::vector, 'gemma',
+              'admitted', now(), 'test')`;
+
+    let active = 0;
+    let maxActive = 0;
+    const result = await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-concurrent-shards',
+      sql: db.sql,
+      shardConcurrency: 2,
+      census: { chunkCount: 2, targetTokens: 110 },
+      llmCall: async (input) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        active -= 1;
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        return {
+          text: '',
+          json: {
+            judgements: keys.map((pairKey) => ({ pairKey, verdict: 'distinct', reason: 'separate finding' })),
+          },
+          inputTokens: 25,
+          outputTokens: 10,
+        };
+      },
+    });
+
+    expect(maxActive).toBe(2);
+    expect(result.stages[0]).toMatchObject({ pairs: 2, modelCalls: 2, censusBefore: 2, censusAfter: 0 });
+  }, 60_000);
 });
