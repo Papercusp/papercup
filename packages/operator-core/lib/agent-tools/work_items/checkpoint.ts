@@ -208,6 +208,15 @@ function looseBoolean() {
   }, z.boolean().optional());
 }
 
+/** WI-42106: an unconfirmed replace computed, under the store lock, that it
+ * would retire carried check rows. Throwing from the transform aborts the
+ * transaction before the new carry-note can be stored. */
+class ReplaceWouldDropError extends Error {
+  constructor(readonly droppedChecks: string[]) {
+    super('checkpoint_replace_would_drop_rows');
+  }
+}
+
 /** Hard cap on a stored checkpoint (matches the `checkpoint` arg's max). */
 const CHECKPOINT_CAP = 32000;
 const TRUNCATION_MARKER = '…[older checkpoint content truncated]…\n';
@@ -412,6 +421,9 @@ const itemSpec = z.object({
       'Pass true to confirm a destructive replacement.',
   ),
   rowsMode: rowsModeSpec(),
+  confirmRetire: looseBoolean().describe(
+    "rowsMode:'replace' safety (WI-42106): if the supplied checks would RETIRE carried rows, refuse before writing unless true. The refusal names every dropped claim; merge mode never needs this.",
+  ),
   dependsOn: dependsOnSpec(),
   checks: checksSpec(),
 });
@@ -488,6 +500,9 @@ export default defineTool({
       rowsMode: rowsModeSpec().describe(
         'single shorthand default for `rowsMode`; also the items[] default. `merge` unions supplied checks without appending the body.',
       ),
+      confirmRetire: looseBoolean().describe(
+        "single shorthand default for `confirmRetire`; also the items[] default. Required only when rowsMode:'replace' would retire carried checks.",
+      ),
       checks: checksSpec(),
       dependsOn: dependsOnSpec(),
     })
@@ -507,6 +522,7 @@ export default defineTool({
             append: args.append,
             confirmShrink: args.confirmShrink,
             rowsMode: args.rowsMode,
+            confirmRetire: args.confirmRetire,
             dependsOn: args.dependsOn,
           },
         ];
@@ -575,6 +591,7 @@ export default defineTool({
         // patch and must preserve the narrative body.
         const wantsAppend = it.append ?? args.append ?? false;
         const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
+        const wantsConfirmRetire = it.confirmRetire ?? args.confirmRetire ?? false;
         const rawSuppliedChecks = it.checks ?? args.checks;
         const isChecksOnlyPatch = it.checkpoint === undefined && rawSuppliedChecks !== undefined;
         // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
@@ -873,6 +890,9 @@ export default defineTool({
                 droppedCheckClaims = prior
                   .filter((c) => c.claim.trim().length > 0 && !keptCheckKeys.has(carryRowKey(c)))
                   .map((c) => c.claim.trim());
+                if (rowsMode === 'replace' && !wantsConfirmRetire && droppedCheckClaims.length > 0) {
+                  throw new ReplaceWouldDropError(droppedCheckClaims);
+                }
                 if (merged.length === 0) return body.length > 0 ? body : null;
                 const rendered = withCarryNoteChecks(body, merged);
                 if (rendered.length <= CHECKPOINT_CAP) return rendered;
@@ -1025,17 +1045,36 @@ export default defineTool({
                 : null;
             }
           : null;
-        let res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
-          ...(checksTransform ? { transform: checksTransform } : {}),
-          guard: composeGuards(
-            appendBaseGuard,
-            bodyPreservationGuard,
-            overflowGuard,
-            appendBodyPreservationGuard,
-            shrinkGuard,
-          ),
-          ...depsOpt,
-        });
+        let res;
+        try {
+          res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
+            ...(checksTransform ? { transform: checksTransform } : {}),
+            guard: composeGuards(
+              appendBaseGuard,
+              bodyPreservationGuard,
+              overflowGuard,
+              appendBodyPreservationGuard,
+              shrinkGuard,
+            ),
+            ...depsOpt,
+          });
+        } catch (error) {
+          if (error instanceof ReplaceWouldDropError) {
+            return {
+              ok: false as const,
+              id: it.id,
+              error: 'checkpoint_replace_would_drop_rows',
+              errorCode: 'checkpoint_replace_would_drop_rows',
+              retryable: true,
+              checksDropped: error.droppedChecks,
+              message:
+                "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
+                'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
+                "rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).",
+            };
+          }
+          throw error;
+        }
         // EI-20232176364474286: retain the existing guard's no-loss behavior, but do
         // not strand a normal concise progress refresh on a manual retry. A blocked
         // plain shrink is retried once WITHOUT the shrink guard and the transform above
