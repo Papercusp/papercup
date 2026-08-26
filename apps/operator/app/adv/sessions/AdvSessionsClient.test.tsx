@@ -134,6 +134,17 @@ describe('AdvSessionsClient wiring guard', () => {
     expect(source).toContain('data-testid="sessions-history-count"');
   });
 
+  it('keeps the Launch SU context-size picker URL-backed and threaded into the launch request', () => {
+    expect(source).toContain("useQueryState(\n    'suContext'");
+    expect(source).toContain("parseAsStringEnum<'full' | 'trimmed'>(['full', 'trimmed'])");
+    expect(source).toContain("{ value: 'full', label: `Full · ${SU_CONTEXT_TOKEN_ESTIMATES.full}` }");
+    expect(source).toContain("{ value: 'trimmed', label: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}` }");
+    expect(source).toContain("full: '~180k'");
+    expect(source).toContain("trimmed: '~70k'");
+    expect(source).toContain('context_size: suContext ?? null');
+    expect(source).toContain('ariaLabel="Context size for Launch SU"');
+  });
+
   it('never falls through to the Server window manager without content-origin desktop proof', () => {
     const proof = source.indexOf('await canUseContentOriginDesktopActions()');
     const focusPost = source.indexOf('/api/adv/sessions/focus');
