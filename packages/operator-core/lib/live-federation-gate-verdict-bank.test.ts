@@ -63,6 +63,10 @@ const GATE_PATH = process.env.PROBE_SCRIPT
     : join(ROOT, process.env.PROBE_SCRIPT)
   : join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
 const gate = readFileSync(GATE_PATH, 'utf8');
+const gateSystemdUnit = readFileSync(
+  join(ROOT, 'apps', 'operator', 'scripts', 'systemd', 'papercup-live-federation-gate.service'),
+  'utf8',
+);
 
 /**
  * Running the REAL gate prunes /tmp/live-fed-gate-* down to GATE_KEEP_RUNS on startup. A test
@@ -176,6 +180,22 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
       .find((line) => line.includes('PC_HEAVY_PREEMPT_AFTER_READY='));
     expect(wrapper, 'the gate wrapper no longer opts into pc-heavy after-ready protection').toBeTruthy();
     expect(wrapper).toContain('${PC_HEAVY_PREEMPT_AFTER_READY:-1}');
+
+    const retry = gate
+      .split('\n')
+      .find((line) => line.includes('PC_HEAVY_RETRY_PREEMPTIONS='));
+    expect(retry, 'the gate wrapper no longer retries an exact typed preemption').toBeTruthy();
+    expect(retry).toContain('${PC_HEAVY_RETRY_PREEMPTIONS:-1}');
+
+    // systemd wraps the script in pc-heavy before the script can execute the
+    // self-enrol block above.  Pin that second entrypoint too: the live failure
+    // this test originally missed had all helper code present but no marker
+    // because the unit supplied only PC_HEAVY_PREEMPTIBLE=1.
+    expect(gateSystemdUnit).toContain('Environment=PC_HEAVY_PREEMPT_AFTER_READY=1');
+    expect(gateSystemdUnit).toContain('Environment=PC_HEAVY_RETRY_PREEMPTIONS=1');
+    expect(gateSystemdUnit).toMatch(
+      /^ExecStart=.*\/scripts\/pc-heavy\.sh -- .*live-federation-gate\.sh$/m,
+    );
 
     const protectCalls = [...gate.matchAll(/^gate_preempt_protect_until_first_verdict$/gm)];
     const releaseCalls = [...gate.matchAll(/^gate_preempt_release_after_first_verdict$/gm)];
