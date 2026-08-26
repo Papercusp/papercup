@@ -18,12 +18,18 @@
  * not an oversight — the claim that stood here until WI-41691 described the function and
  * silently promised the same of the tool.
  *
- * The gap is narrower than it was: WI-41687 removed the dominant partial-write path (the
- * revision transfer no longer throws when the submitter's session has been reaped).
- * `ensureComment` or `deliverRevision` throwing after `mergeWorkItemPayload` has
- * committed still reaches it. Whether a settled row may be re-driven at all is the
- * product question parked on WI-41689; until that is answered this comment states the
- * guarantee rather than assuming one.
+ * The gap is narrower than it was, on two counts. WI-41687 removed the dominant
+ * partial-write path (the revision transfer no longer throws when the submitter's session
+ * has been reaped). WI-41689 then answered the product question this paragraph used to
+ * park: a settled row MAY be re-driven, but only FORWARD through `resubmitAgentReview`,
+ * which returns it to 'pending' and re-enters review — never by re-deciding a settled
+ * round in place through `blender:grade-idea`. Resubmit no longer requires the original
+ * submitter to still exist: when the shared liveness oracle reports that session PROVABLY
+ * gone, another agent may adopt the row (the orphan-rebind branch below).
+ *
+ * `ensureComment` or `deliverRevision` throwing after `mergeWorkItemPayload` has committed
+ * still leaves partial-write residue, and only a direct `reconcileAgentReviewGrade` call
+ * converges that.
  *
  * Pinned by lib/doc-claims/agent-review-retry-convergence.test.ts — if the pending guard
  * is ever relaxed to admit a converging regrade, that test fails and forces this
@@ -49,6 +55,17 @@ import {
   readAgentReviewState,
   type AgentReviewState,
 } from './agent-review-policy';
+// The canonical "this session can still act" set, IMPORTED rather than re-derived.
+// Deliberately not a delegation to `rebindIdentity` itself: that migrates ~16 ownerId-keyed
+// surfaces (loop, presence, fleet membership, claims, facts, watermarks) from one sid to
+// another, whereas the orphan rebind below re-points ONE payload field on ONE work item —
+// delegating would move a dead submitter's entire coordination identity onto whoever
+// resubmits. The two also sit on OPPOSITE sides of the unknown-verdict question, which is
+// why only the constant is shared: `rebindIdentity` fails OPEN on an unmeasured verdict
+// (an explicit caller has asserted the death and its surfaces are idempotent), while this
+// guard must fail CLOSED (nobody asserted anything — the code is inferring the death).
+import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
+import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 
 export const AGENT_REVIEW_MAX_REVISION_GRADE = 3;
 
@@ -58,6 +75,14 @@ export interface AgentReviewLedgerGrade {
   grade: number | null;
   feedback: string | null;
   gradedBy: string | null;
+}
+
+/**
+ * The liveness facts the orphan-rebind guard acts on — a projection of the shared oracle's
+ * verdict, deliberately narrowed to the one field the guard is allowed to reason about.
+ */
+export interface SubmitterLivenessVerdict {
+  sessionState: SessionState;
 }
 
 export interface AgentReviewDeps {
@@ -78,6 +103,18 @@ export interface AgentReviewDeps {
     feedback: string;
     gradedBy: string;
   }) => Promise<{ woken: number }>;
+  /**
+   * Can this agent-review submitter still act? Resolved through THE shared liveness oracle
+   * so the answer cannot drift from what coord:presence / fleet:status report for the same
+   * agent (presence-derivation-unification-2026-07-17 D-001: one derivation, many lenses).
+   *
+   * `null` is the oracle's IN-BAND unknown folded into "no reading" — NOT a state. The
+   * caller MUST fail closed on it; see the orphan-rebind branch.
+   */
+  resolveSubmitterLiveness: (
+    ownerId: string,
+    hints: { claimsHeld: boolean },
+  ) => Promise<SubmitterLivenessVerdict | null>;
 }
 
 async function readLedgerGrade(ideaId: string): Promise<AgentReviewLedgerGrade | null> {
