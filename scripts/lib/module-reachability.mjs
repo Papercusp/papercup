@@ -386,3 +386,60 @@ export function assessGraphHealth({ resolvedEdges, population, dead, unresolvedR
   }
   return { measurable: true, reason: null, unresolvedRelativeCount };
 }
+
+/**
+ * DEFAULT GRACE PERIOD for a newly-added detector module, in days.
+ *
+ * Sized from measurement, not taste: 16 new `lib/release/**` modules were added in the
+ * 7 days to 2026-08-26 (35 in 30 days). A module is normally WRITTEN in one commit and
+ * WIRED in a later one, and git-sync sweeps the whole tree into commits every few
+ * minutes — so without a grace period this axis fails the build on the ordinary
+ * intermediate state of a peer's in-flight work, several times a day, for everybody.
+ */
+export const NEW_MODULE_GRACE_DAYS = 7;
+
+/**
+ * Split unreachable modules into the ones this axis may JUDGE and the ones that are
+ * still IN FLIGHT.
+ *
+ * ⚠ THIS IS THE DIFFERENCE BETWEEN A DETECTOR AND A FLEET-WIDE OUTAGE. The axis exists
+ * to catch modules that a SHIPPED plan certified while nothing calls them — those are
+ * old by construction. A module added twenty minutes ago is not that; it is someone
+ * mid-task whose next commit wires it. Judging it is not a false positive (the module
+ * really is unreachable) — it is a PREMATURE TRUE positive, which is worse, because it
+ * is unarguable and still wrong to block on.
+ *
+ * FAIL-OPEN on unknown age, deliberately, matching `assessGraphHealth`: a module with no
+ * recorded add-date (untracked, or a git query that returned nothing) is treated as in
+ * flight. An axis that red-pins the fleet whenever its OWN date lookup degrades teaches
+ * everyone to distrust the leg, and a missed report costs one cycle where a false red
+ * costs every agent's cycle.
+ *
+ * Pure by design: the caller supplies the dates, so this is testable without git.
+ *
+ * @param {{modules:{module:string}[], addedAtByModule:Map<string,number>, now:number, graceMs?:number}} args
+ * @returns {{judged:{module:string}[], inFlight:{module:string, addedAt:number|null, ageDays:number|null}[]}}
+ */
+export function partitionByGracePeriod({
+  modules,
+  addedAtByModule,
+  now,
+  graceMs = NEW_MODULE_GRACE_DAYS * 24 * 60 * 60 * 1000,
+}) {
+  const judged = [];
+  const inFlight = [];
+  for (const row of modules) {
+    const addedAt = addedAtByModule.get(row.module) ?? null;
+    if (addedAt === null) {
+      inFlight.push({ ...row, addedAt: null, ageDays: null });
+      continue;
+    }
+    const age = now - addedAt;
+    if (age < graceMs) {
+      inFlight.push({ ...row, addedAt, ageDays: age / (24 * 60 * 60 * 1000) });
+      continue;
+    }
+    judged.push(row);
+  }
+  return { judged, inFlight };
+}
