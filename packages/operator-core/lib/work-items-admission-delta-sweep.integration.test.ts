@@ -83,7 +83,9 @@ beforeAll(async () => {
   await db.sql.unsafe(DDL);
 }, 60_000);
 
-afterAll(async () => db?.cleanup());
+// Shared-container DROP DATABASE is explicitly budgeted at 60s by the fixture
+// contract; make it local so direct-file Vitest runs do not fall back to 10s.
+afterAll(async () => db?.cleanup(), 60_000);
 
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.admission_runs,
