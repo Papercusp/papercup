@@ -739,7 +739,15 @@ export async function assemblePresenceSnapshot(
       // unknown id reads as matched:0/fromSessionLog:false — an explicit
       // not-found, distinct from the synthesized-ended case.
       ...(targeted
-        ? { ownerLookup: { needle: opts.owner, matched: scoped.length, fromSessionLog: endedFromSessionLog } }
+        ? {
+            ownerLookup: {
+              needle: opts.owner,
+              matched: scoped.length,
+              // True only when a session-log-synthesized row actually SURVIVED the
+              // owner filter — never merely because the leg ran.
+              fromSessionLog: endedFromSessionLog && scoped.length > 0,
+            },
+          }
         : {}),
     },
     active: activeRows,
