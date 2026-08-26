@@ -465,6 +465,58 @@ describe('D-016 / WI-38048 — profiles bind by launch SLOT, never by psu --role
   });
 });
 
+describe('the schema accepts/refuses `headless` and `fleetType` (P-007)', () => {
+  // Both keys shipped in Phase 1/2 without a schema test. `.strict()` is what
+  // makes a typo'd key a WRITE-time refusal instead of a stored setting that
+  // reads as configured and is silently ignored — so it is worth pinning that
+  // these two are genuinely accepted, and that near-misses are genuinely not.
+  const parse = (o: Record<string, unknown>) => goalLaunchSettingsSchema.safeParse(o);
+
+  it('accepts an explicit headless boolean on a profile, either way round', () => {
+    expect(parse({ defaults: { headless: true } }).success).toBe(true);
+    expect(parse({ defaults: { headless: false } }).success).toBe(true);
+  });
+
+  it("REFUSES the editor's word-form — the stored key is a real boolean (D-002)", () => {
+    // LAUNCH_PROFILE_HEADLESS ('headless'/'headed') is the editor's RENDERING,
+    // converted at the form boundary. If those words could be stored, the goal
+    // record and the fleet layer would hold two spellings of one concept.
+    expect(parse({ defaults: { headless: 'headed' } }).success).toBe(false);
+    expect(parse({ defaults: { headless: 'true' } }).success).toBe(false);
+  });
+
+  it('leaves an absent headless UNPINNED — undefined, never false (D-002)', () => {
+    // The whole reason the default resolves to `true` downstream: absent must
+    // stay distinguishable from an explicit false, or adding the key would have
+    // silently re-pointed every stored goal at a visible terminal.
+    const r = parse({ defaults: { model: 'opus' } });
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data.defaults?.headless).toBeUndefined();
+    expect('headless' in (r.data.defaults ?? {})).toBe(false);
+  });
+
+  it('accepts both fleet shapes, sourced from FLEET_TYPES', () => {
+    expect(parse({ fleetType: 'single' }).success).toBe(true);
+    expect(parse({ fleetType: 'paired' }).success).toBe(true);
+  });
+
+  it("REFUSES a plausible near-miss like 'singular'", () => {
+    // Worth an explicit case: 'singular' is the word people reach for, and a
+    // silently-stored one would read as configured in the panel while
+    // resolveLaunchOptions branched to single anyway.
+    expect(parse({ fleetType: 'singular' }).success).toBe(false);
+    expect(parse({ fleetType: 'pair' }).success).toBe(false);
+  });
+
+  it('leaves an absent fleetType undefined so the default stays invisible', () => {
+    const r = parse({ maxAgents: 3 });
+    expect(r.success).toBe(true);
+    if (!r.success) throw new Error('unreachable');
+    expect(r.data.fleetType).toBeUndefined();
+  });
+});
+
 describe('readGoalLaunchSettings', () => {
   it('reports "none declared" for a NULL column — the common case, not an error', async () => {
     const r = await readGoalLaunchSettings('g1', mockSql({ settings: { g1: null } }));
