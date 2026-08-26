@@ -53,13 +53,16 @@ import {
 } from '../../../personal-vault/store';
 import {
   MAX_PERSONAL_VAULT_IMPORT_BYTES,
-  createPersonalVaultImportJob,
+  finalizePersonalVaultImportUpload,
   listPersonalVaultImportJobs,
   publicPersonalVaultImportJob,
+  releasePersonalVaultImportUpload,
   removePersonalVaultImportArchive,
+  reservePersonalVaultImportUpload,
   requestPersonalVaultImportCancellation,
   retryPersonalVaultImportJob,
-  storePersonalVaultImportArchive,
+  storeReservedPersonalVaultImportArchive,
+  type PersonalVaultImportUploadReservation,
 } from '../../../personal-vault/import-jobs';
 import type { PersonalPrincipalType } from '../../../personal-vault/types';
 
@@ -819,15 +822,19 @@ const archiveImport = defineTool({
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
-    let storedPath: string | null = null;
+    let reservation: PersonalVaultImportUploadReservation | null = null;
     try {
       if (!(await isPersonalVaultEnabled(getOrgPg().sql, workspaceId, user.id))) {
         throw new Error('personal_vault_disabled');
       }
       const filename = importFilename(req);
       if (!req.body) throw new Error('file_required');
-      const declaredSize = Number(req.headers.get('content-length'));
-      if (Number.isFinite(declaredSize) && declaredSize > MAX_PERSONAL_VAULT_IMPORT_BYTES) {
+      const contentLength = req.headers.get('content-length');
+      const declaredSize = contentLength == null ? null : Number(contentLength);
+      if (declaredSize != null && (!Number.isInteger(declaredSize) || declaredSize <= 0)) {
+        throw new Error('personal_vault_import_content_length_invalid');
+      }
+      if (declaredSize != null && declaredSize > MAX_PERSONAL_VAULT_IMPORT_BYTES) {
         throw new Error('personal_archive_too_large');
       }
       const { sourceId, providerAccountId } = await resolveImportProvenance(
@@ -835,26 +842,26 @@ const archiveImport = defineTool({
         user.id,
         new URL(req.url),
       );
-      const stored = await storePersonalVaultImportArchive(
-        workspaceId,
-        req.body as unknown as AsyncIterable<Uint8Array>,
-      );
-      storedPath = stored.storagePath;
-      const job = await createPersonalVaultImportJob(getOrgPg().sql, {
+      reservation = await reservePersonalVaultImportUpload(getOrgPg().sql, {
         workspaceId,
         userId: user.id,
         filename,
-        storagePath: stored.storagePath,
+        declaredSizeBytes: declaredSize,
+      });
+      const stored = await storeReservedPersonalVaultImportArchive(
+        getOrgPg().sql,
+        reservation,
+        req.body as unknown as AsyncIterable<Uint8Array>,
+      );
+      const job = await finalizePersonalVaultImportUpload(getOrgPg().sql, reservation, stored, {
         contentType: req.headers.get('content-type'),
-        contentSha256: stored.contentSha256,
-        sizeBytes: stored.sizeBytes,
         sourceId,
         providerAccountId,
       });
+      reservation = null;
       const duplicate = job.storagePath !== stored.storagePath;
       if (duplicate) {
         await removePersonalVaultImportArchive(workspaceId, stored.storagePath);
-        storedPath = null;
       }
       return Response.json({
         ok: true,
@@ -862,7 +869,9 @@ const archiveImport = defineTool({
         job: publicPersonalVaultImportJob(job),
       }, { status: 202 });
     } catch (err) {
-      if (storedPath) await removePersonalVaultImportArchive(workspaceId, storedPath).catch(() => undefined);
+      if (reservation) {
+        await releasePersonalVaultImportUpload(getOrgPg().sql, reservation).catch(() => undefined);
+      }
       return importError(err);
     }
   },
