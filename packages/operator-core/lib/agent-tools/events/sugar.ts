@@ -45,7 +45,11 @@ import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/p
 import { checkpointProducerCertificate } from "../../events/await/checkpoint-verified-wait";
 import type { ProducerHealthCertificate } from "../../events/await/verified-wait";
 import { activeWorkspaceId } from "../../workspace-registry";
-import { resolveConcreteHarnessSlug } from "../_harness-scope";
+import {
+  harnessArg,
+  harnessRequiredResult,
+  resolveConcreteHarnessSlug,
+} from "../_harness-scope";
 import { probeNamedService, type ProbeResult } from "../../service-health";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
@@ -181,15 +185,18 @@ async function probeServiceUp(name: string): Promise<ProbeResult | null> {
  * convenient global key, but bind this wait to the concrete harness/workspace
  * that owns the caller so another harness's commit cannot wake it.
  *
- * Operator-scope calls carry `'*'` as their workspace sentinel; use the active
- * concrete workspace in that case. An unscoped operator call has no reliable
- * harness identity, so it retains the legacy global wait rather than guessing.
+ * Operator-scope calls carry `'*'` as their harness sentinel, so they must pass
+ * an explicit concrete harness for wildcard-key waits. Exact-SHA waits remain
+ * safe without one because the commit identity is encoded in the event key.
  */
-function gitSyncAwaitScope(ctx: Parameters<typeof resolveAgentIdentity>[0]): {
+function gitSyncAwaitScope(
+  harness: string | undefined,
+  ctx: Parameters<typeof resolveAgentIdentity>[0],
+): {
   installSlug: string;
   workspaceId: string;
 } | null {
-  const installSlug = resolveConcreteHarnessSlug(undefined, ctx);
+  const installSlug = resolveConcreteHarnessSlug(harness, ctx);
   if (!installSlug) return null;
 
   const contextWorkspace =
@@ -295,6 +302,7 @@ defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
+    harness: harnessArg,
     sha: z
       .string()
       .min(4)
@@ -847,7 +855,8 @@ defineTool({
     timeout_sec: timeoutArg,
   }),
   async handler(args, ctx) {
-    const scope = gitSyncAwaitScope(ctx);
+    const scope = gitSyncAwaitScope(args.harness, ctx);
+    if (!args.sha && !scope) return harnessRequiredResult("git-sync:await", ctx);
     return reply(
       await armAwaits(
         ctx,

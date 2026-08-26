@@ -748,13 +748,40 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
     });
   });
 
-  it("keeps an operator-scope call unfiltered when no concrete harness is available", async () => {
+  it("rejects an operator-scope next-commit wait when no concrete harness is available", async () => {
     const res = await gitSyncTool.handler(
       {} as never,
       { harnessSlug: "*", workspaceId: "workspace-a" } as never,
     );
 
+    expect(JSON.parse(res.content[0].text)).toMatchObject({
+      error: "harness_required",
+      tool: "git-sync:await",
+    });
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it("accepts an explicit harness for an operator-scope next-commit wait", async () => {
+    const res = await gitSyncTool.handler(
+      { harness: "harness-a" } as never,
+      { harnessSlug: "*", workspaceId: "workspace-a" } as never,
+    );
+
     expect(JSON.parse(res.content[0].text).events).toEqual(["git-sync:committed"]);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toEqual({
+      installSlug: "harness-a",
+      workspaceId: "workspace-a",
+    });
+  });
+
+  it("keeps an exact-SHA operator wait available without a concrete harness", async () => {
+    const res = await gitSyncTool.handler(
+      { sha: "abc1234" } as never,
+      { harnessSlug: "*", workspaceId: "workspace-a" } as never,
+    );
+
+    expect(JSON.parse(res.content[0].text).events).toEqual(["git-sync:committed:abc1234"]);
     expect(registerAwait).toHaveBeenCalledTimes(1);
     expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toBeNull();
   });
