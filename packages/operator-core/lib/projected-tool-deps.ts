@@ -37,6 +37,7 @@ import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@paperc
 import { recordToolAuthzEvent } from './tool-authz-audit';
 import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
 import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
+import { checkSessionConfinement } from './capability-envelope/session-confinement-port';
 // live-configurability-audit-2026-06-20 P-009 — runtime envelope overrides (D-010 sync-cache).
 // Getters return empty when the dark flag is off ⇒ byte-identical envelope resolution.
 import { envelopeRoleOverrides, envelopeProtectedAdditions } from './capability-envelope-overrides';
@@ -699,6 +700,16 @@ async function checkCapabilityEnvelopeImpl(input: {
   ctx: UnifiedToolContext;
   args: unknown;
 }): Promise<CapabilityEnvelopeVerdict | null> {
+  // P-003 / D-015 (directed-pair): the launch-declared SESSION confinement runs FIRST and is
+  // deliberately NOT subject to the exemptions below it. evaluateCapabilityEnvelope returns
+  // early on isSuperuser||isPowerUser before it even reads the role, so a role envelope cannot
+  // bind a directed implementer — which must be su-tier because coord:* is identity-gated.
+  // This gate is a self-imposed narrowing declared by the LAUNCHER, not a privilege ceiling,
+  // so privilege is irrelevant to it. It is inert (null) for any session with no declared
+  // confinement, i.e. every session until a paired fleet launches one.
+  const confined = checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx });
+  if (confined) return confined;
+
   // P-009 (D-010): merge the runtime per-role overrides OVER the baked ROLE_ENVELOPES (per-role
   // replace) and union the tighten-only protected-floor additions. Both getters are SYNC and
   // return empty unless papercusp-capability-envelope-overrides is ON ⇒ off = byte-identical.
