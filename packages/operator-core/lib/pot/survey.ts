@@ -486,14 +486,10 @@ export async function fetchFrontierRows(
       FROM harness_shared.harness_features_consolidated wi
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
-       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
-       -- 'todo' was rewritten to the unified claimable token 'open' (issue-family already
-       -- used 'open'). This literal was never updated, so every genuinely-placeable
-       -- feature-family row has been silently invisible to the Mug's survey since that
-       -- migration ran (EI-13699 2026-07-17 pre-dates it and had a different proximate
-       -- cause; EI-18690462961089460 2026-07-26 is the post-migration recurrence this
-       -- fixes — pot:survey read frontier:0 while work_items:claimable read ~1062).
-       AND status = 'open'
+       -- WI-42165: callers speak the canonical open token, while the storage boundary
+       -- read-folds the retired feature-family todo alias. Raw writers have regressed
+       -- after migration 638, and a raw equality permanently stranded those rows.
+       AND (CASE WHEN status = 'todo' THEN 'open' ELSE status END) = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
        AND ${admittedWhereSql(sql)}
@@ -568,14 +564,9 @@ export async function fetchEscalatedIssueFrontierRows(
       FROM harness_shared.work_items wi
      WHERE workspace_id = ${workspaceId}
        AND item_kind IN ('bug', 'change', 'task')
-       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
-       -- 'todo' was rewritten to the unified claimable token 'open' (issue-family already
-       -- used 'open'). This literal was never updated, so every genuinely-placeable
-       -- feature-family row has been silently invisible to the Mug's survey since that
-       -- migration ran (EI-13699 2026-07-17 pre-dates it and had a different proximate
-       -- cause; EI-18690462961089460 2026-07-26 is the post-migration recurrence this
-       -- fixes — pot:survey read frontier:0 while work_items:claimable read ~1062).
-       AND status = 'open'
+       -- Keep this storage-alias fold identical to fetchFrontierRows above: this count
+       -- gates starvation/throughput signals and must describe the same row set.
+       AND (CASE WHEN status = 'todo' THEN 'open' ELSE status END) = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND COALESCE(payload -> '_ei' ->> 'severity', 'minor') IN ('critical', 'major')
        AND ${autoPickableWhereSql(sql, workspaceId)}
