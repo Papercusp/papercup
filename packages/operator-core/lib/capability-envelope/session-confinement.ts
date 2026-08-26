@@ -189,14 +189,23 @@ export const DIRECTED_IMPLEMENTER_DENY_TOOLS: readonly string[] = [
 export function directedImplementerConfinement(args: {
   /** The coupled director's session id — named in every refusal. */
   directorSid: string;
-  /** The work-item this engagement is scoped to. */
-  workItemId: string;
+  /**
+   * What this engagement is scoped to, named verbatim in every refusal — the plan the pair
+   * launched on, or a single work item when the pair was launched for exactly one.
+   *
+   * Deliberately NOT a work-item id (it was, until P-004): a confinement is declared at LAUNCH
+   * and lasts the session, while the work items it will work arrive one at a time from the
+   * director over that session's life. Naming an item here would either be a lie at launch —
+   * there is no item yet — or force the confinement to be rewritten per directive, which is a
+   * mutable security rail, the thing this design exists to avoid.
+   */
+  scope: string;
 }): SessionToolConfinement {
   return {
     denyTools: DIRECTED_IMPLEMENTER_DENY_TOOLS,
     imposedBy: `pair-director ${args.directorSid}`,
     reason:
-      `you are the directed implementer for ${args.workItemId}; completion authority and ` +
+      `you are the directed implementer for ${args.scope}; completion authority and ` +
       `work selection belong to the director (D-002/D-004)`,
   };
 }

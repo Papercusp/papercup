@@ -29,7 +29,7 @@ import {
 
 const CONFINEMENT = directedImplementerConfinement({
   directorSid: 'su-director-1',
-  workItemId: 'WI-1234',
+  scope: 'WI-1234',
 });
 
 const IMPLEMENTER_OWNER = 'su-implementer-abc123';
