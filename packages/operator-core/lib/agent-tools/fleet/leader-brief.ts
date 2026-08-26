@@ -122,6 +122,7 @@ import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
+import { getLongCallsInFlight } from '../../in-flight-calls';
 import { readDependencyBottlenecks, type DependencyBottleneckResult } from '../../dependency-traversal';
 import { renderDependencyBottleneckMermaid } from '../../dependency-mermaid';
 import {
@@ -137,6 +138,18 @@ import {
 // trimming.
 const LEADER_BRIEF_MEMBER_DETAIL_BUDGET = 8_000;
 const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
+
+/**
+ * EI-21548894457555139: how long a call must have been in flight before it is worth
+ * reporting on a member row (and before it suppresses `dormant` / `benchSuggestion`).
+ *
+ * Deliberately far SHORTER than VERDICT_SPEAKING_FRESH_MS (5 min). That constant asks
+ * "did a call SETTLE recently enough to prove liveness?" — a backward-looking window
+ * that must be generous. This one asks "is a call running RIGHT NOW?", which is a
+ * present-tense fact needing no grace period; 30s is just long enough to exclude the
+ * ordinary sub-second traffic that would otherwise fill the brief.
+ */
+const LONG_CALL_IN_FLIGHT_MS = 30_000;
 
 export interface LeaderMonitoringBlindAdvisory {
   line: string;
@@ -308,6 +321,23 @@ export interface LeaderBriefMember {
    *  healthy drain member cycling scheduler:get_next is laneless-idle but not spinning —
    *  get_next is productive). See computeSpinningAlert. */
   spinning?: true;
+  /** EI-21548894457555139: this member is INSIDE a tool call right now that has been
+   *  running longer than LONG_CALL_IN_FLIGHT_MS — it is working, not idle.
+   *
+   *  Every other field on this row is derived from SETTLED calls
+   *  (`lastToolCallAgeMs`, `productiveToolCallAgeMs`) or from a presence snapshot
+   *  (`load`, `doing`), and a call that has not returned yet has written none of them.
+   *  So a member 20 minutes into one long call and a member doing nothing produce the
+   *  SAME observable on every other signal here — which is exactly how this row once
+   *  reported `dormant:true` + a `laneless-idle` bench suggestion for a member that was
+   *  working hard. Present ⇒ suppresses both of those verdicts (see computeDormantAlert
+   *  and computeBenchSuggestion).
+   *
+   *  Exception-only: absent for the overwhelming majority of calls, which settle in
+   *  milliseconds. ABSENCE IS NOT PROOF OF IDLENESS — the registry behind it is
+   *  process-local (see in-flight-calls.ts), so read absent as "nothing observed",
+   *  never as "this member is idle". */
+  longCallInFlight?: { tool: string; ageSec: number };
   isSelf?: true;
 }
 
@@ -585,6 +615,12 @@ export function computeBenchSuggestion(
     // has not reflected its next claim yet. Absent/null remains unknown and keeps the
     // existing fail-open idle diagnosis for callers that have not read liveness.
     lastToolCallAgeMs?: number | null;
+    // EI-21548894457555139: the complement of lastToolCallAgeMs above. That field is
+    // derived from SETTLED calls, so it goes stale precisely while a member sits inside
+    // one long call — the case where it most needs to prove liveness. This field covers
+    // exactly that window. Optional (same convention); absent reads as "not observed",
+    // never as a false suppression.
+    longCallInFlight?: { tool: string; ageSec: number } | null;
   },
   /**
    * EI-18681259560385029: the fleet's LIVE authoritative claimable count (the same
@@ -667,6 +703,14 @@ export function computeBenchSuggestion(
    */
   poolCapacity?: PoolDegradedState | null,
 ): LeaderBriefMember['benchSuggestion'] {
+  // EI-21548894457555139: a member INSIDE a long-running call is working, so there is
+  // nothing to bench — and every bench branch below would misread it, because they all
+  // key off `load`/`queued`/`doing` (a presence snapshot) or settled-call ages, none of
+  // which an unreturned call has written. This is the FIRST check for the same reason
+  // the dormant guard is: the remedy is what makes the misdiagnosis expensive.
+  // `fleet:bench` parks the member on a completion event, so benching a member that is
+  // mid-call sleeps it on top of live work.
+  if (a.longCallInFlight) return undefined;
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
     if (a.stalled) {
@@ -929,10 +973,23 @@ export function computeDormantAlert(
     verdict?: MemberVerdict | null;
     loopMode?: 'work' | 'monitor' | null;
     queued?: readonly unknown[];
+    /** EI-21548894457555139: a tool call this member is INSIDE right now. Optional
+     *  (same convention as the fields above) so pre-existing call sites keep compiling;
+     *  absent reads as "not observed", never as a false suppression. */
+    longCallInFlight?: { tool: string; ageSec: number } | null;
   },
   fleetPaused?: boolean | null,
 ): boolean {
   if (fleetPaused) return false;
+  // EI-21548894457555139: a member INSIDE a long-running call is executing, and
+  // `dormant` means the opposite — "no self-wake mechanism at all; nothing will bring
+  // it back". Checked FIRST because every condition below is derived from settled
+  // calls or a presence snapshot, and an unreturned call has written none of them: a
+  // member 20 minutes into one call reads load 0 / no doing / no queue, which is
+  // byte-identical to genuine dormancy. The prescribed remedy makes the error costly
+  // rather than cosmetic — `dormant:true` tells the leader to WAKE it, interrupting
+  // the very work the member is in the middle of.
+  if (a.longCallInFlight) return false;
   if ((a.parkedOn?.length ?? 0) > 0) return false;
   if (a.loopMode != null) return false;
   if (a.load !== 0 || (a.queued?.length ?? 0) !== 0 || a.doing) return false;
@@ -2453,6 +2510,10 @@ export function projectMember(
   /** WI-37161: the live shared-inference-pool verdict — see computeBenchSuggestion's
    *  `poolCapacity` param. Absent = not read on this call, which suppresses nothing. */
   poolCapacity?: PoolDegradedState | null,
+  /** EI-21548894457555139: a tool call this member is INSIDE right now, from the
+   *  operator's in-flight registry. Absent = nothing observed (which is NOT proof of
+   *  idleness — the registry is process-local; see in-flight-calls.ts). */
+  longCallInFlight?: { tool: string; ageSec: number } | null,
 ): LeaderBriefMember {
   const lastMs = a.lastToolCallAt ? Date.parse(a.lastToolCallAt) : NaN;
   const prodMs = a.productiveToolCallAt ? Date.parse(a.productiveToolCallAt) : NaN;
@@ -2514,7 +2575,7 @@ export function projectMember(
       : {}),
     ...(() => {
       const suggestion = computeBenchSuggestion(
-        { ...a, lastToolCallAgeMs },
+        { ...a, lastToolCallAgeMs, longCallInFlight },
         claimableCount,
         laneGating,
         fleetPaused,
@@ -2523,7 +2584,8 @@ export function projectMember(
       );
       return suggestion ? { benchSuggestion: suggestion } : {};
     })(),
-    ...(computeDormantAlert(a, fleetPaused) ? { dormant: true } : {}),
+    ...(computeDormantAlert({ ...a, longCallInFlight }, fleetPaused) ? { dormant: true } : {}),
+    ...(longCallInFlight ? { longCallInFlight } : {}),
     ...(computeSpinningAlert({ ...a, lastToolCallAgeMs, productiveToolCallAgeMs }, fleetPaused)
       ? { spinning: true }
       : {}),
@@ -3047,6 +3109,22 @@ export async function buildLeaderBrief(
   const capacityProvider = fleetCapacityProviderForMembers(grouped, capacityAgentByOwner);
   const poolCapacity = capacityProvider ? await readPoolDegradedState(capacityProvider) : null;
   const nowMs = Date.now();
+  // EI-21548894457555139: one in-process read (no DB round-trip) of the calls currently
+  // executing, so a member sitting inside a long call is not reported as idle/dormant.
+  // Keyed by ownerId, keeping only the LONGEST-running call per member — that is the one
+  // a leader triages, and getLongCallsInFlight already returns longest-first.
+  const longCallByOwner = (() => {
+    const byOwner = new Map<string, { tool: string; ageSec: number }>();
+    try {
+      for (const call of getLongCallsInFlight(LONG_CALL_IN_FLIGHT_MS, nowMs)) {
+        if (!call.ownerId || byOwner.has(call.ownerId)) continue;
+        byOwner.set(call.ownerId, { tool: call.toolName, ageSec: call.ageSec });
+      }
+    } catch {
+      // A liveness read must never be able to fail the brief that carries it.
+    }
+    return byOwner;
+  })();
   const members = grouped.map((a) =>
     projectMember(
       a,
@@ -3056,6 +3134,7 @@ export async function buildLeaderBrief(
       fleetPause.paused,
       concurrencyByOwner.get(a.agentId) ?? null,
       poolCapacity,
+      longCallByOwner.get(a.agentId) ?? null,
     ),
   );
   // `self` now arrives on the caller bag (see LeaderBriefCaller): a viewer has
