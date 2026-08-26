@@ -40,8 +40,27 @@
  */
 
 /**
+ * `session_turn_parts` is CORPUS-namespaced, not tenant-namespaced: every one of its
+ * 2,373,429 rows carries `workspace_id = 'default'` (measured). Pinning it to the item's
+ * workspace instead would return a clean zero — the same false-absence shape as the
+ * harness-slug trap below, one table over.
+ */
+export const SESSION_TURN_PARTS_WORKSPACE_ID = 'default';
+
+/**
  * The ledger selection, as SQL text + values. Exported as data rather than executed here so
- * the predicate itself is testable and so the two traps below live at ONE reviewable seam.
+ * the predicate itself is testable and so the traps below live at ONE reviewable seam.
+ *
+ * ## Two ledgers, because neither one sees every agent
+ *
+ * `tool_invocations` records **MCP tools only** — native client tools (Read, Grep, Edit,
+ * Write) never appear in it. So an agent that reviewed its diff with native `Read` produced
+ * zero rows and was refused, while an otherwise identical agent that routed the same read
+ * through `capability:read` passed (EI-21481919801123128). That is not a uniform failure,
+ * which would at least be visible: it split the arm-B population by TOOL HABIT, silently
+ * confounding the pilot's central variable. `session_turn_parts` records the native calls,
+ * so corroboration reads both and normalizes across their three naming schemes
+ * (`capability:read`, `mcp__papercusp-su__capability_read`, `Read` — see `normalizeToolName`).
  *
  * ⚠ **No `harness_slug` predicate, deliberately** (EI-21476445557415319). A workspace-scoped
  * su session files its calls under `harness_slug='*'`, so scoping by the item's harness
@@ -54,11 +73,20 @@
  * real review calls. The rows are already pinned to this agent and to the window since this
  * item was claimed, so a null-goal call in that window is overwhelmingly this item's work.
  *
- * The direction of that choice is the point: being slightly permissive risks crediting a
+ * ⚠ **The turn-parts leg has NO goal_ref at all** — the table does not carry one — so it is
+ * scoped by owner + window only. That is strictly more permissive than the invocations leg,
+ * in the same direction and for the same reason as the `goal_ref IS NULL` admission above.
+ *
+ * The direction of those choices is the point: being slightly permissive risks crediting a
  * review performed for a neighbouring item, while being strict risks REFUSING an honest close
  * on the fleet's hot path and corrupting the pilot arm with false refusals. For an
  * experimental gate the second failure is far worse than the first, so this errs permissive
  * and records `rubberStampRisk` / `yieldedChange` to keep the arm measurable regardless.
+ *
+ * ⚠ **The turn-parts leg depends on migration 968** — a partial index on `(owner, ts)` where
+ * `part_kind = 'tool_use'`. Without it this is a 2.4M-row parallel seq scan (measured: 444ms,
+ * 222,576 buffers, 5 workers) on the `work_items:complete` hot path. The `part_kind` literal
+ * below is what lets the planner use that partial index; do not relax it to an `IN (...)`.
  */
 export function selfReviewLedgerQuery(args: {
   workspaceId: string;
@@ -67,12 +95,20 @@ export function selfReviewLedgerQuery(args: {
   sinceMs: number;
 }): { text: string; values: unknown[] } {
   return {
-    text: `SELECT tool_name, invoked_at, status
+    text: `SELECT tool_name, invoked_at, status, 'invocations' AS source
              FROM harness_shared.tool_invocations
             WHERE workspace_id = $1
               AND coord_owner_id = $2
               AND (goal_ref = $3 OR goal_ref IS NULL)
               AND invoked_at >= $4
+            UNION ALL
+           SELECT tool_name, ts AS invoked_at, NULL AS status, 'turn-parts' AS source
+             FROM harness_shared.session_turn_parts
+            WHERE workspace_id = '${SESSION_TURN_PARTS_WORKSPACE_ID}'
+              AND owner = $2
+              AND part_kind = 'tool_use'
+              AND tool_name IS NOT NULL
+              AND ts >= $4
             ORDER BY invoked_at ASC`,
     values: [args.workspaceId, args.coordOwnerId, args.goalRef, new Date(args.sinceMs)],
   };
@@ -83,6 +119,7 @@ export function toSelfReviewLedgerRow(raw: {
   tool_name?: unknown;
   invoked_at?: unknown;
   status?: unknown;
+  source?: unknown;
 }): SelfReviewLedgerRow | undefined {
   const toolName = typeof raw.tool_name === 'string' ? raw.tool_name : undefined;
   if (!toolName) return undefined;
@@ -94,6 +131,7 @@ export function toSelfReviewLedgerRow(raw: {
     toolName,
     invokedAtMs,
     status: typeof raw.status === 'string' ? raw.status : undefined,
+    source: raw.source === 'turn-parts' || raw.source === 'invocations' ? raw.source : undefined,
   };
 }
 
@@ -101,8 +139,19 @@ export function toSelfReviewLedgerRow(raw: {
 export interface SelfReviewLedgerRow {
   readonly toolName: string;
   readonly invokedAtMs: number;
-  /** `status` from the ledger; a refused/errored call never counts as having reviewed. */
+  /**
+   * `status` from the ledger; a refused/errored call never counts as having reviewed.
+   *
+   * ⚠ Always `undefined` on a `turn-parts` row: that table records the CALL, and the result
+   * arrives as a separate part, so a native call that errored still counts as a review. This
+   * is a known permissive edge, in the same direction as the scoping choices above.
+   */
   readonly status?: string;
+  /**
+   * Which ledger produced this row. Carried so the pilot can report how arm B's corroboration
+   * was actually obtained, and so the cross-source dedup below has something to key on.
+   */
+  readonly source?: 'invocations' | 'turn-parts';
 }
 
 export interface SelfReviewEvidence {
