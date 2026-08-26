@@ -26455,7 +26455,7 @@
       "guidance": {
         "when": "Following a sessions:search hit: pass its `ref` directly (plus optional `context`). Or read where a session left off; use order:'asc' for the opening turns.",
         "notWhen": "Finding WHERE something was said — sessions:search (which owns `query` and `mode`). Raw un-indexed files — dev:claude_session op=read (being absorbed here).",
-        "chaining": "sessions:search result.ref → sessions:read { ref, context? }."
+        "chaining": "sessions:search result.ref → sessions:read { ref, context?, limit?, order? }."
       }
     },
     {
