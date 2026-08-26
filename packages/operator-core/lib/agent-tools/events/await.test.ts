@@ -1231,6 +1231,15 @@ describe('EI-19344528739076339 — auto-scope a bare multi-pipeline gate key to 
     });
   });
 
+  it('narrows a bare `green-checkpoint:inconclusive` await so a foreign pipeline cannot wake it', async () => {
+    const out = await call({ event: 'green-checkpoint:inconclusive' });
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      payloadFilter: { pipeline: { equals: 'papercusp' } },
+    });
+    expect(out.auto_scoped_payload_filter).toBe(true);
+    expect(out.payload_filter_source).toMatchObject({ source: 'pipeline', pipeline: 'papercusp' });
+  });
+
   /** Even a correctly pipeline-scoped release:green fires for a PARTIAL advance (longest
    *  green prefix; the tip is still RED) — so "green" alone is not "deployable". */
   it('⭐ warns that release:green also fires for a PARTIAL advance', async () => {
