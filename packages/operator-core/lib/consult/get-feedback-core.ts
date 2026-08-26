@@ -187,9 +187,25 @@ export interface GetFeedbackDeps {
 
 export interface GetFeedbackResult {
   ok: true;
-  verdict: 'routed' | 'no_qualified_responder' | 'served_from_archive';
-  /** Only on no_qualified_responder — WHY, honestly (D-003: distinct causes
-   * must stay distinguishable). */
+  /**
+   * `no_qualified_responder` is a measured finding: relevance WAS computed and
+   * no peer cleared the floor, so proceeding alone is correct and a retry buys
+   * nothing. `relevance_unmeasured` is not a finding at all — the embedder was
+   * unavailable, so no similarity was ever computed and this result makes no
+   * claim about who knows what; a retry is exactly the right response. They were
+   * one value until EI-21485716602970457, which made a cold-start latency breach
+   * read as "no one knows more than you do": the same question, re-asked minutes
+   * later, routed to a peer at similarity 0.864.
+   *
+   * Note `verdict` and `state` are deliberately NOT the same field — `routed`
+   * already pairs with state `awaiting_responder`. `verdict` reports the routing
+   * outcome; `state` reports the conversation's lifecycle, which on this path is
+   * still genuinely "no responder attached" and is what the DB CHECK persists.
+   */
+  verdict: 'routed' | 'no_qualified_responder' | 'served_from_archive' | 'relevance_unmeasured';
+  /** WHY, honestly (D-003: distinct causes must stay distinguishable).
+   * `embed_unavailable` always accompanies verdict `relevance_unmeasured`; the
+   * other two accompany `no_qualified_responder`. */
   reason?: 'below_floor' | 'no_live_responder' | 'embed_unavailable';
   conversation_id: string;
   thread_id: string;
