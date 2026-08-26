@@ -978,7 +978,7 @@ export default defineTool({
                   suppliedChecks === undefined
                     ? undefined
                     : additiveChecks || preservePriorOnShrink
-                      ? [...suppliedChecks, ...prior]
+                      ? [...suppliedChecks, ...orderCarriedForUnion(suppliedChecks, prior)]
                       : suppliedChecks;
                 // An empty additive list is a true no-op, including for legacy notes
                 // that exceed today's cap. Do not run the carried rows back through
@@ -1436,7 +1436,16 @@ export default defineTool({
           ...(droppedCheckClaims.length
             ? {
                 checksDropped: droppedCheckClaims.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
-                checksDroppedNote: additiveChecks
+                checksDroppedNote: legacyOverCapNormalization
+                  ? `LEGACY CAP NORMALIZATION, not a replace and not your mistake: this checkpoint was already ` +
+                    `carrying ${legacyOverCapNormalization.legacyExcess} row(s) MORE than the ${CARRY_NOTE_MAX_CHECKS}-row cap before ` +
+                    `your write — a pre-existing state that used to make every additive write to this note refuse ` +
+                    `permanently (EI-21534719386975911). The write was accepted and the note normalized to the cap ` +
+                    `instead: your ${suppliedChecks?.length ?? 0} row(s) were kept first, and ${droppedCheckClaims.length} carried row(s) ` +
+                    `yielded — ? PREDICTED rows before ✓ VERIFIED ones, so the evidence-bearing rows survived. This ` +
+                    `is a ONE-TIME normalization of this note; it now fits, and subsequent writes evict nothing. ` +
+                    `The claims are listed above — re-send any that still matter.`
+                  : additiveChecks
                   ? `CAP EVICTION, not a replace: ${wantsAppend ? '`append`' : "`rowsMode:'merge'`"} UNIONED your ${suppliedChecks?.length ?? 0} row(s) onto ` +
                     `the stored set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
                     `${droppedCheckClaims.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +

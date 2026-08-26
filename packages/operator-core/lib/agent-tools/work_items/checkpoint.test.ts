@@ -16,7 +16,7 @@ import { z } from 'zod';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
 // the cap re-tunes the test instead of breaking it — the guard is about the note being
 // truthful at the boundary, not about the boundary sitting at any particular number.
-import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks } from '../../carry-note';
+import { CARRY_NOTE_MAX_CHECKS, splitCarryNoteChecks, withCarryNoteChecks } from '../../carry-note';
 
 const setWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpointWithPrior = vi.fn();
@@ -1959,6 +1959,127 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           });
           expect(writes).toBe(0);
           expect(await lastStored()).toBe(prior);
+        });
+
+        /**
+         * EI-21534719386975911 — THE RECURRENCE GUARD. This is the seventh fix to this
+         * guard and the first six shipped without one, which is the whole reason the same
+         * defect kept coming back wearing a new error message.
+         *
+         * The bug: `append_checks_overflow` refused any additive write whose union
+         * exceeded the row cap — correct when the caller's OWN rows do the evicting, but
+         * catastrophic against a note that was ALREADY over cap before the call. There,
+         * every non-empty additive write overflows by construction, so the refusal was
+         * permanent and its advertised remedy unreachable (re-sending the full set is
+         * rejected as invalid_input, the set being larger than the cap by definition).
+         * 57 stored notes in one workspace were in that state, the worst holding 62 rows.
+         * Different agents inheriting different poisoned notes each met it as a fresh
+         * bug, so it was filed repeatedly and "fixed" by rewording the refusal.
+         *
+         * The contract this pins: an over-cap prior NORMALIZES ON WRITE. The write
+         * succeeds, the note lands at exactly the cap, and the rows that yield are the
+         * PREDICTED ones — evidence someone paid to obtain outlives a hypothesis anyone
+         * can re-run. The companion test above pins the other half, that a WITHIN-cap
+         * prior still refuses caller-caused eviction; together they are the distinction
+         * the fix turns on, and breaking either direction fails here.
+         */
+        it('normalizes a legacy OVER-CAP prior on write — succeeds, lands exactly at the cap, PREDICTED rows evicted before VERIFIED', async () => {
+          const verifiedRows = Array.from({ length: 8 }, (_, i) => ({
+            claim: `VERIFIED-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe verified ${i + 1}`,
+            verified: `measured at 22:0${i} on current HEAD`,
+          }));
+          const predictedRows = Array.from({ length: 12 }, (_, i) => ({
+            claim: `PREDICTED-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe predicted ${i + 1}`,
+          }));
+          // 20 rows — eight over today's cap of twelve, the shape of the 57 real notes.
+          const prior = withCarryNoteChecks('legacy checkpoint body', [...verifiedRows, ...predictedRows]);
+          expect(splitCarryNoteChecks(prior).checks.length).toBe(20);
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'the finding I just made',
+            append: true,
+            checks: [{ claim: 'BRAND-NEW holds', recheck: 'probe new', verified: 'measured just now' }],
+          })) as {
+            ok: boolean;
+            errorCode?: string;
+            checks: number;
+            checksDropped?: string[];
+            checksDroppedNote?: string;
+          };
+
+          // It must WRITE, not refuse. This is the assertion the six prior fixes lacked.
+          expect(r.ok).toBe(true);
+          expect(r.errorCode).toBeUndefined();
+
+          const storedChecks = splitCarryNoteChecks(readCurrent()).checks;
+          const storedClaims = storedChecks.map((c) => c.claim);
+
+          // Lands EXACTLY at the cap — the legacy excess is gone, not carried forward.
+          expect(storedChecks.length).toBe(CARRY_NOTE_MAX_CHECKS);
+          expect(r.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+
+          // The caller's own row survives; it is never the row the cap cuts.
+          expect(storedClaims).toContain('BRAND-NEW holds');
+
+          // EVERY evidence-bearing row survives: 1 supplied + 8 VERIFIED = 9 of 12 seats,
+          // leaving 3 for PREDICTED rows, so 9 of the 12 PREDICTED rows yield.
+          for (const row of verifiedRows) expect(storedClaims).toContain(row.claim);
+          const survivingPredicted = storedClaims.filter((c) => c.startsWith('PREDICTED-'));
+          expect(survivingPredicted.length).toBe(3);
+
+          // The eviction is REPORTED, never silent, and names the legacy cause rather
+          // than blaming the caller for a state that predates their write.
+          expect(r.checksDropped?.length).toBe(9);
+          expect(r.checksDropped?.every((c) => c.startsWith('PREDICTED-'))).toBe(true);
+          expect(r.checksDroppedNote).toMatch(/LEGACY CAP NORMALIZATION/);
+          expect(r.checksDroppedNote).toContain('not your mistake');
+        });
+
+        /** The self-heal must be TERMINAL: once normalized the note fits, so the very next
+         *  additive write evicts nothing. Without this, a fix that merely trimmed on every
+         *  write would pass the test above while quietly shedding a row per call. */
+        it('self-heals terminally — the write AFTER a legacy normalization evicts nothing', async () => {
+          const prior = withCarryNoteChecks(
+            'legacy checkpoint body',
+            Array.from({ length: 20 }, (_, i) => ({
+              claim: `LEGACY-${String(i + 1).padStart(2, '0')} holds`,
+              recheck: `probe legacy ${i + 1}`,
+              verified: `evidence ${i + 1}`,
+            })),
+          );
+          const readCurrent = installLegacyPrior(prior);
+
+          const first = (await one({
+            id: 'WI-7',
+            checkpoint: 'first touch',
+            append: true,
+            checks: [{ claim: 'FIRST holds', verified: 'measured' }],
+          })) as { ok: boolean; checksDropped?: string[] };
+          expect(first.ok).toBe(true);
+          expect(first.checksDropped?.length).toBeGreaterThan(0);
+          expect(splitCarryNoteChecks(readCurrent()).checks.length).toBe(CARRY_NOTE_MAX_CHECKS);
+
+          // The note now FITS, so this write is an ordinary at-cap append — which the
+          // companion guard refuses rather than silently evicting. Either way the
+          // pathological "loses rows on every write forever" behaviour must be absent.
+          const second = (await one({
+            id: 'WI-7',
+            checkpoint: 'second touch',
+            append: true,
+            checks: [{ claim: 'SECOND holds', verified: 'measured' }],
+          })) as { ok: boolean; errorCode?: string; checksDropped?: string[] };
+
+          if (second.ok) {
+            expect(second.checksDropped ?? []).toEqual([]);
+          } else {
+            // Refused as a normal caller-caused overflow — NOT as a legacy over-cap note.
+            expect(second.errorCode).toBe('append_checks_overflow');
+          }
+          expect(splitCarryNoteChecks(readCurrent()).checks.length).toBe(CARRY_NOTE_MAX_CHECKS);
         });
 
         it('accepts the advertised append:true checks:[] recovery when a legacy prior exceeds the current cap', async () => {
