@@ -45,6 +45,7 @@ import {
   PTOOL_CONNECT_MAX_ATTEMPTS,
   resolveWorkspaceScope,
   jsonSourceKind,
+  parseJsonInput,
   scriptSourceKind,
   shouldPrintInvocationLine,
   shouldPrintRawResult,
@@ -280,6 +281,21 @@ describe('ptool jsonSourceKind (EI-14958)', () => {
 
   it('prefers --json-file over --json when (incorrectly) both are given', () => {
     expect(jsonSourceKind({ ...base, json: '{"a":1}', jsonFile: 'payload.json' })).toBe('file');
+  });
+});
+
+describe('ptool parseJsonInput', () => {
+  it('treats an empty stdin stream as an empty args object', () => {
+    expect(parseJsonInput('', { emptyAsObject: true })).toEqual({});
+    expect(parseJsonInput(' \n\t', { emptyAsObject: true })).toEqual({});
+  });
+
+  it('keeps inline and file-style empty payloads strict', () => {
+    expect(() => parseJsonInput('')).toThrow();
+  });
+
+  it('still rejects malformed non-empty stdin JSON', () => {
+    expect(() => parseJsonInput('{not-json', { emptyAsObject: true })).toThrow();
   });
 });
 
