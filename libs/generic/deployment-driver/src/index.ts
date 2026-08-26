@@ -205,6 +205,7 @@ export {
 } from "./workspace-host-registry";
 export type {
   WorkspaceHostBuildParameterValue,
+  WorkspaceHostBuilderKind,
   WorkspaceHostBuildMaterial,
   WorkspaceHostBuildParameter,
   WorkspaceHostBuildTarget,
@@ -216,6 +217,9 @@ export type {
 export {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_BUILD_MANIFEST_SCHEMA_VERSION,
+  WORKSPACE_HOST_PACKER_BUILDER_KIND,
+  WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
+  WORKSPACE_HOST_BUILDER_KINDS,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WorkspaceHostBuildManifestError,
   normalizeWorkspaceHostBuildManifestInput,

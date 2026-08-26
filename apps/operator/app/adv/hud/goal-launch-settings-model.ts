@@ -141,8 +141,15 @@ export const GOAL_LAUNCH_ROLE_LABEL: Record<GoalLaunchRole, string> = {
   goal: 'Goal agent (the goal’s own driver)',
   'plan-fleet-leader': 'Plan fleet — leader',
   'plan-fleet-member': 'Plan fleet — member',
+  // The paired slots (P-005). They apply only when the goal's `fleetType` is
+  // 'paired'; the labels say "paired" so the picker cannot read as though a
+  // single fleet has directors sitting unused alongside its members.
+  'plan-fleet-director': 'Plan fleet — director (paired)',
+  'plan-fleet-implementer': 'Plan fleet — implementer (paired)',
   'drain-fleet-leader': 'Drain fleet — leader',
   'drain-fleet-member': 'Drain fleet — member',
+  'drain-fleet-director': 'Drain fleet — director (paired)',
+  'drain-fleet-implementer': 'Drain fleet — implementer (paired)',
   grading: 'Grading',
   test: 'Test',
   misc: 'Misc',

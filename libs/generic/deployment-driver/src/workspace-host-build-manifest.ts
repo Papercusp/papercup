@@ -7,7 +7,19 @@ import type { WorkspaceHostProviderTarget } from "./workspace-host-types";
 export const WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION =
   "papercusp-workspace-host-build-input-v1";
 export const WORKSPACE_HOST_BUILD_MANIFEST_SCHEMA_VERSION = 1;
-export const WORKSPACE_HOST_SHARED_BUILDER_KIND = "hashicorp-packer";
+export const WORKSPACE_HOST_PACKER_BUILDER_KIND = "hashicorp-packer";
+export const WORKSPACE_HOST_SIDECAR_BUILDER_KIND =
+  "papercusp-desktop-sidecar";
+export const WORKSPACE_HOST_BUILDER_KINDS = [
+  WORKSPACE_HOST_PACKER_BUILDER_KIND,
+  WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
+] as const;
+export type WorkspaceHostBuilderKind =
+  (typeof WORKSPACE_HOST_BUILDER_KINDS)[number];
+
+/** Backward-compatible name for the D-047 VM-image builder. */
+export const WORKSPACE_HOST_SHARED_BUILDER_KIND =
+  WORKSPACE_HOST_PACKER_BUILDER_KIND;
 
 export type WorkspaceHostBuildParameterValue = string | number | boolean;
 
@@ -52,7 +64,7 @@ export interface WorkspaceHostBuildManifestInput {
   };
   readonly builder: {
     readonly strategy: "shared";
-    readonly kind: typeof WORKSPACE_HOST_SHARED_BUILDER_KIND;
+    readonly kind: WorkspaceHostBuilderKind;
     readonly version: string;
     readonly templatePath: string;
     readonly templateSha256: string;
@@ -257,10 +269,12 @@ export function normalizeWorkspaceHostBuildManifestInput(
   }
   if (
     input.builder.strategy !== "shared" ||
-    input.builder.kind !== WORKSPACE_HOST_SHARED_BUILDER_KIND
+    !WORKSPACE_HOST_BUILDER_KINDS.includes(
+      input.builder.kind as WorkspaceHostBuilderKind,
+    )
   ) {
     throw new WorkspaceHostBuildManifestError(
-      `builder must select shared '${WORKSPACE_HOST_SHARED_BUILDER_KIND}' per the canonical build decision`,
+      `builder must select a shared canonical producer (${WORKSPACE_HOST_BUILDER_KINDS.join(", ")})`,
     );
   }
 

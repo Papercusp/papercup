@@ -91,6 +91,50 @@ describe('focusWindowId — Windows-desktop-host branch', () => {
   });
 });
 
+describe('focusWindowId — Linux activation is observed, not inferred from exit 0', () => {
+  const TARGET = '0x01ebdf3e';
+  const TARGET_DECIMAL = BigInt(TARGET).toString();
+  const OTHER_DECIMAL = BigInt('0x01b00002').toString();
+
+  it('falls back to bounded xdotool activation when wmctrl exits 0 but GNOME leaves another window active', async () => {
+    const runCommand = vi.fn()
+      .mockReturnValueOnce({ status: 0, stdout: '' })
+      .mockReturnValueOnce({ status: 0, stdout: `${OTHER_DECIMAL}\n` })
+      .mockReturnValueOnce({ status: 0, stdout: '' })
+      .mockReturnValueOnce({ status: 0, stdout: `${TARGET_DECIMAL}\n` });
+
+    const { focusWindowId } = await import('./adv-session-windows');
+    expect(await focusWindowId(TARGET, { runCommand })).toBe(true);
+    expect(runCommand.mock.calls).toEqual([
+      ['wmctrl', ['-ia', TARGET]],
+      ['xdotool', ['getactivewindow']],
+      ['xdotool', ['windowactivate', '--sync', TARGET]],
+      ['xdotool', ['getactivewindow']],
+    ]);
+  });
+
+  it('returns false when the fallback exits 0 but the target still is not active', async () => {
+    const runCommand = vi.fn()
+      .mockReturnValueOnce({ status: 0, stdout: '' })
+      .mockReturnValueOnce({ status: 0, stdout: `${OTHER_DECIMAL}\n` })
+      .mockReturnValueOnce({ status: 0, stdout: '' })
+      .mockReturnValueOnce({ status: 0, stdout: `${OTHER_DECIMAL}\n` });
+
+    const { focusWindowId } = await import('./adv-session-windows');
+    expect(await focusWindowId(TARGET, { runCommand })).toBe(false);
+  });
+
+  it('returns after wmctrl only when the observed active id matches across hex and decimal forms', async () => {
+    const runCommand = vi.fn()
+      .mockReturnValueOnce({ status: 0, stdout: '' })
+      .mockReturnValueOnce({ status: 0, stdout: `${TARGET_DECIMAL}\n` });
+
+    const { focusWindowId } = await import('./adv-session-windows');
+    expect(await focusWindowId(TARGET, { runCommand })).toBe(true);
+    expect(runCommand).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('closeWindowId — the "Kill agent" window close (owner ask 2026-07-11)', () => {
   it('returns false (un-actionable) on a Windows-desktop host — no safe title-based close yet', async () => {
     isWindowsDesktopHostMock.mockReturnValue(true);

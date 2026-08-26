@@ -15,6 +15,43 @@
  */
 import { focusWindowByTitle, isWindowsDesktopHost, listWindowsByTitle } from './windows-desktop-windows';
 
+/** Keep a refused X11 focus request from blocking the operator request loop. */
+const X11_FOCUS_TIMEOUT_MS = 2_000;
+
+interface FocusCommandResult {
+  status: number | null;
+  stdout: string;
+}
+
+interface FocusWindowIdDeps {
+  runCommand?: (command: string, args: string[]) => FocusCommandResult;
+}
+
+function parseX11WindowId(value: string): bigint | null {
+  const normalized = value.trim().toLowerCase();
+  if (!/^(?:0x[0-9a-f]+|[0-9]+)$/.test(normalized)) return null;
+  try {
+    return BigInt(normalized);
+  } catch {
+    return null;
+  }
+}
+
+/** wmctrl prints hexadecimal ids while xdotool prints the active id in decimal. */
+export function sameX11WindowId(left: string, right: string): boolean {
+  const a = parseX11WindowId(left);
+  const b = parseX11WindowId(right);
+  return a !== null && b !== null && a === b;
+}
+
+function activeX11WindowMatches(
+  targetWindowId: string,
+  runCommand: (command: string, args: string[]) => FocusCommandResult,
+): boolean {
+  const active = runCommand('xdotool', ['getactivewindow']);
+  return active.status === 0 && sameX11WindowId(active.stdout, targetWindowId);
+}
+
 /**
  * Resolve a pid → X11 window id via `wmctrl -lp`. Best-effort: returns
  * null on any failure (no wmctrl, no DISPLAY, pid not yet windowed,
@@ -108,7 +145,10 @@ export async function resolveWindowIdForTitleFragment(fragment: string): Promise
  * feedback_e2e_no_focus_steal: this pattern is forbidden for automated
  * drivers but fine for an explicit focus-button click.
  */
-export async function focusWindowId(windowId: string): Promise<boolean> {
+export async function focusWindowId(
+  windowId: string,
+  deps: FocusWindowIdDeps = {},
+): Promise<boolean> {
   if (isWindowsDesktopHost()) {
     try {
       return await focusWindowByTitle(windowId);
@@ -116,10 +156,36 @@ export async function focusWindowId(windowId: string): Promise<boolean> {
       return false;
     }
   }
-  const { spawnSync } = await import('node:child_process');
   try {
-    const r = spawnSync('wmctrl', ['-ia', windowId], { encoding: 'utf8' });
-    return r.status === 0;
+    let runCommand = deps.runCommand;
+    if (!runCommand) {
+      const { spawnSync } = await import('node:child_process');
+      runCommand = (command, args) => {
+        const result = spawnSync(command, args, {
+          encoding: 'utf8',
+          timeout: X11_FOCUS_TIMEOUT_MS,
+        });
+        return {
+          status: result.status,
+          stdout: typeof result.stdout === 'string' ? result.stdout : '',
+        };
+      };
+    }
+
+    // GNOME can accept wmctrl's _NET_ACTIVE_WINDOW request (exit 0) while
+    // refusing to activate the window. Observe the active window before
+    // reporting success; an exit code alone is not evidence of activation.
+    const wmctrl = runCommand('wmctrl', ['-ia', windowId]);
+    if (wmctrl.status === 0 && activeX11WindowMatches(windowId, runCommand)) {
+      return true;
+    }
+
+    // xdotool's synchronous activation path succeeds on GNOME installations
+    // where wmctrl is a false positive. It is bounded by the runner timeout,
+    // and still must pass the same observed-active-window check.
+    const xdotool = runCommand('xdotool', ['windowactivate', '--sync', windowId]);
+    if (xdotool.status !== 0) return false;
+    return activeX11WindowMatches(windowId, runCommand);
   } catch {
     return false;
   }

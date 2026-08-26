@@ -7,6 +7,155 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Address of the one canonical conversation/context projection row. The
+/// source/session pair is producer-neutral; P-030 teaches the server about
+/// foreign producers without changing this client contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationContextProjectionTarget {
+    pub source_kind: String,
+    pub session_id: String,
+    pub harness: Option<String>,
+}
+
+impl ConversationContextProjectionTarget {
+    pub fn new(
+        source_kind: impl Into<String>,
+        session_id: impl Into<String>,
+        harness: Option<String>,
+    ) -> Self {
+        Self {
+            source_kind: source_kind.into(),
+            session_id: session_id.into(),
+            harness,
+        }
+    }
+
+    /// Resolve a roster-native handle into the shared projection address.
+    /// Missing exact ids stay absent; guessing `--last` would bind Context to
+    /// a different session and violate the shared-projection contract.
+    pub fn from_native_session(
+        handle: &NativeSessionHandle,
+        harness: Option<String>,
+    ) -> Option<Self> {
+        let (source, id) = match handle {
+            NativeSessionHandle::Claude { session_id, .. } => {
+                ("claude", session_id.as_deref())
+            }
+            NativeSessionHandle::Codex { rollout_id, .. } => {
+                ("codex", rollout_id.as_deref())
+            }
+            NativeSessionHandle::Omp { omp_thread_id, .. } => {
+                ("omp", omp_thread_id.as_deref())
+            }
+        };
+        id.map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| Self::new(source, id, harness))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationContextCapabilities {
+    pub live_frames: bool,
+    pub task_write: bool,
+    pub approval_write: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationContextSession {
+    pub source_kind: String,
+    pub session_id: String,
+    pub harness: Option<String>,
+    pub role: Option<String>,
+    pub linked_work_item_id: Option<String>,
+    pub capability_tier: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConversationContextEntry {
+    pub label: String,
+    pub value: String,
+    #[serde(default)]
+    pub state: Option<String>,
+}
+
+/// Rust mirror of the server-normalized frame union. Conversational frames
+/// intentionally carry only identity here: this pane renders context/tasks/
+/// approvals while the chat renderer consumes message/tool frames.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum ConversationContextFrame {
+    Message {
+        id: String,
+    },
+    Reasoning {
+        id: String,
+    },
+    Tool {
+        id: String,
+    },
+    Task {
+        id: String,
+        #[serde(rename = "taskId")]
+        task_id: String,
+        content: String,
+        #[serde(rename = "activeForm")]
+        active_form: String,
+        status: String,
+        #[serde(default, rename = "blockerRef")]
+        blocker_ref: Option<String>,
+        #[serde(default)]
+        explanation: Option<String>,
+        position: u32,
+        #[serde(rename = "updatedAt")]
+        updated_at: String,
+    },
+    Context {
+        id: String,
+        section: String,
+        title: String,
+        #[serde(default)]
+        entries: Vec<ConversationContextEntry>,
+    },
+    Approval {
+        id: String,
+        #[serde(rename = "callId")]
+        call_id: String,
+        #[serde(default, rename = "toolName")]
+        tool_name: Option<String>,
+        status: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationContextProjection {
+    pub schema_version: String,
+    pub session: ConversationContextSession,
+    pub capabilities: ConversationContextCapabilities,
+    #[serde(default)]
+    pub frames: Vec<ConversationContextFrame>,
+}
+
+impl ConversationContextProjection {
+    pub fn tasks(&self) -> Vec<&ConversationContextFrame> {
+        let mut tasks = self
+            .frames
+            .iter()
+            .filter(|frame| matches!(frame, ConversationContextFrame::Task { .. }))
+            .collect::<Vec<_>>();
+        tasks.sort_by_key(|frame| match frame {
+            ConversationContextFrame::Task { position, .. } => *position,
+            _ => u32::MAX,
+        });
+        tasks
+    }
+}
+
 /// One row of `/api/admin/plans/list` → `{ plans: [...] }`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

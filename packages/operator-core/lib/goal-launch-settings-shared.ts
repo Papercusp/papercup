@@ -46,13 +46,30 @@
  * member, grading, test, misc") PLUS `goal`, which `goals:start` already passes
  * for the goal's own agent. Note that is EIGHT: WI-38048's prose says "six",
  * and building to that number refuses two slots that are already in use.
+ *
+ * P-005 adds the four PAIRED slots. A paired fleet (FleetType 'paired') splits
+ * each fleet into directors and implementers whose launch knobs are independent
+ * by design (D-009) — that independence is the entire point of the shape, since
+ * broadcasting one flat model to both roles is the failure
+ * `fleet_registry/pair-launch-options.ts` was built to refuse. Without slots of
+ * their own, a goal could declare `fleetType:'paired'` and then have nothing to
+ * say about either half.
+ *
+ * They are ADDITIVE to a closed set, which is only safe because it was measured
+ * first: of 20 goals in papercusp-workspace, 0 carry a `roles` key at all
+ * (2026-08-26), so no stored document can collide with a new slot name. Same
+ * check the `holder` key and D-016 shipped under.
  */
 export const GOAL_LAUNCH_ROLES = [
   'goal',
   'plan-fleet-leader',
   'plan-fleet-member',
+  'plan-fleet-director',
+  'plan-fleet-implementer',
   'drain-fleet-leader',
   'drain-fleet-member',
+  'drain-fleet-director',
+  'drain-fleet-implementer',
   'grading',
   'test',
   'misc',

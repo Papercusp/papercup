@@ -71,6 +71,9 @@ import {
   type GoalHolderOnLoss,
 } from './goal-launch-settings-shared';
 import { resolveGoalContext } from './modes/goal-context';
+// The fleet-shape vocabulary is owned by the fleet store; `fleetType` below
+// derives its accepted values from it rather than declaring them a second time.
+import { FLEET_TYPES } from './agent-fleets-store';
 
 function pg(sql?: Sql): Sql {
   return sql ?? getOrgPg().sql;
@@ -368,6 +371,20 @@ export const goalLaunchSettingsSchema = z
      * so no stored document is invalidated by closing this set.
      */
     roles: z.partialRecord(z.enum(GOAL_LAUNCH_ROLES), launchProfileSchema).optional(),
+    /**
+     * P-004: which SHAPE of fleet this goal's plan fleets are launched as.
+     *
+     * The accepted values are DERIVED from `FLEET_TYPES` (agent-fleets-store),
+     * never re-spelled here — the fleet layer already owns this vocabulary, and
+     * a second copy is the D-011 drift one level up: the goal panel would offer
+     * a type the launch surface does not branch on.
+     *
+     * ABSENT ⇒ 'single', matching `asFleetType`'s defensive narrowing and
+     * `resolveLaunchOptions`'s own rule that an omitted type is single. The
+     * default must stay INVISIBLE so no existing goal has to learn the field
+     * exists.
+     */
+    fleetType: z.enum(FLEET_TYPES).optional(),
     /**
      * P-002 (goal-live-holder-guarantee-2026-08-18): the goal's HOLDER policy.
      *

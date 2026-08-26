@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
+  WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
   WorkspaceHostBuildManifestError,
   buildWorkspaceHostBuildManifest,
@@ -174,7 +175,29 @@ describe("workspace-host build manifest", () => {
     ).toThrow(WorkspaceHostBuildManifestError);
   });
 
-  it("requires the shared Packer selection and unique provider targets", () => {
+  it("accepts the real sidecar producer for a Server bundle", () => {
+    const manifest = buildWorkspaceHostBuildManifest({
+      ...input(),
+      builder: {
+        strategy: "shared",
+        kind: WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
+        version: "0.0.18",
+        templatePath: "papercusp-desktop/bin/build-desktop-sidecar.sh",
+        templateSha256: SHA_C,
+      },
+    });
+
+    expect(manifest.builder).toEqual({
+      strategy: "shared",
+      kind: WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
+      version: "0.0.18",
+      templatePath: "papercusp-desktop/bin/build-desktop-sidecar.sh",
+      templateSha256: SHA_C,
+    });
+    expect(verifyWorkspaceHostBuildManifest(manifest).ok).toBe(true);
+  });
+
+  it("requires a canonical shared producer and unique provider targets", () => {
     expect(() =>
       buildWorkspaceHostBuildManifest({
         ...input(),
@@ -183,7 +206,7 @@ describe("workspace-host build manifest", () => {
           kind: "gcp-image-builder" as typeof WORKSPACE_HOST_SHARED_BUILDER_KIND,
         },
       }),
-    ).toThrow("builder must select shared 'hashicorp-packer'");
+    ).toThrow("builder must select a shared canonical producer");
 
     expect(() =>
       buildWorkspaceHostBuildManifest({
