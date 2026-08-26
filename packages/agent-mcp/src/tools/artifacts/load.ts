@@ -47,7 +47,7 @@ export default defineTool({
   name: 'artifacts:load',
   needsWorkspaceTx: true,
   description:
-    'Read one OR many PG-canonical text artifacts (harness_text_artifacts) by (harness_slug, rel_path). Pass a single `{ slug?, rel_path }` or `items:[{ slug?, rel_path }]` for several. Returns { ok, results:[{ ok, slug, rel_path, found, content, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself.',
+    'Read one OR many PG-canonical text artifacts (harness_text_artifacts) by (harness_slug, rel_path). Pass a single `{ slug?, rel_path }` or `items:[{ slug?, rel_path }]` for several. Returns { ok, results:[{ ok, slug, rel_path, found, content, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself. LARGE artifact? Paginate: `offset` + `max_chars` slice each result\'s content (echoed back as content_total_chars / content_offset / content_truncated); ~4000-char pages ride under the model-facing result door, so a series of paged reads beats one clipped blob plus scratch-cursor paging.',
   capability: 'artifacts:read',
   guidance: {
     when: 'You need to read a file the harness wrote earlier (notes, intermediate outputs, plans) by its harness_slug + rel_path. Pass every (slug, rel_path) at once via `items`.',
@@ -61,6 +61,19 @@ export default defineTool({
       slug: z.string().min(1).regex(SLUG_RE).optional(),
       rel_path: z.string().min(1).optional(),
       items: z.array(LoadItem).min(1).max(100).optional().describe('artifact keys to read (1–100), each { slug?, rel_path }'),
+      // EI-21471082146021784: deterministic paging for large artifacts. The
+      // model-facing result door bounds every result, so a whole-artifact
+      // read of a big body arrives clipped with only an opaque scratch
+      // cursor; explicit slices let the caller page the REAL content through
+      // this tool instead. Same convention as capability:read's byte pages.
+      offset: z.number().int().min(0).optional().describe('char offset into each result\'s content (default 0)'),
+      max_chars: z
+        .number()
+        .int()
+        .min(1)
+        .max(20_000)
+        .optional()
+        .describe('slice length per result (default: whole content; ~4000 stays under the result door)'),
     })
     .refine((a) => Boolean(a.items?.length) || Boolean(a.rel_path), {
       message: 'pass `rel_path` (one) or `items:[{ rel_path }]` (many)',
@@ -89,13 +102,24 @@ export default defineTool({
            LIMIT 1
         `;
         const found = rows.length > 0;
+        const full = found ? rows[0].content : null;
+        const totalChars = full ? full.length : 0;
+        const offset = args.offset ?? 0;
+        const slice =
+          full !== null && args.max_chars != null
+            ? full.slice(offset, Math.min(offset + args.max_chars, totalChars))
+            : full;
+        const truncated = slice !== null && args.max_chars != null && offset + args.max_chars < totalChars;
         return {
           ok: true as const,
           slug,
           rel_path: key,
           found,
-          content: found ? rows[0].content : null,
+          content: slice,
           updated_at: found ? Number(rows[0].updated_at) : null,
+          ...(full !== null && args.max_chars != null
+            ? { content_total_chars: totalChars, content_offset: offset, content_truncated: truncated }
+            : {}),
         };
       },
       { keyOf: (item) => ({ slug: item.slug ?? null, rel_path: normalizeRelPath(item.rel_path) }) },

@@ -1201,7 +1201,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many PG-canonical text artifacts (harness_text_artifacts) by (harness_slug, rel_path). Pass a single `{ slug?, rel_path }` or `items:[{ slug?, rel_path }]` for several. Returns { ok, results:[{ ok, slug, rel_path, found, content, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself.",
+      "description": "Read one OR many PG-canonical text artifacts (harness_text_artifacts) by (harness_slug, rel_path). Pass a single `{ slug?, rel_path }` or `items:[{ slug?, rel_path }]` for several. Returns { ok, results:[{ ok, slug, rel_path, found, content, updated_at | error }], counts } — correlate by (slug, rel_path), not by position; a missing / invalid-slug item fails only itself. LARGE artifact? Paginate: `offset` + `max_chars` slice each result's content (echoed back as content_total_chars / content_offset / content_truncated); ~4000-char pages ride under the model-facing result door, so a series of paged reads beats one clipped blob plus scratch-cursor paging.",
       "capabilities": [
         "artifacts:read"
       ],
