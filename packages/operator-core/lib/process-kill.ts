@@ -6,24 +6,43 @@
  *   1. Principal/capability gate (`processes:kill`, Tier 1) — enforced
  *      by the dispatcher wrapper before this code runs. Bearer-required.
  *      Agents that pass URL spawn ctx (no bearer) cannot reach here.
- *   2. Kind allowlist — only `run.sh | omp | claude`. `paperclip | next
- *      | pty | other` are protected because killing them would break
+ *   2. Kind allowlist — only `run.sh | omp | claude | codex`. Codex is
+ *      admitted by an exact argv[0] basename check on the raw PID probe rather
+ *      than widening dev:processes' deliberately frozen inventory. `paperclip |
+ *      next | pty | other` remain protected because killing them would break
  *      the user's autopilot or the operator itself.
  *   3. Audit log row written before signaling, so we have a record even
  *      if signaling crashes the process tree somehow.
  */
 
+import { basename } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { listProcesses, probeProcess, type ProcessEntry } from './dev-data';
 
-export type KillableKind = 'run.sh' | 'omp' | 'claude';
+export type KillableKind = 'run.sh' | 'omp' | 'claude' | 'codex';
 /**
  * Exported so the tool's GUIDANCE can be pinned to it in a test: if this set
  * is ever widened, the processes:kill guidance that enumerates it must be
  * updated in the same change (P-012 — a tool must not advertise reach it
  * does not have).
  */
-export const KILLABLE: Set<string> = new Set(['run.sh', 'omp', 'claude']);
+export const KILLABLE: Set<string> = new Set(['run.sh', 'omp', 'claude', 'codex']);
+
+type KillTarget = Pick<ProcessEntry, 'pid' | 'cmdline' | 'cwd' | 'harness_slug'> & {
+  kind: ProcessEntry['kind'] | 'codex';
+};
+
+/**
+ * Codex is intentionally not added to dev:processes' frozen six-kind inventory.
+ * The recovery path still needs to stop an orphan writer that owns one exact
+ * Codex thread lock, so admit only a process whose argv[0] basename is exactly
+ * `codex`. A command that merely mentions "codex" in a later argument remains
+ * unsupported.
+ */
+function exactCodexCliKind(cmdline: string): 'codex' | null {
+  const executable = cmdline.trim().split(/\s+/, 1)[0];
+  return executable && basename(executable) === 'codex' ? 'codex' : null;
+}
 
 export interface KillProcessInput {
   pid: number;
@@ -63,7 +82,7 @@ async function writeAudit(
   } catch (err) {
     // Audit failures must not block the operation, but we should log
     // loudly so they're visible in dev.
-     
+
     console.warn('[processes:kill] audit write failed:', err);
   }
 }
@@ -74,7 +93,7 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
   // Re-walk /proc to classify the target. We don't trust the caller's
   // claim about kind — they could send any pid number.
   const { processes } = await listProcesses({});
-  const target = processes.find((p: ProcessEntry) => p.pid === input.pid);
+  let target: KillTarget | undefined = processes.find((p: ProcessEntry) => p.pid === input.pid);
 
   if (!target) {
     // listProcesses() silently drops any pid classified 'other' before the
@@ -82,7 +101,16 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
     // "does not exist" — re-probe the raw pid before asserting that (see
     // EI-18698120633403217).
     const probe = await probeProcess(input.pid);
-    if (probe.exists) {
+    const codexKind = probe.exists ? exactCodexCliKind(probe.cmdline) : null;
+    if (codexKind) {
+      target = {
+        pid: input.pid,
+        kind: codexKind,
+        cmdline: probe.cmdline,
+        cwd: null,
+        harness_slug: null,
+      };
+    } else if (probe.exists) {
       await writeAudit(input.workspaceId, input.actorSlug, {
         action: 'processes.kill_rejected',
         subject: String(input.pid),
@@ -97,15 +125,16 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
         pid: input.pid,
         kind: probe.kind,
         error: 'unsupported_kind',
-        detail: `pid ${input.pid} exists but is not a tracked kind (run.sh|omp|claude|paperclip|pty|next) — this tool only manages those`,
+        detail: `pid ${input.pid} exists but is not a managed agent kind (run.sh|omp|claude|codex|paperclip|pty|next) — this tool only manages those`,
       };
+    } else {
+      await writeAudit(input.workspaceId, input.actorSlug, {
+        action: 'processes.kill_rejected',
+        subject: String(input.pid),
+        details: { reason: 'pid_not_found', signal },
+      });
+      return { ok: false, pid: input.pid, error: 'pid_not_found' };
     }
-    await writeAudit(input.workspaceId, input.actorSlug, {
-      action: 'processes.kill_rejected',
-      subject: String(input.pid),
-      details: { reason: 'pid_not_found', signal },
-    });
-    return { ok: false, pid: input.pid, error: 'pid_not_found' };
   }
 
   if (!KILLABLE.has(target.kind)) {

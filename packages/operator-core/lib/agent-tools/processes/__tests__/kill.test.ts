@@ -32,7 +32,7 @@ const MAKE_PRINCIPAL_CTX = (over: Record<string, unknown> = {}) =>
     },
     tx: null,
     ...over,
-  } as never);
+  }) as never;
 
 beforeEach(() => {
   vi.resetModules();
@@ -74,7 +74,8 @@ describe('processes:kill guidance matches what it can actually do', () => {
     const { default: tool } = await import('../kill');
     const description = tool.description ?? '';
     const notWhen = tool.guidance?.notWhen ?? '';
-    expect(description).toContain('run.sh | omp | claude');
+    expect(description).toContain('run.sh | omp | claude | codex');
+    expect(description).toContain('exact argv[0]');
     expect(description).toContain('hono-host.ts');
     expect(notWhen).toContain('hono-host.ts');
     expect(notWhen).toContain('dev:restart');
@@ -102,7 +103,7 @@ describe('processes:kill (bulk keyed-array, P-006)', () => {
     const mock = vi.fn(async () => ({ ok: true, pid: 1234, kind: 'omp', signal: 'SIGTERM' }));
     vi.doMock('../../../process-kill', () => ({ killProcess: mock }));
     const { default: tool } = await import('../kill');
-    const b = parseEnvelope(await tool.handler({ pid: 1234, signal: 'SIGTERM' }, MAKE_PRINCIPAL_CTX()) as never);
+    const b = parseEnvelope((await tool.handler({ pid: 1234, signal: 'SIGTERM' }, MAKE_PRINCIPAL_CTX())) as never);
     expect(mock).toHaveBeenCalledWith({
       pid: 1234,
       signal: 'SIGTERM',
@@ -113,7 +114,7 @@ describe('processes:kill (bulk keyed-array, P-006)', () => {
     expect(b.results[0]).toEqual({ ok: true, pid: 1234, kind: 'omp', signal: 'SIGTERM' });
   });
 
-  it('forwards a killProcess failure as that item\'s { ok:false, pid, error } (batch ok:true)', async () => {
+  it("forwards a killProcess failure as that item's { ok:false, pid, error } (batch ok:true)", async () => {
     vi.doMock('../../../process-kill', () => ({
       killProcess: vi.fn(async () => ({
         ok: false,
@@ -124,7 +125,7 @@ describe('processes:kill (bulk keyed-array, P-006)', () => {
       })),
     }));
     const { default: tool } = await import('../kill');
-    const b = parseEnvelope(await tool.handler({ pid: 1234 }, MAKE_PRINCIPAL_CTX()) as never);
+    const b = parseEnvelope((await tool.handler({ pid: 1234 }, MAKE_PRINCIPAL_CTX())) as never);
     expect(b.ok).toBe(true);
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, pid: 1234, error: 'protected_kind' });
@@ -152,7 +153,7 @@ describe('processes:kill (bulk keyed-array, P-006)', () => {
       ),
     }));
     const { default: tool } = await import('../kill');
-    const b = parseEnvelope(await tool.handler({ pids: [10, 99, 20] }, MAKE_PRINCIPAL_CTX()) as never);
+    const b = parseEnvelope((await tool.handler({ pids: [10, 99, 20] }, MAKE_PRINCIPAL_CTX())) as never);
     expect(b.ok).toBe(true);
     expect(b.counts).toEqual({ ok: 2, failed: 1 });
     expect(b.results.map((r) => [r.pid, r.ok])).toEqual([

@@ -29,9 +29,9 @@ export default defineTool({
   name: 'processes:kill',
   profile: 'engineer',
   description:
-    'Send SIGTERM (or SIGKILL) in ONE call via `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or legacy `pid`/`pids`. PREFER task ids from `processes:list`: they kill the whole cgroup subtree and cannot hit a recycled pid. Scope units are for live unaccounted Papercusp scopes from `processes:list { live:true }`; they are re-probed before signalling. Pids are limited to tracked agent kinds (`run.sh | omp | claude`); host services such as `hono-host.ts` have guarded controls.',
+    'Send SIGTERM (or SIGKILL) in ONE call via `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or legacy `pid`/`pids`. PREFER task ids from `processes:list`: they kill the whole cgroup subtree and cannot hit a recycled pid. Scope units are for live unaccounted Papercusp scopes from `processes:list { live:true }`; they are re-probed before signalling. Pids are limited to managed agent kinds (`run.sh | omp | claude | codex`); Codex requires an exact argv[0] basename match, and host services such as `hono-host.ts` have guarded controls.',
   guidance: {
-    when: 'End a named task. Prefer `taskId` from `processes:list`: it kills the whole subtree. Use `pid` only for a tracked AGENT process (`run.sh | omp | claude`).',
+    when: 'End a named task. Prefer `taskId` from `processes:list`: it kills the whole subtree. Use `pid` only for a managed AGENT process (`run.sh | omp | claude | codex`); Codex is accepted only when the raw PID probe sees an exact `codex` argv[0].',
     notWhen:
       'NEVER pattern-match names to build a kill list (`pkill -f` can kill the owner\'s desktop window or peers\' tests). For runaway BUILD/TEST jobs, `pid` returns `unsupported_kind`; start them with `capability:bash { run_in_background: true }` for a real handle. Host services such as `hono-host.ts` (including desktop :3270) require guarded `dev:restart { target: "desktop-dev" }` (or the matching server target). To PAUSE, use `processes:freeze`.',
     chaining:
@@ -47,13 +47,15 @@ export default defineTool({
         .int()
         .positive()
         .optional()
-        .describe('a host pid for a killable run.sh, omp, or claude agent (n=1 shorthand for pids:[pid])'),
+        .describe(
+          'a host pid for a killable run.sh, omp, claude, or exact Codex CLI agent (n=1 shorthand for pids:[pid])',
+        ),
       pids: z
         .array(z.number().int().positive())
         .min(1)
         .max(100)
         .optional()
-        .describe('host pids for killable run.sh, omp, or claude agents (1–100)'),
+        .describe('host pids for killable run.sh, omp, claude, or exact Codex CLI agents (1–100)'),
       taskId: z.string().max(64).optional().describe('a single task-ledger id (n=1 shorthand for taskIds)'),
       taskIds: z
         .array(z.string().max(64))

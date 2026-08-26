@@ -3,10 +3,11 @@
  * issues process.kill to host pids (processes:kill).
  *
  * The security contract: the target kind is re-classified from the live process
- * list (NOT trusted from the caller), only run.sh|omp|claude are killable, a
- * protected kind / unknown pid is rejected WITHOUT signaling, and a failed
- * signal is reported (not swallowed). process.kill, the process list, and the
- * audit DB are all mocked — the test never signals a real process.
+ * list (NOT trusted from the caller), only run.sh|omp|claude plus an exact Codex
+ * argv[0] are killable, a protected kind / unknown pid is rejected WITHOUT
+ * signaling, and a failed signal is reported (not swallowed). process.kill, the
+ * process list, and the audit DB are all mocked — the test never signals a real
+ * process.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -17,7 +18,10 @@ vi.mock('./dev-data', () => ({
   probeProcess: (...a: unknown[]) => probeProcessMock(...a),
 }));
 // Audit writes are best-effort + tangential — stub the DB to a no-op.
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: { unsafe: vi.fn() } }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: { unsafe: vi.fn() } }),
+}));
 
 import { killProcess } from './process-kill';
 
@@ -65,15 +69,32 @@ describe('killProcess — kind allowlist', () => {
     expect(killSpy).toHaveBeenCalledWith(22, 'SIGKILL');
   });
 
-  it.each(['next', 'paperclip', 'pty', 'other'])(
-    'refuses a protected kind (%s) WITHOUT signaling',
-    async (kind) => {
-      withProcs(proc(99, kind));
-      const r = await killProcess({ pid: 99, ...BASE });
-      expect(r).toMatchObject({ ok: false, error: 'protected_kind', kind });
-      expect(killSpy).not.toHaveBeenCalled();
-    },
-  );
+  it('EI-21557648906136137: signals an exact Codex CLI found by the raw PID probe', async () => {
+    // dev:processes deliberately keeps its frozen six-kind inventory, so Codex
+    // reaches this path as `other`. Exact argv[0] classification makes the psu
+    // orphan-thread recovery instruction executable without widening that read.
+    withProcs(proc(1, 'run.sh'));
+    withProbeHit('other', '/home/marsh-office/.local/bin/codex --model gpt-5.6-sol');
+    const r = await killProcess({ pid: 82464, ...BASE });
+    expect(r).toMatchObject({ ok: true, pid: 82464, kind: 'codex', signal: 'SIGTERM' });
+    expect(probeProcessMock).toHaveBeenCalledWith(82464);
+    expect(killSpy).toHaveBeenCalledWith(82464, 'SIGTERM');
+  });
+
+  it('does not treat a later argument mentioning codex as the Codex executable', async () => {
+    withProcs(proc(1, 'run.sh'));
+    withProbeHit('other', '/usr/bin/node worker.mjs --backend codex');
+    const r = await killProcess({ pid: 82465, ...BASE });
+    expect(r).toMatchObject({ ok: false, pid: 82465, kind: 'other', error: 'unsupported_kind' });
+    expect(killSpy).not.toHaveBeenCalled();
+  });
+
+  it.each(['next', 'paperclip', 'pty', 'other'])('refuses a protected kind (%s) WITHOUT signaling', async (kind) => {
+    withProcs(proc(99, kind));
+    const r = await killProcess({ pid: 99, ...BASE });
+    expect(r).toMatchObject({ ok: false, error: 'protected_kind', kind });
+    expect(killSpy).not.toHaveBeenCalled();
+  });
 
   it('classifies kind from the live process list, not the caller — a protected pid is never killed', async () => {
     // Caller has no way to assert a kind; the target's kind comes from listProcesses.
