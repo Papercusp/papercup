@@ -91,8 +91,16 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 // so only the SELECT + the final gate_health UPDATE run) — the red-streak tests below
 // cross it on purpose, so stub both or a unit test reaches the real SSE/notify path.
 const notifyAttention = vi.fn(async (..._a: unknown[]) => {});
+// WI-42116: the stall leg calls `notifyAttentionOnce` (the replay-safe variant — it is the one
+// that accepts `dedupeKey`). It MUST be stubbed here: the call site swallows its own errors, so
+// an absent export would not fail a test, it would silently turn every stall-notify assertion
+// into a no-op while `console.warn('stall alert failed')` scrolled past.
+const notifyAttentionOnce = vi.fn(
+  async (..._a: unknown[]) => ({ recordId: 1, deduped: false, mobileDelivered: true, desktopDelivered: true }),
+);
 vi.mock('../../attention-notify', () => ({
   notifyAttention: (...a: unknown[]) => notifyAttention(...a),
+  notifyAttentionOnce: (...a: unknown[]) => notifyAttentionOnce(...a),
 }));
 
 const broadcastSevereEvent = vi.fn(async (_ev: Record<string, unknown>) => true);
@@ -144,6 +152,7 @@ beforeEach(() => {
   calls.length = 0;
   seededGh = null;
   notifyAttention.mockClear();
+  notifyAttentionOnce.mockClear();
   broadcastSevereEvent.mockClear();
   broadcastSevereEventResolved.mockClear();
   emitAwaitedEvent.mockClear();

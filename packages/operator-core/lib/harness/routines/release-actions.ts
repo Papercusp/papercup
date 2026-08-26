@@ -2639,8 +2639,11 @@ export async function trackGateStall(
         nowMs: Date.now(),
       });
       try {
-        const { notifyAttention } = await import('../../attention-notify');
-        await notifyAttention({
+        // WI-42116: `notifyAttentionOnce`, not `notifyAttention` — the replay-safe variant is
+        // what accepts `dedupeKey`, and a ladder whose whole contract is "at most one alert per
+        // rung" wants exactly that guarantee at the delivery layer too, not only in the marks.
+        const { notifyAttentionOnce } = await import('../../attention-notify');
+        await notifyAttentionOnce({
           kind: 'intervention',
           // WI-42116: the rung is IN the title. A re-escalation that reads identically to the
           // day-one alert is indistinguishable from a duplicate, and a reader who files it as
