@@ -13,6 +13,7 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line import/no-relative-packages
 import { stripSqlCommentsAndStrings } from '../../../scripts/lib/strip-comments-and-strings.mjs';
+import { selectExplicitBasenames } from '../../../scripts/lib/explicit-files.mjs';
 import {
   findRawTxControl,
   findUnguardedConstraintRename,
@@ -48,6 +49,26 @@ import {
  */
 const TXCTL_SQL = 'BEGIN;\nALTER TABLE t ADD COLUMN c int;\nCOMMIT;\n';
 const CLEAN_SQL = 'ALTER TABLE t ADD COLUMN c int;\n';
+
+describe('focused migration CLI file selection', () => {
+  const available = ['975-old.sql', '976-new.sql', '977-next.sql.DRAFT'];
+
+  it('accepts repo-relative, repeated, and comma-separated --files forms', () => {
+    expect(selectExplicitBasenames([
+      '--files', 'libs/papercusp/libs/db/sql/976-new.sql,./libs/papercusp/libs/db/sql/977-next.sql.DRAFT',
+      '--files=976-new.sql',
+    ], available)).toEqual(['976-new.sql', '977-next.sql.DRAFT']);
+  });
+
+  it('returns null when focused selection was not requested', () => {
+    expect(selectExplicitBasenames([], available)).toBeNull();
+  });
+
+  it('fails loudly instead of reporting green for an unknown or empty selection', () => {
+    expect(() => selectExplicitBasenames(['--files', 'missing.sql'], available)).toThrow(/not a migration artifact/);
+    expect(() => selectExplicitBasenames(['--files='], available)).toThrow(/at least one path/);
+  });
+});
 
 describe('partitionRawTxControl (WI-41119 frozen exemptions)', () => {
   it('CONTROL: a clean file is neither offender, grandfathered, nor exempt', () => {

@@ -55,6 +55,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { orderByDependencies } from '@papercusp/dependency-order';
 import { discover, discoverInvisible, realSpawn, runPackages } from './lib/typecheck-fanout.mjs';
 import { resolvePinnedTscBin } from './lib/tsc-baseline-gate.mjs';
+import { parseFilesArgs } from './lib/explicit-files.mjs';
+export { parseFilesArgs } from './lib/explicit-files.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -97,21 +99,6 @@ export const SIBLING_GATE_PREFIXES = ['libs/papercusp'];
 /** True when `rel` is owned by a sibling gate (see SIBLING_GATE_PREFIXES). */
 export const ownedBySiblingGate = (rel, prefixes = SIBLING_GATE_PREFIXES) =>
   prefixes.some((p) => rel === p || rel.startsWith(`${p}/`));
-
-/** Parse repeated/comma-separated `--files` CLI arguments. */
-export function parseFilesArgs(argv = process.argv.slice(2)) {
-  const out = [];
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
-    const raw = arg === '--files' ? argv[++i] : arg?.startsWith('--files=') ? arg.slice('--files='.length) : null;
-    if (raw == null) continue;
-    for (const file of raw.split(',')) {
-      const normalized = file.trim().replaceAll('\\', '/').replace(/^\.\//, '');
-      if (normalized) out.push(normalized);
-    }
-  }
-  return [...new Set(out)];
-}
 
 /** Select only the gated workspace(s) that own the requested repo-relative files. */
 export function selectPackagesForFiles(packages, files) {

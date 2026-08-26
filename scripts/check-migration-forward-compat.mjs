@@ -44,6 +44,7 @@ import { join, dirname, extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+import { selectExplicitBasenames } from './lib/explicit-files.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
@@ -600,7 +601,15 @@ function main() {
     process.exit(1);
   }
 
-  const all = readdirSync(SQL_DIR).filter(isMigrationArtifactFile);
+  const available = readdirSync(SQL_DIR).filter(isMigrationArtifactFile);
+  let selected;
+  try {
+    selected = selectExplicitBasenames(process.argv.slice(2), available);
+  } catch (error) {
+    console.error(`check-migration-forward-compat: ${error.message}`);
+    process.exit(2);
+  }
+  const all = selected ?? available;
   if (all.length === 0) {
     console.error(`check-migration-forward-compat: zero migration artifacts in ${SQL_DIR}`);
     console.error('Refusing to report green on an empty scan.');
@@ -608,9 +617,15 @@ function main() {
   }
 
   const inScope = all
-    .filter((f) => f.endsWith('.sql'))
-    .filter((f) => isEnforcedMigrationFile(f))
-    .map((f) => ({ file: f, num: Number.parseInt(f.slice(0, f.indexOf('-')), 10) }))
+    .map((file) => ({
+      file,
+      effective: PARKED_SUFFIXES.reduce(
+        (name, suffix) => name.endsWith(suffix) ? name.slice(0, -suffix.length) : name,
+        file,
+      ),
+    }))
+    .filter(({ effective }) => isEnforcedMigrationFile(effective))
+    .map(({ file, effective }) => ({ file, num: Number.parseInt(effective.slice(0, effective.indexOf('-')), 10) }))
     .sort((a, b) => a.num - b.num);
 
   const offenders = [];

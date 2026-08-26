@@ -51,6 +51,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveScriptPgUrl } from "./lib/pg-url.mjs";
+import { selectExplicitBasenames } from "./lib/explicit-files.mjs";
 import {
   stripSqlComments,
   stripSqlCommentsAndStrings,
@@ -753,7 +754,17 @@ async function fetchReservationState() {
 }
 
 async function main() {
-  const files = readdirSync(SQL_DIR).filter((f) => f.endsWith(".sql"));
+  const available = readdirSync(SQL_DIR).filter((f) =>
+    f.endsWith(".sql") || f.endsWith(".sql.DRAFT") || f.endsWith(".sql.PENDING-CODE-DEPLOY")
+  );
+  let selected;
+  try {
+    selected = selectExplicitBasenames(process.argv.slice(2), available);
+  } catch (error) {
+    console.error(`lint:migrations: ${error.message}`);
+    process.exit(2);
+  }
+  const files = selected ?? available.filter((f) => f.endsWith(".sql"));
   let failed = false;
 
   // 1. duplicate numeric prefixes
@@ -875,7 +886,8 @@ async function main() {
   }
 
   // 7. unreserved numbers (PG optional)
-  const fileNums = files
+  const runnerFiles = files.filter((f) => f.endsWith(".sql"));
+  const fileNums = runnerFiles
     .map((f) => /^(\d+)-/.exec(f)?.[1])
     .filter(Boolean)
     .map((n) => Number.parseInt(n, 10));
@@ -909,7 +921,7 @@ async function main() {
         `✗ FROZEN_INDEX_SWAP_EXEMPTIONS lists file(s) that are NOT applied, so they are not frozen and must be fixed (two-phase, or the in-file allow-index-swap pragma), not exempted: ${bogusSwaps.join(", ")}`,
       );
     }
-    const mismatches = reservationFilenameMismatches(files, reservations, {
+    const mismatches = reservationFilenameMismatches(runnerFiles, reservations, {
       appliedFilenames,
     });
     if (mismatches.length) {
