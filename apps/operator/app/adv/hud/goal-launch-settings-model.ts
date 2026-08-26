@@ -133,9 +133,11 @@ export const PROFILE_FIELD_LABEL: Record<ProfileField, string> = {
  * mis-binding for an unexplained save error. A select makes the vocabulary the
  * only thing you can express.
  *
- * `Record<GoalLaunchRole, …>` is deliberately exhaustive: a ninth slot added to
+ * `Record<GoalLaunchRole, …>` is deliberately exhaustive: any slot added to
  * `GOAL_LAUNCH_ROLES` fails THIS typecheck until it is given a label, so the
  * picker cannot silently fall behind the contract it is supposed to present.
+ * That guard has now fired once in earnest — P-005's four paired slots landed
+ * here because this Record refused to compile without them.
  */
 export const GOAL_LAUNCH_ROLE_LABEL: Record<GoalLaunchRole, string> = {
   goal: 'Goal agent (the goal’s own driver)',

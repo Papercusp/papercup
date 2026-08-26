@@ -37,8 +37,17 @@ export type FleetControlState = 'active' | 'winding-down';
  */
 export type FleetType = 'single' | 'paired';
 
-/** The one non-default type. Readers narrow to this set defensively. */
-export const FLEET_TYPES: readonly FleetType[] = ['single', 'paired'] as const;
+/**
+ * The one non-default type. Readers narrow to this set defensively.
+ *
+ * `satisfies` rather than a `: readonly FleetType[]` annotation: the annotation
+ * WIDENS the literals away, and a schema builder that wants to derive its
+ * accepted values from this constant (goal-launch-settings' `fleetType`) then
+ * cannot — leaving it to re-spell 'single' | 'paired' as a second declaration of
+ * this same set. `satisfies` keeps the contract check AND the literal types, so
+ * the set stays spelled exactly once.
+ */
+export const FLEET_TYPES = ['single', 'paired'] as const satisfies readonly FleetType[];
 
 /**
  * Narrow an untrusted value (legacy NULL, a hand-forged string, a value written
