@@ -44,7 +44,15 @@ import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 // apps/operator/lib/release → apps/operator/bin/release/setup-release-checkout.sh
-const SCRIPT_PATH = join(__dirname, '../../bin/release/setup-release-checkout.sh');
+/**
+ * The shipped script, unless a mutation probe points us at a COPY. That override
+ * is what makes tier-2 falsifiability proof available here (CLAUDE.md, "Proving a
+ * guard is falsifiable"): scripts/mutation-probe.sh can mutate an out-of-tree copy
+ * and re-run these tests against it, instead of editing the shared checkout — where
+ * git-sync's whole-tree sweep can commit the mutant even when nothing goes wrong.
+ */
+const SCRIPT_PATH =
+  process.env.PROBE_SCRIPT ?? join(__dirname, '../../bin/release/setup-release-checkout.sh');
 const DEPENDENCY_GENERATION_SCRIPT = join(
   __dirname,
   '../../bin/release/dependency-generation.sh',
@@ -1537,5 +1545,161 @@ describe('extract_submodule_source (EI-18749180047527506) — submodule archive 
     expect(r.stdout).toContain('WARN');
     expect(r.stdout).toContain("rsync'ing integration HEAD");
     expect(readdirSync(join(releaseRoot, 'libs', 'sub')).sort()).toEqual(['a.txt', 'b.txt']);
+  });
+});
+
+/**
+ * P-008 (plan green-main-fast-2026-08-25) — `--source-integrity object-sourced`.
+ *
+ * ## The hole this closes
+ * Every other leg of candidate materialization is sourced from immutable git
+ * OBJECTS: the superproject is a worktree detached at the frozen sha, submodules
+ * are `git clone --local` of the pinned gitlink, and node_modules is an
+ * independent copy pinned to a verified dependency-generation id. The single
+ * exception is `extract_submodule_source`'s last resort, which rsyncs the
+ * integration tree's live WORKING DIRECTORY — on this shared checkout, every peer
+ * agent's uncommitted and possibly mid-write edits.
+ *
+ * The resulting tree corresponds to NO COMMIT, and the two outcomes are not
+ * symmetric. A RED from it is unreproducible: the tree that produced it is
+ * already gone. A GREEN is worse — it fast-forwards `main` to a sha whose tested
+ * content was never that sha, i.e. the gate certifies a commit it did not test.
+ * The path announces itself with one WARN line and is otherwise silent.
+ *
+ * ## What is locked here
+ * `firstTest` below is the FALSIFIER, and it is deliberately first: it proves the
+ * live-tree splice is real by observing an uncommitted file — one no commit
+ * contains — land in the materialized tree under the historical default. Without
+ * it, the refusal test could pass against a hole that never existed. The rest
+ * pin that `object-sourced` refuses that path (exit 2, nothing copied) while
+ * leaving the object-sourced happy path and the deploy's historical self-heal
+ * untouched.
+ */
+describe('extract_submodule_source (P-008) — object-sourced candidate integrity', () => {
+  let work: string;
+  let integrationRoot: string;
+  let releaseRoot: string;
+  let sha: string;
+
+  /** The name of a file that exists ONLY in the integration working tree and is in
+   *  no commit — i.e. exactly what a peer agent's in-flight edit looks like. */
+  const UNCOMMITTED = 'peer-in-flight-uncommitted.txt';
+
+  function makeSubmoduleSource(): void {
+    const subDir = join(integrationRoot, 'libs', 'sub');
+    mkdirSync(subDir, { recursive: true });
+    const git = (...args: string[]) => {
+      const r = spawnSync('git', ['-C', subDir, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+        encoding: 'utf8',
+      });
+      if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+    git('init', '-q');
+    writeFileSync(join(subDir, 'a.txt'), 'a');
+    writeFileSync(join(subDir, 'b.txt'), 'b');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'c1');
+    sha = git('rev-parse', 'HEAD');
+    // Written AFTER the commit and never staged: no tree object contains it.
+    writeFileSync(join(subDir, UNCOMMITTED), 'a peer was mid-edit when the gate fired');
+  }
+
+  /** Runs the real sed-extracted `extract_submodule_source()`, echoing the drift
+   *  flag the caller reads so the out-of-band signal is observable here too. */
+  function runExtract(mode?: string): { status: number | null; stdout: string } {
+    const wrapper = [
+      'set -uo pipefail',
+      'log() { echo "[log] $*"; }',
+      'source <(sed -n "/^extract_submodule_source()/,/^}/p" "$SETUP_SCRIPT")',
+      '_LAST_EXTRACT_USED_LIVE_TREE=0',
+      'extract_submodule_source "libs/sub" "$SHA"; rc=$?',
+      'echo "DRIFT_FLAG=$_LAST_EXTRACT_USED_LIVE_TREE"',
+      'exit $rc',
+    ].join('\n');
+    const env: Record<string, string> = {
+      ...(process.env as Record<string, string>),
+      SETUP_SCRIPT: SCRIPT_PATH,
+      INTEGRATION_ROOT: integrationRoot,
+      RELEASE_ROOT: releaseRoot,
+      SHA: sha,
+    };
+    // Unset rather than empty when no mode is given: the point of the default case
+    // is that the variable is genuinely ABSENT, which is what `set -u` would trip on.
+    if (mode === undefined) delete env.SOURCE_INTEGRITY_MODE;
+    else env.SOURCE_INTEGRITY_MODE = mode;
+    const r = spawnSync('bash', ['-c', wrapper], { env, encoding: 'utf8' });
+    return { status: r.status, stdout: r.stdout ?? '' };
+  }
+
+  beforeEach(() => {
+    work = realpathSync(mkdtempSync(join(tmpdir(), 'p008-source-integrity-')));
+    integrationRoot = join(work, 'int');
+    releaseRoot = join(work, 'rel');
+    mkdirSync(integrationRoot, { recursive: true });
+    mkdirSync(releaseRoot, { recursive: true });
+    makeSubmoduleSource();
+  });
+
+  afterEach(() => {
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  it('THE HOLE IS REAL: under the historical default, an unreadable pin splices UNCOMMITTED live-tree content into the candidate', () => {
+    sha = '0'.repeat(40); // pinned objects unreadable → last resort engages
+    const r = runExtract(undefined);
+
+    expect(r.status).toBe(0); // silent self-heal, exactly as before
+    expect(r.stdout).toContain("rsync'ing integration HEAD");
+    // The candidate now contains a file that is in NO commit. This is the defect:
+    // a verdict rendered here describes a tree that never existed in history.
+    expect(readdirSync(join(releaseRoot, 'libs', 'sub')).sort()).toContain(UNCOMMITTED);
+    expect(r.stdout).toContain('DRIFT_FLAG=1');
+  });
+
+  it('object-sourced REFUSES that path: exit 2, and no live-tree content is copied', () => {
+    sha = '0'.repeat(40);
+    const r = runExtract('object-sourced');
+
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain('FATAL');
+    expect(r.stdout).toContain('forbids the live-tree rsync fallback');
+    expect(r.stdout).not.toContain("rsync'ing integration HEAD");
+    // Nothing at all was materialized — emphatically not the uncommitted file.
+    expect(readdirSync(join(releaseRoot, 'libs', 'sub'))).toEqual([]);
+  });
+
+  it('object-sourced leaves the pin-exact happy path untouched (a readable pin still extracts cleanly)', () => {
+    const r = runExtract('object-sourced');
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).not.toContain('FATAL');
+    expect(r.stdout).not.toContain('WARN');
+    expect(r.stdout).toContain('DRIFT_FLAG=0');
+    // The committed files, and ONLY those — the uncommitted peer edit is absent
+    // because `git archive` reads the pinned tree object, not the working dir.
+    expect(readdirSync(join(releaseRoot, 'libs', 'sub')).sort()).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it('allow-live-tree is explicitly equivalent to the historical default (the deploy keeps its self-heal)', () => {
+    sha = '0'.repeat(40);
+    const explicit = runExtract('allow-live-tree');
+
+    expect(explicit.status).toBe(0);
+    expect(explicit.stdout).toContain("rsync'ing integration HEAD");
+    expect(explicit.stdout).toContain('DRIFT_FLAG=1');
+  });
+
+  it('an unknown SOURCE_INTEGRITY_MODE is treated as permissive by the function, never as a silent refusal', () => {
+    // Mode VALIDATION is the script's job (it exits 2 on a bad --source-integrity
+    // before any work). The extracted function must not invent a second, silent
+    // policy for a value it does not recognise: only the exact string
+    // "object-sourced" may block the fallback, so a typo can never quietly
+    // convert a healthy deploy into a hard failure.
+    sha = '0'.repeat(40);
+    const r = runExtract('objectsourced');
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain("rsync'ing integration HEAD");
   });
 });
