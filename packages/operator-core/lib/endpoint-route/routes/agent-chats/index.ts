@@ -50,6 +50,7 @@ import {
   listPendingLoopApprovals,
   resolveLoopApproval,
 } from '../../../agent-loop/approval-store';
+import { taskOpsRoute } from './task-ops';
 
 /**
  * P-008 (own-tui-full-divorce-2026-08-24): doors whose calls route through
@@ -1028,6 +1029,7 @@ export default [
   createChatRoute,
   getChatRoute,
   archiveChatRoute,
+  taskOpsRoute,
   messagesRoute,
   listApprovalsRoute,
   resolveApprovalRoute,

@@ -42,6 +42,63 @@ pub struct AgentChatApprovalDecision {
     pub reason: Option<String>,
 }
 
+/// User-side task controls exposed by the Context pane. These are UI verbs;
+/// the operator maps them onto the canonical tasks:ops engine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentChatTaskAction {
+    Add,
+    Edit,
+    Check,
+    Drop,
+    ClearBlocker,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatTaskMutation {
+    pub action: AgentChatTaskAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_form: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatTask {
+    pub id: String,
+    pub content: String,
+    pub active_form: String,
+    pub status: String,
+    #[serde(default)]
+    pub blocker_ref: Option<String>,
+    #[serde(default)]
+    pub explanation: Option<String>,
+    pub position: u32,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentChatTaskMutationResponse {
+    pub ok: bool,
+    pub action: AgentChatTaskAction,
+    pub op: String,
+    #[serde(default)]
+    pub changed_task_id: Option<String>,
+    #[serde(default)]
+    pub tasks: Vec<AgentChatTask>,
+    /// The initiating renderer receives the same canonical projection that
+    /// the sync invalidation makes available to every other subscriber.
+    pub projection: Value,
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AgentChatSummary {
     pub id: String,
@@ -522,6 +579,10 @@ pub(crate) fn agent_chat_messages_path(harness: &str, chat_id: &str) -> String {
     format!("{}/messages", agent_chat_path(harness, chat_id))
 }
 
+pub(crate) fn agent_chat_tasks_path(harness: &str, chat_id: &str) -> String {
+    format!("{}/tasks", agent_chat_path(harness, chat_id))
+}
+
 pub(crate) fn agent_chat_approvals_path(harness: &str, chat_id: &str) -> String {
     format!("{}/approvals", agent_chat_path(harness, chat_id))
 }
@@ -830,6 +891,10 @@ mod tests {
             "/api/harness/hive%2Fone/agent-chats/chat%2Fa/messages"
         );
         assert_eq!(
+            agent_chat_tasks_path("hive/one", "chat/a"),
+            "/api/harness/hive%2Fone/agent-chats/chat%2Fa/tasks"
+        );
+        assert_eq!(
             agent_chat_approval_path("hive", "chat-1", "call/1"),
             "/api/harness/hive/agent-chats/chat-1/approvals/call%2F1"
         );
@@ -867,6 +932,49 @@ mod tests {
         })
         .unwrap();
         assert_eq!(decision, json!({"approved": false, "reason": "unsafe"}));
+
+        let mutation = serde_json::to_value(AgentChatTaskMutation {
+            action: AgentChatTaskAction::ClearBlocker,
+            task_id: Some("task-1".to_string()),
+            content: None,
+            active_form: None,
+            explanation: Some("Cleared by operator".to_string()),
+        })
+        .unwrap();
+        assert_eq!(
+            mutation,
+            json!({
+                "action": "clear_blocker",
+                "taskId": "task-1",
+                "explanation": "Cleared by operator"
+            })
+        );
+    }
+
+    #[test]
+    fn decodes_task_mutation_response_contract() {
+        let response: AgentChatTaskMutationResponse = serde_json::from_value(json!({
+            "ok": true,
+            "action": "check",
+            "op": "done",
+            "changedTaskId": "task-1",
+            "tasks": [{
+                "id": "task-1",
+                "content": "Ship it",
+                "activeForm": "Shipping it",
+                "status": "completed",
+                "blockerRef": null,
+                "explanation": "Checked in Context",
+                "position": 0,
+                "createdAt": "2026-08-26T00:00:00.000Z",
+                "updatedAt": "2026-08-26T00:00:01.000Z"
+            }],
+            "projection": {"schemaVersion": "conversation-context-v1", "frames": []}
+        }))
+        .expect("decode task mutation response");
+        assert_eq!(response.action, AgentChatTaskAction::Check);
+        assert_eq!(response.op, "done");
+        assert_eq!(response.tasks[0].status, "completed");
     }
 
     #[test]

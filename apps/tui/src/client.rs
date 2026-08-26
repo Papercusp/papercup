@@ -8,8 +8,8 @@
 
 use crate::agent_chats::{
     self, AgentChat, AgentChatApprovalDecision, AgentChatApprovalsResponse, AgentChatEventStream,
-    AgentChatListOptions, AgentChatListResponse, AgentChatTurnRequest, NewAgentChat,
-    PendingAgentChatApproval,
+    AgentChatListOptions, AgentChatListResponse, AgentChatTaskMutation,
+    AgentChatTaskMutationResponse, AgentChatTurnRequest, NewAgentChat, PendingAgentChatApproval,
 };
 use crate::http::HttpClient;
 use crate::ipc::{CallEvent, CallFrame, IpcClient};
@@ -530,6 +530,22 @@ impl OperatorClient {
             )
             .await?;
         Ok(agent_chats::decode_agent_chat_stream(frames))
+    }
+
+    /// Apply one user-side task action to the selected owned-loop chat. The
+    /// response includes the canonical shared projection; the PG write also
+    /// invalidates conversations.contextProjection for sibling renderers.
+    pub async fn mutate_agent_chat_task(
+        &self,
+        harness: &str,
+        chat_id: &str,
+        mutation: &AgentChatTaskMutation,
+    ) -> Result<AgentChatTaskMutationResponse> {
+        let body = serde_json::to_value(mutation).context("encode agent-chat task mutation")?;
+        let value = self
+            .post_json(&agent_chats::agent_chat_tasks_path(harness, chat_id), body)
+            .await?;
+        serde_json::from_value(value).context("decode agent-chat task mutation")
     }
 
     /// Rehydrate unresolved HITL requests after a client reconnect.
