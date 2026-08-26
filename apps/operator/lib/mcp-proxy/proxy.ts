@@ -41,22 +41,31 @@
  * The endpoint is STATELESS streamable-HTTP (no Mcp-Session-Id / handshake), so the
  * proxy is a pure per-request passthrough — no session state to lose across a restart.
  */
-import http from 'node:http';
-import { randomUUID } from 'node:crypto';
-import { normalizeMcpName } from '@papercusp/tooldef';
+import http from "node:http";
+import { randomUUID } from "node:crypto";
+import { normalizeMcpName } from "@papercusp/tooldef";
 import {
   MCP_REQUEST_TRACE_HEADER,
   MAX_MCP_REQUEST_TRACE_ID_CHARS,
 } from "@papercusp/operator-core/lib/mcp-request-trace";
-import { isCheapRepeatingBeat } from '@papercusp/operator-core/lib/system-health/mcp-proxy-beats';
-export { CHEAP_REPEATING_BEAT_PATHS, isCheapRepeatingBeat } from '@papercusp/operator-core/lib/system-health/mcp-proxy-beats';
+import { isCheapRepeatingBeat } from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
+export {
+  CHEAP_REPEATING_BEAT_PATHS,
+  isCheapRepeatingBeat,
+} from "@papercusp/operator-core/lib/system-health/mcp-proxy-beats";
 // The one path this proxy answers itself. Shared with watchdog.mjs so the liveness probe and
 // the route it probes cannot drift apart (WI-6743).
-import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { applyServerTimeouts } from '../../bin/host-request-deadline';
+import { MCP_PROXY_LOCAL_HEALTH_PATH } from "./budgets.mjs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { applyServerTimeouts } from "../../bin/host-request-deadline";
 
 /**
  * Dedicated upstream agent with keep-alive DISABLED — backend-reliability-100pct-2026-07-03 W1.3.
@@ -87,10 +96,13 @@ import { applyServerTimeouts } from '../../bin/host-request-deadline';
  * requests. Both bounds are env-overridable so a box that legitimately needs more headroom can raise
  * them without a code change.
  */
-const DEFAULT_MAX_UPSTREAM_SOCKETS = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_SOCKETS ?? 64);
+const DEFAULT_MAX_UPSTREAM_SOCKETS = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_SOCKETS ?? 64,
+);
 const UPSTREAM_AGENT = new http.Agent({
   keepAlive: false,
-  maxSockets: DEFAULT_MAX_UPSTREAM_SOCKETS > 0 ? DEFAULT_MAX_UPSTREAM_SOCKETS : Infinity,
+  maxSockets:
+    DEFAULT_MAX_UPSTREAM_SOCKETS > 0 ? DEFAULT_MAX_UPSTREAM_SOCKETS : Infinity,
 });
 
 /**
@@ -101,7 +113,9 @@ const UPSTREAM_AGENT = new http.Agent({
 export const MCP_PROXY_TRACE_HEADER = MCP_REQUEST_TRACE_HEADER;
 export const MAX_MCP_PROXY_TRACE_ID_CHARS = MAX_MCP_REQUEST_TRACE_ID_CHARS;
 
-const configuredInitializeSlowMs = Number(process.env.PAPERCUSP_MCP_PROXY_INITIALIZE_SLOW_MS);
+const configuredInitializeSlowMs = Number(
+  process.env.PAPERCUSP_MCP_PROXY_INITIALIZE_SLOW_MS,
+);
 /** Successful initialize requests are silent unless their end-to-end proxy time crosses this. */
 export const DEFAULT_INITIALIZE_SLOW_MS =
   Number.isFinite(configuredInitializeSlowMs) && configuredInitializeSlowMs > 0
@@ -129,14 +143,24 @@ export const DEFAULT_INITIALIZE_SLOW_MS =
  */
 function failureLogPath(): string {
   // Resolved per-call (not cached at module load) so the sink is env-overridable at runtime + testable.
-  return process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG || join(homedir(), '.papercusp', 'mcp-proxy-failures.jsonl');
+  return (
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG ||
+    join(homedir(), ".papercusp", "mcp-proxy-failures.jsonl")
+  );
 }
 export const DEFAULT_FAILURE_LOG_MAX_BYTES = 10 * 1024 * 1024;
 function failureLogMaxBytes(): number {
-  const configured = Number(process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES);
-  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : DEFAULT_FAILURE_LOG_MAX_BYTES;
+  const configured = Number(
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES,
+  );
+  return Number.isFinite(configured) && configured > 0
+    ? Math.floor(configured)
+    : DEFAULT_FAILURE_LOG_MAX_BYTES;
 }
-export function shouldRotateFailureLog(sizeBytes: number, maxBytes = DEFAULT_FAILURE_LOG_MAX_BYTES): boolean {
+export function shouldRotateFailureLog(
+  sizeBytes: number,
+  maxBytes = DEFAULT_FAILURE_LOG_MAX_BYTES,
+): boolean {
   return sizeBytes >= maxBytes;
 }
 /**
@@ -151,11 +175,19 @@ export function shouldRotateFailureLog(sizeBytes: number, maxBytes = DEFAULT_FAI
  * assert on ledger content already set the override themselves). Exported as a pure
  * predicate (inputs, not env reads) so it is unit-testable without touching real env/fs.
  */
-export function shouldSkipDefaultFailureLog(isTest: boolean, hasExplicitOverride: boolean): boolean {
+export function shouldSkipDefaultFailureLog(
+  isTest: boolean,
+  hasExplicitOverride: boolean,
+): boolean {
   return isTest && !hasExplicitOverride;
 }
 function recordProxyFailure(rec: Record<string, unknown>): void {
-  if (shouldSkipDefaultFailureLog(Boolean(process.env.VITEST), Boolean(process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG))) {
+  if (
+    shouldSkipDefaultFailureLog(
+      Boolean(process.env.VITEST),
+      Boolean(process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG),
+    )
+  ) {
     return;
   }
   try {
@@ -168,7 +200,10 @@ function recordProxyFailure(rec: Record<string, unknown>): void {
     } catch {
       // A missing file is normal; concurrent writers may also win the rotation race.
     }
-    appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), ...rec }) + '\n');
+    appendFileSync(
+      path,
+      JSON.stringify({ ts: new Date().toISOString(), ...rec }) + "\n",
+    );
   } catch {
     /* telemetry must never break the proxy */
   }
@@ -223,6 +258,17 @@ export interface McpProxyOptions {
    * disables waiting and preserves the immediate 429 behavior.
    */
   maxHandshakeQueue?: number;
+  /**
+   * EI-21556422206126497 — bounded FIFO waiters for durability-boundary writes
+   * (`loop:checkpoint`, `work_items:complete`, lifecycle writes, ...). The dedicated
+   * continuation socket remains single-flight, but a concurrent checkpoint waits here
+   * instead of being shed merely because one sibling write is still finishing.
+   */
+  maxCriticalContinuationQueue?: number;
+  /** Maximum time (ms) a critical-continuation write may wait for the dedicated slot. */
+  maxCriticalContinuationQueueWaitMs?: number;
+  /** Per-waiter telemetry cadence (ms) for the critical-continuation FIFO. */
+  criticalContinuationQueueWaitLogMs?: number;
   /**
    * EI-21504897841052086 — how long (ms) a session handshake may WAIT in the admission
    * FIFO before it is shed with 429 `mcp_proxy_handshake_queue_dwell`. Bounded because
@@ -295,13 +341,15 @@ export interface McpProxyTarget {
 /** The shared host token used by the superuser MCP endpoint. */
 export function defaultSuperuserTokenPath(): string {
   const configured = process.env.PAPERCUSP_MCP_TOKEN_FILE?.trim();
-  return configured || join(homedir(), '.papercusp', 'superuser-token');
+  return configured || join(homedir(), ".papercusp", "superuser-token");
 }
 
 /** Read the current bearer without caching it across requests. */
-export function readCurrentSuperuserToken(path = defaultSuperuserTokenPath()): string | null {
+export function readCurrentSuperuserToken(
+  path = defaultSuperuserTokenPath(),
+): string | null {
   try {
-    const token = readFileSync(path, 'utf8').trim();
+    const token = readFileSync(path, "utf8").trim();
     return token || null;
   } catch {
     return null;
@@ -311,7 +359,10 @@ export function readCurrentSuperuserToken(path = defaultSuperuserTokenPath()): s
 /** True only for the query form that opts a request into superuser MCP auth. */
 export function isSuperuserMcpRequest(requestUrl: string): boolean {
   try {
-    return new URL(requestUrl, 'http://127.0.0.1').searchParams.get('superuser') === '1';
+    return (
+      new URL(requestUrl, "http://127.0.0.1").searchParams.get("superuser") ===
+      "1"
+    );
   } catch {
     return false;
   }
@@ -326,13 +377,20 @@ export function isSuperuserMcpRequest(requestUrl: string): boolean {
 export function injectCurrentSuperuserBearer(
   requestUrl: string,
   headers: http.IncomingHttpHeaders,
-  options: { tokenPath?: string; readToken?: (path: string) => string | null } = {},
+  options: {
+    tokenPath?: string;
+    readToken?: (path: string) => string | null;
+  } = {},
 ): http.IncomingHttpHeaders {
   if (!isSuperuserMcpRequest(requestUrl)) return headers;
-  const token = (options.readToken ?? readCurrentSuperuserToken)(options.tokenPath ?? defaultSuperuserTokenPath());
+  const token = (options.readToken ?? readCurrentSuperuserToken)(
+    options.tokenPath ?? defaultSuperuserTokenPath(),
+  );
   if (!token?.trim()) return headers;
   const withoutAuthorization = Object.fromEntries(
-    Object.entries(headers).filter(([name]) => name.toLowerCase() !== 'authorization'),
+    Object.entries(headers).filter(
+      ([name]) => name.toLowerCase() !== "authorization",
+    ),
   );
   return { ...withoutAuthorization, authorization: `Bearer ${token.trim()}` };
 }
@@ -343,25 +401,40 @@ export function injectCurrentSuperuserBearer(
  * onto sockets that are already closing; :3070 can then answer the queued request with an
  * empty 400. Let Node derive the upstream connection policy from its own agent instead.
  */
-export function stripClientConnectionHeader(headers: http.IncomingHttpHeaders): http.IncomingHttpHeaders {
+export function stripClientConnectionHeader(
+  headers: http.IncomingHttpHeaders,
+): http.IncomingHttpHeaders {
   const forwarded = { ...headers };
   delete forwarded.connection;
   return forwarded;
 }
 
-export function staticMcpProxyTarget(host: string, port: number): McpProxyTarget {
-  return { host, port, source: 'static' };
+export function staticMcpProxyTarget(
+  host: string,
+  port: number,
+): McpProxyTarget {
+  return { host, port, source: "static" };
 }
 
-export function readOperatorJsonTarget(path = join(homedir(), '.papercusp', 'operator.json')): McpProxyTarget | null {
+export function readOperatorJsonTarget(
+  path = join(homedir(), ".papercusp", "operator.json"),
+): McpProxyTarget | null {
   try {
-    const d = JSON.parse(readFileSync(path, 'utf8')) as { httpUrl?: string; port?: number | string };
-    if (typeof d.httpUrl === 'string' && d.httpUrl.trim()) {
+    const d = JSON.parse(readFileSync(path, "utf8")) as {
+      httpUrl?: string;
+      port?: number | string;
+    };
+    if (typeof d.httpUrl === "string" && d.httpUrl.trim()) {
       const u = new URL(d.httpUrl);
-      return { host: u.hostname || '127.0.0.1', port: Number(u.port || (u.protocol === 'https:' ? 443 : 80)), source: 'operator.json' };
+      return {
+        host: u.hostname || "127.0.0.1",
+        port: Number(u.port || (u.protocol === "https:" ? 443 : 80)),
+        source: "operator.json",
+      };
     }
     const port = Number(d.port);
-    if (Number.isFinite(port) && port > 0) return { host: '127.0.0.1', port, source: 'operator.json' };
+    if (Number.isFinite(port) && port > 0)
+      return { host: "127.0.0.1", port, source: "operator.json" };
   } catch {
     /* discovery unavailable */
   }
@@ -371,10 +444,12 @@ export function readOperatorJsonTarget(path = join(homedir(), '.papercusp', 'ope
 function resolveTarget(opts: McpProxyOptions): McpProxyTarget {
   const dynamic = opts.resolveTarget?.();
   if (dynamic) return dynamic;
-  const host = opts.targetHost ?? '127.0.0.1';
+  const host = opts.targetHost ?? "127.0.0.1";
   const port = Number(opts.targetPort);
   if (!Number.isFinite(port) || port <= 0) {
-    throw new Error('mcp proxy targetPort must be set when resolveTarget is not provided');
+    throw new Error(
+      "mcp proxy targetPort must be set when resolveTarget is not provided",
+    );
   }
   return staticMcpProxyTarget(host, port);
 }
@@ -387,7 +462,11 @@ function resolveTarget(opts: McpProxyOptions): McpProxyTarget {
  * `connected === true` ⇒ :3070 may already have processed the (possibly non-idempotent)
  * call ⇒ never replay.
  */
-export function shouldRetry(connected: boolean, elapsedMs: number, windowMs: number): boolean {
+export function shouldRetry(
+  connected: boolean,
+  elapsedMs: number,
+  windowMs: number,
+): boolean {
   if (connected) return false;
   return elapsedMs < windowMs;
 }
@@ -434,7 +513,9 @@ const MAX_SHED_DRAIN_SAMPLES = 256;
  * after the window instead of instantly — acceptable; well-formed clients never see these
  * statuses in steady state.
  */
-export const BOOT_WINDOW_STATUSES: ReadonlySet<number> = new Set([404, 405, 503]);
+export const BOOT_WINDOW_STATUSES: ReadonlySet<number> = new Set([
+  404, 405, 503,
+]);
 /** Above this serialized size we do NOT rewrite the body to inject a key: re-stringifying a
  *  pathologically large tools/call would block the proxy loop, and that call is exactly the
  *  one we must not block on. Forgoing its key only drops it to 'opaque' (refused-only). */
@@ -444,7 +525,11 @@ const INJECT_MAX_BODY_BYTES = 256 * 1024;
 const IDEM_KEY_MAX = 200;
 
 function isValidIdemKey(v: unknown): v is string {
-  return typeof v === 'string' && v.trim().length > 0 && v.trim().length <= IDEM_KEY_MAX;
+  return (
+    typeof v === "string" &&
+    v.trim().length > 0 &&
+    v.trim().length <= IDEM_KEY_MAX
+  );
 }
 
 /** How a forwarded request may be retried AFTER the socket connected:
@@ -454,7 +539,7 @@ function isValidIdemKey(v: unknown): v is string {
  *  - 'keyed'      — every tools/call carries a valid idempotencyKey → a replay dedups
  *                   server-side instead of double-applying the write.
  *  - 'opaque'     — a tools/call with no usable key → NEVER replay (write-safety default). */
-export type ForwardClass = 'idempotent' | 'readonly' | 'keyed' | 'opaque';
+export type ForwardClass = "idempotent" | "readonly" | "keyed" | "opaque";
 
 export interface PreparedForward {
   body: Buffer;
@@ -475,9 +560,9 @@ export const MAX_RECORDED_RPC_METHODS = 8;
 function recordedRpcMethods(messages: readonly unknown[]): string[] {
   const out: string[] = [];
   for (const message of messages) {
-    if (!message || typeof message !== 'object') continue;
+    if (!message || typeof message !== "object") continue;
     const method = (message as { method?: unknown }).method;
-    if (typeof method !== 'string' || out.includes(method)) continue;
+    if (typeof method !== "string" || out.includes(method)) continue;
     out.push(method);
     if (out.length >= MAX_RECORDED_RPC_METHODS) break;
   }
@@ -496,37 +581,57 @@ function recordedRpcMethods(messages: readonly unknown[]): string[] {
  */
 export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // build/type diagnostics (the reported failure: scoped tsc runs are pure reads)
-  'build:typecheck',
+  "build:typecheck",
   // dev observability reads
-  'dev:pipeline_position', 'dev:pg_query', 'dev:service_health', 'dev:listening_ports',
-  'dev:build_status', 'dev:migrations', 'dev:rate_governor_status',
+  "dev:pipeline_position",
+  "dev:pg_query",
+  "dev:service_health",
+  "dev:listening_ports",
+  "dev:build_status",
+  "dev:migrations",
+  "dev:rate_governor_status",
   // documentation + search reads
-  'docs:get', 'docs:search', 'docs:outline', 'search:fulltext', 'search:semantic',
+  "docs:get",
+  "docs:search",
+  "docs:outline",
+  "search:fulltext",
+  "search:semantic",
   // memory recall (search ONLY — remember/forget mutate the store)
-  'memory:search',
+  "memory:search",
   // work-item / plan reads
-  'work_items:list', 'work_items:get', 'work_items:claimable',
-  'plans:get', 'plans:list', 'plans:items',
+  "work_items:list",
+  "work_items:get",
+  "work_items:claimable",
+  "plans:get",
+  "plans:list",
+  "plans:items",
   // test-run history
-  'testing:runs',
+  "testing:runs",
   // harness / fleet status snapshots
-  'harness:list', 'harness:status', 'harness:get',
-  'fleet:assignments', 'fleet:status',
+  "harness:list",
+  "harness:status",
+  "harness:get",
+  "fleet:assignments",
+  "fleet:status",
   // coordination/state reads (presence/glance are pure snapshots;
   // coord:inbox EXCLUDED — reading marks messages read)
-  'coord:presence', 'coord:glance',
-  'events:catalog', 'facts:list', 'state:read',
-  'locks:list', 'locks:queue',
+  "coord:presence",
+  "coord:glance",
+  "events:catalog",
+  "facts:list",
+  "state:read",
+  "locks:list",
+  "locks:queue",
   // capability discovery (find ONLY — tools:invoke EXECUTES arbitrary tools)
-  'tools:find',
+  "tools:find",
 ]);
 
 function isReadOnlyToolCall(m: unknown): boolean {
-  if (!m || typeof m !== 'object') return false;
+  if (!m || typeof m !== "object") return false;
   const params = (m as { params?: unknown }).params;
-  if (!params || typeof params !== 'object') return false;
+  if (!params || typeof params !== "object") return false;
   const name = (params as { name?: unknown }).name;
-  return typeof name === 'string' && READ_ONLY_TOOLS.has(name);
+  return typeof name === "string" && READ_ONLY_TOOLS.has(name);
 }
 /**
  * Classify a forward and, for a tools/call, inject a per-request `_meta.idempotencyKey`
@@ -544,51 +649,71 @@ export function prepareForward(
   method: string,
   headers: http.IncomingHttpHeaders,
   body: Buffer,
-  opts: { keyingEnabled: boolean; readonlyRetryEnabled?: boolean; genKey: () => string },
+  opts: {
+    keyingEnabled: boolean;
+    readonlyRetryEnabled?: boolean;
+    genKey: () => string;
+  },
 ): PreparedForward {
-  if (method !== 'POST' || body.length === 0) return { body, headers, klass: 'opaque', rpcMethods: [] };
+  if (method !== "POST" || body.length === 0)
+    return { body, headers, klass: "opaque", rpcMethods: [] };
   let parsed: unknown;
   try {
-    parsed = JSON.parse(body.toString('utf8'));
+    parsed = JSON.parse(body.toString("utf8"));
   } catch {
-    return { body, headers, klass: 'opaque', rpcMethods: [] }; // non-JSON — cannot classify → safe default
+    return { body, headers, klass: "opaque", rpcMethods: [] }; // non-JSON — cannot classify → safe default
   }
   const msgs = Array.isArray(parsed) ? parsed : [parsed];
   const rpcMethods = recordedRpcMethods(msgs);
-  const isCall = (m: unknown): m is { method?: unknown; params?: Record<string, unknown> } =>
-    !!m && typeof m === 'object' && (m as { method?: unknown }).method === 'tools/call';
+  const isCall = (
+    m: unknown,
+  ): m is { method?: unknown; params?: Record<string, unknown> } =>
+    !!m &&
+    typeof m === "object" &&
+    (m as { method?: unknown }).method === "tools/call";
   const calls = msgs.filter(isCall);
-  if (calls.length === 0) return { body, headers, klass: 'idempotent', rpcMethods }; // no write → free safe retry
+  if (calls.length === 0)
+    return { body, headers, klass: "idempotent", rpcMethods }; // no write → free safe retry
 
-  if (!opts.keyingEnabled) return { body, headers, klass: 'opaque', rpcMethods }; // kill-switch → refused-only
-  if (body.length > INJECT_MAX_BODY_BYTES) return { body, headers, klass: 'opaque', rpcMethods };
+  if (!opts.keyingEnabled)
+    return { body, headers, klass: "opaque", rpcMethods }; // kill-switch → refused-only
+  if (body.length > INJECT_MAX_BODY_BYTES)
+    return { body, headers, klass: "opaque", rpcMethods };
   // EI-21268234394605529: a provably read-only tools/call may be replayed on a post-connect
   // socket error (re-executing a read cannot double-apply). Gated behind BOTH switches: the
   // keying master switch above (PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 = pre-P-005 refused-only)
   // and its own PAPERCUSP_MCP_PROXY_READONLY_RETRY=0. Unknown / oversized / switched-off
   // bodies fall through to the existing keyed/opaque path unchanged.
   if (opts.readonlyRetryEnabled !== false && calls.every(isReadOnlyToolCall)) {
-    return { body, headers, klass: 'readonly', rpcMethods }; // body untouched — no key injection needed
+    return { body, headers, klass: "readonly", rpcMethods }; // body untouched — no key injection needed
   }
 
   let mutated = false;
   for (const m of calls) {
     const params =
-      m.params && typeof m.params === 'object' ? m.params : (m.params = {} as Record<string, unknown>);
+      m.params && typeof m.params === "object"
+        ? m.params
+        : (m.params = {} as Record<string, unknown>);
     const meta =
-      params._meta && typeof params._meta === 'object' ? (params._meta as Record<string, unknown>) : {};
+      params._meta && typeof params._meta === "object"
+        ? (params._meta as Record<string, unknown>)
+        : {};
     if (isValidIdemKey(meta.idempotencyKey)) continue; // respect a valid client key
-    if (meta.idempotencyKey !== undefined) return { body, headers, klass: 'opaque', rpcMethods }; // invalid client key → can't safely retry
+    if (meta.idempotencyKey !== undefined)
+      return { body, headers, klass: "opaque", rpcMethods }; // invalid client key → can't safely retry
     meta.idempotencyKey = opts.genKey();
     params._meta = meta;
     m.params = params;
     mutated = true;
   }
-  if (!mutated) return { body, headers, klass: 'keyed', rpcMethods }; // already client-keyed, body unchanged
-  const newBody = Buffer.from(JSON.stringify(parsed), 'utf8');
-  const newHeaders: http.IncomingHttpHeaders = { ...headers, 'content-length': String(newBody.length) };
-  delete newHeaders['transfer-encoding'];
-  return { body: newBody, headers: newHeaders, klass: 'keyed', rpcMethods };
+  if (!mutated) return { body, headers, klass: "keyed", rpcMethods }; // already client-keyed, body unchanged
+  const newBody = Buffer.from(JSON.stringify(parsed), "utf8");
+  const newHeaders: http.IncomingHttpHeaders = {
+    ...headers,
+    "content-length": String(newBody.length),
+  };
+  delete newHeaders["transfer-encoding"];
+  return { body: newBody, headers: newHeaders, klass: "keyed", rpcMethods };
 }
 
 /**
@@ -605,7 +730,7 @@ export function postConnectRetryable(
   elapsedMs: number,
   windowMs: number,
 ): boolean {
-  if (klass !== 'idempotent' && klass !== 'readonly') return false;
+  if (klass !== "idempotent" && klass !== "readonly") return false;
   if (retriesUsed >= maxRetries) return false;
   return elapsedMs < windowMs;
 }
@@ -660,7 +785,7 @@ export function handshakeTimeoutRetryable(
   windowMs: number,
   nextAttemptBudgetMs = 0,
 ): boolean {
-  if (klass !== 'idempotent') return false;
+  if (klass !== "idempotent") return false;
   if (retriesUsed >= maxRetries) return false;
   // EI-21554095087170158: a timer can fire substantially late when the local proxy
   // process is CPU-starved. Starting another full response-header attempt merely because
@@ -695,7 +820,10 @@ export function backpressureRetryable(
 /** EI-21504897841052086 — PURE + unit-tested via the queue-dwell behavior specs: a queued
  *  handshake whose dwell reached the bound is shed with 429 instead of waiting indefinitely.
  *  `maxWaitMs <= 0` disables expiry (the previous unbounded behavior). */
-export function handshakeQueueWaitExpired(waitedMs: number, maxWaitMs: number): boolean {
+export function handshakeQueueWaitExpired(
+  waitedMs: number,
+  maxWaitMs: number,
+): boolean {
   return maxWaitMs > 0 && waitedMs >= maxWaitMs;
 }
 
@@ -711,7 +839,7 @@ export function retryAfterMs(
   maxMs: number,
 ): number {
   const raw = Array.isArray(header) ? header[0] : header;
-  const secs = raw != null && raw !== '' ? Number(raw) : NaN;
+  const secs = raw != null && raw !== "" ? Number(raw) : NaN;
   const ms = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : fallbackMs;
   return Math.max(0, Math.min(ms, maxMs));
 }
@@ -735,20 +863,28 @@ export function retryAfterSecForDrainRate(
     maxSec?: number;
   } = {},
 ): number {
-  const windowMs = Number.isFinite(options.windowMs) && (options.windowMs ?? 0) > 0
-    ? options.windowMs!
-    : SHED_DRAIN_RATE_WINDOW_MS;
-  const configuredMinSec = Number.isFinite(options.minSec) && (options.minSec ?? 0) > 0
-    ? options.minSec!
-    : MIN_SHED_RETRY_AFTER_SEC;
-  const configuredMaxSec = Number.isFinite(options.maxSec) && (options.maxSec ?? 0) > 0
-    ? options.maxSec!
-    : MAX_SHED_RETRY_AFTER_SEC;
+  const windowMs =
+    Number.isFinite(options.windowMs) && (options.windowMs ?? 0) > 0
+      ? options.windowMs!
+      : SHED_DRAIN_RATE_WINDOW_MS;
+  const configuredMinSec =
+    Number.isFinite(options.minSec) && (options.minSec ?? 0) > 0
+      ? options.minSec!
+      : MIN_SHED_RETRY_AFTER_SEC;
+  const configuredMaxSec =
+    Number.isFinite(options.maxSec) && (options.maxSec ?? 0) > 0
+      ? options.maxSec!
+      : MAX_SHED_RETRY_AFTER_SEC;
   const minSec = Math.max(1, configuredMinSec);
   const maxSec = Math.max(minSec, configuredMaxSec);
   const cutoffMs = nowMs - windowMs;
   const recent = completionTimesMs
-    .filter((timestamp) => Number.isFinite(timestamp) && timestamp >= cutoffMs && timestamp <= nowMs)
+    .filter(
+      (timestamp) =>
+        Number.isFinite(timestamp) &&
+        timestamp >= cutoffMs &&
+        timestamp <= nowMs,
+    )
     .slice()
     .sort((a, b) => a - b);
   const completionsNeeded = Math.max(1, currentInFlight - admissionCeiling + 1);
@@ -843,7 +979,7 @@ function forwardOnce(
       },
       (ures) => done({ ures, connected: true }),
     );
-    upstream.on('socket', (s) => {
+    upstream.on("socket", (s) => {
       // Once the TCP handshake completes, the request is (or may be) in flight at :3070.
       // A reused keep-alive socket is ALREADY connected — return without adding a
       // 'connect' listener (one per proxied request accumulated on the shared socket:
@@ -852,11 +988,13 @@ function forwardOnce(
         connected = true;
         return;
       }
-      s.once('connect', () => {
+      s.once("connect", () => {
         connected = true;
       });
     });
-    upstream.on('error', (err: NodeJS.ErrnoException) => done({ err, connected }));
+    upstream.on("error", (err: NodeJS.ErrnoException) =>
+      done({ err, connected }),
+    );
     // WI-6740: bound the wait for RESPONSE HEADERS. Note this is deliberately NOT
     // `upstream.setTimeout` (socket INACTIVITY): a stalled :3070 can keep the socket alive
     // while producing nothing, which inactivity never fires on. We want wall-clock silence.
@@ -866,7 +1004,7 @@ function forwardOnce(
       timer = setTimeout(() => {
         const err: NodeJS.ErrnoException = Object.assign(
           new Error(`upstream silent for ${timeoutMs}ms (no response headers)`),
-          { code: 'ETIMEDOUT' },
+          { code: "ETIMEDOUT" },
         );
         upstream.destroy();
         done({ err, connected: true, timedOut: true });
@@ -943,7 +1081,9 @@ export const CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS = 2000;
 /** The retry window this REQUEST gets — the restart-sized default, unless it is a cheap
  *  repeating beat, which must fail fast rather than amplify (EI-19294517824914302). */
 export function effectiveRetryWindowMs(url: string, windowMs: number): number {
-  return isCheapRepeatingBeat(url) ? Math.min(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS, windowMs) : windowMs;
+  return isCheapRepeatingBeat(url)
+    ? Math.min(CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS, windowMs)
+    : windowMs;
 }
 
 /**
@@ -955,8 +1095,12 @@ export function effectiveRetryWindowMs(url: string, windowMs: number): number {
  * ceiling is deliberately well ABOVE the socket bound so healthy queuing is not shed; it exists
  * to catch the genuinely runaway case that would otherwise pile up invisibly in the agent queue.
  */
-export const DEFAULT_MAX_IN_FLIGHT = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_IN_FLIGHT ?? 200);
-export const DEFAULT_CONTROL_PLANE_RESERVE = Number(process.env.PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE ?? 8);
+export const DEFAULT_MAX_IN_FLIGHT = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_IN_FLIGHT ?? 200,
+);
+export const DEFAULT_CONTROL_PLANE_RESERVE = Number(
+  process.env.PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE ?? 8,
+);
 /**
  * EI-21395174573687098 — the watchdog probe has its own upstream agent, so the full reserved
  * control-plane pool is available to ordinary reconnect handshakes. This is a class cap, not a
@@ -972,108 +1116,171 @@ export const DEFAULT_MAX_HANDSHAKES_IN_FLIGHT = Number(
  * client independently retry the same handshake. The default absorbs a burst of roughly eight
  * class caps while remaining a hard memory bound; set the env/option to 0 to retain shed-now.
  */
-const configuredMaxHandshakeQueue = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_HANDSHAKE_QUEUE ?? 64);
-export const DEFAULT_MAX_HANDSHAKE_QUEUE = Number.isFinite(configuredMaxHandshakeQueue)
+const configuredMaxHandshakeQueue = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_HANDSHAKE_QUEUE ?? 64,
+);
+export const DEFAULT_MAX_HANDSHAKE_QUEUE = Number.isFinite(
+  configuredMaxHandshakeQueue,
+)
   ? Math.max(0, Math.floor(configuredMaxHandshakeQueue))
   : 64;
+/**
+ * EI-21556422206126497 — continuation writes are deliberately single-flight upstream, but
+ * immediate shed-on-one made the durability plane fail exactly when two sessions checkpointed
+ * together. Queue a small, hard-bounded burst behind that one socket instead.
+ */
+const configuredMaxCriticalContinuationQueue = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_CRITICAL_CONTINUATION_QUEUE ?? 16,
+);
+export const DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE = Number.isFinite(
+  configuredMaxCriticalContinuationQueue,
+)
+  ? Math.max(0, Math.floor(configuredMaxCriticalContinuationQueue))
+  : 16;
+const MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS = 16;
 /**
  * EI-21504897841052086 — bounded dwell for a handshake WAITING in the admission FIFO.
  * During the measured wedge, clients hung 16-44s while the proxy held their handshakes
  * indefinitely behind 8 stuck slots; shedding at ~30s answers honestly inside typical
  * client budgets. 0 disables expiry.
  */
-const configuredHandshakeQueueWaitMs = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_QUEUE_WAIT_MS ?? 30_000);
+const configuredHandshakeQueueWaitMs = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_QUEUE_WAIT_MS ?? 30_000,
+);
 export const DEFAULT_HANDSHAKE_QUEUE_WAIT_MS =
-  Number.isFinite(configuredHandshakeQueueWaitMs) && configuredHandshakeQueueWaitMs >= 0
+  Number.isFinite(configuredHandshakeQueueWaitMs) &&
+  configuredHandshakeQueueWaitMs >= 0
     ? Math.floor(configuredHandshakeQueueWaitMs)
     : 30_000;
 /** EI-21504897841052086 — per-waiter queue telemetry cadence. The wedge window recorded ONLY
  *  arrival rows, so 13 minutes of saturation left zero ledger evidence. Mirrors the
  *  per-request heartbeat pattern (EI-19388661789704364). 0 disables. */
-const configuredQueueWaitLogMs = Number(process.env.PAPERCUSP_MCP_PROXY_QUEUE_WAIT_LOG_MS ?? 5_000);
+const configuredQueueWaitLogMs = Number(
+  process.env.PAPERCUSP_MCP_PROXY_QUEUE_WAIT_LOG_MS ?? 5_000,
+);
 export const DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS =
   Number.isFinite(configuredQueueWaitLogMs) && configuredQueueWaitLogMs > 0
     ? Math.floor(configuredQueueWaitLogMs)
+    : 5_000;
+const configuredCriticalContinuationQueueWaitMs = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_CRITICAL_CONTINUATION_QUEUE_WAIT_MS ??
+    30_000,
+);
+export const DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS =
+  Number.isFinite(configuredCriticalContinuationQueueWaitMs) &&
+  configuredCriticalContinuationQueueWaitMs >= 0
+    ? Math.floor(configuredCriticalContinuationQueueWaitMs)
+    : 30_000;
+const configuredCriticalContinuationQueueWaitLogMs = Number(
+  process.env.PAPERCUSP_MCP_PROXY_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS ??
+    5_000,
+);
+export const DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS =
+  Number.isFinite(configuredCriticalContinuationQueueWaitLogMs) &&
+  configuredCriticalContinuationQueueWaitLogMs >= 0
+    ? Math.floor(configuredCriticalContinuationQueueWaitLogMs)
     : 5_000;
 /**
  * EI-19305299022434394 — see `McpProxyOptions.maxHoldMs`. 10 minutes is comfortably above any
  * legitimate tool's real runtime (`build:typecheck` ~160s, `capability:bash` ~120s) while still
  * cutting off the 32-89 minute silent parks the report measured.
  */
-export const DEFAULT_MAX_HOLD_MS = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_HOLD_MS ?? 10 * 60_000);
+export const DEFAULT_MAX_HOLD_MS = Number(
+  process.env.PAPERCUSP_MCP_PROXY_MAX_HOLD_MS ?? 10 * 60_000,
+);
 /** EI-19305299022434394 — see `McpProxyOptions.heartbeatIntervalMs`. */
-export const DEFAULT_HEARTBEAT_INTERVAL_MS = Number(process.env.PAPERCUSP_MCP_PROXY_HEARTBEAT_MS ?? 30_000);
+export const DEFAULT_HEARTBEAT_INTERVAL_MS = Number(
+  process.env.PAPERCUSP_MCP_PROXY_HEARTBEAT_MS ?? 30_000,
+);
 
 /**
  * Whether a NEW request should be shed (429, before opening any upstream socket) given how many
  * forwards are already in flight. PURE + unit-tested. `maxInFlight <= 0` disables shedding
  * entirely (unbounded, the pre-fix behavior) — an explicit opt-out, never the default.
  */
-export function shouldShedForInFlight(currentInFlight: number, maxInFlight: number): boolean {
+export function shouldShedForInFlight(
+  currentInFlight: number,
+  maxInFlight: number,
+): boolean {
   if (maxInFlight <= 0) return false;
   return currentInFlight >= maxInFlight;
 }
 
-const RESERVED_CONTROL_PLANE_TOOLS = new Set([
-  'scheduler:get_next',
-  'coord:orient',
-  'coord:send',
-  // The automatic status glance is a read-only liveness surface. Keep it on the
-  // reserved admission path so a saturated ordinary pool cannot hide the fleet
-  // state that agents use to recover from the saturation.
-  'coord:glance',
-  // DRAIN reconciliation reads must remain callable while ordinary tool traffic
-  // occupies the non-reserved ceiling. `coord:inbox` is intentionally not in
-  // READ_ONLY_TOOLS because reading it advances message-read state, but it is
-  // still liveness-critical for recovering a fleet member.
-  'coord:inbox',
-  'fleet:assignments',
-  'fleet:leader-brief',
-  'loop:checkpoint',
-  // Ending a loop is the terminal recovery action when a worker is blocked or the
-  // queue is drained. Keep it callable at the reserved ceiling and isolate it from
-  // a saturated reserved socket so the failed wake path can actually shut down.
-  'loop:end',
-  'session:request-compaction',
-  'tools:find',
-  'dev:service_health',
-  'dev:pg_query',
-  'loop:arm',
-  'plans:get',
-  'improvements:capture',
-  'locks:acquire',
-  'locks:queue',
-  'locks:cancel_wait',
-  'locks:release',
-  'events:cancel',
-  'work_items:checkpoint',
-  'work_items:claimable',
-  'work_items:complete',
-  'work_items:get',
-  'work_items:search',
-  'work_items:release',
-  'work_items:set_state',
-].map(normalizeMcpName));
+const RESERVED_CONTROL_PLANE_TOOLS = new Set(
+  [
+    "scheduler:get_next",
+    "coord:orient",
+    "coord:send",
+    // The automatic status glance is a read-only liveness surface. Keep it on the
+    // reserved admission path so a saturated ordinary pool cannot hide the fleet
+    // state that agents use to recover from the saturation.
+    "coord:glance",
+    // DRAIN reconciliation reads must remain callable while ordinary tool traffic
+    // occupies the non-reserved ceiling. `coord:inbox` is intentionally not in
+    // READ_ONLY_TOOLS because reading it advances message-read state, but it is
+    // still liveness-critical for recovering a fleet member.
+    "coord:inbox",
+    "fleet:assignments",
+    "fleet:leader-brief",
+    "loop:checkpoint",
+    // Ending a loop is the terminal recovery action when a worker is blocked or the
+    // queue is drained. Keep it callable at the reserved ceiling and isolate it from
+    // a saturated reserved socket so the failed wake path can actually shut down.
+    "loop:end",
+    "session:request-compaction",
+    "tools:find",
+    "dev:service_health",
+    "dev:pg_query",
+    "loop:arm",
+    "plans:get",
+    "improvements:capture",
+    "locks:acquire",
+    "locks:queue",
+    "locks:cancel_wait",
+    "locks:release",
+    "events:cancel",
+    "work_items:checkpoint",
+    "work_items:claimable",
+    "work_items:complete",
+    "work_items:get",
+    "work_items:search",
+    "work_items:release",
+    "work_items:set_state",
+  ].map(normalizeMcpName),
+);
 
 // Continuation writes are a narrower, higher-priority slice of the reserved plane. Keep this
 // separate from RESERVED_CONTROL_PLANE_TOOLS: the ordinary reserved pool is allowed to queue
 // behind a slow upstream, while these writes are the durable boundary that lets a session recover
 // from that exact condition.
-const CRITICAL_CONTINUATION_TOOLS = new Set([
-  'loop:checkpoint',
-  'loop:end',
-  'session:request-compaction',
-  'work_items:checkpoint',
-  'work_items:complete',
-].map(normalizeMcpName));
+const CRITICAL_CONTINUATION_TOOL_NAMES = [
+  "loop:checkpoint",
+  "loop:end",
+  "session:request-compaction",
+  "work_items:checkpoint",
+  "work_items:complete",
+] as const;
+const CRITICAL_CONTINUATION_TOOLS = new Set(
+  CRITICAL_CONTINUATION_TOOL_NAMES.map(normalizeMcpName),
+);
+const CRITICAL_CONTINUATION_DISPLAY_NAMES = new Map(
+  CRITICAL_CONTINUATION_TOOL_NAMES.map((name) => [
+    normalizeMcpName(name),
+    name,
+  ]),
+);
 
 // EI-21266423740643882 — the watchdog's session-plane probe is a plain JSON-RPC
 // `tools/list`, not a tools/call named by RESERVED_CONTROL_PLANE_TOOLS. The admission reserve
 // is useless to the probe that diagnoses a saturated proxy unless the MCP handshake itself is
 // recognized. Keep this deliberately narrow: only the stateless, write-free calls required to
 // establish/prove a session, not every idempotent resources/prompts request.
-const RESERVED_CONTROL_PLANE_METHODS = new Set(['initialize', 'ping', 'tools/list']);
-const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
+const RESERVED_CONTROL_PLANE_METHODS = new Set([
+  "initialize",
+  "ping",
+  "tools/list",
+]);
+const TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
 
 /**
  * Whether the complete JSON-RPC batch is a write-free session handshake. `prepareForward`
@@ -1083,13 +1290,19 @@ const TOOLS_INVOKE_NAME = normalizeMcpName('tools:invoke');
  */
 export function isMcpSessionHandshakeCall(rawBody: Buffer): boolean {
   try {
-    const parsed = JSON.parse(rawBody.toString('utf8')) as unknown;
+    const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
     const messages = Array.isArray(parsed) ? parsed : [parsed];
-    return messages.length > 0 && messages.every((message) => {
-      if (!message || typeof message !== 'object') return false;
-      const method = (message as { method?: unknown }).method;
-      return typeof method === 'string' && RESERVED_CONTROL_PLANE_METHODS.has(method);
-    });
+    return (
+      messages.length > 0 &&
+      messages.every((message) => {
+        if (!message || typeof message !== "object") return false;
+        const method = (message as { method?: unknown }).method;
+        return (
+          typeof method === "string" &&
+          RESERVED_CONTROL_PLANE_METHODS.has(method)
+        );
+      })
+    );
   } catch {
     return false;
   }
@@ -1099,10 +1312,13 @@ export function isMcpSessionHandshakeCall(rawBody: Buffer): boolean {
  * client query parameter. Keep the exemption path- and value-exact: ordinary reconnect clients
  * remain bounded, while the detector retains the one socket the default class cap leaves free. */
 export function isMcpProxyWatchdogProbePath(requestPath: unknown): boolean {
-  if (typeof requestPath !== 'string') return false;
+  if (typeof requestPath !== "string") return false;
   try {
-    const url = new URL(requestPath, 'http://127.0.0.1');
-    return url.pathname === '/api/mcp' && url.searchParams.get('client') === 'mcp-proxy-watchdog';
+    const url = new URL(requestPath, "http://127.0.0.1");
+    return (
+      url.pathname === "/api/mcp" &&
+      url.searchParams.get("client") === "mcp-proxy-watchdog"
+    );
   } catch {
     return false;
   }
@@ -1114,15 +1330,15 @@ export function isMcpProxyWatchdogProbePath(requestPath: unknown): boolean {
 // saturated. Heartbeat is intentionally absent: it is a cheap repeating beat
 // and should fail fast rather than consume a reserved slot.
 export const RESERVED_CONTROL_PLANE_PATHS = new Set([
-  '/api/adv/sessions/resumable',
-  '/api/agent-mcp/console/bootstrap-su/options',
-  '/api/agent-mcp/console/bootstrap-su',
-  '/api/agent-mcp/console/bootstrap-su/session-ended',
-  '/api/agent-mcp/console/bootstrap-su/session-resumed',
-  '/api/agent-mcp/console/bootstrap-su/session-resume-finalized',
-  '/api/agent-mcp/console/bootstrap-su/session-resume-released',
-  '/api/agent-mcp/console/bootstrap-su/session-respawned',
-  '/api/tui/identity',
+  "/api/adv/sessions/resumable",
+  "/api/agent-mcp/console/bootstrap-su/options",
+  "/api/agent-mcp/console/bootstrap-su",
+  "/api/agent-mcp/console/bootstrap-su/session-ended",
+  "/api/agent-mcp/console/bootstrap-su/session-resumed",
+  "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
+  "/api/agent-mcp/console/bootstrap-su/session-resume-released",
+  "/api/agent-mcp/console/bootstrap-su/session-respawned",
+  "/api/tui/identity",
 ]);
 
 // One-shot lifecycle mutations are the boundary that creates/ends a live
@@ -1130,24 +1346,24 @@ export const RESERVED_CONTROL_PLANE_PATHS = new Set([
 // as continuation checkpoints. Heartbeat is deliberately excluded: it repeats
 // and may fail fast under pressure.
 export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
-  '/api/agent-mcp/console/bootstrap-su/session-ended',
-  '/api/agent-mcp/console/bootstrap-su/session-resumed',
-  '/api/agent-mcp/console/bootstrap-su/session-resume-finalized',
-  '/api/agent-mcp/console/bootstrap-su/session-resume-released',
-  '/api/agent-mcp/console/bootstrap-su/session-respawned',
+  "/api/agent-mcp/console/bootstrap-su/session-ended",
+  "/api/agent-mcp/console/bootstrap-su/session-resumed",
+  "/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
+  "/api/agent-mcp/console/bootstrap-su/session-resume-released",
+  "/api/agent-mcp/console/bootstrap-su/session-respawned",
 ]);
 
 /** Match a REST control-plane path without letting query strings or a harmless
  * trailing slash defeat the reserve classification. */
 export function isReservedControlPlanePath(requestPath: unknown): boolean {
-  if (typeof requestPath !== 'string') return false;
-  const path = requestPath.split('?')[0]?.replace(/\/+$/, '') || '/';
+  if (typeof requestPath !== "string") return false;
+  const path = requestPath.split("?")[0]?.replace(/\/+$/, "") || "/";
   return RESERVED_CONTROL_PLANE_PATHS.has(path);
 }
 
 export function isCriticalSessionLifecyclePath(requestPath: unknown): boolean {
-  if (typeof requestPath !== 'string') return false;
-  const path = requestPath.split('?')[0]?.replace(/\/+$/, '') || '/';
+  if (typeof requestPath !== "string") return false;
+  const path = requestPath.split("?")[0]?.replace(/\/+$/, "") || "/";
   return CRITICAL_SESSION_LIFECYCLE_PATHS.has(path);
 }
 
@@ -1156,26 +1372,86 @@ export function isCriticalSessionLifecyclePath(requestPath: unknown): boolean {
  * stays on the ordinary route so an unrelated call cannot inherit the critical socket.
  * `tools:invoke` is recognized because some clients reach deferred tools through that wrapper.
  */
-export function isCriticalContinuationCall(rawBody: Buffer, requestPath?: string): boolean {
-  if (isCriticalSessionLifecyclePath(requestPath)) return true;
-  try {
-    const parsed = JSON.parse(rawBody.toString('utf8')) as unknown;
-    const messages = Array.isArray(parsed) ? parsed : [parsed];
-    return messages.length > 0 && messages.every((message) => {
-      if (!message || typeof message !== 'object') return false;
-      const call = message as { method?: unknown; params?: { name?: unknown; arguments?: unknown } };
-      if (call.method !== 'tools/call' || typeof call.params?.name !== 'string') return false;
-      const calledTool = normalizeMcpName(call.params.name);
-      if (CRITICAL_CONTINUATION_TOOLS.has(calledTool)) return true;
-      if (calledTool !== TOOLS_INVOKE_NAME) return false;
-      const invokeArgs = call.params.arguments;
-      if (!invokeArgs || typeof invokeArgs !== 'object' || Array.isArray(invokeArgs)) return false;
-      const target = (invokeArgs as { name?: unknown }).name;
-      return typeof target === 'string' && CRITICAL_CONTINUATION_TOOLS.has(normalizeMcpName(target));
-    });
-  } catch {
-    return false;
+interface CriticalContinuationIdentity {
+  critical: boolean;
+  /** Bounded, argument-free tool/path identities safe to expose in health + failure telemetry. */
+  tools: string[];
+}
+
+function classifyCriticalContinuationCall(
+  rawBody: Buffer,
+  requestPath?: string,
+): CriticalContinuationIdentity {
+  if (isCriticalSessionLifecyclePath(requestPath)) {
+    const path = requestPath?.split("?")[0]?.replace(/\/+$/, "") || "/";
+    return { critical: true, tools: [`rest:${path}`] };
   }
+  try {
+    const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    const tools: string[] = [];
+    const critical =
+      messages.length > 0 &&
+      messages.every((message) => {
+        if (!message || typeof message !== "object") return false;
+        const call = message as {
+          method?: unknown;
+          params?: { name?: unknown; arguments?: unknown };
+        };
+        if (
+          call.method !== "tools/call" ||
+          typeof call.params?.name !== "string"
+        )
+          return false;
+        const calledTool = normalizeMcpName(call.params.name);
+        if (CRITICAL_CONTINUATION_TOOLS.has(calledTool)) {
+          tools.push(
+            CRITICAL_CONTINUATION_DISPLAY_NAMES.get(calledTool) ?? calledTool,
+          );
+          return true;
+        }
+        if (calledTool !== TOOLS_INVOKE_NAME) return false;
+        const invokeArgs = call.params.arguments;
+        if (
+          !invokeArgs ||
+          typeof invokeArgs !== "object" ||
+          Array.isArray(invokeArgs)
+        )
+          return false;
+        const target = (invokeArgs as { name?: unknown }).name;
+        if (typeof target !== "string") return false;
+        const normalizedTarget = normalizeMcpName(target);
+        if (!CRITICAL_CONTINUATION_TOOLS.has(normalizedTarget)) return false;
+        tools.push(
+          CRITICAL_CONTINUATION_DISPLAY_NAMES.get(normalizedTarget) ??
+            normalizedTarget,
+        );
+        return true;
+      });
+    return critical
+      ? {
+          critical: true,
+          tools: [...new Set(tools)].slice(0, MAX_RECORDED_RPC_METHODS),
+        }
+      : { critical: false, tools: [] };
+  } catch {
+    return { critical: false, tools: [] };
+  }
+}
+
+export function isCriticalContinuationCall(
+  rawBody: Buffer,
+  requestPath?: string,
+): boolean {
+  return classifyCriticalContinuationCall(rawBody, requestPath).critical;
+}
+
+/** Argument-free identity for the critical request occupying/waiting on the durability slot. */
+export function criticalContinuationToolNames(
+  rawBody: Buffer,
+  requestPath?: string,
+): string[] {
+  return classifyCriticalContinuationCall(rawBody, requestPath).tools;
 }
 
 /** Fleet bootstrap, direct coordination delivery, continuation checkpoints, scheduler claims,
@@ -1192,28 +1468,43 @@ export function isCriticalContinuationCall(rawBody: Buffer, requestPath?: string
  * name; both are normalized through the shared tooldef helper before this narrow membership check.
  * Keep the reserved set deliberately narrow. `requestPath` covers the small
  * plain-REST bootstrap surface that cannot identify itself in a JSON-RPC body. */
-export function isReservedControlPlaneCall(rawBody: Buffer, requestPath?: string): boolean {
+export function isReservedControlPlaneCall(
+  rawBody: Buffer,
+  requestPath?: string,
+): boolean {
   if (isReservedControlPlanePath(requestPath)) return true;
   try {
-    const parsed = JSON.parse(rawBody.toString('utf8')) as unknown;
+    const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
     // JSON-RPC permits a request body to contain a batch. Reserve the whole forward when
     // any member is a control-plane call: one HTTP request consumes one admission slot, and
     // hiding a scheduler/orientation call inside a batch must not make it compete with ordinary
     // traffic for the non-reserved ceiling.
     const messages = Array.isArray(parsed) ? parsed : [parsed];
     return messages.some((message) => {
-      if (!message || typeof message !== 'object') return false;
-      const call = message as { method?: unknown; params?: { name?: unknown; arguments?: unknown } };
-      if (typeof call.method !== 'string') return false;
+      if (!message || typeof message !== "object") return false;
+      const call = message as {
+        method?: unknown;
+        params?: { name?: unknown; arguments?: unknown };
+      };
+      if (typeof call.method !== "string") return false;
       if (RESERVED_CONTROL_PLANE_METHODS.has(call.method)) return true;
-      if (call.method !== 'tools/call' || typeof call.params?.name !== 'string') return false;
+      if (call.method !== "tools/call" || typeof call.params?.name !== "string")
+        return false;
       const calledTool = normalizeMcpName(call.params.name);
       if (RESERVED_CONTROL_PLANE_TOOLS.has(calledTool)) return true;
       if (calledTool !== TOOLS_INVOKE_NAME) return false;
       const invokeArgs = call.params.arguments;
-      if (!invokeArgs || typeof invokeArgs !== 'object' || Array.isArray(invokeArgs)) return false;
+      if (
+        !invokeArgs ||
+        typeof invokeArgs !== "object" ||
+        Array.isArray(invokeArgs)
+      )
+        return false;
       const target = (invokeArgs as { name?: unknown }).name;
-      return typeof target === 'string' && RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(target));
+      return (
+        typeof target === "string" &&
+        RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(target))
+      );
     });
   } catch {
     return false;
@@ -1237,7 +1528,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     } catch {
       /* target unresolved (misconfig / operator.json missing) — omit rather than throw */
     }
-    recordProxyFailure({ pid: process.pid, listenPort: opts.listenPort, target, ...rec });
+    recordProxyFailure({
+      pid: process.pid,
+      listenPort: opts.listenPort,
+      target,
+      ...rec,
+    });
   };
 
   // EI-19305299022434394 — admission control + visibility state for THIS proxy instance.
@@ -1248,15 +1544,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // all-purpose semantics unless that caller also explicitly asks for a reserve.
   const controlPlaneReserve = Math.max(
     0,
-    opts.controlPlaneReserve ?? (opts.maxInFlight === undefined ? DEFAULT_CONTROL_PLANE_RESERVE : 0),
+    opts.controlPlaneReserve ??
+      (opts.maxInFlight === undefined ? DEFAULT_CONTROL_PLANE_RESERVE : 0),
   );
   const reservedControlPlaneGuaranteedFloor =
     maxInFlight > 1 && controlPlaneReserve > 0
       ? Math.min(Math.floor(controlPlaneReserve), maxInFlight - 1)
       : 0;
-  const ordinaryInFlightCeiling = reservedControlPlaneGuaranteedFloor > 0
-    ? maxInFlight - reservedControlPlaneGuaranteedFloor
-    : maxInFlight;
+  const ordinaryInFlightCeiling =
+    reservedControlPlaneGuaranteedFloor > 0
+      ? maxInFlight - reservedControlPlaneGuaranteedFloor
+      : maxInFlight;
   // EI-21553301566833091 — a strict 136/64 partition stranded every standard control read
   // while all 136 ordinary slots sat empty. Make the partition work-conserving without
   // returning to the old one-way reserve: each normal class may borrow only down to the
@@ -1267,12 +1565,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     ordinaryInFlightCeiling,
     reservedControlPlaneGuaranteedFloor,
   );
-  const reservedControlPlaneCeiling = reservedControlPlaneGuaranteedFloor > 0
-    ? Math.min(
-        maxInFlight,
-        Math.max(reservedControlPlaneGuaranteedFloor, maxInFlight - ordinaryGuaranteedFloor),
-      )
-    : maxInFlight;
+  const reservedControlPlaneCeiling =
+    reservedControlPlaneGuaranteedFloor > 0
+      ? Math.min(
+          maxInFlight,
+          Math.max(
+            reservedControlPlaneGuaranteedFloor,
+            maxInFlight - ordinaryGuaranteedFloor,
+          ),
+        )
+      : maxInFlight;
   const partitionedAdmission = reservedControlPlaneGuaranteedFloor > 0;
   const upstreamAgent = opts.upstreamAgent ?? UPSTREAM_AGENT;
   // Admission-only reservation is not end-to-end reservation: during the measured incident all
@@ -1280,19 +1582,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // behind them. A distinct pool gives the reserved slots real upstream capacity. Keep the pool
   // instance-local so its maxSockets follows an injected/env reserve; destroy only agents we own.
   const ownsControlPlaneAgent = opts.controlPlaneAgent === undefined;
-  const controlPlaneAgent = opts.controlPlaneAgent ?? new http.Agent({
-    keepAlive: false,
-    maxSockets: Math.max(1, reservedControlPlaneCeiling),
-  });
+  const controlPlaneAgent =
+    opts.controlPlaneAgent ??
+    new http.Agent({
+      keepAlive: false,
+      maxSockets: Math.max(1, reservedControlPlaneCeiling),
+    });
   const ownsWatchdogAgent = opts.watchdogAgent === undefined;
   // Keep one independent upstream socket for the watchdog. Admission reservation alone is not
   // enough: ordinary reserved tools/call traffic can occupy every socket in controlPlaneAgent
   // while its requests wait on a slow upstream, leaving the watchdog queued behind the failure
   // it is meant to diagnose.
-  const watchdogAgent = opts.watchdogAgent ?? new http.Agent({
-    keepAlive: false,
-    maxSockets: 1,
-  });
+  const watchdogAgent =
+    opts.watchdogAgent ??
+    new http.Agent({
+      keepAlive: false,
+      maxSockets: 1,
+    });
   const ownsCriticalContinuationAgent =
     opts.criticalContinuationAgent === undefined;
   // A single independent socket is intentional: continuation writes are infrequent, and
@@ -1303,14 +1609,32 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       keepAlive: false,
       maxSockets: 1,
     });
-  const maxHandshakeInFlight = opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
-  const configuredHandshakeQueue = opts.maxHandshakeQueue ?? DEFAULT_MAX_HANDSHAKE_QUEUE;
+  const maxHandshakeInFlight =
+    opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
+  const configuredHandshakeQueue =
+    opts.maxHandshakeQueue ?? DEFAULT_MAX_HANDSHAKE_QUEUE;
   const maxHandshakeQueue = Number.isFinite(configuredHandshakeQueue)
     ? Math.max(0, Math.floor(configuredHandshakeQueue))
     : 0;
   // EI-21504897841052086 — queue dwell bound + per-waiter telemetry cadence.
-  const maxHandshakeQueueWaitMs = opts.maxHandshakeQueueWaitMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
-  const queueWaitLogMs = opts.handshakeQueueWaitLogMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS;
+  const maxHandshakeQueueWaitMs =
+    opts.maxHandshakeQueueWaitMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
+  const queueWaitLogMs =
+    opts.handshakeQueueWaitLogMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS;
+  const configuredCriticalContinuationQueue =
+    opts.maxCriticalContinuationQueue ??
+    DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE;
+  const maxCriticalContinuationQueue = Number.isFinite(
+    configuredCriticalContinuationQueue,
+  )
+    ? Math.max(0, Math.floor(configuredCriticalContinuationQueue))
+    : 0;
+  const maxCriticalContinuationQueueWaitMs =
+    opts.maxCriticalContinuationQueueWaitMs ??
+    DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS;
+  const criticalContinuationQueueWaitLogMs =
+    opts.criticalContinuationQueueWaitLogMs ??
+    DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS;
   let handshakeInFlight = 0;
   // EI-21548622458694037 — admission must count the TWO normal traffic classes independently.
   // The old one-way "reserve" compared every ordinary request against TOTAL in-flight traffic,
@@ -1331,10 +1655,22 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const reservedControlPlaneInFlightStarts = new Map<number, number>();
   const watchdogProbeInFlightStarts = new Map<number, number>();
   const criticalContinuationInFlightStarts = new Map<number, number>();
+  interface CriticalContinuationRequestDetails {
+    startedAtMs: number;
+    traceId: string;
+    tools: string[];
+  }
+  const criticalContinuationRequests = new Map<
+    number,
+    CriticalContinuationRequestDetails
+  >();
   const completedForwardAtMs: number[] = [];
   let nextInFlightId = 0;
 
-  const oldestAgeMs = (starts: Map<number, number>, now = Date.now()): number | null => {
+  const oldestAgeMs = (
+    starts: Map<number, number>,
+    now = Date.now(),
+  ): number | null => {
     let oldest: number | null = null;
     for (const startedAt of starts.values()) {
       if (oldest == null || startedAt < oldest) oldest = startedAt;
@@ -1345,7 +1681,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const recordForwardCompletion = (completedAtMs: number): void => {
     completedForwardAtMs.push(completedAtMs);
     const cutoffMs = completedAtMs - SHED_DRAIN_RATE_WINDOW_MS;
-    while (completedForwardAtMs.length > 0 && completedForwardAtMs[0] < cutoffMs) {
+    while (
+      completedForwardAtMs.length > 0 &&
+      completedForwardAtMs[0] < cutoffMs
+    ) {
       completedForwardAtMs.shift();
     }
     while (completedForwardAtMs.length > MAX_SHED_DRAIN_SAMPLES) {
@@ -1354,7 +1693,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   };
 
   /** A request waiting for a class-cap slot. It is resolved only after the slot is reserved. */
-  interface QueuedHandshake {
+  interface QueuedAdmission {
     resolve: (granted: boolean) => void;
     cancelled: boolean;
     granted: boolean;
@@ -1365,27 +1704,56 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     /** Per-waiter telemetry/expiry watch; cleared on grant, cancel, and after the await. */
     waitTimer?: NodeJS.Timeout;
   }
+  interface QueuedCriticalContinuation extends QueuedAdmission {
+    traceId: string;
+    tools: string[];
+  }
+  type QueuedHandshake = QueuedAdmission;
   const handshakeQueue: QueuedHandshake[] = [];
+  const criticalContinuationQueue: QueuedCriticalContinuation[] = [];
   // Resolve one waiter at a time so the async continuation can increment the live counters
   // before another queued request is granted. This reservation also keeps the global hard cap
   // true while the grant continuation is between the queue and the forwarding loop.
   let handshakeGrantReservations = 0;
   let pumpHandshakeQueue: () => void = () => {};
+  let criticalContinuationGrantReservations = 0;
+  let pumpCriticalContinuationQueue: () => void = () => {};
 
   const handshakeQueueLength = (): number =>
-    handshakeQueue.reduce((count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1), 0);
+    handshakeQueue.reduce(
+      (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
+      0,
+    );
+  const criticalContinuationQueueLength = (): number =>
+    criticalContinuationQueue.reduce(
+      (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
+      0,
+    );
 
   const canGrantHandshake = (): boolean => {
-    if (shouldShedForInFlight(handshakeInFlight + handshakeGrantReservations, maxHandshakeInFlight)) {
+    if (
+      shouldShedForInFlight(
+        handshakeInFlight + handshakeGrantReservations,
+        maxHandshakeInFlight,
+      )
+    ) {
       return false;
     }
     if (partitionedAdmission) {
-      const reservedWithGrant = reservedControlPlaneInFlight + handshakeGrantReservations;
+      const reservedWithGrant =
+        reservedControlPlaneInFlight + handshakeGrantReservations;
       const normalWithGrant = ordinaryInFlight + reservedWithGrant;
-      return !shouldShedForInFlight(reservedWithGrant, reservedControlPlaneCeiling) &&
-        !shouldShedForInFlight(normalWithGrant, maxInFlight);
+      return (
+        !shouldShedForInFlight(
+          reservedWithGrant,
+          reservedControlPlaneCeiling,
+        ) && !shouldShedForInFlight(normalWithGrant, maxInFlight)
+      );
     }
-    return maxInFlight <= 0 || inFlightStarts.size + handshakeGrantReservations < maxInFlight;
+    return (
+      maxInFlight <= 0 ||
+      inFlightStarts.size + handshakeGrantReservations < maxInFlight
+    );
   };
 
   const cancelQueuedHandshake = (waiter: QueuedHandshake): void => {
@@ -1396,7 +1764,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   };
 
   /** EI-21504897841052086 — stop a waiter's dwell watch; idempotent. */
-  const clearQueuedWaitTimer = (waiter: QueuedHandshake): void => {
+  const clearQueuedWaitTimer = (waiter: QueuedAdmission): void => {
     if (!waiter.waitTimer) return;
     clearTimeout(waiter.waitTimer);
     waiter.waitTimer = undefined;
@@ -1413,6 +1781,38 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       waiter.granted = true;
       handshakeGrantReservations++;
       waiter.resolve(true);
+    }
+  };
+
+  const canGrantCriticalContinuation = (): boolean =>
+    !shouldShedForInFlight(
+      criticalContinuationInFlight + criticalContinuationGrantReservations,
+      1,
+    );
+
+  const cancelQueuedCriticalContinuation = (
+    waiter: QueuedCriticalContinuation,
+  ): void => {
+    if (waiter.cancelled || waiter.granted) return;
+    waiter.cancelled = true;
+    waiter.resolve(false);
+    pumpCriticalContinuationQueue();
+  };
+
+  pumpCriticalContinuationQueue = (): void => {
+    while (criticalContinuationQueue.length > 0) {
+      const waiter = criticalContinuationQueue.shift();
+      if (!waiter || waiter.cancelled) continue;
+      if (!canGrantCriticalContinuation()) {
+        criticalContinuationQueue.unshift(waiter);
+        return;
+      }
+      waiter.granted = true;
+      criticalContinuationGrantReservations++;
+      waiter.resolve(true);
+      // The continuation that received this reservation increments the live counter before the
+      // event loop returns here, so one grant per pump is the simplest fail-closed guarantee.
+      return;
     }
   };
 
@@ -1435,7 +1835,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // that happened to be in flight at a sample instant), so it beats, then reschedules itself for as
   // long as the request remains open. This fires deterministically for any forward held at least
   // `heartbeatIntervalMs`, with no dependency on how many other requests are in flight or when.
-  const heartbeatIntervalMs = opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
+  const heartbeatIntervalMs =
+    opts.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS;
   if (heartbeatIntervalMs > 0) {
     // Deliberately does NOT contain the word "heartbeat" — that word marks a real per-request
     // beat event (tests and any production log-grep for `heartbeat` key off it), and this is a
@@ -1452,8 +1853,24 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       if (!inFlightStarts.has(inFlightId)) return;
       const oldestAgeMs = Date.now() - startedAt;
       const count = inFlightStarts.size;
-      log(`heartbeat: request #${inFlightId} held ${Math.round(oldestAgeMs / 1000)}s, ${count} in flight total`);
-      record({ kind: 'heartbeat', inFlight: count, oldestAgeMs, maxInFlight, inFlightId });
+      const criticalDetails = criticalContinuationRequests.get(inFlightId);
+      log(
+        `heartbeat: request #${inFlightId} held ${Math.round(oldestAgeMs / 1000)}s, ${count} in flight total`,
+      );
+      record({
+        kind: "heartbeat",
+        inFlight: count,
+        oldestAgeMs,
+        maxInFlight,
+        inFlightId,
+        ...(criticalDetails
+          ? {
+              admissionClass: "critical-continuation",
+              traceId: criticalDetails.traceId,
+              tools: criticalDetails.tools,
+            }
+          : {}),
+      });
       scheduleStallCheck(inFlightId, startedAt); // still outstanding — keep beating until it isn't
     }, heartbeatIntervalMs);
     timer.unref?.();
@@ -1477,7 +1894,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const inboundSnapshot = (): typeof inbound => ({ ...inbound });
   const isSocketResetError = (error: Error): boolean => {
     const code = (error as NodeJS.ErrnoException).code;
-    return code === 'ECONNRESET' || code === 'EPIPE' || /(?:socket|connection).*(?:reset|hang up)/i.test(error.message);
+    return (
+      code === "ECONNRESET" ||
+      code === "EPIPE" ||
+      /(?:socket|connection).*(?:reset|hang up)/i.test(error.message)
+    );
   };
   const socketDetails = (socket: object): Record<string, unknown> => {
     const peer = socket as {
@@ -1491,13 +1912,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       remoteFamily: peer.remoteFamily,
     };
   };
-  const recordInboundSocketReset = (socket: object | undefined, source: string): void => {
+  const recordInboundSocketReset = (
+    socket: object | undefined,
+    source: string,
+  ): void => {
     if (socket && resetSockets.has(socket)) return;
     if (socket) resetSockets.add(socket);
     inbound.socketResets++;
     log(`inbound socket reset (${source})`);
     record({
-      kind: 'inbound_socket_reset',
+      kind: "inbound_socket_reset",
       event: source,
       socketResets: inbound.socketResets,
       ...(socket ? socketDetails(socket) : {}),
@@ -1507,14 +1931,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     inbound.clientErrors++;
     const socketReset = isSocketResetError(error);
     if (socketReset) {
-      recordInboundSocketReset(socket, 'clientError');
+      recordInboundSocketReset(socket, "clientError");
     }
     const errorCode = (error as NodeJS.ErrnoException).code;
     const message = error.message || String(error);
-    log(`inbound client error${socketReset ? ' / socket reset' : ''}: ${message}`);
+    log(
+      `inbound client error${socketReset ? " / socket reset" : ""}: ${message}`,
+    );
     record({
-      kind: 'inbound_client_error',
-      event: 'clientError',
+      kind: "inbound_client_error",
+      event: "clientError",
       errorCode,
       detail: message,
       socketReset,
@@ -1525,7 +1951,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
 
   const server = http.createServer((req, res) => {
     const receivedAt = Date.now();
-    if (req.method === 'GET' && req.url === MCP_PROXY_LOCAL_HEALTH_PATH) {
+    if (req.method === "GET" && req.url === MCP_PROXY_LOCAL_HEALTH_PATH) {
       let target: McpProxyTarget | null = null;
       try {
         target = resolveTarget(opts);
@@ -1533,30 +1959,71 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         target = null;
       }
       const healthNow = Date.now();
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({
-        ok: true,
-        target,
-        inbound: inboundSnapshot(),
-        inFlight: {
-          total: inFlightStarts.size,
-          ordinary: ordinaryInFlight,
-          reservedControlPlane: reservedControlPlaneInFlight,
-          watchdog: watchdogProbeInFlight,
-          criticalContinuation: criticalContinuationInFlight,
-          maxInFlight,
-          ordinaryCeiling: ordinaryInFlightCeiling,
-          ordinaryGuaranteedFloor,
-          reservedControlPlaneGuaranteedFloor,
-          reservedControlPlaneCeiling,
-          oldestAgeMs: {
-            ordinary: oldestAgeMs(ordinaryInFlightStarts, healthNow),
-            reservedControlPlane: oldestAgeMs(reservedControlPlaneInFlightStarts, healthNow),
-            watchdog: oldestAgeMs(watchdogProbeInFlightStarts, healthNow),
-            criticalContinuation: oldestAgeMs(criticalContinuationInFlightStarts, healthNow),
+      const activeCriticalContinuationRequests = [
+        ...criticalContinuationRequests.entries(),
+      ]
+        .slice(0, MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS)
+        .map(([inFlightId, details]) => ({
+          inFlightId,
+          traceId: details.traceId,
+          tools: details.tools,
+          ageMs: Math.max(0, healthNow - details.startedAtMs),
+        }));
+      const waitingCriticalContinuationRequests = criticalContinuationQueue
+        .filter((waiter) => !waiter.cancelled && !waiter.granted)
+        .slice(0, MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS)
+        .map((waiter) => ({
+          traceId: waiter.traceId,
+          tools: waiter.tools,
+          ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
+        }));
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          target,
+          inbound: inboundSnapshot(),
+          inFlight: {
+            total: inFlightStarts.size,
+            ordinary: ordinaryInFlight,
+            reservedControlPlane: reservedControlPlaneInFlight,
+            watchdog: watchdogProbeInFlight,
+            criticalContinuation: criticalContinuationInFlight,
+            criticalContinuationRequests: activeCriticalContinuationRequests,
+            criticalContinuationQueue: {
+              waiting: criticalContinuationQueueLength(),
+              max: maxCriticalContinuationQueue,
+              maxWaitMs: maxCriticalContinuationQueueWaitMs,
+              oldestAgeMs:
+                waitingCriticalContinuationRequests.length > 0
+                  ? Math.max(
+                      ...waitingCriticalContinuationRequests.map(
+                        (request) => request.ageMs,
+                      ),
+                    )
+                  : null,
+              requests: waitingCriticalContinuationRequests,
+            },
+            maxInFlight,
+            ordinaryCeiling: ordinaryInFlightCeiling,
+            ordinaryGuaranteedFloor,
+            reservedControlPlaneGuaranteedFloor,
+            reservedControlPlaneCeiling,
+            oldestAgeMs: {
+              ordinary: oldestAgeMs(ordinaryInFlightStarts, healthNow),
+              reservedControlPlane: oldestAgeMs(
+                reservedControlPlaneInFlightStarts,
+                healthNow,
+              ),
+              watchdog: oldestAgeMs(watchdogProbeInFlightStarts, healthNow),
+              criticalContinuation: oldestAgeMs(
+                criticalContinuationInFlightStarts,
+                healthNow,
+              ),
+            },
           },
-        },
-      }));
+        }),
+      );
       return;
     }
     // WI-35737 — CLIENT-DISCONNECT TRACKING. Before this, the proxy had no client-side
@@ -1575,7 +2042,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     let clientGone = false;
     let abortAttempt: (() => void) | null = null;
     let cancelQueuedAdmission: (() => void) | null = null;
-    const noteClientGone = (source: 'response_close' | 'request_aborted'): void => {
+    const noteClientGone = (
+      source: "response_close" | "request_aborted",
+    ): void => {
       // 'close' also fires on NORMAL completion — `writableFinished` is what separates "the
       // response was fully sent" from "the peer vanished mid-flight". Without this guard
       // every successful request would mark itself aborted.
@@ -1585,19 +2054,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       cancelQueuedAdmission?.();
       abortAttempt?.();
     };
-    res.on('close', () => noteClientGone('response_close'));
-    req.on('aborted', () => noteClientGone('request_aborted'));
+    res.on("close", () => noteClientGone("response_close"));
+    req.on("aborted", () => noteClientGone("request_aborted"));
     const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => chunks.push(c));
-    req.on('error', (error) => {
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("error", (error) => {
       if (isSocketResetError(error)) {
-        recordInboundSocketReset(req.socket, 'request_error');
+        recordInboundSocketReset(req.socket, "request_error");
       } else {
         inbound.clientErrors++;
-        log(`inbound client error (request): ${error.message || String(error)}`);
+        log(
+          `inbound client error (request): ${error.message || String(error)}`,
+        );
         record({
-          kind: 'inbound_client_error',
-          event: 'request_error',
+          kind: "inbound_client_error",
+          event: "request_error",
           detail: error.message || String(error),
           clientErrors: inbound.clientErrors,
           ...socketDetails(req.socket),
@@ -1610,7 +2081,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         /* client already gone */
       }
     });
-    req.on('end', () => {
+    req.on("end", () => {
       void (async () => {
         const rawBody = Buffer.concat(chunks);
         const bodyReadyAt = Date.now();
@@ -1621,26 +2092,39 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // this is what stops the congestion-collapse feedback loop the unbounded agent used to
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
-        const reservedControlPlane = isReservedControlPlaneCall(rawBody, req.url);
-        const criticalContinuation = isCriticalContinuationCall(rawBody, req.url);
+        const requestTraceId = randomUUID();
+        const reservedControlPlane = isReservedControlPlaneCall(
+          rawBody,
+          req.url,
+        );
+        const criticalContinuationIdentity = classifyCriticalContinuationCall(
+          rawBody,
+          req.url,
+        );
+        const criticalContinuation = criticalContinuationIdentity.critical;
+        const criticalContinuationTools = criticalContinuationIdentity.tools;
         const sessionHandshake = isMcpSessionHandshakeCall(rawBody);
-        const watchdogSessionProbe = sessionHandshake && isMcpProxyWatchdogProbePath(req.url);
+        const watchdogSessionProbe =
+          sessionHandshake && isMcpProxyWatchdogProbePath(req.url);
         const standardReservedControlPlane =
-          reservedControlPlane && !criticalContinuation && !watchdogSessionProbe;
+          reservedControlPlane &&
+          !criticalContinuation &&
+          !watchdogSessionProbe;
         const admissionClass = criticalContinuation
-          ? 'critical-continuation'
+          ? "critical-continuation"
           : watchdogSessionProbe
-            ? 'watchdog'
+            ? "watchdog"
             : standardReservedControlPlane
-              ? 'reserved-control-plane'
-              : 'ordinary';
-        const admissionCeiling = criticalContinuation || watchdogSessionProbe
-          ? 1
-          : partitionedAdmission
-            ? standardReservedControlPlane
-              ? reservedControlPlaneCeiling
-              : ordinaryInFlightCeiling
-            : maxInFlight;
+              ? "reserved-control-plane"
+              : "ordinary";
+        const admissionCeiling =
+          criticalContinuation || watchdogSessionProbe
+            ? 1
+            : partitionedAdmission
+              ? standardReservedControlPlane
+                ? reservedControlPlaneCeiling
+                : ordinaryInFlightCeiling
+              : maxInFlight;
         const classInFlight = criticalContinuation
           ? criticalContinuationInFlight
           : watchdogSessionProbe
@@ -1655,9 +2139,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           shouldShedForInFlight(normalInFlight, maxInFlight);
         // Ordinary handshakes use the bounded FIFO below, which accounts for both their own
         // handshake cap and the reserved-class cap. Shedding them here would bypass that queue.
-        const admissionSaturated = sessionHandshake && !watchdogSessionProbe
+        const admissionSaturated = criticalContinuation
           ? false
-          : shouldShedForInFlight(classInFlight, admissionCeiling) || normalPartitionSaturated;
+          : sessionHandshake && !watchdogSessionProbe
+            ? false
+            : shouldShedForInFlight(classInFlight, admissionCeiling) ||
+              normalPartitionSaturated;
         if (admissionSaturated) {
           const retryAfterSec = retryAfterSecForDrainRate(
             classInFlight,
@@ -1665,19 +2152,24 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             completedForwardAtMs,
             Date.now(),
           );
-          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(retryAfterSec) });
+          res.writeHead(429, {
+            "content-type": "application/json",
+            "retry-after": String(retryAfterSec),
+          });
           res.end(
             JSON.stringify({
               ok: false,
-              error: 'mcp_proxy_overloaded',
+              error: "mcp_proxy_overloaded",
               retryable: true,
               detail: `proxy ${admissionClass} class already has ${classInFlight} request(s) in flight (class max ${admissionCeiling}, total ${inFlightNow}, normal hard max ${maxInFlight}) — shed before forwarding`,
               retryAfterSec,
             }),
           );
-          log(`shed request — ${admissionClass} ${classInFlight}/${admissionCeiling}, ${inFlightNow} total`);
+          log(
+            `shed request — ${admissionClass} ${classInFlight}/${admissionCeiling}, ${inFlightNow} total`,
+          );
           record({
-            kind: 'shed_max_in_flight',
+            kind: "shed_max_in_flight",
             method: req.method,
             path: req.url,
             inFlight: inFlightNow,
@@ -1692,6 +2184,190 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           });
           return;
         }
+        // EI-21556422206126497 — the one-socket continuation bulkhead protects durability writes
+        // from normal traffic, but the old hard admission ceiling shed every SECOND durability
+        // write immediately. Preserve single-flight upstream execution while absorbing a bounded
+        // concurrent burst in FIFO order. A waiter owns no socket or in-flight slot until granted.
+        if (criticalContinuation && !canGrantCriticalContinuation()) {
+          pumpCriticalContinuationQueue();
+          if (
+            maxCriticalContinuationQueue <= criticalContinuationQueueLength()
+          ) {
+            const retryAfterSec = retryAfterSecForDrainRate(
+              criticalContinuationInFlight,
+              1,
+              completedForwardAtMs,
+              Date.now(),
+            );
+            res.writeHead(429, {
+              "content-type": "application/json",
+              "retry-after": String(retryAfterSec),
+            });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error: "mcp_proxy_critical_continuation_queue_full",
+                retryable: true,
+                detail: `proxy critical-continuation FIFO already has ${criticalContinuationQueueLength()} waiter(s) (queue max ${maxCriticalContinuationQueue})`,
+                retryAfterSec,
+                traceId: requestTraceId,
+              }),
+            );
+            log(
+              `shed critical-continuation request ${requestTraceId} (${criticalContinuationTools.join(",") || "unknown"}) — ` +
+                `${criticalContinuationQueueLength()}/${maxCriticalContinuationQueue} waiters`,
+            );
+            record({
+              kind: "shed_critical_continuation_queue_full",
+              method: req.method,
+              path: req.url,
+              traceId: requestTraceId,
+              tools: criticalContinuationTools,
+              criticalContinuationInFlight,
+              queueLength: criticalContinuationQueueLength(),
+              maxCriticalContinuationQueue,
+              retryAfterSec,
+            });
+            return;
+          }
+
+          let queuedCriticalContinuation!: QueuedCriticalContinuation;
+          const enqueuedAtMs = Date.now();
+          const granted = await new Promise<boolean>((resolve) => {
+            queuedCriticalContinuation = {
+              resolve,
+              cancelled: false,
+              granted: false,
+              enqueuedAtMs,
+              expired: false,
+              traceId: requestTraceId,
+              tools: criticalContinuationTools,
+            };
+            criticalContinuationQueue.push(queuedCriticalContinuation);
+            cancelQueuedAdmission = (): void => {
+              clearQueuedWaitTimer(queuedCriticalContinuation);
+              cancelQueuedCriticalContinuation(queuedCriticalContinuation);
+            };
+
+            const armCriticalContinuationWaitWatch = (): void => {
+              if (
+                maxCriticalContinuationQueueWaitMs === 0 &&
+                criticalContinuationQueueWaitLogMs === 0
+              ) {
+                return;
+              }
+              const waitedMs =
+                Date.now() - queuedCriticalContinuation.enqueuedAtMs;
+              const remainingMs =
+                maxCriticalContinuationQueueWaitMs > 0
+                  ? Math.max(1, maxCriticalContinuationQueueWaitMs - waitedMs)
+                  : Number.POSITIVE_INFINITY;
+              const nextLogMs =
+                criticalContinuationQueueWaitLogMs > 0
+                  ? criticalContinuationQueueWaitLogMs
+                  : Number.POSITIVE_INFINITY;
+              const nextDelayMs = Math.min(remainingMs, nextLogMs);
+              if (!Number.isFinite(nextDelayMs)) return;
+              queuedCriticalContinuation.waitTimer = setTimeout(() => {
+                if (
+                  queuedCriticalContinuation.granted ||
+                  queuedCriticalContinuation.cancelled
+                )
+                  return;
+                const waitedSoFarMs =
+                  Date.now() - queuedCriticalContinuation.enqueuedAtMs;
+                if (
+                  maxCriticalContinuationQueueWaitMs > 0 &&
+                  waitedSoFarMs >= maxCriticalContinuationQueueWaitMs
+                ) {
+                  queuedCriticalContinuation.expired = true;
+                  clearQueuedWaitTimer(queuedCriticalContinuation);
+                  cancelQueuedCriticalContinuation(queuedCriticalContinuation);
+                  return;
+                }
+                log(
+                  `critical-continuation request ${requestTraceId} (${criticalContinuationTools.join(",") || "unknown"}) ` +
+                    `still queued ${Math.round(waitedSoFarMs / 1000)}s — ` +
+                    `${criticalContinuationInFlight} in flight, ${criticalContinuationQueueLength()} waiting`,
+                );
+                record({
+                  kind: "critical_continuation_queue_wait",
+                  method: req.method,
+                  path: req.url,
+                  traceId: requestTraceId,
+                  tools: criticalContinuationTools,
+                  waitedMs: waitedSoFarMs,
+                  criticalContinuationInFlight,
+                  queueLength: criticalContinuationQueueLength(),
+                  maxCriticalContinuationQueue,
+                  maxCriticalContinuationQueueWaitMs,
+                });
+                armCriticalContinuationWaitWatch();
+              }, nextDelayMs);
+              queuedCriticalContinuation.waitTimer.unref?.();
+            };
+            armCriticalContinuationWaitWatch();
+            log(
+              `queued critical-continuation request ${requestTraceId} (${criticalContinuationTools.join(",") || "unknown"}) — ` +
+                `${criticalContinuationInFlight} in flight, ${criticalContinuationQueueLength()} waiting`,
+            );
+            record({
+              kind: "queue_critical_continuation",
+              method: req.method,
+              path: req.url,
+              traceId: requestTraceId,
+              tools: criticalContinuationTools,
+              criticalContinuationInFlight,
+              queueLength: criticalContinuationQueueLength(),
+              maxCriticalContinuationQueue,
+              maxCriticalContinuationQueueWaitMs,
+            });
+          });
+          clearQueuedWaitTimer(queuedCriticalContinuation);
+          cancelQueuedAdmission = null;
+          if (!granted || clientGone) {
+            if (granted) {
+              criticalContinuationGrantReservations = Math.max(
+                0,
+                criticalContinuationGrantReservations - 1,
+              );
+              pumpCriticalContinuationQueue();
+            } else if (queuedCriticalContinuation.expired && !clientGone) {
+              const waitedMs =
+                Date.now() - queuedCriticalContinuation.enqueuedAtMs;
+              res.writeHead(429, {
+                "content-type": "application/json",
+                "retry-after": "2",
+              });
+              res.end(
+                JSON.stringify({
+                  ok: false,
+                  error: "mcp_proxy_critical_continuation_queue_dwell",
+                  retryable: true,
+                  detail: `critical-continuation write waited ${waitedMs}ms in the FIFO (max ${maxCriticalContinuationQueueWaitMs}ms)`,
+                  retryAfterSec: 2,
+                  traceId: requestTraceId,
+                }),
+              );
+              record({
+                kind: "shed_critical_continuation_queue_dwell",
+                method: req.method,
+                path: req.url,
+                traceId: requestTraceId,
+                tools: criticalContinuationTools,
+                waitedMs,
+                criticalContinuationInFlight,
+                queueLength: criticalContinuationQueueLength(),
+                maxCriticalContinuationQueueWaitMs,
+              });
+            }
+            return;
+          }
+          criticalContinuationGrantReservations = Math.max(
+            0,
+            criticalContinuationGrantReservations - 1,
+          );
+        }
         // EI-21391963810159383 — a proxy restart made ~60 clients reconnect at once. Because
         // initialize/tools/list/ping are reserved traffic, every one bypassed the ordinary
         // ceiling and queued/replayed inside the 8-socket control-plane pool: 1,164 internal
@@ -1699,24 +2375,30 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // the herd it was trying to diagnose. Bound THIS write-free class before it opens an
         // upstream socket. The watchdog's exact named probe alone uses the socket deliberately
         // left outside the normal production partition; its one-socket agent is its hard bound.
-        const countsTowardHandshakeCap = sessionHandshake && !watchdogSessionProbe;
+        const countsTowardHandshakeCap =
+          sessionHandshake && !watchdogSessionProbe;
         if (countsTowardHandshakeCap && !canGrantHandshake()) {
           // Prune cancelled entries before enforcing the bounded FIFO length. A cancelled
           // request is not capacity, even when its promise has not yet reached the async
           // continuation that observes the false grant.
           pumpHandshakeQueue();
           if (maxHandshakeQueue <= handshakeQueueLength()) {
-            res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
+            res.writeHead(429, {
+              "content-type": "application/json",
+              "retry-after": "2",
+            });
             res.end(
               JSON.stringify({
-                error: 'mcp_proxy_handshake_overloaded',
+                error: "mcp_proxy_handshake_overloaded",
                 detail: `proxy already has ${handshakeInFlight} session handshake(s) in flight (class max ${maxHandshakeInFlight}, queue max ${maxHandshakeQueue}) — shed before forwarding`,
                 retryAfterSec: 2,
               }),
             );
-            log(`shed session handshake — ${handshakeInFlight} already in flight (class max ${maxHandshakeInFlight}, queue full)`);
+            log(
+              `shed session handshake — ${handshakeInFlight} already in flight (class max ${maxHandshakeInFlight}, queue full)`,
+            );
             record({
-              kind: 'shed_handshake_queue_full',
+              kind: "shed_handshake_queue_full",
               method: req.method,
               path: req.url,
               inFlight: inFlightNow,
@@ -1732,7 +2414,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           let queuedHandshake!: QueuedHandshake;
           const enqueuedAtMs = Date.now();
           const granted = await new Promise<boolean>((resolve) => {
-            queuedHandshake = { resolve, cancelled: false, granted: false, enqueuedAtMs, expired: false };
+            queuedHandshake = {
+              resolve,
+              cancelled: false,
+              granted: false,
+              enqueuedAtMs,
+              expired: false,
+            };
             handshakeQueue.push(queuedHandshake);
             cancelQueuedAdmission = (): void => {
               clearQueuedWaitTimer(queuedHandshake);
@@ -1746,9 +2434,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             if (queueWaitLogMs > 0) {
               const armQueueWaitWatch = (): void => {
                 queuedHandshake.waitTimer = setTimeout(() => {
-                  if (queuedHandshake.granted || queuedHandshake.cancelled) return;
-                  const waitedSoFarMs = Date.now() - queuedHandshake.enqueuedAtMs;
-                  if (handshakeQueueWaitExpired(waitedSoFarMs, maxHandshakeQueueWaitMs)) {
+                  if (queuedHandshake.granted || queuedHandshake.cancelled)
+                    return;
+                  const waitedSoFarMs =
+                    Date.now() - queuedHandshake.enqueuedAtMs;
+                  if (
+                    handshakeQueueWaitExpired(
+                      waitedSoFarMs,
+                      maxHandshakeQueueWaitMs,
+                    )
+                  ) {
                     queuedHandshake.expired = true;
                     clearQueuedWaitTimer(queuedHandshake);
                     cancelQueuedHandshake(queuedHandshake); // resolves false + pumps the queue
@@ -1759,7 +2454,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                       `${handshakeInFlight} in flight, ${handshakeQueueLength()} waiting (max ${maxHandshakeQueue})`,
                   );
                   record({
-                    kind: 'handshake_queue_wait',
+                    kind: "handshake_queue_wait",
                     method: req.method,
                     path: req.url,
                     waitedMs: waitedSoFarMs,
@@ -1774,9 +2469,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               };
               armQueueWaitWatch();
             }
-            log(`queued session handshake — ${handshakeInFlight} in flight, ${handshakeQueueLength()} waiting (max ${maxHandshakeQueue})`);
+            log(
+              `queued session handshake — ${handshakeInFlight} in flight, ${handshakeQueueLength()} waiting (max ${maxHandshakeQueue})`,
+            );
             record({
-              kind: 'queue_handshake',
+              kind: "queue_handshake",
               method: req.method,
               path: req.url,
               inFlight: inFlightNow,
@@ -1790,23 +2487,31 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           cancelQueuedAdmission = null;
           if (!granted || clientGone) {
             if (granted) {
-              handshakeGrantReservations = Math.max(0, handshakeGrantReservations - 1);
+              handshakeGrantReservations = Math.max(
+                0,
+                handshakeGrantReservations - 1,
+              );
               pumpHandshakeQueue();
             } else if (queuedHandshake.expired && !clientGone) {
               // Dwell expiry with a LIVE client: answer honestly instead of silently
               // dropping it — the client's own budget (16-44s observed) may not have fired.
               const waitedMs = Date.now() - queuedHandshake.enqueuedAtMs;
-              res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
+              res.writeHead(429, {
+                "content-type": "application/json",
+                "retry-after": "2",
+              });
               res.end(
                 JSON.stringify({
-                  error: 'mcp_proxy_handshake_queue_dwell',
+                  error: "mcp_proxy_handshake_queue_dwell",
                   detail: `session handshake waited ${waitedMs}ms in the admission queue (max ${maxHandshakeQueueWaitMs}ms) — shed; retry`,
                   retryAfterSec: 2,
                 }),
               );
-              log(`shed session handshake — queue dwell ${waitedMs}ms exceeded ${maxHandshakeQueueWaitMs}ms`);
+              log(
+                `shed session handshake — queue dwell ${waitedMs}ms exceeded ${maxHandshakeQueueWaitMs}ms`,
+              );
               record({
-                kind: 'shed_handshake_queue_dwell',
+                kind: "shed_handshake_queue_dwell",
                 method: req.method,
                 path: req.url,
                 waitedMs,
@@ -1817,7 +2522,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             }
             return;
           }
-          handshakeGrantReservations = Math.max(0, handshakeGrantReservations - 1);
+          handshakeGrantReservations = Math.max(
+            0,
+            handshakeGrantReservations - 1,
+          );
         }
         const admittedAt = Date.now();
         const inFlightId = nextInFlightId++;
@@ -1826,6 +2534,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         if (criticalContinuation) {
           criticalContinuationInFlight++;
           criticalContinuationInFlightStarts.set(inFlightId, inFlightStartedAt);
+          criticalContinuationRequests.set(inFlightId, {
+            startedAtMs: inFlightStartedAt,
+            traceId: requestTraceId,
+            tools: criticalContinuationTools,
+          });
         } else if (watchdogSessionProbe) {
           watchdogProbeInFlight++;
           watchdogProbeInFlightStarts.set(inFlightId, inFlightStartedAt);
@@ -1843,17 +2556,25 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // idempotencyKey ONCE, reused across every retry of THIS request so :3070 dedups a
           // replay instead of double-applying the write. Kill-switch:
           // PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces tools/call to 'opaque' (refused-only).
-          const keyingEnabled = process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY !== '0';
+          const keyingEnabled =
+            process.env.PAPERCUSP_MCP_PROXY_KEYED_RETRY !== "0";
           // EI-21268234394605529: replay a provably read-only tools/call once on a
           // post-connect socket error (own kill-switch; the keying master switch above
           // disables it too). Defaults ON.
           const readonlyRetryEnabled =
-            keyingEnabled && process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY !== '0';
+            keyingEnabled &&
+            process.env.PAPERCUSP_MCP_PROXY_READONLY_RETRY !== "0";
           // P-010: absorb an admission-control 429 by retrying (kill-switch to opt out).
-          const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== '0';
-          const absorbBoot = process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== '0';
-          const fwd = prepareForward(req.method ?? 'GET', req.headers, rawBody, { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID });
-          const traceId = randomUUID();
+          const absorb429 = process.env.PAPERCUSP_MCP_PROXY_ABSORB_429 !== "0";
+          const absorbBoot =
+            process.env.PAPERCUSP_MCP_PROXY_ABSORB_BOOT !== "0";
+          const fwd = prepareForward(
+            req.method ?? "GET",
+            req.headers,
+            rawBody,
+            { keyingEnabled, readonlyRetryEnabled, genKey: randomUUID },
+          );
+          const traceId = requestTraceId;
           fwd.headers = { ...fwd.headers, [MCP_PROXY_TRACE_HEADER]: traceId };
           // WI-41042 detector gap: `klass:'idempotent'` folds initialize,
           // tools/list, ping, resources and prompts together. Preserve only the
@@ -1863,18 +2584,22 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             traceId,
             ...(fwd.rpcMethods.length ? { rpcMethods: fwd.rpcMethods } : {}),
           };
-          const isInitialize = fwd.rpcMethods.includes('initialize');
+          const isInitialize = fwd.rpcMethods.includes("initialize");
           const recordInitializeStage = (
-            outcome: 'slow_response' | 'timeout_retry' | 'timeout_exhausted',
+            outcome: "slow_response" | "timeout_retry" | "timeout_exhausted",
             upstreamMs: number,
           ): void => {
             const totalMs = Date.now() - receivedAt;
-            if (!isInitialize || (outcome === 'slow_response' && totalMs < initializeSlowMs)) return;
+            if (
+              !isInitialize ||
+              (outcome === "slow_response" && totalMs < initializeSlowMs)
+            )
+              return;
             // Privacy boundary: request-specific fields are limited to the proxy-owned trace id,
             // a finite outcome enum, and stage durations. Never add methods, tool names, args,
             // headers, URLs, bodies, or error text to this record.
             record({
-              kind: 'initialize_stage',
+              kind: "initialize_stage",
               traceId,
               outcome,
               stages: {
@@ -1887,7 +2612,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           };
           // EI-19294517824914302: a cheap repeating beat fails fast instead of burning the
           // restart-sized window (~30 attempts) and amplifying a transient stall ~30x.
-          const retryWindowMs = effectiveRetryWindowMs(req.url ?? '/', opts.retryWindowMs);
+          const retryWindowMs = effectiveRetryWindowMs(
+            req.url ?? "/",
+            opts.retryWindowMs,
+          );
           const started = Date.now();
           let attempts = 0;
           let postConnectRetries = 0;
@@ -1918,8 +2646,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // (This costs nothing in practice: every failure in the measured 2026-08-08 window
             // — 540 handshake timeouts, 520 upstream errors, 245 post-connect retries — was
             // klass 'idempotent'.)
-            const attemptAbort = fwd.klass === 'idempotent' ? new AbortController() : null;
-            abortAttempt = attemptAbort ? (): void => attemptAbort.abort() : null;
+            const attemptAbort =
+              fwd.klass === "idempotent" ? new AbortController() : null;
+            abortAttempt = attemptAbort
+              ? (): void => attemptAbort.abort()
+              : null;
             let outcome: ForwardOutcome;
             try {
               outcome = await forwardOnce(
@@ -1951,8 +2682,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // write to a dead socket.
             if (clientGone) {
               record({
-                kind: 'client_gone',
-                method: req.method, path: req.url, klass: fwd.klass, attempts,
+                kind: "client_gone",
+                method: req.method,
+                path: req.url,
+                klass: fwd.klass,
+                attempts,
                 elapsedMs: Date.now() - started,
               });
               break;
@@ -1961,7 +2695,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             if (outcome.ures) {
               const ures = outcome.ures;
               const status = ures.statusCode ?? 502;
-              recordInitializeStage('slow_response', upstreamMs);
+              recordInitializeStage("slow_response", upstreamMs);
               // P-010: :3070 shed this tools/call (event loop critically saturated). The tool
               // NEVER dispatched (429 = not fulfilled) → replay is write-safe for any class.
               // Drain the shed response to free the socket, wait Retry-After, and retry within
@@ -1971,17 +2705,38 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // watchdog's liveness check) that yields 404/405 must surface INSTANTLY —
               // absorbing it would stall probes for the whole retry window and read as a
               // wedge (worst case: the watchdog restart-loops the proxy, flapping the fleet).
-              const bootAbsorbable = req.method === 'POST' && BOOT_WINDOW_STATUSES.has(status) && absorbBoot;
+              const bootAbsorbable =
+                req.method === "POST" &&
+                BOOT_WINDOW_STATUSES.has(status) &&
+                absorbBoot;
               if (
-                ((isBackpressureStatus(status) && absorb429) || bootAbsorbable) &&
-                backpressureRetryable(backpressureRetries, MAX_BACKPRESSURE_RETRIES, elapsed, retryWindowMs)
+                ((isBackpressureStatus(status) && absorb429) ||
+                  bootAbsorbable) &&
+                backpressureRetryable(
+                  backpressureRetries,
+                  MAX_BACKPRESSURE_RETRIES,
+                  elapsed,
+                  retryWindowMs,
+                )
               ) {
                 backpressureRetries++;
-                const waitMs = retryAfterMs(ures.headers['retry-after'], backoff, MAX_BACKPRESSURE_WAIT_MS);
+                const waitMs = retryAfterMs(
+                  ures.headers["retry-after"],
+                  backoff,
+                  MAX_BACKPRESSURE_WAIT_MS,
+                );
                 ures.resume(); // discard the shed/boot-window body so the (keepAlive:false) socket is released
                 record({
-                  kind: isBackpressureStatus(status) ? 'absorb_429' : 'absorb_boot_status',
-                  method: req.method, path: req.url, status, attempts, backpressureRetries, waitMs, elapsedMs: elapsed,
+                  kind: isBackpressureStatus(status)
+                    ? "absorb_429"
+                    : "absorb_boot_status",
+                  method: req.method,
+                  path: req.url,
+                  status,
+                  attempts,
+                  backpressureRetries,
+                  waitMs,
+                  elapsedMs: elapsed,
                 });
                 await new Promise((r) => setTimeout(r, waitMs));
                 continue;
@@ -1994,19 +2749,39 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               // for the life of the stream. Safe for every class, unlike aborting a request
               // in flight: headers are already back, so the tools/call has run — destroying
               // the RESPONSE cannot half-apply anything.
-              res.on('close', () => {
+              res.on("close", () => {
                 if (!ures.destroyed) ures.destroy();
               });
               ures.pipe(res);
               if (attempts > 1) {
-                log(`recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`);
-                record({ kind: 'recovered', method: req.method, path: req.url, status, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, ...rpcTrace });
+                log(
+                  `recovered after ${attempts} attempts (${Date.now() - started}ms) — :3070 came back`,
+                );
+                record({
+                  kind: "recovered",
+                  method: req.method,
+                  path: req.url,
+                  status,
+                  attempts,
+                  postConnectRetries,
+                  klass: fwd.klass,
+                  elapsedMs: Date.now() - started,
+                  ...rpcTrace,
+                });
               }
               // Forwarded a non-2xx: previously INVISIBLE (no tool_invocations row). A 4xx with
               // `connection: close` is the stale-socket-400 signature (W1.3) — record it so any
               // regression of that class is instantly visible, never silently "transient".
               if (status >= 400) {
-                record({ kind: 'upstream_non2xx', method: req.method, path: req.url, status, attempts, elapsedMs: Date.now() - started, connection: (ures.headers['connection'] as string) ?? null });
+                record({
+                  kind: "upstream_non2xx",
+                  method: req.method,
+                  path: req.url,
+                  status,
+                  attempts,
+                  elapsedMs: Date.now() - started,
+                  connection: (ures.headers["connection"] as string) ?? null,
+                });
               }
               return;
             }
@@ -2025,24 +2800,34 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // so it gets its own (larger) bound rather than consuming MAX_POST_CONNECT_RETRIES.
             const retryTimedOutHandshake = Boolean(
               outcome.timedOut &&
-                handshakeTimeoutRetryable(
-                  fwd.klass,
-                  handshakeTimeoutRetries,
-                  MAX_HANDSHAKE_TIMEOUT_RETRIES,
-                  elapsed,
-                  retryWindowMs,
-                  (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS) + backoff,
-                ),
+              handshakeTimeoutRetryable(
+                fwd.klass,
+                handshakeTimeoutRetries,
+                MAX_HANDSHAKE_TIMEOUT_RETRIES,
+                elapsed,
+                retryWindowMs,
+                (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS) +
+                  backoff,
+              ),
             );
             if (outcome.timedOut) {
               recordInitializeStage(
-                retryTimedOutHandshake ? 'timeout_retry' : 'timeout_exhausted',
+                retryTimedOutHandshake ? "timeout_retry" : "timeout_exhausted",
                 upstreamMs,
               );
             }
             if (retryTimedOutHandshake) {
               handshakeTimeoutRetries++;
-              record({ kind: 'handshake_timeout_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, handshakeTimeoutRetries, elapsedMs: elapsed, ...rpcTrace });
+              record({
+                kind: "handshake_timeout_retry",
+                method: req.method,
+                path: req.url,
+                klass: fwd.klass,
+                attempts,
+                handshakeTimeoutRetries,
+                elapsedMs: elapsed,
+                ...rpcTrace,
+              });
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
@@ -2051,9 +2836,26 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             // after the two allowed timeout retries and amplify the same silent upstream stall.
             if (outcome.timedOut) break;
             // Post-connect failure: replay ONLY an idempotent or server-keyed request, bounded.
-            if (postConnectRetryable(fwd.klass, postConnectRetries, MAX_POST_CONNECT_RETRIES, elapsed, retryWindowMs)) {
+            if (
+              postConnectRetryable(
+                fwd.klass,
+                postConnectRetries,
+                MAX_POST_CONNECT_RETRIES,
+                elapsed,
+                retryWindowMs,
+              )
+            ) {
               postConnectRetries++;
-              record({ kind: 'post_connect_retry', method: req.method, path: req.url, klass: fwd.klass, attempts, elapsedMs: elapsed, detail: String(outcome.err?.message ?? ''), ...rpcTrace });
+              record({
+                kind: "post_connect_retry",
+                method: req.method,
+                path: req.url,
+                klass: fwd.klass,
+                attempts,
+                elapsedMs: elapsed,
+                detail: String(outcome.err?.message ?? ""),
+                ...rpcTrace,
+              });
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
@@ -2066,43 +2868,68 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           if (clientGone) return;
           // Exhausted the window (or a post-connect error we must not / no longer replay).
           const refused = last && !last.connected;
-          res.writeHead(refused ? 503 : 502, { 'content-type': 'application/json', 'retry-after': '5' });
+          res.writeHead(refused ? 503 : 502, {
+            "content-type": "application/json",
+            "retry-after": "5",
+          });
           res.end(
             JSON.stringify({
-              error: refused ? 'mcp_proxy_upstream_unavailable' : 'mcp_proxy_upstream_error',
-              detail: String(last?.err?.message ?? last?.err ?? 'unknown'),
+              error: refused
+                ? "mcp_proxy_upstream_unavailable"
+                : "mcp_proxy_upstream_error",
+              detail: String(last?.err?.message ?? last?.err ?? "unknown"),
               attempts,
               windowMs: retryWindowMs,
               note: refused
-                ? ':3070 refused connections for the whole retry window (restart took too long or is down)'
-                : fwd.klass === 'opaque'
-                  ? 'upstream errored AFTER connecting — not retried (avoids double-applying a non-idempotent tools/call)'
+                ? ":3070 refused connections for the whole retry window (restart took too long or is down)"
+                : fwd.klass === "opaque"
+                  ? "upstream errored AFTER connecting — not retried (avoids double-applying a non-idempotent tools/call)"
                   : `upstream errored AFTER connecting; retried ${postConnectRetries}× (${fwd.klass}) then surfaced the error`,
             }),
           );
-          log(`upstream ${refused ? 'unavailable' : 'error'} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`);
-          record({ kind: refused ? 'exhausted_refused' : 'upstream_error', method: req.method, path: req.url, status: refused ? 503 : 502, attempts, postConnectRetries, klass: fwd.klass, elapsedMs: Date.now() - started, detail: String(last?.err?.message ?? last?.err ?? 'unknown'), ...rpcTrace });
+          log(
+            `upstream ${refused ? "unavailable" : "error"} after ${attempts} attempt(s): ${last?.err?.message ?? last?.err}`,
+          );
+          record({
+            kind: refused ? "exhausted_refused" : "upstream_error",
+            method: req.method,
+            path: req.url,
+            status: refused ? 503 : 502,
+            attempts,
+            postConnectRetries,
+            klass: fwd.klass,
+            elapsedMs: Date.now() - started,
+            detail: String(last?.err?.message ?? last?.err ?? "unknown"),
+            ...rpcTrace,
+          });
         } finally {
           // EI-19305299022434394: always release the in-flight slot, on every exit path
           // (success return, exhausted-window fallthrough, or an unexpected throw).
           const completedAtMs = Date.now();
           inFlightStarts.delete(inFlightId);
           if (criticalContinuation) {
-            criticalContinuationInFlight = Math.max(0, criticalContinuationInFlight - 1);
+            criticalContinuationInFlight = Math.max(
+              0,
+              criticalContinuationInFlight - 1,
+            );
             criticalContinuationInFlightStarts.delete(inFlightId);
+            criticalContinuationRequests.delete(inFlightId);
           } else if (watchdogSessionProbe) {
             watchdogProbeInFlight = Math.max(0, watchdogProbeInFlight - 1);
             watchdogProbeInFlightStarts.delete(inFlightId);
-          }
-          else if (standardReservedControlPlane) {
-            reservedControlPlaneInFlight = Math.max(0, reservedControlPlaneInFlight - 1);
+          } else if (standardReservedControlPlane) {
+            reservedControlPlaneInFlight = Math.max(
+              0,
+              reservedControlPlaneInFlight - 1,
+            );
             reservedControlPlaneInFlightStarts.delete(inFlightId);
           } else {
             ordinaryInFlight = Math.max(0, ordinaryInFlight - 1);
             ordinaryInFlightStarts.delete(inFlightId);
           }
           recordForwardCompletion(completedAtMs);
-          if (countsTowardHandshakeCap) handshakeInFlight = Math.max(0, handshakeInFlight - 1);
+          if (countsTowardHandshakeCap)
+            handshakeInFlight = Math.max(0, handshakeInFlight - 1);
           // EI-19388661789704364: cancel this request's own stall timer so a fast forward
           // never leaves a dangling scheduled check (and never fires one after completion).
           const stallTimer = stallTimers.get(inFlightId);
@@ -2114,6 +2941,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // itself was already available; pump after both counters are current so neither cap
           // is oversubscribed during the grant continuation.
           pumpHandshakeQueue();
+          pumpCriticalContinuationQueue();
         }
       })();
     });
@@ -2121,28 +2949,30 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // Adding a `clientError` listener disables Node's default socket destruction, so preserve the
   // default safety behavior after recording the event. The event may represent a parser error or
   // an ECONNRESET before an IncomingMessage exists; both are inbound and otherwise invisible.
-  server.on('clientError', (error, socket) => {
+  server.on("clientError", (error, socket) => {
     recordInboundClientError(error, socket);
     socket.destroy();
   });
   // Node emits `drop` when its connection admission limit rejects a socket. This is the closest
   // process-level signal to listen-backlog pressure; kernel-level SYN/backlog drops cannot be
   // observed by userland, so do not claim this counter is a complete refusal count.
-  server.on('drop', (details) => {
+  server.on("drop", (details) => {
     inbound.drops++;
-    log(`inbound connection dropped (accept pressure): ${details?.remoteAddress ?? 'unknown peer'}`);
+    log(
+      `inbound connection dropped (accept pressure): ${details?.remoteAddress ?? "unknown peer"}`,
+    );
     record({
-      kind: 'inbound_drop',
-      event: 'drop',
+      kind: "inbound_drop",
+      event: "drop",
       acceptPressure: true,
       drops: inbound.drops,
       ...details,
     });
   });
-  server.on('connection', (socket) => {
+  server.on("connection", (socket) => {
     inbound.accepted++;
     inbound.active++;
-    socket.once('close', () => {
+    socket.once("close", () => {
       inbound.active = Math.max(0, inbound.active - 1);
     });
   });
@@ -2155,7 +2985,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // headersTimeout > keepAliveTimeout invariant and existing kill-switch) instead of
   // inventing a proxy-specific timeout surface.
   applyServerTimeouts(server);
-  server.on('close', () => {
+  server.on("close", () => {
     for (const timer of stallTimers.values()) clearTimeout(timer);
     stallTimers.clear();
     // EI-21504897841052086 — queued waiters' dwell watches must not hold the loop open.
@@ -2171,10 +3001,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
 export function startMcpProxy(opts: McpProxyOptions): http.Server {
   const log = opts.log ?? ((s: string) => console.log(`[mcp-proxy] ${s}`));
   const server = createMcpProxy(opts);
-  server.listen(opts.listenPort, opts.listenHost ?? '127.0.0.1', () => {
-    const target = opts.resolveTarget ? 'dynamic operator.json target' : `${opts.targetHost ?? '127.0.0.1'}:${opts.targetPort}`;
+  server.listen(opts.listenPort, opts.listenHost ?? "127.0.0.1", () => {
+    const target = opts.resolveTarget
+      ? "dynamic operator.json target"
+      : `${opts.targetHost ?? "127.0.0.1"}:${opts.targetPort}`;
     log(
-      `listening on ${opts.listenHost ?? '127.0.0.1'}:${opts.listenPort} → ${target} ` +
+      `listening on ${opts.listenHost ?? "127.0.0.1"}:${opts.listenPort} → ${target} ` +
         `(retry-on-refused window ${opts.retryWindowMs}ms)`,
     );
   });
