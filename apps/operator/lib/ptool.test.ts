@@ -135,6 +135,29 @@ describe('ptool parseArgs', () => {
     expect(a.tool).toBe('x:y');
   });
 
+  it('keeps a later stdin sentinel when convenience flags are interleaved', () => {
+    expect(parseArgs(['x:y', '--json', '--workspace=ws1', '--harness=h', '-'])).toMatchObject({
+      tool: 'x:y',
+      json: '-',
+      workspace: 'ws1',
+      harness: 'h',
+    });
+    expect(parseArgs(['x:y', '--args', '--workspace', 'ws1', '--harness', 'h', '-'])).toMatchObject({
+      tool: 'x:y',
+      json: '-',
+      workspace: 'ws1',
+      harness: 'h',
+    });
+  });
+
+  it('applies the same interleaved-scope rule to code:run stdin scripts', () => {
+    expect(parseArgs(['code:run', '--script', '--workspace=ws1', '-'])).toMatchObject({
+      tool: 'code:run',
+      script: '-',
+      workspace: 'ws1',
+    });
+  });
+
   it('parses --projection in both value-flag forms', () => {
     expect(parseArgs(['x:y', '--projection={"pick":["results[].id"]}']).projection)
       .toBe('{"pick":["results[].id"]}');
