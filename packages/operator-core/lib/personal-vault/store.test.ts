@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { personalAliasGroups } from './store';
+import { dedupeKeyFor, personalAliasGroups } from './store';
 
 describe('Personal Vault identity alias grouping', () => {
+  it('namespaces an otherwise identical document by provider account', () => {
+    const base = { source: 'gmail', kind: 'message', dedupeKey: 'gmail:message-1' };
+    const first = dedupeKeyFor({ ...base, providerAccountId: 'first@example.com' });
+    const second = dedupeKeyFor({ ...base, providerAccountId: 'second@example.com' });
+    expect(first).toMatch(/^account:[0-9a-f]{64}:gmail:message-1$/);
+    expect(second).toMatch(/^account:[0-9a-f]{64}:gmail:message-1$/);
+    expect(first).not.toBe(second);
+    expect(dedupeKeyFor(base)).toBe('gmail:message-1');
+  });
+
   it('links a contact display name and all of its email aliases as one human', () => {
     const groups = personalAliasGroups({
       source: 'contacts',

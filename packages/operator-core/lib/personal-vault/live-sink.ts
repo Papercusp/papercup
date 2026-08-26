@@ -1,5 +1,5 @@
 import type { Sql } from 'postgres';
-import { requireExternalTriggerSourceOwner } from '../external-triggers/source-store';
+import { getExternalTriggerSource } from '../external-triggers/source-store';
 import { GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT } from '../oauth/providers';
 import type { PersonalDocumentInput } from './types';
 import { setPersonalSyncState, upsertPersonalDocuments } from './store';
@@ -15,11 +15,19 @@ const strings = (value: unknown): string[] => Array.isArray(value)
   ? value.filter((v): v is string => typeof v === 'string')
   : typeof value === 'string' ? [value] : [];
 
-export function personalDocumentFromExternalEvent(event: NormalizedExternalEvent): PersonalDocumentInput {
+export interface PersonalDocumentProvenance {
+  sourceId?: string | null;
+  providerAccountId?: string | null;
+}
+
+export function personalDocumentFromExternalEvent(
+  event: NormalizedExternalEvent,
+  provenance: PersonalDocumentProvenance = {},
+): PersonalDocumentInput {
   const p = event.payload;
   if (event.key.startsWith('ext:gmail:')) {
     return {
-      source: 'gmail', kind: 'message', externalId: event.externalId, occurredAt: event.occurredAt,
+      source: 'gmail', ...provenance, kind: 'message', externalId: event.externalId, occurredAt: event.occurredAt,
       participants: [...strings(p.from), ...strings(p.to), ...strings(p.cc)],
       title: String(p.subject ?? '(no subject)'), text: String(p.text ?? p.snippet ?? ''),
       metadata: p, dedupeKey: `gmail:${event.externalId}`,
@@ -30,7 +38,7 @@ export function personalDocumentFromExternalEvent(event: NormalizedExternalEvent
       ? p.attendees.flatMap((a) => typeof a === 'string' ? [a] : strings((a as { email?: unknown }).email))
       : [];
     return {
-      source: 'calendar', kind: 'event', externalId: event.externalId, occurredAt: event.occurredAt,
+      source: 'calendar', ...provenance, kind: 'event', externalId: event.externalId, occurredAt: event.occurredAt,
       participants: [...strings(p.organizer), ...attendees],
       title: String(p.summary ?? '(untitled event)'), text: String(p.description ?? ''),
       metadata: p, dedupeKey: `calendar:${event.externalId}`,
@@ -48,7 +56,7 @@ export function personalDocumentFromExternalEvent(event: NormalizedExternalEvent
         ? text || 'Facebook photo'
         : 'Facebook post';
     return {
-      source: 'facebook', kind: entityType, externalId: event.externalId, occurredAt: event.occurredAt,
+      source: 'facebook', ...provenance, kind: entityType, externalId: event.externalId, occurredAt: event.occurredAt,
       participants: author ? [author] : [], title, text,
       metadata: p, dedupeKey: `facebook:${entityType}:${event.externalId}`,
     };
@@ -63,8 +71,9 @@ export async function ingestPersonalExternalEvent(
   workspaceId: string,
   userId: string,
   event: NormalizedExternalEvent,
+  provenance: PersonalDocumentProvenance = {},
 ): Promise<{ insertedOrUpdated: number; ids: string[] }> {
-  return upsertPersonalDocuments(sql, workspaceId, userId, [personalDocumentFromExternalEvent(event)]);
+  return upsertPersonalDocuments(sql, workspaceId, userId, [personalDocumentFromExternalEvent(event, provenance)]);
 }
 
 /**
@@ -87,13 +96,14 @@ export function createPersonalVaultExternalSink(
   sql: Sql,
   workspaceId: string,
   userId: string,
+  provenance: PersonalDocumentProvenance = {},
 ): PersonalVaultExternalSink {
   const normalizedUserId = userId.trim();
   if (!normalizedUserId) throw new Error('personal_vault_user_required');
   return {
     kind: 'personal-vault',
-    ref: `user:${normalizedUserId}`,
-    deliver: (event) => ingestPersonalExternalEvent(sql, workspaceId, normalizedUserId, event),
+    ref: provenance.sourceId ? `user:${normalizedUserId}:source:${provenance.sourceId}` : `user:${normalizedUserId}`,
+    deliver: (event) => ingestPersonalExternalEvent(sql, workspaceId, normalizedUserId, event, provenance),
   };
 }
 
@@ -108,8 +118,13 @@ export async function createPersonalVaultExternalSinkForSource(
   workspaceId: string,
   sourceId: string,
 ): Promise<PersonalVaultExternalSink> {
-  const userId = await requireExternalTriggerSourceOwner(sql, workspaceId, sourceId);
-  return createPersonalVaultExternalSink(sql, workspaceId, userId);
+  const source = await getExternalTriggerSource(sql, workspaceId, sourceId);
+  if (!source?.ownerUserId) throw new Error(`external_trigger_source_owner_required:${sourceId}`);
+  if (!source.providerAccountId) throw new Error(`external_trigger_source_account_required:${sourceId}`);
+  return createPersonalVaultExternalSink(sql, workspaceId, source.ownerUserId, {
+    sourceId: source.id,
+    providerAccountId: source.providerAccountId,
+  });
 }
 
 export async function syncGoogleContacts(

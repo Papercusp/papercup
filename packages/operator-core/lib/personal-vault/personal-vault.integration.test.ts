@@ -266,14 +266,47 @@ describe('Personal Vault core', () => {
     await expect(upsertPersonalDocuments(org.adminSql, WS, userId, [{ source: 'gmail', kind: 'message', dedupeKey: 'blocked' }])).rejects.toThrow('personal_vault_disabled');
   });
 
+  it('keeps identical external records separate by provider account and purges surgically', async () => {
+    const common = {
+      source: 'gmail',
+      kind: 'message',
+      externalId: 'shared-provider-local-id',
+      title: 'Account provenance proof',
+      text: 'account scoped cobalt record',
+      dedupeKey: 'gmail:shared-provider-local-id',
+    };
+    await upsertPersonalDocuments(org.adminSql, WS, userId, [
+      { ...common, providerAccountId: 'first@example.com' },
+      { ...common, providerAccountId: 'second@example.com' },
+    ]);
+
+    const first = await searchPersonalDocuments(org.adminSql, WS, userId, {
+      query: 'cobalt record',
+      scopes: ['gmail'],
+      providerAccountIds: ['first@example.com'],
+    });
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ providerAccountId: 'first@example.com' });
+
+    const removed = await purgePersonalSource(org.adminSql, WS, userId, 'gmail', {
+      providerAccountId: 'first@example.com',
+    });
+    expect(removed).toMatchObject({ documents: 1, cursors: 0 });
+    const remaining = await org.adminSql<Array<{ provider_account_id: string }>>`
+      SELECT provider_account_id
+        FROM harness_shared.personal_documents
+       WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'gmail'`;
+    expect(remaining).toEqual([{ provider_account_id: 'second@example.com' }]);
+  });
+
   it('consumes normalized Gmail/Calendar events and paged Google Contacts locally', async () => {
     const sources = await org.adminSql<Array<{ id: string }>>`
       INSERT INTO harness_shared.trigger_sources
-        (workspace_id, kind, owner_user_id, status)
-      VALUES (${WS}, 'gmail', ${userId}, 'ready')
+        (workspace_id, kind, owner_user_id, provider_account_id, status)
+      VALUES (${WS}, 'gmail', ${userId}, 'owner@example.com', 'ready')
       RETURNING id`;
     const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, sources[0].id);
-    expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}` });
+    expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}:source:${sources[0].id}` });
     const event = {
       id: 'live-m1', from: 'ada@example.com', to: ['bob@example.com'],
       subject: 'Live mail', text: 'Hello',
@@ -300,8 +333,18 @@ describe('Personal Vault core', () => {
     }), { status: 200, headers: { 'content-type': 'application/json' } });
     const synced = await syncGoogleContacts(org.adminSql, { workspaceId: WS, userId, accessToken: 'local-test-token', fetchImpl: fakeFetch as typeof fetch });
     expect(synced).toMatchObject({ contacts: 1, pages: 1, nextPageToken: null });
-    const rows = await org.adminSql<Array<{ source: string }>>`
-      SELECT source FROM harness_shared.personal_documents WHERE user_id = ${userId} ORDER BY source`;
+    const rows = await org.adminSql<Array<{
+      source: string;
+      source_id: string | null;
+      provider_account_id: string | null;
+    }>>`
+      SELECT source, source_id::text, provider_account_id
+        FROM harness_shared.personal_documents
+       WHERE user_id = ${userId} ORDER BY source`;
     expect(rows.map((r) => r.source)).toEqual(['contacts', 'gmail']);
+    expect(rows.find((row) => row.source === 'gmail')).toMatchObject({
+      source_id: sources[0].id,
+      provider_account_id: 'owner@example.com',
+    });
   });
 });

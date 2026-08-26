@@ -7,6 +7,8 @@ export interface PersonalPrincipal {
 
 export interface PersonalDocumentInput {
   source: string;
+  sourceId?: string | null;
+  providerAccountId?: string | null;
   kind: string;
   externalId?: string | null;
   occurredAt?: string | Date | null;
@@ -21,6 +23,8 @@ export interface PersonalDocumentInput {
 export interface PersonalSearchInput {
   query: string;
   scopes?: string[];
+  sourceIds?: string[];
+  providerAccountIds?: string[];
   participants?: string[];
   timeRange?: { from?: string; to?: string };
   limit?: number;
@@ -32,6 +36,8 @@ export interface PersonalSearchResult {
   id: string;
   source: string;
   scopeKey: string;
+  sourceId: string | null;
+  providerAccountId: string | null;
   kind: string;
   externalId: string | null;
   occurredAt: string | null;

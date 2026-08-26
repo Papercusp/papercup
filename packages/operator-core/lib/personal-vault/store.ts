@@ -8,6 +8,7 @@ import type {
 } from './types';
 
 const SOURCE_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function normalizePersonalSource(value: string): string {
   const source = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '');
@@ -27,17 +28,32 @@ export function normalizeParticipant(value: string): string {
   return (angle?.[1] ?? v).replace(/^mailto:/, '').replace(/^@/, '');
 }
 
+export function normalizePersonalProviderAccountId(value?: string | null): string | null {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) return null;
+  if (normalized.length > 512) throw new Error('personal_provider_account_id_too_long');
+  return normalized;
+}
+
+export function normalizePersonalSourceId(value?: string | null): string | null {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) return null;
+  if (!UUID_RE.test(normalized)) throw new Error('personal_source_id_invalid');
+  return normalized;
+}
+
 export function dedupeKeyFor(doc: PersonalDocumentInput): string {
-  if (doc.dedupeKey?.trim()) return doc.dedupeKey.trim();
-  const stable = [
+  const raw = doc.dedupeKey?.trim() || createHash('sha256').update([
     normalizePersonalSource(doc.source),
     doc.kind.trim().toLowerCase(),
     doc.externalId ?? '',
     doc.occurredAt instanceof Date ? doc.occurredAt.toISOString() : doc.occurredAt ?? '',
     doc.title ?? '',
     doc.text ?? '',
-  ].join('\u001f');
-  return createHash('sha256').update(stable).digest('hex');
+  ].join('\u001f')).digest('hex');
+  const accountId = normalizePersonalProviderAccountId(doc.providerAccountId);
+  if (!accountId) return raw;
+  return `account:${createHash('sha256').update(accountId).digest('hex')}:${raw}`;
 }
 
 type PersonalAliasKind = 'email' | 'contact' | 'social-handle' | 'name';
@@ -235,6 +251,9 @@ export async function upsertPersonalDocuments(
   const ids: string[] = [];
   for (const doc of documents) {
     const source = normalizePersonalSource(doc.source);
+    const sourceId = normalizePersonalSourceId(doc.sourceId);
+    const providerAccountId = normalizePersonalProviderAccountId(doc.providerAccountId);
+    if (sourceId && !providerAccountId) throw new Error('personal_provider_account_id_required_for_source');
     const participants = [...new Set((doc.participants ?? []).map(normalizeParticipant).filter(Boolean))];
     const resolvedParticipantIds = participants.length
       ? await resolvePersonalIdentityIds(sql, workspaceId, userId, { ...doc, source })
@@ -244,14 +263,17 @@ export async function upsertPersonalDocuments(
     const metadata = JSON.stringify(doc.metadata ?? {});
     const rows = await sql<Array<{ id: string }>>`
       INSERT INTO harness_shared.personal_documents
-        (workspace_id, user_id, source, kind, external_id, occurred_at,
+        (workspace_id, user_id, source, source_id, provider_account_id, kind, external_id, occurred_at,
          participants, participant_ids, title, text, metadata, dedupe_key)
       VALUES
-        (${workspaceId}, ${userId}, ${source}, ${doc.kind.trim()}, ${doc.externalId ?? null},
+        (${workspaceId}, ${userId}, ${source}, ${sourceId}::uuid, ${providerAccountId},
+         ${doc.kind.trim()}, ${doc.externalId ?? null},
          ${occurredAt}, ${participants}, ${participantIds}, ${doc.title ?? ''}, ${doc.text ?? ''},
          ${metadata}::jsonb, ${dedupeKeyFor(doc)})
       ON CONFLICT (workspace_id, user_id, source, dedupe_key) DO UPDATE
         SET kind = EXCLUDED.kind,
+            source_id = COALESCE(EXCLUDED.source_id, personal_documents.source_id),
+            provider_account_id = COALESCE(EXCLUDED.provider_account_id, personal_documents.provider_account_id),
             external_id = EXCLUDED.external_id,
             occurred_at = COALESCE(EXCLUDED.occurred_at, personal_documents.occurred_at),
             participants = EXCLUDED.participants,
@@ -396,11 +418,19 @@ export async function listPersonalGrants(sql: Sql, workspaceId: string, userId: 
 
 export async function personalVaultStats(sql: Sql, workspaceId: string, userId: string) {
   const [counts, unembedded] = await Promise.all([
-    sql<Array<{ source: string; documents: number; newest_at: string | null }>>`
-      SELECT source, count(*)::int AS documents, max(occurred_at)::text AS newest_at
+    sql<Array<{
+      source: string;
+      source_id: string | null;
+      provider_account_id: string | null;
+      documents: number;
+      newest_at: string | null;
+    }>>`
+      SELECT source, source_id::text, provider_account_id,
+             count(*)::int AS documents, max(occurred_at)::text AS newest_at
         FROM harness_shared.personal_documents
        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
-       GROUP BY source ORDER BY source`,
+       GROUP BY source, source_id, provider_account_id
+       ORDER BY source, provider_account_id NULLS FIRST, source_id NULLS FIRST`,
     sql<Array<{ count: number }>>`
       SELECT count(*)::int AS count
         FROM harness_shared.personal_documents
@@ -415,23 +445,38 @@ export async function purgePersonalSource(
   workspaceId: string,
   userId: string,
   sourceInput?: string | null,
+  provenance: { sourceId?: string | null; providerAccountId?: string | null } = {},
 ): Promise<{ documents: number; cursors: number; aliases: number; identities: number }> {
   const source = sourceInput ? normalizePersonalSource(sourceInput) : null;
+  const sourceId = normalizePersonalSourceId(provenance.sourceId);
+  const providerAccountId = normalizePersonalProviderAccountId(provenance.providerAccountId);
+  const accountScoped = sourceId !== null || providerAccountId !== null;
   return sql.begin(async (tx) => {
     const docs = await tx<Array<{ id: string }>>`
       DELETE FROM harness_shared.personal_documents
        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
          AND (${source}::text IS NULL OR source = ${source})
+         AND (${sourceId}::uuid IS NULL OR source_id = ${sourceId}::uuid)
+         AND (${providerAccountId}::text IS NULL OR provider_account_id = ${providerAccountId})
       RETURNING id`;
     const cursors = await tx<Array<{ source: string }>>`
       DELETE FROM harness_shared.personal_sync_state
        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
+         AND ${!accountScoped}
          AND (${source}::text IS NULL OR source = ${source})
       RETURNING source`;
     const aliases = await tx<Array<{ id: string }>>`
       DELETE FROM harness_shared.personal_identity_aliases
        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
-         AND (${source}::text IS NULL OR source = ${source})
+         AND (
+           (${!accountScoped} AND (${source}::text IS NULL OR source = ${source}))
+           OR (${accountScoped} AND NOT EXISTS (
+             SELECT 1 FROM harness_shared.personal_documents document
+              WHERE document.workspace_id = personal_identity_aliases.workspace_id
+                AND document.user_id = personal_identity_aliases.user_id
+                AND personal_identity_aliases.identity_id = ANY(document.participant_ids)
+           ))
+         )
       RETURNING id`;
     const identities = await tx<Array<{ id: string }>>`
       DELETE FROM harness_shared.personal_identities i
@@ -454,6 +499,14 @@ export async function searchPersonalDocuments(
   const limit = Math.max(1, Math.min(50, input.limit ?? 10));
   const snippetChars = Math.max(80, Math.min(1200, input.snippetChars ?? 600));
   const scopes = [...new Set((input.scopes ?? []).map(personalScope))];
+  const sourceIds = [...new Set(
+    (input.sourceIds ?? []).map(normalizePersonalSourceId).filter((id): id is string => id !== null),
+  )];
+  const providerAccountIds = [...new Set(
+    (input.providerAccountIds ?? [])
+      .map(normalizePersonalProviderAccountId)
+      .filter((id): id is string => id !== null),
+  )];
   const participants = [...new Set((input.participants ?? []).map(normalizeParticipant).filter(Boolean))];
   const aliases = participants.length
     ? await sql<Array<{ identity_id: string }>>`
@@ -464,6 +517,10 @@ export async function searchPersonalDocuments(
     : [];
   const participantIds = aliases.map((r) => r.identity_id);
   const scopeFilter = scopes.length ? sql`AND d.scope_key = ANY(${scopes})` : sql``;
+  const sourceIdFilter = sourceIds.length ? sql`AND d.source_id = ANY(${sourceIds}::uuid[])` : sql``;
+  const providerAccountFilter = providerAccountIds.length
+    ? sql`AND d.provider_account_id = ANY(${providerAccountIds})`
+    : sql``;
   const participantFilter = participants.length
     ? sql`AND (d.participants && ${participants}::text[] OR d.participant_ids && ${participantIds}::uuid[])`
     : sql``;
@@ -477,7 +534,8 @@ export async function searchPersonalDocuments(
     : sql`SELECT id, NULL::bigint AS vector_rank FROM filtered WHERE false`;
 
   const rows = await sql<Array<{
-    id: string; source: string; scope_key: string; kind: string; external_id: string | null;
+    id: string; source: string; scope_key: string; source_id: string | null;
+    provider_account_id: string | null; kind: string; external_id: string | null;
     occurred_at: string | null; participants: string[]; participant_ids: string[]; title: string;
     snippet: string; metadata: Record<string, unknown>; score: number | string;
     lexical_rank: number | string | null; vector_rank: number | string | null;
@@ -486,7 +544,8 @@ export async function searchPersonalDocuments(
       SELECT d.*
         FROM harness_shared.personal_documents d
        WHERE d.workspace_id = ${workspaceId} AND d.user_id = ${userId}
-         ${scopeFilter} ${participantFilter} ${fromFilter} ${toFilter}
+         ${scopeFilter} ${sourceIdFilter} ${providerAccountFilter}
+         ${participantFilter} ${fromFilter} ${toFilter}
     ), lexical AS (
       SELECT id,
              row_number() OVER (
@@ -504,7 +563,8 @@ export async function searchPersonalDocuments(
                + COALESCE(1.0 / (60 + v.vector_rank), 0) AS score
         FROM lexical l FULL OUTER JOIN vector v ON v.id = l.id
     )
-    SELECT d.id, d.source, d.scope_key, d.kind, d.external_id,
+    SELECT d.id, d.source, d.scope_key, d.source_id::text, d.provider_account_id,
+           d.kind, d.external_id,
            d.occurred_at::text, d.participants, d.participant_ids, d.title,
            left(d.text, ${snippetChars}) AS snippet, d.metadata,
            r.score, r.lexical_rank, r.vector_rank
@@ -516,6 +576,8 @@ export async function searchPersonalDocuments(
     id: r.id,
     source: r.source,
     scopeKey: r.scope_key,
+    sourceId: r.source_id,
+    providerAccountId: r.provider_account_id,
     kind: r.kind,
     externalId: r.external_id,
     occurredAt: r.occurred_at,

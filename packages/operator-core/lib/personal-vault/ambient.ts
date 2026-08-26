@@ -141,7 +141,12 @@ export function renderPersonalAmbientBlock(
   const lines = [header, notice];
   let used = header.length + notice.length + 1;
   for (const result of results) {
-    const provenance = [result.scopeKey, result.occurredAt?.slice(0, 10), result.externalId]
+    const provenance = [
+      result.scopeKey,
+      result.providerAccountId ? `account:${result.providerAccountId}` : null,
+      result.occurredAt?.slice(0, 10),
+      result.externalId,
+    ]
       .filter(Boolean)
       .join(' · ');
     const line = `- ${compact(result.title || '(untitled)', 120)} — ${compact(result.snippet, 360)} [${provenance}]`;

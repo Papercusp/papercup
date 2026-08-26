@@ -14,6 +14,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { parsePersonalArchive } from '../../../personal-vault/archive-import';
 import {
   disconnectOwnedExternalTriggerSources,
+  getExternalTriggerSource,
   listOwnedExternalTriggerSources,
   setOwnedExternalTriggerSourceCapability,
   type OwnedExternalTriggerSourceRow,
@@ -642,16 +643,26 @@ const purge = defineTool({
   path: '/user/personal-vault',
   auth: 'loopback',
   async handler(req) {
-    const body = await jsonBody<{ source?: unknown; confirm?: unknown }>(req);
+    const body = await jsonBody<{
+      source?: unknown;
+      sourceId?: unknown;
+      providerAccountId?: unknown;
+      confirm?: unknown;
+    }>(req);
     if (body?.confirm !== true) {
       return Response.json({ ok: false, error: 'confirm_required' }, { status: 400 });
     }
     const source = typeof body.source === 'string' && body.source.trim() ? body.source.trim() : null;
+    const sourceId = typeof body.sourceId === 'string' ? body.sourceId : null;
+    const providerAccountId = typeof body.providerAccountId === 'string' ? body.providerAccountId : null;
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
     try {
-      const removed = await purgePersonalSource(getOrgPg().sql, workspaceId, user.id, source);
-      return Response.json({ ok: true, source, removed });
+      const removed = await purgePersonalSource(getOrgPg().sql, workspaceId, user.id, source, {
+        sourceId,
+        providerAccountId,
+      });
+      return Response.json({ ok: true, source, sourceId, providerAccountId, removed });
     } catch (err) {
       return Response.json({ ok: false, error: messageOf(err) }, { status: 400 });
     }
@@ -679,14 +690,39 @@ const archiveImport = defineTool({
     const workspaceId = activeWorkspaceId();
     try {
       const parsed = parsePersonalArchive(file.name, Buffer.from(await file.arrayBuffer()));
-      const stored = parsed.documents.length
-        ? await upsertPersonalDocuments(getOrgPg().sql, workspaceId, user.id, parsed.documents)
+      const requestedSourceId = typeof form?.get('sourceId') === 'string'
+        ? String(form.get('sourceId')).trim()
+        : '';
+      const requestedProviderAccountId = typeof form?.get('providerAccountId') === 'string'
+        ? String(form.get('providerAccountId')).trim()
+        : '';
+      let sourceId: string | null = requestedSourceId || null;
+      let providerAccountId: string | null = requestedProviderAccountId || null;
+      if (sourceId) {
+        const owned = await getExternalTriggerSource(getOrgPg().sql, workspaceId, sourceId);
+        if (!owned?.ownerUserId || owned.ownerUserId !== user.id) throw new Error('personal_import_source_not_owned');
+        if (!owned.providerAccountId) throw new Error('personal_import_source_account_required');
+        if (providerAccountId && providerAccountId !== owned.providerAccountId) {
+          throw new Error('personal_import_source_account_mismatch');
+        }
+        providerAccountId = owned.providerAccountId;
+        sourceId = owned.id;
+      }
+      const documents = parsed.documents.map((document) => ({
+        ...document,
+        sourceId,
+        providerAccountId,
+      }));
+      const stored = documents.length
+        ? await upsertPersonalDocuments(getOrgPg().sql, workspaceId, user.id, documents)
         : { insertedOrUpdated: 0, ids: [] as string[] };
       return Response.json({
         ok: true,
         filename: file.name,
         documents: stored.insertedOrUpdated,
         sources: parsed.sources,
+        sourceId,
+        providerAccountId,
         warnings: parsed.warnings,
       });
     } catch (err) {
