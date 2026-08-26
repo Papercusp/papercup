@@ -15,6 +15,25 @@ import { ingestExternalTriggerEvent } from './ingestion';
 import { upsertOwnedExternalTriggerSource } from './source-store';
 import { runScheduledPlanFire } from '../harness/routines/plan-run-action';
 
+const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
+
+// Canonical promotion uses the shared stores rather than the explicit plan-run
+// transaction client. Keep every one of those reads/writes in this throwaway DB;
+// papercusp's operator-home shortcut previously hid the missing isolation.
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    withWorkspace: async <T>(_workspaceId: string, fn: (tx: Sql) => Promise<T>) => fn(h.sql),
+  };
+});
+vi.mock('../workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
+  return { ...actual, activeWorkspaceId: () => WS };
+});
+
 const WS = 'gmail-flagship-e2e';
 let org: OrgTestDb;
 let sql: Sql;
@@ -23,11 +42,32 @@ let userId: string;
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
+  h.sql = sql;
   const users = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${'gmail-flagship-owner-' + Date.now()}, 'Gmail Flagship Owner')
     RETURNING id`;
   userId = users[0].id;
+  await sql`
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+    VALUES (${WS}, ${GMAIL_RESPOND_DRAFT_HARNESS}, ${Buffer.from([2])}, 'kc-gmail-flagship-email', 0)
+    ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING`;
+  await sql`
+    INSERT INTO harness_shared.harness_registry (workspace_id, payload)
+    VALUES (
+      ${WS},
+      ${JSON.stringify({
+        projects: [
+          {
+            slug: GMAIL_RESPOND_DRAFT_HARNESS,
+            path: '/tmp/gmail-flagship-email',
+            harness_kind: 'hive',
+          },
+        ],
+      })}::text::jsonb
+    )
+    ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload`;
   await sql`
     INSERT INTO harness_shared.datatype_registry
       (workspace_id, id, title, description, tier, payload_schema, authoritative_writer)
@@ -167,9 +207,18 @@ describe('Gmail flagship desktop flow', () => {
     }));
     const runPlan = (db: Sql, opts: Parameters<typeof runScheduledPlanFire>[1]) =>
       runScheduledPlanFire(db, opts, { dispatch: dispatchActionable });
-    await expect(
-      dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork: async () => undefined }),
-    ).resolves.toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+    const dispatchResult = await dispatchPendingTriggerRuns(sql, {
+      runPlan,
+      announceRunWork: async () => undefined,
+    });
+    const dispatchRows = await sql<Array<{ error: string | null }>>`
+      SELECT error FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} ORDER BY triggered_at DESC LIMIT 1`;
+    expect(dispatchResult, dispatchRows[0]?.error ?? 'trigger dispatch failed without an error').toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+    });
     expect(dispatchActionable).toHaveBeenCalledWith(
       expect.objectContaining({
         targetAgent: 'email-agent',
