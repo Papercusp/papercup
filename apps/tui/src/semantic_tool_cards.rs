@@ -168,7 +168,7 @@ pub(crate) fn card_for_activity(row: &ActivityRow) -> Option<SemanticToolCard> {
     })
 }
 
-fn effective_call<'a>(tool: &'a ChatToolCall) -> (&'a str, Option<&'a Value>) {
+fn effective_call(tool: &ChatToolCall) -> (&str, Option<&Value>) {
     if tool_name_is(&tool.name, "tools:invoke") {
         if let Some(input) = tool.input.as_ref() {
             if let Some(name) = input.get("name").and_then(Value::as_str) {
@@ -650,16 +650,38 @@ mod tests {
 
     #[test]
     fn alias_shims_match_every_first_wave_verb_per_model_family() {
-        let verbs = [
-            "work_items:complete",
-            "locks:acquire",
-            "coord:send",
-            "plans:set-status",
-            "tasks:ops",
-            "work_items:checkpoint",
+        // Proven card-producing payloads per verb (mirrors the tests above —
+        // the card fns are deliberately None-y on empty input).
+        let cases: [(&str, Value, Option<Value>); 6] = [
+            (
+                "work_items:complete",
+                json!({"id":"WI-7","completion":{"summary":"landed it","testResult":"12 passed"}}),
+                Some(json!({"ok":true})),
+            ),
+            (
+                "locks:acquire",
+                json!({"paths":["a.rs"]}),
+                Some(json!({"busy":[{"path":"a.rs","holder":"su-1","intent":"editing"}],"queuePosition":2})),
+            ),
+            ("coord:send", json!({"to":["su-1"]}), Some(json!({"woken":1}))),
+            (
+                "plans:set-status",
+                json!({"slug":"cockpit","item":"P-007","status":"done"}),
+                Some(json!({"results":[{"itemId":"P-007","oldStatus":"wip","newStatus":"done"}]})),
+            ),
+            (
+                "tasks:ops",
+                json!({"op":"block","task_id":"t-2","blocker_ref":"lock:a.rs","explanation":"waiting for holder"}),
+                Some(json!({"changedTaskId":"t-2"})),
+            ),
+            (
+                "work_items:checkpoint",
+                json!({"id":"WI-7","checkpoint":"next: tests"}),
+                Some(json!({"ok":true})),
+            ),
         ];
-        for verb in verbs {
-            let canonical = card_for_tool(&call(verb, json!({}), None))
+        for (verb, input, result) in cases {
+            let canonical = card_for_tool(&call(verb, input.clone(), result.clone()))
                 .unwrap_or_else(|| panic!("canonical {verb} produced no card"));
             let aliases = [
                 // Claude-family MCP id: mcp__<server>__<verb with ':' → '_'>
@@ -670,7 +692,7 @@ mod tests {
                 format!("papercusp-su:{verb}"),
             ];
             for alias in aliases {
-                let card = card_for_tool(&call(&alias, json!({}), None))
+                let card = card_for_tool(&call(&alias, input.clone(), result.clone()))
                     .unwrap_or_else(|| panic!("alias {alias} produced no card for {verb}"));
                 assert_eq!(card.title, canonical.title, "alias {alias} diverged from {verb}");
             }

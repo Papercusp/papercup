@@ -243,8 +243,8 @@ pub fn normalize_agent_label(label: &str, lex: &crate::lexicon::Lexicon) -> Stri
 ///   - `sentinel` is a kind ALIAS for Papercup, but as a ROLE it is the read-mostly
 ///     fleet WATCHER — a worker (the D-001 collision noted above) — so routing it
 ///     through `from_wire` would wrongly strip a real worker of its pane.
-/// `papercup-deep` is the hidden heavy half of the ONE Papercup identity and is
-/// deliberately PANELESS (WI-4485: it is woken over coord and never takes pane input).
+///   - `papercup-deep` is the hidden heavy half of the ONE Papercup identity and is
+///     deliberately PANELESS (WI-4485: it is woken over coord and never takes pane input).
 pub fn role_has_fixed_dock_pane(role: &str) -> bool {
     matches!(
         role.trim().to_ascii_lowercase().as_str(),

@@ -52,7 +52,7 @@ pub fn resample_to_16k(mono: &[f32], src_rate: u32) -> Vec<f32> {
     if src_rate == WHISPER_RATE {
         return mono.to_vec();
     }
-    if src_rate > WHISPER_RATE && src_rate % WHISPER_RATE == 0 {
+    if src_rate > WHISPER_RATE && src_rate.is_multiple_of(WHISPER_RATE) {
         let ratio = (src_rate / WHISPER_RATE) as usize;
         return mono
             .chunks(ratio)

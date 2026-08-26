@@ -297,9 +297,7 @@ pub fn set_config_theme_line(config_path: &Path, name: &str) -> io::Result<Confi
 
     if !replaced {
         lines.push(String::new());
-        lines.push(format!(
-            "// pui :theme keeps the line below in sync with the workbench theme."
-        ));
+        lines.push("// pui :theme keeps the line below in sync with the workbench theme.".to_string());
         lines.push(managed_line);
     }
     let mut out = lines.join("\n");

@@ -15,10 +15,10 @@
 //!   - `OpenCardSnapshot`  — `libs/generic/tooldef/src/types.ts` (~L990)
 //!   - `CardPresentation`  — same file (~L908)
 //!   - submit payload      — `{ picks: [option_id, …] }` for radio/checkbox,
-//!                           `{ value: … }` for text/date/slider
-//!                           (`apps/operator/app/_components/chat/PendingCardsBar.tsx`)
+//!    `{ value: … }` for text/date/slider
+//!    (`apps/operator/app/_components/chat/PendingCardsBar.tsx`)
 //!   - `/card-response` body — `{ correlationId, workspaceId, action, payload? }`
-//!                           (`packages/operator-core/lib/post-card-response.ts`)
+//!    (`packages/operator-core/lib/post-card-response.ts`)
 
 use serde::Deserialize;
 
@@ -405,9 +405,7 @@ impl CardState {
     /// checkbox: toggles that option). Returns the response when a number-pick
     /// commits a radio card.
     pub fn pick_number(&mut self, n: usize) -> Option<CardResponse> {
-        let Some(head) = self.cards.first() else {
-            return None;
-        };
+        let head = self.cards.first()?;
         let opts = head.presentation.options();
         if n == 0 || n > opts.len() {
             return None;

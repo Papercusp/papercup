@@ -9,9 +9,9 @@
 //!       - **UPPER**: the bee's coord INBOX (messages addressed to / broadcast
 //!         at it).
 //!       - **LOWER**: the bee's coord OUTBOX (messages FROM it).
-//!     Both from ONE `coord:feed { owner }` read, split client-side — the old
-//!     `fleet:bee_mail` transport was retired with the bee tier (P-003
-//!     own-tui-full-divorce-2026-08-24).
+//!         Both from ONE `coord:feed { owner }` read, split client-side — the old
+//!         `fleet:bee_mail` transport was retired with the bee tier (P-003
+//!         own-tui-full-divorce-2026-08-24).
 //!
 //! Selection is driven IN-PROCESS by the Fleet-tab roster cursor (the
 //! `Action::PublishBeeSelection` arm in main.rs) — the old `fleet:selected_bee`

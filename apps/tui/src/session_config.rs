@@ -27,10 +27,10 @@
 //!      · a pool account       → `accounts:pin`   (live, durable)
 //!      · `auto`               → `accounts:unpin` (live; reverts to launch routing)
 //!      · default system account → NOT REACHABLE. A `--account=default` session
-//!        bypasses the gateway, so there is no pin to change; it must be
-//!        RESPAWNED. It stays in the menu as a disabled row carrying that reason,
-//!        because the owner asked for the option by name and a silently-dropped
-//!        row misreports what the control does.
+//!      bypasses the gateway, so there is no pin to change; it must be
+//!      RESPAWNED. It stays in the menu as a disabled row carrying that reason,
+//!      because the owner asked for the option by name and a silently-dropped
+//!      row misreports what the control does.
 //!   2. A `--account=default` session makes EVERY row a no-op, so the whole menu
 //!      disables with the reason. UNKNOWN launch argv is deliberately NOT treated
 //!      as gateway-free — disabling on an absence is the same unsourced guess in
@@ -336,6 +336,7 @@ pub fn chat_account_pick(id: &str) -> Option<String> {
 /// What applying a pick actually requires — the three values are not three of a
 /// kind, so the caller cannot treat "set the account" as one operation.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(dead_code, reason = "account pin controls are staged for the session configuration UI")]
 pub enum AccountPick {
     /// `accounts:pin { agent, account }`
     Pin { account: String },
@@ -345,6 +346,7 @@ pub enum AccountPick {
     NotSettable { reason: String },
 }
 
+#[expect(dead_code, reason = "account pin controls are staged for the session configuration UI")]
 pub fn account_pick(id: &str, launch_account: Option<&str>) -> AccountPick {
     if is_gateway_free(launch_account) {
         return AccountPick::NotSettable {
@@ -364,6 +366,7 @@ pub fn account_pick(id: &str, launch_account: Option<&str>) -> AccountPick {
 
 /// What the SETTER reported — never what the user picked.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(dead_code, reason = "account pin controls are staged for the session configuration UI")]
 pub struct PinOutcome {
     /// Is the pin actually in force on the live session? A durable write whose
     /// live push failed (`appliedLive:false`) is NOT in force.
@@ -373,6 +376,7 @@ pub struct PinOutcome {
 
 /// Read `accounts:pin` / `accounts:unpin`'s own reply. Never asserts the session
 /// IS on an account — only what the setter said about the PIN.
+#[expect(dead_code, reason = "account pin controls are staged for the session configuration UI")]
 pub fn describe_pin_outcome(reply: &serde_json::Value, picked_label: &str) -> PinOutcome {
     let get_bool = |k: &str| reply.get(k).and_then(|v| v.as_bool());
     let get_str = |k: &str| {

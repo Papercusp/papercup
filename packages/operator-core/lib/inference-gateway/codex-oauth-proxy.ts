@@ -36,6 +36,7 @@
  */
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 
 /** The ChatGPT backend that serves codex Responses for ChatGPT-subscription auth. */
 export const CODEX_CHATGPT_BACKEND_BASE =
@@ -196,6 +197,178 @@ export function normalizeCodexChatGptResponsesBody(
     return { body: Buffer.from(JSON.stringify(body), 'utf8'), inputNormalized };
   } catch {
     return { body: bodyBuf, inputNormalized: false };
+  }
+}
+
+/** Add the streaming wire bit used by the ChatGPT backend while keeping the public
+ * non-stream request shape. The gateway consumes the resulting SSE and returns the
+ * final `response.completed.response` object to the caller. */
+export function makeCodexNonStreamUpstreamBody(bodyBuf: Buffer): Buffer | null {
+  if (!bodyBuf.length) return null;
+  try {
+    const parsed = JSON.parse(bodyBuf.toString('utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const body = parsed as Record<string, unknown>;
+    body.stream = true;
+    body.store = false;
+    return Buffer.from(JSON.stringify(body), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+export type CodexNonStreamAggregateErrorCode = 'aborted' | 'timeout' | 'size' | 'invalid';
+
+/** Typed failure from the bounded non-stream OAuth compatibility transport. */
+export class CodexNonStreamAggregateError extends Error {
+  constructor(
+    readonly code: CodexNonStreamAggregateErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'CodexNonStreamAggregateError';
+  }
+}
+
+export interface CodexNonStreamAggregateOpts {
+  /** Upstream content type. `text/event-stream` selects SSE; JSON is the safe fallback. */
+  contentType?: string | null;
+  /** Hard cap on bytes read from the upstream response. */
+  maxBytes: number;
+  /** Hard wall-clock cap for reading and aggregating the response. */
+  timeoutMs: number;
+  /** Downstream cancellation / gateway request ceiling signal. */
+  signal?: AbortSignal;
+  /** Abort the active fetch when the aggregation deadline fires. */
+  onTimeout?: () => void;
+}
+
+/**
+ * Consume one ChatGPT Responses response without retaining an unbounded body.
+ *
+ * The OAuth backend speaks SSE even when the caller asked for `stream:false`.
+ * We retain only the final `response.completed` object, return it as ordinary
+ * Responses JSON, and reject malformed/incomplete streams. A JSON response is
+ * accepted too so a backend rollout that ignores `stream:true` remains compatible.
+ * The iterator is raced against both cancellation and a wall-clock deadline;
+ * callers should use `onTimeout` to abort the underlying fetch as well.
+ */
+export async function aggregateCodexNonStreamResponse(
+  source: AsyncIterable<Uint8Array>,
+  opts: CodexNonStreamAggregateOpts,
+): Promise<Buffer> {
+  const maxBytes = Math.max(1, Math.floor(opts.maxBytes));
+  const timeoutMs = Math.max(1, Math.floor(opts.timeoutMs));
+  const iterator = source[Symbol.asyncIterator]();
+  let totalBytes = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let abortListener: (() => void) | undefined;
+  let stopped = false;
+
+  const stopIterator = () => {
+    if (stopped) return;
+    stopped = true;
+    try {
+      void iterator.return?.();
+    } catch {
+      /* best-effort cancellation; the fetch signal is the hard stop */
+    }
+  };
+  const fail = (code: CodexNonStreamAggregateErrorCode, message: string): never => {
+    stopIterator();
+    throw new CodexNonStreamAggregateError(code, message);
+  };
+
+  let timeoutResolve!: () => void;
+  const timeout = new Promise<'timeout'>((resolve) => {
+    timeoutResolve = resolve;
+    timer = setTimeout(() => {
+      opts.onTimeout?.();
+      resolve('timeout');
+    }, timeoutMs);
+    timer.unref?.();
+  });
+  let abortResolve!: (value: 'aborted') => void;
+  const aborted = new Promise<'aborted'>((resolve) => {
+    abortResolve = resolve;
+  });
+  if (opts.signal) {
+    abortListener = () => abortResolve('aborted');
+    if (opts.signal.aborted) abortListener();
+    else opts.signal.addEventListener('abort', abortListener, { once: true });
+  }
+
+  const isSse = (opts.contentType ?? '').toLowerCase().includes('text/event-stream');
+  const decoder = new StringDecoder('utf8');
+  let text = '';
+  const sseData: string[] = [];
+  let completed: Record<string, unknown> | undefined;
+  let jsonChunks: Buffer[] = [];
+
+  const consumeSseFrame = (data: string) => {
+    const payload = data.trim();
+    if (!payload || payload === '[DONE]') return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(payload);
+    } catch {
+      fail('invalid', 'codex OAuth non-stream response contained malformed SSE JSON');
+    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
+    const event = parsed as { type?: unknown; response?: unknown };
+    if (event.type === 'response.completed' && event.response && typeof event.response === 'object' && !Array.isArray(event.response)) {
+      completed = event.response as Record<string, unknown>;
+    }
+  };
+  const consumeSseText = (chunk: string) => {
+    text += chunk;
+    const lines = text.split(/\r?\n/);
+    text = lines.pop() ?? '';
+    for (const line of lines) {
+      if (line.startsWith('data:')) sseData.push(line.slice(5).replace(/^ /, ''));
+      else if (line === '' && sseData.length) {
+        consumeSseFrame(sseData.join('\n'));
+        sseData.length = 0;
+      }
+    }
+    if (completed) stopIterator();
+  };
+
+  try {
+    while (!completed) {
+      const next = await Promise.race([iterator.next(), timeout, aborted]);
+      if (next === 'timeout') fail('timeout', `codex OAuth non-stream response timed out after ${timeoutMs}ms`);
+      if (next === 'aborted') fail('aborted', 'codex OAuth non-stream response aggregation aborted');
+      if (next.done) break;
+      const chunk = next.value;
+      const bytes = chunk instanceof Uint8Array ? chunk.byteLength : 0;
+      totalBytes += bytes;
+      if (totalBytes > maxBytes) fail('size', `codex OAuth non-stream response exceeded ${maxBytes}-byte limit`);
+      if (isSse) consumeSseText(decoder.write(Buffer.from(chunk)));
+      else jsonChunks.push(Buffer.from(chunk));
+    }
+    if (isSse) {
+      consumeSseText(decoder.end());
+      if (sseData.length) consumeSseFrame(sseData.join('\n'));
+      if (!completed) fail('invalid', 'codex OAuth non-stream SSE ended without response.completed');
+      return Buffer.from(JSON.stringify(completed), 'utf8');
+    }
+    const body = Buffer.concat(jsonChunks);
+    try {
+      const parsed = JSON.parse(body.toString('utf8')) as unknown;
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        fail('invalid', 'codex OAuth non-stream response was not a JSON object');
+      }
+    } catch (error) {
+      if (error instanceof CodexNonStreamAggregateError) throw error;
+      fail('invalid', 'codex OAuth non-stream response was not valid JSON');
+    }
+    return body;
+  } finally {
+    if (timer) clearTimeout(timer);
+    // Keep the promise settled and avoid retaining listeners after a completed response.
+    timeoutResolve();
+    if (opts.signal && abortListener) opts.signal.removeEventListener('abort', abortListener);
   }
 }
 

@@ -98,9 +98,7 @@ pub fn plan(list_output: &str, own: &str, is_alive: impl Fn(u32) -> bool) -> Vec
         }
         if line.contains("EXITED") {
             actions.push(Action::Delete(name.to_string()));
-        } else if !is_alive(pid) {
-            actions.push(Action::KillAndDelete(name.to_string()));
-        } else if launching_dock && session_kind(name) == Some("dock") {
+        } else if !is_alive(pid) || (launching_dock && session_kind(name) == Some("dock")) {
             actions.push(Action::KillAndDelete(name.to_string()));
         }
     }
