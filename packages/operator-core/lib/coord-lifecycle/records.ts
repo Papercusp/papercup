@@ -288,6 +288,22 @@ export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
    * describes the close and must NEVER promote an evidence-free completion to `committed`.
    */
   selfReviewJudgement?: PersistedSelfReviewJudgement;
+  /**
+   * EI-21462047954123123 — the terminal cleanup in `work_items:complete` CLEARS the
+   * item checkpoint, while completion evidence routinely CITES that checkpoint ("the
+   * checkpoint carries ..."), so the pointer was voided by the very call that wrote
+   * it. Before the clear, any checks rows are folded HERE — a surface an auditor
+   * already reads — so "see the checkpoint" becomes "see _completionEvidence". The
+   * clear keeps its deliberate invariant (no checks-only checkpoint survives on a
+   * closed item); the CONTENT moves instead of dying silently. Server-computed,
+   * narrative-side: never participates in completion-authority calculation.
+   */
+  checkpointChecksCarried?: Array<{
+    claim: string;
+    recheck?: string;
+    verified?: string;
+    contested?: string;
+  }>;
 };
 
 /**

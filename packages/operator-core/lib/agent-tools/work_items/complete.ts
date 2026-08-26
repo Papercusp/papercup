@@ -121,7 +121,8 @@ import { independentSiblingRepos } from '../../plan-audits';
 import { checkoutRootForPath, discoverKnownHiveCheckoutRoots } from '../testing/run';
 import { hasValidGitEntry } from '../locks/valid-git-entry';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
-import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { getWorkItemCheckpoint, setWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { splitCarryNoteChecks } from '../../carry-note';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { fireReactionInProcess } from '../../events';
 import { detectEphemeralDeliverableReferences, renderEphemeralDeliverableWarning } from '../../turn-end-tracking';
@@ -2169,6 +2170,33 @@ async function completeOne(
   // moment the response was read. Persisting it under `evidence.summary` (both on a normal
   // close AND inside a second-close attestation, since that path reads `opts.completionEvidence`)
   // fixes both cases from one write, without touching the authority/warning semantics above.
+  // EI-21462047954123123: the finish saga below CLEARS this item's checkpoint, while
+  // completion evidence routinely cites it. Read the live note NOW — before that
+  // clear — and carry any checks rows into the persisted narrative so the citation
+  // lands on `_completionEvidence` instead of a location guaranteed empty. Best-
+  // effort: a read failure must never cost the completion.
+  let checkpointChecksCarried: PersistedCompletionEvidence['checkpointChecksCarried'];
+  try {
+    const priorCheckpoint = await getWorkItemCheckpoint({
+      harness: (it.harness as string | null | undefined) ?? null,
+      workItemId: it.id,
+      workspaceId: ctx.workspaceId,
+    });
+    if (priorCheckpoint) {
+      const { checks } = splitCarryNoteChecks(priorCheckpoint);
+      if (checks.length > 0) {
+        checkpointChecksCarried = checks.map((c) => ({
+          claim: c.claim,
+          ...(c.recheck ? { recheck: c.recheck } : {}),
+          ...(c.verified ? { verified: c.verified } : {}),
+          ...(c.contested ? { contested: c.contested } : {}),
+        }));
+      }
+    }
+  } catch {
+    /* fail-open: the clear below proceeds regardless */
+  }
+
   const summaryText = it.completion.summary?.trim();
   // EI-21478999218933285: `deferred`, `whatLanded`, and `coordNotes` used to survive
   // only in the transient completion event. A later work_items:get therefore gave a
@@ -2180,6 +2208,9 @@ async function completeOne(
   if (it.completion.whatLanded?.length) completionNarrative.whatLanded = it.completion.whatLanded;
   if (it.completion.deferred?.length) completionNarrative.deferred = it.completion.deferred;
   if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
+  if (checkpointChecksCarried?.length) {
+    completionNarrative.checkpointChecksCarried = checkpointChecksCarried;
+  }
   // WI-41769. Only reachable on the PASSING path: a refusing verdict returned above, before
   // any persistence — which is correct, since a refused close records no completion at all.
   // So what lands here is exactly the population D-022 needs: the arm-B closes that passed.
