@@ -204,12 +204,13 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 
 const SCOPE_NAMESPACES = new Set(['plans', 'workitems', 'fleet', 'harness', 'locks', 'resource', 'resources']);
 const OPAQUE_TOOLS = new Set(['dev:pgquery', 'capability:bash', 'capability:script', 'code:run']);
-// Session carry is owned by the CURRENT caller, not by the recipe. A saved
-// loop:checkpoint therefore carries a prior wake's did/left/next state and can
-// overwrite the reuser's live carry note with stale lane facts. There is no
-// entity proof dimension for the session's current carry state, so fail closed
-// instead of treating this as a generic recipe.
-const VOLATILE_SESSION_STATE_TOOLS = new Set(['loop:checkpoint']);
+// Loop/session state is owned by the CURRENT caller, not by the recipe. A saved
+// loop:checkpoint carries a prior wake's did/left/next state and can overwrite
+// the reuser's live carry note; loop:arm can replace the reuser's active mission
+// and cadence; loop:end can stop the reuser's loop. There is no entity proof
+// dimension for these caller-scoped mutations, so fail closed instead of
+// treating them as generic recipes.
+const VOLATILE_SESSION_STATE_TOOLS = new Set(['loop:checkpoint', 'loop:arm', 'loop:end']);
 // Coordination cursors and sender ids describe a momentary conversation, not a
 // reusable lane. A saved recipe carrying one must fail closed: neither the
 // recipe's stable entity refs nor a later authority proof can prove that the
@@ -752,8 +753,9 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
       return (
         `the recipe script calls \`${cause.tool}\`, which writes caller-scoped session carry state whose values ` +
         'cannot be proved current for a later wake — reusing it could overwrite the caller\'s live carry note with ' +
-        'stale lane facts. No authority proof can safely authorize this saved state mutation; do not reuse this ' +
-        'recipe. Re-author the checkpoint from the current state only after inspecting the values.'
+        'stale lane facts or mutate the caller\'s active loop mission/cadence. No authority proof can safely ' +
+        'authorize this saved state mutation; do not reuse this recipe. Re-author the loop state from the current ' +
+        'session only after inspecting the values.'
       );
     case 'volatile-run-artifact-path':
       return (
