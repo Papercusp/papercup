@@ -2492,7 +2492,10 @@ async function completeOne(
       `\`agent-tools/\` segment and a \`__tests__/\` dir that this repo does not use — and both closes still ` +
       `landed authority:'committed'. The fabricated paths were MORE conventional than the real ones, which is ` +
       `exactly why review does not catch them. If you DELETED these files, or they live in a submodule that is ` +
-      `not checked out, ignore this. Otherwise re-call work_items:complete with the paths verified on disk.`
+      `not checked out, ignore this. If \`filesChanged\` was a scalar/comma-separated string or any entry ` +
+      `contains a prose annotation, re-call work_items:complete with an ARRAY of bare repo-relative paths, ` +
+      `for example \`filesChanged: ["path/to/file.ts", "path/to/test.ts"]\`. Otherwise verify the paths on disk ` +
+      `before re-calling.`
     : undefined;
 
   // EI-20288629053504794: a positive path claim is not evidence that this item touched

@@ -2536,6 +2536,20 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.addedTests).toBe(true);
     });
 
+    it('splits a scalar filesChanged path list on comma, semicolon, or newline', () => {
+      const out = coerceCompletionShape({
+        summary: 's',
+        filesChanged:
+          'packages/operator-core/lib/a.ts, packages/operator-core/lib/b.ts;\npackages/operator-core/lib/c.ts',
+      }) as { filesChanged: unknown };
+
+      expect(out.filesChanged).toEqual([
+        'packages/operator-core/lib/a.ts',
+        'packages/operator-core/lib/b.ts',
+        'packages/operator-core/lib/c.ts',
+      ]);
+    });
+
     it('unwraps a one-element addedTests array and joins top-level testsRun arrays', () => {
       const out = coerceCompletionShape({
         summary: 's',
@@ -2557,14 +2571,18 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         verification: {
           testsRun: ['67 green', 'vitest'],
           testResult: ['passed'],
-          filesChanged: 'packages/operator-core/lib/work-items.ts',
+          filesChanged:
+            'packages/operator-core/lib/work-items.ts, packages/operator-core/lib/agent-tools/work_items/complete.ts',
           addedTests: 'true',
         },
       }) as { verification: Record<string, unknown> };
       expect(out.verification).toEqual({
         testsRun: '67 green; vitest',
         testResult: 'passed',
-        filesChanged: ['packages/operator-core/lib/work-items.ts'],
+        filesChanged: [
+          'packages/operator-core/lib/work-items.ts',
+          'packages/operator-core/lib/agent-tools/work_items/complete.ts',
+        ],
         addedTests: true,
       });
     });

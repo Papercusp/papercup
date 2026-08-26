@@ -33,8 +33,8 @@
  * with an actionable object example, while JSON-object strings remain recoverable.
  */
 
-/** CompletionRecord fields that are arrays of strings (a lone scalar → `[scalar]`). */
-const ARRAY_FIELDS = ['whatLanded', 'migrations', 'deferred', 'filesChanged'] as const;
+/** CompletionRecord prose fields that are arrays of strings (a lone scalar → `[scalar]`). */
+const ARRAY_FIELDS = ['whatLanded', 'migrations', 'deferred'] as const;
 /** CompletionRecord fields that are plain strings (an array → joined). */
 const STRING_FIELDS = [
   'summary',
@@ -52,7 +52,14 @@ const STRING_FIELDS = [
 ] as const;
 const BOOL_FIELDS = ['addedTests'] as const;
 /** Every completion-record field name — used to recognise a FLAT completion. */
-export const COMPLETION_FIELDS: readonly string[] = [...ARRAY_FIELDS, ...STRING_FIELDS, ...BOOL_FIELDS, 'verification', 'coverage'];
+export const COMPLETION_FIELDS: readonly string[] = [
+  ...ARRAY_FIELDS,
+  ...STRING_FIELDS,
+  ...BOOL_FIELDS,
+  'filesChanged',
+  'verification',
+  'coverage',
+];
 
 /** Exact object-form example shared by the schema error and the tool guidance. */
 export const COMPLETION_OBJECT_EXAMPLE =
@@ -67,6 +74,37 @@ export const COMPLETION_STRING_REJECTION =
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Normalize the path-only `filesChanged` field.
+ *
+ * Unlike prose arrays such as `whatLanded`, a scalar containing commas,
+ * semicolons, or newlines is overwhelmingly a list of paths. Treating that
+ * entire string as ONE path makes the integrity warning prescribe an
+ * impossible "verify it on disk and retry" loop (EI-21471221125941096).
+ * Split only this field; callers with a literal delimiter in a filename can
+ * disambiguate it by passing the documented array form.
+ */
+function coerceFilesChanged(v: unknown): unknown {
+  let entries: unknown[];
+  if (typeof v === 'string') {
+    entries = v
+      .split(/[;,]|\r?\n/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  } else if (Array.isArray(v)) {
+    entries = v;
+  } else if (v == null) {
+    return undefined;
+  } else {
+    entries = [v];
+  }
+
+  return entries.map((entry) => {
+    if (!isPlainObject(entry) || typeof entry.path !== 'string' || !entry.path.trim()) return entry;
+    return entry.path.trim();
+  });
 }
 
 /** Join a mis-typed array into the single string the field expects (drops empties). */
@@ -248,19 +286,7 @@ export function coerceCompletionShape(raw: unknown): unknown {
       const value = verification[f];
       if (Array.isArray(value)) verification[f] = joinToString(value) || undefined;
     }
-    const filesChanged = verification.filesChanged;
-    if (typeof filesChanged === 'string') {
-      const s = filesChanged.trim();
-      verification.filesChanged = s ? [s] : undefined;
-    } else if (filesChanged != null && !Array.isArray(filesChanged)) {
-      verification.filesChanged = [filesChanged];
-    }
-    if (Array.isArray(verification.filesChanged)) {
-      verification.filesChanged = verification.filesChanged.map((entry) => {
-        if (!isPlainObject(entry) || typeof entry.path !== 'string' || !entry.path.trim()) return entry;
-        return entry.path.trim();
-      });
-    }
+    verification.filesChanged = coerceFilesChanged(verification.filesChanged);
     verification.addedTests = coerceBooleanFlag(verification.addedTests);
     out.verification = verification;
   }
@@ -277,17 +303,11 @@ export function coerceCompletionShape(raw: unknown): unknown {
     }
   }
 
-  // Some callers describe changed files as `{ path, change }` records. The
-  // completion contract stores paths only because downstream resolution and
-  // audit code treats every entry as a string. Keep the useful path and drop
-  // the presentation-only description. Invalid records remain unchanged so
-  // schema validation rejects them instead of recording "[object Object]".
-  if (Array.isArray(out.filesChanged)) {
-    out.filesChanged = out.filesChanged.map((entry) => {
-      if (!isPlainObject(entry) || typeof entry.path !== 'string' || !entry.path.trim()) return entry;
-      return entry.path.trim();
-    });
-  }
+  // `filesChanged` is path-only, so it has a stricter scalar rescue than the
+  // prose arrays above: common list delimiters become distinct paths. This also
+  // unwraps `{ path, change }` records while leaving invalid entries for schema
+  // validation instead of recording "[object Object]".
+  out.filesChanged = coerceFilesChanged(out.filesChanged);
 
   // string-typed fields: an array becomes a joined string.
   for (const f of STRING_FIELDS) {
