@@ -381,12 +381,17 @@ export function resolveTaskBudget({
     memoryWorkerBudget,
   );
   let pidsMaxConcurrentTasks = null;
+  let effectivePidsPerConcurrentTask = configuredPidsPerConcurrentTask;
+  let effectivePidsReserve = configuredPidsReserve;
+  let pidsBudgetAdapted = false;
   if (configuredTaskCgroupPidsMax != null) {
-    const usablePids = configuredTaskCgroupPidsMax - configuredPidsReserve;
-    pidsMaxConcurrentTasks = Math.floor(
-      usablePids / configuredPidsPerConcurrentTask,
-    );
-    if (pidsMaxConcurrentTasks < 1) {
+    // A confined capability task can receive fewer pids than the conservative host-wide
+    // envelope (for example pids.max=512 versus the default 4096-per-task + 1024 reserve).
+    // That is a narrower scheduling budget, not proof that no test can run. Scale the two
+    // configured terms together so one serial task still has a fitting envelope. Keep a true
+    // refusal only for a cgroup that cannot contain even one process (pids.max=0).
+    if (configuredTaskCgroupPidsMax === 0) {
+      const usablePids = configuredTaskCgroupPidsMax - configuredPidsReserve;
       throw new Error(
         `task cgroup pids.max=${configuredTaskCgroupPidsMax} leaves ${Math.max(0, usablePids)} ` +
           `after pidsReserve=${configuredPidsReserve}, below one ` +
@@ -397,6 +402,42 @@ export function resolveTaskBudget({
             limit: configuredTaskCgroupPidsMax,
             reserve: configuredPidsReserve,
             requiredPerTask: configuredPidsPerConcurrentTask,
+          }),
+      );
+    }
+    const configuredPidsEnvelope =
+      configuredPidsReserve + configuredPidsPerConcurrentTask;
+    if (configuredTaskCgroupPidsMax < configuredPidsEnvelope) {
+      // Preserve the configured reserve/envelope ratio while rounding to integral pids. The
+      // per-task term gets the remainder, so effectiveReserve + effectivePerTask always fits.
+      effectivePidsReserve = Math.min(
+        configuredPidsReserve,
+        Math.floor(
+          (configuredTaskCgroupPidsMax * configuredPidsReserve) /
+            configuredPidsEnvelope,
+        ),
+      );
+      effectivePidsPerConcurrentTask = Math.min(
+        configuredPidsPerConcurrentTask,
+        configuredTaskCgroupPidsMax - effectivePidsReserve,
+      );
+      pidsBudgetAdapted = true;
+    }
+    const usablePids = configuredTaskCgroupPidsMax - effectivePidsReserve;
+    pidsMaxConcurrentTasks = Math.floor(
+      usablePids / effectivePidsPerConcurrentTask,
+    );
+    if (pidsMaxConcurrentTasks < 1) {
+      throw new Error(
+        `task cgroup pids.max=${configuredTaskCgroupPidsMax} leaves ${Math.max(0, usablePids)} ` +
+          `after pidsReserve=${effectivePidsReserve}, below one ` +
+          `pidsPerConcurrentTask=${effectivePidsPerConcurrentTask} envelope; refusing before launch ` +
+          formatTaskBudgetRefusal({
+            kind: "pids",
+            unit: "tasks",
+            limit: configuredTaskCgroupPidsMax,
+            reserve: effectivePidsReserve,
+            requiredPerTask: effectivePidsPerConcurrentTask,
           }),
       );
     }
@@ -427,10 +468,13 @@ export function resolveTaskBudget({
     configuredMaxConcurrentTasks,
     pidsMaxConcurrentTasks,
     taskCgroupPidsMax: configuredTaskCgroupPidsMax,
-    pidsPerConcurrentTask: configuredPidsPerConcurrentTask,
-    pidsReserve: configuredPidsReserve,
+    pidsPerConcurrentTask: effectivePidsPerConcurrentTask,
+    pidsReserve: effectivePidsReserve,
+    configuredPidsPerConcurrentTask,
+    configuredPidsReserve,
+    pidsBudgetAdapted,
     taskBoundBy:
-      effectiveMaxConcurrentTasks < configuredMaxConcurrentTasks
+      pidsBudgetAdapted || effectiveMaxConcurrentTasks < configuredMaxConcurrentTasks
         ? "pids"
         : "ceiling",
     reserveWorkers: configuredReserveWorkers,
@@ -913,7 +957,11 @@ export function formatTaskBudgetMarker(
         ` taskBoundBy=${stats.taskBoundBy ?? "ceiling"}` +
         ` taskCgroupPidsMax=${stats.taskCgroupPidsMax}` +
         ` pidsPerTask=${stats.pidsPerConcurrentTask ?? PIDS_PER_CONCURRENT_TASK}` +
-        ` pidsReserve=${stats.pidsReserve ?? PIDS_RESERVE}`;
+        ` pidsReserve=${stats.pidsReserve ?? PIDS_RESERVE}` +
+        (stats.pidsBudgetAdapted
+          ? ` pidsBudgetAdapted=1 configuredPidsPerTask=${stats.configuredPidsPerConcurrentTask ?? PIDS_PER_CONCURRENT_TASK}` +
+            ` configuredPidsReserve=${stats.configuredPidsReserve ?? PIDS_RESERVE}`
+          : "");
   return (
     `${prefix} mode=${stats.mode} workerBudget=${stats.workerBudget} ` +
     `memoryBudgetMb=${stats.memoryBudgetMb} workerMemoryMb=${stats.workerMemoryMb} ` +
