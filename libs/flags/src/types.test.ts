@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   FLAGS,
   FLAG_DEFAULTS,
+  DARK_FLAGS,
   ALL_FLAG_KEYS,
   resolveWithDefaults,
   type FlagKey,
@@ -67,6 +68,11 @@ describe('flag registry invariants', () => {
     // but production must enforce every declared RouteAuth tier unless an
     // operator explicitly flips that kill switch.
     expect(FLAG_DEFAULTS[FLAGS.ENDPOINT_AUTH_TIERS]).toBe(true);
+  });
+
+  it('the acceptance-rubric completion gate is default-ON and not dark', () => {
+    expect(FLAG_DEFAULTS[FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE]).toBe(true);
+    expect(DARK_FLAGS.has(FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE)).toBe(false);
   });
 
   it('deterministic maintenance carry defaults ON with an explicit false kill-switch', () => {

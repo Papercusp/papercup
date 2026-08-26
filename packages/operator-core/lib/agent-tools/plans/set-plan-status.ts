@@ -279,13 +279,13 @@ export async function launchAcceptanceGraderForGate(
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
-    "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` requires a current code-truth `plans:audit { phase:'completion' }` and a peer-graded acceptance rubric. Plan frontmatter, not item status. `superseded` + `learnings` emits a salvage observation.",
+    "Change a plan's lifecycle status: draft→ready, ready→draft, →shipped, or →superseded. draft→ready/active requires `plans:audit { phase:'activation' }`; shipped/`done` is post-implementation: author the plan-specific rubric from as-built reality, run `plans:audit { phase:'completion' }`, then get a peer grade. Plan frontmatter, not item status.",
   guidance: {
-    when: "Lifecycle changes. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), repair omissions, and record `plans:audit { phase:'activation' }`. Before shipped/`done`, run `plans:audit { phase:'completion', items:[...] }` against current code/tests, then satisfy the peer-graded acceptance rubric. Other moves: ready→draft or supersede; deprecate with `status:'superseded'` + `learnings`.",
+    when: "Lifecycle changes. Before draft→ready/active, re-read the COMPLETE source conversation (not memory/summary), repair omissions, and record `plans:audit { phase:'activation' }`. Before shipped/`done`, author the acceptance rubric AFTER implementation from as-built outcomes, run `plans:audit { phase:'completion', items:[...] }`, then get a peer grade. Other moves: ready→draft or supersede.",
     notWhen:
       "Not for P-NNN item status (use plans:set-status) or legacy plans without frontmatter (use plans:set-frontmatter). `learnings` applies only to superseded; shipped has code-truth and rubric gates.",
     chaining:
-      "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: `plans:audit { phase:'completion', items:[...] }` → peer-graded rubric → shipped/`done`. Re-audit after semantic edits, not cosmetic ones. Start uses the same activation gate.",
+      "Activation: sessions:search/read → repair → `plans:audit { phase:'activation' }` → ready (`expectedCurrent:'draft'`). Completion: implementation → as-built acceptance rubric → `plans:audit { phase:'completion', items:[...] }` → peer grade → shipped/`done`. Re-audit after semantic edits, not cosmetic ones.",
   },
   capability: 'plans:write',
   // Idempotent-completion (backend-reliability-100pct-2026-07-03 W6/P-007):

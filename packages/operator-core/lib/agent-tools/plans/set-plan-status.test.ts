@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   normalizePlanStatus,
   flipPlanFrontmatterStatus,
   launchAcceptanceGraderForGate,
 } from './set-plan-status';
 import setPlanStatusTool from './set-plan-status';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 describe('set-plan-status public lifecycle guidance', () => {
   it('documents the completion audit gate for shipped and done', () => {
@@ -17,7 +22,17 @@ describe('set-plan-status public lifecycle guidance', () => {
     expect(publicGuidance).toContain('shipped');
     expect(publicGuidance).toContain('`done`');
     expect(publicGuidance).toContain("plans:audit { phase:'completion'");
-    expect(publicGuidance).toContain('peer-graded acceptance rubric');
+    expect(publicGuidance).toContain('AFTER implementation');
+    expect(publicGuidance).toContain('as-built');
+    expect(publicGuidance).toContain('peer grade');
+  });
+
+  it('projects the post-implementation authoring contract to both agent clients', () => {
+    for (const clientDoc of ['AGENTS.md', 'CLAUDE.md']) {
+      const projected = readFileSync(resolve(ROOT, clientDoc), 'utf8');
+      expect(projected).toContain('## Every plan ships with a graded acceptance rubric');
+      expect(projected).toContain('After implementation is verified:');
+    }
   });
 });
 

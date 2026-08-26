@@ -303,6 +303,14 @@ describe('tools-md-sync', () => {
     expect(CATALOG.size).toBeGreaterThan(0);
   });
 
+  it('keeps plan acceptance grading on scorecards:emit, with no wrapper grading verb (D-010)', () => {
+    expect(CATALOG.has('scorecards:emit')).toBe(true);
+    const wrapperNames = [...CATALOG.keys()].filter((name) =>
+      /acceptance.*(?:grade|score)|(?:grade|score).*acceptance/i.test(name),
+    );
+    expect(wrapperNames).toEqual([]);
+  });
+
   for (const { role, label, allowedToolsSource } of CHAT_SURFACES) {
     const allowed = parseChatSurfaceAllowedTools(allowedToolsSource);
     describe(`chat surface: ${label} (${role})`, () => {
