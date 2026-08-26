@@ -139,6 +139,90 @@ describe('decideGitSyncEscalation (EI-18)', () => {
 });
 
 /**
+ * EI-21230011589307899 — on 2026-08-26 a secret-SHAPED test fixture (a bare PEM
+ * private-key header line, used as a NEGATIVE fixture asserting a scanner rejects it)
+ * froze this device's own-head publish at one commit. Egress stayed dead for 51
+ * minutes with 54 commits queued behind it, and NOTHING raised an alarm:
+ * `decideGitSyncEscalation` was never given the publish state at all, so the condition
+ * was structurally un-escalatable.
+ *
+ * Worse than silent — the commit leg still succeeded, so the tick reported status
+ * 'synced' and actively CLEARED any open error escalation while egress was frozen.
+ * That is the same silent metadata-only failure mode EI-18 fixed for the push and
+ * oversized legs, reached through the one hole it left.
+ *
+ * (Writing this very file produced a live positive control: the write-time
+ * secrets-guard hook BLOCKED the first draft for quoting that header literally. The
+ * hook is sound on the Edit path — which is why the offending blob can only have
+ * reached history through a write path the hook's matcher does not cover.)
+ */
+describe('decideGitSyncEscalation — own-head publish refusal (EI-21230011589307899)', () => {
+  const refusal = { refused: 'secrets', blockedAtCommit: '97bb154c1aaf393e328d4e93bbe7c28eb01a3bc7' };
+
+  it('escalates on SIGHT — no consecutive-tick threshold, unlike push-failure', () => {
+    const d = decideGitSyncEscalation({ ...base, publishRefusal: refusal });
+    expect(d.escalate).toBe(true);
+    expect(d.reasons).toContain('publish-refused');
+    // The freeze cannot self-clear (the blob is already in history), so waiting out a
+    // flake-absorbing threshold would only extend the outage.
+    expect(base.consecutiveErrorTicks).toBeLessThan(PUSH_FAILURE_ESCALATION_TICKS);
+  });
+
+  it('does NOT let a frozen-egress tick be reported clean (the 2026-08-26 regression)', () => {
+    // status 'synced' — the commit leg succeeded; only the publish leg refused. Before
+    // this fix that combination cleared the escalation row while egress was dead.
+    const d = decideGitSyncEscalation({ ...base, status: 'synced', publishRefusal: refusal });
+    expect(d.clear).toBe(false);
+  });
+
+  it('broadcast names the blocked commit AND the remedy that actually works', () => {
+    const d = decideGitSyncEscalation({ ...base, publishRefusal: refusal });
+    expect(d.broadcast).toContain('97bb154c1aaf'); // where the freeze is pinned
+    expect(d.broadcast).toContain('secrets'); // why it refused
+    expect(d.broadcast).toContain('pot_git:secrets_exemptions'); // the lever
+    // The two misreadings that cost the most time on the day: blaming the origin ref,
+    // and trying to fix the file forward.
+    expect(d.broadcast).toContain('does NOT clear this');
+    expect(d.broadcast).toMatch(/SYMPTOM, not the cause/);
+  });
+
+  it('a PERSISTING freeze refreshes the row but does not re-broadcast every tick', () => {
+    const d = decideGitSyncEscalation({
+      ...base,
+      publishRefusal: refusal,
+      prevPublishBlockedAtCommit: refusal.blockedAtCommit,
+    });
+    expect(d.escalate).toBe(true);
+    expect(d.reasons).toContain('publish-refused');
+    expect(d.broadcast).toBeNull();
+  });
+
+  it('a freeze that MOVES to a new commit broadcasts again', () => {
+    const d = decideGitSyncEscalation({
+      ...base,
+      publishRefusal: refusal,
+      prevPublishBlockedAtCommit: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+    });
+    expect(d.broadcast).toContain('97bb154c1aaf');
+  });
+
+  it('refused:null is a HEALTHY publish, not a freeze', () => {
+    const d = decideGitSyncEscalation({ ...base, publishRefusal: { refused: '', blockedAtCommit: null } });
+    expect(d.reasons).not.toContain('publish-refused');
+    expect(d.clear).toBe(true);
+  });
+
+  it('omitting publishRefusal changes nothing — every pre-existing caller is unaffected', () => {
+    expect(decideGitSyncEscalation(base)).toEqual({ escalate: false, reasons: [], clear: true, broadcast: null });
+  });
+
+  it('combines with the other reasons rather than replacing them', () => {
+    const d = decideGitSyncEscalation({ ...base, oversized: [big], publishRefusal: refusal });
+    expect(d.reasons).toEqual(expect.arrayContaining(['oversized-blobs', 'publish-refused']));
+  });
+});
+
+/**
  * EI-19275994927087666 — both the escalation broadcast and the /admin/git deploy
  * panel called EVERY git-sync failure a PUSH failure. For 32h the fleet inbox read
  * "PUSH FAILING … commits NOT reaching origin" while origin/staging was byte-identical
