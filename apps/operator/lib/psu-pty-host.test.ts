@@ -3149,6 +3149,39 @@ describe('shutdownRefusalReason (WI-6638)', () => {
     expect(shutdownRefusalReason()).toBe('not-agent-launched');
   });
 
+  it('EI-21560080116530508: accepts a structurally headless fleet member without legacy launch provenance', () => {
+    expect(
+      shutdownRefusalReason({
+        launchedBy: '',
+        headless: true,
+        fleetSlug: 'nonp2p-bug-drain',
+        lastInputAt: 0,
+        agentQuietMs: 60_000,
+      }),
+    ).toBeNull();
+  });
+
+  it('EI-21560080116530508: fleet membership alone never weakens an interactive session guard', () => {
+    expect(
+      shutdownRefusalReason({
+        launchedBy: '',
+        headless: false,
+        fleetSlug: 'nonp2p-bug-drain',
+        lastInputAt: 0,
+        agentQuietMs: 60_000,
+      }),
+    ).toBe('not-agent-launched');
+    expect(
+      shutdownRefusalReason({
+        launchedBy: '',
+        headless: true,
+        fleetSlug: '',
+        lastInputAt: 0,
+        agentQuietMs: 60_000,
+      }),
+    ).toBe('not-agent-launched');
+  });
+
   it('REFUSES a session a human has EVER typed into, however long ago', () => {
     expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, lastInputAt: 1 })).toBe('human-attended');
     expect(shutdownRefusalReason({ ...AGENT_LAUNCHED, lastInputAt: Date.now() })).toBe('human-attended');
