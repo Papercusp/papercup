@@ -70,6 +70,11 @@ mode.
 - A `curl http://127.0.0.1:3070/...` for a quick **API** check (not a UI check)
   is fine while the desktop is running.
 
+The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
+webapp — what's retired is the *act of running/browsing it standalone*. Detail +
+the transport/persistence table:
+[repo-conventions § deployment model](/internal/docs/system/repo-conventions).
+
 ## Almost all state should be in nuqs
 
 **If a piece of state is reasonably user-meaningful, it goes in the URL via
@@ -694,6 +699,11 @@ on a VM whose instantaneous load was 200% — right here only by coincidence, an
 for anything whose load has changed), and any first-iteration sampler has no prior sample to
 difference against. CPU usage *is* a delta; ask for one:
 
+The runnable recipe, and the two `/proc` methods that each report a confident FALSE IDLE on a
+process burning a full core:
+[is this process actually doing work?](/internal/docs/agent-insights/is-this-process-actually-doing-work).
+
+
 ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
 service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
 work runs in a child, so measuring it alone reports "idle" about a process
@@ -919,7 +929,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **8 part(s) (4,581 chars) did not fit this client's
+> ⚠ **6 part(s) (2,525 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -932,11 +942,9 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 > matters more than something still above, change its `project_rank` — do not re-add it
 > by hand, which the next projection would undo.
 
-- `running-testing-this-app-it-the-30553070-layer-i` — *▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp* — The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
 - `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
-- `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
 - `browser-checks-use-verdict-ad-hocexploratory-bro` — *Browser checks — use `verdict`* — Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
 - `use-context7-for-current-lib-before-non-trivial` — *Use Context7 for current library docs* — Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,
