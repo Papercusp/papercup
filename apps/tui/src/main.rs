@@ -95,8 +95,10 @@ Options:
   -h, --help                 Print this help text
 ";
 
-fn print_cli_help(subcommand: Option<&str>) -> bool {
-    if matches!(subcommand, Some("-h") | Some("--help")) {
+fn print_cli_help(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> bool {
+    if matches!(subcommand, Some("-h") | Some("--help"))
+        || matches!(subcommand_arg, Some("-h") | Some("--help"))
+    {
         print!("{CLI_HELP}");
         true
     } else {
@@ -114,7 +116,8 @@ async fn main() -> Result<()> {
     //                   already inside zellij (so the HUD pane can't recursively
     //                   nest another workbench — `$ZELLIJ` is set by zellij).
     let subcommand = std::env::args().nth(1);
-    if print_cli_help(subcommand.as_deref()) {
+    let subcommand_arg = std::env::args().nth(2);
+    if print_cli_help(subcommand.as_deref(), subcommand_arg.as_deref()) {
         return Ok(());
     }
     match subcommand.as_deref() {
@@ -311,6 +314,28 @@ async fn main() -> Result<()> {
     .ok();
     terminal.show_cursor().ok();
     result
+}
+
+#[cfg(test)]
+mod cli_help_tests {
+    use super::print_cli_help;
+
+    #[test]
+    fn top_level_help_is_recognized() {
+        assert!(print_cli_help(Some("--help"), None));
+        assert!(print_cli_help(Some("-h"), None));
+    }
+
+    #[test]
+    fn subcommand_help_is_recognized_before_dispatch() {
+        assert!(print_cli_help(Some("workbench"), Some("--help")));
+        assert!(print_cli_help(Some("doctor"), Some("-h")));
+    }
+
+    #[test]
+    fn ordinary_subcommand_arguments_do_not_trigger_help() {
+        assert!(!print_cli_help(Some("hive-pane"), Some("engineering")));
+    }
 }
 
 /// Materialise the workbench layout and hand off to zellij. Replaces this
