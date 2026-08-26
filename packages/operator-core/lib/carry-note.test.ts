@@ -1451,6 +1451,41 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
       expect(merged.checks.map((c) => c.claim)).toContain('claim 1');
     });
 
+    it('evidence ordering STOPS PROTECTING once the supplied list alone fills the cap', () => {
+      // THE REACH LIMIT of the EI-21229591144264047 fix, pinned so the prose cannot drift
+      // back to stating it unconditionally (EI-21514029457263901).
+      //
+      // Every other test in this block supplies exactly ONE row, which is the only regime
+      // where `evidenceFirst` can decide anything: the carried remainder still has seats to
+      // compete for. Supplied rows are placed FIRST, so once the supplied list on its own
+      // meets the cap there is no seat left and EVERY unmatched carried row is evicted --
+      // verified or not. A caller who reads "? PREDICTED rows are evicted before VERIFIED
+      // ones" as a guarantee that their hard-won evidence survives a big merge is wrong,
+      // and this is exactly the case where the MOST rows are lost at once.
+      const carriedAllVerified = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => check(i + 1));
+      // Supplied rows are all PREDICTED (no `verified`) and all NEW claims, so nothing upserts.
+      const suppliedAllPredicted = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+        claim: `supplied ${i + 1}`,
+        recheck: `supplied probe ${i + 1}`,
+      }));
+      const merged = mergeCarryRows({
+        priorNote: priorNoteWith(carriedAllVerified),
+        baseNote: 'body',
+        checks: suppliedAllPredicted,
+        hasNoteWrite: true,
+        mode: 'merge',
+      });
+
+      // The stored set is the supplied PREDICTED rows, in full.
+      expect(merged.checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+      expect(merged.checks.map((c) => c.claim)).toEqual(suppliedAllPredicted.map((c) => c.claim));
+      // ...and every VERIFIED carried row was evicted, despite carrying evidence.
+      expect(merged.droppedChecks).toEqual(carriedAllVerified.map((c) => c.claim));
+      // Nothing the caller supplied overflowed, so `checksOverflowed` cannot warn them either:
+      // the entire loss shows up only in `checksDropped`.
+      expect(merged.overflowChecks).toEqual([]);
+    });
+
     it('keeps a supplied WALL and evicts the carried tail', () => {
       const merged = mergeCarryRows({
         priorNote: priorNoteWith([], Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => wall(i + 1))),
