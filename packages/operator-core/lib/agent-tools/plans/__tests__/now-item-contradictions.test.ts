@@ -92,6 +92,39 @@ describe('detectNowItemContradictions', () => {
     expect(detectNowItemContradictions(proposed)).toEqual([]);
   });
 
+  it('allows a neutral cross-ledger implementation mapping for a terminal item', () => {
+    const proposed = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+        '**State:** The consumer lane is now WI-41755/P-001 under D-081; its affected-radius verification remains in progress.\n\n**Next:** Continue the affected-radius verification.',
+      ),
+    );
+
+    expect(detectNowItemContradictions(proposed)).toEqual([]);
+  });
+
+  it('still flags action or active-status wording around a cross-ledger reference', () => {
+    const action = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+        '**State:** Revisit WI-41755/P-001 under D-081 before continuing.',
+      ),
+    );
+    const active = parsePlan(
+      CURRENT.replace(
+        '**State:** P-001 is done.\n\n**Next:** Continue with P-002.',
+        '**State:** Active implementation lane: WI-41755/P-001 under D-081.',
+      ),
+    );
+
+    expect(detectNowItemContradictions(action)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+    expect(detectNowItemContradictions(active)).toEqual([
+      expect.objectContaining({ id: 'P-001', status: 'done' }),
+    ]);
+  });
+
   it('still flags an action-oriented mention inside a historical note', () => {
     const proposed = parsePlan(
       CURRENT.replace(
@@ -153,6 +186,17 @@ describe('evaluateNowUpdate — Now/item contradiction guard', () => {
       GROUPED_COMPLETION,
       'NOT COMPLETE: The engineering half (P-001/P-002/P-003/P-004/P-005/P-007) is code-truth audited and independently accepted; P-008 remains blocked.',
       'Continue with P-008.',
+      SLUG,
+    );
+
+    expect(result.value).toEqual({ ok: true });
+  });
+
+  it('accepts a neutral cross-ledger implementation mapping while verification continues', () => {
+    const result = evaluateNowUpdate(
+      CURRENT,
+      'The consumer lane is now WI-41755/P-001 under D-081; its affected-radius verification remains in progress.',
+      'Continue the affected-radius verification.',
       SLUG,
     );
 

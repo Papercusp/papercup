@@ -17,6 +17,9 @@ const NOW_HISTORICAL_RE =
   /\b(?:histor(?:y|ical)|prior|previous(?:ly)?|earlier|former(?:ly)?|legacy|archived?|record(?:ed)?)\b/i;
 const NOW_ACTION_RE =
   /\b(?:address|audit|claim|close|complete|continue|finish|fix|handle|implement|investigate|pick(?:\s+up)?|reopen|repair|revisit|review|resume|retry|run|start|validate|verify|work)\b/i;
+const NOW_ACTIVE_RE = /\b(?:active|assigned|in\s+progress|ongoing|open|pending|underway)\b/i;
+const NOW_CROSS_LEDGER_REF_BEFORE_RE = /\bWI-\d+\s*\/\s*$/i;
+const NOW_CROSS_LEDGER_REF_AFTER_RE = /^\s*\/\s*WI-\d+\b/i;
 
 /**
  * PURE: find terminal plan items that the cold-resume Now block still presents
@@ -82,7 +85,21 @@ export function detectNowItemContradictions(parsed: Pick<ParsedPlan, 'now' | 'it
       !NOW_ACTION_RE.test(before.slice(-120)) &&
       !NOW_ACTION_RE.test(after) &&
       !NOW_NEGATED_OR_FUTURE_RE.test(after);
-    if (closeAfter || closeBefore || historicalReference) continue;
+    // Cross-ledger pairs such as `WI-41755/P-006 under D-081` identify the
+    // implementation lineage. A neutral mapping remains useful after the plan
+    // item closes while verification of the wider affected radius continues;
+    // it is not itself an instruction to redo P-006. Keep this exemption
+    // evidence-based and narrow: explicit action/future/active wording still
+    // means the terminal item is being presented as current work.
+    const crossLedgerReference =
+      (NOW_CROSS_LEDGER_REF_BEFORE_RE.test(before) || NOW_CROSS_LEDGER_REF_AFTER_RE.test(after)) &&
+      !NOW_ACTION_RE.test(historicalContext.slice(-120)) &&
+      !NOW_ACTION_RE.test(after) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(historicalContext.slice(-120)) &&
+      !NOW_NEGATED_OR_FUTURE_RE.test(after) &&
+      !NOW_ACTIVE_RE.test(historicalContext.slice(-120)) &&
+      !NOW_ACTIVE_RE.test(after);
+    if (closeAfter || closeBefore || historicalReference || crossLedgerReference) continue;
 
     contradictions.push({
       id,
