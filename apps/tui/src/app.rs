@@ -9,8 +9,8 @@ use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, ConversationContextFrame,
     ConversationContextProjection, ConversationContextProjectionTarget, CrewMember, DocsResponse,
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
-    HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
-    TuiPaneContribution, ViewState, WorkItem,
+    HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
+    SessionTranscriptTurn, TestingDomain, TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -54,6 +54,16 @@ pub enum Action {
     FetchSessionSwitcher {
         query: String,
     },
+    /// Refresh the Sessions destination from the same merged roster + indexed
+    /// transcript model as the global switcher.
+    FetchSessionBrowser {
+        query: String,
+    },
+    /// Read the canonical transcript tail for the selected browser row.
+    FetchSessionTranscript {
+        session_key: String,
+        reference: String,
+    },
     /// Fetch the per-item assignment/claim/liveness for one plan
     /// (pui-plans-status-board-2026-06-14 P-008) so the plans board's right-side
     /// work-items detail updates the instant the selection moves — the active-
@@ -88,6 +98,11 @@ pub enum Action {
     Quit,
     /// Open a native agent session in a new multiplexer pane.
     Launch(PaneSpec),
+    /// Open several native agent sessions at once — the crew-restore prompt's
+    /// `[y] resume ended members` (P-031). Each spec follows the `Launch` path
+    /// (companion when linked, else the zellij CLI); the reducer already
+    /// `record_launch`ed each spec, so the run-loop arm must not re-record.
+    LaunchMany(Vec<PaneSpec>),
     /// Reactively open work-area panes for new LOCAL workbench launches
     /// (pui-reactive-session-panes D-006). The run loop opens each `spec` via the
     /// multiplexer (companion when linked, else `zellij action new-pane`) and POSTs
@@ -113,6 +128,12 @@ pub enum Action {
     /// A command-palette workbench command (P12b) — the run loop dispatches it to
     /// the workbench-command task (list/save/restore layouts + crews).
     Workbench(PaletteCommand),
+    /// Save the Sessions browser's current selection through the existing
+    /// SaveCrew executor without mutating the workbench's launched-pane roster.
+    SaveCrewSelection {
+        name: String,
+        members: Vec<CrewMember>,
+    },
     /// A dockview dock-verb (Brief 50 / dockview-workbench D-008) — the run loop
     /// drives the companion plugin (or a CLI fallback). Carried separately from
     /// `Workbench` because these need the live companion handle + topology, which
@@ -381,6 +402,19 @@ pub struct FleetActionMenu {
     /// External-window focus handle (adv_session_id, pid, window_id) — Some iff
     /// `can_focus_window`.
     pub focus: Option<(Option<i64>, Option<i64>, Option<String>)>,
+}
+
+/// The ended-members prompt a crew RESTORE surfaces (P-031 — crews are the
+/// multi-session switch): restoring a crew focuses live members and wakes
+/// parked ones, but an ENDED member would otherwise silently vanish from the
+/// restored workspace — so the reducer asks first. `[y]`/Enter resumes every
+/// listed member; `[n]`/Esc restores without them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CrewRestorePrompt {
+    /// Crew name (the modal header).
+    pub crew: String,
+    /// The crew rows whose sessions ended (each carries its resume handle).
+    pub members: Vec<CrewMember>,
 }
 
 /// The staged-wake review overlay's state (hive-agent-tabs P-009 / D-005).
@@ -907,6 +941,9 @@ pub enum Tab {
     /// absorbed the old Sessions launcher (D-002b: roster + dossier + n-launch
     /// fold into the fleet view).
     Fleet,
+    /// Sessions — faceted archive over live, parked, ended, and indexed-only
+    /// sessions. Unlike Ctrl-S this is a wide exploratory destination.
+    Sessions,
     /// Pots — the per-project features/issues surface (`Tab::Harnesses` variant,
     /// titled "Pots" per D-001).
     Harnesses,
@@ -971,12 +1008,13 @@ impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
     // audit_log, and the Fleet tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Fleet exactly.
-    pub const ALL: [Tab; 16] = [
+    pub const ALL: [Tab; 17] = [
         Tab::Overview,
         Tab::Operator,
         Tab::Inbox,
         Tab::Plans,
         Tab::Fleet,
+        Tab::Sessions,
         Tab::Harnesses,
         Tab::Docs,
         Tab::Testing,
@@ -998,6 +1036,7 @@ impl Tab {
             // D-001 label-only rename: Harnesses→Pots. The cup-theme rename
             // was REVERSED by the owner (2026-06-05) — "Fleet is clearer".
             Tab::Fleet => "Fleet",
+            Tab::Sessions => "Sessions",
             Tab::Harnesses => "Pots",
             Tab::Docs => "Docs",
             Tab::Testing => "Testing",
@@ -1048,6 +1087,7 @@ impl Tab {
             Tab::Inbox => '2',
             Tab::Plans => '3',
             Tab::Fleet => '4',
+            Tab::Sessions => 's',
             Tab::Harnesses => '5',
             Tab::Docs => '6',
             Tab::Testing => '7',
@@ -1115,6 +1155,51 @@ pub struct SessionSwitcher {
     pub rows: Vec<RosterEntry>,
     pub sel: usize,
     pub loading: bool,
+}
+
+pub const SESSION_BROWSER_STATES: [&str; 5] = ["all", "live", "parked", "ended", "recorded"];
+pub const SESSION_BROWSER_WHEN: [&str; 3] = ["7d", "30d", "all"];
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionBrowserFacet {
+    #[default]
+    State,
+    Fleet,
+    Agent,
+    When,
+}
+
+impl SessionBrowserFacet {
+    fn next(self) -> Self {
+        match self {
+            Self::State => Self::Fleet,
+            Self::Fleet => Self::Agent,
+            Self::Agent => Self::When,
+            Self::When => Self::State,
+        }
+    }
+}
+
+/// Sessions destination state (P-030 / D-009). Rows share the switcher's
+/// canonical merged model; only the destination-specific facets and preview
+/// state live here.
+#[derive(Debug, Clone, Default)]
+pub struct SessionBrowser {
+    pub rows: Vec<RosterEntry>,
+    pub sel: usize,
+    pub loading: bool,
+    pub query: String,
+    pub search_open: bool,
+    pub facet: SessionBrowserFacet,
+    pub state_idx: usize,
+    pub fleet_idx: usize,
+    pub agent_idx: usize,
+    pub when_idx: usize,
+    pub transcript_key: Option<String>,
+    pub transcript: Vec<SessionTranscriptTurn>,
+    pub transcript_loading: bool,
+    pub transcript_error: Option<String>,
+    pub full_transcript: bool,
 }
 
 impl PlansFocus {
@@ -1244,6 +1329,7 @@ pub struct App {
     /// read-model data; MRU is process-local muscle memory, not durable state.
     pub session_switcher: Option<SessionSwitcher>,
     pub session_mru: Vec<String>,
+    pub session_browser: SessionBrowser,
     /// The open model/account picker overlay (P-005 final lane, WI-41189).
     pub session_picker: Option<crate::session_config::SessionPicker>,
     /// Model override for THIS chat's turns. `None` ⇒ send no `model` at all and
@@ -1449,6 +1535,9 @@ pub struct App {
     /// `Some` while Enter on an unreachable agent has surfaced the `[r]/[n]/[f]`
     /// choices; the next `r`/`n`/`f`/Esc closes it. Captures keys while open.
     pub fleet_action_menu: Option<FleetActionMenu>,
+    /// `Some` while a crew RESTORE surfaced ended members (P-031): the modal
+    /// asks whether to also resume them. Captures keys while open.
+    pub crew_restore_prompt: Option<CrewRestorePrompt>,
     /// `Some` while the staged-wake review overlay is open (P-009): the selected
     /// agent's pending wakes + release/edit/skip state. Captures keys while open.
     pub wake_review: Option<WakeReview>,
@@ -1718,6 +1807,7 @@ impl App {
             pot_picker_sel: 0,
             session_switcher: None,
             session_mru: Vec::new(),
+            session_browser: SessionBrowser::default(),
             session_picker: None,
             chat_model: None,
             chat_effort: None,
@@ -1813,6 +1903,7 @@ impl App {
             notif_seq: 0,
             notify_enabled: false,
             fleet_action_menu: None,
+            crew_restore_prompt: None,
             wake_review: None,
             wake_board: WakeBoard {
                 loading: true,
@@ -4060,6 +4151,199 @@ impl App {
         }
     }
 
+    pub fn session_browser_state(row: &RosterEntry) -> &str {
+        match row.session_state.as_deref().filter(|state| !state.is_empty()) {
+            Some(state) => state,
+            None if row.is_live() => "live",
+            None if row.transcript_ref.is_some() => "recorded",
+            None => "ended",
+        }
+    }
+
+    pub fn session_browser_fleets(&self) -> Vec<String> {
+        let mut values = BTreeSet::new();
+        for row in &self.session_browser.rows {
+            if let Some(value) = row.fleet_slug.as_deref().filter(|value| !value.is_empty()) {
+                values.insert(value.to_string());
+            }
+        }
+        std::iter::once("any".to_string()).chain(values).collect()
+    }
+
+    pub fn session_browser_agents(&self) -> Vec<String> {
+        let mut values = BTreeSet::new();
+        for row in &self.session_browser.rows {
+            let value = row.agent.as_deref().unwrap_or(&row.source);
+            if !value.is_empty() {
+                values.insert(value.to_string());
+            }
+        }
+        std::iter::once("any".to_string()).chain(values).collect()
+    }
+
+    /// Faceted browser rows. Server order remains the recency tie-breaker;
+    /// query matching is already owner-scoped and ranked by `sessions:search`.
+    pub fn visible_session_browser(&self) -> Vec<&RosterEntry> {
+        let browser = &self.session_browser;
+        let state = SESSION_BROWSER_STATES[browser.state_idx.min(SESSION_BROWSER_STATES.len() - 1)];
+        let fleets = self.session_browser_fleets();
+        let fleet = fleets
+            .get(browser.fleet_idx.min(fleets.len().saturating_sub(1)))
+            .map(String::as_str)
+            .unwrap_or("any");
+        let agents = self.session_browser_agents();
+        let agent = agents
+            .get(browser.agent_idx.min(agents.len().saturating_sub(1)))
+            .map(String::as_str)
+            .unwrap_or("any");
+        let days = match browser.when_idx.min(SESSION_BROWSER_WHEN.len() - 1) {
+            0 => Some(7),
+            1 => Some(30),
+            _ => None,
+        };
+        browser
+            .rows
+            .iter()
+            .filter(|row| state == "all" || Self::session_browser_state(row) == state)
+            .filter(|row| fleet == "any" || row.fleet_slug.as_deref() == Some(fleet))
+            .filter(|row| {
+                agent == "any" || row.agent.as_deref().unwrap_or(&row.source) == agent
+            })
+            .filter(|row| days.is_none_or(|days| session_within_days(row, days)))
+            .collect()
+    }
+
+    pub fn selected_browser_session(&self) -> Option<&RosterEntry> {
+        self.visible_session_browser()
+            .get(self.session_browser.sel)
+            .copied()
+    }
+
+    fn fetch_selected_browser_transcript(&mut self) -> Action {
+        let Some(row) = self.selected_browser_session().cloned() else {
+            self.session_browser.transcript_key = None;
+            self.session_browser.transcript.clear();
+            self.session_browser.transcript_loading = false;
+            return Action::Render;
+        };
+        let key = Self::session_key(&row);
+        if self.session_browser.transcript_key.as_deref() == Some(&key)
+            && (self.session_browser.transcript_loading
+                || !self.session_browser.transcript.is_empty()
+                || self.session_browser.transcript_error.is_some())
+        {
+            return Action::Render;
+        }
+        self.session_browser.transcript_key = Some(key.clone());
+        self.session_browser.transcript.clear();
+        self.session_browser.transcript_error = None;
+        let Some(reference) = row.transcript_ref.filter(|value| !value.is_empty()) else {
+            self.session_browser.transcript_loading = false;
+            return Action::Render;
+        };
+        self.session_browser.transcript_loading = true;
+        Action::FetchSessionTranscript {
+            session_key: key,
+            reference,
+        }
+    }
+
+    fn refetch_session_browser(&mut self) -> Action {
+        self.session_browser.loading = true;
+        Action::FetchSessionBrowser {
+            query: self.session_browser.query.clone(),
+        }
+    }
+
+    fn move_session_browser(&mut self, delta: isize) -> Action {
+        let len = self.visible_session_browser().len();
+        self.session_browser.sel = step_clamped(self.session_browser.sel, delta, len);
+        self.session_browser.transcript_key = None;
+        self.fetch_selected_browser_transcript()
+    }
+
+    fn cycle_session_browser_facet(&mut self, delta: isize) -> Action {
+        let browser = &self.session_browser;
+        let len = match browser.facet {
+            SessionBrowserFacet::State => SESSION_BROWSER_STATES.len(),
+            SessionBrowserFacet::Fleet => self.session_browser_fleets().len(),
+            SessionBrowserFacet::Agent => self.session_browser_agents().len(),
+            SessionBrowserFacet::When => SESSION_BROWSER_WHEN.len(),
+        };
+        let step = |value: usize| ((value as isize + delta).rem_euclid(len as isize)) as usize;
+        match self.session_browser.facet {
+            SessionBrowserFacet::State => {
+                self.session_browser.state_idx = step(self.session_browser.state_idx)
+            }
+            SessionBrowserFacet::Fleet => {
+                self.session_browser.fleet_idx = step(self.session_browser.fleet_idx)
+            }
+            SessionBrowserFacet::Agent => {
+                self.session_browser.agent_idx = step(self.session_browser.agent_idx)
+            }
+            SessionBrowserFacet::When => {
+                self.session_browser.when_idx = step(self.session_browser.when_idx)
+            }
+        }
+        self.session_browser.sel = 0;
+        self.session_browser.transcript_key = None;
+        self.fetch_selected_browser_transcript()
+    }
+
+    fn session_browser_search_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Action {
+        if code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL) {
+            return Action::Quit;
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Enter => {
+                self.session_browser.search_open = false;
+                Action::Render
+            }
+            KeyCode::Backspace => {
+                self.session_browser.query.pop();
+                self.session_browser.sel = 0;
+                self.refetch_session_browser()
+            }
+            KeyCode::Char(c) => {
+                self.session_browser.query.push(c);
+                self.session_browser.sel = 0;
+                self.refetch_session_browser()
+            }
+            _ => Action::None,
+        }
+    }
+
+    fn save_selected_session_as_crew(&self) -> Action {
+        let Some(row) = self.selected_browser_session() else {
+            return Action::Render;
+        };
+        let raw_name = if row.label.is_empty() {
+            &row.owner_id
+        } else {
+            &row.label
+        };
+        let suffix: String = raw_name
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+            .collect::<String>()
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        let name = format!("session-{}", if suffix.is_empty() { "saved" } else { &suffix });
+        Action::SaveCrewSelection {
+            name,
+            members: vec![CrewMember {
+                agent: row.agent.clone().or_else(|| (!row.source.is_empty()).then(|| row.source.clone())),
+                resume_id: row.adv_session_id.map(|id| id.to_string()),
+                harness: None,
+                plan: row.current_plan_slug.clone(),
+                cwd: row.cwd.clone(),
+                ..CrewMember::default()
+            }],
+        }
+    }
+
     /// Handle a key while the Fleet `[r]/[n]/[f]` no-session menu is open (D-002).
     /// `r` resumes (when viable), `n` launches a fresh agent, `f` focuses the
     /// window (when viable); Esc / any other key closes it. Always consumes the
@@ -4098,6 +4382,53 @@ impl App {
             _ => {
                 // Esc / any non-action key closes the menu without acting.
                 self.fleet_action_menu = None;
+                Action::Render
+            }
+        }
+    }
+
+    /// Handle a key while the crew-restore ended-members prompt is open
+    /// (P-031). `y`/Enter resumes EVERY listed ended member (`psu --resume …`
+    /// panes via one [`Action::LaunchMany`]); `n`/Esc/any other key restores
+    /// without them. Always consumes the key (the prompt is modal).
+    fn crew_restore_prompt_key(&mut self, code: KeyCode) -> Action {
+        let Some(prompt) = self.crew_restore_prompt.take() else {
+            return Action::Render;
+        };
+        match code {
+            KeyCode::Char('y') | KeyCode::Enter => {
+                let specs: Vec<PaneSpec> = prompt
+                    .members
+                    .iter()
+                    .map(crate::workbench::member_pane_spec)
+                    .collect();
+                for spec in &specs {
+                    self.record_launch(spec);
+                }
+                self.push_notif(Notif {
+                    level: "info".into(),
+                    message: format!(
+                        "crew '{}': resuming {} ended member(s)",
+                        prompt.crew,
+                        specs.len()
+                    ),
+                    harness: None,
+                    ts: None,
+                });
+                Action::LaunchMany(specs)
+            }
+            _ => {
+                // n / Esc / any other key: restore proceeds without them.
+                self.push_notif(Notif {
+                    level: "info".into(),
+                    message: format!(
+                        "crew '{}': restored without {} ended member(s)",
+                        prompt.crew,
+                        prompt.members.len()
+                    ),
+                    harness: None,
+                    ts: None,
+                });
                 Action::Render
             }
         }
@@ -5312,6 +5643,77 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::CrewRestoreResolved {
+                name,
+                fresh_spawned,
+                live,
+                woken,
+                wake_failed,
+                ended,
+            } => {
+                // P-031: summarize what the restore DID (spawn/focus/wake),
+                // then PROMPT on ended members instead of silently shrinking
+                // the crew (D-009).
+                let mut parts: Vec<String> = Vec::new();
+                if fresh_spawned > 0 {
+                    parts.push(format!("{fresh_spawned} launched"));
+                }
+                if !live.is_empty() {
+                    parts.push(format!("{} live", live.len()));
+                }
+                if !woken.is_empty() {
+                    parts.push(format!("{} woken", woken.len()));
+                }
+                if !wake_failed.is_empty() {
+                    parts.push(format!("{} wake failed", wake_failed.len()));
+                }
+                if !ended.is_empty() {
+                    parts.push(format!("{} ended", ended.len()));
+                }
+                let summary = if parts.is_empty() {
+                    "no members".to_string()
+                } else {
+                    parts.join(" · ")
+                };
+                self.push_notif(Notif {
+                    level: "info".into(),
+                    message: format!("crew '{name}': {summary}"),
+                    harness: None,
+                    ts: None,
+                });
+                if !ended.is_empty() {
+                    self.crew_restore_prompt = Some(CrewRestorePrompt {
+                        crew: name,
+                        members: ended,
+                    });
+                    return Action::Render;
+                }
+                // Nothing to ask — focus the FIRST live member so the restored
+                // crew lands with an agent in front of the user. Direct routes
+                // only: a Menu here would fight the restore flow, and Resume
+                // would double-spawn a live session (D-001).
+                if let Some(entry) = live.first() {
+                    match self.resolve_agent_route(entry) {
+                        AgentRoute::LocalPane { pane_id } => {
+                            return Action::FocusLocalPane { pane_id };
+                        }
+                        AgentRoute::FocusWindow {
+                            adv_session_id,
+                            pid,
+                            window_id,
+                        } => {
+                            return Action::FocusWindow {
+                                adv_session_id,
+                                pid,
+                                window_id,
+                                label: entry.label.clone(),
+                            };
+                        }
+                        _ => {}
+                    }
+                }
+                Action::Render
+            }
             Event::Notify(n) => {
                 self.push_notif(n);
                 self.last_error = None;
@@ -5760,6 +6162,11 @@ impl App {
         // the choices fire (or it closes) before any tab navigation.
         if self.fleet_action_menu.is_some() {
             return self.fleet_menu_key(code);
+        }
+        // Crew-restore ended-members prompt (P-031): captures y/n/Enter/Esc
+        // while open so the choice fires before any tab navigation.
+        if self.crew_restore_prompt.is_some() {
+            return self.crew_restore_prompt_key(code);
         }
         // Pot-picker overlay (D-003) captures navigation while open: j/k moves
         // over ["All Pots", ...pots], Enter applies, Esc closes unchanged.
@@ -10068,6 +10475,74 @@ mod tests {
             harness: None,
             ts: None,
         }
+    }
+
+    #[test]
+    fn crew_restore_resolved_prompts_on_ended_members() {
+        let mut a = App::new();
+        let ended = vec![crate::models::CrewMember {
+            agent: Some("claude".into()),
+            resume_id: Some("77".into()),
+            ..Default::default()
+        }];
+        let act = a.update(Event::CrewRestoreResolved {
+            name: "morning".into(),
+            fresh_spawned: 1,
+            live: vec![],
+            woken: vec!["su-1".into()],
+            wake_failed: vec![],
+            ended: ended.clone(),
+        });
+        assert!(matches!(act, Action::Render));
+        let p = a.crew_restore_prompt.clone().expect("prompt must open");
+        assert_eq!(p.crew, "morning");
+        assert_eq!(p.members, ended);
+    }
+
+    #[test]
+    fn crew_restore_prompt_y_launches_resume_specs() {
+        let mut a = App::new();
+        a.crew_restore_prompt = Some(CrewRestorePrompt {
+            crew: "morning".into(),
+            members: vec![crate::models::CrewMember {
+                resume_id: Some("77".into()),
+                ..Default::default()
+            }],
+        });
+        let act = a.update(key('y', KeyModifiers::NONE));
+        assert!(a.crew_restore_prompt.is_none(), "prompt closes on y");
+        match act {
+            Action::LaunchMany(specs) => {
+                assert_eq!(specs.len(), 1);
+                assert_eq!(
+                    specs[0].argv,
+                    vec![
+                        "psu".to_string(),
+                        "--resume".to_string(),
+                        "77".to_string()
+                    ]
+                );
+            }
+            _ => panic!("expected LaunchMany"),
+        }
+        // record_launch ran for the resumed spec (the crew roster tracks it).
+        assert_eq!(a.launched.len(), 1);
+        assert_eq!(a.launched[0].resume_id.as_deref(), Some("77"));
+    }
+
+    #[test]
+    fn crew_restore_prompt_esc_dismisses_without_launch() {
+        let mut a = App::new();
+        a.crew_restore_prompt = Some(CrewRestorePrompt {
+            crew: "morning".into(),
+            members: vec![crate::models::CrewMember::default()],
+        });
+        let act = a.update(Event::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert!(a.crew_restore_prompt.is_none(), "prompt closes on Esc");
+        assert!(matches!(act, Action::Render));
     }
 
     #[test]
