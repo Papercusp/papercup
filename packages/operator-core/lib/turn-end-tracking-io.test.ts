@@ -20,6 +20,12 @@ const getWorkItemCheckpointWithMeta = vi.fn();
 const setWorkItemCheckpoint = vi.fn();
 const toolCallRowsFor = vi.fn();
 const renderToolCallLog = vi.fn();
+const applySessionTaskOp = vi.fn();
+const getLoopStatus = vi.fn();
+const listActiveAwaits = vi.fn();
+const recentTurnJournal = vi.fn();
+const wakeRecipients = vi.fn();
+const sql = vi.fn();
 
 vi.mock('./work-item-checkpoint', () => ({
   getWorkItemCheckpointWithMeta: (...a: unknown[]) => getWorkItemCheckpointWithMeta(...a),
@@ -31,8 +37,31 @@ vi.mock('./tool-call-log-store', () => ({
 vi.mock('./tool-call-log', () => ({
   renderToolCallLog: (...a: unknown[]) => renderToolCallLog(...a),
 }));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql }),
+}));
+vi.mock('./session-tasks', () => ({
+  applySessionTaskOp: (...a: unknown[]) => applySessionTaskOp(...a),
+}));
+vi.mock('./harness/routines/loop', () => ({
+  getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
+}));
+vi.mock('./events/await/store', () => ({
+  INBOX_WAKE_KEY_PREFIX: 'coord:inbox-wake:',
+  listActiveAwaits: (...a: unknown[]) => listActiveAwaits(...a),
+}));
+vi.mock('./turn-journal-store', () => ({
+  recentTurnJournal: (...a: unknown[]) => recentTurnJournal(...a),
+}));
+vi.mock('./agent-tools/coordination/inbox-wake', () => ({
+  wakeRecipients: (...a: unknown[]) => wakeRecipients(...a),
+}));
 
-const { checkpointOnRelease } = await import('./turn-end-tracking-io');
+const {
+  checkpointOnRelease,
+  sweepOpenTaskReminder,
+  wakeOpenTaskReminder,
+} = await import('./turn-end-tracking-io');
 
 const REF = { releasingOwnerId: 'su-holder-1', workspaceId: 'ws-1', harness: 'papercusp', workItemId: 'WI-1' };
 
@@ -111,5 +140,94 @@ describe('checkpointOnRelease (EI-18734870651452334)', () => {
     const result = await checkpointOnRelease(REF);
 
     expect(result).toEqual({ written: false });
+  });
+});
+
+describe('open-task reminder IO (P-005)', () => {
+  const activeTask = {
+    id: 'task-a',
+    content: 'Finish implementation',
+    activeForm: 'Finishing implementation',
+    status: 'in_progress',
+    blockerRef: null,
+    explanation: null,
+    position: 0,
+    createdAt: '2026-08-26T20:00:00.000Z',
+    updatedAt: '2026-08-26T20:00:00.000Z',
+    links: [],
+  };
+
+  it('reads owner-keyed canonical tasks and the prior journal attempt', async () => {
+    applySessionTaskOp.mockResolvedValue({
+      op: 'view', changedTaskId: null, tasks: [activeTask], links: [],
+    });
+    getLoopStatus.mockResolvedValue({ active: false });
+    listActiveAwaits.mockResolvedValue([]);
+    recentTurnJournal.mockResolvedValue([]);
+
+    const first = await sweepOpenTaskReminder({
+      ownerId: 'su-owner-1', workspaceId: 'ws-1', ownerInteractiveTurn: false,
+    });
+
+    expect(applySessionTaskOp).toHaveBeenCalledWith(sql, expect.objectContaining({
+      op: 'view', workspaceId: 'ws-1', sessionId: 'su-owner-1',
+    }));
+    expect(first?.tripwire.attempt).toBe(1);
+
+    recentTurnJournal.mockResolvedValue([{ tripwire: first?.tripwire }]);
+    const second = await sweepOpenTaskReminder({
+      ownerId: 'su-owner-1', workspaceId: 'ws-1', ownerInteractiveTurn: false,
+    });
+    expect(second?.tripwire.attempt).toBe(2);
+  });
+
+  it('suppresses when a loop, bounded await, or owner answer already guarantees continuation', async () => {
+    applySessionTaskOp.mockResolvedValue({
+      op: 'view', changedTaskId: null, tasks: [activeTask], links: [],
+    });
+    recentTurnJournal.mockResolvedValue([]);
+    listActiveAwaits.mockResolvedValue([]);
+    getLoopStatus.mockResolvedValue({ active: true });
+    expect(await sweepOpenTaskReminder({ ownerId: 'su-1', workspaceId: 'ws-1' })).toBeNull();
+
+    getLoopStatus.mockResolvedValue({ active: false });
+    listActiveAwaits.mockResolvedValue([{
+      eventKey: 'work-item:done:WI-1',
+      expiresTs: '2026-08-26T21:00:00.000Z',
+      timeoutBehavior: 'wake',
+    }]);
+    expect(await sweepOpenTaskReminder({ ownerId: 'su-1', workspaceId: 'ws-1' })).toBeNull();
+
+    listActiveAwaits.mockResolvedValue([]);
+    expect(await sweepOpenTaskReminder({
+      ownerId: 'su-1', workspaceId: 'ws-1', ownerInteractiveTurn: true,
+    })).toBeNull();
+  });
+
+  it('targets the owner with the persisted decision prompt', async () => {
+    wakeRecipients.mockResolvedValue({ woken: 1 });
+    const decision = {
+      prompt: '⟦open-task-reminder 1/3⟧ Continue the task.',
+      tasks: [activeTask],
+      tripwire: {
+        kind: 'open-task-reminder' as const,
+        note: 'continue',
+        signature: 'abc',
+        attempt: 1,
+        maxAttempts: 3,
+        taskCount: 1,
+        taskIds: ['task-a'],
+      },
+    };
+
+    await expect(wakeOpenTaskReminder({
+      ownerId: 'su-owner-1', workspaceId: 'ws-1', decision,
+    })).resolves.toBe(true);
+    expect(wakeRecipients).toHaveBeenCalledWith(['su-owner-1'], {
+      summary: decision.prompt,
+      payload: decision.tripwire,
+      source: 'turn-end-open-task-reminder',
+      workspaceId: 'ws-1',
+    });
   });
 });

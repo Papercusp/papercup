@@ -11,6 +11,7 @@ import { modeImpliesAutonomy } from './modes/registry';
 import {
   awaitGuaranteesRewake,
   composeMechanicalCheckpoint,
+  decideOpenTaskReminder,
   detectUnguardedHalt,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
@@ -18,6 +19,8 @@ import {
   unregisteredArtifactTripwire,
   type UnguardedHaltTripwire,
   type UnregisteredArtifactTripwire,
+  type OpenTaskReminderDecision,
+  type OpenTaskReminderTripwire,
 } from './turn-end-tracking';
 
 /** Total budget for each sweep — advisory work riding a fire-and-forget hook. */
@@ -294,6 +297,96 @@ export async function boundedUnguardedHaltSweep(input: {
     fallback: null,
     timeoutMs: TURN_END_SWEEP_BUDGET_MS,
     label: 'turn-end-unguarded-halt-sweep',
+  });
+  return value;
+}
+
+/**
+ * Read the canonical per-owner task list and the concrete wake sources at turn
+ * end, then apply the pure bounded continuation decision. The immediately
+ * preceding journal row is the durable attempt counter; a different tripwire
+ * or changed task signature resets the counter. Never throws.
+ */
+export async function sweepOpenTaskReminder(input: {
+  ownerId: string;
+  workspaceId: string;
+  ownerInteractiveTurn?: boolean;
+}): Promise<OpenTaskReminderDecision | null> {
+  try {
+    const [db, tasksMod, loopMod, awaitMod, journalMod] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('./session-tasks'),
+      import('./harness/routines/loop'),
+      import('./events/await/store'),
+      import('./turn-journal-store'),
+    ]);
+    const { sql } = db.getOrgPg();
+    const [view, loop, awaits, priorRows] = await Promise.all([
+      tasksMod.applySessionTaskOp(sql, {
+        op: 'view',
+        workspaceId: input.workspaceId,
+        sessionId: input.ownerId,
+        idFactory: () => 'turn-end-task-view',
+      }),
+      loopMod.getLoopStatus(input.ownerId).catch(() => null),
+      awaitMod.listActiveAwaits(input.ownerId).catch(() => []),
+      journalMod.recentTurnJournal({ ownerId: input.ownerId, limit: 1 }).catch(() => []),
+    ]);
+    const boundedAwaitActive = awaits.some((entry) =>
+      awaitGuaranteesRewake(entry, awaitMod.INBOX_WAKE_KEY_PREFIX),
+    );
+    const prior = priorRows[0]?.tripwire;
+    const priorTripwire: OpenTaskReminderTripwire | null =
+      prior?.kind === 'open-task-reminder' ? prior : null;
+    return decideOpenTaskReminder({
+      tasks: view.tasks,
+      wakeGuaranteed:
+        Boolean(input.ownerInteractiveTurn) || Boolean(loop?.active) || boundedAwaitActive,
+      priorTripwire,
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function boundedOpenTaskReminderSweep(
+  input: Parameters<typeof sweepOpenTaskReminder>[0],
+): Promise<OpenTaskReminderDecision | null> {
+  const { value } = await withBoundedTimeout(sweepOpenTaskReminder(input), {
+    fallback: null,
+    timeoutMs: TURN_END_SWEEP_BUDGET_MS,
+    label: 'turn-end-open-task-reminder-sweep',
+  });
+  return value;
+}
+
+/** Fire the already-persisted reminder back to this owner as one targeted turn. */
+export async function wakeOpenTaskReminder(input: {
+  ownerId: string;
+  workspaceId: string;
+  decision: OpenTaskReminderDecision;
+}): Promise<boolean> {
+  try {
+    const { wakeRecipients } = await import('./agent-tools/coordination/inbox-wake');
+    await wakeRecipients([input.ownerId], {
+      summary: input.decision.prompt,
+      payload: input.decision.tripwire,
+      source: 'turn-end-open-task-reminder',
+      workspaceId: input.workspaceId,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function boundedWakeOpenTaskReminder(
+  input: Parameters<typeof wakeOpenTaskReminder>[0],
+): Promise<boolean> {
+  const { value } = await withBoundedTimeout(wakeOpenTaskReminder(input), {
+    fallback: false,
+    timeoutMs: TURN_END_SWEEP_BUDGET_MS,
+    label: 'turn-end-open-task-reminder-wake',
   });
   return value;
 }

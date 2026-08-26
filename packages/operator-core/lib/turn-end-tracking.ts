@@ -25,6 +25,8 @@
  * agent-tools/journal/record-turn.ts. Warn/record-only — enforcement is P-016.
  */
 
+import { createHash } from 'node:crypto';
+
 /** A held checkpoint older than this (or absent) is STALE at turn end. */
 export const STALE_CHECKPOINT_MS = 45 * 60 * 1000;
 
@@ -649,6 +651,128 @@ export function renderEphemeralDeliverableWarning(
     `reference${references.length === 1 ? '' : 's'}: ${listed}. ${scopeNote}${loopbackNote} Persist the deliverable first in committed repository, plan, or ` +
     `work-item storage, and record its source path alongside any URL. This warning is advisory; the write ` +
     `was recorded (deliverable-durability guard).`;
+}
+
+/* ------------------------------------------------------------------ */
+/* Open-task continuation — bounded TodoTracker-style turn reminder    */
+/* ------------------------------------------------------------------ */
+
+/** OMO's stagnation guard stops after three unchanged continuations. */
+export const MAX_OPEN_TASK_REMINDER_ATTEMPTS = 3;
+
+export interface OpenTaskReminderTask {
+  id: string;
+  content: string;
+  activeForm?: string | null;
+  status: string;
+  position?: number | null;
+  updatedAt: string;
+}
+
+export interface OpenTaskReminderTripwire {
+  kind: 'open-task-reminder';
+  note: string;
+  signature: string;
+  attempt: number;
+  maxAttempts: number;
+  taskCount: number;
+  taskIds: string[];
+}
+
+export interface OpenTaskReminderDecision {
+  tripwire: OpenTaskReminderTripwire;
+  prompt: string;
+  tasks: OpenTaskReminderTask[];
+}
+
+function openReminderTasks(tasks: readonly OpenTaskReminderTask[]): OpenTaskReminderTask[] {
+  return tasks
+    .filter((task) => task.status === 'pending' || task.status === 'in_progress')
+    .map((task) => ({ ...task }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * A task mutation changes `updatedAt`; the remaining fields make the
+ * fingerprint robust to imported/legacy rows whose timestamp was preserved.
+ */
+export function openTaskReminderSignature(tasks: readonly OpenTaskReminderTask[]): string {
+  const canonical = openReminderTasks(tasks).map((task) => ({
+    id: task.id,
+    status: task.status,
+    content: task.content,
+    activeForm: task.activeForm ?? '',
+    position: task.position ?? null,
+    updatedAt: task.updatedAt,
+  }));
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex').slice(0, 24);
+}
+
+function oneLine(text: string, max = 160): string {
+  const normalized = text.replace(/\s+/g, ' ').trim();
+  return normalized.length <= max ? normalized : `${normalized.slice(0, max - 1)}…`;
+}
+
+export function renderOpenTaskReminder(
+  tasks: readonly OpenTaskReminderTask[],
+  attempt: number,
+  maxAttempts: number,
+): string {
+  const shown = tasks.slice(0, 6);
+  const remaining = tasks.length - shown.length;
+  const lines = shown.map((task) => {
+    const label = task.status === 'in_progress' && task.activeForm
+      ? task.activeForm
+      : task.content;
+    return `- [${task.status}] ${oneLine(label)}`;
+  });
+  if (remaining > 0) lines.push(`- …and ${remaining} more open task${remaining === 1 ? '' : 's'}`);
+  return [
+    `⟦open-task-reminder ${attempt}/${maxAttempts}⟧ This turn ended with ${tasks.length} ` +
+      `pending/in-progress session task${tasks.length === 1 ? '' : 's'} and no armed continuation.`,
+    ...lines,
+    'Continue working now. Mark finished tasks completed, or drop/edit tasks that no longer describe real work. ' +
+      `This automatic continuation stops after ${maxAttempts} unchanged attempts.`,
+  ].join('\n');
+}
+
+/**
+ * Decide whether this turn earns one continuation. A concrete wake source (an
+ * engine loop, a bounded event-await, or an owner-answer turn) wins and makes
+ * this reminder redundant. An unchanged task signature increments the durable
+ * attempt carried by the prior journal tripwire; any task mutation resets it.
+ */
+export function decideOpenTaskReminder(input: {
+  tasks: readonly OpenTaskReminderTask[];
+  wakeGuaranteed: boolean;
+  priorTripwire?: OpenTaskReminderTripwire | null;
+  maxAttempts?: number;
+}): OpenTaskReminderDecision | null {
+  if (input.wakeGuaranteed) return null;
+  const tasks = openReminderTasks(input.tasks);
+  if (tasks.length === 0) return null;
+  const maxAttempts = input.maxAttempts ?? MAX_OPEN_TASK_REMINDER_ATTEMPTS;
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1) return null;
+  const signature = openTaskReminderSignature(tasks);
+  const priorAttempt = input.priorTripwire?.signature === signature
+    ? input.priorTripwire.attempt
+    : 0;
+  if (priorAttempt >= maxAttempts) return null;
+  const attempt = priorAttempt + 1;
+  const prompt = renderOpenTaskReminder(tasks, attempt, maxAttempts);
+  return {
+    prompt,
+    tasks,
+    tripwire: {
+      kind: 'open-task-reminder',
+      note: prompt,
+      signature,
+      attempt,
+      maxAttempts,
+      taskCount: tasks.length,
+      taskIds: tasks.map((task) => task.id),
+    },
+  };
 }
 
 /* ------------------------------------------------------------------ */

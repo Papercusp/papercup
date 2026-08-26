@@ -5,8 +5,10 @@ import {
   MECHANICAL_CHECKPOINT_MARKER,
   STALE_CHECKPOINT_MS,
   UNGUARDED_HALT_NOTE,
+  MAX_OPEN_TASK_REMINDER_ATTEMPTS,
   composeMechanicalCheckpoint,
   detectUnguardedHalt,
+  decideOpenTaskReminder,
   detectEphemeralDeliverableReferences,
   extractFileWritePaths,
   extractShellWriteTargets,
@@ -16,6 +18,7 @@ import {
   isRewakeGuaranteed,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
+  openTaskReminderSignature,
   renderEphemeralDeliverableWarning,
   settledMessagesCursor,
   unregisteredArtifactTripwire,
@@ -317,6 +320,83 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
     expect(t?.kind).toBe('unguarded-halt');
     expect(t?.note).toBe(UNGUARDED_HALT_NOTE);
     expect(t?.note).toContain('session:request-compaction');
+  });
+});
+
+describe('decideOpenTaskReminder (P-005 bounded task continuation)', () => {
+  const task = (overrides: Partial<{
+    id: string;
+    content: string;
+    activeForm: string;
+    status: string;
+    position: number;
+    updatedAt: string;
+  }> = {}) => ({
+    id: 'task-a',
+    content: 'Finish the focused regression tests',
+    activeForm: 'Finishing the focused regression tests',
+    status: 'in_progress',
+    position: 0,
+    updatedAt: '2026-08-26T20:00:00.000Z',
+    ...overrides,
+  });
+
+  it('reminds for pending/in_progress tasks and renders a visible bounded prompt', () => {
+    const decision = decideOpenTaskReminder({
+      tasks: [task(), task({ id: 'task-b', status: 'pending', content: 'Run typecheck' })],
+      wakeGuaranteed: false,
+    });
+
+    expect(decision?.tripwire).toMatchObject({
+      kind: 'open-task-reminder',
+      attempt: 1,
+      maxAttempts: MAX_OPEN_TASK_REMINDER_ATTEMPTS,
+      taskCount: 2,
+      taskIds: ['task-a', 'task-b'],
+    });
+    expect(decision?.prompt).toContain('⟦open-task-reminder 1/3⟧');
+    expect(decision?.prompt).toContain('[in_progress] Finishing the focused regression tests');
+    expect(decision?.prompt).toContain('[pending] Run typecheck');
+  });
+
+  it('suppresses completed/blocked-only lists and any concrete wake guarantee', () => {
+    expect(decideOpenTaskReminder({
+      tasks: [task({ status: 'completed' }), task({ id: 'task-b', status: 'blocked' })],
+      wakeGuaranteed: false,
+    })).toBeNull();
+    expect(decideOpenTaskReminder({ tasks: [task()], wakeGuaranteed: true })).toBeNull();
+  });
+
+  it('increments an unchanged signature, resets after task mutation, and never exceeds the bound', () => {
+    const tasks = [task()];
+    const first = decideOpenTaskReminder({ tasks, wakeGuaranteed: false });
+    const second = decideOpenTaskReminder({
+      tasks,
+      wakeGuaranteed: false,
+      priorTripwire: first?.tripwire,
+    });
+    const third = decideOpenTaskReminder({
+      tasks,
+      wakeGuaranteed: false,
+      priorTripwire: second?.tripwire,
+    });
+    const exhausted = decideOpenTaskReminder({
+      tasks,
+      wakeGuaranteed: false,
+      priorTripwire: third?.tripwire,
+    });
+
+    expect(second?.tripwire.attempt).toBe(2);
+    expect(third?.tripwire.attempt).toBe(3);
+    expect(exhausted).toBeNull();
+
+    const mutated = [task({ updatedAt: '2026-08-26T20:01:00.000Z' })];
+    expect(openTaskReminderSignature(mutated)).not.toBe(openTaskReminderSignature(tasks));
+    expect(decideOpenTaskReminder({
+      tasks: mutated,
+      wakeGuaranteed: false,
+      priorTripwire: third?.tripwire,
+    })?.tripwire.attempt).toBe(1);
   });
 });
 

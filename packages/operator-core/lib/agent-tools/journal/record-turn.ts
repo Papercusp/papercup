@@ -80,6 +80,10 @@ export default defineTool({
       ? await resolveCurrentTurnStamp(ownerId, { filePath, sessionId: args.session_id }).catch(() => null)
       : null;
     const machineTurn = currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface';
+    const ownerInteractiveTurn =
+      currentTurn?.verdict === 'owner-typed' ||
+      currentTurn?.verdict === 'owner-dialog' ||
+      currentTurn?.verdict === 'owner-turn';
     const extracted = extractJournalFromAssistantText(turn.text);
     if (!extracted) {
       return { data: { ok: false, recorded: false, reason: 'no_note' } };
@@ -100,6 +104,18 @@ export default defineTool({
     const artifactTripwire = claimTripwire
       ? null
       : await ioMod.boundedArtifactSweep(args.session_id, sinceIso);
+    // P-005 (pui-agent-context-cockpit): pending/in_progress canonical session
+    // tasks require a visible, bounded continuation when no loop, bounded await,
+    // or owner-answer path already guarantees the next turn. The prior journal
+    // tripwire carries the unchanged-task attempt count across turns.
+    const openTaskReminder =
+      ownerId && !claimTripwire
+        ? await ioMod.boundedOpenTaskReminderSweep({
+            ownerId,
+            workspaceId: journalWorkspaceId,
+            ownerInteractiveTurn,
+          })
+        : null;
     // P-015 turn-end sweep (re-wake guarantee): an AUTONOMOUS session ending a
     // turn with no armed loop, no real (non-inbox-wake) event-await, and no
     // owner present is about to SILENTLY HALT — the classic lost-session
@@ -109,14 +125,17 @@ export default defineTool({
     // self-checks). Outranks the artifact sweep on the single slot (a lost
     // session > a lost file); never masks a dishonest note (claim wins).
     const unguardedHaltTripwire =
-      ownerId && !claimTripwire
+      ownerId && !claimTripwire && !openTaskReminder
         ? await ioMod.boundedUnguardedHaltSweep({
             ownerId,
             workspaceId: identity.workspaceId ?? '*',
             machineTurn,
           })
         : null;
-    const tripwire = claimTripwire ?? unguardedHaltTripwire ?? artifactTripwire;
+    // Claim honesty always wins the single journal slot. A concrete open-task
+    // continuation is more actionable than the generic unguarded-halt warning.
+    const tripwire =
+      claimTripwire ?? openTaskReminder?.tripwire ?? unguardedHaltTripwire ?? artifactTripwire;
 
     const { id, deduped } = await recordTurnJournal({
       workspaceId: journalWorkspaceId,
@@ -131,6 +150,18 @@ export default defineTool({
       tripwire,
       harnessSlug: args.harness ?? null,
     });
+
+    // Persist FIRST, then wake: the injected turn and every later reader can
+    // recover the exact attempt/signature from session_turn_journal. A deduped
+    // hook call never spends a second continuation attempt.
+    let openTaskReminderWoken = false;
+    if (ownerId && openTaskReminder && !deduped && tripwire === openTaskReminder.tripwire) {
+      openTaskReminderWoken = await ioMod.boundedWakeOpenTaskReminder({
+        ownerId,
+        workspaceId: journalWorkspaceId,
+        decision: openTaskReminder,
+      });
+    }
 
     // P-015 turn-end sweep: mechanically checkpoint the holder's stale held
     // work-items (missing checkpoint, or older than the staleness threshold)
@@ -255,6 +286,10 @@ export default defineTool({
         turn_ts: turn.ts ? turn.ts.toISOString() : null,
         ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
         ...(unguardedHaltTripwire ? { unguardedHalt: unguardedHaltTripwire } : {}),
+        ...(openTaskReminder ? {
+          openTaskReminder: openTaskReminder.tripwire,
+          openTaskReminderWoken,
+        } : {}),
         ...(cursorPersisted ? { cursorPersisted } : {}),
         ...(coordCursorSettledTo ? { coordCursorSettledTo } : {}),
       },

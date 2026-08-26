@@ -332,6 +332,42 @@ const forYouBecauseArg = z
       "non-structural escape hatch), and 'other' is excluded from the divergence check.",
   );
 
+/**
+ * `blockedOn` — EI-21548894457555139. What this section is WAITING ON, structured so the
+ * reader can ACT on it instead of re-deriving it from prose.
+ *
+ * The originating incident was a leader unable to tell whether a member was working or
+ * idle. The member knew perfectly well what it was doing; the channel between them had
+ * no shape for saying so. "still running the tests" is unactionable — a leader cannot
+ * check it, cannot tell a live run from a wedged one, and cannot find the log. A
+ * `taskId` is actionable: `processes:list` shows whether it is alive and `logs:read` /
+ * the log path shows whether it is advancing.
+ *
+ * Structured for the same reason `forYouBecause` is: a prose blocker cannot be diffed
+ * against live state, so it can never be shown to have gone stale.
+ */
+const blockedOnArg = z
+  .object({
+    kind: z.enum(['process', 'event', 'work-item', 'agent', 'owner', 'other']),
+    /** The blocker's identity in its own namespace: an event key, a WI-/EI- id, an ownerId. */
+    ref: z.string().min(1).optional(),
+    /** kind:'process' — the durable task id. THE actionable handle: processes:list / processes:kill. */
+    taskId: z.string().min(1).optional(),
+    /** kind:'process' — where the run is writing, so a reader can judge progress rather than guess. */
+    logPath: z.string().min(1).optional(),
+    /** ISO-8601. Lets a reader compute how long this has been blocked without asking. */
+    startedAt: z.string().min(1).optional(),
+    note: z.string().min(1).optional(),
+  })
+  .optional()
+  .describe(
+    'PER-SECTION. What this section is WAITING ON, structured so the reader can act on it ' +
+      'rather than re-derive it from prose. kind: process | event | work-item | agent | owner | ' +
+      "other. For kind:'process' give `taskId` (processes:list / logs:read can then check it) " +
+      "and/or `logPath` — a process blocker with neither is unactionable. `note` is REQUIRED " +
+      "with 'other'. `startedAt` (ISO-8601) lets the reader age the block without asking.",
+  );
+
 // ─────────────────────────────────────────────────────────────────────────────
 // youMayNotKnow / couldNotDetermine — D-024's split of the old `asymmetry`
 // ─────────────────────────────────────────────────────────────────────────────
@@ -738,6 +774,7 @@ export const SECTION_ONLY_FIELDS = [
   'youMayNotKnow',
   'couldNotDetermine',
   'clarify',
+  'blockedOn',
 ] as const;
 
 export const messageSectionSchema = z
@@ -748,9 +785,38 @@ export const messageSectionSchema = z
     youMayNotKnow: youMayNotKnowArg,
     couldNotDetermine: couldNotDetermineArg,
     clarify: clarifyArg,
+    blockedOn: blockedOnArg,
   })
   .strict()
   .superRefine((section, ctx) => {
+    // EI-21548894457555139 — same principle as the forYouBecause rule below: an escape
+    // that carries no explanation is a silent opt-out.
+    if (section.blockedOn?.kind === 'other' && !section.blockedOn.note) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['blockedOn', 'note'],
+        message:
+          "blockedOn.kind:'other' REQUIRES a `note`. 'other' is the escape hatch for a blocker " +
+          'that fits none of the structured kinds, so without the note it says only "blocked", ' +
+          'which is what the structured field exists to improve on.',
+      });
+    }
+    // A process blocker with no handle is prose wearing a schema. The whole value of
+    // kind:'process' is that the reader can CHECK it — processes:list on the taskId, or
+    // the log path for progress. Naming neither leaves them exactly where they were:
+    // unable to tell a live run from a wedged one, which is the incident this field
+    // comes from.
+    if (section.blockedOn?.kind === 'process' && !section.blockedOn.taskId && !section.blockedOn.logPath) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['blockedOn', 'taskId'],
+        message:
+          "blockedOn.kind:'process' REQUIRES `taskId` and/or `logPath`. Without one the reader " +
+          'cannot check whether the process is alive or advancing, which is the only reason to ' +
+          'send a structured process blocker instead of a sentence. capability:bash returns the ' +
+          'durable task_id; processes:list resolves it.',
+      });
+    }
     // D-043 ruling 1 — an escape that carries no explanation is a silent opt-out.
     if (section.forYouBecause?.relation === 'other' && !section.forYouBecause.note) {
       ctx.addIssue({
