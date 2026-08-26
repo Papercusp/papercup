@@ -391,6 +391,36 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(fs.existsSync(join(cache, 'tu-domain-release.domain'))).toBe(false);
   });
 
+  it('PostToolUse falls back to the stable operator when the staging authority refuses connections', async () => {
+    const toolUseId = 'tu-staging-restart-fallback';
+    const lockId = 'staging-restart-lock';
+    const paths = ['sub/staging-restart.ts'];
+    fs.writeFileSync(join(cache, `${toolUseId}.lock`), lockId);
+    fs.writeFileSync(join(cache, `${toolUseId}.paths`), JSON.stringify(paths));
+    fs.writeFileSync(join(cache, `${toolUseId}.domain`), fs.realpathSync(repo));
+    recoveryReleaseInner = { ok: true, released: paths, held_before: 1 };
+
+    const post = await runPost(
+      { tool_name: 'apply_patch', tool_input: '', tool_use_id: toolUseId, session_id: 's' },
+      {
+        PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1',
+        PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: `http://127.0.0.1:${port}`,
+      },
+    );
+
+    expect(post.status).toBe(0);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].body.params.name).toBe('locks:release');
+    expect(requests[0].body.params.arguments).toMatchObject({
+      lock_id: lockId,
+      paths,
+      coordination_domain: fs.realpathSync(repo),
+    });
+    for (const suffix of ['lock', 'paths', 'domain']) {
+      expect(fs.existsSync(join(cache, `${toolUseId}.${suffix}`))).toBe(false);
+    }
+  });
+
   it.each(["exec", "functions.exec"])(
     "failed nested apply_patch is recovered when its %s parent completes",
     async (parentToolName) => {

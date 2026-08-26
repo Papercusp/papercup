@@ -46,7 +46,7 @@ INPUT=$(cat)
 
 # Fail-open backstop: release is best-effort (TTL covers a missed one), so
 # never let a Python error exit non-zero from this hook.
-python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" 3<<<"$INPUT" <<'PYEOF' || exit 0
+python3 - "$OPERATOR_URL" "$TOKEN_PATH" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" "$FALLBACK_OPERATOR_URL" 3<<<"$INPUT" <<'PYEOF' || exit 0
 import json, os, re, sys, time, urllib.request, urllib.parse
 from pathlib import Path
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
