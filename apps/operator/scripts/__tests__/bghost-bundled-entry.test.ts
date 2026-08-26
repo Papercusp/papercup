@@ -20,6 +20,17 @@ describe('papercup-bg-host bundled-entry systemd contract (EI-21434335931587523)
     expect(bundleHost).not.toContain('(:3270 bg-host');
   });
 
+  it('fails closed when the bundled CLI-entry recurrence guard rejects the graph', () => {
+    const guard = 'if ! node "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \\';
+    expect(bundleHost).toContain(guard);
+    const guardAt = bundleHost.indexOf(guard);
+    const exitAt = bundleHost.indexOf('    exit 1\n  fi', guardAt);
+    const swapAt = bundleHost.indexOf('  mv -f "$TMPFILE" "$OUTFILE"', guardAt);
+    expect(guardAt).toBeGreaterThanOrEqual(0);
+    expect(exitAt).toBeGreaterThan(guardAt);
+    expect(swapAt).toBeGreaterThan(exitAt);
+  });
+
   it('resets the base ExecStart, bundles first, and preserves the inline runtime environment', () => {
     const serviceLines = dropIn.split('\n').map((line) => line.trim());
     const execLines = serviceLines.filter((line) => line.startsWith('ExecStart'));

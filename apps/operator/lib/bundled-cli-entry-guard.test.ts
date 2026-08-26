@@ -18,12 +18,17 @@ describe('check-bundled-cli-entry-guards', () => {
       const apps = join(root, 'operator');
       const scripts = join(root, 'scripts');
       const bad = join(scripts, 'bad.mjs');
+      const badWrapped = join(scripts, 'bad-wrapped.mjs');
       const good = join(scripts, 'good.mjs');
       const outsideRoot = mkdtempSync(join(tmpdir(), 'bundled-cli-entry-guard-outside-'));
       const outside = join(outsideRoot, 'foreign.mjs');
       mkdirSync(scripts, { recursive: true });
       // The helper resolves input keys relative to apps/operator, mirroring bundle-host.sh.
       writeFileSync(bad, 'if (import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(1);\n');
+      writeFileSync(
+        badWrapped,
+        'const direct = resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url)); if (direct) main();\n',
+      );
       writeFileSync(good, 'if (isCliEntry(import.meta.url)) main();\n');
       writeFileSync(outside, 'if (import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(1);\n');
       const metafile = join(root, 'bundle.meta.json');
@@ -32,6 +37,7 @@ describe('check-bundled-cli-entry-guards', () => {
         JSON.stringify({
           inputs: {
             [relative(apps, bad)]: {},
+            [relative(apps, badWrapped)]: {},
             [relative(apps, good)]: {},
             [outside]: {},
           },
@@ -39,12 +45,21 @@ describe('check-bundled-cli-entry-guards', () => {
       );
 
       const findings = findBundledCliEntryGuards({ metafilePath: metafile, baseDir: apps });
-      expect(findings).toHaveLength(1);
-      expect(findings[0]).toMatchObject({
-        file: relative(repoRoot, bad).replaceAll('\\', '/'),
-        kind: 'path-to-file-url',
-        line: 1,
-      });
+      expect(findings).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            file: relative(repoRoot, bad).replaceAll('\\', '/'),
+            kind: 'path-to-file-url',
+            line: 1,
+          }),
+          expect.objectContaining({
+            file: relative(repoRoot, badWrapped).replaceAll('\\', '/'),
+            kind: 'file-url-to-path',
+            line: 1,
+          }),
+        ]),
+      );
+      expect(findings).toHaveLength(2);
       rmSync(outsideRoot, { recursive: true, force: true });
     } finally {
       rmSync(root, { recursive: true, force: true });

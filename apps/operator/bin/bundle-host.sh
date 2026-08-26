@@ -211,8 +211,13 @@ if ! (
     --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
     --log-limit=20 \
     "${HOST_EXTERNALS[@]}"
-  node "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \
-    --metafile "$METAFILE" --base-dir "$SCRIPT_DIR/.."
+  # This subshell is the condition of `if ! (...)`; Bash disables errexit inside such a tested
+  # compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
+  # publishing the rejected bundle and returning success. Fail explicitly before the atomic swap.
+  if ! node "$REPO_ROOT/scripts/check-bundled-cli-entry-guards.mjs" \
+    --metafile "$METAFILE" --base-dir "$SCRIPT_DIR/.."; then
+    exit 1
+  fi
   # WI-38221: widen-avoidance pass. Runs on $TMPFILE, BEFORE the atomic rename
   # below, so the swap stays atomic and a failure here leaves the last-known-good
   # $OUTFILE untouched. The helper never exits non-zero — a bundle that skipped

@@ -24,6 +24,14 @@ describe('lint:no-hand-rolled-cli-entry — predicate controls', () => {
     ]);
   });
 
+  it('finds fileURLToPath comparisons hidden behind resolve wrappers', () => {
+    const source = `
+      const invokedDirectly = process.argv[1] &&
+        resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
+    `;
+    expect(findGuards(source).map((hit: { kind: string }) => hit.kind)).toEqual(['file-url-to-path']);
+  });
+
   it('ignores comments, strings, and regex bodies that quote the banned idiom', () => {
     const source = `
       // import.meta.url === pathToFileURL(process.argv[1]).href
@@ -52,15 +60,11 @@ describe('lint:no-hand-rolled-cli-entry — repository ratchet', () => {
     expect(result.staleExemptions).toEqual([]);
   });
 
-  it('records standalone bare-node guards as reasoned, count-bounded exemptions rather than baseline debt', () => {
+  it('has no standalone exception for the dependency-free systemd runner', () => {
     const result = repositoryScan;
-    expect(result.exemptions).toEqual(
+    expect(result.exemptions).not.toEqual(
       expect.arrayContaining([
-        expect.objectContaining({
-          rel: 'packages/operator-core/lib/systemd-scope-env-runner.mjs',
-          kind: 'path-to-file-url',
-          reason: expect.stringMatching(/bare node.*copied verbatim/i),
-        }),
+        expect.objectContaining({ rel: 'packages/operator-core/lib/systemd-scope-env-runner.mjs' }),
       ]),
     );
   });

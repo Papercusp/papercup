@@ -104,7 +104,6 @@ const ALLOW_COUNTS = new Map([
   ['scripts/gen-borrowable-catalog.mjs|file-template', 1],
   ['scripts/gen-claude-md-manifest.mjs|file-template', 1],
   ['scripts/gen-testing-domains-contract.ts|file-template', 1],
-  ['scripts/lint-migrations.mjs|path-to-file-url', 1],
   ['scripts/lint-tsc-agent-mcp.mjs|path-to-file-url', 1],
   ['scripts/lint-tsc-operator-vite.mjs|path-to-file-url', 1],
   ['scripts/lint-tsc-operator.mjs|path-to-file-url', 1],
@@ -131,16 +130,7 @@ const ALLOW_COUNTS = new Map([
  * exception carries its reason and cannot silently bless additional guards in
  * the same file.
  */
-const STANDALONE_ENTRY_EXEMPTIONS = new Map([
-  [
-    'packages/operator-core/lib/systemd-scope-env-runner.mjs|path-to-file-url',
-    {
-      count: 1,
-      reason:
-        'Invoked by bare node and copied verbatim into host/desktop bundles; importing the TypeScript helper would make this dependency-free runner unresolvable.',
-    },
-  ],
-]);
+const STANDALONE_ENTRY_EXEMPTIONS = new Map();
 
 function* walk(dir) {
   let entries;
@@ -198,7 +188,10 @@ export function findGuards(source, fileName = 'cli-entry.mjs') {
     },
     {
       kind: 'file-url-to-path',
-      re: /(?:fileURLToPath\w*\s*\(\s*import\.meta\.url\s*\)\s*===\s*process\.argv\s*\[\s*1\s*\]|process\.argv\s*\[\s*1\s*\]\s*===\s*fileURLToPath\w*\s*\(\s*import\.meta\.url\s*\))/g,
+      // Allow optional resolve()/realpathSync()-style wrappers around either operand. The
+      // pre-EI-21543544916409140 form used resolve(argv[1]) === resolve(fileURLToPath(import.meta.url));
+      // the narrower detector missed it, so a known-dangerous guard entered a host bundle.
+      re: /(?:(?:\w+\s*\(\s*)?fileURLToPath\w*\s*\(\s*import\.meta\.url\s*\)\s*\)?\s*===\s*(?:\w+\s*\(\s*)?process\.argv\s*\[\s*1\s*\]\s*\)?|(?:\w+\s*\(\s*)?process\.argv\s*\[\s*1\s*\]\s*\)?\s*===\s*(?:\w+\s*\(\s*)?fileURLToPath\w*\s*\(\s*import\.meta\.url\s*\)\s*\)?)/g,
     },
   ];
   const hits = [];

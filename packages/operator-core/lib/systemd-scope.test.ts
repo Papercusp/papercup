@@ -13,10 +13,19 @@ import {
   SYSTEMD_ENV_RUNNER_PATH,
 } from './systemd-scope';
 import {
+  isDirectSystemdScopeEnvRunnerInvocation,
   SYSTEMD_RUNNER_JOB_END_PREFIX,
   SYSTEMD_RUNNER_OUTPUT_PATH_ENV,
   SYSTEMD_RUNNER_REDACTIONS_ENV,
 } from './systemd-scope-env-runner.mjs';
+
+describe('systemd scope environment runner entrypoint', () => {
+  it('executes only the copied runner basename, never an importing host bundle', () => {
+    expect(isDirectSystemdScopeEnvRunnerInvocation('/tmp/dist-host/systemd-scope-env-runner.mjs')).toBe(true);
+    expect(isDirectSystemdScopeEnvRunnerInvocation('/tmp/dist-host/hono-host.mjs')).toBe(false);
+    expect(isDirectSystemdScopeEnvRunnerInvocation('/tmp/serve.mjs')).toBe(false);
+  });
+});
 
 const PROPS = { unit: 'papercusp-bash-job-test.service', slice: 'papercusp-bash-job.slice' };
 
