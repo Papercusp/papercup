@@ -108,6 +108,13 @@ export interface PresenceSnapshot {
      *  the common case and aren't counted, mirroring the ambient gauge's own
      *  quiet-below-LOUD philosophy). */
     byContextPressure: { high: number; critical: number };
+    /** EI-21488009366204518 — targeted `{ owner }` reads ONLY: how the needle
+     *  resolved. `matched` is the returned row count; `fromSessionLog` true means
+     *  the answer was synthesized from adv_sessions death evidence because the
+     *  coord_presence row was reaped. matched:0 + fromSessionLog:false is an
+     *  EXPLICIT not-found, distinct from the synthesized-ended case. Absent on
+     *  default (browse) reads. */
+    ownerLookup?: { needle: string; matched: number; fromSessionLog: boolean };
   };
   /** The ACTIONABLE roster: live + parked + recorded rows (everything a
    *  coordinator can dispatch to / wake) — `ended` rows are NEVER included here
