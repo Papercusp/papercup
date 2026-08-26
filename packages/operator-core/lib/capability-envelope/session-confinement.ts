@@ -133,17 +133,16 @@ export function evaluateSessionConfinement(args: {
   const { toolName, confinement } = args;
   if (!confinement || confinement.denyTools.length === 0) return UNCONFINED;
 
-  const canonical = normalizeToolName(toolName);
+  const key = toDenyMatchKey(toolName);
   for (const glob of confinement.denyTools) {
-    // Match BOTH spellings: a caller may hand us either, and a denial that only
-    // catches one is not a denial.
-    if (matchesAny(canonical, [glob]) || matchesAny(toolName, [glob])) {
+    // Both sides folded to the same key, so either spelling the caller used matches.
+    if (matchesAny(key, [toDenyMatchKey(glob)])) {
       return {
         allowed: false,
         applied: true,
         matchedGlob: glob,
         reason:
-          `tool "${canonical}" is denied for this session by ${confinement.imposedBy}: ` +
+          `tool "${toolName.trim()}" is denied for this session by ${confinement.imposedBy}: ` +
           `${confinement.reason} (matched "${glob}"). This denial is declared at launch and ` +
           `is not liftable from inside the session — if this milestone genuinely requires ` +
           `this tool, that is a finding to report upward, not an obstacle to route around.`,

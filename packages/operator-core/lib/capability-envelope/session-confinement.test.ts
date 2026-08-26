@@ -7,7 +7,7 @@ import {
   assertConfinementCoversIndirectDispatch,
   directedImplementerConfinement,
   evaluateSessionConfinement,
-  normalizeToolName,
+  toDenyMatchKey,
   type SessionToolConfinement,
 } from './session-confinement';
 
@@ -81,11 +81,15 @@ describe('session confinement — the collateral the capability grain got wrong'
 });
 
 describe('session confinement — client name mangling cannot bypass it', () => {
-  it('normalizes the mangled MCP spelling back to colon form', () => {
-    expect(normalizeToolName('mcp__papercusp-su__work_items_complete')).toBe(
-      'work_items:complete',
+  it('folds both spellings onto one match key', () => {
+    expect(toDenyMatchKey('mcp__papercusp-su__work_items_complete')).toBe(
+      'work_items_complete',
     );
-    expect(normalizeToolName('work_items:complete')).toBe('work_items:complete');
+    expect(toDenyMatchKey('work_items:complete')).toBe('work_items_complete');
+    // The underscore-bearing verb that makes reconstructing the colon unsound.
+    expect(toDenyMatchKey('mcp__papercusp-su__scheduler_get_next')).toBe(
+      toDenyMatchKey('scheduler:get_next'),
+    );
   });
 
   it('denies the mangled spelling too — a denial that catches one spelling is not a denial', () => {
@@ -120,7 +124,11 @@ describe('session confinement — the wiring invariant is itself falsifiable', (
 });
 
 describe('session confinement — structural guarantees, pinned to the source', () => {
-  const SOURCE = readFileSync(join(__dirname, 'session-confinement.ts'), 'utf8');
+  // Subject path is overridable so this guard can be falsifiability-probed against a
+  // COPY outside the tree (scripts/mutation-probe.sh tier 2) instead of by mutating the
+  // shared checkout, which git-sync would happily commit mid-probe.
+  const SUBJECT = process.env.PROBE_SESSION_CONFINEMENT_SRC ?? join(__dirname, 'session-confinement.ts');
+  const SOURCE = readFileSync(SUBJECT, 'utf8');
   // Strip the header/JSDoc prose: the comments legitimately DISCUSS isSuperuser and
   // allowTools, and a guard that cannot tell prose from code would be unfixable.
   const CODE = SOURCE.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
