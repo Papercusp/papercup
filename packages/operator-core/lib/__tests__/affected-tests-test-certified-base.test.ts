@@ -193,6 +193,24 @@ describe('test-certified base: scope detection (the false-certification hole)', 
     expect(isScopedInvocation(['node', 'x.mjs', '--exclude', '--range-to'])).toBe(true);
   });
 
+  it('is strictly stronger than the bare includes() it replaced (permanent control)', () => {
+    // The deliberately-wrong implementation, kept HERE permanently rather than mutated
+    // into the shared tree — the prescribed falsifiability technique for a subject the
+    // test imports. This is verbatim what the guard did before P-047.
+    const naive = (argv: string[]) =>
+      argv.includes('--changed-paths') || argv.includes('--range-from') || argv.includes('--range-to');
+
+    const equalsForm = ['node', 'x.mjs', '--changed-paths=p.ts'];
+    expect(naive(equalsForm), 'the control must reproduce the bug, or it proves nothing').toBe(false);
+    expect(isScopedInvocation(equalsForm)).toBe(true);
+
+    // Calibration: on the space form the two AGREE. Without this, a control that simply
+    // always disagreed would look identical to one that isolates the `=` handling.
+    const spaceForm = ['node', 'x.mjs', '--changed-paths', 'p.ts'];
+    expect(naive(spaceForm)).toBe(true);
+    expect(isScopedInvocation(spaceForm)).toBe(true);
+  });
+
   it('survives a non-array or non-string argv instead of throwing mid-run', () => {
     expect(isScopedInvocation(undefined as unknown as string[])).toBe(false);
     expect(isScopedInvocation([null, 42, '--changed-paths'] as unknown as string[])).toBe(true);
