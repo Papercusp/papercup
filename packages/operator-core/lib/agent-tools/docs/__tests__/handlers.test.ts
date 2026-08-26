@@ -89,10 +89,8 @@ const loadHarnessRegistry = vi.hoisted(() => vi.fn(async () => ({ projects: regi
 vi.mock('../../../harness-registry', () => ({
   loadHarnessRegistry,
   deregisterEphemeralForeignHarness: vi.fn(async () => false),
-  resolveHarnessContentPath: (
-    reg: { projects: RegistryProject[] },
-    slug: string,
-  ) => reg.projects.find((p) => p.slug === slug)?.path,
+  resolveHarnessContentPath: (reg: { projects: RegistryProject[] }, slug: string) =>
+    reg.projects.find((p) => p.slug === slug)?.path,
 }));
 
 function mockRegistry(projects: Array<{ slug: string; path: string }>) {
@@ -255,7 +253,7 @@ describe('docs:outline handler — engineering scope brief-by-default (EI-400)',
     for (const s of p.sections) expect(s.pages).toBeUndefined();
   });
 
-  it('`section` arg → that section\'s full page list + headings, brief omitted', async () => {
+  it("`section` arg → that section's full page list + headings, brief omitted", async () => {
     mockRegistry([]);
     buildOutline.mockResolvedValueOnce(bigPayload);
     const tool = (await import('../outline')).default;
@@ -609,7 +607,7 @@ describe('docs:search handler', () => {
   // instead of silent, even on a NON-empty result (the reported incident had 37 hits, just none of them
   // agent-insights).
   describe('scopeNote (EI-18804433041289369)', () => {
-    it('harness surface → scopeNote present, names the surface and the harness:\'all\' retry', async () => {
+    it("harness surface → scopeNote present, names the surface and the harness:'all' retry", async () => {
       mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
       const tool = (await import('../search')).default;
       const res = await tool.handler({ query: 'auth flow', limit: 8 } as never, { harnessSlug: 'sheets' } as never);

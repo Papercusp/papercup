@@ -8,21 +8,40 @@
  * cutover without erasing its audit trail.
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
+import fs from "node:fs";
+import path from "node:path";
 
 export const ACTIVE_RETIRED_GUIDANCE_ROOTS = [
-  'templates/papercusp-app',
-  'templates/papercusp-ops-pots',
+  "templates/papercusp-app",
+  "templates/papercusp-ops-pots",
 ];
 
 export const ACTIVE_RETIRED_GUIDANCE_FILES = [
-  'libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
+  "libs/papercusp/packages/harness/blueprints/base/prompts/su.md",
 ];
 
-const TEXT_EXTENSIONS = new Set(['.md', '.mdx', '.yaml', '.yml', '.json', '.ts', '.tsx', '.js', '.mjs']);
-const SKIP_DIRS = new Set(['node_modules', '.git', '_retired', 'build', 'coverage', 'dist', '.next']);
-const TEST_FILE_RE = /(?:^|\/)(?:__tests__\/|checks\/.*\.(?:test|spec)\.)|\.(?:test|spec)\.[cm]?[jt]sx?$/;
+const TEXT_EXTENSIONS = new Set([
+  ".md",
+  ".mdx",
+  ".yaml",
+  ".yml",
+  ".json",
+  ".ts",
+  ".tsx",
+  ".js",
+  ".mjs",
+]);
+const SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  "_retired",
+  "build",
+  "coverage",
+  "dist",
+  ".next",
+]);
+const TEST_FILE_RE =
+  /(?:^|\/)(?:__tests__\/|checks\/.*\.(?:test|spec)\.)|\.(?:test|spec)\.[cm]?[jt]sx?$/;
 
 const ROLE_RE = /\b(?:queen|mug|kettle)\b/i;
 const ROLE_RE_GLOBAL = /\b(?:queen|mug|kettle)\b/gi;
@@ -38,13 +57,14 @@ const ADVERSATIVE_RE = /\b(?:but|however|still|yet|nevertheless|except)\b/gi;
 
 /** Keep a Markdown/YAML list item together while separating neighboring policy statements. */
 export function guidanceSegments(source) {
-  const lines = String(source).replace(/\r\n?/g, '\n').split('\n');
+  const lines = String(source).replace(/\r\n?/g, "\n").split("\n");
   const segments = [];
   let current = [];
   let startLine = 1;
 
   const flush = () => {
-    if (current.length > 0) segments.push({ line: startLine, text: current.join('\n') });
+    if (current.length > 0)
+      segments.push({ line: startLine, text: current.join("\n") });
     current = [];
   };
   const startsStatement = (line) =>
@@ -64,11 +84,16 @@ export function guidanceSegments(source) {
   return segments;
 }
 
-function positiveCountermandAfterHistory(segment) {
+function positiveCountermandAfterHistory(segment, markerIndex) {
   ADVERSATIVE_RE.lastIndex = 0;
   for (const match of segment.matchAll(ADVERSATIVE_RE)) {
+    if ((match.index ?? 0) <= markerIndex) continue;
     const tail = segment.slice((match.index ?? 0) + match[0].length);
-    if (ROLE_RE.test(tail) && (EXECUTION_RE.test(tail) || EXECUTOR_NOUN_RE.test(tail))) return true;
+    if (
+      ROLE_RE.test(tail) &&
+      (EXECUTION_RE.test(tail) || EXECUTOR_NOUN_RE.test(tail))
+    )
+      return true;
   }
   return false;
 }
@@ -79,21 +104,44 @@ export function findRetiredGuidanceOffenders(file, source) {
   for (const segment of guidanceSegments(source)) {
     const roleMatch = ROLE_RE.exec(segment.text);
     if (!roleMatch) continue;
-    if (!EXECUTION_RE.test(segment.text) && !EXECUTOR_NOUN_RE.test(segment.text)) continue;
+    if (
+      !EXECUTION_RE.test(segment.text) &&
+      !EXECUTOR_NOUN_RE.test(segment.text)
+    )
+      continue;
 
-    const explicitlyNonCurrent =
-      EXPLICIT_NON_CURRENT_RE.test(segment.text) || EXPLICIT_REFUSAL_RE.test(segment.text);
-    if (explicitlyNonCurrent && !positiveCountermandAfterHistory(segment.text)) continue;
+    const nonCurrentAt = EXPLICIT_NON_CURRENT_RE.exec(segment.text)?.index;
+    const refusalAt = EXPLICIT_REFUSAL_RE.exec(segment.text)?.index;
+    const markerIndexes = [nonCurrentAt, refusalAt].filter(
+      (index) => index !== undefined,
+    );
+    const markerIndex =
+      markerIndexes.length > 0 ? Math.min(...markerIndexes) : -1;
+    if (
+      markerIndex >= 0 &&
+      !positiveCountermandAfterHistory(segment.text, markerIndex)
+    )
+      continue;
 
-    const roleLine = segment.line + segment.text.slice(0, roleMatch.index).split('\n').length - 1;
-    const roles = [...new Set([...segment.text.matchAll(ROLE_RE_GLOBAL)].map((match) => match[0].toLowerCase()))];
+    const roleLine =
+      segment.line +
+      segment.text.slice(0, roleMatch.index).split("\n").length -
+      1;
+    const roles = [
+      ...new Set(
+        [...segment.text.matchAll(ROLE_RE_GLOBAL)].map((match) =>
+          match[0].toLowerCase(),
+        ),
+      ),
+    ];
     offenders.push({
-      category: 'current-guidance',
+      category: "current-guidance",
       file,
       line: roleLine,
       roles,
-      detail: 'active guidance prescribes a retired Queen/Mug/Kettle execution role without an explicit historical or refusal marker',
-      excerpt: segment.text.replace(/\s+/g, ' ').trim().slice(0, 260),
+      detail:
+        "active guidance prescribes a retired Queen/Mug/Kettle execution role without an explicit historical or refusal marker",
+      excerpt: segment.text.replace(/\s+/g, " ").trim().slice(0, 260),
     });
   }
   return offenders;
@@ -107,8 +155,12 @@ function walkGuidanceRoot(root, acc) {
       walkGuidanceRoot(abs, acc);
       continue;
     }
-    const normalized = abs.split(path.sep).join('/');
-    if (!TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase()) || TEST_FILE_RE.test(normalized)) continue;
+    const normalized = abs.split(path.sep).join("/");
+    if (
+      !TEXT_EXTENSIONS.has(path.extname(entry.name).toLowerCase()) ||
+      TEST_FILE_RE.test(normalized)
+    )
+      continue;
     acc.push(abs);
   }
 }
@@ -136,11 +188,22 @@ export function collectActiveRetiredGuidance(repoRoot) {
   const files = [...new Set(absoluteFiles)].sort();
   const offenders = [];
   for (const absoluteFile of files) {
-    const relativeFile = path.relative(repoRoot, absoluteFile).split(path.sep).join('/');
+    const relativeFile = path
+      .relative(repoRoot, absoluteFile)
+      .split(path.sep)
+      .join("/");
     try {
-      offenders.push(...findRetiredGuidanceOffenders(relativeFile, fs.readFileSync(absoluteFile, 'utf8')));
+      offenders.push(
+        ...findRetiredGuidanceOffenders(
+          relativeFile,
+          fs.readFileSync(absoluteFile, "utf8"),
+        ),
+      );
     } catch (error) {
-      readErrors.push({ file: relativeFile, message: error instanceof Error ? error.message : String(error) });
+      readErrors.push({
+        file: relativeFile,
+        message: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

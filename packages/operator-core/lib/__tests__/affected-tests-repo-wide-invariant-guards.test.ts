@@ -64,10 +64,7 @@ import {
 // MIRRORS these as literals on purpose (a static import there would let a load error in
 // this lint hard-fail every agent's test:affected), so importing the originals HERE is
 // what keeps the mirror honest.
-import {
-  OKF_SCAN_ROOTS,
-  isOkfScannedFile,
-} from '../../../../scripts/check-okf-conformance.mjs';
+import { OKF_SCAN_ROOTS, isOkfScannedFile } from '../../../../scripts/check-okf-conformance.mjs';
 // WI-37605 — same reason as the import above: the router MIRRORS this list rather than importing
 // it, so importing the ORIGINAL here is what keeps the mirror honest.
 import { GC_TAG_SOURCE_ROOTS } from '../../../../scripts/check-green-checkpoint-tag.mjs';
@@ -117,11 +114,11 @@ const DOCS_CONFIG_PATH = '.papercusp/docs.json';
  */
 function dryTasks(changedPaths: string, base?: string): string {
   const baseArgs = base ? ['--base', base] : [];
-  const res = spawnSync(
-    process.execPath,
-    [AFFECTED_TESTS, '--changed-paths', changedPaths, ...baseArgs, '--dry'],
-    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000 },
-  );
+  const res = spawnSync(process.execPath, [AFFECTED_TESTS, '--changed-paths', changedPaths, ...baseArgs, '--dry'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
   // Fail loudly rather than letting a crashed probe read as "guard absent" — a
   // non-zero exit with empty stdout would otherwise satisfy every `not.toContain`.
   expect(res.error, `CLI failed to spawn: ${res.error?.message}`).toBeUndefined();
@@ -143,11 +140,11 @@ function dryTaskLine(out: string, task: string): string {
  * is the machine-readable surface used by release-prefix tooling.
  */
 function printAffected(changedPaths: string): string {
-  const res = spawnSync(
-    process.execPath,
-    [AFFECTED_TESTS, '--changed-paths', changedPaths, '--print-affected'],
-    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000 },
-  );
+  const res = spawnSync(process.execPath, [AFFECTED_TESTS, '--changed-paths', changedPaths, '--print-affected'], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
   expect(res.error, `CLI failed to spawn: ${res.error?.message}`).toBeUndefined();
   expect(res.status, `print-only probe failed:\n${res.stderr ?? ''}`).toBe(0);
   return `${res.stdout ?? ''}${res.stderr ?? ''}`;
@@ -165,9 +162,9 @@ describe('affected-tests: dependency-integrity preflight (EI-20863794002653922)'
   });
 
   it('keeps the host script pointed at the reused detector and guarded by the install mutex', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     const command = pkg.scripts?.[DEPENDENCY_INTEGRITY_SCRIPT];
 
     expect(command).toBeTruthy();
@@ -193,9 +190,9 @@ describe('affected-tests: registry-test runnability invariant (EI-15951)', () =>
   });
 
   it('keeps the selected lint task defined on its host workspace', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'apps/operator/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'apps/operator/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(pkg.scripts?.[TEST_RUNNABILITY_SCRIPT]).toBe('tsx scripts/lint-tests.ts');
   });
 });
@@ -232,9 +229,9 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
   });
 
   it('keeps the guard script defined, so the attachment cannot silently no-op', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[GUARD_SCRIPT],
       `${HOST_WORKSPACE} must define "${GUARD_SCRIPT}". The router only builds a task when ` +
@@ -252,10 +249,7 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
       `${VIMOCK_GUARD_TASK} must receive the same base that affected-tests used for its ` +
         'authoritative changed-path derivation AND the exact triggering paths; otherwise ' +
         'git-sync leaves the guard comparing HEAD with itself or widens attribution to peers',
-    ).toContain(
-      `${VIMOCK_GUARD_TASK} (guard base: ${base}) ` +
-        `(guard args: --files=${OUTSIDE_TS_PATH})`,
-    );
+    ).toContain(`${VIMOCK_GUARD_TASK} (guard base: ${base}) ` + `(guard args: --files=${OUTSIDE_TS_PATH})`);
   });
 
   it('does NOT attach the vimock strand guard for a test-only change it cannot inspect', () => {
@@ -276,10 +270,7 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
       dryTasks(submodule, base),
       `a runtime export added inside ${submodule} reaches affected-tests only as the bare ` +
         'gitlink path; a TS-extension-only predicate silently omits the guard for the whole submodule',
-    ).toContain(
-      `${VIMOCK_GUARD_TASK} (guard base: ${base}) ` +
-        `(guard args: --files=${submodule})`,
-    );
+    ).toContain(`${VIMOCK_GUARD_TASK} (guard base: ${base}) ` + `(guard args: --files=${submodule})`);
   });
 });
 
@@ -290,19 +281,13 @@ describe('affected-tests: authored-doc guard candidate scope (EI-210793302015720
   });
 
   it('excludes unrelated changed paths from the authored-doc allowlist', () => {
-    const line = dryTaskLine(
-      dryTasks(`${AUTHORED_DOC_PATH},${OUTSIDE_TS_PATH}`),
-      AUTHORED_DOC_TASK,
-    );
+    const line = dryTaskLine(dryTasks(`${AUTHORED_DOC_PATH},${OUTSIDE_TS_PATH}`), AUTHORED_DOC_TASK);
     expect(line).toContain(`(guard args: --files=${AUTHORED_DOC_ID})`);
     expect(line).not.toContain(OUTSIDE_TS_PATH);
   });
 
   it('filters generator-owned docs when an authored doc changes alongside one', () => {
-    const line = dryTaskLine(
-      dryTasks(`${AUTHORED_DOC_PATH},${GENERATOR_OWNED_DOC_PATH}`),
-      AUTHORED_DOC_TASK,
-    );
+    const line = dryTaskLine(dryTasks(`${AUTHORED_DOC_PATH},${GENERATOR_OWNED_DOC_PATH}`), AUTHORED_DOC_TASK);
     expect(line).toContain(`(guard args: --files=${AUTHORED_DOC_ID})`);
     expect(line).not.toContain('reference/agent-insights-index.md');
   });
@@ -438,14 +423,14 @@ describe('affected-tests: partial-index-alignment guard (WI-9434)', () => {
       out,
       `${PI_UNSCANNED_PATH} is outside every SOURCE_ROOT, so the lint cannot read it and ` +
         'cannot produce a finding. Unlike chunk-safe (whose enumeration IS repo-wide), ' +
-        'firing here would spend every agent\'s edit budget for nothing.',
+        "firing here would spend every agent's edit budget for nothing.",
     ).not.toContain(PI_TASK);
   });
 
   it('keeps the guard script defined, and pointed at the SCRIPT rather than the vitest file', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[PI_SCRIPT],
       `${HOST_WORKSPACE} must define "${PI_SCRIPT}" — the router only builds a task when the ` +
@@ -540,9 +525,7 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
     // satisfies both, because libs/papercusp/** now reaches operator-core through the
     // dependency graph — the very change that exposed this bug.
     const out = dryTasks(MIGRATION_PATH);
-    expect(out, 'the host workspace should run its own suite here').toContain(
-      `${HOST_WORKSPACE} :: test`,
-    );
+    expect(out, 'the host workspace should run its own suite here').toContain(`${HOST_WORKSPACE} :: test`);
     expect(
       out,
       'lint:migration-forward-compat declares no hostSuiteRatchet, so the host suite ' +
@@ -569,9 +552,9 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
   });
 
   it('keeps the guard script defined, so the attachment cannot silently no-op', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[FC_SCRIPT],
       `${HOST_WORKSPACE} must define "${FC_SCRIPT}". The router only builds a task when ` +
@@ -620,9 +603,9 @@ describe('affected-tests: prose-vector live-schema guard (EI-20820551755839769)'
   });
 
   it('keeps the focused script declared with the integration config and exact contract file', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     const command = pkg.scripts?.[SCRIPT];
     expect(command, `missing ${HOST_WORKSPACE} script ${SCRIPT}`).toBeTruthy();
     expect(command).toContain('vitest.integration.config.ts');
@@ -681,9 +664,7 @@ describe('affected-tests: migration lint guard (WI-38351)', () => {
     // scans the real SQL directory or reads the reservations table — so deferring to it
     // would run nothing at all while looking, from every output, like success.
     const out = dryTasks(MIGRATION_PATH);
-    expect(out, 'the host workspace should run its own suite here').toContain(
-      `${HOST_WORKSPACE} :: test`,
-    );
+    expect(out, 'the host workspace should run its own suite here').toContain(`${HOST_WORKSPACE} :: test`);
     expect(
       out,
       'lint:migrations declares no hostSuiteRatchet, so the host suite running is NOT a ' +
@@ -710,13 +691,12 @@ describe('affected-tests: migration lint guard (WI-38351)', () => {
     // workspace does not define the script, and `lint:migrations` lived ONLY in the root
     // package.json — so the registry entry alone would have attached nothing and looked
     // exactly like success from every probe.
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[LM_SCRIPT],
-      `${HOST_WORKSPACE} must define "${LM_SCRIPT}" — defining it only in the ROOT ` +
-        'package.json is not enough.',
+      `${HOST_WORKSPACE} must define "${LM_SCRIPT}" — defining it only in the ROOT ` + 'package.json is not enough.',
     ).toBeTruthy();
     expect(pkg.scripts?.[LM_SCRIPT]).toContain('lint-migrations.mjs');
   });
@@ -800,13 +780,11 @@ describe('affected-tests: OKF frontmatter conformance guard (WI-35930)', () => {
     const dotPath = `${OKF_SCAN_ROOTS[0]}.papercusp/memory/raw.md`;
     expect(
       isOkfScannedFile(dotPath),
-      'precondition: the lint itself must decline this path, or this case is testing ' +
-        'the wrong thing',
+      'precondition: the lint itself must decline this path, or this case is testing ' + 'the wrong thing',
     ).toBe(false);
     expect(
       dryTasks(dotPath),
-      `${dotPath} is excluded from the SCAN, so attaching the guard for it could never ` +
-        'produce a finding',
+      `${dotPath} is excluded from the SCAN, so attaching the guard for it could never ` + 'produce a finding',
     ).not.toContain(OKF_TASK);
   });
 
@@ -816,8 +794,7 @@ describe('affected-tests: OKF frontmatter conformance guard (WI-35930)', () => {
     const out = dryTasks('astro.config.mjs');
     expect(
       out,
-      'only the two corpus roots are scanned, so a file elsewhere cannot violate the ' +
-        'invariant',
+      'only the two corpus roots are scanned, so a file elsewhere cannot violate the ' + 'invariant',
     ).not.toContain(OKF_TASK);
   });
 
@@ -826,9 +803,9 @@ describe('affected-tests: OKF frontmatter conformance guard (WI-35930)', () => {
     // does not define the script, producing a registry entry that attaches NOTHING and
     // looks, from every output, like success. Defining it only in the ROOT
     // package.json is not enough.
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[OKF_SCRIPT],
       `${HOST_WORKSPACE} must define "${OKF_SCRIPT}" — the router only builds a task ` +
@@ -895,9 +872,7 @@ describe('affected-tests: green-checkpoint tag guard (WI-37605)', () => {
   });
 
   it('does NOT double-run it when the host workspace is already affected', () => {
-    expect(dryTasks('packages/operator-core/lib/harness/routines/release-actions.ts')).not.toContain(
-      GC_TAG_TASK,
-    );
+    expect(dryTasks('packages/operator-core/lib/harness/routines/release-actions.ts')).not.toContain(GC_TAG_TASK);
   });
 
   it('does NOT attach for a TS file outside every scanned root', () => {
@@ -940,9 +915,9 @@ describe('affected-tests: green-checkpoint tag guard (WI-37605)', () => {
     // The specific false green this catches (WI-37454/WI-37445): affected-tests.mjs skips a
     // registered-but-undeclared guard with a bare `continue`, so the guard runs NOWHERE while
     // lint:guard-reachability still credits it as fully enforced.
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[GC_TAG_SCRIPT],
       `${HOST_WORKSPACE} must define "${GC_TAG_SCRIPT}" or the attachment is inert`,
@@ -983,6 +958,8 @@ const MUG_KETTLE_TASK = `${HOST_WORKSPACE} :: ${MUG_KETTLE_SCRIPT}`;
 const MK_OUTSIDE_TS_PATH = 'apps/operator/lib/release/green-checkpoint.ts';
 /** Markdown inside a package dir — blueprint PROMPTS are a census category, so `.md` counts. */
 const MK_MARKDOWN_PATH = 'apps/operator/docs/nuqs-audit-2026-05-11.md';
+/** Active agentic template manifest — P-005's current-guidance family scans YAML too. */
+const MK_TEMPLATE_YAML_PATH = 'templates/papercusp-ops-pots/blueprints/app-agent/blueprint.yaml';
 /** Matches the predicate NOWHERE: not TS/JS-family, not `.md`. */
 const MK_UNMATCHED_PATH = 'apps/operator/app/_brand-primitives.css';
 
@@ -1013,6 +990,10 @@ describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () =
     expect(dryTasks(MK_MARKDOWN_PATH)).toContain(MUG_KETTLE_TASK);
   });
 
+  it('attaches for YAML agentic-template guidance, not only code and Markdown', () => {
+    expect(dryTasks(MK_TEMPLATE_YAML_PATH)).toContain(MUG_KETTLE_TASK);
+  });
+
   it('does NOT attach for a change the predicate cannot match', () => {
     const out = dryTasks(MK_UNMATCHED_PATH);
     // ⚠ This assertion is only about the PREDICATE if the double-run branch cannot have fired
@@ -1033,9 +1014,9 @@ describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () =
   });
 
   it('keeps the guard script DEFINED, so the registration cannot be silently inert', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[MUG_KETTLE_SCRIPT],
       `${HOST_WORKSPACE} must define "${MUG_KETTLE_SCRIPT}" or the attachment is inert — ` +
@@ -1114,10 +1095,7 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
       out,
       'a post-git-sync run needs the before-image and exact scope; --files alone still ' +
         'compares byte-identical HEAD content and exits NOT_CHECKED',
-    ).toContain(
-      `${RFS_TASK} (guard base: ${base}) ` +
-        `(guard args: --files=${RFS_OUTSIDE_TS_PATH})`,
-    );
+    ).toContain(`${RFS_TASK} (guard base: ${base}) ` + `(guard args: --files=${RFS_OUTSIDE_TS_PATH})`);
   });
 
   it('moves an E2BIG-class triggering set into a cleaned JSON response file', () => {
@@ -1172,9 +1150,9 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
   });
 
   it('registers the ADVISORY form, never the --typecheck variant', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     const cmd = pkg.scripts?.[RFS_SCRIPT];
     expect(
       cmd,
@@ -1187,7 +1165,7 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
       'the --typecheck variant execs lint:tsc over operator-core (~104s cold, and it queues ' +
         'behind pc-heavy.sh). Registered here it would be the most expensive guard by two ' +
         'orders of magnitude, on every edit — the advisory form exits 0 even WITH findings, ' +
-        'and printing the strand into the author\'s own run is the entire value',
+        "and printing the strand into the author's own run is the entire value",
     ).not.toContain('--typecheck');
   });
 });
@@ -1247,9 +1225,7 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
     // zero cases, green suite, zero protection. The declared count is cross-checked against
     // the raw `script:` occurrences so a new entry shape cannot quietly fall out of the scan.
     const rawCount = (registrySource.match(/\n\s*script: '/g) ?? []).length;
-    expect(guards.length, `parsed ${guards.length} guard(s) from a registry with ${rawCount}`).toBe(
-      rawCount,
-    );
+    expect(guards.length, `parsed ${guards.length} guard(s) from a registry with ${rawCount}`).toBe(rawCount);
     expect(guards.length).toBeGreaterThanOrEqual(10);
     // Shape, not namespace. This asserted `startsWith('lint:')` until the registry took its
     // first non-lint entry (`gen:authored-docs:check` — a projected-doc drift check, which is
@@ -1311,7 +1287,7 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
     expect(checked, 'no registered guard was recognised as strand-family — parse is stale').toBeGreaterThan(0);
   });
 
-  it('the router\'s mirrored EXIT_NOT_CHECKED equals the real one', () => {
+  it("the router's mirrored EXIT_NOT_CHECKED equals the real one", () => {
     const src = readFileSync(REGISTRY_FILE, 'utf8');
     const mirrored = /const EXIT_NOT_CHECKED = (\d+);/.exec(src)?.[1];
     expect(mirrored, 'affected-tests.mjs no longer declares EXIT_NOT_CHECKED').toBeDefined();
@@ -1346,9 +1322,9 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
     // The substantive check: the named file must reference the guard's own detector, either
     // by being the vitest file the guard script targets, or by exercising the .mjs it runs.
     // A file that merely sits in the suite vouches for nothing.
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
 
     for (const g of guards.filter((x) => x.hostSuiteRatchet)) {
       const command = pkg.scripts?.[g.script] ?? '';
@@ -1444,9 +1420,7 @@ describe('affected-tests: --print-affected includes repo-wide guards (EI-2009918
     const out = printAffected('apps/operator/app/adv/hud/GoalSessionsRail.tsx');
     const lines = out.split('\n').filter(Boolean);
 
-    expect(lines.filter((line) => line.startsWith('AFFECTED_WS\t'))).toEqual([
-      'AFFECTED_WS\t@papercusp/web',
-    ]);
+    expect(lines.filter((line) => line.startsWith('AFFECTED_WS\t'))).toEqual(['AFFECTED_WS\t@papercusp/web']);
     expect(lines).toContain('AFFECTED_GUARD\t@papercusp/operator-core\tlint:chunk-safe');
     expect(out).not.toContain('AFFECTED_TESTS_RESULT');
     expect(out).not.toContain('(repo-wide invariant guard:');
@@ -1457,9 +1431,7 @@ describe('affected-tests: --print-affected includes repo-wide guards (EI-2009918
     const lines = out.split('\n').filter(Boolean);
 
     expect(lines.filter((line) => line.startsWith('AFFECTED_WS\t'))).toEqual([]);
-    expect(lines).toContain(
-      'AFFECTED_GUARD\t@papercusp/operator-core\tlint:guard-reachability',
-    );
+    expect(lines).toContain('AFFECTED_GUARD\t@papercusp/operator-core\tlint:guard-reachability');
     expect(out).not.toContain('AFFECTED_TESTS_RESULT');
   });
 });
@@ -1514,8 +1486,9 @@ describe('affected-tests: declarations freshness guard (WI-38089)', () => {
       'no declared .mjs inputs found — the router would then widen to every .mjs, silently ' +
         'turning this guard into a tax on unrelated edits',
     ).toBeGreaterThan(0);
-    expect(declared, `${OUTSIDE_INPUT} must remain a declared input or this suite proves nothing`)
-      .toContain(OUTSIDE_INPUT);
+    expect(declared, `${OUTSIDE_INPUT} must remain a declared input or this suite proves nothing`).toContain(
+      OUTSIDE_INPUT,
+    );
     expect(declared, `${INSIDE_INPUT} must remain a declared input`).toContain(INSIDE_INPUT);
     expect(
       declared,
@@ -1544,8 +1517,7 @@ describe('affected-tests: declarations freshness guard (WI-38089)', () => {
     const dmts = OUTSIDE_INPUT.replace(/\.mjs$/, '.d.mts');
     expect(
       dryTasks(dmts),
-      'drift in the opposite direction: the committed declaration no longer matches what the ' +
-        'generator would emit',
+      'drift in the opposite direction: the committed declaration no longer matches what the ' + 'generator would emit',
     ).toContain(DECL_TASK);
   });
 
@@ -1568,9 +1540,7 @@ describe('affected-tests: declarations freshness guard (WI-38089)', () => {
 
   it('does NOT double-run when the host workspace is already affected', () => {
     const out = dryTasks(INSIDE_INPUT);
-    expect(out, 'the host workspace should run its own suite here').toContain(
-      `${HOST_WORKSPACE} :: test`,
-    );
+    expect(out, 'the host workspace should run its own suite here').toContain(`${HOST_WORKSPACE} :: test`);
     expect(
       out,
       'generated-declarations.test.ts execs the SAME --check invocation inside operator-core’s ' +
@@ -1579,9 +1549,9 @@ describe('affected-tests: declarations freshness guard (WI-38089)', () => {
   });
 
   it('keeps the guard script defined, and pointed at the CHECK rather than the vitest file', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[DECL_SCRIPT],
       `${HOST_WORKSPACE} must define "${DECL_SCRIPT}". The router only builds a task when the ` +
@@ -1633,9 +1603,9 @@ describe('affected-tests: unenrolled .mjs import guard (WI-7025)', () => {
   });
 
   it('keeps the guard script defined and pointed at the detector', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(pkg.scripts?.[SCRIPT]).toBeTruthy();
     expect(pkg.scripts?.[SCRIPT]).toContain('check-unenrolled-mjs-imports.mjs');
     expect(pkg.scripts?.[SCRIPT]).not.toContain('vitest');
@@ -1708,9 +1678,9 @@ describe('affected-tests: substitution registry drift guard (D-046)', () => {
   });
 
   it('keeps the guard script defined on the HOST workspace, so the attachment cannot silently no-op', () => {
-    const pkg = JSON.parse(
-      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
-    ) as { scripts?: Record<string, string> };
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
     expect(
       pkg.scripts?.[SEED_SCRIPT],
       `${HOST_WORKSPACE} must define "${SEED_SCRIPT}". The router only builds a task when the ` +

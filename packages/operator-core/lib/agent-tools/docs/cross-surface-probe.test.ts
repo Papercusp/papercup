@@ -115,21 +115,20 @@ describe('retirement authority/currentness ranking', () => {
   });
 
   it('labels authored-superseded and plan-export hits as historical', () => {
-    expect(isHistoricalDocsHit(hit('agent-insights/old', 1, { tier: 'unverified', stale: false, superseded: true }))).toBe(true);
+    expect(
+      isHistoricalDocsHit(hit('agent-insights/old', 1, { tier: 'unverified', stale: false, superseded: true })),
+    ).toBe(true);
     expect(isHistoricalDocsHit(hit('docs/plans/old-queen-architecture', 1))).toBe(true);
     expect(isHistoricalDocsHit(hit('plans/old-queen-architecture', 1))).toBe(true);
     expect(isHistoricalDocsHit(hit('agent-insights/current', 1))).toBe(false);
   });
 
   it('puts canonical current authority first, then current material, then historical plans', () => {
-    const ranked = rankRetirementAuthorityHits(
-      'Queen Mug Kettle retired current work assignment wake agent',
-      [
-        hit('docs/plans/queen-architecture', 99),
-        hit('agent-insights/current-assignment', 4),
-        hit(RETIREMENT_AUTHORITY_SLUG, 1),
-      ],
-    );
+    const ranked = rankRetirementAuthorityHits('Queen Mug Kettle retired current work assignment wake agent', [
+      hit('docs/plans/queen-architecture', 99),
+      hit('agent-insights/current-assignment', 4),
+      hit(RETIREMENT_AUTHORITY_SLUG, 1),
+    ]);
     expect(ranked.map((entry) => entry.slug)).toEqual([
       RETIREMENT_AUTHORITY_SLUG,
       'agent-insights/current-assignment',
@@ -168,7 +167,11 @@ function naiveShouldProbe(input: { surface: string; isSuperuser: boolean; semant
 
 describe('falsifiability control', () => {
   it('the naive candidates-only rule DISAGREES with the real one exactly on the embedder-fault cases', () => {
-    const embedderFaults: Leg[] = [{ status: 'blocked', candidates: 0 }, { status: 'not-run', candidates: 0 }, undefined];
+    const embedderFaults: Leg[] = [
+      { status: 'blocked', candidates: 0 },
+      { status: 'not-run', candidates: 0 },
+      undefined,
+    ];
 
     for (const leg of embedderFaults) {
       const real = shouldProbeSiblingSurface({ surface: 'harness', isSuperuser: true, semanticLeg: leg });

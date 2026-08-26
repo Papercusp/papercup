@@ -2384,12 +2384,12 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // ~3.4s: it shells out to scripts/mug-kettle-surface-census.mjs --json rather than
     // re-implementing its 8 detectors, so there is exactly ONE implementation of them.
     script: "lint:no-ungated-mug-kettle",
-    // Mirrors the union of both scan surfaces: the census walks packages/libs/apps/scripts
-    // for the TS-family + .mjs, and the guard's own role-door pass adds .mjs launchers
-    // (apps/operator/scripts/psu-launcher.mjs is a real door). Blueprint PROMPTS are a
-    // census category too (`prompt|coding/mug|…md`), so .md counts — a new mug role prompt
-    // is exactly the kind of quiet re-introduction this is for.
-    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) || f.endsWith(".md"),
+    // Mirrors the union of all three scan surfaces: the census + role-door passes cover
+    // executable TS/JS and Markdown prompts; P-005's current-guidance family also scans
+    // maintained agentic template manifests/reference material in MDX, JSON, and YAML.
+    // A stale execution prescription in template.yaml is just as material as one in GUIDE.md.
+    appliesTo: (f) =>
+      /\.[cm]?[jt]sx?$/.test(f) || /\.(?:mdx?|json|ya?ml)$/.test(f),
   },
   {
     // EI-21271940404773459 — a raw ESM self-exec check is safe in an isolated source

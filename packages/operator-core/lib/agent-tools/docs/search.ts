@@ -19,7 +19,12 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runHybridSearch, isVectorOnly, type SearchSource, type Listing, type PgHandle } from '@papercusp/search';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
 import { engineeringAdapter } from './_engineering-adapter';
-import { HARNESS_REQUIRED_DETAIL, isEngineeringDocsSentinel, resolveHarnessScope, type HarnessScope } from '../_harness-scope';
+import {
+  HARNESS_REQUIRED_DETAIL,
+  isEngineeringDocsSentinel,
+  resolveHarnessScope,
+  type HarnessScope,
+} from '../_harness-scope';
 import { resolveDocsEmbedder, docSectionsRanker, type DocSemanticHit } from './semantic-leg';
 import { interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 // Installs papercusp's engine-level ranking policy (P-017) on import — the
@@ -68,9 +73,11 @@ export function isRetirementAuthorityQuery(query: string): boolean {
   // insufficient unless the query also names retirement, an execution mechanism, or multiple tier
   // roles. This keeps the authority route narrow without requiring one exact incident sentence.
   return (
-    /\b(?:retir(?:e[sd]?|ing|ement)|replacement|replaced)\b/i.test(query)
-    || /\b(?:agent|role|work|assign(?:ment)?|wake|dispatch|plan|fleet|executor|runtime|spawn|orchestrat\w*|supported)\b/i.test(query)
-    || new Set(tierTerms).size > 1
+    /\b(?:retir(?:e[sd]?|ing|ement)|replacement|replaced)\b/i.test(query) ||
+    /\b(?:agent|role|work|assign(?:ment)?|wake|dispatch|plan|fleet|executor|runtime|spawn|orchestrat\w*|supported)\b/i.test(
+      query,
+    ) ||
+    new Set(tierTerms).size > 1
   );
 }
 
@@ -149,8 +156,7 @@ export function shouldProbeSiblingSurface(input: {
  * that genuinely wants the handle still gets the real one on first touch.
  */
 const lazyOrgSql = new Proxy((() => {}) as unknown as PgHandle, {
-  apply: (_t, _self, argv: unknown[]) =>
-    (getOrgPg().sql as unknown as (...a: unknown[]) => unknown)(...argv),
+  apply: (_t, _self, argv: unknown[]) => (getOrgPg().sql as unknown as (...a: unknown[]) => unknown)(...argv),
   get: (_t, prop) => (getOrgPg().sql as unknown as Record<string | symbol, unknown>)[prop],
 });
 
@@ -229,7 +235,11 @@ export function normalizeDocsSearchArgs(raw: unknown): unknown {
 const argsSchema = z.preprocess(
   normalizeDocsSearchArgs,
   z.object({
-    query: z.string().min(2).max(200).describe('Keyword query. Legacy alias: `q`. Whitespace-separated tokens; tokens <2 chars dropped.'),
+    query: z
+      .string()
+      .min(2)
+      .max(200)
+      .describe('Keyword query. Legacy alias: `q`. Whitespace-separated tokens; tokens <2 chars dropped.'),
     limit: z.number().int().min(1).max(20).default(8).describe('Max hits returned. Default 8.'),
     harness: z
       .string()
@@ -238,7 +248,7 @@ const argsSchema = z.preprocess(
         "Harness slug whose docs to search. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
           "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden for 'all'/'*' " +
           "(EI-12898). To reach the SAME framework/agent-insights corpus from a workspace-scoped session, pass 'engineering' " +
-          "instead — a distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the " +
+          'instead — a distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the ' +
           "session is already scoped to a harness — otherwise you'll get harness_required.",
       ),
     semantic: z
@@ -246,7 +256,7 @@ const argsSchema = z.preprocess(
       .optional()
       .describe(
         'Fuse an embedding-cosine leg with the keyword leg (RRF), so a topically-exact page whose words ' +
-          "never appear verbatim still ranks. Hits found ONLY that way are marked semantic:true. " +
+          'never appear verbatim still ranks. Hits found ONLY that way are marked semantic:true. ' +
           'Default on (off under vitest); false = lexical-only. Read `legs` on the response for whether ' +
           'it actually ran: legs.degraded=true means the ranking is NOT the one this promises.',
       ),
@@ -265,10 +275,7 @@ export default defineTool({
       'docs:search → docs:get { slugs: [top-hit] } (or { slug, heading } if the hit excerpt names a specific heading). A hit carrying `trust` is telling you something about its RELIABILITY (OKF v0.2): `stale:true` = past its author-set stale_after, so re-check its claims against the code before acting; `tier` = unverified/machine-verified/human-verified. NO `trust` field means unverified and not stale — the state of nearly every doc today, not an error.',
     returns:
       "{ hits, hitCount, surface, legs, applied, scopeNote?, crossSurface? }. READ `crossSurface` WHENEVER IT IS PRESENT: it means the semantic leg RAN against your surface and matched nothing above the similarity floor, so the `hits` above are lexical-only and may be entirely off-topic even when there are dozens of them. Rather than only advising a retry, the sibling 'engineering' surface (agent-insights/ + the Papercusp framework reference) was searched FOR you; `crossSurface.hits` are keyword hits from there. Re-run `docs:search { harness: 'engineering' }` for that corpus's full hybrid ranking. Absent when your surface matched something topical, on the engineering surface itself, for non-superusers, or when the embedder was blocked/not-run (a broken embedder says nothing about which corpus holds the answer).",
-    seeAlso: [
-      'docs:outline (browse the full section tree when the term is unknown)',
-      'docs:get (read a matched page)',
-    ],
+    seeAlso: ['docs:outline (browse the full section tree when the term is unknown)', 'docs:get (read a matched page)'],
   },
   capability: 'docs:read',
   requirePrincipal: false,
@@ -302,7 +309,12 @@ export default defineTool({
       : resolveHarnessScope(args.harness, ctxAny);
     if (scope.kind === 'none') {
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }) }],
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }),
+          },
+        ],
         isError: true,
       };
     }
@@ -377,7 +389,9 @@ export default defineTool({
           {
             ...(ctxAny.signal && { signal: ctxAny.signal }),
             ...(ctxAny.progress && { progress: ctxAny.progress }),
-            metadata: (d) => { innerMeta = d; },
+            metadata: (d) => {
+              innerMeta = d;
+            },
           },
         );
         lexicalResponse = response;
@@ -458,29 +472,27 @@ export default defineTool({
     });
 
     let semanticHitCount = 0;
-    const fusedHits: Array<SearchHit & { semantic?: true; similarity?: number; anchor?: string }> = results.map(
-      (r) => {
-        const entry = hydration.get(r.source_id);
-        const base: SearchHit = entry?.hit ?? {
-          slug: r.source_id,
-          url: `/docs/${r.source_id}`,
-          title: r.source_id,
-          score: r.score,
-          excerpt: r.excerpt,
-        };
-        const raw = r.rankerScores?.embeddings;
-        const similarity = raw === undefined ? undefined : Math.round(raw * 1000) / 1000;
-        // Only mark semantic:true (the "this wasn't a lexical match" signal
-        // downstream callers key on) when the page has NO lexical hit of its
-        // own — a page found by both legs keeps its real lexical excerpt and
-        // just also carries the similarity that helped rank it.
-        if (isVectorOnly(r)) {
-          semanticHitCount += 1;
-          return { ...base, semantic: true as const, similarity, ...(entry?.anchor ? { anchor: entry.anchor } : {}) };
-        }
-        return similarity !== undefined ? { ...base, similarity } : base;
-      },
-    );
+    const fusedHits: Array<SearchHit & { semantic?: true; similarity?: number; anchor?: string }> = results.map((r) => {
+      const entry = hydration.get(r.source_id);
+      const base: SearchHit = entry?.hit ?? {
+        slug: r.source_id,
+        url: `/docs/${r.source_id}`,
+        title: r.source_id,
+        score: r.score,
+        excerpt: r.excerpt,
+      };
+      const raw = r.rankerScores?.embeddings;
+      const similarity = raw === undefined ? undefined : Math.round(raw * 1000) / 1000;
+      // Only mark semantic:true (the "this wasn't a lexical match" signal
+      // downstream callers key on) when the page has NO lexical hit of its
+      // own — a page found by both legs keeps its real lexical excerpt and
+      // just also carries the similarity that helped rank it.
+      if (isVectorOnly(r)) {
+        semanticHitCount += 1;
+        return { ...base, semantic: true as const, similarity, ...(entry?.anchor ? { anchor: entry.anchor } : {}) };
+      }
+      return similarity !== undefined ? { ...base, similarity } : base;
+    });
     const finalHits = rankRetirementAuthorityHits(args.query, fusedHits);
 
     // P-004 (knowledge-at-symptom-time-2026-08-09): ADVISING a retry is not the same as RUNNING one.
@@ -540,7 +552,8 @@ export default defineTool({
                 ? `This retirement/currentness query returned historical plan material on '${resolved.surface}', so the canonical current authority was resolved by exact slug from the 'engineering' surface.`
                 : `Retirement/currentness questions resolve the canonical current authority by exact slug from the 'engineering' surface rather than treating lexical or semantic density as authority.`
               : `The semantic leg RAN against '${resolved.surface}' and matched nothing above the similarity floor, so the hits above are lexical-only and may be off-topic. These are keyword hits from the 'engineering' surface (agent-insights/ + the Papercusp framework reference), which this surface does not contain.`,
-            rerunFor: "docs:search { harness: 'engineering', query: <same query> } — for the full hybrid ranking of this corpus.",
+            rerunFor:
+              "docs:search { harness: 'engineering', query: <same query> } — for the full hybrid ranking of this corpus.",
             hits: rankedProbeHits.map((h) => ({
               slug: h.slug,
               url: h.url,
@@ -630,7 +643,9 @@ export default defineTool({
       ...(reportedSemanticHitCount > 0 ? { semanticHitCount: reportedSemanticHitCount } : {}),
       ...(legs.degraded ? { legsDegraded: true, legsWarning: legs.warning } : {}),
       // P-004: measurable adoption — how often the probe fires, and whether it found anything.
-      ...(crossSurface ? { crossSurfaceProbed: 'engineering', crossSurfaceHits: (crossSurface.hits as unknown[]).length } : {}),
+      ...(crossSurface
+        ? { crossSurfaceProbed: 'engineering', crossSurfaceHits: (crossSurface.hits as unknown[]).length }
+        : {}),
     });
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
