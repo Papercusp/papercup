@@ -157,6 +157,11 @@ pub struct FleetState {
     /// Refreshed on Fleet entry + periodically. A selection narrows to one bee's
     /// dossier (`app.bee`).
     pub all_assignments: Vec<crate::models::BeeAssignment>,
+    /// The deterministic cockpit target: the active roster row whose
+    /// `fleetRole` is `leader`.
+    pub leader_fleet: Option<String>,
+    pub leader_brief: Option<crate::models::FleetLeaderBrief>,
+    pub leader_brief_error: Option<String>,
 }
 
 impl Default for FleetState {
@@ -175,6 +180,9 @@ impl Default for FleetState {
             dossier_sel: 0,
             plan_progress_sel: 0,
             all_assignments: Vec::new(),
+            leader_fleet: None,
+            leader_brief: None,
+            leader_brief_error: None,
         }
     }
 }
@@ -433,6 +441,12 @@ fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
     spans.push(Span::styled(marker, Theme::title_active()));
     spans.push(Span::styled(keys, Theme::info()));
     spans.push(Span::styled(toggle, Theme::info()));
+    if app.fleet.leader_brief.is_some() && !comms {
+        spans.push(Span::styled(
+            " · leader: b bench · w wake · r relaunch · g fire gate · s bump spec",
+            Theme::warn(),
+        ));
+    }
     let line = Line::from(spans);
     f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
 }
@@ -593,8 +607,130 @@ fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
         .split(cols[1]);
-    draw_dossier(f, app, right[0], focus == FleetPanel::Dossier);
-    draw_plan_progress(f, app, agg, right[1], focus == FleetPanel::PlanProgress);
+    if let Some(brief) = app.fleet.leader_brief.as_ref() {
+        draw_leader_cockpit(f, brief, cols[1]);
+    } else {
+        draw_dossier(f, app, right[0], focus == FleetPanel::Dossier);
+        draw_plan_progress(f, app, agg, right[1], focus == FleetPanel::PlanProgress);
+    }
+}
+
+fn draw_leader_cockpit(
+    f: &mut Frame,
+    brief: &crate::models::FleetLeaderBrief,
+    area: Rect,
+) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(46),
+            Constraint::Percentage(27),
+            Constraint::Percentage(27),
+        ])
+        .split(area);
+
+    let mut members = vec![Line::from(vec![
+        Span::styled(format!("{} ", brief.summary.fleet), Theme::title_active()),
+        Span::raw(format!(
+            "{} members · {} speaking · {} stalled · {} dead · ctx {}/{} high/critical",
+            brief.summary.members,
+            brief.summary.speaking,
+            brief.summary.stalled,
+            brief.summary.dead,
+            brief.summary.high_context,
+            brief.summary.critical_context,
+        )),
+    ])];
+    members.extend(brief.members.iter().map(|member| {
+        let state = member
+            .session_state
+            .as_deref()
+            .or(member.verdict.as_deref())
+            .unwrap_or("unknown");
+        let context = member.context_pressure.as_deref().unwrap_or("?");
+        let spoke = member
+            .last_tool_call_age_ms
+            .map(|age| format!("{}s", age.max(0) / 1000))
+            .unwrap_or_else(|| "never".into());
+        let work = if member.work_item_ids.is_empty() {
+            "—".into()
+        } else {
+            member.work_item_ids.join(",")
+        };
+        Line::from(format!(
+            "{:<12} {:<9} ctx:{:<8} spoke:{:<7} lane:{} q:{} load:{}",
+            trunc(member.label.as_deref().unwrap_or(&member.agent_id), 12),
+            trunc(state, 9),
+            trunc(context, 8),
+            spoke,
+            trunc(&work, 18),
+            member.queued_count,
+            member.load,
+        ))
+    }));
+    f.render_widget(
+        Paragraph::new(members).block(Theme::block(" leader members ".into(), false)),
+        rows[0],
+    );
+
+    let gates = match brief.announced_gates.as_ref() {
+        None => vec![Line::from(Span::styled("(gate read unavailable)", Theme::warn()))],
+        Some(gates) if gates.is_empty() => vec![Line::from(Span::styled("(no announced gates)", Theme::dim()))],
+        Some(gates) => gates
+            .iter()
+            .map(|gate| {
+                Line::from(format!(
+                    "{} {:<3} waiters:{:<2} {}",
+                    if gate.fired { "✓" } else { "○" },
+                    if gate.fired { "open" } else { "held" },
+                    gate.awaiters,
+                    trunc(&gate.event, 42),
+                ))
+            })
+            .collect(),
+    };
+    f.render_widget(
+        Paragraph::new(gates).block(Theme::block(" announced gates · g arms selected ".into(), false)),
+        rows[1],
+    );
+
+    let invariant_count = brief.custom_invariants.as_ref().map(Vec::len);
+    let claimable = brief
+        .summary
+        .claimable_now
+        .get("value")
+        .and_then(serde_json::Value::as_i64);
+    let lower = vec![
+        Line::from(format!(
+            "invariants: {} · admission blocks: {}",
+            invariant_count
+                .map(|count| count.to_string())
+                .unwrap_or_else(|| "unavailable".into()),
+            brief.admission_blocked.len(),
+        )),
+        Line::from(format!(
+            "queue: claimable {} · spec matched {} / pool {} · revision {}",
+            claimable
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".into()),
+            brief
+                .spec_matched
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".into()),
+            brief
+                .harness_wide_pool
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".into()),
+            brief
+                .spec_revision
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "?".into()),
+        )),
+    ];
+    f.render_widget(
+        Paragraph::new(lower).block(Theme::block(" declared invariants + admission ".into(), false)),
+        rows[2],
+    );
 }
 
 /// The dossier region (#2): when an agent is selected in the roster, that bee's
