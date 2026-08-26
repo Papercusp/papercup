@@ -763,8 +763,8 @@ describe('D-039 — every nullable BUILTIN cell reaches a reader with its hoist'
 
   it('the sweep is NON-VACUOUS — there are nullable built-in cells to check', () => {
     // Without this, deleting every nullable declaration would make the sweep below
-    // pass by iterating nothing. Six today: git.pipelinePosition, the four verdict
-    // cells, and agent.goal.
+    // pass by iterating nothing. Seven today: git.pipelinePosition, the four verdict
+    // cells, gate.greenCheckpoint.qualification, and agent.goal.
     expect(nullableBuiltins.length).toBeGreaterThanOrEqual(6);
     for (const s of nullableBuiltins) expect(s.unknownHoist?.trim()).toBeTruthy();
   });

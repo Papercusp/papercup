@@ -154,6 +154,11 @@ describe('P-007: the four verdict cells', () => {
   it('registers the routine-owned qualification cell with the durable typed projection', () => {
     expect(validateCellSpec(GATE_QUALIFICATION_CELL)).toEqual([]);
     expect(GATE_QUALIFICATION_CELL.headline).toBe('gate.qualification.attemptId');
+    expect(GATE_QUALIFICATION_CELL.changeSignal).toEqual({
+      kind: 'poll',
+      tool: 'dev:pipeline_position',
+      path: 'gate.qualification.attemptId',
+    });
     expect(GATE_QUALIFICATION_CELL.assessment?.path).toBe('gate.qualification.safeNextAction.code');
     expect(Object.keys(GATE_QUALIFICATION_CELL.assessment?.codes ?? {})).toEqual([
       'launch-physical-run',

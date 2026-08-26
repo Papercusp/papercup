@@ -617,7 +617,11 @@ export const GATE_QUALIFICATION_CELL: CellSpec = {
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
   visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
-  changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.qualification' },
+  changeSignal: {
+    kind: 'poll',
+    tool: 'dev:pipeline_position',
+    path: 'gate.qualification.attemptId',
+  },
   shape:
     '{ gate: { qualification: { status, attemptId, candidate, phase, outcome, owner, lease, blockers, phaseDurationsMs, consumedPhysicalRuns, safeNextAction, unknown } } }',
 };

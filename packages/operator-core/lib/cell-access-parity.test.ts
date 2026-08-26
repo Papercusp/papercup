@@ -637,7 +637,7 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
       'the built-in visibility census changed. If a cell has adopted a NARROWER visibility that is good news — ' +
         "leg E now exercises an arm of canReadCell's switch it never did before. Update this expectation, and " +
         'check that leg E still asserts something for the newly-narrow cell.',
-    ).toEqual({ workspace: 4, harness: 6 });
+    ).toEqual({ workspace: 4, harness: 7 });
     // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
     // cell registered under a kind NOT named there would be invisible to it; summing the census
     // back to the registry size is what makes "these are all of them" an assertion rather than
