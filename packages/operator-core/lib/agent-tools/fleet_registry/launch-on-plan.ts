@@ -140,9 +140,9 @@ import { resolveGoalLaunch, readGoalLaunchSettingsForLauncher } from '../../goal
 import {
   applyGoalLaunchOverlay,
   goalFleetLaunchOverlay,
+  goalFleetWideFoldSlot,
   goalPairedTypeNote,
 } from './goal-fleet-launch-options';
-import { goalFleetMemberSlot } from '../../goal-launch-settings-shared';
 // type-only: the runtime call is a LAZY dynamic import in the handler (the promotion failsafe),
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
@@ -3599,7 +3599,7 @@ export default defineTool({
       // refuses one layer down, smuggled back in one layer up. The per-role
       // profiles reach their seats through `members[]` instead, where the
       // member > fleet precedence keeps them apart.
-      goalRole: launchFleetType === 'paired' ? null : goalFleetMemberSlot(goalOverlay.family),
+      goalRole: goalFleetWideFoldSlot(goalOverlay.family, launchFleetType),
       fleetSlug,
       count: openCount,
       requested: {

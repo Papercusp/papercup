@@ -26,8 +26,10 @@ import { foldLaunchProfile, type GoalLaunchSettings } from '../../goal-launch-se
 import {
   goalFleetFamily,
   goalFleetLaunchSlots,
+  goalFleetMemberSlot,
   type GoalFleetFamily,
   type GoalFleetSlots,
+  type GoalLaunchRole,
 } from '../../goal-launch-settings-shared';
 import {
   PER_ROLE_KNOBS,
@@ -273,6 +275,36 @@ export function applyGoalLaunchOverlay(
     type: overlay.type,
     ...(emit ? { directors, implementers } : {}),
   };
+}
+
+/**
+ * The slot the FLEET-WIDE goal fold binds — the D-005 rule, as a pure function.
+ *
+ * That fold feeds `fleetDefaults`, which EVERY member of the fleet inherits.
+ *
+ *   single → this family's member slot. Correct: one homogeneous fleet, one
+ *            profile, exactly as it worked before paired fleets existed.
+ *   paired → NULL, deliberately. Folding either the director or the implementer
+ *            profile into a fleet-wide default would broadcast one role's
+ *            model/account/carry to BOTH roles — the precise coercion
+ *            `pair-launch-options` refuses one layer down, smuggled back in one
+ *            layer up where that module cannot see it. The per-role profiles
+ *            reach their seats through `members[]` instead, where the
+ *            member > fleet precedence keeps them apart.
+ *
+ * Extracted rather than left inline at the call site so the rule is provable
+ * without opening a terminal — the same discipline the rest of this module and
+ * `pair-launch-options` hold themselves to.
+ *
+ * ⚠ Pass the AUTHORITATIVE fleet type (the one re-read off the registry row
+ * after `createFleetIfAbsent`), not the provisional one: a top-up joins an
+ * existing fleet whose stored type wins over whatever this call asked for.
+ */
+export function goalFleetWideFoldSlot(
+  family: GoalFleetFamily,
+  authoritativeFleetType: FleetType,
+): GoalLaunchRole | null {
+  return authoritativeFleetType === 'paired' ? null : goalFleetMemberSlot(family);
 }
 
 /**
