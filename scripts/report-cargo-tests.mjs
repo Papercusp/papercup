@@ -40,6 +40,7 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import {
   assessCargoDiskAdmission,
+  cargoRunExitCode,
   CARGO_DISK_REFUSAL_EXIT_CODE,
   ensureCargoCacheTag,
   cargoDiskPolicyFromEnv,
@@ -305,7 +306,8 @@ async function main() {
 
   // The wrapper's exit code reflects cargo test's REAL outcome — never the
   // recorder's own DB fault (D-007: ledger health must never gate the test run).
-  process.exit(code ?? 0);
+  // A zero-result run is an invalid measurement even when Cargo returned 0.
+  process.exit(cargoRunExitCode({ code, resultCount: results.length }));
 }
 
 main();

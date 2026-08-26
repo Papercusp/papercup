@@ -531,6 +531,20 @@ export function classifyCargoRun({ code, output, resultCount }) {
 }
 
 /**
+ * Return the reporter's process exit code without allowing an unmeasured Cargo
+ * run to pass. Cargo versions/configurations can report an invalid target (for
+ * example `--lib` on a bin-only crate) with exit code 0, so a zero parsed-test
+ * count must remain a failure even when Cargo itself says it succeeded.
+ *
+ * @param {{ code: number | null, resultCount: number }} input
+ * @returns {number}
+ */
+export function cargoRunExitCode({ code, resultCount }) {
+  if (code === 0 && resultCount === 0) return 1;
+  return code ?? 1;
+}
+
+/**
  * A keyed, grep-safe line for the run log. The signal fields are deliberately
  * on the same line as the status so a fixed-size tail cannot leave a reader
  * with only "could not compile" and no cause.

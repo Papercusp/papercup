@@ -21,6 +21,7 @@ import { spawnSync } from 'node:child_process';
 
 import {
   assessCargoDiskAdmission,
+  cargoRunExitCode,
   CARGO_CACHE_TAG,
   CARGO_DISK_REFUSAL_EXIT_CODE,
   CARGO_PERCENT_FLOOR_BYPASS_BYTES,
@@ -91,6 +92,19 @@ describe('cargo result classification (EI-20041922041407287)', () => {
         resultCount: 351,
       }),
     ).toEqual({ status: 'passed', termination: null });
+  });
+});
+
+describe('cargo reporter empty-suite exit guard (EI-21554799836880302)', () => {
+  it('fails a zero-result run even when Cargo exits successfully', () => {
+    expect(cargoRunExitCode({ code: 0, resultCount: 0 })).toBe(1);
+    expect(REPORTER_SOURCE).toContain('process.exit(cargoRunExitCode({ code, resultCount: results.length }));');
+  });
+
+  it('preserves Cargo failures and successful measured runs', () => {
+    expect(cargoRunExitCode({ code: 101, resultCount: 0 })).toBe(101);
+    expect(cargoRunExitCode({ code: 0, resultCount: 695 })).toBe(0);
+    expect(cargoRunExitCode({ code: null, resultCount: 0 })).toBe(1);
   });
 });
 
