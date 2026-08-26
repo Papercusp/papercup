@@ -17,7 +17,11 @@ import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { composeMemberLaunchContext, memberLaunchCommand } from '../../agent-launch-core';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
-import type { GoalLaunchRole } from '../../goal-launch-settings-shared';
+import {
+  goalFleetFamily,
+  goalFleetMemberSlot,
+  type GoalLaunchRole,
+} from '../../goal-launch-settings-shared';
 import { resolveGoalContext } from '../../modes/goal-context';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
@@ -56,7 +60,13 @@ export function resolveFleetHeadcountLaunchRole(args: {
   drainFleetSlug: string | null;
 }): GoalLaunchRole | null {
   if (!args.goalId) return null;
-  return args.drainFleetSlug === args.fleetSlug ? 'drain-fleet-member' : 'plan-fleet-member';
+  // The family rule moved to goal-launch-settings-shared when the fleet-LAUNCH
+  // boundary needed it too (P-006). Delegated rather than copied: a governor that
+  // disagreed with the launch door about which fleet is the drain fleet would
+  // refill a fleet under a different profile than the one it was opened with —
+  // silently heterogeneous members, which is the bug EI-20219409083169975 fixed
+  // here in the first place.
+  return goalFleetMemberSlot(goalFleetFamily(args));
 }
 
 /** Resolve the governor's slot from the launcher's goal and its declaration. */
