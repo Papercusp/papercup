@@ -63,6 +63,11 @@ export const RECORDED_INCONCLUSIVE_STATUSES = [
   // in the set a reader can be advised about — it was previously counted as a RED instead, which
   // is the defect that item exists to fix (see `classifyGateStallStatus`'s 'no-verdict' class).
   'error',
+  // P-007 (green-main-fast-2026-08-25): the immutable dependency generation for the candidate's
+  // exact input fingerprint was never published, so the selector refused (exit 74) before any
+  // test ran. A named, MEASURED prerequisite — distinct from 'error', which is the unknown-cause
+  // bucket. Recorded so a reader can be advised about it instead of reading an anonymous crash.
+  'dependency-prewarm-missing',
 ] as const;
 
 export type RecordedInconclusiveStatus = (typeof RECORDED_INCONCLUSIVE_STATUSES)[number];
@@ -116,6 +121,21 @@ const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 
    * named" plus find the cause first, "or the next run dies the same way").
    */
   error: 'transient',
+  /**
+   * P-007 — 'standing-condition', and this is the whole point of giving it its own status.
+   *
+   * A missing prewarmed dependency generation is a NAMED blocker that genuinely persists: the
+   * selector refuses the same fingerprint on every run until the producer publishes it
+   * (WI-41491). That is the `migrations-pending` / `repair-staging-mismatch` shape exactly —
+   * clear it, or a re-fire hits it again — and the OPPOSITE of the transient class.
+   *
+   * ⚠ Do NOT collapse this back into 'error'/'transient'. Measured 2026-08-26 on papercusp:
+   * this outage arrived as an untyped crash, was therefore advised as transient ("a re-fire may
+   * well finish"), and the re-fire that advice invited would have died on the identical
+   * fingerprint — spending a scarce owner authorization to learn nothing. The transient lever's
+   * words are actively wrong here; the standing-condition lever's ("clear it first") are right.
+   */
+  'dependency-prewarm-missing': 'standing-condition',
 };
 
 export function classifyGateAbort(status: string): GateAbortKind {
