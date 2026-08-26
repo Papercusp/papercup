@@ -34,7 +34,11 @@ const body = async (args: unknown) => (((await tool.handler(args as never, {} as
 const conversationRow = (id: string, over: Partial<ConversationRow> = {}): ConversationRow => ({
   id,
   kind: 'question',
-  scope: 'global',
+  // 'operator', not the 'global' this fixture carried before it was typed:
+  // ConversationScope is 'operator' | 'harness', and 'global' was never a
+  // member. The old `as never` cast hid that outright — which is precisely the
+  // silent fixture rot the typed factory exists to surface.
+  scope: 'operator',
   harness_slug: null,
   asker_id: 'a1',
   title: 'How?',
