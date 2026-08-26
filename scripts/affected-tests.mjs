@@ -593,7 +593,14 @@ const resolvedBase = explicitBase
 // Say so out loud: a run whose radius came from somewhere other than the documented
 // default must never be a silent difference when someone reads the log later.
 if (resolvedBase.source === "watermark") {
-  process.stderr.write(`${baseSourceLine(resolvedBase)}\n`);
+  // Must be errSync, not process.stderr.write: every runner-emitted line goes through the
+  // synchronous fd helpers so it stays ORDERED against inherit-mode child output (EI-10542,
+  // pinned by affected-tests-stdout-ordering.test.ts). An async write can interleave into the
+  // middle of a child's block and be misattributed to it. errSync also routes through logLine,
+  // so this derivation line lands in the run's own log — process.stderr.write skipped it, which
+  // meant the one line explaining where a run's radius came from was missing from the artifact
+  // a later reader actually opens.
+  errSync(baseSourceLine(resolvedBase));
 }
 const base = resolvedBase.base;
 const runIntegration = has("--integration");
