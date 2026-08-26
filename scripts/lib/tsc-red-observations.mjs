@@ -9,7 +9,10 @@
  *     ⚠ N NEW file(s) (absent from the baseline) also have type errors …
  *     <path>: 0 → N  ← COMMITTED: a standing red that WILL red the fleet
  *
- * That line is CORRECT every time and is thrown away every time. Measured 2026-08-02:
+ * On a causally settled tree that line is correct and was thrown away every time. When other
+ * paths are still uncommitted, the hot-path reporter now withholds the stronger "COMMITTED"
+ * attribution because TypeScript names the diagnostic site rather than the edit that caused it;
+ * persistence across later samples is what establishes a real standing red. Measured 2026-08-02:
  * 20 heavy jobs queued on this box in one 10-minute window, 9 of them identical
  * `lint-tsc --files` compiles — so the finding is computed ~9x/hour and recorded ZERO
  * times. Meanwhile a scoped run deliberately does NOT fail you for a new file you did

@@ -847,6 +847,23 @@ function formatRow(r) {
 }
 
 /**
+ * Describe a clean diagnostic site without inventing its causal provenance.
+ *
+ * A clean file is genuinely committed, but its NEW diagnostic may still be caused by another
+ * uncommitted file in its import/type graph. `tsc` reports the error site, not the edit that made
+ * the site invalid, so asserting "standing red" while any other path is dirty can send a caller
+ * straight into a live peer's lane. Preserve the strong warning only when the working tree gives
+ * us no uncommitted alternative cause.
+ */
+export function formatStandingRedRow(r, { dirtyPathCount = 0 } = {}) {
+  const status =
+    dirtyPathCount > 0
+      ? `CLEAN ERROR SITE; causal origin unresolved while ${dirtyPathCount} other path(s) are uncommitted`
+      : 'COMMITTED: a standing red that WILL red the fleet';
+  return `${formatRow(r)}  ← ${status}`;
+}
+
+/**
  * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.
  *
  * This is a pure function purely so the wording is TESTABLE, because the wording is where
@@ -2906,7 +2923,13 @@ export async function runTscBaselineGate({
             `none of them in the set you named:`,
         );
         for (const r of liveEdits) console.log(`${formatRow(r)}  ← uncommitted, a peer is likely mid-edit`);
-        for (const r of standing) console.log(`${formatRow(r)}  ← COMMITTED: a standing red that WILL red the fleet`);
+        for (const r of standing) {
+          console.log(
+            formatStandingRedRow(r, {
+              dirtyPathCount: dirtyFiles?.size ?? 0,
+            }),
+          );
+        }
         // WI-7153 — the footer is an exported pure function so the "do not hand-file" contract is
         // unit-testable; inline console.log in a process.exit branch was untestable, which is why
         // the contradiction with recordStandingReds() below survived unnoticed.
