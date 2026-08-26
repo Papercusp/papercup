@@ -203,8 +203,7 @@ fn critical_path_columns(
         return Vec::new();
     }
 
-    let mut indegree: BTreeMap<String, usize> =
-        active.keys().map(|id| (id.clone(), 0)).collect();
+    let mut indegree: BTreeMap<String, usize> = active.keys().map(|id| (id.clone(), 0)).collect();
     let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for (item_id, item) in &active {
         let blockers: BTreeSet<String> = item
@@ -272,6 +271,13 @@ fn critical_path_columns(
         let mut waiting = HashSet::new();
         let mut stack = dependents.get(&item_id).cloned().unwrap_or_default();
         while let Some(child) = stack.pop() {
+            // A cyclic component eventually walks back to its origin. The
+            // origin is not a downstream lane waiting on itself, and skipping
+            // it here also terminates that back-edge without inflating the
+            // criticality count.
+            if child == item_id {
+                continue;
+            }
             if waiting.insert(child.clone()) {
                 stack.extend(dependents.get(&child).into_iter().flatten().cloned());
             }
@@ -282,16 +288,19 @@ fn critical_path_columns(
             .as_deref()
             .and_then(|owner| pressure_by_owner.get(owner).copied())
             .map(str::to_string);
-        columns.entry(item_depth).or_default().push(CriticalPathNode {
-            item_id,
-            status: item.item_status.clone().unwrap_or_else(|| "unknown".into()),
-            depth: item_depth,
-            waiters: waiting.len(),
-            holder: item.claim_owner.clone(),
-            pressure,
-            unclaimed: item.claim_owner_id.is_none(),
-            cycle: !processed.contains(&item.item_id),
-        });
+        columns
+            .entry(item_depth)
+            .or_default()
+            .push(CriticalPathNode {
+                item_id,
+                status: item.item_status.clone().unwrap_or_else(|| "unknown".into()),
+                depth: item_depth,
+                waiters: waiting.len(),
+                holder: item.claim_owner.clone(),
+                pressure,
+                unclaimed: item.claim_owner_id.is_none(),
+                cycle: !processed.contains(&item.item_id),
+            });
     }
     let mut out: Vec<Vec<CriticalPathNode>> = columns.into_values().collect();
     for column in &mut out {
@@ -318,7 +327,9 @@ fn draw_critical_path(f: &mut Frame, app: &App) {
         .unwrap_or("plan");
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" Critical path · {plan} · dependency depth → · K/Esc close "))
+        .title(format!(
+            " Critical path · {plan} · dependency depth → · K/Esc close "
+        ))
         .style(Theme::panel_active());
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -390,7 +401,11 @@ fn draw_critical_path(f: &mut Frame, app: &App) {
                     ]),
                     Line::from(vec![
                         Span::styled("waiting  ", Theme::dim()),
-                        Span::raw(format!("{} lane{}", node.waiters, if node.waiters == 1 { "" } else { "s" })),
+                        Span::raw(format!(
+                            "{} lane{}",
+                            node.waiters,
+                            if node.waiters == 1 { "" } else { "s" }
+                        )),
                     ]),
                     Line::from(""),
                 ]))
@@ -3932,6 +3947,137 @@ mod tests {
             done: None,
             priority: None,
         }
+    }
+
+    fn critical_item(
+        id: &str,
+        status: &str,
+        blocked_by: &[&str],
+        owner: Option<(&str, &str)>,
+    ) -> crate::models::PlanItemState {
+        crate::models::PlanItemState {
+            item_id: id.into(),
+            item_status: Some(status.into()),
+            blocked_by: blocked_by.iter().map(|id| (*id).into()).collect(),
+            in_plan: true,
+            claim_owner: owner.map(|(_, label)| label.into()),
+            claim_owner_id: owner.map(|(id, _)| id.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn critical_path_uses_longest_depth_and_live_claim_context() {
+        let states = crate::models::PlanItemStates {
+            harness: "papercup".into(),
+            plan: "critical-demo".into(),
+            items: vec![
+                critical_item("P-001", "done", &[], None),
+                // The completed blocker vanishes, making P-002 a remaining root.
+                critical_item("P-002", "todo", &["P-001"], Some(("su-root", "root"))),
+                critical_item("P-003", "wip", &["P-002"], None),
+                critical_item("P-004", "todo", &["P-002"], Some(("su-side", "side"))),
+                // Two parents pin this node to the longest remaining path.
+                critical_item(
+                    "P-005",
+                    "todo",
+                    &["P-003", "P-004"],
+                    Some(("su-leaf", "leaf")),
+                ),
+                // A dangling ref is not part of this plan's remaining graph.
+                critical_item("P-006", "todo", &["P-999"], None),
+            ],
+            ..Default::default()
+        };
+        let assignments = vec![
+            crate::models::BeeAssignment {
+                agent_id: "su-root".into(),
+                context_pressure: Some("critical".into()),
+                ..Default::default()
+            },
+            crate::models::BeeAssignment {
+                agent_id: "su-leaf".into(),
+                context_pressure: Some("high".into()),
+                ..Default::default()
+            },
+        ];
+
+        let columns = critical_path_columns(&states, &assignments);
+        assert_eq!(columns.len(), 3);
+        assert_eq!(
+            columns[0]
+                .iter()
+                .map(|n| n.item_id.as_str())
+                .collect::<Vec<_>>(),
+            ["P-002", "P-006"]
+        );
+        assert_eq!(
+            columns[1]
+                .iter()
+                .map(|n| n.item_id.as_str())
+                .collect::<Vec<_>>(),
+            ["P-003", "P-004"]
+        );
+        assert_eq!(columns[2][0].item_id, "P-005");
+        assert_eq!(columns[2][0].depth, 2);
+        assert_eq!(columns[0][0].waiters, 3);
+        assert_eq!(columns[0][0].pressure.as_deref(), Some("critical"));
+        assert_eq!(columns[2][0].pressure.as_deref(), Some("high"));
+        assert!(columns[0][1].unclaimed);
+        assert!(
+            columns[1][0].unclaimed,
+            "unclaimed peers sort loudly before claimed peers"
+        );
+        assert!(columns.iter().flatten().all(|n| n.item_id != "P-001"));
+    }
+
+    #[test]
+    fn critical_path_keeps_cycles_visible_without_self_waiters() {
+        let states = crate::models::PlanItemStates {
+            items: vec![
+                critical_item("P-001", "todo", &["P-002"], None),
+                critical_item("P-002", "todo", &["P-001"], None),
+                critical_item("P-003", "todo", &[], None),
+            ],
+            ..Default::default()
+        };
+
+        let columns = critical_path_columns(&states, &[]);
+        assert_eq!(columns.len(), 2);
+        assert_eq!(columns[0][0].item_id, "P-003");
+        assert!(columns[1].iter().all(|node| node.cycle));
+        assert!(columns[1].iter().all(|node| node.depth == 1));
+        assert!(columns[1].iter().all(|node| node.waiters == 1));
+    }
+
+    #[test]
+    fn critical_path_overlay_renders_depth_pressure_and_unclaimed_warning() {
+        let mut app = App::new();
+        app.critical_path_open = true;
+        app.critical_path_target = Some(("papercup".into(), "critical-demo".into()));
+        app.critical_path_states = Some(crate::models::PlanItemStates {
+            harness: "papercup".into(),
+            plan: "critical-demo".into(),
+            items: vec![
+                critical_item("P-001", "wip", &[], Some(("su-root", "root"))),
+                critical_item("P-002", "todo", &["P-001"], None),
+            ],
+            ..Default::default()
+        });
+        app.fleet.all_assignments = vec![crate::models::BeeAssignment {
+            agent_id: "su-root".into(),
+            context_pressure: Some("critical".into()),
+            ..Default::default()
+        }];
+
+        let text = render(&app, 160, 40);
+        assert!(text.contains("dependency depth"));
+        assert!(text.contains("depth 0"));
+        assert!(text.contains("depth 1"));
+        assert!(text.contains("P-001 [wip]"));
+        assert!(text.contains("critical"));
+        assert!(text.contains("UNCLAIMED"));
+        assert!(text.contains("1 lane"));
     }
 
     #[test]
