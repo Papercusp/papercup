@@ -181,16 +181,25 @@ export interface ReplaySafeWorkspaceHostInitializationExecutorDeps {
 }
 
 function canonicalInitializationJson(value: unknown, path: string): string {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean"
+  ) {
     return JSON.stringify(value);
   }
   if (typeof value === "number") {
-    requireCondition(Number.isFinite(value), `${path} must contain finite numbers`);
+    requireCondition(
+      Number.isFinite(value),
+      `${path} must contain finite numbers`,
+    );
     return JSON.stringify(value);
   }
   if (Array.isArray(value)) {
     return `[${value
-      .map((entry, index) => canonicalInitializationJson(entry, `${path}[${index}]`))
+      .map((entry, index) =>
+        canonicalInitializationJson(entry, `${path}[${index}]`),
+      )
       .join(",")}]`;
   }
   requireCondition(
@@ -220,7 +229,10 @@ export function workspaceHostInitializationStepFingerprint(
 ): string {
   assertWorkspaceHostSecretIsolation(step, "workspaceHost.initialization.step");
   return createHash("sha256")
-    .update(canonicalInitializationJson(step, "workspaceHost.initialization.step"), "utf8")
+    .update(
+      canonicalInitializationJson(step, "workspaceHost.initialization.step"),
+      "utf8",
+    )
     .digest("hex");
 }
 
@@ -229,9 +241,7 @@ export function workspaceHostInitializationStepFingerprint(
  * owns replay serialization while the host adapter owns only declared step
  * kinds; every fresh or replayed receipt crosses the same secret-safe boundary.
  */
-export class ReplaySafeWorkspaceHostInitializationExecutor
-  implements WorkspaceHostInitializationExecutor
-{
+export class ReplaySafeWorkspaceHostInitializationExecutor implements WorkspaceHostInitializationExecutor {
   private readonly operations: WorkspaceHostInitializationHostOperations;
   private readonly replayStore: WorkspaceHostInitializationReplayStore;
   private readonly supportedStepKinds: ReadonlySet<WorkspaceHostInitializationStepKind>;
@@ -266,7 +276,10 @@ export class ReplaySafeWorkspaceHostInitializationExecutor
       this.supportedStepKinds.has(step.kind),
       `Workspace-host initialization operation '${step.kind}' is not supported by this adapter`,
     );
-    assertWorkspaceHostSecretIsolation(step, `workspaceHost.initialization.step.${step.id}`);
+    assertWorkspaceHostSecretIsolation(
+      step,
+      `workspaceHost.initialization.step.${step.id}`,
+    );
 
     const receipt = await this.replayStore.runOnce(
       {
@@ -284,7 +297,9 @@ export class ReplaySafeWorkspaceHostInitializationExecutor
           stepId: step.id,
           status: "succeeded",
           observedAt: result.observedAt,
-          ...(result.publicEvidence ? { publicEvidence: result.publicEvidence } : {}),
+          ...(result.publicEvidence
+            ? { publicEvidence: result.publicEvidence }
+            : {}),
         };
       },
     );
@@ -713,30 +728,49 @@ export interface WorkspaceHostBackupCredentialManifest {
   authorizationMaterial: "excluded";
   credentialReferences: "excluded";
   rebindRequired: readonly WorkspaceHostCredentialChannel[];
+  /** Public comparison metadata only; neither reference is retained. */
+  bindingState: readonly WorkspaceHostBackupCredentialBindingState[];
+}
+
+export interface WorkspaceHostBackupCredentialBindingState {
+  channel: WorkspaceHostCredentialChannel;
+  generation: number;
+  revocationRefSha256: string;
 }
 
 /**
- * Backups remember only which runtime channels must be rebound. Neither
- * resolved authorization nor credential-reference locations enter the backup.
+ * Backups remember which runtime channels must be rebound and only enough
+ * one-way metadata to prove the replacement is newer. Neither resolved
+ * authorization nor credential-reference locations enter the backup.
  */
 export function buildWorkspaceHostBackupCredentialManifest(
   workspaceId: string,
   capturedAt: string,
   refs: WorkspaceHostCredentialRefs,
+  delivery: WorkspaceHostCredentialDeliverySet,
 ): WorkspaceHostBackupCredentialManifest {
   requireId(workspaceId, "workspaceId");
-  requireTimestamp(capturedAt, "capturedAt");
-  const rebindRequired: WorkspaceHostCredentialChannel[] = ["cloud"];
-  if (refs.gitCredentialRef) rebindRequired.push("git");
-  if (refs.agentCredentialRef) rebindRequired.push("agent");
-  return {
+  const current = validateCredentialSet(refs, delivery, capturedAt);
+  const manifest: WorkspaceHostBackupCredentialManifest = {
     contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
     workspaceId,
     capturedAt,
     authorizationMaterial: "excluded",
     credentialReferences: "excluded",
-    rebindRequired,
+    rebindRequired: current.map((binding) => binding.channel),
+    bindingState: current.map((binding) => ({
+      channel: binding.channel,
+      generation: binding.delivery.generation,
+      revocationRefSha256: createHash("sha256")
+        .update(binding.delivery.revocationRef, "utf8")
+        .digest("hex"),
+    })),
   };
+  assertWorkspaceHostSecretIsolation(
+    manifest,
+    "workspaceHost.backupCredentialManifest",
+  );
+  return manifest;
 }
 
 interface WorkspaceHostCredentialLifecycleBase {
@@ -745,6 +779,14 @@ interface WorkspaceHostCredentialLifecycleBase {
   workspaceId: string;
   hostId: string;
   requestedAt: string;
+}
+
+/** Route-ready restore body; controller-owned ids and timestamps are added by the runner. */
+export interface WorkspaceHostBackupRestoreCredentialRebindRequest {
+  action: "restore-rebind";
+  backup: WorkspaceHostBackupCredentialManifest;
+  nextCredentialRefs: WorkspaceHostCredentialRefs;
+  nextDelivery: WorkspaceHostCredentialDeliverySet;
 }
 
 export type WorkspaceHostCredentialLifecycleRequest =
@@ -766,12 +808,8 @@ export type WorkspaceHostCredentialLifecycleRequest =
       currentCredentialRefs: WorkspaceHostCredentialRefs;
       currentDelivery: WorkspaceHostCredentialDeliverySet;
     })
-  | (WorkspaceHostCredentialLifecycleBase & {
-      action: "restore-rebind";
-      backup: WorkspaceHostBackupCredentialManifest;
-      nextCredentialRefs: WorkspaceHostCredentialRefs;
-      nextDelivery: WorkspaceHostCredentialDeliverySet;
-    });
+  | (WorkspaceHostCredentialLifecycleBase &
+      WorkspaceHostBackupRestoreCredentialRebindRequest);
 
 /**
  * The four lifecycle step kinds, as a RUNTIME array.
@@ -854,6 +892,100 @@ function sameChannels(
   return a.length === b.length && a.every((channel) => b.includes(channel));
 }
 
+function validateBackupCredentialManifest(
+  backup: WorkspaceHostBackupCredentialManifest,
+  workspaceId: string,
+): void {
+  requireCondition(
+    backup.contractVersion === WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION &&
+      backup.workspaceId === workspaceId &&
+      backup.authorizationMaterial === "excluded" &&
+      backup.credentialReferences === "excluded",
+    "Restore requires a matching credential-free backup manifest",
+  );
+  requireTimestamp(backup.capturedAt, "backup.capturedAt");
+  requireCondition(
+    Array.isArray(backup.bindingState) && backup.bindingState.length > 0,
+    "Restore backup must include credential replacement metadata",
+  );
+  const channels = backup.bindingState.map((binding) => binding.channel);
+  requireCondition(
+    new Set(channels).size === channels.length &&
+      channels.every((channel) =>
+        (WORKSPACE_HOST_CREDENTIAL_CHANNELS as readonly string[]).includes(
+          channel,
+        ),
+      ) &&
+      sameChannels(backup.rebindRequired, channels),
+    "Restore backup replacement metadata must cover every channel named by the manifest",
+  );
+  for (const binding of backup.bindingState) {
+    requireCondition(
+      Number.isSafeInteger(binding.generation) && binding.generation >= 1,
+      `Restore backup generation for ${binding.channel} must be a positive safe integer`,
+    );
+    requireCondition(
+      /^[a-f0-9]{64}$/.test(binding.revocationRefSha256),
+      `Restore backup revocation fingerprint for ${binding.channel} must be SHA-256`,
+    );
+  }
+}
+
+function requireCredentialReplacements(
+  label: "Rotation" | "Restore",
+  previous: readonly WorkspaceHostBackupCredentialBindingState[],
+  next: readonly CredentialBinding[],
+): void {
+  requireCondition(
+    sameChannels(
+      previous.map((entry) => entry.channel),
+      next.map((entry) => entry.channel),
+    ),
+    `${label} must ${label === "Restore" ? "rebind" : "replace"} every currently bound credential channel`,
+  );
+  for (const replacement of next) {
+    const prior = previous.find(
+      (entry) => entry.channel === replacement.channel,
+    )!;
+    requireCondition(
+      replacement.delivery.generation > prior.generation,
+      `${label} generation for ${replacement.channel} must increase`,
+    );
+    requireCondition(
+      createHash("sha256")
+        .update(replacement.delivery.revocationRef, "utf8")
+        .digest("hex") !== prior.revocationRefSha256,
+      `${label} revocation reference for ${replacement.channel} must change`,
+    );
+  }
+}
+
+/**
+ * Build the exact restore-rebind body accepted by the operator route. The
+ * backup's one-way binding metadata is the authority for the replacement
+ * checks, so callers cannot bypass them by constructing the body themselves.
+ */
+export function buildWorkspaceHostBackupRestoreCredentialRebindRequest(
+  backup: WorkspaceHostBackupCredentialManifest,
+  nextCredentialRefs: WorkspaceHostCredentialRefs,
+  nextDelivery: WorkspaceHostCredentialDeliverySet,
+  requestedAt: string,
+): WorkspaceHostBackupRestoreCredentialRebindRequest {
+  validateBackupCredentialManifest(backup, backup.workspaceId);
+  const next = validateCredentialSet(
+    nextCredentialRefs,
+    nextDelivery,
+    requestedAt,
+  );
+  requireCredentialReplacements("Restore", backup.bindingState, next);
+  return {
+    action: "restore-rebind",
+    backup,
+    nextCredentialRefs,
+    nextDelivery,
+  };
+}
+
 /**
  * Plan rotation/revocation/reconnect/restore rebinding without ever persisting
  * resolved authorization. Rotation verifies the replacement before revoking
@@ -877,25 +1009,21 @@ export function planWorkspaceHostCredentialLifecycle(
       request.nextDelivery,
       request.requestedAt,
     );
-    requireCondition(
-      sameChannels(
-        current.map((entry) => entry.channel),
-        next.map((entry) => entry.channel),
-      ),
-      "Rotation must replace every currently bound credential channel",
+    requireCredentialReplacements(
+      "Rotation",
+      current.map((binding) => ({
+        channel: binding.channel,
+        generation: binding.delivery.generation,
+        revocationRefSha256: createHash("sha256")
+          .update(binding.delivery.revocationRef, "utf8")
+          .digest("hex"),
+      })),
+      next,
     );
     for (const replacement of next) {
       const previous = current.find(
         (entry) => entry.channel === replacement.channel,
       )!;
-      requireCondition(
-        replacement.delivery.generation > previous.delivery.generation,
-        `Rotation generation for ${replacement.channel} must increase`,
-      );
-      requireCondition(
-        replacement.delivery.revocationRef !== previous.delivery.revocationRef,
-        `Rotation revocation reference for ${replacement.channel} must change`,
-      );
       const bindId = `bind-next-${replacement.channel}`;
       const verifyId = `verify-next-${replacement.channel}`;
       const revokeId = `revoke-previous-${replacement.channel}`;
@@ -947,20 +1075,11 @@ export function planWorkspaceHostCredentialLifecycle(
         : request.currentDelivery;
     const current = validateCredentialSet(refs, delivery, request.requestedAt);
     if (request.action === "restore-rebind") {
-      requireCondition(
-        request.backup.contractVersion ===
-          WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION &&
-          request.backup.workspaceId === request.workspaceId &&
-          request.backup.authorizationMaterial === "excluded" &&
-          request.backup.credentialReferences === "excluded",
-        "Restore requires a matching credential-free backup manifest",
-      );
-      requireCondition(
-        sameChannels(
-          request.backup.rebindRequired,
-          current.map((entry) => entry.channel),
-        ),
-        "Restore must rebind every channel named by the backup manifest",
+      validateBackupCredentialManifest(request.backup, request.workspaceId);
+      requireCredentialReplacements(
+        "Restore",
+        request.backup.bindingState,
+        current,
       );
     }
     for (const binding of current) {

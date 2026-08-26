@@ -117,6 +117,8 @@ export type {
   WorkspaceHostInitializationReplayStore,
   ReplaySafeWorkspaceHostInitializationExecutorDeps,
   WorkspaceHostBackupCredentialManifest,
+  WorkspaceHostBackupCredentialBindingState,
+  WorkspaceHostBackupRestoreCredentialRebindRequest,
   WorkspaceHostCredentialLifecycleRequest,
   WorkspaceHostCredentialLifecycleStepKind,
   WorkspaceHostCredentialLifecycleStep,
@@ -135,6 +137,7 @@ export {
   planWorkspaceHostInitialization,
   executeWorkspaceHostInitialization,
   buildWorkspaceHostBackupCredentialManifest,
+  buildWorkspaceHostBackupRestoreCredentialRebindRequest,
   planWorkspaceHostCredentialLifecycle,
   validateWorkspaceHostInitializationCanary,
 } from "./workspace-host-initialization";

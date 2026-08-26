@@ -18,6 +18,8 @@ import {
   type WorkspaceHostCredentialMaterializer,
 } from './workspace-host-credential-namespace';
 import {
+  buildWorkspaceHostBackupCredentialManifest,
+  buildWorkspaceHostBackupRestoreCredentialRebindRequest,
   planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -509,7 +511,21 @@ describe('workspace-host credential resolver', () => {
   it('rebinds all three channels from a backup manifest that carries no references', async () => {
     const materializers = allFamilyMaterializers();
     const resolver = new WorkspaceHostCredentialResolver(materializers);
+    const current = refsAndDelivery(1);
     const next = refsAndDelivery(2);
+
+    const backup = buildWorkspaceHostBackupCredentialManifest(
+      'papercusp-workspace',
+      REQUESTED_AT,
+      current.refs,
+      current.delivery,
+    );
+    const restoreBody = buildWorkspaceHostBackupRestoreCredentialRebindRequest(
+      backup,
+      next.refs,
+      next.delivery,
+      REQUESTED_AT,
+    );
 
     const plan = planWorkspaceHostCredentialLifecycle({
       contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -517,22 +533,31 @@ describe('workspace-host credential resolver', () => {
       workspaceId: 'papercusp-workspace',
       hostId: 'byoc-canary-01',
       requestedAt: REQUESTED_AT,
-      action: 'restore-rebind',
-      backup: {
-        contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
-        workspaceId: 'papercusp-workspace',
-        capturedAt: REQUESTED_AT,
-        authorizationMaterial: 'excluded',
-        credentialReferences: 'excluded',
-        rebindRequired: ['cloud', 'git', 'agent'],
-      },
-      nextCredentialRefs: next.refs,
-      nextDelivery: next.delivery,
+      ...restoreBody,
     });
 
     const receipts = await executeWorkspaceHostCredentialLifecycle(plan, resolver);
-    expect(new Set(receipts.map((r) => r.evidence.channel)).size).toBe(3);
+    expect([...new Set(receipts.map((r) => r.evidence.channel))].sort()).toEqual([
+      'agent',
+      'cloud',
+      'git',
+    ]);
     expect(receipts.every((r) => r.evidence.generation === 2)).toBe(true);
+    const serializedBackup = JSON.stringify(backup);
+    for (const credentialRef of [
+      current.refs.cloudCredentialRef.ref,
+      current.refs.gitCredentialRef!.ref,
+      current.refs.agentCredentialRef!.ref,
+    ]) {
+      expect(serializedBackup).not.toContain(credentialRef);
+    }
+    for (const revocationRef of [
+      current.delivery.cloud.revocationRef,
+      current.delivery.git!.revocationRef,
+      current.delivery.agent!.revocationRef,
+    ]) {
+      expect(serializedBackup).not.toContain(revocationRef);
+    }
   });
 
   it('refuses to run a lifecycle step whose dependency has not completed', async () => {

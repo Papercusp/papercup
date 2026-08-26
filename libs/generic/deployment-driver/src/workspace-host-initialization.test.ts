@@ -4,6 +4,7 @@ import {
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   ReplaySafeWorkspaceHostInitializationExecutor,
   buildWorkspaceHostBackupCredentialManifest,
+  buildWorkspaceHostBackupRestoreCredentialRebindRequest,
   executeWorkspaceHostInitialization,
   planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
@@ -272,7 +273,9 @@ describe("ReplaySafeWorkspaceHostInitializationExecutor", () => {
         const prior = records.get(identity.idempotencyKey);
         if (prior) {
           if (prior.fingerprint !== identity.stepFingerprint) {
-            throw new Error("idempotency key reused for different initialization input");
+            throw new Error(
+              "idempotency key reused for different initialization input",
+            );
           }
           return prior.receipt;
         }
@@ -455,13 +458,34 @@ describe("workspace-host credential lifecycle", () => {
       "workspace-1",
       REQUESTED_AT,
       refs(),
+      delivery(),
     );
     expect(manifest).toMatchObject({
       authorizationMaterial: "excluded",
       credentialReferences: "excluded",
       rebindRequired: WORKSPACE_HOST_CREDENTIAL_CHANNELS,
     });
-    expect(JSON.stringify(manifest)).not.toContain("resolver:");
+    expect(manifest.bindingState.map((binding) => binding.generation)).toEqual([
+      1, 1, 1,
+    ]);
+    const serializedBackup = JSON.stringify(manifest);
+    expect(serializedBackup).not.toContain("resolver:");
+    expect(serializedBackup).not.toContain("revoke-cloud-1");
+    expect(serializedBackup).not.toContain("revoke-git-1");
+    expect(serializedBackup).not.toContain("revoke-agent-1");
+
+    const restoreBody = buildWorkspaceHostBackupRestoreCredentialRebindRequest(
+      manifest,
+      refs("restored"),
+      delivery(2),
+      REQUESTED_AT,
+    );
+    expect(restoreBody).toMatchObject({
+      action: "restore-rebind",
+      backup: manifest,
+      nextCredentialRefs: refs("restored"),
+      nextDelivery: delivery(2),
+    });
 
     const restored = planWorkspaceHostCredentialLifecycle({
       contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -469,14 +493,29 @@ describe("workspace-host credential lifecycle", () => {
       workspaceId: "workspace-1",
       hostId: "host-1",
       requestedAt: REQUESTED_AT,
-      action: "restore-rebind",
-      backup: manifest,
-      nextCredentialRefs: refs("restored"),
-      nextDelivery: delivery(2),
+      ...restoreBody,
     });
     expect(restored.steps.filter((step) => step.kind === "bind")).toHaveLength(
       3,
     );
+    expect(() =>
+      buildWorkspaceHostBackupRestoreCredentialRebindRequest(
+        manifest,
+        refs("same-generation"),
+        delivery(1),
+        REQUESTED_AT,
+      ),
+    ).toThrow(/Restore generation for cloud must increase/);
+    const reusedRevocationRef = delivery(2);
+    reusedRevocationRef.cloud.revocationRef = delivery().cloud.revocationRef;
+    expect(() =>
+      buildWorkspaceHostBackupRestoreCredentialRebindRequest(
+        manifest,
+        refs("reused-revocation"),
+        reusedRevocationRef,
+        REQUESTED_AT,
+      ),
+    ).toThrow(/Restore revocation reference for cloud must change/);
     expect(() =>
       planWorkspaceHostCredentialLifecycle({
         contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -489,7 +528,7 @@ describe("workspace-host credential lifecycle", () => {
         nextCredentialRefs: { cloudCredentialRef: refs().cloudCredentialRef },
         nextDelivery: { cloud: delivery(2).cloud },
       }),
-    ).toThrow(/rebind every channel/);
+    ).toThrow(/rebind every currently bound credential channel/);
   });
 });
 
