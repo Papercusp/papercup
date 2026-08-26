@@ -1479,16 +1479,18 @@ export async function probeFreshLaunchSessions({
  * A resumed session re-attaches its ORIGINAL coord identity, so a live psu-pty
  * host appearing for that `ownerId` is proof the agent actually booted (the host
  * writes its discovery file once the pty is up, and findLiveHost self-validates:
- * pid alive + socket exists + psu-host identity). If none appears within the
- * window, the resume no-op'd and the caller must say so LOUDLY rather than report
- * a phantom success.
+ * pid alive + socket exists + psu-host identity). Absence at a bounded deadline,
+ * however, is not proof of a no-op: EI-21476169071856015 recorded a healthy exact
+ * Codex resume registering more than seven minutes after this 30s window. Match
+ * the fresh-launch verifier's three-state contract: `true` = matching live host,
+ * `false` = observed UUID mismatch, `null` = still unconfirmed at the deadline.
  *
- * Returns as SOON as a host appears — a healthy resume waits only a few seconds;
- * ONLY a failed resume pays the full timeout, which is exactly when we need to
- * wait to detect the failure. Injectable (findHost / sleep) so it unit-tests
- * without a real host, mirroring injectKickoffAfterResume. (A FORK mints a fresh
- * identity we cannot poll by a known ownerId, so verification is scoped to an
- * in-place resume — the exact case the bug documents.)
+ * Returns as SOON as a host appears — most healthy resumes wait only a few
+ * seconds. A slow or failed resume pays the full timeout, after which the caller
+ * must report the ambiguity without inventing either success or failure.
+ * Injectable (findHost / sleep) so it unit-tests without a real host, mirroring
+ * injectKickoffAfterResume. (A FORK mints a fresh identity we cannot poll by a
+ * known ownerId, so verification is scoped to an in-place resume.)
  */
 export async function verifyResumeStarted(
   ownerId: string,
@@ -1507,7 +1509,7 @@ export async function verifyResumeStarted(
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<{
-  started: boolean;
+  started: boolean | null;
   waitedMs: number;
   expectedSessionId: string | null;
   actualSessionId: string | null;
@@ -1530,7 +1532,7 @@ export async function verifyResumeStarted(
     }
     if (Date.now() - begun + pollMs > timeoutMs) {
       return {
-        started: false,
+        started: null,
         waitedMs: Date.now() - begun,
         expectedSessionId: expectedSessionId?.trim() || null,
         actualSessionId: null,

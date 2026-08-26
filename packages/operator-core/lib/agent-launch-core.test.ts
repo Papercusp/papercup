@@ -452,7 +452,7 @@ describe('injectKickoffAfterResume (D-008: the pty-socket is the only path to a 
   });
 });
 
-describe('verifyResumeStarted (EI-11524: a resume that leaves no live agent must not report success)', () => {
+describe('verifyResumeStarted (resume liveness is three-state)', () => {
   it('confirms started once a live psu-pty host appears for the resumed identity', async () => {
     const findHost = vi
       .fn()
@@ -488,10 +488,10 @@ describe('verifyResumeStarted (EI-11524: a resume that leaves no live agent must
     });
   });
 
-  // THE REGRESSION: an archived/no-op resume spawns a window but boots no agent, so
-  // no live host EVER registers. Before EI-11524 this reported phantom success; now
-  // it must be detectable as started:false so the tool can fail loudly.
-  it('reports started:false when no live host ever appears (the silent no-op case)', async () => {
+  // EI-21476169071856015: a healthy exact Codex resume registered more than seven
+  // minutes after the 30s verifier refused it. No host inside a bounded window is
+  // absence of evidence, not an observed no-op.
+  it('reports started:null when no live host appears before the deadline', async () => {
     const sleep = vi.fn().mockResolvedValue(undefined);
     const r = await verifyResumeStarted(OWNER, {
       findHost: () => null,
@@ -500,7 +500,7 @@ describe('verifyResumeStarted (EI-11524: a resume that leaves no live agent must
       timeoutMs: 35,
     });
 
-    expect(r.started).toBe(false);
+    expect(r.started).toBeNull();
     expect(r.waitedMs).toBeGreaterThanOrEqual(0);
   });
 });

@@ -90,9 +90,9 @@ import {
 const MAX_AGENTS = 12;
 
 /** How long to wait for a resumed session's live psu-pty host to appear before
- *  declaring the resume UNVERIFIED (EI-11524). A healthy resume registers its host
- *  within a few seconds (verifyResumeStarted returns early), so only a silent
- *  no-op pays this full window — comfortably under the ~55s MCP foreground cap. */
+ *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
+ *  a few seconds, but EI-21476169071856015 measured a healthy exact Codex resume
+ *  landing more than seven minutes later, so expiry is never itself a failure. */
 const RESUME_VERIFY_TIMEOUT_MS = 30_000;
 
 /**
@@ -150,7 +150,7 @@ export default defineTool({
     notWhen:
       'To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. For N members on a plan: fleet:launch-on-plan. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
-      'A fresh/fork/headless launch returns once spawned; an in-place resume also VERIFIES a live agent registered (EI-11524) — isError + a loud "RESUME UNVERIFIED" note if the window opened but no agent booted (archived transcript / no-op), so a resume never reports phantom success. `resume: { agentId }` resolves that agent\'s latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.',
+      'A fresh/fork/headless launch returns once spawned; a visible in-place resume uses a three-state verifier: matching host = verified, observed UUID mismatch = isError, deadline with no host = RESUME UNCONFIRMED (not an invented failure). `resume: { agentId }` resolves that agent\'s latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.',
     seeAlso: [
       'fleet:launch-on-plan (N members on a plan, with seats + capacity advice)',
       'capability:terminal (run a COMMAND in a visible terminal, not an agent)',
@@ -1031,11 +1031,13 @@ export default defineTool({
     // launcher searched the wrong projects dir) finds nothing, starts no process,
     // and the window closes seconds later — yet we previously reported SUCCESS.
     // Verify a live psu-pty host actually appears for the resumed identity (which
-    // re-attaches its ORIGINAL ownerId) before calling the resume good; if none
-    // does, say so LOUDLY and fail the tool. Scoped to a VISIBLE IN-PLACE resume:
+    // re-attaches its ORIGINAL ownerId) before calling the resume good. If none
+    // appears inside the bounded window, report UNCONFIRMED without converting
+    // absence into failure (EI-21476169071856015). Scoped to a VISIBLE IN-PLACE resume:
     // a fork mints a new identity we can't poll here, and a headless session hosts
     // no window whose silent close is the symptom.
     let resumeVerifyFailed = false;
+    let resumeVerified: boolean | null | undefined;
     let resumeVerification: {
       expectedSessionId: string | null;
       actualSessionId: string | null;
@@ -1048,8 +1050,9 @@ export default defineTool({
         expectedSessionId: resumeSessionId,
         timeoutMs: RESUME_VERIFY_TIMEOUT_MS,
       });
-      if (!verify.started) {
+      if (verify.started === false) {
         resumeVerifyFailed = true;
+        resumeVerified = false;
         if (verify.mismatch) {
           const rollback = await shutdownViaPty(resumeOwnerId, {
             force: true,
@@ -1076,15 +1079,31 @@ export default defineTool({
             bootLogTail,
           };
           notes.push(
-            `✗ RESUME UNVERIFIED — a window opened but NO live agent registered for ${resumeOwnerId} within ` +
-              `${Math.round(RESUME_VERIFY_TIMEOUT_MS / 1000)}s, so the resume almost certainly NO-OP'd (its transcript may be ` +
-              `archived off-disk, or \`claude --resume\` found nothing and the terminal exited). Do NOT assume it is running: ` +
-              `check the terminal window; if it exited, rematerialize the archived transcript ` +
-              `(POST /api/adv/sessions/rematerialize) or relaunch FRESH with a context-seeded brief.` +
+            `✗ RESUME DID NOT START — an observed failure prevented ${resumeOwnerId} from registering a matching live agent. ` +
+              `Check the terminal window and bounded boot log before retrying.` +
               resumeBootLogNote(bootLogTail),
           );
         }
+      } else if (verify.started === null) {
+        resumeVerified = null;
+        const bootLogTail = readResumeBootLogTail(resumeOwnerId);
+        resumeVerification = {
+          expectedSessionId: verify.expectedSessionId,
+          actualSessionId: verify.actualSessionId,
+          mismatch: false,
+          rollback: null,
+          bootLogTail,
+        };
+        notes.push(
+          `⏳ RESUME UNCONFIRMED — no matching managed-pty host was observed for ${resumeOwnerId} within ` +
+            `${Math.round(RESUME_VERIFY_TIMEOUT_MS / 1000)}s. The bounded verification window expired; ` +
+            `that is absence of evidence, not an observed no-op. A healthy exact Codex resume has registered ` +
+            `more than seven minutes later (EI-21476169071856015). Do NOT launch a fallback on this note alone: ` +
+            `re-check coord:presence / work_items:observe in a few minutes.` +
+            resumeBootLogNote(bootLogTail),
+        );
       } else {
+        resumeVerified = true;
         resumeVerification = {
           expectedSessionId: verify.expectedSessionId,
           actualSessionId: verify.actualSessionId,
@@ -1224,7 +1243,7 @@ export default defineTool({
             }]
           : [],
       ),
-      ...(resumeVerifyFailed ? { resumeVerified: false } : {}),
+      ...(resumeVerified !== undefined ? { resumeVerified } : {}),
       ...(resumeVerification ? { resumeVerification } : {}),
       ...(freshVerdict ? { agentStarted: freshVerdict.agentStarted } : {}),
     };
@@ -1238,10 +1257,10 @@ export default defineTool({
     return {
       content: [{ type: 'text' as const, text: lines.join('\n') }],
       data: { deduped: false, launch: launchSummary },
-      // Only an OBSERVED failure is an error. `agentStarted === null` (unverified —
-      // still booting) must NOT set isError: most healthy launches land there
-      // inside this window (D-004), and flagging them would make the tool cry wolf
-      // on its own success path.
+      // Only an OBSERVED failure is an error. `agentStarted === null` and
+      // `resumeVerified === null` (unconfirmed — still booting) must NOT set
+      // isError: healthy launches can land there inside this bounded window, and
+      // flagging them would make the tool cry wolf on its own success path.
       ...(opened.length === 0 || resumeVerifyFailed || freshVerdict?.agentStarted === false
         ? { isError: true as const }
         : {}),

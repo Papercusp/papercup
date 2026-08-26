@@ -177,7 +177,7 @@ const verifyFreshLaunchStartedMock = vi.fn(async (_args: unknown) => ({
   note: 'test launch verification stub',
 }));
 const verifyResumeStartedMock = vi.fn(async (_ownerId: unknown, opts?: { expectedSessionId?: string | null }) => ({
-  started: true,
+  started: true as boolean | null,
   waitedMs: 0,
   expectedSessionId: opts?.expectedSessionId ?? null,
   actualSessionId: opts?.expectedSessionId ?? null,
@@ -861,10 +861,10 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
-  it('fails loudly and records the failure when a visible resume opens no live agent (EI-20264752821998735)', async () => {
+  it('records an unconfirmed verdict without inventing failure when the resume host is delayed', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     verifyResumeStartedMock.mockResolvedValue({
-      started: false,
+      started: null,
       waitedMs: 30_000,
       expectedSessionId: 'sid-dead',
       actualSessionId: null,
@@ -873,20 +873,21 @@ describe('resume + fork (D-004/D-007)', () => {
 
     const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
 
-    expect(isError(res)).toBe(true);
-    expect(textOf(res)).toContain('RESUME UNVERIFIED');
-    expect(textOf(res)).toContain('NO live agent registered');
+    expect(isError(res)).toBe(false);
+    expect(textOf(res)).toContain('RESUME UNCONFIRMED');
+    expect(textOf(res)).toContain('absence of evidence, not an observed no-op');
+    expect(textOf(res)).toContain('Do NOT launch a fallback on this note alone');
     expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        summary: expect.objectContaining({ mode: 'resume', resumeVerified: false }),
+        summary: expect.objectContaining({ mode: 'resume', resumeVerified: null }),
       }),
     );
   });
 
-  it('includes the bounded per-owner psu boot-log tail when a resume is unverified', async () => {
+  it('includes the bounded per-owner psu boot-log tail when a resume is unconfirmed', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     verifyResumeStartedMock.mockResolvedValue({
-      started: false,
+      started: null,
       waitedMs: 30_000,
       expectedSessionId: 'sid-dead',
       actualSessionId: null,
