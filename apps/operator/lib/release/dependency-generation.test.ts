@@ -14,6 +14,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
+// EI-21475576623166605: these tests launch several real shells and copy/hardlink/prune
+// filesystem trees. Under fleet I/O contention they have measured 7–53s, so Vitest's
+// 5s unit-test default fabricates a red before their product assertions run. Keep the
+// larger budget local to those native-I/O cases; pure tests retain the default detector.
+const NATIVE_SHELL_TIMEOUT_MS = 120_000;
+
 const REPO_ROOT = resolve(__dirname, '../../../..');
 // Overridable so a mutation probe can point the suite at a COPY of the script
 // outside the tree; mutating the tracked file in place would race git-sync's
@@ -687,7 +693,7 @@ describe('immutable dependency generation', () => {
     expect(second.status, second.stderr).toBe(0);
     expect(second.stdout).toContain('reused=true');
     expect(publishedPath(second.stdout)).toBe(publishedPath(first.stdout));
-  });
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('hardlinks on one filesystem and has an independent portable-copy fallback', () => {
     const integration = makeIntegration();
@@ -768,7 +774,7 @@ describe('immutable dependency generation', () => {
     expect(reused.status, reused.stderr).toBe(0);
     expect(reused.stdout).toContain('reused=true');
     expect(publishedPath(reused.stdout)).toBe(generation);
-  });
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('bounds published growth to the newest set and finishes crash-left prune quarantines', () => {
     const integration = makeIntegration();
@@ -798,7 +804,7 @@ describe('immutable dependency generation', () => {
     });
     expect(reused.status, reused.stderr).toBe(0);
     expect(existsSync(orphan)).toBe(false);
-  });
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('imports direct sibling checkout pins and prunes them after their marker goes stale', () => {
     const integration = makeIntegration();
