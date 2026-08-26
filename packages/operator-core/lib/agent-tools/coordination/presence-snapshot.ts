@@ -724,39 +724,39 @@ export async function assemblePresenceSnapshot(
     }
   }
 
+  const summary: PresenceSnapshot['summary'] = {
+    active: active.length,
+    stale: stale.length,
+    // EI-9454: on a targeted read the count matches the returned subset (like
+    // active/stale above); the default read keeps the whole-roster count.
+    federated: targeted ? scoped.filter((r) => r.federated === true).length : federated.length,
+    wakeable,
+    onDesktop,
+    viewerAttached,
+    byState,
+    byContextPressure,
+  };
+  // EI-21488009366204518: on a targeted read, say HOW the needle resolved —
+  // matched rows, and whether the answer came from session-log death evidence
+  // (a reaped presence row) rather than a live presence row. An unknown id reads
+  // as matched:0/fromSessionLog:false — an explicit not-found, distinct from the
+  // synthesized-ended case.
+  if (targeted) {
+    summary.ownerLookup = {
+      needle: opts.owner,
+      matched: scoped.length,
+      // True only when a session-log-synthesized row actually SURVIVED the
+      // owner filter — never merely because the leg ran.
+      fromSessionLog: endedFromSessionLog && scoped.length > 0,
+    };
+  }
+
   return {
     as_of: new Date(now).toISOString(),
     scope,
     ...(potId ? { hive: potId } : {}),
     ...(scopeNote ? { scope_note: scopeNote } : {}),
-    summary: {
-      active: active.length,
-      stale: stale.length,
-      // EI-9454: on a targeted read the count matches the returned subset (like
-      // active/stale above); the default read keeps the whole-roster count.
-      federated: targeted ? scoped.filter((r) => r.federated === true).length : federated.length,
-      wakeable,
-      onDesktop,
-      viewerAttached,
-      byState,
-      byContextPressure,
-      // EI-21488009366204518: on a targeted read, say HOW the needle resolved —
-      // matched rows, and whether the answer came from session-log death
-      // evidence (a reaped presence row) rather than a live presence row. An
-      // unknown id reads as matched:0/fromSessionLog:false — an explicit
-      // not-found, distinct from the synthesized-ended case.
-      ...(targeted
-        ? {
-            ownerLookup: {
-              needle: opts.owner,
-              matched: scoped.length,
-              // True only when a session-log-synthesized row actually SURVIVED the
-              // owner filter — never merely because the leg ran.
-              fromSessionLog: endedFromSessionLog && scoped.length > 0,
-            },
-          }
-        : {}),
-    },
+    summary,
     active: activeRows,
     etag,
   };
