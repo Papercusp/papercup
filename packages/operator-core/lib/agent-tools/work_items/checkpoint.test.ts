@@ -1766,7 +1766,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
          *  `getWorkItemCheckpoint` backs the append pre-read AND the post-write
          *  verify-read, so a static mock returns the stale prior to the verify and the
          *  write fails `checkpoint_verify_failed` — advance it when the store commits. */
-        const seed = async (checks: Array<{ claim: string; recheck?: string; verified?: string }>) => {
+        const seed = async (
+          checks: Array<{ id?: string; claim: string; recheck?: string; verified?: string }>,
+        ) => {
           withPrior(null);
           await one({ id: 'WI-7', checkpoint: 'the body worth keeping', checks });
           const prior = await lastStored();
@@ -2117,6 +2119,71 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(r.recovery.append).toMatchObject({
             args: { rowsMode: 'merge', checkpoint: freshBody, checks: [] },
           });
+          expect(writes).toBe(0);
+          expect(await lastStored()).toBe(prior);
+        });
+
+        it('reports exact sanitized ids when a rendered [#id] label is re-sent during overflow', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            id: `peer-${String(i + 1).padStart(2, '0')}`,
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe ${i + 1}`,
+            verified: `measured ${i + 1}`,
+          }));
+          await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          let writes = 0;
+
+          setWorkItemCheckpointWithPrior.mockImplementation(
+            async (
+              _ref: unknown,
+              _incoming: string | null | undefined,
+              opts?: { guard?: (priorNote: string | null, priorLength: number) => string | null },
+            ) => {
+              const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+              if (blockedReason) return { stored: prior, priorLength: prior.length, blockedReason };
+              writes += 1;
+              return { stored: prior, priorLength: prior.length };
+            },
+          );
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'fresh progress body',
+            rowsMode: 'merge',
+            checks: [
+              // This is copied from the rendered `[#peer-01]` label. It must
+              // normalize back to the stored stable id rather than become a
+              // second row and change which predecessor is diagnosed.
+              { id: '[#peer-01]', claim: 'PEER-01 holds', recheck: 'probe 1' },
+              { id: 'mine-new', claim: 'MINE holds', recheck: 'probe mine', verified: 'measured mine' },
+            ],
+          })) as {
+            ok: boolean;
+            errorCode: string;
+            checksDropped?: string[];
+            checksDroppedRows?: Array<{
+              id?: string;
+              claim: string;
+              recheck?: string;
+              verified?: string;
+              sinceMs?: number;
+            }>;
+          };
+
+          expect(r.ok).toBe(false);
+          expect(r.errorCode).toBe('append_checks_overflow');
+          expect(r.checksDropped).toEqual(['PEER-12 holds']);
+          expect(r.checksDroppedRows).toEqual([
+            expect.objectContaining({
+              id: 'peer-12',
+              claim: 'PEER-12 holds',
+              recheck: 'probe 12',
+              verified: 'measured 12',
+              sinceMs: expect.any(Number),
+            }),
+          ]);
           expect(writes).toBe(0);
           expect(await lastStored()).toBe(prior);
         });
