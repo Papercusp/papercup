@@ -107,6 +107,13 @@ export interface StoredPersonalVaultImportArchive {
   sizeBytes: number;
 }
 
+export interface ReservePersonalVaultImportUploadInput {
+  workspaceId: string;
+  userId: string;
+  filename: string;
+  declaredSizeBytes?: number | null;
+}
+
 export interface PersonalVaultImportUploadReservation {
   id: string;
   workspaceId: string;
@@ -297,8 +304,136 @@ function normalizedFilename(value: string): string {
   return filename;
 }
 
+function declaredUploadSize(value: number | null | undefined): number | null {
+  if (value == null) return null;
+  const size = finiteInteger(value, -1, 1, MAX_PERSONAL_VAULT_IMPORT_BYTES);
+  if (size < 0) throw new Error('personal_archive_too_large');
+  return size;
+}
+
 export function personalVaultImportStorageDir(workspaceId: string): string {
   return papercuspPathForWorkspace(workspaceId, 'personal-vault-imports');
+}
+
+/** Reserve both disk bytes and one retained-job slot before accepting a request body. */
+export async function reservePersonalVaultImportUpload(
+  sql: postgres.Sql,
+  input: ReservePersonalVaultImportUploadInput,
+): Promise<PersonalVaultImportUploadReservation> {
+  const filename = normalizedFilename(input.filename);
+  const declaredSizeBytes = declaredUploadSize(input.declaredSizeBytes);
+  const reservedBytes = declaredSizeBytes ?? MAX_PERSONAL_VAULT_IMPORT_BYTES;
+  const storagePath = join(personalVaultImportStorageDir(input.workspaceId), `${randomUUID()}.partial`);
+
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`personal-vault-import:${input.workspaceId}`}, 0))`;
+    const usage = await tx<PersonalVaultImportAdmissionRow[]>`
+      SELECT
+        COALESCE((SELECT sum(size_bytes) FROM harness_shared.personal_vault_import_jobs
+                   WHERE workspace_id = ${input.workspaceId} AND storage_path IS NOT NULL), 0)
+          + COALESCE((SELECT sum(reserved_bytes) FROM harness_shared.personal_vault_import_uploads
+                       WHERE workspace_id = ${input.workspaceId}), 0) AS workspace_bytes,
+        (SELECT count(*) FROM harness_shared.personal_vault_import_jobs
+          WHERE workspace_id = ${input.workspaceId} AND storage_path IS NOT NULL)
+          + (SELECT count(*) FROM harness_shared.personal_vault_import_uploads
+              WHERE workspace_id = ${input.workspaceId}) AS workspace_jobs,
+        COALESCE((SELECT sum(size_bytes) FROM harness_shared.personal_vault_import_jobs
+                   WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid
+                     AND storage_path IS NOT NULL), 0)
+          + COALESCE((SELECT sum(reserved_bytes) FROM harness_shared.personal_vault_import_uploads
+                       WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid), 0)
+          AS owner_bytes,
+        (SELECT count(*) FROM harness_shared.personal_vault_import_jobs
+          WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid
+            AND storage_path IS NOT NULL)
+          + (SELECT count(*) FROM harness_shared.personal_vault_import_uploads
+              WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid)
+          AS owner_jobs`;
+    const current = usage[0]!;
+    if (Number(current.owner_jobs) >= MAX_PERSONAL_VAULT_OWNER_STORED_JOBS) {
+      throw new Error('personal_vault_import_owner_job_limit');
+    }
+    if (Number(current.workspace_jobs) >= MAX_PERSONAL_VAULT_WORKSPACE_STORED_JOBS) {
+      throw new Error('personal_vault_import_workspace_job_limit');
+    }
+    if (Number(current.owner_bytes) + reservedBytes > MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES) {
+      throw new Error('personal_vault_import_owner_storage_limit');
+    }
+    if (Number(current.workspace_bytes) + reservedBytes > MAX_PERSONAL_VAULT_WORKSPACE_RETAINED_BYTES) {
+      throw new Error('personal_vault_import_workspace_storage_limit');
+    }
+    const rows = await tx<PersonalVaultImportUploadRow[]>`
+      INSERT INTO harness_shared.personal_vault_import_uploads
+        (workspace_id, user_id, filename, storage_path, declared_size_bytes,
+         reserved_bytes, expires_at)
+      VALUES (${input.workspaceId}, ${input.userId}::uuid, ${filename}, ${storagePath},
+              ${declaredSizeBytes}, ${reservedBytes},
+              now() + make_interval(secs => ${PERSONAL_VAULT_UPLOAD_LEASE_SECONDS}))
+      RETURNING *`;
+    return mapUploadReservation(rows[0]!);
+  });
+}
+
+async function touchPersonalVaultImportUpload(
+  sql: postgres.Sql,
+  reservation: PersonalVaultImportUploadReservation,
+  receivedBytes: number,
+): Promise<void> {
+  const rows = await sql<{ id: string }[]>`
+    UPDATE harness_shared.personal_vault_import_uploads
+       SET received_bytes = ${receivedBytes},
+           expires_at = now() + make_interval(secs => ${PERSONAL_VAULT_UPLOAD_LEASE_SECONDS}),
+           updated_at = now()
+     WHERE workspace_id = ${reservation.workspaceId} AND user_id = ${reservation.userId}::uuid
+       AND id = ${reservation.id}::uuid AND received_bytes <= ${receivedBytes}
+       AND reserved_bytes >= ${receivedBytes}
+    RETURNING id`;
+  if (!rows[0]) throw new Error('personal_vault_import_upload_reservation_lost');
+}
+
+/** Stream into a reserved partial path, then publish the authenticated ciphertext atomically. */
+export async function storeReservedPersonalVaultImportArchive(
+  sql: postgres.Sql,
+  reservation: PersonalVaultImportUploadReservation,
+  body: AsyncIterable<Uint8Array>,
+  options: PersonalArchiveEncryptionOptions = {},
+): Promise<StoredPersonalVaultImportArchive> {
+  await mkdir(personalVaultImportStorageDir(reservation.workspaceId), { recursive: true, mode: 0o700 });
+  const partialPath = assertSyntacticImportPath(reservation.workspaceId, reservation.storagePath);
+  const archivePath = partialPath.replace(/\.partial$/i, '.archive');
+  if (archivePath === partialPath) throw new Error('personal_vault_import_upload_path_invalid');
+  const writer = await PersonalArchiveEncryptedWriter.create(reservation.workspaceId, partialPath, options);
+  let sizeBytes = 0;
+  let nextProgress = PERSONAL_VAULT_UPLOAD_PROGRESS_BYTES;
+  let complete = false;
+  try {
+    for await (const value of body) {
+      const chunk = Buffer.from(value);
+      if (!chunk.length) continue;
+      sizeBytes += chunk.length;
+      if (sizeBytes > reservation.reservedBytes) throw new Error('personal_archive_too_large');
+      await writer.write(chunk);
+      if (sizeBytes >= nextProgress) {
+        await touchPersonalVaultImportUpload(sql, reservation, sizeBytes);
+        nextProgress = sizeBytes + PERSONAL_VAULT_UPLOAD_PROGRESS_BYTES;
+      }
+    }
+    if (sizeBytes === 0) throw new Error('personal_archive_empty');
+    if (reservation.declaredSizeBytes != null && sizeBytes !== reservation.declaredSizeBytes) {
+      throw new Error('personal_archive_content_length_mismatch');
+    }
+    const encrypted = await writer.finish();
+    await rename(partialPath, archivePath);
+    await touchPersonalVaultImportUpload(sql, reservation, sizeBytes);
+    complete = true;
+    return { storagePath: archivePath, contentSha256: encrypted.contentSha256, sizeBytes };
+  } finally {
+    if (!complete) {
+      await writer.abort();
+      await unlink(partialPath).catch(() => undefined);
+      await unlink(archivePath).catch(() => undefined);
+    }
+  }
 }
 
 /** Persist an upload incrementally so multi-GB provider exports never enter memory as one buffer. */
@@ -454,6 +589,82 @@ export async function createPersonalVaultImportJob(
       SET updated_at = harness_shared.personal_vault_import_jobs.updated_at
     RETURNING *`;
   return mapJob(rows[0]!);
+}
+
+export async function finalizePersonalVaultImportUpload(
+  sql: postgres.Sql,
+  reservation: PersonalVaultImportUploadReservation,
+  stored: StoredPersonalVaultImportArchive,
+  input: Omit<CreatePersonalVaultImportJobInput, 'workspaceId' | 'userId' | 'filename' | 'storagePath' | 'contentSha256' | 'sizeBytes'>,
+): Promise<PersonalVaultImportJob> {
+  const sourceId = normalizePersonalSourceId(input.sourceId);
+  const providerAccountId = normalizePersonalProviderAccountId(input.providerAccountId);
+  if (sourceId && !providerAccountId) throw new Error('personal_provider_account_id_required_for_source');
+  const contentSha256 = assertHash(stored.contentSha256, 'content_sha256');
+  const idempotencyKey = input.idempotencyKey
+    ? assertHash(input.idempotencyKey, 'idempotency_key')
+    : defaultIdempotencyKey({
+        workspaceId: reservation.workspaceId,
+        userId: reservation.userId,
+        sourceId,
+        providerAccountId,
+        contentSha256,
+      });
+  const storagePath = assertSyntacticImportPath(reservation.workspaceId, stored.storagePath);
+  const expectedPath = reservation.storagePath.replace(/\.partial$/i, '.archive');
+  if (storagePath !== expectedPath || stored.sizeBytes <= 0 || stored.sizeBytes > reservation.reservedBytes) {
+    throw new Error('personal_vault_import_upload_promotion_invalid');
+  }
+  const maxAttempts = finiteInteger(input.maxAttempts, 5, 1, 20);
+  const retainForDays = finiteInteger(input.retainForDays, 7, 1, 30);
+
+  return sql.begin(async (tx) => {
+    const held = await tx<PersonalVaultImportUploadRow[]>`
+      SELECT * FROM harness_shared.personal_vault_import_uploads
+       WHERE workspace_id = ${reservation.workspaceId} AND user_id = ${reservation.userId}::uuid
+         AND id = ${reservation.id}::uuid AND storage_path = ${reservation.storagePath}
+       FOR UPDATE`;
+    if (!held[0]) throw new Error('personal_vault_import_upload_reservation_lost');
+    if (Number(held[0].received_bytes) !== stored.sizeBytes) {
+      throw new Error('personal_vault_import_upload_size_mismatch');
+    }
+    const rows = await tx<PersonalVaultImportJobRow[]>`
+      INSERT INTO harness_shared.personal_vault_import_jobs
+        (workspace_id, user_id, source_id, provider_account_id, filename,
+         storage_path, content_type, content_sha256, idempotency_key, size_bytes,
+         max_attempts, retained_until)
+      VALUES (${reservation.workspaceId}, ${reservation.userId}::uuid, ${sourceId}::uuid,
+              ${providerAccountId}, ${reservation.filename}, ${storagePath},
+              ${input.contentType ?? null}, ${contentSha256}, ${idempotencyKey},
+              ${stored.sizeBytes}, ${maxAttempts},
+              now() + make_interval(days => ${retainForDays}))
+      ON CONFLICT (workspace_id, user_id, idempotency_key) DO UPDATE
+        SET updated_at = harness_shared.personal_vault_import_jobs.updated_at
+      RETURNING *`;
+    await tx`
+      DELETE FROM harness_shared.personal_vault_import_uploads
+       WHERE workspace_id = ${reservation.workspaceId} AND user_id = ${reservation.userId}::uuid
+         AND id = ${reservation.id}::uuid`;
+    return mapJob(rows[0]!);
+  });
+}
+
+/** Release a failed request's reservation and either possible filesystem phase. */
+export async function releasePersonalVaultImportUpload(
+  sql: postgres.Sql,
+  reservation: PersonalVaultImportUploadReservation,
+): Promise<void> {
+  await sql`
+    DELETE FROM harness_shared.personal_vault_import_uploads
+     WHERE workspace_id = ${reservation.workspaceId} AND user_id = ${reservation.userId}::uuid
+       AND id = ${reservation.id}::uuid`;
+  await Promise.all([
+    removePersonalVaultImportArchive(reservation.workspaceId, reservation.storagePath),
+    removePersonalVaultImportArchive(
+      reservation.workspaceId,
+      reservation.storagePath.replace(/\.partial$/i, '.archive'),
+    ),
+  ]);
 }
 
 export async function getPersonalVaultImportJob(
@@ -699,6 +910,60 @@ export async function cleanupExpiredPersonalVaultImportArchives(
   return cleaned;
 }
 
+export async function cleanupOrphanedPersonalVaultImportUploads(
+  sql: postgres.Sql,
+  workspaceId: string,
+  now = Date.now(),
+): Promise<number> {
+  const expired = await sql<PersonalVaultImportUploadRow[]>`
+    DELETE FROM harness_shared.personal_vault_import_uploads
+     WHERE workspace_id = ${workspaceId} AND expires_at <= now()
+    RETURNING *`;
+  let cleaned = 0;
+  for (const row of expired) {
+    const upload = mapUploadReservation(row);
+    await Promise.all([
+      removePersonalVaultImportArchive(workspaceId, upload.storagePath),
+      removePersonalVaultImportArchive(workspaceId, upload.storagePath.replace(/\.partial$/i, '.archive')),
+    ]).catch(() => undefined);
+    cleaned += 1;
+  }
+
+  const root = personalVaultImportStorageDir(workspaceId);
+  let names: string[];
+  try {
+    names = await readdir(root);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'ENOENT') return cleaned;
+    throw cause;
+  }
+  const referenced = await sql<{ storage_path: string }[]>`
+    SELECT storage_path FROM harness_shared.personal_vault_import_jobs
+     WHERE workspace_id = ${workspaceId} AND storage_path IS NOT NULL
+    UNION ALL
+    SELECT storage_path FROM harness_shared.personal_vault_import_uploads
+     WHERE workspace_id = ${workspaceId}`;
+  const livePaths = new Set(referenced.flatMap(({ storage_path: path }) => [
+    resolve(path),
+    resolve(path.replace(/\.partial$/i, '.archive')),
+  ]));
+  for (const name of names) {
+    if (!IMPORT_ARCHIVE_NAME_RE.test(name)) continue;
+    const path = resolve(root, name);
+    if (livePaths.has(path)) continue;
+    try {
+      const stat = await lstat(path);
+      if (stat.isFile() && now - stat.mtimeMs >= PERSONAL_VAULT_ORPHAN_AGE_MS) {
+        await unlink(path);
+        cleaned += 1;
+      }
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') throw cause;
+    }
+  }
+  return cleaned;
+}
+
 async function processClaimedJob(
   sql: postgres.Sql,
   job: PersonalVaultImportJob,
@@ -809,6 +1074,7 @@ export async function runPersonalVaultImportBatch(
   );
   const leaseOwner = options.leaseOwner?.trim() || `system:personal-vault-import:${workspaceId}`;
   const removeArchive = options.removeArchive ?? removePersonalVaultImportArchive;
+  await cleanupOrphanedPersonalVaultImportUploads(sql, workspaceId);
   await cleanupExpiredPersonalVaultImportArchives(sql, workspaceId, removeArchive);
   const job = await claimNextPersonalVaultImportJob(sql, workspaceId, leaseOwner, leaseSeconds);
   if (!job) {

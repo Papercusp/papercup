@@ -2,6 +2,10 @@ import AdmZip from 'adm-zip';
 import type { Readable } from 'node:stream';
 import { simpleParser } from 'mailparser';
 import * as yauzl from 'yauzl';
+import { chain } from 'stream-chain';
+import { parser } from 'stream-json';
+import { pick } from 'stream-json/filters/pick.js';
+import { streamArray } from 'stream-json/streamers/stream-array.js';
 import type { PersonalDocumentInput } from './types';
 import { dedupeKeyFor, normalizeParticipant, normalizePersonalSource } from './store';
 import { openEncryptedPersonalArchive } from './archive-encryption';
@@ -163,6 +167,30 @@ function parseSocialJson(path: string, text: string): PersonalDocumentInput[] {
   return [];
 }
 
+function metaMessageDocument(
+  path: string,
+  message: Record<string, unknown>,
+  index: number,
+  participants: string[] = [],
+): PersonalDocumentInput {
+  const source = path.toLowerCase().includes('instagram') ? 'instagram' : 'facebook';
+  const sender = String(message.sender_name ?? '');
+  const externalId = String(message.id ?? `${message.timestamp_ms ?? 'unknown'}-${index}`);
+  return {
+    source,
+    kind: 'message',
+    externalId,
+    occurredAt: typeof message.timestamp_ms === 'number'
+      ? new Date(message.timestamp_ms).toISOString()
+      : null,
+    participants: [...new Set([...participants, sender].filter(Boolean))],
+    title: `Conversation with ${participants.join(', ') || sender || 'unknown'}`,
+    text: String(message.content ?? ''),
+    metadata: message,
+    dedupeKey: `${source}:${externalId}`,
+  };
+}
+
 function parseEntry(path: string, data: Buffer): PersonalDocumentInput[] {
   const lower = path.toLowerCase();
   const text = data.toString('utf8');
@@ -297,6 +325,24 @@ async function* streamMboxMessages(stream: Readable): AsyncGenerator<Buffer> {
   if (pending.length) yield pending;
 }
 
+/** Meta message exports can contain millions of records; assemble one message object at a time. */
+async function* streamMetaMessages(
+  path: string,
+  stream: Readable,
+): AsyncGenerator<PersonalDocumentInput> {
+  const pipeline = chain([
+    stream,
+    parser(),
+    pick({ filter: 'messages' }),
+    streamArray(),
+  ]);
+  for await (const item of pipeline) {
+    const { key, value } = item as { key: number; value: unknown };
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    yield metaMessageDocument(path, value as Record<string, unknown>, key);
+  }
+}
+
 async function* streamOneEntry(
   path: string,
   stream: Readable,
@@ -323,6 +369,22 @@ async function* streamOneEntry(
             bytesProcessed: bytesBefore,
           };
         }
+      }
+      recordIndex += 1;
+    }
+    return;
+  }
+
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.json') && /(?:facebook|instagram|messages?\/|inbox\/)/i.test(lower)) {
+    let recordIndex = 0;
+    for await (const document of streamMetaMessages(path, stream)) {
+      if (recordIndex >= skipRecords) {
+        yield {
+          document,
+          checkpoint: { entryIndex, recordIndex: recordIndex + 1 },
+          bytesProcessed: bytesBefore + entryBytes,
+        };
       }
       recordIndex += 1;
     }
