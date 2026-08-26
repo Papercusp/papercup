@@ -25,9 +25,11 @@ import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { beginInteraction, endInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
 import { OperatorChat } from '@/app/_components/OperatorChat';
 import type { ChatMessage } from '@/app/_components/chat/chat-types';
+import type { ConversationContextProjection } from '@papercusp/operator-core/lib/conversation-context-projection';
 import {
   ConversationContextProjectionView,
   mergeConversationProjectionMessages,
+  type ConversationTaskActionInput,
   useConversationContextProjection,
 } from '@/app/_components/chat/ConversationContextProjectionView';
 
@@ -100,6 +102,8 @@ export default function ChatPanel({ slug, chatId, mode, context, initialMessage,
   const [loadError, setLoadError] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [sendState, setSendState] = useState<SendState>({ kind: 'idle' });
+  const [taskActionBusy, setTaskActionBusy] = useState(false);
+  const [taskActionError, setTaskActionError] = useState<string | null>(null);
   const transcriptScrollRef = useRef<HTMLDivElement | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const initialMessageSentRef = useRef<string | null>(null);
@@ -130,11 +134,59 @@ export default function ChatPanel({ slug, chatId, mode, context, initialMessage,
     enabled: !!chatId,
     staleTime: 30_000,
   });
-  const { projection } = useConversationContextProjection({
+  const {
+    projection,
+    acceptProjection,
+    invalidate: invalidateProjection,
+  } = useConversationContextProjection({
     sourceKind: 'agent_chat',
     sessionId: chatId,
     harness: slug,
   });
+
+  const mutateTask = useCallback(async (input: ConversationTaskActionInput) => {
+    setTaskActionBusy(true);
+    setTaskActionError(null);
+    try {
+      const response = await fetch(
+        `/api/harness/${encodeURIComponent(slug)}/agent-chats/${encodeURIComponent(chatId)}/tasks`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(input),
+        },
+      );
+      const payload = await response.json().catch(() => null) as {
+        projection?: ConversationContextProjection;
+        error?: { message?: string };
+      } | null;
+      if (!response.ok) {
+        throw new Error(payload?.error?.message ?? `task update failed (${response.status})`);
+      }
+      const nextProjection = payload?.projection;
+      if (
+        !nextProjection ||
+        nextProjection.schemaVersion !== 'conversation-context-v1' ||
+        nextProjection.session.sourceKind !== 'agent_chat' ||
+        nextProjection.session.sessionId !== chatId
+      ) {
+        throw new Error('task update returned an invalid conversation projection');
+      }
+      acceptProjection(nextProjection);
+      invalidateProjection();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'task update failed';
+      setTaskActionError(message);
+      throw error;
+    } finally {
+      setTaskActionBusy(false);
+    }
+  }, [acceptProjection, chatId, invalidateProjection, slug]);
+
+  useEffect(() => {
+    setTaskActionBusy(false);
+    setTaskActionError(null);
+  }, [chatId]);
 
   const loadChat = useCallback(async () => {
     // Never reload mid-stream — the streamed turns aren't on the server row
@@ -442,7 +494,12 @@ export default function ChatPanel({ slug, chatId, mode, context, initialMessage,
 
       {projection ? (
         <div className="pc-conversation-context-layout">
-          <ConversationContextProjectionView projection={projection} />
+          <ConversationContextProjectionView
+            projection={projection}
+            onTaskAction={mutateTask}
+            taskActionBusy={taskActionBusy}
+            taskActionError={taskActionError}
+          />
           <div className="pc-conversation-context-layout__chat">
             <OperatorChat
               messages={projectedMessages}

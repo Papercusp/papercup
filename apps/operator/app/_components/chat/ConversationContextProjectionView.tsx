@@ -183,21 +183,178 @@ function ContextSection({ frame }: { frame: ConversationContextSectionFrame }) {
   );
 }
 
-function TaskList({ frames }: { frames: ConversationTaskFrame[] }) {
-  if (frames.length === 0) return null;
+interface TaskListProps {
+  frames: ConversationTaskFrame[];
+  onTaskAction?: (input: ConversationTaskActionInput) => void | Promise<void>;
+  busy: boolean;
+  error: string | null;
+}
+
+function TaskList({ frames, onTaskAction, busy, error }: TaskListProps) {
+  const [newTask, setNewTask] = useState('');
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [editContent, setEditContent] = useState('');
+  const [editActiveForm, setEditActiveForm] = useState('');
+
+  if (frames.length === 0 && !onTaskAction) return null;
+
+  const dispatch = async (
+    input: ConversationTaskActionInput,
+    afterSuccess?: () => void,
+  ) => {
+    if (!onTaskAction || busy) return;
+    try {
+      await onTaskAction(input);
+      afterSuccess?.();
+    } catch {
+      // The hosting renderer owns the error string so all task controls share
+      // one stable, capability-scoped error surface.
+    }
+  };
+
+  const beginEdit = (task: ConversationTaskFrame) => {
+    setEditingTaskId(task.taskId);
+    setEditContent(task.content);
+    setEditActiveForm(task.activeForm);
+  };
+
   return (
     <section className="pc-context-projection__section" data-section="tasks">
-      <h4>Tasks</h4>
+      <div className="pc-context-projection__section-heading">
+        <h4>Tasks</h4>
+        {busy ? <span aria-live="polite">Saving…</span> : null}
+      </div>
+      {error ? (
+        <div className="pc-context-projection__task-error" role="alert">{error}</div>
+      ) : null}
       <ol className="pc-context-projection__tasks">
         {[...frames].sort((a, b) => a.position - b.position).map((task) => (
           <li key={task.id} data-status={task.status}>
             <span className="pc-context-projection__task-state">{TASK_LABEL[task.status]}</span>
-            <strong>{task.status === 'in_progress' ? task.activeForm : task.content}</strong>
+            {editingTaskId === task.taskId && onTaskAction ? (
+              <form
+                className="pc-context-projection__task-edit"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const content = editContent.trim();
+                  if (!content) return;
+                  void dispatch({
+                    action: 'edit',
+                    taskId: task.taskId,
+                    content,
+                    ...(editActiveForm.trim() ? { activeForm: editActiveForm.trim() } : {}),
+                    explanation: 'Edited from the operator Context pane.',
+                  }, () => setEditingTaskId(null));
+                }}
+              >
+                <input
+                  aria-label={`Task content: ${task.content}`}
+                  value={editContent}
+                  onChange={(event) => setEditContent(event.target.value)}
+                  disabled={busy}
+                  maxLength={4_000}
+                  required
+                />
+                <input
+                  aria-label={`Task active form: ${task.content}`}
+                  value={editActiveForm}
+                  onChange={(event) => setEditActiveForm(event.target.value)}
+                  disabled={busy}
+                  maxLength={500}
+                  placeholder="Active wording (optional)"
+                />
+                <div className="pc-context-projection__task-actions">
+                  <button type="submit" disabled={busy || !editContent.trim()}>Save</button>
+                  <button type="button" disabled={busy} onClick={() => setEditingTaskId(null)}>Cancel</button>
+                </div>
+              </form>
+            ) : (
+              <strong>{task.status === 'in_progress' ? task.activeForm : task.content}</strong>
+            )}
             {task.blockerRef ? <small>Blocked on {task.blockerRef}</small> : null}
             {task.explanation ? <small>{task.explanation}</small> : null}
+            {onTaskAction && editingTaskId !== task.taskId ? (
+              <div className="pc-context-projection__task-actions">
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-label={`Edit task: ${task.content}`}
+                  onClick={() => beginEdit(task)}
+                >
+                  Edit
+                </button>
+                {task.status !== 'completed' && task.status !== 'dropped' ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={`Check task: ${task.content}`}
+                    onClick={() => void dispatch({
+                      action: 'check',
+                      taskId: task.taskId,
+                      explanation: 'Checked from the operator Context pane.',
+                    })}
+                  >
+                    Check
+                  </button>
+                ) : null}
+                {task.status !== 'completed' && task.status !== 'dropped' ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={`Drop task: ${task.content}`}
+                    onClick={() => void dispatch({
+                      action: 'drop',
+                      taskId: task.taskId,
+                      explanation: 'Dropped from the operator Context pane.',
+                    })}
+                  >
+                    Drop
+                  </button>
+                ) : null}
+                {task.status === 'blocked' && task.blockerState?.typed === false ? (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={`Clear blocker for task: ${task.content}`}
+                    onClick={() => void dispatch({
+                      action: 'clear_blocker',
+                      taskId: task.taskId,
+                      explanation: 'Manual blocker cleared from the operator Context pane.',
+                    })}
+                  >
+                    Clear blocker
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
           </li>
         ))}
       </ol>
+      {onTaskAction ? (
+        <form
+          className="pc-context-projection__task-add"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const content = newTask.trim();
+            if (!content) return;
+            void dispatch({
+              action: 'add',
+              content,
+              explanation: 'Added from the operator Context pane.',
+            }, () => setNewTask(''));
+          }}
+        >
+          <input
+            aria-label="New task"
+            value={newTask}
+            onChange={(event) => setNewTask(event.target.value)}
+            disabled={busy}
+            maxLength={4_000}
+            placeholder="Add a task"
+          />
+          <button type="submit" disabled={busy || !newTask.trim()}>Add</button>
+        </form>
+      ) : null}
     </section>
   );
 }
@@ -224,10 +381,16 @@ export function ConversationContextProjectionView({
   projection,
   defaultOpen = true,
   className,
+  onTaskAction,
+  taskActionBusy = false,
+  taskActionError = null,
 }: {
   projection: ConversationContextProjection | null;
   defaultOpen?: boolean;
   className?: string;
+  onTaskAction?: (input: ConversationTaskActionInput) => void | Promise<void>;
+  taskActionBusy?: boolean;
+  taskActionError?: string | null;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const contextFrames = useMemo(
@@ -271,7 +434,12 @@ export function ConversationContextProjectionView({
             {projection.capabilities.approvalWrite ? <span>Approval write</span> : null}
           </div>
           {contextFrames.map((frame) => <ContextSection key={frame.id} frame={frame} />)}
-          <TaskList frames={taskFrames} />
+          <TaskList
+            frames={taskFrames}
+            onTaskAction={projection.capabilities.taskWrite ? onTaskAction : undefined}
+            busy={taskActionBusy}
+            error={taskActionError}
+          />
           <ApprovalList frames={approvalFrames} />
         </div>
       ) : null}
