@@ -121,8 +121,14 @@ describe('conflictMarkersDetector', () => {
 });
 
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all nine seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all ten seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
+      // EI-21230011589307899: ordered FIRST. Every other detector here guards a
+      // BUILD, where a miss is repaired by the next commit; this one guards git
+      // HISTORY, where a miss freezes the pot's egress permanently and only a
+      // path exemption clears it. When a file trips several detectors, that is
+      // the message that must be recorded and escalated.
+      'secrets',
       'mdx',
       'smart-quotes',
       'nul-bytes',

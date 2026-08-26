@@ -24,6 +24,31 @@ import {
   sqlCommentBacktickScopeMatches,
   autoFixSqlCommentBacktick,
 } from './sql-comment-backtick';
+import {
+  findCommitBlockingSecrets,
+  describeCommitBlockingSecrets,
+  cachedExemptionLoader,
+  defaultExemptionLoader,
+  type ExemptionLoader,
+} from './secrets';
+
+/**
+ * The registry's shared runtime-exemption reader for the `secrets` detector.
+ *
+ * Module-scoped ON PURPOSE so a tick that scans hundreds of dirty files pays one
+ * database read rather than one per file, and so the TTL is measured across the
+ * whole tick. `setContentLintExemptionLoader` is the test seam — production never
+ * calls it, which is why the default is installed here rather than injected.
+ */
+let contentLintExemptions: ExemptionLoader = cachedExemptionLoader(defaultExemptionLoader);
+
+/** Read the current runtime secrets-guard path exemptions (cached). */
+export const loadContentLintExemptions: ExemptionLoader = () => contentLintExemptions();
+
+/** Replace the exemption reader (tests only). Pass nothing to restore the default. */
+export function setContentLintExemptionLoader(loader?: ExemptionLoader): void {
+  contentLintExemptions = loader ?? cachedExemptionLoader(defaultExemptionLoader);
+}
 
 /** A registered content check. */
 export interface ContentDetector {
@@ -422,11 +447,60 @@ export const focusedTestDetector: ContentDetector = {
 };
 
 /**
+ * The COMMIT-TIME secrets detector (EI-21230011589307899) — the ONE detector here
+ * whose miss is not recoverable by a later commit.
+ *
+ * Every other detector in this registry guards a BUILD: a miss ships a broken
+ * file and the fix is another commit. This one guards git HISTORY. A
+ * credential-shaped blob that lands in a commit freezes this pot's p2p egress
+ * permanently — pot-git's own-head publish guard re-scans `(baseline, head]`,
+ * its baseline never advances past a refused range, and editing the file
+ * afterwards does not remove the earlier blob. Only a path exemption clears it.
+ * Three instances in four days; the last froze egress ~51min with 55 commits
+ * queued behind it.
+ *
+ * The write-time PreToolUse secrets hook already covers Edit/Write, and is
+ * sound. It does NOT cover Bash — `sed -i`, a heredoc, a `>` redirect — which is
+ * exactly the path the stock Claude Code bypass-mode preamble steers agents onto.
+ * Scanning the working tree HERE is write-path-agnostic, so it closes the gap
+ * however the bytes arrived. See ./secrets.ts for the full rationale, the
+ * rejected alternative (widening the hook matcher), and the exemption layering.
+ *
+ * SCOPE is deliberately the whole tracked tree rather than a suffix set: a
+ * credential shape is not a property of a file TYPE, and the historical
+ * instances were a .test.ts, a .mjs hook and a test harness — no suffix filter
+ * would have caught all three. `scanTextForSecrets` skips >4096-char lines, so
+ * minified/one-line blobs cost nothing.
+ */
+export const secretsDetector: ContentDetector = {
+  key: 'secrets',
+  glob: '**/*',
+  matches: (f) => !isExcludedPath(f),
+  detect: async (file, text) => {
+    const findings = findCommitBlockingSecrets(file, text, await loadContentLintExemptions());
+    if (findings.length === 0) return null;
+    return describeCommitBlockingSecrets(file, findings);
+  },
+  // The same role the other detectors dispatch to. The remedy for the overwhelming
+  // majority case — a credential STAND-IN in a test — is a rename to a low-entropy
+  // role-named constant, which is ordinary content-fixer work, and the error string
+  // names that remedy BEFORE the exemption path on purpose. Deliberately NO
+  // `autoFix`: a deterministic rewrite of something that looks like a credential is
+  // exactly the repair that must be read by someone before it is applied.
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
+/**
  * The default registry the git-sync content guard runs with. Extend by adding an
  * entry (a new `{ key, glob, matches, detect, fixerRole }`); the guard + escalation
  * + fixer dispatch pick it up with no further change.
  */
 export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
+  // Ordered FIRST: a file carrying a credential shape is the one offence here whose
+  // cost is unbounded and unrecoverable (a permanent egress freeze) rather than a
+  // broken build, so when a file trips several detectors this is the message that
+  // gets recorded and escalated first.
+  secretsDetector,
   mdxDetector,
   smartQuotesDetector,
   nulBytesDetector,
