@@ -5,7 +5,7 @@ import {
   WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
-  WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
   type WorkspaceHostImageArtifact,
@@ -74,9 +74,9 @@ async function fixture(
     },
     builder: {
       strategy: 'shared',
-      kind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
-      version: '1.14.2',
-      templatePath: 'infra/images/workspace-host.pkr.hcl',
+      kind: WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
+      version: '0.0.18',
+      templatePath: 'papercusp-desktop/bin/build-desktop-sidecar.sh',
       templateSha256: 'e'.repeat(64),
     },
     materials: [
