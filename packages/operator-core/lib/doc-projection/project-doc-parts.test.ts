@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, cascadeDanglingLedes, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionParts, danglingProjectionWarnings, docClaimCutMatches, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readDocClaimPins, readOrder, shortfallsForCutInvariants, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, cascadeDanglingLedes, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionParts, danglingProjectionWarnings, docClaimCutMatches, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, PROJECTION_BUDGET_CHARS, projectionBanner, projectionBudget, projectionRecord, readDocClaimPins, readOrder, shortfallsForCutInvariants, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -82,6 +82,23 @@ describe('memoryWarningThreshold — transcribed from the Claude Code bundle', (
 
   it('the reported matrix never claims a threshold below the floor', () => {
     for (const row of budgetMatrix()) expect(row.threshold).toBeGreaterThanOrEqual(MEMORY_WARN_FLOOR_CHARS);
+  });
+
+  // [owner 2026-08-26] The enforced budget was deliberately raised ABOVE the reader's warn
+  // threshold ("raise it to 160k"). These pin the two properties that make that override
+  // legible rather than folklore: the number itself, and the fact that it is knowingly over.
+  it('the ENFORCED budget is the owner-raised 160k, not the reader threshold', () => {
+    expect(projectionBudget()).toBe(PROJECTION_BUDGET_CHARS);
+    expect(PROJECTION_BUDGET_CHARS).toBe(160_000);
+  });
+
+  it('the enforced budget deliberately EXCEEDS the reader warn threshold — the gap is the trade', () => {
+    // Not an accident to be "fixed" by clamping: exceeding it is the point, and it is safe
+    // only while the reader's threshold gates a WARNING. If a future bundle truncates at
+    // this threshold instead, PROJECTION_BUDGET_CHARS is what must be reverted — this
+    // assertion is the marker that the two numbers were compared on purpose.
+    const readerThreshold = memoryWarningThreshold({ contextTokens: 400_000, charsPerToken: 4 });
+    expect(projectionBudget()).toBeGreaterThan(readerThreshold);
   });
 });
 
