@@ -553,6 +553,87 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(unrelated75.stderr).not.toContain('retrying after exclusive-materializer preemption');
   }, 15_000);
 
+  it('waits for a still-pending exclusive materializer before starting its retry', async () => {
+    const attemptsFile = join(dir, 'pending-retry-attempts');
+    const successFile = join(dir, 'pending-retry-success');
+    const barrierRan = join(dir, 'pending-retry-barrier-ran');
+    const writerPath = join(dir, 'exclusive-materialization.lock');
+    const env = {
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_RETRY_PREEMPTIONS: '1',
+      PC_HEAVY_RETRY_INTENT_WAIT_SEC: '8',
+      PC_HEAVY_TIMEOUT_SEC: '8',
+      PC_HEAVY_PREEMPT_GRACE_SEC: '0',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+    };
+    const writerBlocker = spawn('flock', [writerPath, 'sleep', '30'], {
+      env: baseEnv(env), cwd: dir, detached: true,
+    });
+    const retryWorkload = [
+      `attempt=$(cat ${JSON.stringify(attemptsFile)} 2>/dev/null || printf '0')`,
+      'attempt=$((attempt + 1))',
+      `printf '%s\\n' "$attempt" > ${JSON.stringify(attemptsFile)}`,
+      `if [ "$attempt" -gt 1 ]; then printf success > ${JSON.stringify(successFile)}; exit 0; fi`,
+      'while :; do sleep 1; done',
+    ].join('; ');
+    let retrying: ReturnType<typeof spawn> | undefined;
+    let barrier: ReturnType<typeof spawn> | undefined;
+    try {
+      await waitFor('the writer blocker acquiring the materializer writer lock', () =>
+        spawnSync('flock', ['-n', writerPath, 'true'], { stdio: 'ignore' }).status !== 0,
+      );
+
+      retrying = spawn('bash', [PC_HEAVY, 'bash', '-c', retryWorkload], {
+        env: baseEnv(env), cwd: dir, detached: true,
+      });
+      const retryingErr = createTextCollector(retrying.stderr);
+      const retryingExit = new Promise<number>((resolve) => retrying?.on('exit', (code) => resolve(code ?? -1)));
+      await waitFor('the first pending retry attempt starting', () => existsSync(attemptsFile));
+      expect(readFileSync(attemptsFile, 'utf8').trim()).toBe('1');
+
+      barrier = spawn(
+        'bash',
+        [PC_HEAVY, '--exclusive-all-slots', 'bash', '-c', `printf acquired > ${JSON.stringify(barrierRan)}`],
+        { env: baseEnv(env), cwd: dir, detached: true },
+      );
+      const barrierErr = createTextCollector(barrier.stderr);
+      const barrierExit = new Promise<number>((resolve) => barrier?.on('exit', (code) => resolve(code ?? -1)));
+      await untilStderr(
+        barrier,
+        barrierErr,
+        (t) => t.includes('another exclusive materializer owns the writer lock — waiting before touching heavy slots'),
+        'the materializer remaining pending on the writer lock',
+      );
+      await untilStderr(
+        retrying,
+        retryingErr,
+        (t) => t.includes('retry waiting for exclusive materializer intent to clear'),
+        'the retry waiting for the materializer intent',
+      );
+      // The regression is about re-admission ordering: while the materializer is
+      // still intent-pending, no second workload attempt may have started.
+      expect(readFileSync(attemptsFile, 'utf8').trim()).toBe('1');
+
+      killGroup(writerBlocker);
+      expect(
+        await barrierExit,
+        `retry stderr:\n${retryingErr.text()}\nbarrier stderr:\n${barrierErr.text()}`,
+      ).toBe(0);
+      expect(await retryingExit, `retry stderr:\n${retryingErr.text()}`).toBe(0);
+      expect(readFileSync(attemptsFile, 'utf8').trim()).toBe('2');
+      expect(readFileSync(successFile, 'utf8')).toBe('success');
+      expect(readFileSync(barrierRan, 'utf8')).toBe('acquired');
+      expect(retryingErr.text()).toContain('PC_HEAVY_RESULT status=preempted reason=exclusive-materializer');
+      expect(retryingErr.text()).toContain('exclusive materializer intent cleared; starting retry');
+    } finally {
+      if (retrying) killGroup(retrying);
+      if (barrier) killGroup(barrier);
+      killGroup(writerBlocker);
+    }
+  }, 15_000);
+
   it('keeps an opt-in run preemptible until it publishes the after-ready marker', async () => {
     const readyDir = join(dir, 'after-ready-before');
     const started = join(dir, 'after-ready-before-started');

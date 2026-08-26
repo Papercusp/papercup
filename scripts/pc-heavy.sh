@@ -183,6 +183,14 @@
 #                         so a preempted rc=75 cannot be replayed. The value is
 #                         capped at 10 to keep the retry policy bounded.
 #                         Default: 0.
+#   PC_HEAVY_RETRY_INTENT_WAIT_SEC
+#                         max seconds a preemption retry waits for the
+#                         exclusive materializer's intent flock to clear
+#                         before re-admitting the attempt (default:
+#                         PC_HEAVY_TIMEOUT_SEC, or 900 when unset). The wait
+#                         probes the shared intent lock without perturbing the
+#                         writer mutex and fails open on timeout or when the
+#                         signal cannot be inspected.
 #
 # Crash-safe: the slot is an flock held on an open fd for the child's whole
 # lifetime; the kernel releases it when this process exits for ANY reason
@@ -2466,6 +2474,55 @@ exit $?
 
 _pc_heavy_retry_result_file=''
 
+# A preempted attempt must not immediately compete for the slot it was evicted
+# from. The materializer's intent flock is the correct signal here: it is held
+# from the moment a materializer declares itself until its exclusive writer and
+# slot drain have completed, including while it is queued behind another
+# materializer. Probe it with a SHARED non-blocking flock so this wait never
+# contends with, or steals, the writer mutex. This helper is deliberately
+# fail-open: retry synchronization can improve liveness under contention, but
+# it must never turn an unavailable lock signal into a hard admission failure.
+_pc_heavy_wait_for_exclusive_intent_clear() {
+  local _intent_wait_raw="${PC_HEAVY_RETRY_INTENT_WAIT_SEC:-${PC_HEAVY_TIMEOUT_SEC:-900}}"
+  local _intent_wait_sec=''
+  case "$_intent_wait_raw" in
+    ''|*[!0-9]*) _intent_wait_sec=900 ;;
+    *) _intent_wait_sec="$_intent_wait_raw" ;;
+  esac
+
+  local _intent_path="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}/exclusive-materialization.intent"
+  [ -e "$_intent_path" ] || return 0
+  command -v flock >/dev/null 2>&1 || return 0
+
+  local _intent_started _intent_deadline _intent_probe_fd='' _intent_announced=0
+  _intent_started=$(date +%s)
+  _intent_deadline=$(( _intent_started + _intent_wait_sec ))
+  while :; do
+    if ! { exec {_intent_probe_fd}>>"$_intent_path"; } 2>/dev/null; then
+      echo "[pc-heavy] retry intent signal unavailable; proceeding without the exclusive-materializer wait" >&2
+      return 0
+    fi
+    if flock -s -n "$_intent_probe_fd"; then
+      eval "exec ${_intent_probe_fd}>&-" 2>/dev/null || true
+      if [ "$_intent_announced" = 1 ]; then
+        echo "[pc-heavy] exclusive materializer intent cleared; starting retry" >&2
+      fi
+      return 0
+    fi
+    eval "exec ${_intent_probe_fd}>&-" 2>/dev/null || true
+
+    if [ "$_intent_announced" = 0 ]; then
+      echo "[pc-heavy] retry waiting for exclusive materializer intent to clear (up to ${_intent_wait_sec}s)" >&2
+      _intent_announced=1
+    fi
+    if [ "$_intent_wait_sec" -eq 0 ] || [ "$(date +%s)" -ge "$_intent_deadline" ]; then
+      echo "[pc-heavy] retry intent wait timed out after ${_intent_wait_sec}s; proceeding fail-open" >&2
+      return 0
+    fi
+    sleep 0.2
+  done
+}
+
 # Run the requested command through a bounded outer retry policy. This wrapper
 # deliberately lives OUTSIDE `main`: the normal pc-heavy invocation has many
 # terminal `exit` paths (including coalescing replay), so a same-shell retry
@@ -2620,6 +2677,7 @@ _pc_heavy_run_with_retries() {
       if [ "$_retry_attempt" -lt "$_retry_limit" ]; then
         _retry_attempt=$(( _retry_attempt + 1 ))
         echo "[pc-heavy] retrying after exclusive-materializer preemption (retry $_retry_attempt/$_retry_limit)" >&2
+        _pc_heavy_wait_for_exclusive_intent_clear
         continue
       fi
       echo "[pc-heavy] exhausted $_retry_limit preemption retry(s); returning the exact exclusive-materializer failure" >&2
