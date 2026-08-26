@@ -975,7 +975,8 @@ export async function markAdvSessionEnded(
     const r = await sql`
       UPDATE harness_shared.adv_sessions
          SET ended_at = now(), exit_code = ${exitCode}, ended_by = ${endedBy},
-             ended_signal = ${endedSignal}
+             ended_signal = ${endedSignal}, resume_claim_key = NULL,
+             resume_claimed_at = NULL
        WHERE id = ${id} AND ended_at IS NULL
        RETURNING id
     `;
@@ -1091,6 +1092,136 @@ export async function markAdvSessionShutdownAcceptedByOwner(coordOwnerId: string
  */
 const RESUME_CLAIM_WINDOW_SEC = 300;
 
+/** Default lifetime of a psu resume reservation. This is deliberately much
+ * shorter than the retired five-minute started_at claim window: normal
+ * launcher setup completes in seconds, while a dead launcher must not strand
+ * an intentionally ended session. Callers may pass a measured override. */
+export const RESUME_RESERVATION_LEASE_SEC = 60;
+
+export type AdvSessionResumeReservation =
+  | {
+      status: 'acquired';
+      acquired: true;
+      replayed: boolean;
+      leaseExpiresAt: string;
+    }
+  | {
+      status: 'reserved';
+      acquired: false;
+      retryAfterMs: number;
+      leaseExpiresAt: string;
+    }
+  | { status: 'live'; acquired: false }
+  | { status: 'missing'; acquired: false };
+
+/**
+ * Reserve the right to resume one adv-session WITHOUT asserting liveness.
+ *
+ * The row itself is the durable idempotency receipt: replaying `key` returns
+ * the acquired verdict after an unknown HTTP outcome. A competing unexpired
+ * key gets a typed reservation response; an expired key is atomically replaced.
+ * Terminal rows are eligible immediately. Legacy active rows remain eligible
+ * only after the established stale-process window, preserving recovery for old
+ * sessions whose parent never recorded their exit.
+ */
+export async function acquireAdvSessionResume(
+  id: number,
+  resumeClaimKey: string,
+  leaseSec: number = RESUME_RESERVATION_LEASE_SEC,
+  staleActiveSec: number = RESUME_CLAIM_WINDOW_SEC,
+): Promise<AdvSessionResumeReservation> {
+  const key = resumeClaimKey.trim();
+  if (!key) throw new Error('resumeClaimKey must be non-empty');
+  const boundedLeaseSec = Math.max(1, Math.min(300, Math.floor(leaseSec)));
+  const boundedStaleSec = Math.max(1, Math.floor(staleActiveSec));
+  const { sql } = getOrgPg();
+
+  return sql.begin(async (tx) => {
+    const [row] = await tx<Array<{
+      ended_at: Date | string | null;
+      ended_by: string | null;
+      started_at: Date | string;
+      resume_claim_key: string | null;
+      resume_claimed_at: Date | string | null;
+    }>>`
+      SELECT ended_at, ended_by, started_at, resume_claim_key, resume_claimed_at
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
+       FOR UPDATE
+    `;
+    if (!row) return { status: 'missing', acquired: false } as const;
+
+    const nowMs = Date.now();
+    const claimedAtMs = row.resume_claimed_at == null
+      ? null
+      : new Date(row.resume_claimed_at).getTime();
+    const leaseMs = boundedLeaseSec * 1_000;
+    const leaseLive = claimedAtMs != null && claimedAtMs + leaseMs > nowMs;
+
+    if (row.resume_claim_key && row.resume_claim_key !== key && leaseLive) {
+      const leaseExpiresAt = new Date(claimedAtMs! + leaseMs).toISOString();
+      return {
+        status: 'reserved',
+        acquired: false,
+        retryAfterMs: Math.max(1, claimedAtMs! + leaseMs - nowMs),
+        leaseExpiresAt,
+      } as const;
+    }
+
+    const replayed = row.resume_claim_key === key;
+    const terminal = row.ended_at != null || row.ended_by != null;
+    const staleActive = new Date(row.started_at).getTime() <= nowMs - boundedStaleSec * 1_000;
+    const expiredReservation = row.resume_claim_key != null && !leaseLive;
+    if (!replayed && !terminal && !staleActive && !expiredReservation) {
+      return { status: 'live', acquired: false } as const;
+    }
+
+    const [reserved] = await tx<Array<{ lease_expires_at: Date | string }>>`
+      UPDATE harness_shared.adv_sessions
+         SET resume_claim_key = ${key}, resume_claimed_at = now()
+       WHERE id = ${id}
+      RETURNING resume_claimed_at + make_interval(secs => ${boundedLeaseSec}) AS lease_expires_at
+    `;
+    return {
+      status: 'acquired',
+      acquired: true,
+      replayed,
+      leaseExpiresAt: new Date(reserved.lease_expires_at).toISOString(),
+    } as const;
+  });
+}
+
+/** Assert liveness for a reservation after the managed host/direct child has
+ * actually spawned. The key match is the one-writer proof. */
+export async function finalizeAdvSessionResume(id: number, resumeClaimKey: string): Promise<boolean> {
+  const key = resumeClaimKey.trim();
+  if (!key) return false;
+  const { sql } = getOrgPg();
+  const rows = await sql<{ id: number }[]>`
+    UPDATE harness_shared.adv_sessions
+       SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
+           started_at = now(), shutdown_accepted_at = NULL,
+           resume_claim_key = NULL, resume_claimed_at = NULL
+     WHERE id = ${id} AND resume_claim_key = ${key}
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
+/** Release a pre-spawn/failed reservation while preserving terminal evidence. */
+export async function releaseAdvSessionResume(id: number, resumeClaimKey: string): Promise<boolean> {
+  const key = resumeClaimKey.trim();
+  if (!key) return false;
+  const { sql } = getOrgPg();
+  const rows = await sql<{ id: number }[]>`
+    UPDATE harness_shared.adv_sessions
+       SET resume_claim_key = NULL, resume_claimed_at = NULL
+     WHERE id = ${id} AND resume_claim_key = ${key}
+    RETURNING id
+  `;
+  return rows.length > 0;
+}
+
 /**
  * EI-21247460909447431: claim the single-winner right to RESUME an adv session.
  *
@@ -1133,12 +1264,17 @@ export async function claimAdvSessionResume(
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
          SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
-             started_at = now(), shutdown_accepted_at = NULL
+             started_at = now(), shutdown_accepted_at = NULL,
+             resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
          AND (
            ended_at IS NOT NULL
            OR ended_by IS NOT NULL
            OR started_at < now() - make_interval(secs => ${windowSec})
+         )
+         AND (
+           resume_claim_key IS NULL
+           OR resume_claimed_at < now() - make_interval(secs => ${RESUME_RESERVATION_LEASE_SEC})
          )
       RETURNING id
     `;
@@ -1184,12 +1320,18 @@ export async function claimAdvSessionResume(
     const rows = await tx<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
          SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
-             started_at = now(), shutdown_accepted_at = NULL
+             started_at = now(), shutdown_accepted_at = NULL,
+             resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id}
          AND (
            ended_at IS NOT NULL
            OR ended_by IS NOT NULL
            OR started_at < now() - make_interval(secs => ${windowSec})
+         )
+         AND (
+           resume_claim_key IS NULL
+           OR resume_claim_key = ${key}
+           OR resume_claimed_at < now() - make_interval(secs => ${RESUME_RESERVATION_LEASE_SEC})
          )
       RETURNING id
     `;
@@ -1227,7 +1369,8 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
          SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
-             started_at = now(), shutdown_accepted_at = NULL
+             started_at = now(), shutdown_accepted_at = NULL,
+             resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = (
          SELECT id FROM harness_shared.adv_sessions
           WHERE coord_owner_id = ${coordOwnerId} AND ended_at IS NOT NULL
@@ -1277,7 +1420,8 @@ export async function reanchorAdvSessionNativeId(
     const rows = await sql<{ id: number; owner: string | null }[]>`
       UPDATE harness_shared.adv_sessions
          SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, ended_by = NULL,
-             ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL
+             ended_signal = NULL, started_at = now(), shutdown_accepted_at = NULL,
+             resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = ${id} AND session_id IS DISTINCT FROM ${sessionId}
       RETURNING id, coord_owner_id AS owner
     `;
@@ -1328,7 +1472,10 @@ export async function reanchorAdvSessionNativeIdByOwner(
     const { sql } = getOrgPg();
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
-         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL, started_at = now(), shutdown_accepted_at = NULL
+         SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
+             ended_by = NULL, ended_signal = NULL, started_at = now(),
+             shutdown_accepted_at = NULL, resume_claim_key = NULL,
+             resume_claimed_at = NULL
        WHERE id = (
          SELECT id FROM harness_shared.adv_sessions
           WHERE coord_owner_id = ${coordOwnerId}
