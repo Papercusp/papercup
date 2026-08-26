@@ -37,16 +37,24 @@ vi.mock('./presence', async (importOriginal) => ({
   sweepStalePresence: sweepMock,
 }));
 vi.mock('./federated-presence', () => ({ listFederatedPresence: vi.fn(async () => []) }));
-vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../adv-sessions', async (orig) => ({
+  ...(await orig<typeof import('../../adv-sessions')>()),
+  endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   listRecordedLiveSessions: vi.fn(async () => []),
   // Unification P-002: the snapshot's recorded-session oracle leg.
   recordedLiveOwnerIds: vi.fn(async () => new Set<string>()),
+  // EI-21488009366204518: the targeted-miss ended-session leg.
+  listEndedAdvSessionsByOwners: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
 }));
 // Pass-through reconcile: the test rows below are already RosterRow-shaped.
-vi.mock('./recorded-sessions', () => ({
+// importOriginal keeps the REAL synthesizeEndedRosterRows so the EI-21488009366204518
+// leg runs its production synthesis in these fixtures.
+vi.mock('./recorded-sessions', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   reconcileRosterSources: (rows: unknown[]) => rows,
   RECORDED_SESSION_SOURCE: 'recorded-session',
 }));
+
 // EI-16639: the nursery-alias leg — no running nursery bees in these fixtures,
 // so it contributes nothing (existing counts/ids stay exactly as asserted below).
 vi.mock('./nursery-alias-liveness', () => ({

@@ -142,3 +142,57 @@ export function synthesizeRecordedRosterRows(
   }
   return out;
 }
+/**
+ * EI-21488009366204518 — the ENDED twin of {@link synthesizeRecordedRosterRows}:
+ * synthesize roster rows for owners whose ONLY remaining evidence is a
+ * session-log death record (adv_sessions.ended_at) because their coord_presence
+ * row has been reaped. Without this leg, a targeted `coord:presence { owner }`
+ * lookup — the documented "inspect one dead agent" door — renders a reaped dead
+ * session as an EMPTY roster, indistinguishable from an id that never existed.
+ *
+ * The synthesized row is `stale: true` with its heartbeat pinned to `endedAt`,
+ * so the oracle's deriveVerdict classifies it `'ended'` via the recordedEnded
+ * branch (positive death evidence) rather than inventing liveness. Pure; the IO
+ * seam is `listEndedAdvSessionsByOwners` in adv-sessions.ts.
+ */
+export function synthesizeEndedRosterRows(
+  ended: readonly AdvSessionRow[],
+  existingOwnerIds: ReadonlySet<string>,
+): UnifiedPresenceRecord[] {
+  const out: UnifiedPresenceRecord[] = [];
+  const seen = new Set<string>();
+  for (const r of ended) {
+    const ownerId = r.coordOwnerId;
+    if (!ownerId) continue; // unaddressable — skip
+    if (existingOwnerIds.has(ownerId)) continue; // a live presence row wins
+    if (seen.has(ownerId)) continue; // dedup within the ended list
+    seen.add(ownerId);
+    out.push({
+      ownerId,
+      ownerLabel: recordedLabel(r),
+      workspaceId: r.workspaceId,
+      source: RECORDED_SESSION_SOURCE,
+      intent: '',
+      currentPlanSlug: r.planSlug,
+      currentFiles: [],
+      host: '',
+      pid: r.pid,
+      tty: null,
+      startedAt: r.startedAt,
+      // The death ts is the last truthful liveness reading. stale:true keeps the
+      // row out of every dispatchable surface; deriveVerdict's recordedEnded
+      // branch turns it into an explicit `ended` row on the targeted read.
+      heartbeatAt: r.endedAt ?? r.startedAt,
+      lastActiveAt: null,
+      intentDeclaredAt: null,
+      agentRole: r.role,
+      potSlug: null,
+      capabilityTags: [],
+      stale: true,
+      userId: null,
+      revoked: false,
+      federated: false,
+    });
+  }
+  return out;
+}
