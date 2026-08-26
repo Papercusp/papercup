@@ -44,8 +44,8 @@ export interface ChecksSeamSection {
   validOutput: Record<string, unknown>;
   /** A payload.out fixture the gate must REJECT (throw). */
   invalidOutput: Record<string, unknown>;
-  /** Member blueprint.yaml — cross-checked: workItem.kind === workItemKind. */
-  memberBlueprint?: string;
+  /** Stable app-agent blueprint.yaml — cross-checked: workItem.kind === workItemKind. */
+  agentBlueprint?: string;
   /** The app's own full enqueue→ingest integration leg (must exit 0). */
   roundTripCommand?: string[];
   roundTripCwd?: string;
@@ -87,9 +87,9 @@ export interface ChecksNativeDesktopSection {
   icons: string[];
 }
 
-/** `gym-signals` — the hive's guardrail signals are declared and wired. */
+/** `gym-signals` — the stable app agent's guardrail signals are declared and wired. */
 export interface ChecksGymSection {
-  /** The HIVE blueprint.yaml, app-root-relative. */
+  /** The stable app-agent blueprint.yaml, app-root-relative. */
   blueprint: string;
   /** The app's ids for the four signal classes. */
   requiredSignals: string[];
