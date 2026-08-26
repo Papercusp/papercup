@@ -69,6 +69,7 @@ import {
   stripNulBytesDeep,
   type CompletionCoverage,
   type CompletionRecord,
+  type PersistedCompletionEvidence,
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
 import {
@@ -2164,9 +2165,25 @@ async function completeOne(
   // close AND inside a second-close attestation, since that path reads `opts.completionEvidence`)
   // fixes both cases from one write, without touching the authority/warning semantics above.
   const summaryText = it.completion.summary?.trim();
-  const completionEvidenceBeforeStamp: CompletionVerificationEvidence | undefined = summaryText
-    ? { ...(completionEvidenceForGate ?? {}), summary: summaryText }
-    : completionEvidenceForGate;
+  // EI-21478999218933285: `deferred`, `whatLanded`, and `coordNotes` used to survive
+  // only in the transient completion event. A later work_items:get therefore gave a
+  // confident but false "none recorded" answer even for a known-positive close.
+  // Persist them beside `summary` on the EXISTING `_completionEvidence` surface.
+  // Keep this object separate from `completionEvidenceForGate`: narrative fields
+  // describe the close, but must never promote an evidence-free close to `committed`.
+  const completionNarrative: PersistedCompletionEvidence = {};
+  if (it.completion.whatLanded?.length) completionNarrative.whatLanded = it.completion.whatLanded;
+  if (it.completion.deferred?.length) completionNarrative.deferred = it.completion.deferred;
+  if (it.completion.coordNotes) completionNarrative.coordNotes = it.completion.coordNotes;
+  const hasCompletionNarrative = Object.keys(completionNarrative).length > 0;
+  const completionEvidenceBeforeStamp: PersistedCompletionEvidence | undefined =
+    summaryText || hasCompletionNarrative
+      ? {
+          ...(completionEvidenceForGate ?? {}),
+          ...(summaryText ? { summary: summaryText } : {}),
+          ...completionNarrative,
+        }
+      : completionEvidenceForGate;
 
   // Cross-repository completions are common: an su can coordinate through Papercusp while
   // verifying SideStage. Reuse the same registered-root fallback as the filesChanged audit,
@@ -2197,7 +2214,7 @@ async function completeOne(
       ? completionTreeStampForEvidence(completionEvidenceBeforeStamp, registeredRepoRoots)
       : completionTreeStamp({ filesChanged: completionEvidenceBeforeStamp.filesChanged })
     : undefined;
-  const completionEvidenceToPersist: CompletionVerificationEvidence | undefined =
+  const completionEvidenceToPersist: PersistedCompletionEvidence | undefined =
     completionEvidenceBeforeStamp && treeStamp
       ? { ...completionEvidenceBeforeStamp, treeStamp }
       : completionEvidenceBeforeStamp;

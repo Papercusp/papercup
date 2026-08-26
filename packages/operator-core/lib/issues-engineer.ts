@@ -64,7 +64,7 @@ import {
   type CompletionAudit,
 } from './completion-audit';
 import { dedupSignature } from './harness/improvements/digest';
-import type { CompletionVerificationEvidence } from './coord-lifecycle/records';
+import type { PersistedCompletionEvidence } from './coord-lifecycle/records';
 import {
   isSufficientEvidence,
   isWorkItemCompletionAuthority,
@@ -469,7 +469,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
+function extractTerminalCompletionEvidence(payload: unknown): PersistedCompletionEvidence | null {
   let obj = payload;
   if (typeof obj === 'string') {
     try {
@@ -488,7 +488,7 @@ function extractTerminalCompletionEvidence(payload: unknown): CompletionVerifica
     }
   }
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  return value as CompletionVerificationEvidence;
+  return value as PersistedCompletionEvidence;
 }
 
 export interface IssueRowDb {
@@ -2487,7 +2487,7 @@ export async function setIssueState(
   by?: string,
   completionRef?: string,
   opts: {
-    completionEvidence?: CompletionVerificationEvidence;
+    completionEvidence?: PersistedCompletionEvidence;
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under `TERMINAL_ASSUMPTIONS_KEY`. Optional here for the same
