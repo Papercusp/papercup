@@ -16,6 +16,7 @@ import {
   buildSilentNullPathAdvisory,
   buildJsonbTypeofNegationAdvisory,
   buildClaimabilityAdvisory,
+  buildBacklogFlowAdvisory,
   buildCorpusNamespaceAdvisory,
   buildSessionTurnPartsJsonAdvisory,
   buildNativeToolAttributionAdvisory,
@@ -2216,5 +2217,29 @@ describe('buildToolRoutingAdvisory', () => {
 
     const phantom = routed.filter((v) => !known.has(v));
     expect(phantom, `routed to verbs that do not exist: ${phantom.join(', ')}`).toEqual([]);
+  });
+});
+describe('buildBacklogFlowAdvisory — lane-predicate detection (EI-21412161573952069)', () => {
+  it('does NOT fire for a payload-lane filter whose key only survives in string literals', () => {
+    // The exact reporter shape: the lane key lives inside a JSON literal, which
+    // stripSqlLiteralsAndComments erases — the old stripped-only probe read this
+    // correctly-filtered aggregate as "no lane predicate".
+    const sql = [
+      'SELECT workspace_id, harness_slug, count(*) AS n',
+      'FROM harness_shared.work_items',
+      "WHERE COALESCE(payload->>'lane','') <> 'observation'",
+      'GROUP BY workspace_id, harness_slug',
+    ].join(' ');
+    expect(buildBacklogFlowAdvisory(sql)).toBeNull();
+  });
+
+  it('still fires for an aggregate with no lane mention anywhere', () => {
+    const sql = 'SELECT count(*) FROM harness_shared.work_items';
+    expect(buildBacklogFlowAdvisory(sql)).toMatch(/no `lane` predicate/);
+  });
+
+  it('stays silent when a real lane column reference survives stripping', () => {
+    const sql = "SELECT count(*) FROM harness_shared.work_items WHERE payload->>'lane' = 'bug'";
+    expect(buildBacklogFlowAdvisory(sql)).toBeNull();
   });
 });

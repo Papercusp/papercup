@@ -1505,7 +1505,16 @@ export function buildBacklogFlowAdvisory(rawSql: string): string | null {
   const parts: string[] = [];
 
   // (1) An aggregate with no lane predicate silently spans the observation lane.
-  if (isAggregate && !/\blane\b/i.test(stripped)) {
+  // EI-21412161573952069: the lane key usually appears as a JSON LITERAL —
+  // `COALESCE(payload->>'lane','') <> 'observation'` — and stripSqlLiteralsAndComments
+  // ERASES string literals, so probing only the stripped text made every
+  // payload-lane filter read as absent (a false "no lane predicate" on a query
+  // that filtered the lane). Probe the RAW text as well: a literal mention is
+  // precisely the predicate this check hunts. The accepted trade-off: a mention
+  // inside a COMMENT can also suppress the advisory — an acceptable heuristic
+  // cost, since the alternative was flagging correctly-filtered queries.
+  const hasLanePredicate = /\blane\b/i.test(stripped) || /\blane\b/i.test(rawSql);
+  if (isAggregate && !hasLanePredicate) {
     parts.push(
       "no `lane` predicate: harness_shared.work_items also holds agents' own end-of-turn notes under " +
         "lane='observation'. An unfiltered aggregate counts those as filed work — measured 2026-08-17, " +
