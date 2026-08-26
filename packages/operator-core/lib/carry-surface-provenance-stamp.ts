@@ -22,6 +22,7 @@
 
 import { withBoundedTimeout } from './bounded-timeout';
 import {
+  assertsOwnerAuthority,
   provenanceLintField,
   type ProvenanceLintMatch,
 } from './carry-surface-provenance-lint';
@@ -38,6 +39,7 @@ import {
   resolveCurrentTurnStamp,
   verifyTurnRefs,
   type CurrentTurnStamp,
+  type RecordedTurnVerdict,
   type TurnRefVerdict,
 } from './turn-provenance/turn-ref';
 
@@ -102,6 +104,110 @@ export function mergeQuoteMismatchesIntoLint(
     matches: [...(lint?.matches ?? []), ...quoteMismatches],
   };
 }
+
+/**
+ * The verdicts that mean the referenced turn really was the HUMAN OWNER speaking.
+ * Kept as data, and as a SET of all three owner-ish members, because the obvious
+ * hand-written test — `verdict !== 'owner-typed'` — silently misclassifies a
+ * cross-session-proven `owner-turn` and an `owner-dialog` answer as agent speech.
+ */
+export const OWNER_TURN_VERDICTS: ReadonlySet<RecordedTurnVerdict> = new Set([
+  'owner-typed',
+  'owner-turn',
+  'owner-dialog',
+]);
+
+/** One line that claims owner authority on an anchor whose turn is NOT the owner. */
+export interface FalsifiedOwnerAnchor {
+  /** The offending line, trimmed and capped for display. */
+  line: string;
+  /** The `[turn:…]` ref, exactly as written. */
+  ref: string;
+  /** What the referenced turn actually was. */
+  verdict: RecordedTurnVerdict;
+  origin: string | null;
+  /** Head of the referenced turn's real text, so the reader sees what was said. */
+  snippet: string | null;
+}
+
+const FALSIFIED_LINE_CAP = 240;
+
+/**
+ * WI-42142 — the FALSIFIED OWNER ANCHOR: a line that asserts owner authority and
+ * cites a `[turn:…]` ref which RESOLVED to a turn the system classified as NOT the
+ * owner (a self-compaction note, a loop fire, a wake pump).
+ *
+ * This is the gap between the two existing legs, and it is the one that cost real
+ * time. The sync lint ({@link lintCarrySurfaceProvenance}) treats ANY `[turn:…]`
+ * ref as sufficient and skips the line entirely, so it flags nothing.
+ * {@link mergeQuoteMismatchesIntoLint} then checks whether the attached QUOTE
+ * matches the turn's text — but only when a quote was attached, and it says nothing
+ * about WHO spoke. So a citation with no quote, pointing at a machine turn, passes
+ * both. `stable-candidate-related-gate-2026-08-23#D-085` is that shape verbatim:
+ * "Owner-directed ordering. … records the exact source turn as
+ * [turn:codex:01a03d76-…@2026-08-26T09:46:32.215Z]" — a real, resolvable turn that
+ * is `self-compaction` in a session containing zero human turns. The asserted hold
+ * was then treated as owner authority by every downstream lane.
+ *
+ * PURE — the caller supplies verdicts already resolved by
+ * {@link stampCarrySurfaceProvenance}, so this is unit-testable with hand-built
+ * fixtures and adds no IO of its own.
+ *
+ * CONSERVATIVE BY CONSTRUCTION, which is what makes it safe to ENFORCE rather than
+ * merely warn (the rest of this module is warn-only, deliberately):
+ *   - it needs a verdict that was actually `found` AND `checked` — an unreachable
+ *     transcript, a timed-out stamp, or a ref outside the owner's isolation chain
+ *     yields nothing, so a failed lookup can never manufacture a refusal;
+ *   - the owner-authority claim and the falsified ref must be on the SAME LINE,
+ *     mirroring this module's line-scoping everywhere else, so an unrelated turn
+ *     citation elsewhere in a long body cannot collide with the word "owner";
+ *   - `owner-turn` and `owner-dialog` count as the owner (see
+ *     {@link OWNER_TURN_VERDICTS}).
+ *
+ * Measured blast radius before wiring it: across every papercusp plan, exactly
+ * FIVE decision-body lines carry a `[turn:…]` ref at all (2 plans), against 483
+ * lines carrying a bare `[owner:…]`-shaped tag with no anchor. So this predicate
+ * asks a question of ~5 historical lines, while the naive alternative — porting
+ * loop:arm's `manual-owner-tag` refusal onto plan decisions — would have refused
+ * 432 of those 483 across 139 plans AND still waved D-085 straight through, since
+ * its line carries an anchor.
+ */
+export function falsifiedOwnerAnchors(
+  text: string | null | undefined,
+  verdicts: readonly TurnRefVerdict[],
+): FalsifiedOwnerAnchor[] {
+  if (!text || verdicts.length === 0) return [];
+  const falsified = verdicts.filter(
+    (v) => v.found && v.checked && v.verdict !== null && !OWNER_TURN_VERDICTS.has(v.verdict),
+  );
+  if (falsified.length === 0) return [];
+  const out: FalsifiedOwnerAnchor[] = [];
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line || !assertsOwnerAuthority(line)) continue;
+    for (const v of falsified) {
+      if (!line.includes(v.ref)) continue;
+      out.push({
+        line: line.slice(0, FALSIFIED_LINE_CAP),
+        ref: v.ref,
+        verdict: v.verdict as RecordedTurnVerdict,
+        origin: v.origin,
+        snippet: v.snippet,
+      });
+    }
+  }
+  return out;
+}
+
+/** The refusal text a consumer returns when {@link falsifiedOwnerAnchors} fires. */
+export const FALSIFIED_OWNER_ANCHOR_NOTE =
+  'falsified_owner_anchor: this write claims OWNER authority on a line whose [turn:<session>@<ts>] anchor ' +
+  'resolved to a turn the system classified as NOT the owner (a self-compaction note, a loop fire, a wake ' +
+  'pump). A resolvable ref is necessary but not sufficient — the cited turn has to be the human actually ' +
+  'speaking. Re-read the turn verbatim (sessions:search { session:\'self\', mode:\'verbatim\' }), then either ' +
+  'cite the real owner turn, or record the directive under its true source: [self-imposed] · [peer:<sid>] · ' +
+  '[inferred]. A self-imposed constraint recorded honestly is worth more than an owner tag that cannot survive ' +
+  'being checked. See stable-candidate-related-gate-2026-08-23#D-085 / #D-086 / #D-089.';
 
 /**
  * P-005 (cold-carry-system-hardening-2026-07-19), PURE: a hand-written [owner:…] tag

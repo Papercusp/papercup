@@ -172,6 +172,39 @@ const NEGATED_OWNER_AUTHORITY_RE = new RegExp(
 );
 
 /**
+ * WI-42142 — the LINE-SCOPED predicate "does this line assert OWNER AUTHORITY at
+ * all?", exported for a consumer that has RESOLVED the line's `[turn:…]` ref and
+ * needs to ask the second half of a question this module's sync scan structurally
+ * cannot: not *is the claim anchored?* but *is the anchor's turn actually the
+ * owner?*
+ *
+ * WHY IT MUST BE SEPARATE: {@link lintCarrySurfaceProvenance} SKIPS any line
+ * carrying a `[turn:…]` ref (TURN_REF_LINE_RE) — a ref is treated as mechanically
+ * verifiable, so such a line never reaches a detector at all. That exemption is
+ * exactly what `stable-candidate-related-gate-2026-08-23#D-085` rode in on: it
+ * cited `[turn:codex:01a03d76-…@2026-08-26T09:46:32.215Z]` for "Owner-directed
+ * ordering", and the cited turn is a SELF-COMPACTION note in a session with zero
+ * human turns. The sync lint flagged nothing — correctly, by its own contract —
+ * and the asserted hold then froze a release gate for days. Only the RESOLVED
+ * verdict can falsify such an anchor, and a consumer holding that verdict still
+ * needs to know the line was claiming owner authority in the first place.
+ *
+ * Deliberately BROADER than the assertion detectors above — it matches the bare
+ * noun `owner` via {@link OWNER_AUTHORITY_REF}'s final alternative, so it also sees
+ * shapes no detector here matches ("Owner-directed ordering", "the owner
+ * checkpoint records…"). That breadth is safe ONLY because it is used in
+ * CONJUNCTION with a resolved-and-falsified turn verdict: the narrowing is carried
+ * by the evidence, not by the phrase match. Do not reuse it as a standalone
+ * detector — on its own it would fire on any sentence containing the word.
+ */
+const OWNER_AUTHORITY_LINE_RE = new RegExp(OWNER_AUTHORITY_REF, 'i');
+
+export function assertsOwnerAuthority(line: string | null | undefined): boolean {
+  if (!line) return false;
+  return OWNER_AUTHORITY_LINE_RE.test(line);
+}
+
+/**
  * A line that RETRACTS an owner attribution rather than asserting one. Applies to both
  * the bracket tag and the `owner directive|mandate` noun phrase — a retraction is
  * written in whichever form the thing being retracted used.

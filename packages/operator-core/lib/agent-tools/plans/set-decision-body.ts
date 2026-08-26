@@ -16,6 +16,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
+import { decisionProvenance, FALSIFIED_OWNER_ANCHOR_NOTE } from './decision-provenance';
 import { parsePlan, maskFences, normalizeDecisionBodyHeadings, type LegacyReason } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { hardText, softText, clampText, LIMITS } from '../limits';
@@ -128,6 +129,25 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
+    // WI-42142 — the same decision-provenance leg plans:add-decision runs, for the
+    // same reason: this tool overwrites the very body that tool appends, so guarding
+    // only the append is a guard an agent clears by recording a clean decision and
+    // then rewriting it. Resolved BEFORE the plan lock (transcript IO under a bounded
+    // budget must not be paid under a held lock); see ./decision-provenance.
+    const { fields: provenance, anchors } = await decisionProvenance(args.body, ctx);
+    if (anchors.length > 0) {
+      return text(
+        {
+          error: 'falsified_owner_anchor',
+          slug: args.slug,
+          decisionId: args.decisionId,
+          message: FALSIFIED_OWNER_ANCHOR_NOTE,
+          anchors,
+        },
+        true,
+      );
+    }
+
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
     const rev = planRevisionCapture(
@@ -211,6 +231,8 @@ export default defineTool({
       ...result.value,
       filePath: result.filePath,
       revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+      // WI-42142: advisory provenance — absent on the clean common case.
+      ...provenance,
     });
   },
 });

@@ -24,6 +24,10 @@ const handlerMocks = vi.hoisted(() => ({
   planRevisionCapture: vi.fn(),
   emitPlanEventForCaller: vi.fn(async () => {}),
   emitDecisionAdded: vi.fn(),
+  // WI-42142: the provenance stamp does transcript IO. Mocked so these tests pin
+  // the WIRING (refusal + advisory fold), while falsifiedOwnerAnchors itself stays
+  // REAL here — its own contract is unit-tested in carry-surface-provenance-stamp.test.ts.
+  carryProvenanceFields: vi.fn(async () => ({}) as Record<string, unknown>),
 }));
 
 // Handler tests below isolate the scope and lock seams; the pure helper tests
@@ -48,6 +52,10 @@ vi.mock('../coordination/plan-events', () => ({
 }));
 vi.mock('../../harness/usage-emitters', () => ({
   emitDecisionAdded: handlerMocks.emitDecisionAdded,
+}));
+vi.mock('../../carry-surface-provenance-stamp', async (orig) => ({
+  ...(await orig<typeof import('../../carry-surface-provenance-stamp')>()),
+  carryProvenanceFields: handlerMocks.carryProvenanceFields,
 }));
 import tool, {
   findRetryDuplicateOfLastDecision,
@@ -345,6 +353,101 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
       expect.any(Function),
     );
     expect(result.results[0]).toMatchObject({ ok: true, slug: 'handler-plan', decisionId: 'D-001' });
+  });
+
+  it('WI-42142: refuses a decision whose owner claim is anchored to a NON-owner turn, before taking the plan lock', async () => {
+    const ctx = handlerContext();
+    const ref = '[turn:codex:01a03d76-8954-76d3-a211-dc9717f3e07c@2026-08-26T09:46:32.215Z]';
+    handlerMocks.carryProvenanceFields.mockResolvedValue({
+      turnProvenance: {
+        refs: [
+          {
+            ref,
+            found: true,
+            checked: true,
+            verdict: 'agent-injected',
+            origin: 'self-compaction',
+            snippet: 'Continue where you left off',
+            quote: null,
+            quoteMatch: null,
+          },
+        ],
+      },
+    });
+
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Owner-directed ordering',
+        body: `Owner-directed ordering. The owner checkpoint records the source turn as ${ref}.`,
+      },
+      ctx,
+    );
+
+    // The refusal must land BEFORE the write — a decision recorded and then
+    // warned about is already being read as authority by other lanes.
+    expect(handlerMocks.withPlanLock).not.toHaveBeenCalled();
+    expect(result.results[0]).toMatchObject({
+      ok: false,
+      slug: 'handler-plan',
+      error: 'falsified_owner_anchor',
+    });
+    expect(String(result.results[0].message)).toContain('[self-imposed]');
+    expect(result.results[0].anchors).toHaveLength(1);
+  });
+
+  it('WI-42142: a bare [owner:…] tag with no anchor is NOT refused — it folds through as advisory', async () => {
+    // The dominant existing convention: 432 of the 483 decision-body owner-tag
+    // lines in this workspace's plans are bare tags. Refusing them would break
+    // correct practice AND still miss the falsified-anchor shape above.
+    const ctx = handlerContext();
+    handlerMocks.carryProvenanceFields.mockResolvedValue({
+      provenanceLint: {
+        flagged: true,
+        note: 'sync note',
+        matches: [{ line: '[owner 2026-08-26] ship it', kind: 'manual-owner-tag' }],
+      },
+    });
+
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Ship it',
+        body: '[owner 2026-08-26] ship it',
+      },
+      ctx,
+    );
+
+    expect(handlerMocks.withPlanLock).toHaveBeenCalled();
+    expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
+    expect(result.results[0].provenanceLint).toMatchObject({ flagged: true });
+  });
+
+  it('WI-42142: a stamp fault fails OPEN — the decision still lands', async () => {
+    const ctx = handlerContext();
+    handlerMocks.carryProvenanceFields.mockRejectedValue(new Error('transcript unreachable'));
+
+    const result = await handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'Still lands', body: 'No provenance shapes.' },
+      ctx,
+    );
+
+    expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
+  });
+
+  it('WI-42142: a clean decision keeps its exact prior response shape (no provenance noise)', async () => {
+    const ctx = handlerContext();
+
+    const result = await handlerBody(
+      { harness: 'explicit-harness', slug: 'handler-plan', title: 'Clean', body: 'Ordinary rationale.' },
+      ctx,
+    );
+
+    expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
+    expect(result.results[0]).not.toHaveProperty('provenanceLint');
+    expect(result.results[0]).not.toHaveProperty('turnProvenance');
   });
 
   it('refuses an ambiguous recovered slug before taking the plan lock', async () => {

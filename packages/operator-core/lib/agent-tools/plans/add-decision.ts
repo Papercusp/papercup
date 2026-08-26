@@ -35,6 +35,7 @@ import { emitDecisionAdded } from '../../harness/usage-emitters';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { recoverHarnessFromSlugs, requireUnambiguousSlugScope } from './slug-scope';
+import { decisionProvenance, FALSIFIED_OWNER_ANCHOR_NOTE } from './decision-provenance';
 
 const REFS = z
   .array(z.string().regex(/^P-\d{3,}$/))
@@ -377,6 +378,19 @@ async function decisionContext(
  *  the plan-event emit, AND the cross-plan `affects` propagation. The new decisionId
  *  rides the result; not_found / legacy_plan / busy map to this item's failure. */
 async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise<BulkItemResult> {
+  // WI-42142 — decision provenance, resolved BEFORE the plan lock (the helper's
+  // header carries the full rationale and the measurement behind enforced-vs-advisory).
+  const { fields: provenance, anchors } = await decisionProvenance(`${it.title}\n${it.body}`, ctx);
+  if (anchors.length > 0) {
+    return {
+      ok: false,
+      slug: it.slug,
+      error: 'falsified_owner_anchor',
+      message: FALSIFIED_OWNER_ANCHOR_NOTE,
+      anchors,
+    };
+  }
+
   const resolved = await decisionContext(it, ctx);
   if (!resolved.ok) return resolved.result;
   const sctx = resolved.ctx;
@@ -453,7 +467,7 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
   // or propagate — just hand back the id the earlier (already-landed) call
   // allocated.
   if (result.value.deduped) {
-    return { ok: true, decisionId, slug: it.slug, deduped: true, filePath: result.filePath };
+    return { ok: true, decisionId, slug: it.slug, deduped: true, filePath: result.filePath, ...provenance };
   }
 
   // P-070 usage ledger (best-effort): a decision is contributor activity on a
@@ -498,6 +512,9 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
     revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
     ...(propagatedTo.length > 0 ? { propagated_to: propagatedTo } : {}),
     ...(unknownAffects.length > 0 ? { unknown_affects: unknownAffects } : {}),
+    // WI-42142: advisory provenance fields — absent on the clean common case, so a
+    // decision with no directive shape and no turn ref keeps its exact prior shape.
+    ...provenance,
   };
 }
 
