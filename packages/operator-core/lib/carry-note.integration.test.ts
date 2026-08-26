@@ -39,6 +39,7 @@ const {
   setCarryNote,
   getCarryNote,
   getCarryJournal,
+  setCarryNoteWithPrior,
   setLoopCarryNote,
   setLoopCarryNoteWithPrior,
   getLoopCarryNote,
@@ -291,9 +292,18 @@ describe('su-loop carry-note read/write round-trip (P-002)', () => {
     // that older write and loses the newer checkpoint.
     const fixedNow = Date.now();
     const clock = vi.spyOn(Date, 'now').mockReturnValue(fixedNow);
-    const newer = setLoopCarryNoteWithPrior(LOOP, 'newer checkpoint');
+    // Use the underlying writer without the loop wrapper's deliberately short
+    // lock budget. This test owns the row lock and must isolate ordering from
+    // unrelated test-container contention.
+    const write = (value: string) =>
+      setCarryNoteWithPrior(
+        { scope, workspaceId: 'default' },
+        value,
+        { bounded: false },
+      );
+    const newer = write('newer checkpoint');
     await new Promise((resolve) => setTimeout(resolve, 25));
-    const stale = setLoopCarryNoteWithPrior(LOOP, 'stale checkpoint');
+    const stale = write('stale checkpoint');
     clock.mockRestore();
 
     release();
