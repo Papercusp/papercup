@@ -1396,13 +1396,13 @@ export async function connectWithLocalRetry(
         local && effectiveAttemptTimeoutMs ? { timeoutMs: effectiveAttemptTimeoutMs } : undefined,
       );
       if (!local || !effectiveAttemptTimeoutMs) return await connection;
-      return await new Promise((resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error(`local operator connection attempt timed out after ${effectiveAttemptTimeoutMs}ms`)),
-          effectiveAttemptTimeoutMs,
-        );
-        Promise.resolve(connection).then(resolve, reject);
-      });
+      const connected = Promise.withResolvers();
+      timeout = setTimeout(
+        () => connected.reject(new Error(`local operator connection attempt timed out after ${effectiveAttemptTimeoutMs}ms`)),
+        effectiveAttemptTimeoutMs,
+      );
+      Promise.resolve(connection).then(connected.resolve, connected.reject);
+      return await connected.promise;
     } catch (error) {
       lastError = error;
       attemptKinds.push(classifyConnectFailure(error));
@@ -1441,7 +1441,7 @@ export async function connectWithLocalRetry(
       // from re-contending for a bulkhead slot faster than the proxy asks.
       await sleep(Math.min(retryAfterMsFromError(error) ?? retryDelayMs, remainingTotalMs ?? retryDelayMs));
     } finally {
-      if (timeout) clearTimeout(timeout);
+      clearTimeout(timeout);
     }
   }
   throw appendConnectAttemptHistory(lastError, attemptKinds, Date.now() - startedAt);
