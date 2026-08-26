@@ -22,6 +22,7 @@ import {
   looksLikeMidInstallCorruption,
   looksLikeSilentCollectionFailure,
   parseTransformFailure,
+  publishPreemptReadyMarker,
   transformFailureMarker,
   perGroupVitestArgs,
   runCapturedTestProcess,
@@ -42,6 +43,23 @@ import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs'
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
 describe('test-files router', () => {
+  it('publishes and cleans the pc-heavy after-ready marker at the execution boundary', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'test-file-ready-'));
+    const marker = join(dir, 'ready');
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const cleanup = publishPreemptReadyMarker(marker);
+      expect(readFileSync(marker, 'utf8')).toBe(`${process.pid}\n`);
+      expect(errorSpy).toHaveBeenCalledWith(`PC_HEAVY_PREEMPT_READY pid=${process.pid}`);
+      cleanup?.();
+      expect(() => readFileSync(marker, 'utf8')).toThrow();
+      cleanup?.();
+    } finally {
+      errorSpy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('makes route refusals point to the supported testing:run surface', () => {
     expect(formatRouteError('requested test file does not exist: missing.test.ts')).toBe(
       'TEST_FILE_ROUTE_ERROR requested test file does not exist: missing.test.ts; ' +

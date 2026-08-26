@@ -13,7 +13,7 @@
  * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
@@ -51,6 +51,36 @@ import { ensurePapercuspTmpdir } from '../libs/test-config/src/tmpdir-guard.ts';
 ensurePapercuspTmpdir();
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+/**
+ * Publish pc-heavy's after-ready marker immediately before the first test process starts.
+ *
+ * Route discovery and `vitest list` stay preemptible so an exclusive dependency
+ * materializer keeps priority while this command is still reversible. Once the
+ * exact test set is known, however, repeatedly killing and replaying the same
+ * focused run can starve it forever when materializers queue back-to-back. The
+ * marker gives that already-derived run pc-heavy's bounded protected window; the
+ * wrapper remains the last-resort cleanup owner if this process is killed.
+ *
+ * @param {string|null|undefined} file
+ * @returns {(() => void)|null} cleanup callback when a marker was published
+ */
+export function publishPreemptReadyMarker(file = process.env.PC_HEAVY_PREEMPT_READY_FILE) {
+  const marker = file?.trim();
+  if (!marker) return null;
+  writeFileSync(marker, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+  console.error(`PC_HEAVY_PREEMPT_READY pid=${process.pid}`);
+  let cleaned = false;
+  return () => {
+    if (cleaned) return;
+    cleaned = true;
+    try {
+      unlinkSync(marker);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+  };
+}
 
 // WI-5621 (2026-07-20): this is THE most frequently invoked test runner in the
 // repo (CLAUDE.md tells every agent to reach for `npm run test:file` after any
@@ -1598,6 +1628,21 @@ export async function main(
   argv = process.argv.slice(2),
   { runCapturedTestProcessImpl = runCapturedTestProcess } = {},
 ) {
+  let cleanupPreemptReadyMarker = null;
+  const ensurePreemptReady = () => {
+    if (cleanupPreemptReadyMarker) return true;
+    try {
+      cleanupPreemptReadyMarker = publishPreemptReadyMarker();
+      return true;
+    } catch (error) {
+      console.error(
+        formatRouteError(
+          `refusing execution phase: could not publish the pc-heavy after-ready marker: ${error instanceof Error ? error.message : String(error)}`,
+        ),
+      );
+      return false;
+    }
+  };
   const { dry, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
@@ -1655,6 +1700,7 @@ export async function main(
       const exact = group.routes.map((route) => route.requested);
       console.log(`ROUTE cwd=${cwdLabel} runner=node:test`);
       for (const file of exact) console.log(`  requested ${file}`);
+      if (!dry && !ensurePreemptReady()) return 75;
       const result = spawnSync(process.execPath, ['--test', ...exact, ...vitestArgs], {
         cwd: group.cwd,
         env: process.env,
@@ -1797,6 +1843,7 @@ export async function main(
     // below; forwarded verbatim on completion so nothing is lost for a live TTY. The ASYNC seam
     // emits bounded progress separately while retaining the existing 256MB capture ceiling.
     warnIfInstallInFlight(`\`vitest run\` (group cwd=${cwdLabel})`);
+    if (!ensurePreemptReady()) return 75;
     const result = await runCapturedTestProcessImpl(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
@@ -1992,6 +2039,7 @@ export async function main(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
       `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)}`,
   );
+  cleanupPreemptReadyMarker?.();
   return summary.anyFailed ? 1 : 0;
 }
 

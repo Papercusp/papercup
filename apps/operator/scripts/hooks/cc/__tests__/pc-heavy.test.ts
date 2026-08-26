@@ -2871,6 +2871,7 @@ describe('root focused-test entrypoint survives exclusive materialization', () =
 
   it('gives test:file bounded fresh attempts after an exact preemption', () => {
     expect(scripts['test:file']).toContain('PC_HEAVY_RETRY_PREEMPTIONS=3');
+    expect(scripts['test:file']).toContain('PC_HEAVY_PREEMPT_AFTER_READY=1');
     expect(scripts['test:file']).toContain('PC_HEAVY_COALESCE=0');
   });
 });
