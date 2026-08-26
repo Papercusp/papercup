@@ -76,6 +76,8 @@ export interface WorkspaceHostCommandInput {
   readonly args: readonly string[];
   readonly cwd?: string;
   readonly timeoutMs?: number;
+  /** Process-only configuration. Callers must never copy this into evidence or diagnostics. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -124,6 +126,7 @@ export class NodeWorkspaceHostSystem implements WorkspaceHostSystem {
         [...input.args],
         {
           cwd: input.cwd,
+          ...(input.env ? { env: { ...process.env, ...input.env } } : {}),
           timeout: input.timeoutMs ?? WORKSPACE_HOST_DEFAULT_COMMAND_TIMEOUT_MS,
           maxBuffer: 16 * 1024 * 1024,
           // The child must never inherit an interactive terminal: every command here runs
@@ -168,6 +171,51 @@ export interface ProductionWorkspaceHostOptions {
   readonly gitCommand?: string;
   readonly agentProbeRunner?: WorkspaceHostAgentProbeRunner;
   readonly now?: () => Date;
+  readonly gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry;
+}
+
+interface WorkspaceHostGitCredentialBinding {
+  readonly generation: number;
+  readonly materialPath: string;
+  readonly expiresAt?: string;
+}
+
+/** Shared, host-local state joining lifecycle bind/revoke to the later private clone. */
+export class WorkspaceHostGitCredentialBindingRegistry {
+  private active: WorkspaceHostGitCredentialBinding | null = null;
+
+  bind(binding: WorkspaceHostCredentialBindingDescriptor, materialPath: string): void {
+    if (binding.channel !== 'git') return;
+    this.active = {
+      generation: binding.generation,
+      materialPath,
+      ...(binding.expiresAt ? { expiresAt: binding.expiresAt } : {}),
+    };
+  }
+
+  revoke(binding: WorkspaceHostCredentialBindingDescriptor): void {
+    if (binding.channel === 'git' && this.active?.generation === binding.generation) {
+      this.active = null;
+    }
+  }
+
+  resolve(now: Date): WorkspaceHostGitCredentialBinding {
+    if (!this.active) {
+      throw new WorkspaceHostOperationError(
+        'cloneRepository.credentials',
+        1,
+        'no bound git credential material is available for a private clone',
+      );
+    }
+    if (this.active.expiresAt && Date.parse(this.active.expiresAt) <= now.getTime()) {
+      throw new WorkspaceHostOperationError(
+        'cloneRepository.credentials',
+        1,
+        'the bound git credential material has expired',
+      );
+    }
+    return this.active;
+  }
 }
 
 /**
@@ -197,6 +245,7 @@ export class ProductionWorkspaceHostRemoteInitializerHost
   private readonly gitCommand: string;
   private readonly agentProbeRunner: WorkspaceHostAgentProbeRunner;
   private readonly now: () => Date;
+  private readonly gitCredentialBindings: WorkspaceHostGitCredentialBindingRegistry;
   /** Set by `cloneRepository`; read by `describeClonedRepository` for the verify step. */
   private clone: { readonly destination: string; readonly visibility: 'public' | 'private' } | null =
     null;
@@ -208,6 +257,8 @@ export class ProductionWorkspaceHostRemoteInitializerHost
     this.gitCommand = options.gitCommand ?? 'git';
     this.agentProbeRunner = options.agentProbeRunner ?? new NodeWorkspaceHostAgentProbeRunner();
     this.now = options.now ?? (() => new Date());
+    this.gitCredentialBindings =
+      options.gitCredentialBindings ?? new WorkspaceHostGitCredentialBindingRegistry();
   }
 
   private async require(
@@ -248,9 +299,38 @@ export class ProductionWorkspaceHostRemoteInitializerHost
     input: WorkspaceHostCloneRepositoryInput,
   ): Promise<WorkspaceHostRemoteStepEvidence> {
     const destination = resolveWithinRoot(this.workspaceRoot, input.destination, 'destination');
+    let env: Readonly<Record<string, string>> | undefined;
+    if (input.visibility === 'private') {
+      if (input.credentialChannel !== 'git') {
+        throw new WorkspaceHostOperationError(
+          'cloneRepository.credentials',
+          1,
+          "a private repository clone must consume the bound 'git' credential channel",
+        );
+      }
+      const binding = this.gitCredentialBindings.resolve(this.now());
+      if (!(await this.system.pathExists(binding.materialPath))) {
+        throw new WorkspaceHostOperationError(
+          'cloneRepository.credentials',
+          1,
+          'the bound git credential material is absent from the host',
+        );
+      }
+      // The material itself remains in the 0700 credential store. Git receives only the helper
+      // path through its environment: never argv, evidence, errors, or logs.
+      env = {
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_0: 'credential.helper',
+        GIT_CONFIG_VALUE_0: `store --file=${binding.materialPath}`,
+        GIT_CONFIG_KEY_1: 'credential.useHttpPath',
+        GIT_CONFIG_VALUE_1: 'true',
+      };
+    }
     await this.require('cloneRepository', {
       command: this.gitCommand,
       args: ['clone', '--quiet', input.repositoryUrl, destination],
+      ...(env ? { env } : {}),
     });
     if (input.revision) {
       await this.require('cloneRepository.checkout', {
@@ -373,15 +453,18 @@ export class ProductionWorkspaceHostCredentialMaterializer
   readonly family: WorkspaceHostCredentialFamily;
   private readonly system: WorkspaceHostSystem;
   private readonly locate: (binding: WorkspaceHostCredentialBindingDescriptor) => string | null;
+  private readonly gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry;
 
   constructor(
     family: WorkspaceHostCredentialFamily,
     system: WorkspaceHostSystem,
     locate: (binding: WorkspaceHostCredentialBindingDescriptor) => string | null,
+    gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry,
   ) {
     this.family = family;
     this.system = system;
     this.locate = locate;
+    this.gitCredentialBindings = gitCredentialBindings;
   }
 
   private describe(
@@ -417,6 +500,8 @@ export class ProductionWorkspaceHostCredentialMaterializer
         `delivered material for family '${this.family}' is not present on the host`,
       );
     }
+    const path = this.locate(binding);
+    if (path !== null) this.gitCredentialBindings?.bind(binding, path);
     return this.describe(binding, true);
   }
 
@@ -439,6 +524,7 @@ export class ProductionWorkspaceHostCredentialMaterializer
   ): Promise<Readonly<Record<string, unknown>>> {
     const path = this.locate(binding);
     if (path !== null) await this.system.removePath(path);
+    this.gitCredentialBindings?.revoke(binding);
     return this.describe(binding, false);
   }
 
@@ -478,6 +564,7 @@ function materialPathFor(
 export function createProductionWorkspaceHostCredentialMaterializers(
   system: WorkspaceHostSystem,
   materialRoot: string = WORKSPACE_HOST_CREDENTIAL_MATERIAL_ROOT,
+  gitCredentialBindings?: WorkspaceHostGitCredentialBindingRegistry,
 ): readonly WorkspaceHostCredentialMaterializer[] {
   // Enumerated explicitly rather than mapped over WORKSPACE_HOST_CREDENTIAL_FAMILIES: adding a
   // family should be a decision that lands here deliberately, not one that silently acquires a
@@ -494,6 +581,7 @@ export function createProductionWorkspaceHostCredentialMaterializers(
         family,
         system,
         materialPathFor(materialRoot, family),
+        gitCredentialBindings,
       ),
   );
 }
@@ -514,12 +602,19 @@ export function createProductionWorkspaceHostRemoteInitializerDeps(
   options: ProductionWorkspaceHostRemoteInitializerOptions = {},
 ): WorkspaceHostRemoteInitializerDeps {
   const system = options.system ?? new NodeWorkspaceHostSystem();
+  const gitCredentialBindings =
+    options.gitCredentialBindings ?? new WorkspaceHostGitCredentialBindingRegistry();
   return {
-    host: new ProductionWorkspaceHostRemoteInitializerHost({ ...options, system }),
+    host: new ProductionWorkspaceHostRemoteInitializerHost({
+      ...options,
+      system,
+      gitCredentialBindings,
+    }),
     credentials: new WorkspaceHostCredentialResolver(
       createProductionWorkspaceHostCredentialMaterializers(
         system,
         options.credentialMaterialRoot,
+        gitCredentialBindings,
       ),
     ),
     ...(options.now ? { now: options.now } : {}),
