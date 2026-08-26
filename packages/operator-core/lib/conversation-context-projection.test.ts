@@ -80,11 +80,11 @@ describe('conversation context projection', () => {
         activeForm: 'Implementing projection',
         status: 'in_progress',
         blockerRef: null,
-        blockerState: null,
         explanation: null,
         position: 0,
         createdAt: '2026-08-26T00:00:00Z',
         updatedAt: '2026-08-26T00:00:00Z',
+        links: [{ workItemId: 'WI-9', workItemHarness: 'papercusp', relation: 'for' }],
       }],
       approvals: [{
         chatId: 'chat-1',
@@ -107,7 +107,12 @@ describe('conversation context projection', () => {
       }),
     ]);
     expect(projected.frames).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'task', taskId: 'task-1', status: 'in_progress' }),
+      expect.objectContaining({
+        kind: 'task',
+        taskId: 'task-1',
+        status: 'in_progress',
+        links: [{ workItemId: 'WI-9', workItemHarness: 'papercusp', relation: 'for' }],
+      }),
       expect.objectContaining({ kind: 'approval', callId: 'call-2', status: 'pending' }),
     ]));
   });

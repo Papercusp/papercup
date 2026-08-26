@@ -220,6 +220,17 @@ describe('reduceSessionTasks', () => {
       'blocker_ref_required',
     );
     expectCode(
+      () => reduce([task()], { op: 'block', taskId: 'task-a', blockerRef: 'event:' }),
+      'blocker_ref_target_required',
+    );
+    expectCode(
+      () => reduce([], {
+        op: 'init',
+        tasks: [{ content: 'Blocked', status: 'blocked', blockerRef: 'plan:P-4' }],
+      }),
+      'blocker_ref_plan_invalid',
+    );
+    expectCode(
       () => reduce([task()], { op: 'view', explanation: 'not allowed' }),
       'view_fields_unexpected',
     );

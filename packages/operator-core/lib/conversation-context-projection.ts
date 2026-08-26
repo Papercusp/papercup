@@ -99,6 +99,8 @@ export interface ConversationTaskFrame extends FrameBase {
   explanation: string | null;
   position: number;
   updatedAt: string;
+  /** D-004: render promotion/link state from the same typed projection. */
+  links: SessionTask['links'];
 }
 
 export type ConversationContextSection =
@@ -300,6 +302,7 @@ export function projectConversationContext(
     explanation: task.explanation,
     position: task.position,
     updatedAt: task.updatedAt,
+    links: task.links.map((link) => ({ ...link })),
   }));
   const approvalFrames: ConversationApprovalFrame[] = (input.approvals ?? []).map((approval) => ({
     id: `approval:${approval.callId}`,
