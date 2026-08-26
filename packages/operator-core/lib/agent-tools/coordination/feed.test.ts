@@ -153,19 +153,52 @@ describe('limit clamp + nextCursor', () => {
 
   it('defaults to DEFAULT_FEED_LIMIT and returns null cursor when not capped', async () => {
     setSurfaces({ messages: five });
-    const { rows, nextCursor, total } = await readCoordFeed();
+    const { rows, nextCursor, nextCursorMsgId, total } = await readCoordFeed();
     expect(DEFAULT_FEED_LIMIT).toBe(100);
     expect(rows).toHaveLength(5);
     expect(total).toBe(5);
     expect(nextCursor).toBeNull();
+    expect(nextCursorMsgId).toBeNull();
   });
 
   it('caps to the requested limit and returns the oldest-of-page ts as the cursor', async () => {
     setSurfaces({ messages: five });
-    const { rows, nextCursor, total } = await readCoordFeed({ limit: 2 });
+    const { rows, nextCursor, nextCursorMsgId, total } = await readCoordFeed({ limit: 2 });
     expect(rows.map((r) => r.msg_id)).toEqual(['m4', 'm3']); // newest two
     expect(total).toBe(5); // total counts the WHOLE filtered set, not the page
     expect(nextCursor).toBe('2026-06-23T12:00:03.000Z'); // ts of m3 (oldest on the page)
+    expect(nextCursorMsgId).toBe('m3');
+  });
+
+  it('paginates across same-timestamp siblings with the composite cursor without loss or duplicates', async () => {
+    const sharedTs = '2026-06-23T12:00:00.000Z';
+    setSurfaces({
+      messages: [
+        env({ msg_id: 'm1', ts: sharedTs }),
+        env({ msg_id: 'm3', ts: sharedTs }),
+        env({ msg_id: 'm2', ts: sharedTs }),
+        env({ msg_id: 'm0', ts: '2026-06-23T11:59:59.999Z' }),
+      ],
+    });
+
+    const first = await readCoordFeed({ limit: 2 });
+    expect(first.rows.map((r) => r.msg_id)).toEqual(['m3', 'm2']);
+    expect(first.nextCursor).toBe(sharedTs);
+    expect(first.nextCursorMsgId).toBe('m2');
+
+    const second = await readCoordFeed({
+      limit: 2,
+      before_ts: first.nextCursor!,
+      before_msg_id: first.nextCursorMsgId!,
+    });
+    expect(second.rows.map((r) => r.msg_id)).toEqual(['m1', 'm0']);
+    expect(second.nextCursor).toBeNull();
+    expect(second.nextCursorMsgId).toBeNull();
+
+    // Existing timestamp-only callers retain their strict-earlier behavior;
+    // the companion id is what makes new callers lossless at this boundary.
+    const legacySecond = await readCoordFeed({ limit: 2, before_ts: first.nextCursor! });
+    expect(legacySecond.rows.map((r) => r.msg_id)).toEqual(['m0']);
   });
 
   it('clamps a 0/negative limit up to 1', async () => {

@@ -103,6 +103,11 @@ export interface ReadCoordFeedOpts {
   since_ts?: string;
   /** Strictly-earlier-than this ISO ts (newer bound) — the pagination cursor. */
   before_ts?: string;
+  /** Tie-breaker for `before_ts`. When both are supplied, return rows strictly
+   *  older than the `(ts, msg_id)` tuple so a page boundary inside a shared
+   *  timestamp neither drops nor repeats sibling messages. Omitted preserves
+   *  the legacy timestamp-only cursor contract. */
+  before_msg_id?: string;
   /** Max rows returned (newest kept). */
   limit?: number;
   /** Token budget: accumulate rows newest-first until the estimated token cost of
@@ -204,10 +209,12 @@ function matchesText(env: CoordEnvelope, needle: string): boolean {
 /**
  * Read the complete cross-channel coordination stream, newest-first, filtered.
  *
- * Returns `{ rows, nextCursor }`. `nextCursor` is the `ts` of the oldest row
- * returned when the page was capped (more rows exist) — pass it back as
- * `before_ts` to fetch the next (older) page; `null` when the stream is
- * exhausted.
+ * Returns `{ rows, nextCursor, nextCursorMsgId }`. The cursor pair is the
+ * `(ts, msg_id)` tuple of the oldest row returned when the page was capped
+ * (more rows exist) — pass both back as `before_ts` / `before_msg_id` to fetch
+ * the next (older) page without losing same-timestamp siblings. Both are
+ * `null` when the stream is exhausted. `nextCursor` remains the timestamp-only
+ * compatibility field for existing callers.
  *
  * (WI-3869) The raw per-surface read behind this is bounded to
  * RAW_SURFACE_FETCH_CAP rows per round, never a full-table scan. (WI-3880) A
@@ -220,7 +227,14 @@ function matchesText(env: CoordEnvelope, needle: string): boolean {
  */
 export async function readCoordFeed(
   opts: ReadCoordFeedOpts = {},
-): Promise<{ rows: CoordFeedRow[]; nextCursor: string | null; total: number; byKind: Record<string, number>; tokens: number }> {
+): Promise<{
+  rows: CoordFeedRow[];
+  nextCursor: string | null;
+  nextCursorMsgId: string | null;
+  total: number;
+  byKind: Record<string, number>;
+  tokens: number;
+}> {
   const limit = Math.min(Math.max(1, opts.limit ?? DEFAULT_FEED_LIMIT), MAX_FEED_LIMIT);
 
   // Union every surface. Tag each envelope with its origin surface.
@@ -255,7 +269,19 @@ export async function readCoordFeed(
     if (sinceMs !== null || beforeMs !== null) {
       const ms = new Date(env.ts).getTime();
       if (sinceMs !== null && !(ms > sinceMs)) return false;
-      if (beforeMs !== null && !(ms < beforeMs)) return false;
+      if (beforeMs !== null) {
+        if (opts.before_msg_id) {
+          // The feed is ordered newest-first by (ts, msg_id). A composite
+          // cursor admits the strictly older half of that tuple: earlier
+          // timestamps, plus lower ids at the boundary timestamp.
+          if (ms > beforeMs) return false;
+          if (ms === beforeMs && env.msg_id.localeCompare(opts.before_msg_id) >= 0) return false;
+        } else if (!(ms < beforeMs)) {
+          // Backward compatibility for timestamp-only callers: retain the
+          // historical strict-earlier-than behavior.
+          return false;
+        }
+      }
     }
     return true;
   };
@@ -348,7 +374,10 @@ export async function readCoordFeed(
     if (page.length >= limit) break;
     if (tokenBudget !== null && tokens >= tokenBudget) break;
   }
-  const nextCursor = visible.length > page.length ? (page[page.length - 1]?.ts ?? null) : null;
+  const hasMore = visible.length > page.length;
+  const oldestPageRow = page[page.length - 1];
+  const nextCursor = hasMore ? (oldestPageRow?.ts ?? null) : null;
+  const nextCursorMsgId = hasMore ? (oldestPageRow?.msg_id ?? null) : null;
 
   // P-004 follow-up: annotate superseded messages. Migration 732 records the
   // marker and coord:supersede writes it, but nothing on the READ side surfaced
@@ -388,5 +417,5 @@ export async function readCoordFeed(
     }
   }
 
-  return { rows: page, nextCursor, total: visible.length, byKind, tokens };
+  return { rows: page, nextCursor, nextCursorMsgId, total: visible.length, byKind, tokens };
 }

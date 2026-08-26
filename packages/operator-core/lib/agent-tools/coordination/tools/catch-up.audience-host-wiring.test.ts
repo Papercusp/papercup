@@ -22,6 +22,16 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
+const readCoordFeed = vi.hoisted(() =>
+  vi.fn(async (): Promise<{
+    rows: never[];
+    nextCursor: string | null;
+    nextCursorMsgId: string | null;
+    total: number;
+    tokens: number;
+  }> => ({ rows: [], nextCursor: null, nextCursorMsgId: null, total: 0, tokens: 0 })),
+);
+
 // Fixed caller identity = 'me' (keeps ctx/env assumptions out of the wiring test).
 vi.mock('../identity', async (orig) => {
   const actual = await orig<typeof import('../identity')>();
@@ -52,7 +62,7 @@ vi.mock('../feed', async (orig) => {
   const actual = await orig<typeof import('../feed')>();
   return {
     ...actual,
-    readCoordFeed: async () => ({ rows: [], nextCursor: null, total: 0, tokens: 0 }),
+    readCoordFeed,
   };
 });
 
@@ -93,5 +103,33 @@ describe('coord:catch-up × REAL audience-host — importer-boundary export guar
     const res = await run({ audience: '*' });
     expect(isError(res)).toBe(false);
     expect(payload(res as { content: { text: string }[] }).audience).toBe('*');
+  });
+});
+
+describe('coord:catch-up — lossless composite pagination cursor', () => {
+  it('declares, forwards, and returns the timestamp/message-id cursor pair', async () => {
+    expect(Object.keys(catchUp.args.shape)).toEqual(expect.arrayContaining(['before_ts', 'before_msg_id']));
+    readCoordFeed.mockResolvedValueOnce({
+      rows: [],
+      nextCursor: '2026-08-26T12:00:00.000Z',
+      nextCursorMsgId: 'm-boundary',
+      total: 3,
+      tokens: 0,
+    });
+
+    const res = await run({
+      audience: '*',
+      before_ts: '2026-08-26T12:00:00.000Z',
+      before_msg_id: 'm-boundary',
+    });
+
+    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({
+      before_ts: '2026-08-26T12:00:00.000Z',
+      before_msg_id: 'm-boundary',
+    }));
+    expect(payload(res as { content: { text: string }[] })).toMatchObject({
+      next_cursor: '2026-08-26T12:00:00.000Z',
+      next_cursor_msg_id: 'm-boundary',
+    });
   });
 });

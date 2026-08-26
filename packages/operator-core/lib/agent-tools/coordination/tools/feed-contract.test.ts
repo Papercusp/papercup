@@ -6,13 +6,23 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const readCoordFeed = vi.hoisted(() => vi.fn(async () => ({
-  rows: [],
-  nextCursor: null,
-  total: 0,
-  byKind: {},
-  tokens: 0,
-})));
+const readCoordFeed = vi.hoisted(() =>
+  vi.fn(async (): Promise<{
+    rows: never[];
+    nextCursor: string | null;
+    nextCursorMsgId: string | null;
+    total: number;
+    byKind: Record<string, number>;
+    tokens: number;
+  }> => ({
+    rows: [],
+    nextCursor: null,
+    nextCursorMsgId: null,
+    total: 0,
+    byKind: {},
+    tokens: 0,
+  })),
+);
 
 vi.mock('../feed', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../feed')>();
@@ -65,5 +75,36 @@ describe('coord:feed — fleet compatibility alias', () => {
       {} as never,
     );
     expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ audience: '@topic:coordination' }));
+  });
+});
+
+describe('coord:feed — lossless composite pagination cursor', () => {
+  it('declares the companion message-id input', () => {
+    expect(Object.keys(tool.args.shape)).toContain('before_ts');
+    expect(Object.keys(tool.args.shape)).toContain('before_msg_id');
+  });
+
+  it('passes the cursor pair to the reader and returns both halves to callers', async () => {
+    readCoordFeed.mockResolvedValueOnce({
+      rows: [],
+      nextCursor: '2026-08-26T12:00:00.000Z',
+      nextCursorMsgId: 'm-boundary',
+      total: 3,
+      byKind: { message: 3 },
+      tokens: 0,
+    });
+
+    const result = await tool.handler({
+      before_ts: '2026-08-26T12:00:00.000Z',
+      before_msg_id: 'm-boundary',
+    } as never);
+
+    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({
+      before_ts: '2026-08-26T12:00:00.000Z',
+      before_msg_id: 'm-boundary',
+    }));
+    const payload = JSON.parse(result.content[0]!.text);
+    expect(payload.next_cursor).toBe('2026-08-26T12:00:00.000Z');
+    expect(payload.next_cursor_msg_id).toBe('m-boundary');
   });
 });

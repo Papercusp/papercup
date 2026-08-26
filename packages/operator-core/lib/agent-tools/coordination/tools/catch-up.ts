@@ -20,7 +20,8 @@
  * Bounds (D-005): a fleet may be paused for a week, so a time window is the wrong
  * knob — this takes `limit` (last N messages) and/or `token_budget` (as much as
  * fits in ~N tokens), newest-first, stopping at whichever is hit first; paginate
- * older with the returned next_cursor (before_ts).
+ * older with the returned next_cursor / next_cursor_msg_id pair
+ * (before_ts / before_msg_id).
  */
 
 import { z } from 'zod';
@@ -43,7 +44,7 @@ const SUMMARY_BUDGET = 10_000;
 export default defineTool({
   name: 'coord:catch-up',
   description:
-    "Catch up on the message HISTORY for an audience you belong to — everything broadcast to a @fleet:<slug> / @topic:<slug> (or @plan:/@object:/@file:/*) you're a member of, newest-first. This is how you get the backlog after JOINING a fleet/topic or WAKING from a pause: broadcasts are not auto-polled, and your inbox only shows messages whose recipient list named you at send time. Bound the read by `limit` (last N messages) and/or `token_budget` (as much as fits in ~N tokens); paginate older with before_ts/next_cursor. Returns { audience, count, total, tokens, next_cursor, rows }. A row carrying `superseded_by` was CORRECTED by its own sender — read that correction (the msg_id it points to) before acting on the row. You must currently belong to the audience (low-tier, membership-checked) — use coord:feed for the unscoped, high-tier firehose.",
+    "Catch up on the message HISTORY for an audience you belong to — everything broadcast to a @fleet:<slug> / @topic:<slug> (or @plan:/@object:/@file:/*) you're a member of, newest-first. This is how you get the backlog after JOINING a fleet/topic or WAKING from a pause: broadcasts are not auto-polled, and your inbox only shows messages whose recipient list named you at send time. Bound the read by `limit` (last N messages) and/or `token_budget` (as much as fits in ~N tokens); paginate older by passing `next_cursor` / `next_cursor_msg_id` back as `before_ts` / `before_msg_id`. Returns { audience, count, total, tokens, next_cursor, next_cursor_msg_id, rows }. A row carrying `superseded_by` was CORRECTED by its own sender — read that correction (the msg_id it points to) before acting on the row. You must currently belong to the audience (low-tier, membership-checked) — use coord:feed for the unscoped, high-tier firehose.",
   guidance: {
     when:
       'You just joined a fleet/topic, or woke after being paused/offline, and want what was said to that audience while you were away. The pull counterpart to an @fleet:/@topic: broadcast.',
@@ -84,7 +85,11 @@ export default defineTool({
     before_ts: z
       .string()
       .optional()
-      .describe('Only messages strictly earlier than this ISO timestamp — the pagination cursor; pass back the returned next_cursor for the next older page.'),
+      .describe('Timestamp half of the pagination cursor; pass back next_cursor together with next_cursor_msg_id for the next older page.'),
+    before_msg_id: z
+      .string()
+      .optional()
+      .describe('Message-id tie-breaker for before_ts; pass back next_cursor_msg_id so same-timestamp siblings are neither dropped nor repeated.'),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -104,13 +109,14 @@ export default defineTool({
       }
     }
 
-    const { rows, nextCursor, total, tokens } = await readCoordFeed({
+    const { rows, nextCursor, nextCursorMsgId, total, tokens } = await readCoordFeed({
       audience,
       kinds: ['message', 'notify'],
       limit: args.limit ?? CATCHUP_DEFAULT_LIMIT,
       token_budget: args.token_budget,
       since_ts: args.since_ts,
       before_ts: args.before_ts,
+      before_msg_id: args.before_msg_id,
     });
 
     let boundedRows = boundRowField(rows, 'body', BODY_CAP, BODY_BUDGET);
@@ -135,6 +141,7 @@ export default defineTool({
             total,
             tokens,
             next_cursor: nextCursor,
+            next_cursor_msg_id: nextCursorMsgId,
             rows: boundedRows,
           }),
         },

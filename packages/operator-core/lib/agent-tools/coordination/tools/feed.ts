@@ -41,7 +41,7 @@ const FEED_SUMMARY_BUDGET = 10_000;
 export default defineTool({
   name: 'coord:feed',
   description:
-    'Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, fleet (legacy alias for audience `@fleet:<slug>`), free-text `q` (over summary/body/from/to), and a since/before time window. `since` is the preferred timestamp filter; legacy `since_ts` remains accepted. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.',
+    'Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, fleet (legacy alias for audience `@fleet:<slug>`), free-text `q` (over summary/body/from/to), and a since/before time window. `since` is the preferred timestamp filter; legacy `since_ts` remains accepted. Paginate by passing back both `next_cursor` / `next_cursor_msg_id` as `before_ts` / `before_msg_id`; the message id prevents loss at same-timestamp page boundaries. Returns `{ count, total, by_kind, next_cursor, next_cursor_msg_id, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.',
   guidance: {
     when:
       'You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.',
@@ -86,7 +86,11 @@ export default defineTool({
     before_ts: z
       .string()
       .optional()
-      .describe('Strictly earlier than this ISO timestamp (newer bound) — the pagination cursor; pass back the returned next_cursor.'),
+      .describe('Timestamp half of the pagination cursor; pass back the returned next_cursor together with next_cursor_msg_id.'),
+    before_msg_id: z
+      .string()
+      .optional()
+      .describe('Message-id tie-breaker for before_ts; pass back next_cursor_msg_id so same-timestamp siblings are neither dropped nor repeated.'),
     limit: z
       .number()
       .int()
@@ -106,7 +110,7 @@ export default defineTool({
       .describe('Also show messages withdrawn via coord:retract (default false — retracted messages are suppressed from the feed; the retraction notice itself is always visible). The forensic/audit escape hatch; coord:thread shows both without a flag.'),
   }),
   async handler(args) {
-    const { rows, nextCursor, total, byKind, tokens } = await readCoordFeed({
+    const { rows, nextCursor, nextCursorMsgId, total, byKind, tokens } = await readCoordFeed({
       kinds: args.kinds,
       owner: args.owner,
       from: args.from,
@@ -117,6 +121,7 @@ export default defineTool({
       // surrounding coordination API's `since` convention available to callers.
       since_ts: args.since ?? args.since_ts,
       before_ts: args.before_ts,
+      before_msg_id: args.before_msg_id,
       limit: args.limit ?? AGENT_FEED_DEFAULT,
       token_budget: args.token_budget,
       includeRetracted: args.include_retracted,
@@ -145,6 +150,7 @@ export default defineTool({
             tokens,
             by_kind: byKind,
             next_cursor: nextCursor,
+            next_cursor_msg_id: nextCursorMsgId,
             rows: boundedRows,
           }),
         },
