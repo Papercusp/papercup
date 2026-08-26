@@ -5,6 +5,7 @@ import {
   callToolWithReplayRecovery,
   buildCallToolParams,
   buildMcpUrl,
+  connectWithLocalRetry,
   escapeJsonStringControls,
   parseArgs,
   parseJsonInput,
@@ -642,5 +643,58 @@ describe('ptool JSON input', () => {
     const payload = '{\n  "body": "first\\nsecond"\n}\n';
     expect(escapeJsonStringControls(payload)).toBe(payload);
     expect(parseJsonInput(payload)).toEqual({ body: 'first\nsecond' });
+  });
+});
+
+describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
+  const shedErr = () =>
+    Object.assign(new Error('{"error":"mcp_proxy_handshake_overloaded","retryAfterSec":2}'), { code: 429 });
+
+  it('paces connect retries by the proxy Retry-After hint instead of a flat 1s', async () => {
+    const sleeps: number[] = [];
+    await expect(
+      connectWithLocalRetry(
+        async () => {
+          throw shedErr();
+        },
+        'http://127.0.0.1:3070',
+        {},
+        {
+          maxAttempts: 3,
+          attemptTimeoutMs: 5_000,
+          totalTimeoutMs: 60_000,
+          sleep: async (ms: number) => {
+            sleeps.push(ms);
+          },
+        },
+      ),
+    ).rejects.toThrow(/proxy-shed-429/);
+    // The proxy's typed handshake shed asks for 2s (`retryAfterSec: 2`) — the
+    // loop must honor it rather than re-contending every second.
+    expect(sleeps).toEqual([2_000, 2_000]);
+  });
+
+  it('an exhausted budget escapes with the original prefix AND the classified attempt tally', async () => {
+    const hang = (): Promise<never> => Promise.withResolvers<never>().promise;
+    let calls = 0;
+    await expect(
+      connectWithLocalRetry(
+        async () => {
+          calls += 1;
+          if (calls === 1) throw shedErr();
+          return hang();
+        },
+        'http://127.0.0.1:3070',
+        {},
+        {
+          maxAttempts: 3,
+          attemptTimeoutMs: 20,
+          totalTimeoutMs: 60_000,
+          sleep: async () => {},
+        },
+      ),
+    ).rejects.toThrow(
+      /^local operator connection attempt timed out after 20ms \[3 connect attempt\(s\) over \d+s: 1x proxy-shed-429, 2x attempt-timeout\]$/,
+    );
   });
 });
