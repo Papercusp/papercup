@@ -520,6 +520,44 @@ describe('dev:pipeline_position routes to the state plane (P-002)', () => {
       expect(tools.some((t) => t.startsWith(name))).toBe(true);
     }
   });
+  /**
+   * EI-21515547059659539 — a CROSS-HARNESS caller cannot reach the state plane
+   * (audience-filtered; cell_absent is deliberately indistinguishable from
+   * nonexistent). The pointers stay (option b: teach the boundary) but must say
+   * WHICH audience owns the cells and what the caller will get.
+   */
+  it('qualifies state pointers with the audience boundary on a harnessMismatch reply', () => {
+    const data = {
+      blockedOn: 'gate',
+      harnessMismatch: { callerHarness: 'sb-devboard-hive', reportedHarness: 'papercusp' },
+    };
+    for (const p of ptrs(data).filter((x) => x.tool === 'state:read' || x.tool === 'state:subscribe')) {
+      expect(p.reason).toMatch(/AUDIENCE/);
+      expect(p.reason).toContain("in the 'papercusp' state-plane audience");
+      expect(p.reason).toContain("from 'sb-devboard-hive'");
+      expect(p.reason).toMatch(/cell_absent/);
+    }
+  });
+
+  it('does NOT add the audience note when the caller is in-harness', () => {
+    for (const p of ptrs({ blockedOn: 'gate' })) {
+      if (x_toolIsState(p)) expect(p.reason).not.toMatch(/AUDIENCE/);
+    }
+  });
+
+  /** The TOON fallback path must keep the qualification alive too. */
+  it('detects harnessMismatch through the regex fallback on non-JSON text', () => {
+    const toon = {
+      content: [
+        {
+          type: 'text' as const,
+          text: 'blockedOn: gate\nharnessMismatch:\ncallerHarness: "sb-devboard-hive"\nreportedHarness: "papercusp"',
+        },
+      ],
+    };
+    const p = resolveSeeAlso(tool.guidance?.seeAlso, toon as never, {}, {});
+    expect(p.find((x) => x.tool === 'state:read')?.reason).toMatch(/AUDIENCE.*sb-devboard-hive/s);
+  });
 });
 
 /**
