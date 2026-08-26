@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   purge: vi.fn(),
   upsert: vi.fn(),
   listSources: vi.fn(),
+  getSource: vi.fn(),
   disconnectSources: vi.fn(),
   setCapability: vi.fn(),
   loadProviders: vi.fn(),
@@ -33,6 +34,7 @@ vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-tes
 vi.mock('../../../personal-vault/archive-import', () => ({ parsePersonalArchive: mocks.parseArchive }));
 vi.mock('../../../external-triggers/source-store', () => ({
   listOwnedExternalTriggerSources: mocks.listSources,
+  getExternalTriggerSource: mocks.getSource,
   disconnectOwnedExternalTriggerSources: mocks.disconnectSources,
   setOwnedExternalTriggerSourceCapability: mocks.setCapability,
 }));
@@ -83,6 +85,8 @@ vi.mock('../../../personal-vault/store', async () => {
 
 import routes, { declaredPersonalScopes } from './personal-vault';
 
+const SOURCE_ID = '00000000-0000-4000-8000-000000000101';
+
 const route = (method: string, path: string): RouteDefinition => {
   const found = (routes as RouteDefinition[]).find(
     (candidate) => candidate.method === method && candidate.path === path,
@@ -121,6 +125,13 @@ beforeEach(() => {
       updatedAt: '2026-08-23T00:00:00.000Z',
     },
   ]);
+  mocks.getSource.mockResolvedValue({
+    id: SOURCE_ID,
+    workspaceId: 'ws-test',
+    kind: 'gmail',
+    ownerUserId: 'user-1',
+    providerAccountId: 'owner@example.com',
+  });
   mocks.disconnectSources.mockResolvedValue({
     sources: 3,
     credentialRefs: ['google-workspace:owner-user-1'],
@@ -441,7 +452,37 @@ describe('Personal Vault owner routes', () => {
       }),
     );
     expect(accepted.status).toBe(200);
-    expect(mocks.purge).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', 'gmail');
+    expect(mocks.purge).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', 'gmail', {
+      sourceId: null,
+      providerAccountId: null,
+    });
+  });
+
+  it('forwards account provenance for a surgical purge', async () => {
+    const accepted = await invoke(
+      'DELETE',
+      '/user/personal-vault',
+      new Request('http://localhost/user/personal-vault', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          source: 'gmail',
+          sourceId: SOURCE_ID,
+          providerAccountId: 'owner@example.com',
+          confirm: true,
+        }),
+      }),
+    );
+    expect(accepted.status).toBe(200);
+    await expect(accepted.json()).resolves.toMatchObject({
+      source: 'gmail',
+      sourceId: SOURCE_ID,
+      providerAccountId: 'owner@example.com',
+    });
+    expect(mocks.purge).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', 'gmail', {
+      sourceId: SOURCE_ID,
+      providerAccountId: 'owner@example.com',
+    });
   });
 
   it('parses multipart archives locally and upserts through the vault store', async () => {
@@ -455,7 +496,53 @@ describe('Personal Vault owner routes', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ documents: 1, sources: ['gmail'] });
     expect(mocks.parseArchive).toHaveBeenCalledWith('takeout.mbox', expect.any(Buffer));
-    expect(mocks.upsert).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', expect.any(Array));
+    expect(mocks.upsert).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', [
+      expect.objectContaining({ sourceId: null, providerAccountId: null }),
+    ]);
+  });
+
+  it('binds an archive import to the server-owned source account', async () => {
+    const form = new FormData();
+    form.set('file', new File(['mail'], 'takeout.mbox', { type: 'application/mbox' }));
+    form.set('sourceId', SOURCE_ID);
+    const response = await invoke(
+      'POST',
+      '/user/personal-vault/import',
+      new Request('http://localhost/user/personal-vault/import', { method: 'POST', body: form }),
+    );
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      sourceId: SOURCE_ID,
+      providerAccountId: 'owner@example.com',
+    });
+    expect(mocks.getSource).toHaveBeenCalledWith(mocks.sql, 'ws-test', SOURCE_ID);
+    expect(mocks.upsert).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', [
+      expect.objectContaining({
+        sourceId: SOURCE_ID,
+        providerAccountId: 'owner@example.com',
+      }),
+    ]);
+  });
+
+  it('refuses to import through a source owned by another user', async () => {
+    mocks.getSource.mockResolvedValueOnce({
+      id: SOURCE_ID,
+      workspaceId: 'ws-test',
+      kind: 'gmail',
+      ownerUserId: 'user-2',
+      providerAccountId: 'other@example.com',
+    });
+    const form = new FormData();
+    form.set('file', new File(['mail'], 'takeout.mbox', { type: 'application/mbox' }));
+    form.set('sourceId', SOURCE_ID);
+    const response = await invoke(
+      'POST',
+      '/user/personal-vault/import',
+      new Request('http://localhost/user/personal-vault/import', { method: 'POST', body: form }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: 'personal_import_source_not_owned' });
+    expect(mocks.upsert).not.toHaveBeenCalled();
   });
 
   it('previews and approves only scopes declared by the plan template', async () => {

@@ -9,8 +9,16 @@ import { Table, type TableColumn } from "../../harness/Table";
 
 interface SourceStats {
   source: string;
+  source_id: string | null;
+  provider_account_id: string | null;
   documents: number;
   newest_at: string | null;
+}
+
+interface PurgeTarget {
+  source: string | null;
+  sourceId: string | null;
+  providerAccountId: string | null;
 }
 
 interface PersonalGrant {
@@ -168,6 +176,14 @@ function formatDate(value: string | null): string {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
 }
 
+function purgeTargetLabel(target: PurgeTarget): string {
+  if (!target.source) return "entire Personal Vault";
+  const source = `personal:${target.source}`;
+  return target.providerAccountId
+    ? `${source} for ${target.providerAccountId}`
+    : source;
+}
+
 function integrationStatusLabel(status: IntegrationStatus["status"]): string {
   if (status === "needs-app-config") return "Needs app setup";
   return status.charAt(0).toUpperCase() + status.slice(1);
@@ -191,9 +207,7 @@ export default function PersonalVaultSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
-  const [purgeTarget, setPurgeTarget] = useState<{
-    source: string | null;
-  } | null>(null);
+  const [purgeTarget, setPurgeTarget] = useState<PurgeTarget | null>(null);
   const [planSlug, setPlanSlug] = useState("");
   const [harnessSlug, setHarnessSlug] = useState("papercusp");
   const [grantPreview, setGrantPreview] = useState<GrantPreview | null>(null);
@@ -390,8 +404,8 @@ export default function PersonalVaultSettingsPage() {
 
   const purge = useCallback(async () => {
     if (!purgeTarget) return;
-    const source = purgeTarget.source;
-    setBusy(`purge:${source ?? "all"}`);
+    const { source, sourceId, providerAccountId } = purgeTarget;
+    setBusy(`purge:${providerAccountId ?? sourceId ?? source ?? "all"}`);
     try {
       const result = await responseJson<{
         ok: true;
@@ -405,11 +419,16 @@ export default function PersonalVaultSettingsPage() {
         await fetch("/api/user/personal-vault", {
           method: "DELETE",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ source, confirm: true }),
+          body: JSON.stringify({
+            source,
+            sourceId,
+            providerAccountId,
+            confirm: true,
+          }),
         }),
       );
       toast.success(
-        `Purged ${result.removed.documents.toLocaleString()} document${result.removed.documents === 1 ? "" : "s"}${source ? ` from ${source}` : ""}.`,
+        `Purged ${result.removed.documents.toLocaleString()} document${result.removed.documents === 1 ? "" : "s"}${source ? ` from ${purgeTargetLabel(purgeTarget)}` : ""}.`,
       );
       setPurgeTarget(null);
       await load();
@@ -506,6 +525,13 @@ export default function PersonalVaultSettingsPage() {
       render: (source) => source.documents.toLocaleString(),
     },
     {
+      key: "account",
+      header: "Account",
+      render: (source) =>
+        source.provider_account_id ?? "Legacy / unattributed",
+      cellTitle: (source) => source.source_id ?? undefined,
+    },
+    {
       key: "newest",
       header: "Newest",
       render: (source) => formatDate(source.newest_at),
@@ -517,10 +543,17 @@ export default function PersonalVaultSettingsPage() {
       render: (source) => (
         <Button
           variant="destructive"
-          onClick={() => setPurgeTarget({ source: source.source })}
+          aria-label={`Purge personal:${source.source}${source.provider_account_id ? ` for ${source.provider_account_id}` : ""}`}
+          onClick={() =>
+            setPurgeTarget({
+              source: source.source,
+              sourceId: source.source_id,
+              providerAccountId: source.provider_account_id,
+            })
+          }
           disabled={busy !== null}
         >
-          Purge source
+          {source.provider_account_id ? "Purge account" : "Purge source"}
         </Button>
       ),
     },
@@ -1211,7 +1244,13 @@ export default function PersonalVaultSettingsPage() {
             <Table
               columns={sourceColumns}
               rows={status.stats.sources}
-              getRowKey={(source) => source.source}
+              getRowKey={(source) =>
+                JSON.stringify([
+                  source.source,
+                  source.source_id,
+                  source.provider_account_id,
+                ])
+              }
             />
           </div>
         ) : (
@@ -1220,7 +1259,13 @@ export default function PersonalVaultSettingsPage() {
         <div className="pc-settings-actions" style={{ marginTop: 16 }}>
           <Button
             variant="destructive"
-            onClick={() => setPurgeTarget({ source: null })}
+            onClick={() =>
+              setPurgeTarget({
+                source: null,
+                sourceId: null,
+                providerAccountId: null,
+              })
+            }
             disabled={busy !== null}
           >
             Purge entire vault
@@ -1297,9 +1342,9 @@ export default function PersonalVaultSettingsPage() {
         open={purgeTarget !== null}
         onOpenChange={(open) => !open && setPurgeTarget(null)}
         title={
-          purgeTarget?.source
-            ? `Purge ${purgeTarget.source}`
-            : "Purge entire Personal Vault"
+          purgeTarget
+            ? `Purge ${purgeTargetLabel(purgeTarget)}`
+            : "Purge Personal Vault"
         }
         description="This permanently deletes Personal Vault documents, vectors, cursors, and orphaned identity data."
         contentStyle={{
@@ -1311,9 +1356,9 @@ export default function PersonalVaultSettingsPage() {
         }}
       >
         <h2>
-          {purgeTarget?.source
-            ? `Purge personal:${purgeTarget.source}?`
-            : "Purge the entire Personal Vault?"}
+          {purgeTarget
+            ? `Purge ${purgeTargetLabel(purgeTarget)}?`
+            : "Purge Personal Vault?"}
         </h2>
         <p>
           This permanently removes the selected documents, their local vectors,

@@ -52,7 +52,20 @@ const status = {
   user: { id: "user-1", displayName: "Owner" },
   stats: {
     sources: [
-      { source: "gmail", documents: 12, newest_at: "2026-08-20T12:00:00Z" },
+      {
+        source: "gmail",
+        source_id: "00000000-0000-4000-8000-000000000101",
+        provider_account_id: "owner@example.com",
+        documents: 12,
+        newest_at: "2026-08-20T12:00:00Z",
+      },
+      {
+        source: "gmail",
+        source_id: "00000000-0000-4000-8000-000000000102",
+        provider_account_id: "backup@example.com",
+        documents: 4,
+        newest_at: "2026-08-19T12:00:00Z",
+      },
     ],
     unembedded: 2,
   },
@@ -134,6 +147,12 @@ beforeEach(() => {
         const body = JSON.parse(String(init.body)) as { enabled: boolean };
         return Response.json({ ok: true, enabled: body.enabled });
       }
+      if (url === "/api/user/personal-vault" && init?.method === "DELETE") {
+        return Response.json({
+          ok: true,
+          removed: { documents: 12, cursors: 0, aliases: 0, identities: 0 },
+        });
+      }
       if (url === "/api/user/personal-vault/grants/preview") {
         return Response.json({
           ok: true,
@@ -207,6 +226,45 @@ describe("PersonalVaultSettingsPage", () => {
       );
     });
     expect(screen.getByText(/It does not delete anything/i)).toBeTruthy();
+  });
+
+  it("renders duplicate source labels as account rows and purges only the selected account", async () => {
+    render(<PersonalVaultSettingsPage />);
+    const sourceSection = (
+      await screen.findByRole("heading", { name: "Imported sources" })
+    ).closest("section");
+    expect(sourceSection).toBeTruthy();
+    expect(within(sourceSection!).getByText("owner@example.com")).toBeTruthy();
+    expect(within(sourceSection!).getByText("backup@example.com")).toBeTruthy();
+
+    fireEvent.click(
+      within(sourceSection!).getByRole("button", {
+        name: "Purge personal:gmail for owner@example.com",
+      }),
+    );
+    expect(
+      await screen.findByRole("heading", {
+        name: "Purge personal:gmail for owner@example.com?",
+      }),
+    ).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Permanently purge" }),
+    );
+
+    await waitFor(() => {
+      const purgeCall = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === "/api/user/personal-vault" &&
+          (init as RequestInit | undefined)?.method === "DELETE",
+      );
+      expect(purgeCall).toBeTruthy();
+      expect(JSON.parse(String((purgeCall?.[1] as RequestInit).body))).toEqual({
+        source: "gmail",
+        sourceId: "00000000-0000-4000-8000-000000000101",
+        providerAccountId: "owner@example.com",
+        confirm: true,
+      });
+    });
   });
 
   it("renders Google live status and disconnects without invoking purge", async () => {

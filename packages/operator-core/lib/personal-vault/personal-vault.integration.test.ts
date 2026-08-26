@@ -267,6 +267,8 @@ describe('Personal Vault core', () => {
   });
 
   it('keeps identical external records separate by provider account and purges surgically', async () => {
+    const firstSourceId = '00000000-0000-4000-8000-000000000201';
+    const secondSourceId = '00000000-0000-4000-8000-000000000202';
     const common = {
       source: 'gmail',
       kind: 'message',
@@ -276,27 +278,53 @@ describe('Personal Vault core', () => {
       dedupeKey: 'gmail:shared-provider-local-id',
     };
     await upsertPersonalDocuments(org.adminSql, WS, userId, [
-      { ...common, providerAccountId: 'first@example.com' },
-      { ...common, providerAccountId: 'second@example.com' },
+      { ...common, sourceId: firstSourceId, providerAccountId: 'first@example.com' },
+      { ...common, sourceId: secondSourceId, providerAccountId: 'second@example.com' },
+    ]);
+
+    const [otherUser] = await org.adminSql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.users (username, display_name)
+      VALUES (${'personal-isolation-' + Date.now()}, 'Personal Isolation')
+      RETURNING id`;
+    await upsertPersonalDocuments(org.adminSql, WS, otherUser.id, [
+      { ...common, sourceId: firstSourceId, providerAccountId: 'first@example.com' },
     ]);
 
     const first = await searchPersonalDocuments(org.adminSql, WS, userId, {
       query: 'cobalt record',
       scopes: ['gmail'],
+      sourceIds: [firstSourceId],
       providerAccountIds: ['first@example.com'],
     });
     expect(first).toHaveLength(1);
-    expect(first[0]).toMatchObject({ providerAccountId: 'first@example.com' });
+    expect(first[0]).toMatchObject({
+      sourceId: firstSourceId,
+      providerAccountId: 'first@example.com',
+    });
 
     const removed = await purgePersonalSource(org.adminSql, WS, userId, 'gmail', {
+      sourceId: firstSourceId,
       providerAccountId: 'first@example.com',
     });
     expect(removed).toMatchObject({ documents: 1, cursors: 0 });
-    const remaining = await org.adminSql<Array<{ provider_account_id: string }>>`
-      SELECT provider_account_id
+    const remaining = await org.adminSql<Array<{
+      source_id: string;
+      provider_account_id: string;
+    }>>`
+      SELECT source_id::text, provider_account_id
         FROM harness_shared.personal_documents
        WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'gmail'`;
-    expect(remaining).toEqual([{ provider_account_id: 'second@example.com' }]);
+    expect(remaining).toEqual([{
+      source_id: secondSourceId,
+      provider_account_id: 'second@example.com',
+    }]);
+    const otherUserRows = await org.adminSql<Array<{ n: number }>>`
+      SELECT count(*)::int AS n
+        FROM harness_shared.personal_documents
+       WHERE workspace_id = ${WS} AND user_id = ${otherUser.id}
+         AND provider_account_id = 'first@example.com'`;
+    expect(otherUserRows).toEqual([{ n: 1 }]);
+    await org.adminSql`DELETE FROM harness_shared.users WHERE id = ${otherUser.id}`;
   });
 
   it('consumes normalized Gmail/Calendar events and paged Google Contacts locally', async () => {
