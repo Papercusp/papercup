@@ -1168,11 +1168,17 @@ export default defineTool({
     let coverageTruncated = false;
     let collisions: CoverageCollision[] = [];
     let duplicates: CoverageDuplicate[] = [];
-    // Hoisted so the DAG-frontier block (includeDag) reuses the SAME fused
-    // coverage map for its claims — one getAllPlanItemCoverage() call, not two.
-    let covMap: Awaited<ReturnType<typeof getAllPlanItemCoverage>> | null = null;
-    try {
-      covMap = await getAllPlanItemCoverage();
+    // Reuse the bounded top-level coverage read for both the rollup and the
+    // optional DAG frontier — one getAllPlanItemCoverage() call, not two. If
+    // harness scoping failed, omit this section rather than widening an
+    // uncertain scope to another harness.
+    let covMap: Awaited<ReturnType<typeof getAllPlanItemCoverage>> | null =
+      degradedLegs.has('coverage') ||
+      (args.harness != null && !args.plan && degradedLegs.has('harnessPlans'))
+        ? null
+        : coverageRead;
+    if (covMap) {
+      try {
       // Scope to the queried plan (when set) the same way coverage is, so a
       // { plan } filter narrows both the coverage rollup AND the collision list.
       // P-003 (fleet-member-dx, EI-9017): an {agent}-scoped read (e.g. coord:orient's
@@ -1215,7 +1221,6 @@ export default defineTool({
       // tools already apply to a `harness` arg). Scope to the queried harness's
       // OWN plans, ANDed with the plan/agent narrowing above (an explicit
       // `{ plan }` still wins outright — it names one plan directly).
-      const harnessPlans: Set<string> | null = args.harness && !args.plan ? await planSlugsForHarness(workspaceId, args.harness) : null;
       const inScope = (ref: string): boolean => {
         const hash = ref.indexOf('#');
         const plan = hash > 0 ? ref.slice(0, hash) : null;
@@ -1252,8 +1257,11 @@ export default defineTool({
           ...(compact.links ? { links: compact.links } : {}),
         };
       });
-    } catch {
-      // Non-fatal — omit the coverage section.
+      } catch {
+        // Non-fatal — omit the coverage section, but report the failed fold.
+        degradedLegs.add('coverage');
+        covMap = null;
+      }
     }
     // DAG-filter frontier (EI-6949, includeDag): the whole set of items the plan's
     // dependency DAG selects, each with its disposition — a FLEET-level work-graph
@@ -1265,14 +1273,19 @@ export default defineTool({
     let dagView: DagFrontierView | null = null;
     if (args.includeDag && args.plan) {
       try {
-        const row = await getPlanRow(args.plan, { workspaceId });
+        const row = await boundedRead(
+          'dag',
+          () => getPlanRow(args.plan as string, { workspaceId }),
+          undefined as Awaited<ReturnType<typeof getPlanRow>>,
+        );
         if (row) {
           const items = resolveEffectiveStatusForItems(planItemsForRow(row)).items;
           const claims = covMap ? claimsFromCoverage(covMap.values(), args.plan) : {};
           dagView = shapeDagFrontier(items, claims);
         }
       } catch {
-        // Non-fatal — omit the dag section.
+        // Non-fatal — omit the dag section, but report the failed fold.
+        degradedLegs.add('dag');
       }
     }
     // Summary is computed over the FULL agent set so the counts stay accurate even
@@ -1366,11 +1379,23 @@ export default defineTool({
         'trimmed to the agent result byte budget (22KB, live-first order) — narrow with { agent } / { plan }',
       ),
     };
+    // Keep the healthy payload byte-compatible with the existing tool, but make
+    // every degraded fallback explicit when one fires. The fixed order makes a
+    // concurrent fan-out deterministic for callers and tests.
+    const degradedLegsOut = FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER.filter((leg) =>
+      degradedLegs.has(leg),
+    );
     // {data} envelope so the payload-tier shapers apply; HTTP consumers (the
     // pui bee-dossier pane) still read identical lossless JSON text.
     return {
       data: {
         ok: true,
+        // A degraded read remains useful, but its counts/rows can be incomplete.
+        // Name the exact bounded leg(s) so supervisors can distinguish that state
+        // from a genuine empty fleet.
+        ...(degradedLegsOut.length > 0
+          ? { degraded: true, degradedLegs: degradedLegsOut }
+          : {}),
         ...(self ? { self } : {}),
         summary: summaryOut,
         // WI-6762: SHIP THE SCOPE NEXT TO THE SCOPED COUNTS.
