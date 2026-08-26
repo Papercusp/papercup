@@ -112,6 +112,11 @@ const row = (ownerId: string, stale: boolean) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // clearAllMocks keeps mockResolvedValue IMPLEMENTATIONS — restore the leg
+  // defaults explicitly so the EI-21488009366204518 tests cannot leak their
+  // fixtures into each other (order-dependent false positives).
+  endedSessionsMock.mockResolvedValue([]);
+  endedOwnersMock.mockResolvedValue(new Set<string>());
   listPresenceMock.mockResolvedValue([row('su-aaa', false), row('su-bbb', false), row('su-ccc', true)]);
 });
 
