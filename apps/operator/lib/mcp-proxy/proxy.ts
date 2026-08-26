@@ -953,13 +953,28 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'scheduler:get_next',
   'coord:orient',
   'coord:send',
+  // The automatic status glance is a read-only liveness surface. Keep it on the
+  // reserved admission path so a saturated ordinary pool cannot hide the fleet
+  // state that agents use to recover from the saturation.
+  'coord:glance',
+  // DRAIN reconciliation reads must remain callable while ordinary tool traffic
+  // occupies the non-reserved ceiling. `coord:inbox` is intentionally not in
+  // READ_ONLY_TOOLS because reading it advances message-read state, but it is
+  // still liveness-critical for recovering a fleet member.
+  'coord:inbox',
   'fleet:assignments',
+  'fleet:leader-brief',
   'loop:checkpoint',
+  // Ending a loop is the terminal recovery action when a worker is blocked or the
+  // queue is drained. Keep it callable at the reserved ceiling and isolate it from
+  // a saturated reserved socket so the failed wake path can actually shut down.
+  'loop:end',
   'session:request-compaction',
   'tools:find',
   'dev:service_health',
   'dev:pg_query',
   'loop:arm',
+  'plans:get',
   'improvements:capture',
   'locks:acquire',
   'locks:queue',
@@ -967,9 +982,12 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'locks:release',
   'events:cancel',
   'work_items:checkpoint',
+  'work_items:claimable',
   'work_items:complete',
   'work_items:get',
+  'work_items:search',
   'work_items:release',
+  'work_items:set_state',
 ].map(normalizeMcpName));
 
 // Continuation writes are a narrower, higher-priority slice of the reserved plane. Keep this
@@ -978,6 +996,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
 // from that exact condition.
 const CRITICAL_CONTINUATION_TOOLS = new Set([
   'loop:checkpoint',
+  'loop:end',
   'session:request-compaction',
   'work_items:checkpoint',
   'work_items:complete',
@@ -1024,14 +1043,33 @@ export function isMcpProxyWatchdogProbePath(requestPath: unknown): boolean {
   }
 }
 
-// psu launch/resume preflight uses plain REST rather than JSON-RPC. These calls
-// are the human/fleet entry point and must retain access to the reserve while
-// ordinary tool traffic is saturated. Heartbeat is intentionally absent: it is
-// a cheap repeating beat and should fail fast rather than consume a reserved slot.
+// psu launch/resume preflight and the PUI's canonical operator/store identity
+// probe use plain REST rather than JSON-RPC. These calls are human/fleet entry
+// points and must retain access to the reserve while ordinary tool traffic is
+// saturated. Heartbeat is intentionally absent: it is a cheap repeating beat
+// and should fail fast rather than consume a reserved slot.
 export const RESERVED_CONTROL_PLANE_PATHS = new Set([
   '/api/adv/sessions/resumable',
   '/api/agent-mcp/console/bootstrap-su/options',
   '/api/agent-mcp/console/bootstrap-su',
+  '/api/agent-mcp/console/bootstrap-su/session-ended',
+  '/api/agent-mcp/console/bootstrap-su/session-resumed',
+  '/api/agent-mcp/console/bootstrap-su/session-resume-finalized',
+  '/api/agent-mcp/console/bootstrap-su/session-resume-released',
+  '/api/agent-mcp/console/bootstrap-su/session-respawned',
+  '/api/tui/identity',
+]);
+
+// One-shot lifecycle mutations are the boundary that creates/ends a live
+// writer. They need the reserved admission pool plus the same isolated socket
+// as continuation checkpoints. Heartbeat is deliberately excluded: it repeats
+// and may fail fast under pressure.
+export const CRITICAL_SESSION_LIFECYCLE_PATHS = new Set([
+  '/api/agent-mcp/console/bootstrap-su/session-ended',
+  '/api/agent-mcp/console/bootstrap-su/session-resumed',
+  '/api/agent-mcp/console/bootstrap-su/session-resume-finalized',
+  '/api/agent-mcp/console/bootstrap-su/session-resume-released',
+  '/api/agent-mcp/console/bootstrap-su/session-respawned',
 ]);
 
 /** Match a REST control-plane path without letting query strings or a harmless
@@ -1042,12 +1080,19 @@ export function isReservedControlPlanePath(requestPath: unknown): boolean {
   return RESERVED_CONTROL_PLANE_PATHS.has(path);
 }
 
+export function isCriticalSessionLifecyclePath(requestPath: unknown): boolean {
+  if (typeof requestPath !== 'string') return false;
+  const path = requestPath.split('?')[0]?.replace(/\/+$/, '') || '/';
+  return CRITICAL_SESSION_LIFECYCLE_PATHS.has(path);
+}
+
 /**
  * Whether a complete JSON-RPC batch contains only continuation-boundary writes. A mixed batch
  * stays on the ordinary route so an unrelated call cannot inherit the critical socket.
  * `tools:invoke` is recognized because some clients reach deferred tools through that wrapper.
  */
-export function isCriticalContinuationCall(rawBody: Buffer): boolean {
+export function isCriticalContinuationCall(rawBody: Buffer, requestPath?: string): boolean {
+  if (isCriticalSessionLifecyclePath(requestPath)) return true;
   try {
     const parsed = JSON.parse(rawBody.toString('utf8')) as unknown;
     const messages = Array.isArray(parsed) ? parsed : [parsed];
@@ -1076,7 +1121,7 @@ export function isCriticalContinuationCall(rawBody: Buffer): boolean {
  * the failure that needs fixing, inspect lock ownership, release a lock held during an edit,
  * or preserve the successor state needed to resume after a task boundary, cancel an event wait,
  * acquire/release a file lock around an edit, inspect a
- * work-item during recovery, release a claim during recovery, diagnose a service outage, or finish a work-item when
+ * work-item during recovery, search the work-item queue during recovery, release a claim during recovery, diagnose a service outage, or finish a work-item when
  * ordinary traffic has saturated the proxy. The MCP
  * client may send a canonical colon-form name or its `mcp__<server>__group_verb` advertisement
  * name; both are normalized through the shared tooldef helper before this narrow membership check.
@@ -1423,7 +1468,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
         const reservedControlPlane = isReservedControlPlaneCall(rawBody, req.url);
-        const criticalContinuation = isCriticalContinuationCall(rawBody);
+        const criticalContinuation = isCriticalContinuationCall(rawBody, req.url);
         const sessionHandshake = isMcpSessionHandshakeCall(rawBody);
         const watchdogSessionProbe = sessionHandshake && isMcpProxyWatchdogProbePath(req.url);
         const admissionCeiling = reservedControlPlane

@@ -1400,13 +1400,18 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call('scheduler:get_next'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:orient'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:send'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('coord:glance'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('coord:inbox'))).toBe(true);
     expect(isReservedControlPlaneCall(call('fleet:assignments'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('fleet:leader-brief'))).toBe(true);
     expect(isReservedControlPlaneCall(call('loop:checkpoint'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('loop:end'))).toBe(true);
     expect(isReservedControlPlaneCall(call('session:request-compaction'))).toBe(true);
     expect(isReservedControlPlaneCall(call('tools:find'))).toBe(true);
     expect(isReservedControlPlaneCall(call('dev:service_health'))).toBe(true);
     expect(isReservedControlPlaneCall(call('dev:pg_query'))).toBe(true);
     expect(isReservedControlPlaneCall(call('loop:arm'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('plans:get'))).toBe(true);
     expect(isReservedControlPlaneCall(call('improvements:capture'))).toBe(true);
     expect(isReservedControlPlaneCall(call('locks:acquire'))).toBe(true);
     expect(isReservedControlPlaneCall(call('locks:queue'))).toBe(true);
@@ -1414,10 +1419,15 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call('locks:release'))).toBe(true);
     expect(isReservedControlPlaneCall(call('events:cancel'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:checkpoint'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('work_items:claimable'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:release'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:complete'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:get'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('work_items:search'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('work_items:set_state'))).toBe(true);
     expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'tools:invoke', arguments: { name: 'tools:find', args: {} } } })))).toBe(true);
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'tools:invoke', arguments: { name: 'plans:get', args: {} } } })))).toBe(true);
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'tools:invoke', arguments: { name: 'work_items:search', args: {} } } })))).toBe(true);
     expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/call', params: { name: 'tools:invoke', arguments: { name: 'work_items:list', args: {} } } })))).toBe(false);
     expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
   });
@@ -1451,6 +1461,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     const call = (name: string) =>
       Buffer.from(JSON.stringify({ method: "tools/call", params: { name } }));
     expect(isCriticalContinuationCall(call("loop:checkpoint"))).toBe(true);
+    expect(isCriticalContinuationCall(call("loop:end"))).toBe(true);
     expect(isCriticalContinuationCall(call("session:request-compaction"))).toBe(
       true,
     );
@@ -1466,6 +1477,19 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
             params: {
               name: "tools:invoke",
               arguments: { name: "loop:checkpoint", args: {} },
+            },
+          }),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isCriticalContinuationCall(
+        Buffer.from(
+          JSON.stringify({
+            method: "tools/call",
+            params: {
+              name: "tools:invoke",
+              arguments: { name: "loop:end", args: {} },
             },
           }),
         ),
@@ -1495,21 +1519,70 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isCriticalContinuationCall(Buffer.from("{bad json"))).toBe(false);
   });
 
-  it('recognizes psu launch/resume REST preflight paths and leaves the repeating heartbeat unreserved', () => {
+  it('recognizes PUI identity and psu lifecycle REST paths while leaving the repeating heartbeat unreserved', () => {
     const ordinaryBody = Buffer.from(JSON.stringify({ ownerId: 'su-test' }));
     expect(isReservedControlPlanePath('/api/adv/sessions/resumable')).toBe(true);
     expect(isReservedControlPlanePath('/api/adv/sessions/resumable?limit=30')).toBe(true);
     expect(isReservedControlPlanePath('/api/agent-mcp/console/bootstrap-su/options')).toBe(true);
     expect(isReservedControlPlanePath('/api/agent-mcp/console/bootstrap-su/')).toBe(true);
+    for (const path of [
+      '/api/agent-mcp/console/bootstrap-su/session-ended',
+      '/api/agent-mcp/console/bootstrap-su/session-resumed',
+      '/api/agent-mcp/console/bootstrap-su/session-resume-finalized',
+      '/api/agent-mcp/console/bootstrap-su/session-resume-released',
+      '/api/agent-mcp/console/bootstrap-su/session-respawned',
+    ]) {
+      expect(isReservedControlPlanePath(path)).toBe(true);
+      expect(isCriticalContinuationCall(ordinaryBody, path)).toBe(true);
+    }
+    expect(isReservedControlPlanePath('/api/tui/identity')).toBe(true);
+    expect(isReservedControlPlanePath('/api/tui/identity/')).toBe(true);
+    expect(isReservedControlPlanePath('/api/tui/identity?probe=startup')).toBe(true);
     expect(isReservedControlPlanePath('/api/agent-mcp/console/bootstrap-su/heartbeat')).toBe(false);
     expect(isReservedControlPlaneCall(ordinaryBody, '/api/adv/sessions/resumable')).toBe(true);
     expect(isReservedControlPlaneCall(ordinaryBody, '/api/agent-mcp/console/bootstrap-su/options')).toBe(true);
     expect(isReservedControlPlaneCall(ordinaryBody, '/api/agent-mcp/console/bootstrap-su')).toBe(true);
+    expect(isReservedControlPlaneCall(Buffer.alloc(0), '/api/tui/identity')).toBe(true);
     expect(isReservedControlPlaneCall(ordinaryBody, '/api/agent-mcp/console/bootstrap-su/heartbeat')).toBe(false);
+    expect(isCriticalContinuationCall(ordinaryBody, '/api/agent-mcp/console/bootstrap-su/heartbeat')).toBe(false);
+  });
+
+  it('admits a lifecycle write from the reserved slot while ordinary traffic sheds', async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
+    const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"ok":true}'))));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+      retryWindowMs: 5_000, maxInFlight: 2, controlPlaneReserve: 1, log: () => {},
+    }));
+    await listen(proxy);
+
+    const ordinary = request(port(proxy), JSON.stringify({ method: 'tools/call', params: { name: 'work_items:list' } }));
+    await new Promise((r) => setTimeout(r, 30));
+    expect((await request(port(proxy), JSON.stringify({ method: 'tools/call', params: { name: 'work_items:list' } }))).status).toBe(429);
+
+    const lifecycle = request(
+      port(proxy),
+      JSON.stringify({ advSessionId: 42, resumeClaimKey: 'attempt-1' }),
+      '/api/agent-mcp/console/bootstrap-su/session-resumed',
+    );
+    await new Promise((r) => setTimeout(r, 30));
+    releaseUpstream();
+    expect((await ordinary).status).toBe(200);
+    expect((await lifecycle).status).toBe(200);
   });
 
   it.each([
     ['canonical colon-form', 'scheduler:get_next'],
+    ['canonical loop-end form', 'loop:end'],
+    ['underscore loop-end form', 'loop_end'],
+    ['Claude MCP-advertised loop-end form', 'mcp__papercusp-su__loop_end'],
+    ['MCP-advertised loop-end form with underscore server slug', 'mcp__papercusp_su__loop_end'],
+    ['canonical glance form', 'coord:glance'],
+    ['underscore glance form', 'coord_glance'],
+    ['Claude MCP-advertised glance form', 'mcp__papercusp-su__coord_glance'],
+    ['MCP-advertised glance form with underscore server slug', 'mcp__papercusp_su__coord_glance'],
     ['underscore group/verb form', 'scheduler_get_next'],
     ['Claude MCP-advertised form', 'mcp__papercusp-su__scheduler_get_next'],
     ['MCP-advertised form with underscore server slug', 'mcp__papercusp_su__scheduler_get_next'],
@@ -1518,6 +1591,10 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ['underscore bounded PG diagnostic form', 'dev_pg_query'],
     ['Claude MCP-advertised bounded PG diagnostic form', 'mcp__papercusp-su__dev_pg_query'],
     ['MCP-advertised bounded PG diagnostic form with underscore server slug', 'mcp__papercusp_su__dev_pg_query'],
+    ['canonical plan inspection form', 'plans:get'],
+    ['underscore plan inspection form', 'plans_get'],
+    ['Claude MCP-advertised plan inspection form', 'mcp__papercusp-su__plans_get'],
+    ['MCP-advertised plan inspection form with underscore server slug', 'mcp__papercusp_su__plans_get'],
     ['canonical locks:acquire form', 'locks:acquire'],
     ['underscore locks:acquire form', 'locks_acquire'],
     ['Claude MCP-advertised locks:acquire form', 'mcp__papercusp-su__locks_acquire'],
@@ -1549,6 +1626,10 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ['underscore work-item inspection form', 'work_items_get'],
     ['Claude MCP-advertised work-item inspection form', 'mcp__papercusp-su__work_items_get'],
     ['MCP-advertised work-item inspection form with underscore server slug', 'mcp__papercusp_su__work_items_get'],
+    ['canonical work-item search form', 'work_items:search'],
+    ['underscore work-item search form', 'work_items_search'],
+    ['Claude MCP-advertised work-item search form', 'mcp__papercusp-su__work_items_search'],
+    ['MCP-advertised work-item search form with underscore server slug', 'mcp__papercusp_su__work_items_search'],
   ])('normalizes %s before checking the reserved set', (_label, name) => {
     expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/call', params: { name } })))).toBe(true);
   });
@@ -1574,7 +1655,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ])))).toBe(false);
   });
 
-  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'fleet:assignments', 'loop:checkpoint', 'session:request-compaction', 'tools:find', 'tools:invoke → tools:find', 'dev:service_health', 'dev:pg_query', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'events:cancel', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
+  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'coord:glance', 'coord:inbox', 'fleet:assignments', 'fleet:leader-brief', 'loop:checkpoint', 'loop:end', 'session:request-compaction', 'tools:find', 'tools:invoke → tools:find', 'dev:service_health', 'dev:pg_query', 'loop:arm', 'plans:get', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'events:cancel', 'work_items:checkpoint', 'work_items:claimable', 'work_items:get', 'work_items:search', 'work_items:release', 'work_items:complete', 'work_items:set_state'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
@@ -1603,7 +1684,8 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     '/api/adv/sessions/resumable',
     '/api/agent-mcp/console/bootstrap-su/options',
     '/api/agent-mcp/console/bootstrap-su',
-  ])('admits launcher preflight %s from the reserve while ordinary traffic sheds', async (path) => {
+    '/api/tui/identity',
+  ])('admits REST control-plane path %s from the reserve while ordinary traffic sheds', async (path) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
