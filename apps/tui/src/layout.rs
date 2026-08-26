@@ -226,21 +226,21 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 ///     selecting a row drills into an on-demand per-hive tab (`hive_tab_kdl`).
 ///   * tab **"context"** — `pui context-pane`, the shared projection for the
 ///     live Sentinel (the former plans board refitted in place for P-006).
-/// The tab-bar + status-bar move into a `default_tab_template` shared by all
-/// tabs; "this hive" is the FIRST tab + focus=true so the dock opens where it
-/// always did (and tier-1 `GoToTab(1)` lands on it). The workbench swap presets
-/// are untouched.
+///   The tab-bar + status-bar move into a `default_tab_template` shared by all
+///   tabs; "this hive" is the FIRST tab + focus=true so the dock opens where it
+///   always did (and tier-1 `GoToTab(1)` lands on it). The workbench swap presets
+///   are untouched.
 ///
 /// Pane DISPLAY names route through the active Hive lexicon (`lex`): the
 /// operator pane is the `operator` term (Queen). The pinned-pane ARGS
 /// (`network-pane`, `wake-pane`, …) are internal identifiers and never change.
 /// `_brain_argv` is retained for a future "take control" action; the ♛ queen
 /// + 👁 overwatch dock panes now render the
-/// READ-ONLY shared transcript view (`pui brain-view`, queen-overwatch-live-
-/// visibility D-003) so every instance shows the SAME live agent and survives a
-/// shell exit, instead of a per-window interactive shell. Pure (no I/O) so it is
-/// unit-tested. (hive-agent-tabs P-014 retired the `pui chat-pane` flag-off dock
-/// shape — the queen-split layout is the only dock now.)
+///   READ-ONLY shared transcript view (`pui brain-view`, queen-overwatch-live-
+///   visibility D-003) so every instance shows the SAME live agent and survives a
+///   shell exit, instead of a per-window interactive shell. Pure (no I/O) so it is
+///   unit-tested. (hive-agent-tabs P-014 retired the `pui chat-pane` flag-off dock
+///   shape — the queen-split layout is the only dock now.)
 pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> String {
     // Lexicon-resolved, kdl-safe pane display names ("chat" is fixed). Under
     // the-hive pack: operator → sentinel, brain → queen (owner naming, 2026-06-07;
