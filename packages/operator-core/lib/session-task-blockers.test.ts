@@ -5,7 +5,12 @@ import {
   validateSessionTaskBlockerRef,
 } from './session-task-blockers';
 
-const scope = { workspaceId: 'ws', harness: 'papercusp', planSlug: 'cockpit' };
+const scope = {
+  workspaceId: 'ws',
+  harness: 'papercusp',
+  planSlug: 'cockpit',
+  coordinationDomain: '/repo',
+};
 
 function sqlReturning(rows: unknown[]) {
   return vi.fn(async () => rows) as never;
@@ -33,8 +38,10 @@ describe('session task typed blocker refs', () => {
   });
 
   it('clears a released lock and waits on a live holder', async () => {
-    await expect(resolveSessionTaskBlocker(sqlReturning([]), scope, 'lock:a.ts'))
+    const releasedSql = vi.fn(async () => []);
+    await expect(resolveSessionTaskBlocker(releasedSql as never, scope, 'lock:a.ts'))
       .resolves.toMatchObject({ status: 'cleared', autoUnblocks: true });
+    expect(releasedSql.mock.calls[0]?.[1]).toBe('/repo');
     await expect(resolveSessionTaskBlocker(sqlReturning([{ owner: 'peer', expires_ts: '2026-08-27T00:00:00Z' }]), scope, 'lock:a.ts'))
       .resolves.toMatchObject({ status: 'waiting', detail: 'Held by peer.' });
   });

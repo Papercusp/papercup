@@ -31,6 +31,8 @@ export interface SessionTaskBlockerScope {
   workspaceId: string;
   harness: string;
   planSlug?: string | null;
+  /** Physical checkout domain used by agent_file_locks; null fails closed across domains. */
+  coordinationDomain?: string | null;
 }
 
 function iso(value: unknown): string | undefined {
@@ -55,7 +57,8 @@ export async function resolveSessionTaskBlocker(
       const rows = await sql<{ owner: string; expires_ts: Date | string }[]>`
         SELECT owner, expires_ts
           FROM agent_file_locks
-         WHERE coordination_domain = ${scope.workspaceId}
+         WHERE (${scope.coordinationDomain ?? null}::text IS NULL
+                OR coordination_domain = ${scope.coordinationDomain ?? null})
            AND expires_ts > clock_timestamp()
            AND lock_path_overlaps(path, ${parsed.target})
          ORDER BY expires_ts DESC
