@@ -46,6 +46,19 @@ describe('CLAUDE.md gate-candidate-ref claim', () => {
       expect(verdict.violations.join('\n')).toMatch(/git fetch/);
     });
 
+    it('recognizes a local integration-branch resolution split across continuation lines', () => {
+      const verdict = judgeGateCandidateRef(
+        pad(`
+          let candidate = await revParse(
+            cfg.integrationRoot,
+            cfg.integrationBranch,
+          );
+        `),
+      );
+      expect(verdict.ok).toBe(true);
+      expect(verdict.candidateSites).toHaveLength(1);
+    });
+
     it('catches the candidate site disappearing entirely', () => {
       const verdict = judgeGateCandidateRef(pad('const unrelated = 1;'));
       expect(verdict.ok).toBe(false);

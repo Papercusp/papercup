@@ -229,9 +229,12 @@ describe('stampStatePlane — caller-relativity decides whether the handle is CO
   });
 
   it('a GLOBAL cell needs no subject and gets a complete handle', () => {
-    const out = stampStatePlane({ payload: { deployedSha: 'x' }, tool: DOOR, args: {}, cells: [
-      cell({ cell: 'deploy.3070.sha', changeSignal: { kind: 'poll', tool: DOOR, path: 'deployedSha' } }),
-    ] });
+    const out = stampStatePlane({
+      payload: { deployedSha: 'x' },
+      tool: DOOR,
+      args: {},
+      cells: [cell({ cell: 'deploy.3070.sha', changeSignal: { kind: 'poll', tool: DOOR, path: 'deployedSha' } })],
+    });
     expect(out?.cells[0]?.reread?.args).toEqual({ cell: 'deploy.3070.sha' });
     expect(out?.cells[0]?.unreadable).toBeUndefined();
   });
@@ -241,7 +244,11 @@ describe('stampStatePlane — audience (P-019: a stamp must not be an enumeratio
   it('never advertises a cell the reader may not read', () => {
     const cells = [
       cell({ cell: 'open', visibility: { kind: 'workspace' }, changeSignal: { kind: 'poll', tool: DOOR, path: 'a' } }),
-      cell({ cell: 'narrow', visibility: { kind: 'owner', ref: 'someone-else' }, changeSignal: { kind: 'poll', tool: DOOR, path: 'b' } }),
+      cell({
+        cell: 'narrow',
+        visibility: { kind: 'owner', ref: 'someone-else' },
+        changeSignal: { kind: 'poll', tool: DOOR, path: 'b' },
+      }),
     ];
     const out = stampStatePlane({
       payload: { a: 1, b: 2 },
@@ -253,7 +260,13 @@ describe('stampStatePlane — audience (P-019: a stamp must not be an enumeratio
   });
 
   it('admits an owner-visible cell to its owner', () => {
-    const cells = [cell({ cell: 'mine', visibility: { kind: 'owner', ref: 'me' }, changeSignal: { kind: 'poll', tool: DOOR, path: 'a' } })];
+    const cells = [
+      cell({
+        cell: 'mine',
+        visibility: { kind: 'owner', ref: 'me' },
+        changeSignal: { kind: 'poll', tool: DOOR, path: 'a' },
+      }),
+    ];
     const out = stampStatePlane({ payload: { a: 1 }, tool: DOOR, cells, reader: { ownerId: 'me', roles: [] } });
     expect(out?.cells.map((c) => c.cell)).toEqual(['mine']);
   });
@@ -295,9 +308,7 @@ describe('stampStatePlane — totality (an enrichment must never fail the call i
  * emit nothing, silently, which is the failure mode this whole plan keeps rediscovering.
  */
 describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payload', () => {
-  const pipelineCells = BUILTIN_CELLS.filter(
-    (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === DOOR,
-  );
+  const pipelineCells = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === DOOR);
 
   it('the door has cells registered against it at all', () => {
     // If this ever hits zero the feature is dead and every other test here still passes.
@@ -310,7 +321,7 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
     const payload = {
       positions: { deployed: false },
       deployedSha: null,
-      gate: { consecutiveReds: 0, ownership: { claimState: null } },
+      gate: { consecutiveReds: 0, qualification: null, ownership: { claimState: null } },
       changeInCandidate: { judgingSha: null },
       // The pair is ONE reading in two polarities, so they must stay consistent
       // negations of each other or this fixture stops mirroring the resolver
@@ -369,9 +380,7 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
  * block answers a question they never got the chance to ask.
  */
 describe('P-005 — an operator-scope reader still gets the plane block', () => {
-  const pipelineCells = BUILTIN_CELLS.filter(
-    (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === DOOR,
-  );
+  const pipelineCells = BUILTIN_CELLS.filter((c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === DOOR);
 
   /** A payload carrying each candidate cell's declared path, so own-key existence holds. */
   const payload = {

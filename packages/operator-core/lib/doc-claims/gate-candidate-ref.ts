@@ -78,6 +78,24 @@ const REMOTE_REF = /origin\//;
 const GIT_FETCH = /git\s+fetch|(['"])fetch\1/;
 
 /**
+ * Rejoin a multi-line ref-resolution call without losing the source line that opened it.
+ *
+ * The detector is deliberately textual, but TypeScript formatting is not line-stable: Prettier
+ * moves `cfg.integrationBranch` onto a continuation line as soon as the call grows. Scanning only
+ * the opener then manufactures a false absence. Bound the join to one call expression (or twelve
+ * lines) so an unrelated later integration-branch mention cannot satisfy an earlier `revParse`.
+ */
+function refResolutionWindow(lines: readonly string[], start: number): string {
+  const out = [lines[start] ?? ''];
+  for (let i = start + 1; i < Math.min(lines.length, start + 12); i += 1) {
+    const line = lines[i] ?? '';
+    out.push(line);
+    if (/\)\s*[,;]?\s*$/.test(line)) break;
+  }
+  return out.join(' ');
+}
+
+/**
  * Judge a green-checkpoint-shaped source against CLAUDE.md's stated claim.
  *
  * THROWS on a source too small to be the real file. A read that silently returned
@@ -101,9 +119,11 @@ export function judgeGateCandidateRef(source: string, minLines = 100): GateCandi
   const fetchSites: GateRefFinding[] = [];
 
   codeLines.forEach((line, i) => {
-    if (RESOLVES_REF.test(line) && INTEGRATION_BRANCH.test(line)) candidateSites.push(at(i, line));
-    if (REMOTE_REF.test(line) && (RESOLVES_REF.test(line) || /candidate/i.test(line))) {
-      remoteRefSites.push(at(i, line));
+    const resolvesRef = RESOLVES_REF.test(line);
+    const resolution = resolvesRef ? refResolutionWindow(codeLines, i) : line;
+    if (resolvesRef && INTEGRATION_BRANCH.test(resolution)) candidateSites.push(at(i, resolution));
+    if ((resolvesRef && REMOTE_REF.test(resolution)) || (REMOTE_REF.test(line) && /candidate/i.test(line))) {
+      remoteRefSites.push(at(i, resolution));
     }
     if (GIT_FETCH.test(line)) fetchSites.push(at(i, line));
   });
@@ -116,9 +136,7 @@ export function judgeGateCandidateRef(source: string, minLines = 100): GateCandi
     );
   }
   for (const site of remoteRefSites) {
-    violations.push(
-      `Line ${site.line} ties a remote-tracking ref to candidate resolution: ${site.text}`,
-    );
+    violations.push(`Line ${site.line} ties a remote-tracking ref to candidate resolution: ${site.text}`);
   }
   for (const site of fetchSites) {
     violations.push(`Line ${site.line} invokes a git fetch: ${site.text}`);
