@@ -648,7 +648,10 @@ async function processClaimedJob(
   sql: postgres.Sql,
   job: PersonalVaultImportJob,
   options: Required<Pick<PersonalVaultImportBatchOptions, 'batchSize' | 'leaseSeconds'>> &
-    Pick<PersonalVaultImportBatchOptions, 'streamArchive' | 'upsertDocuments' | 'removeArchive'>,
+    Pick<
+      PersonalVaultImportBatchOptions,
+      'streamArchive' | 'upsertDocuments' | 'removeArchive' | 'verifyArchive'
+    >,
 ): Promise<PersonalVaultImportBatchResult> {
   const streamArchive = options.streamArchive ?? streamPersonalArchiveFile;
   const upsertDocuments = options.upsertDocuments ?? upsertPersonalDocuments;
