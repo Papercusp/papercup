@@ -449,7 +449,8 @@ expensive mistake, and no amount of care in the steps below can recover from it.
 state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
 ```
 
-It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its provenance (`source.authoritative` — check this before acting)**, the containment falsifier `judgingContainsPath` (*is the gate judging MY change*) with its own prose attached, a `verdictUnknown` hoist naming anything it could NOT determine, and the `resolver` that produced them. The cells and the doors read the SAME resolver (`gitPipelinePosition()`), so this is a re-read of the authority, never a second source of truth. **Everything below — the marker SQL, the log greps, the ancestry and blob archaeology — is the FALLBACK**: reach for it when the cell answers `unknown`, when `source.authoritative` is false and the distinction matters, or when you need a field the cell does not carry (the refire budget, a run's failing-file set).
+It returns the judged sha plus **`source.authoritative` — read that FIRST**: a `run-probe` reading is an *inference* (on a CRON run it is just the checkout's live HEAD), so never fire a manual re-run off one. Everything below is the FALLBACK for when the cell answers `unknown` or you need a field it does not carry. Field-by-field: [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
+
 
 ## Ratified designs: implementation owes current passing visual evidence
 
@@ -497,6 +498,15 @@ restart does **NOT** pick up your edits:
 (`:3055` Vite *does* hot-reload.) Probe where the write actually lands; if it's
 stale, restart the *right* host and re-probe. Detail:
 [repo-conventions § two-port model](/internal/docs/system/repo-conventions).
+
+## Read this before changing code — performance anti-patterns
+
+Performance regressions here repeatedly come from the same small set of patterns
+(serial fs loops, per-slug PG-pool opens, `<details>` gating, duplicate React
+keys, stale Radix pointer-events overrides, …). **Read
+`/internal/docs/performance` before any non-trivial change** — especially the
+"What NOT to do" sections (A1–A14). If your change matches an anti-pattern,
+change the approach first.
 
 ## Storage policy: Postgres by default
 
@@ -693,11 +703,10 @@ matches, and a peer's prose or JSON payload is still ignored.
 
 ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 process's CGROUP, never a single-shot reading and never a hand-walked tree.** Every
-single-shot CPU probe answers a *different* question than the one you are asking, and each
-fails toward a false "idle": `ps -o %cpu` is a **process-lifetime average** (measured: 208%
-on a VM whose instantaneous load was 200% — right here only by coincidence, and badly wrong
-for anything whose load has changed), and any first-iteration sampler has no prior sample to
-difference against. CPU usage *is* a delta; ask for one:
+single-shot probe answers a *different* question and fails toward a false "idle":
+`ps -o %cpu` is a process-LIFETIME average, and a first-iteration sampler has no prior
+sample to difference against. CPU usage *is* a delta; ask for one:
+
 
 The runnable recipe, and the two `/proc` methods that each report a confident FALSE IDLE on a
 process burning a full core:
@@ -709,13 +718,11 @@ service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
 work runs in a child, so measuring it alone reports "idle" about a process
 burning a full core. 
 
-⚠ A corollary worth knowing before you design one: **a liveness/progress beat
-emitted BY the process being judged cannot report on main-thread saturation** —
-`await` yields to the microtask queue, not the event loop, so a saturated Node
-main thread stops every `setInterval`/`setTimeout` while looking perfectly
-asynchronous. The beat goes missing exactly when it is the thing you need.
-Observe from OUTSIDE (`/proc`), where a saturated process cannot suppress its
-own signal.
+⚠ Corollary worth knowing before you design one: **a liveness/progress beat emitted BY
+the process being judged cannot report main-thread saturation** — a saturated Node main
+thread stops every `setInterval`/`setTimeout` while looking perfectly asynchronous, so
+the beat goes missing exactly when you need it. Observe from OUTSIDE (`/proc`).
+
 
 Treat `top -n1` as usable here; the two-sample `/proc` recipe is still the one to reach for, because it needs no column-index guess (`%CPU` is field **9** in `-H` output, not 8 — field 8 is the state column, and misreading it yields a whole column of `S` that looks like data).
 
@@ -870,6 +877,22 @@ locks:release_resource { lock_id: '<returned lock_id>' }
 
 Holding it, pass `--sweep-lock-held` so the probe records which choice you made; `--accept-sweep-race` is the escape when the checkout is not swept.
 
+## Browser checks — use `verdict`
+
+Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
+MCP tools or ad-hoc Puppeteer. Playwright is only for running/extending the
+committed `apps/operator/e2e/*.spec.ts` suite. `verdict` is for
+**arbitrary/external** pages — operator UI (`:3055`/`:3070`) is verified inside
+the **Tauri shell** per `/internal/docs/testing/agent-e2e`, never by pointing
+verdict at those ports.
+
+## Use Context7 for current library docs
+
+Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,
+Hono, Radix, Vercel AI SDK, Vditor, BlockNote, …), call the `context7` MCP tools
+(`resolve-library-id` → `get-library-docs`). Library APIs change faster than
+training cutoffs; don't guess from memory.
+
 ## Adding a tool — the per-role guidance discipline
 
 1. **Define** in `packages/operator-core/lib/agent-tools/<group>/<verb>.ts` (or
@@ -929,7 +952,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **6 part(s) (2,525 chars) did not fit this client's
+> ⚠ **3 part(s) (1,449 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -945,6 +968,3 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 - `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
-- `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
-- `browser-checks-use-verdict-ad-hocexploratory-bro` — *Browser checks — use `verdict`* — Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
-- `use-context7-for-current-lib-before-non-trivial` — *Use Context7 for current library docs* — Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,

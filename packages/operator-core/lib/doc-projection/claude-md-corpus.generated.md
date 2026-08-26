@@ -813,7 +813,8 @@ expensive mistake, and no amount of care in the steps below can recover from it.
 state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
 ```
 
-It returns the judged sha (`changeInCandidate.judgingSha` — marker-preferred since WI-36259, see above), **its provenance (`source.authoritative` — check this before acting)**, the containment falsifier `judgingContainsPath` (*is the gate judging MY change*) with its own prose attached, a `verdictUnknown` hoist naming anything it could NOT determine, and the `resolver` that produced them. The cells and the doors read the SAME resolver (`gitPipelinePosition()`), so this is a re-read of the authority, never a second source of truth. **Everything below — the marker SQL, the log greps, the ancestry and blob archaeology — is the FALLBACK**: reach for it when the cell answers `unknown`, when `source.authoritative` is false and the distinction matters, or when you need a field the cell does not carry (the refire budget, a run's failing-file set).Verified live 2026-08-08.
+It returns the judged sha plus **`source.authoritative` — read that FIRST**: a `run-probe` reading is an *inference* (on a CRON run it is just the checkout's live HEAD), so never fire a manual re-run off one. Everything below is the FALLBACK for when the cell answers `unknown` or you need a field it does not carry. Field-by-field: [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
+Verified live 2026-08-08.
 
 The `candidate` field DRIFTS: a single continuous run reports different candidates over its
 lifetime. Observed 2026-08-02: one run with an unchanged `started_at` of 07:15:17Z (elapsed
@@ -1965,11 +1966,10 @@ the expected transition rather than treated as a bare absence.
 
 ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 process's CGROUP, never a single-shot reading and never a hand-walked tree.** Every
-single-shot CPU probe answers a *different* question than the one you are asking, and each
-fails toward a false "idle": `ps -o %cpu` is a **process-lifetime average** (measured: 208%
-on a VM whose instantaneous load was 200% — right here only by coincidence, and badly wrong
-for anything whose load has changed), and any first-iteration sampler has no prior sample to
-difference against. CPU usage *is* a delta; ask for one:
+single-shot probe answers a *different* question and fails toward a false "idle":
+`ps -o %cpu` is a process-LIFETIME average, and a first-iteration sampler has no prior
+sample to difference against. CPU usage *is* a delta; ask for one:
+
 
 The runnable recipe, and the two `/proc` methods that each report a confident FALSE IDLE on a
 process burning a full core:
@@ -1984,13 +1984,11 @@ service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
 work runs in a child, so measuring it alone reports "idle" about a process
 burning a full core. That trap cost a critical (EI-20029519971967372: the bg-host freeze watchdog killed a healthy boot every ~8 min because it had no way to tell "saturated and working" from "dead"). Walk children via `/proc/<pid>/task/<tid>/children` — **pid-anchored, so unlike a `pgrep -f` pattern it cannot self-match a peer's diagnostic shell**. Reference implementation: `procTreeCpuTicks` in `apps/operator/scripts/bghost-watchdog.mjs` — ⚠ but copy its TRAVERSAL, not its arithmetic: it sums utime+stime only and so carries the reap-heavy defect above (WI-37714), which is correct for bg-host's long-lived tree and wrong for any tree that forks-and-reaps.
 
-⚠ A corollary worth knowing before you design one: **a liveness/progress beat
-emitted BY the process being judged cannot report on main-thread saturation** —
-`await` yields to the microtask queue, not the event loop, so a saturated Node
-main thread stops every `setInterval`/`setTimeout` while looking perfectly
-asynchronous. The beat goes missing exactly when it is the thing you need.
-Observe from OUTSIDE (`/proc`), where a saturated process cannot suppress its
-own signal.
+⚠ Corollary worth knowing before you design one: **a liveness/progress beat emitted BY
+the process being judged cannot report main-thread saturation** — a saturated Node main
+thread stops every `setInterval`/`setTimeout` while looking perfectly asynchronous, so
+the beat goes missing exactly when you need it. Observe from OUTSIDE (`/proc`).
+
 
 Treat `top -n1` as usable here; the two-sample `/proc` recipe is still the one to reach for, because it needs no column-index guess (`%CPU` is field **9** in `-H` output, not 8 — field 8 is the state column, and misreading it yields a whole column of `S` that looks like data).⚠ EI-20017779937060288 reports that `top -b -n1 -H` prints **0.0% for every thread** (a first-iteration artifact). **That did NOT reproduce** — re-measured 2026-08-10 against the same pid at the same load, `top -b -n1 -H` reported 99.9% on exactly the 2 hot threads of 13 and 0.0% on the idle ones, agreeing with the `/proc` delta above.
 
