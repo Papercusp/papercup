@@ -112,18 +112,27 @@ export interface ScoutReadyCandidate {
   title: string | null;
   /** Does the plan body contain at least one open item (`- **P-NNN** \`todo|wip\``) to promote? */
   hasOpenItems: boolean;
+  /** Does the body contain any canonical P-NNN item, including terminal ones? */
+  hasAnyItems: boolean;
 }
 
-/** PURE: split ready candidates into startable (has items → auto-start) and
- *  itemless (→ debounced Queen decompose-wake). */
+/** PURE: split ready candidates into startable (open items → auto-start), truly
+ * itemless (zero items ever → decompose), and finished (items exist but all are
+ * terminal → completion flow owns them; never add work at the ship gate). */
 export function partitionReadyCandidates(candidates: readonly ScoutReadyCandidate[]): {
   startable: ScoutReadyCandidate[];
   itemless: ScoutReadyCandidate[];
+  finished: ScoutReadyCandidate[];
 } {
   const startable: ScoutReadyCandidate[] = [];
   const itemless: ScoutReadyCandidate[] = [];
-  for (const c of candidates) (c.hasOpenItems ? startable : itemless).push(c);
-  return { startable, itemless };
+  const finished: ScoutReadyCandidate[] = [];
+  for (const c of candidates) {
+    if (c.hasOpenItems) startable.push(c);
+    else if (!c.hasAnyItems) itemless.push(c);
+    else finished.push(c);
+  }
+  return { startable, itemless, finished };
 }
 
 // ── the PG sweep ──────────────────────────────────────────────────────────────
@@ -132,6 +141,7 @@ interface ReadyRow {
   plan_slug: string;
   title: string | null;
   has_open_items: boolean;
+  has_any_items: boolean;
 }
 
 /** Read this hive's ratified-but-never-started scout plans. Same scoping rules as
@@ -156,7 +166,8 @@ export async function readScoutReadyCandidates(
   // marker with an OPEN status (todo|wip).
   const rows = await sql<ReadyRow[]>`
     SELECT plan_slug, title,
-           (content ~ ('- [*][*]P-[0-9]+[*][*] ' || chr(96) || '(todo|wip)' || chr(96))) AS has_open_items
+           (content ~ ('- [*][*]P-[0-9]+[*][*] ' || chr(96) || '(todo|wip)' || chr(96))) AS has_open_items,
+           (content ~ '- [*][*]P-[0-9]+[*][*] ') AS has_any_items
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${planWorkspaceId}
        AND harness_slug = ${planStorageSlug}
@@ -164,12 +175,17 @@ export async function readScoutReadyCandidates(
        AND archived = false
        AND (op_status IS NULL OR op_status <> 'started')
        AND content LIKE ${'%\norigin: scout\n%'}
+       AND (
+         content ~ ('- [*][*]P-[0-9]+[*][*] ' || chr(96) || '(todo|wip)' || chr(96))
+         OR NOT (content ~ '- [*][*]P-[0-9]+[*][*] ')
+       )
      ORDER BY updated_at ASC
      LIMIT ${limit}`;
   return rows.map((r) => ({
     planSlug: r.plan_slug,
     title: r.title,
     hasOpenItems: Boolean(r.has_open_items),
+    hasAnyItems: Boolean(r.has_any_items),
   }));
 }
 
@@ -401,7 +417,11 @@ async function countEligibleReadyPlans(workspaceId: string): Promise<number> {
        AND status = 'ready'
        AND archived = false
        AND (op_status IS NULL OR op_status <> 'started')
-       AND content LIKE ${'%\norigin: scout\n%'}`;
+       AND content LIKE ${'%\norigin: scout\n%'}
+       AND (
+         content ~ ('- [*][*]P-[0-9]+[*][*] ' || chr(96) || '(todo|wip)' || chr(96))
+         OR NOT (content ~ '- [*][*]P-[0-9]+[*][*] ')
+       )`;
   return Number(rows[0]?.n ?? 0);
 }
 
