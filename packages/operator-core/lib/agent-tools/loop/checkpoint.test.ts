@@ -12,6 +12,7 @@ import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
 const setLoopCarryNote = vi.fn();
 const getLoopCarryNote = vi.fn();
+const listLoopCarryNoteHarnesses = vi.fn(async (..._a: unknown[]) => [] as string[]);
 const getLoopStatus = vi.fn();
 const getSessionBrief = vi.fn();
 const getPresence = vi.fn();
@@ -97,6 +98,7 @@ vi.mock('../../carry-note', async (importOriginal) => ({
   setLoopCarryNoteWithPrior: (...a: Parameters<typeof import('../../carry-note').setLoopCarryNoteWithPrior>) =>
     setLoopCarryNoteWithPrior(...a),
   getLoopCarryNote: (...a: unknown[]) => getLoopCarryNote(...a),
+  listLoopCarryNoteHarnesses: (...a: unknown[]) => listLoopCarryNoteHarnesses(...a),
   getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
   renderCarryNote: (f: Record<string, string | undefined>) => `RENDERED:${JSON.stringify(f)}`,
 }));
@@ -719,11 +721,99 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
   it('errors cleanly (no_harness) when no harness resolves anywhere — never writes an empty-namespace note', async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
-    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(undefined as never);
+    // `null` is in resolvePotHomeSlug's REAL return type (string | null), so this needs
+    // no cast — and an uncast fixture still typechecks against the real signature if it
+    // ever changes, which `as never` would have silently swallowed.
+    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null);
     const out = await call({ next: 'x' }, { workspaceId: 'ws-1' });
     expect(out.isError).toBe(true);
     expect(body(out)).toMatchObject({ ok: false, error: 'no_harness' });
     expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  // EI-21510951589801937: after a loop:end there is no active routine, and a superuser
+  // session carrying only the '*' sentinel with no home hive resolves nothing — so an
+  // ordinary carry-note refresh failed no_harness even though the owner's note sat in
+  // exactly one store. These pin the last-resort inference AND both of its guard rails:
+  // it must not fire when a stronger signal already answered, and it must refuse while
+  // NAMING the candidates rather than guess when the owner holds notes in several.
+  describe('carry-note scope inference (EI-21510951589801937)', () => {
+    // The production read is wrapped in withBoundedTimeout, whose suite-wide double
+    // returns a fixed `undefined`. Execute the wrapped work for THIS call site only —
+    // keyed on its label, so the other three sites keep the suite default — otherwise
+    // the tests would pass against the double rather than the inference.
+    const runInferenceWorkForReal = () =>
+      withBoundedTimeout.mockImplementation(async (work: unknown, opts: unknown) => {
+        if ((opts as { label?: string } | undefined)?.label !== 'loop:checkpoint carry-note scope inference') {
+          return { value: undefined, degraded: false, elapsedMs: 0 };
+        }
+        return {
+          value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await work,
+          degraded: false,
+          elapsedMs: 0,
+        };
+      });
+
+    it("infers the scope from the owner's single existing carry-note when nothing else resolves", async () => {
+      const { resolvePotHomeSlug } = await import('../../pot/wake');
+      // `null` is in resolvePotHomeSlug's REAL return type (string | null), so this needs
+    // no cast — and an uncast fixture still typechecks against the real signature if it
+    // ever changes, which `as never` would have silently swallowed.
+    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null);
+      runInferenceWorkForReal();
+      listLoopCarryNoteHarnesses.mockResolvedValueOnce(['sb-devboard-hive']);
+      const out = await call({ next: 'x' }, { workspaceId: 'ws-1' });
+      expect(out.isError).toBeFalsy();
+      // The PATH, not just the verdict: the lookup was addressed to THIS owner, the
+      // note landed in the inferred store, and the reply says the scope was inferred
+      // rather than resolved from the session.
+      expect(listLoopCarryNoteHarnesses).toHaveBeenCalledWith('su-caller');
+      expect(setLoopCarryNote).toHaveBeenCalledWith(
+        expect.objectContaining({ harness: 'sb-devboard-hive' }),
+        expect.any(String),
+      );
+      expect(body(out)).toMatchObject({
+        ok: true,
+        harness: 'sb-devboard-hive',
+        scopeInferredFrom: 'carry-note',
+      });
+    });
+
+    it('refuses and NAMES the candidates instead of guessing when the owner holds notes under several harnesses', async () => {
+      const { resolvePotHomeSlug } = await import('../../pot/wake');
+      // `null` is in resolvePotHomeSlug's REAL return type (string | null), so this needs
+    // no cast — and an uncast fixture still typechecks against the real signature if it
+    // ever changes, which `as never` would have silently swallowed.
+    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null);
+      runInferenceWorkForReal();
+      listLoopCarryNoteHarnesses.mockResolvedValueOnce(['hive-a', 'hive-b']);
+      const out = await call({ next: 'x' }, { workspaceId: 'ws-1' });
+      expect(out.isError).toBe(true);
+      // Asserting `error: 'no_harness'` alone would pass with this whole branch
+      // DELETED — it reuses the pre-existing refusal's code. The candidates are the
+      // branch, so the candidates are what this pins.
+      expect(body(out)).toMatchObject({
+        ok: false,
+        error: 'no_harness',
+        candidates: ['hive-a', 'hive-b'],
+      });
+      expect(String((body(out) as { message?: string }).message)).toContain('hive-a, hive-b');
+      expect(setLoopCarryNote).not.toHaveBeenCalled();
+    });
+
+    it('never consults the carry-note store when a stronger signal already resolved the scope', async () => {
+      runInferenceWorkForReal();
+      listLoopCarryNoteHarnesses.mockResolvedValueOnce(['some-other-hive']);
+      await call({ next: 'x' }, { workspaceId: 'ws-1', harnessSlug: 'ctx-hive' });
+      // Last-resort BY CONSTRUCTION: the inference can turn a failure into a write but
+      // must never redirect a scope the session already answered — that placement is
+      // what keeps it from reintroducing the wrong-store stranding it sits beside.
+      expect(listLoopCarryNoteHarnesses).not.toHaveBeenCalled();
+      expect(setLoopCarryNote).toHaveBeenCalledWith(
+        expect.objectContaining({ harness: 'ctx-hive' }),
+        expect.any(String),
+      );
+    });
   });
 
   it('read:true returns the current note metadata without entering the write path', async () => {
