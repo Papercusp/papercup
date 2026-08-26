@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  acquireSessionTaskLock,
   inferSessionTaskOp,
   reduceSessionTasks,
   SessionTaskValidationError,
@@ -49,6 +50,20 @@ describe('inferSessionTaskOp', () => {
     expect(inferSessionTaskOp({ taskId: 'task-a', blockerRef: 'wi:WI-1' })).toBe('block');
     expect(inferSessionTaskOp({})).toBe('view');
     expectCode(() => inferSessionTaskOp({ taskId: 'task-a' }), 'op_ambiguous');
+  });
+});
+
+describe('acquireSessionTaskLock', () => {
+  it('uses the canonical transaction advisory-lock namespace and validates scope', async () => {
+    const sql = vi.fn();
+    await acquireSessionTaskLock(sql as never, 'ws-1', 'session-1');
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(sql.mock.calls[0]?.[1]).toBe('ws-1\u0000session-1');
+    expect(sql.mock.calls[0]?.[2]).toBe(981);
+
+    await expect(acquireSessionTaskLock(sql as never, ' ', 'session-1')).rejects.toMatchObject({
+      code: 'workspace_id_required',
+    });
   });
 });
 

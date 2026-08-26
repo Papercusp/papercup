@@ -402,6 +402,23 @@ async function readSessionTasks(
   return rows.map(mapRow);
 }
 
+/**
+ * Serialize a multi-step read/diff/write sequence for one session.
+ *
+ * applySessionTaskOp calls this for every mutation. Snapshot facades call it
+ * before their initial view so the diff cannot be computed from stale state;
+ * PostgreSQL transaction advisory locks are re-entrant for the later ops.
+ */
+export async function acquireSessionTaskLock(
+  sql: SqlLike,
+  workspaceIdValue: string,
+  sessionIdValue: string,
+): Promise<void> {
+  const workspaceId = present(workspaceIdValue, 'workspace_id', 240);
+  const sessionId = present(sessionIdValue, 'session_id', 240);
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${workspaceId + '\u0000' + sessionId}, 981))`;
+}
+
 export async function applySessionTaskOp(sql: SqlLike, args: SessionTaskStoreArgs): Promise<SessionTaskResult> {
   const workspaceId = present(args.workspaceId, 'workspace_id', 240);
   const sessionId = present(args.sessionId, 'session_id', 240);
@@ -415,7 +432,7 @@ export async function applySessionTaskOp(sql: SqlLike, args: SessionTaskStoreArg
     };
   }
 
-  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${workspaceId + '\u0000' + sessionId}, 981))`;
+  await acquireSessionTaskLock(sql, workspaceId, sessionId);
   const current = await readSessionTasks(sql, workspaceId, sessionId, true);
   const reduced = reduceSessionTasks(current, { ...args, op }, {
     now: args.now ?? new Date().toISOString(),
