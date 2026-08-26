@@ -13,6 +13,7 @@ import {
   applySessionTaskOp,
   reduceSessionTasks,
   type SessionTask,
+  type SessionTaskBridge,
   type SessionTaskOpArgs,
   type SessionTaskResult,
   type SessionTaskSeed,
@@ -48,6 +49,7 @@ interface SnapshotApplyArgs {
   explanation?: string;
   idFactory: () => string;
   now?: string;
+  bridge?: SessionTaskBridge;
 }
 
 type ApplyOp = typeof applySessionTaskOp;
@@ -187,6 +189,7 @@ export async function applySessionTaskSnapshot(
     workspaceId: args.workspaceId,
     sessionId: args.sessionId,
     op: 'view',
+    bridge: args.bridge,
     idFactory: args.idFactory,
   });
   const plan = planSessionTaskSnapshot(viewed.tasks, args.tasks, args.explanation);
@@ -204,6 +207,7 @@ export async function applySessionTaskSnapshot(
       explanation: args.explanation,
       idFactory: args.idFactory,
       now: args.now,
+      bridge: args.bridge,
     }));
   } else {
     for (const op of plan.ops) {
@@ -213,6 +217,7 @@ export async function applySessionTaskSnapshot(
         ...op,
         idFactory: args.idFactory,
         now: args.now,
+        bridge: args.bridge,
       }));
     }
   }
