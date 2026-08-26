@@ -263,6 +263,15 @@ jobs:
       - name: Lint no raw setInterval
         if: ${{ !cancelled() }}
         run: npm run lint:no-raw-setinterval
+      # documented-test-run-cwd guard (EI-21463787319820028): a header `Run:`
+      # command whose --config/test paths resolve only from an UNSTATED package
+      # cwd fails before any test runs, and the default-config retry times out —
+      # both read as "this test is broken". GATING on the command being
+      # executable AS WRITTEN from the repo root, or stating its cwd (`cd <pkg>
+      # && …` / "(from <pkg>)") with every extension-bearing path existing under it.
+      - name: Lint documented test run cwd
+        if: ${{ !cancelled() }}
+        run: npm run lint:documented-test-run-cwd
 
       # no-unenrolled-detached-import guard (WI-39811, follow-up to EI-20349773342925327):
       # a fire-and-forget `void import(...)` can still be walking its module graph after the
