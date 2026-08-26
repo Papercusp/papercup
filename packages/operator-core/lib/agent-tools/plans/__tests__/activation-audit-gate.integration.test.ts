@@ -127,7 +127,7 @@ describe('conversation activation audit gate', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, flipReady(DRAFT));
     await expect(
-      evaluateConversationActivationGate(fx.admin, {
+      evaluateConversationActivationGate(fx.admin as never, {
         workspaceId: fx.workspaceId,
         harnessSlug: HARNESS,
         planSlug: SLUG,
@@ -143,7 +143,7 @@ describe('conversation activation audit gate', () => {
     await cleanupPlans(fx.admin, fx.workspaceId, HARNESS);
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
     await expect(
-      evaluateConversationActivationGate(fx.admin, {
+      evaluateConversationActivationGate(fx.admin as never, {
         workspaceId: fx.workspaceId,
         harnessSlug: HARNESS,
         planSlug: SLUG,
