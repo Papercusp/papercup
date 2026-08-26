@@ -122,9 +122,10 @@ function isTypedBlocker(ref: string): boolean {
   return /^(lock|event|wi|plan):/.test(ref);
 }
 
-function canonicalOpFor(action: Exclude<AgentChatTaskAction, 'edit'>): SessionTaskOp {
+function canonicalOpFor(action: AgentChatTaskAction): SessionTaskOp {
   switch (action) {
     case 'add': return 'append';
+    case 'edit': return 'edit';
     case 'check': return 'done';
     case 'drop': return 'drop';
     case 'clear_blocker': return 'unblock';
@@ -159,38 +160,6 @@ export async function mutateAgentChatTask(
   }
 
   const result = await deps.withWorkspace(input.workspaceId, async (sql) => {
-    if (input.action === 'edit') {
-      const current = await deps.applyOp(sql, {
-        workspaceId: input.workspaceId,
-        sessionId: input.sessionId,
-        op: 'view',
-        idFactory: deps.idFactory,
-      });
-      taskById(current.tasks, input.taskId!);
-      return deps.applyOp(sql, {
-        workspaceId: input.workspaceId,
-        sessionId: input.sessionId,
-        op: 'init',
-        tasks: current.tasks.map((task) => task.id === input.taskId
-          ? {
-              id: task.id,
-              content: input.content!,
-              activeForm: input.activeForm ?? input.content!,
-              status: task.status,
-              ...(task.blockerRef ? { blockerRef: task.blockerRef } : {}),
-            }
-          : {
-              id: task.id,
-              content: task.content,
-              activeForm: task.activeForm,
-              status: task.status,
-              ...(task.blockerRef ? { blockerRef: task.blockerRef } : {}),
-            }),
-        explanation: input.explanation,
-        idFactory: deps.idFactory,
-      });
-    }
-
     if (input.action === 'clear_blocker') {
       const current = await deps.applyOp(sql, {
         workspaceId: input.workspaceId,
@@ -242,7 +211,7 @@ export async function mutateAgentChatTask(
   return {
     action: input.action,
     op: result.op,
-    changedTaskId: input.action === 'edit' ? input.taskId! : result.changedTaskId,
+    changedTaskId: result.changedTaskId,
     tasks: result.tasks,
     projection,
   };

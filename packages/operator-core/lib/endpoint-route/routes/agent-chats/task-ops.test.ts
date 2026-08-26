@@ -59,6 +59,7 @@ describe('agent-chat user task operations', () => {
 
   it.each([
     ['add', 'append'],
+    ['edit', 'edit'],
     ['check', 'done'],
     ['drop', 'drop'],
     ['clear_blocker', 'unblock'],
@@ -67,17 +68,19 @@ describe('agent-chat user task operations', () => {
     await mutateAgentChatTask({
       ...scope,
       action,
-      ...(action === 'add' ? { content: 'Added task' } : { taskId: 'task-1' }),
+      ...(action === 'add'
+        ? { content: 'Added task' }
+        : action === 'edit'
+          ? { taskId: 'task-1', content: 'Edited task' }
+          : { taskId: 'task-1' }),
     }, d);
     expect(d.applyOp).toHaveBeenLastCalledWith({}, expect.objectContaining({ op: canonicalOp }));
     expect(d.readProjection).toHaveBeenCalledTimes(2);
   });
 
-  it('implements edit as a canonical view plus full-list init and returns the edited id', async () => {
+  it('routes edit through one atomic canonical op and returns the edited id', async () => {
     const d = deps();
-    d.applyOp
-      .mockResolvedValueOnce(result('view'))
-      .mockResolvedValueOnce(result('init', [{ ...BASE_TASK, content: 'Edited task' }]));
+    d.applyOp.mockResolvedValueOnce(result('edit', [{ ...BASE_TASK, content: 'Edited task' }]));
     const output = await mutateAgentChatTask({
       ...scope,
       action: 'edit',
@@ -85,9 +88,12 @@ describe('agent-chat user task operations', () => {
       content: 'Edited task',
       activeForm: 'Editing task',
     }, d);
-    expect(d.applyOp).toHaveBeenNthCalledWith(2, {}, expect.objectContaining({
-      op: 'init',
-      tasks: [expect.objectContaining({ id: 'task-1', content: 'Edited task', activeForm: 'Editing task' })],
+    expect(d.applyOp).toHaveBeenCalledOnce();
+    expect(d.applyOp).toHaveBeenCalledWith({}, expect.objectContaining({
+      op: 'edit',
+      taskId: 'task-1',
+      content: 'Edited task',
+      activeForm: 'Editing task',
     }));
     expect(output.changedTaskId).toBe('task-1');
   });
