@@ -381,6 +381,21 @@ describe('docs:get handler', () => {
     expect(p.surface).toBe('engineering');
     expect(p.error).toBeUndefined();
   });
+
+  it('accepts the authored projected path together with its returned engineering scope', async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+    const tool = (await import('../get')).default;
+    const res = await tool.handler(
+      { slugs: ['agent-insights/current-refresh.mdx'], harness: 'engineering' } as never,
+      { harnessSlug: 'sheets', isSuperuser: true } as never,
+    );
+    expect(payloadOf(res)).toMatchObject({ surface: 'engineering' });
+    expect(getDocs).toHaveBeenCalledWith(
+      expect.anything(),
+      { slugs: ['agent-insights/current-refresh'] },
+      expect.anything(),
+    );
+  });
 });
 
 /**
@@ -408,6 +423,16 @@ describe('docs:get slug coercion (WI-1985)', () => {
     it('maps a string-valued `slugs` → a one-element array', async () => {
       const { coerceDocsGetSlugs } = await import('../get-coerce');
       expect(coerceDocsGetSlugs({ slugs: 'testing/agent-e2e' })).toEqual({ slugs: ['testing/agent-e2e'] });
+    });
+
+    it('normalizes a projected `.mdx` ref to the extensionless Starlight slug', async () => {
+      const { coerceDocsGetSlugs } = await import('../get-coerce');
+      expect(coerceDocsGetSlugs({ slugs: ['agent-insights/current-refresh.mdx'] })).toEqual({
+        slugs: ['agent-insights/current-refresh'],
+      });
+      expect(coerceDocsGetSlugs({ slug: 'agent-insights/current-refresh.md' })).toEqual({
+        slugs: ['agent-insights/current-refresh'],
+      });
     });
 
     it('splits a comma/space-separated slug string into multiple slugs', async () => {
