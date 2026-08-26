@@ -540,9 +540,11 @@ describe('dev:pipeline_position routes to the state plane (P-002)', () => {
   });
 
   it('does NOT add the audience note when the caller is in-harness', () => {
-    for (const p of ptrs({ blockedOn: 'gate' })) {
-      if (x_toolIsState(p)) expect(p.reason).not.toMatch(/AUDIENCE/);
-    }
+    const statePtrs = ptrs({ blockedOn: 'gate' }).filter(
+      (x) => x.tool === 'state:read' || x.tool === 'state:subscribe',
+    );
+    expect(statePtrs.length).toBeGreaterThan(0);
+    for (const p of statePtrs) expect(p.reason).not.toMatch(/AUDIENCE/);
   });
 
   /** The TOON fallback path must keep the qualification alive too. */
