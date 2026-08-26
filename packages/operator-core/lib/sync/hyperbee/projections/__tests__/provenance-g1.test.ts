@@ -62,9 +62,9 @@ function featureValue(overrides: Record<string, unknown> = {}): unknown {
 /** Build a capturing projection that records provenance passed to writeToPg. */
 function capturingProjection(tableTag = 'features-by-id'): {
   projection: TableProjection<unknown>;
-  captured: Array<{ row: unknown; provenance?: ProvenanceContext }>;
+  captured: Array<{ row: unknown; provenance: ProvenanceContext }>;
 } {
-  const captured: Array<{ row: unknown; provenance?: ProvenanceContext }> = [];
+  const captured: Array<{ row: unknown; provenance: ProvenanceContext }> = [];
   const projection: TableProjection<unknown> = {
     tableTag,
     composeKey: (row: any) => row.feature_id ?? row.issue_id ?? 'key',
@@ -93,6 +93,26 @@ function putOp(overrides: Partial<OpEnvelope> = {}): OpEnvelope {
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 describe('G1 Provenance — applyOpVia origin determination', () => {
+  it('always supplies an explicit local context for a legacy op with no provenance fields', async () => {
+    const { projection, captured } = capturingProjection();
+    const lookup = (tag: string) => (tag === projection.tableTag ? projection : null);
+
+    await applyOpVia(lookup, putOp({ writerPubkey: undefined, sourceLogKeyHex: undefined, ts: undefined }));
+
+    expect(captured).toEqual([
+      {
+        row: featureValue(),
+        provenance: {
+          authorPubkey: '',
+          origin: 'local',
+          ts: undefined,
+          fedHlc: undefined,
+          sourceLogKeyHex: undefined,
+        },
+      },
+    ]);
+  });
+
   it('local op (sourceLogKeyHex === ownLogKeyHex) → origin=local + author_pubkey stamped', async () => {
     const { projection, captured } = capturingProjection();
     const lookup = (tag: string) => (tag === projection.tableTag ? projection : null);

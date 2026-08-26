@@ -306,7 +306,7 @@ function withHiveHomeApplyGuard<Row>(
     ...p,
     writeToPg: async (row, provenance) => {
       const homeLog = guard.resolveHomeLogKeyHex?.() ?? null;
-      if (homeLog && provenance?.sourceLogKeyHex === homeLog) {
+      if (homeLog && provenance.sourceLogKeyHex === homeLog) {
         // home fold owns home-log ops. EI-19304844689981989: count it — this was
         // the last fully-silent drop in the guard (its demux sibling below always
         // bumped a counter), which made a "published + drained, never applied"
@@ -315,7 +315,7 @@ function withHiveHomeApplyGuard<Row>(
           {
             workspaceId: guard.workspaceId,
             harnessSlug: guard.boundSlug,
-            sourceHive: provenance?.sourceLogKeyHex ?? provenance?.authorPubkey,
+            sourceHive: provenance.sourceLogKeyHex ?? provenance.authorPubkey,
             tableTag: p.tableTag,
             reason: 'home-log-excluded',
           },
@@ -329,7 +329,7 @@ function withHiveHomeApplyGuard<Row>(
           {
             workspaceId: guard.workspaceId,
             harnessSlug: guard.boundSlug,
-            sourceHive: provenance?.sourceLogKeyHex ?? provenance?.authorPubkey,
+            sourceHive: provenance.sourceLogKeyHex ?? provenance.authorPubkey,
             tableTag: p.tableTag,
             reason: 'demux-mismatch',
           },
