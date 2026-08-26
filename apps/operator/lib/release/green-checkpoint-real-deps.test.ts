@@ -2716,11 +2716,12 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(calls[0].cmd).toBe("git");
   });
 
-  it("push skips the CI dispatch (without throwing) when no GitHub origin resolves", async () => {
+  it("local-only push skips remote publication and CI dispatch when no origin resolves", async () => {
     mockGitOriginUrl.mockResolvedValueOnce(null as unknown as string);
     mockCreateWorkflowDispatch.mockClear();
-    const { exec } = makeExec([{ code: 0 }]);
+    const { exec, calls } = makeExec([]);
     await realCheckpointDeps(cfg, exec).push("ready");
+    expect(calls).toEqual([]);
     expect(mockCreateWorkflowDispatch).not.toHaveBeenCalled();
   });
 

@@ -13859,6 +13859,19 @@ export function realCheckpointDeps(
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
     // pushes to main are blocked by that hook.
     push: async (ref, baseSha, candidateSha) => {
+      const { gitOriginUrl } =
+        await import("@papercusp/operator-core/lib/cupboard/resolve-repo-coords");
+      const origin = await gitOriginUrl(cfg.integrationRoot);
+      if (!origin) {
+        // Coding hives may deliberately remain local-only when no GitHub credentials
+        // are available (hive-repo-init.ts). Their local staging→main gate is still
+        // authoritative, so an absent remote skips publication; a configured remote
+        // continues through the fail-closed push below.
+        log(
+          `git-push: skipped — local-only repository has no origin for ${cfg.integrationRoot}`,
+        );
+        return;
+      }
       const remoteRef = ref.startsWith("refs/") ? ref : `refs/heads/${ref}`;
       await exec(
         "git",
