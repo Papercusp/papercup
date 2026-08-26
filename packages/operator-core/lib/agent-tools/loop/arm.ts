@@ -392,8 +392,9 @@ export default defineTool({
       .int()
       .min(LOOP_INTERVAL_FLOOR_SEC)
       .max(MAX_LOOP_INTERVAL_SEC)
+      .optional()
       .describe(
-        'Seconds AFTER each turn settles before the next wake (≥60). IN AUTO MODE the DEFAULT is 60 (a 1-minute cadence) unless the owner specifies otherwise — only lengthen it when the loop is genuinely blocked on a slower-moving dependency (a deploy, a long gate suite), and restore 1m the moment it clears, because a multi-minute loop is indistinguishable from a dead one to an owner watching for progress. The true period is interval + up-to-30s (the turn-settle is observed on the 30s reconcile tick), so sub-minute is not supported.',
+        'Seconds AFTER each turn settles before the next wake (≥60). IN AUTO MODE the DEFAULT is 60 (a 1-minute cadence) unless the owner specifies otherwise — only lengthen it when the loop is genuinely blocked on a slower-moving dependency (a deploy, a long gate suite), and restore 1m the moment it clears, because a multi-minute loop is indistinguishable from a dead one to an owner watching for progress. The true period is interval + up-to-30s (the turn-settle is observed on the 30s reconcile tick), so sub-minute is not supported. OMITTED on a retune of an ACTIVE loop: the live interval is inherited, so `loop:arm { carry }` retunes without re-stating it. Required when arming a loop with no active prior.',
       ),
     blockedOn: z
       .object({
@@ -414,9 +415,11 @@ export default defineTool({
       .describe(
         'Pass this WHENEVER you are lengthening the interval because you are BLOCKED (rather than because the work is genuinely slow-moving) — EI-19395290807657827. It records WHY the interval was widened so the premise is re-checked on the next wake instead of silently inherited, caps a blocker-motivated interval that has no push channel, and lets a fleet leader see "N members backed off for X, which cleared M minutes ago".',
       ),
-    goal: softText(4000, { min: 1 }).describe(
-      'One line: what this loop is working toward — echoed into every wake. Auto-truncated to 4000 chars if longer.',
-    ),
+    goal: softText(4000, { min: 1 })
+      .optional()
+      .describe(
+        "One line: what this loop is working toward — echoed into every wake. Auto-truncated to 4000 chars if longer. OMITTED on a retune of an ACTIVE loop: the live goal is inherited, so a carry-only retune does not re-state it. Required when arming a loop with no active prior.",
+      ),
     harness: z
       .string()
       .max(120)
@@ -601,6 +604,42 @@ export default defineTool({
         `[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`,
       );
     }
+    // EI-21476896242465605: a carry/mode retune of an ACTIVE loop must not have to
+    // re-state intervalSec/goal — inherit both from the live row so the documented
+    // `loop:arm { carry }` retune works. A FRESH arm missing either still fails,
+    // now with an explicit invalid_args response naming the fields instead of an
+    // opaque schema rejection.
+    let intervalSecArg = args.intervalSec;
+    let goalArg = args.goal;
+    if (intervalSecArg == null || goalArg == null) {
+      if (prior?.active === true) {
+        intervalSecArg = intervalSecArg ?? (prior.intervalSec ?? undefined);
+        goalArg = goalArg ?? prior.goal;
+      }
+      const goalBlank = goalArg == null || String(goalArg).trim() === '';
+      if (intervalSecArg == null || goalBlank) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'invalid_args',
+                missing: [
+                  ...(intervalSecArg == null ? ['intervalSec'] : []),
+                  ...(goalBlank ? ['goal'] : []),
+                ],
+                message:
+                  'intervalSec and goal are required when arming a loop that has no active prior ' +
+                  '(a carry-only RETUNE inherits them from the live loop). Read loop:status for ' +
+                  'the current values, or pass both explicitly.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
     const explicitWorkItem = args.workItem?.trim();
     const monitorAuthorityWorkItem =
       preparedMonitorConfig?.authority.kind === 'work-item' ? preparedMonitorConfig.authority.workItem : undefined;
@@ -615,7 +654,7 @@ export default defineTool({
     // identifier that straddles the 4000-character boundary into a valid-looking
     // truncated prefix (for example `EI-214022`), producing a misleading not_found
     // auto-claim result (EI-21405190650662222).
-    const rawGoal = args.goal;
+    const rawGoal = goalArg;
     const goal = clampText(rawGoal, 4000);
     const carryForScope: 'warm' | 'cold' | undefined =
       args.carry ??
@@ -851,9 +890,8 @@ export default defineTool({
     // EI-19395290807657827 — resolve a blocker-motivated interval BEFORE it is threaded
     // into the kickoff / overwrite-note / materializeLoop, so every downstream consumer
     // sees the interval that is actually armed rather than the one that was requested.
-    const backoff = resolveBlockedBackoff(args.intervalSec, args.blockedOn ?? null, livePush);
     const intervalSec = backoff.intervalSec;
-
+    const backoff = resolveBlockedBackoff(intervalSecArg, args.blockedOn ?? null, livePush);
     // EI-18792078711601844 — read the prior loop this arm is about to UPSERT over
     // EI-21424742792137469: an unspecified carry on a FRESH arm always defaults
     // WARM. Session/headless detection must not override the fleet/owner launch
@@ -1144,7 +1182,7 @@ export default defineTool({
               // EI-19395290807657827 — report the REQUESTED interval alongside the armed
               // one whenever they differ, so a capped backoff is legible in the structured
               // result and not only in the prose note.
-              requestedIntervalSec: backoff.clamped ? args.intervalSec : undefined,
+              requestedIntervalSec: backoff.clamped ? intervalSecArg : undefined,
               blockedOn: args.blockedOn
                 ? {
                     reason: args.blockedOn.reason,
