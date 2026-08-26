@@ -60,6 +60,14 @@ import {
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
+// P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
+// it never files and never promotes. Actuation (the condition flip below, and filing the
+// returned drafts) stays here, deliberately, for the same reason green-stall-watchdog's
+// refire DECISION is separated from its firing.
+import {
+  decidePromotion,
+  type HygieneWorkItemDraft,
+} from "@papercusp/operator-core/lib/release/gate-hygiene-split";
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -336,6 +344,12 @@ export interface CheckpointDeps {
     ref: string,
     gateIds: string[],
   ): Promise<{ pass: boolean; summary: string }>;
+  /** P-005 / D-008: the root package.json `scripts` map, supplied rather than read, so the
+   *  hygiene classifier stays pure and its `gen:X:check` ⇄ `gen:X` pair derivation is testable
+   *  against synthetic script sets. Optional: ABSENT ⇒ no hygiene split is computed at all and
+   *  `if (!green)` behaves EXACTLY as it does today (every red holds the gate). That is the
+   *  fail-closed direction on purpose — a stub or older dep can never accidentally promote. */
+  readRootScripts?(): Record<string, string>;
   /** EI-18669342433807110: called right before a stale-candidate auto-refire RECURSES (which can
    *  run a full suite again, minutes, before this process returns) — merges a marker into
    *  `gate_health` so a concurrent reader (coord:orient, dev:why) can tell the cached red for
@@ -856,6 +870,13 @@ export interface CheckpointResult {
    *  the gate, so `cleanGreen: true` means "the gate absorbed nothing", NOT "no test was
    *  ever retried anywhere". */
   cleanGreen?: boolean;
+  /** P-005 / D-008: present ⇒ this candidate advanced with HYGIENE failures outstanding. The
+   *  gate promoted because no product-correctness test failed, not because nothing failed —
+   *  these are the drafts the caller owes the ledger. Same reasoning as `cleanGreen` directly
+   *  above: a qualified green that renders identically to a clean one is how a split quietly
+   *  becomes a suppression, so the debt rides ON the verdict rather than only in the log.
+   *  ABSENT ⇒ no hygiene debt was carried (an ordinary green), never "unknown". */
+  hygieneDebt?: HygieneWorkItemDraft[];
   /** WI-4957: this run's own identity (see CheckpointDeps.runId) — carried on every
    *  verdict so a consumer can distinguish two runs that happen to judge the same
    *  candidate, and so an events:await can bind to an EXACT run when that matters. */
@@ -8532,7 +8553,38 @@ async function runGreenCheckpointInner(
         `${passedOnRerun.map((t) => `${t.name} (${t.attempts} attempts)`).join(", ")}`,
     );
   }
-  if (!green) {
+  // P-005 / D-008 — THE GATE SPLIT. A hygiene/drift guard (a stale generated artifact, a
+  // prompt-weight budget, a fixture drift) failing says the TREE needs tidying; it says nothing
+  // about whether the CODE is correct. Holding `main` red on one freezes every agent's deploys
+  // behind a chore. So classify the failures and, when EVERY one of them is hygiene, promote —
+  // and carry the debt forward on the verdict rather than dropping it.
+  //
+  // Expressed at the CONDITION, never inside the body: the red block below ends in a `return`,
+  // so "promote anyway" is simply NOT ENTERING it. There is no jump out of a 900-line block.
+  //
+  // FAIL-CLOSED ON FOUR AXES — each one is a way this could otherwise promote something nobody
+  // measured, and each is load-bearing:
+  //   green === false  — a RENDERED red only. Never an inconclusive/crash verdict.
+  //   !infraFault      — EI-20767792192323374: on a host fault the failing list is INNOCENT files
+  //                      (measured: 4,789 of 5,505). Classifying that list is meaningless, and
+  //                      the infra arm that renders `green: null` lives INSIDE the block below —
+  //                      skipping it would convert an abort into a promotion.
+  //   length > 0       — a red with `failingTests: []` means the list DIED WITH THE PROCESS (see
+  //                      buildSelfWatchdogCheckpointResult), not that nothing failed. decidePromotion
+  //                      reads an empty list as "nothing failed" and would promote vacuously.
+  //   readRootScripts  — absent ⇒ null ⇒ today's behaviour, exactly.
+  const hygieneSplit =
+    green === false &&
+    !infraFault &&
+    (failingTests?.length ?? 0) > 0 &&
+    deps.readRootScripts
+      ? decidePromotion({
+          failures: failingTests ?? [],
+          verdictRendered: true,
+          ctx: { rootScripts: deps.readRootScripts() },
+        })
+      : null;
+  if (!green && !hygieneSplit?.promote) {
     deps.log(
       `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? "unset"}`,
     );
@@ -9469,6 +9521,20 @@ async function runGreenCheckpointInner(
     };
   }
 
+  // P-005 / D-008: we reached the green path with a RED suite because every failure was
+  // hygiene. Say so, loudly, at the same volume as the red we skipped. This file already sets
+  // the precedent twice directly above — the flake-absorbed log and the `cleanGreen === false`
+  // log both exist because a qualified green that logs like a clean one trains everyone to
+  // read "green" as "everything passed". A hygiene-promoted green is exactly that hazard.
+  if (hygieneSplit?.promote && green === false) {
+    deps.log(
+      `candidate ${candidate.slice(0, 8)} advanced with HYGIENE DEBT — the suite was RED and every ` +
+        `failure was a hygiene/drift guard, so no product-correctness test failed: ` +
+        `${hygieneSplit.hygieneFailures.map((h) => h.entry).join(", ")}. ` +
+        `${hygieneSplit.hygieneWorkItems.length} work item(s) owed. This is NOT a clean green.`,
+    );
+  }
+
   // F2 (round-4 P-031): the candidate is GREEN — but if the operator is in a definitive
   // per-thread wedge right NOW, don't silently advance the green pin into a degraded
   // runtime. Default-WARN (surface + still advance); BLOCK only when the owner armed
@@ -9854,6 +9920,12 @@ async function runGreenCheckpointInner(
     // from a clean one; `failingTests: []` renders identically for both.
     ...(retriedTests?.length ? { retriedTests } : {}),
     ...(cleanGreen === undefined ? {} : { cleanGreen }),
+    // P-005 / D-008: the same argument one line up, for the other way a green can be qualified.
+    // A hygiene-promoted advance MUST be distinguishable from an ordinary one on the verdict
+    // itself — the log above is for humans, this is for every consumer that never reads a log.
+    ...(hygieneSplit?.promote && hygieneSplit.hygieneWorkItems.length
+      ? { hygieneDebt: hygieneSplit.hygieneWorkItems }
+      : {}),
     ...(deps.runId ? { runId: deps.runId } : {}),
     ...(logPath ? { logPath } : {}),
     ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
