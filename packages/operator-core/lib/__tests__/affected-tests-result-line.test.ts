@@ -282,6 +282,14 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       );
     });
 
+    it('marks a pre-launch budget refusal as not measured, not zero failures', () => {
+      const refusalStart = source.indexOf('function refuseOnTaskBudget');
+      const refusalEnd = source.indexOf('const SCHEDULER_CONFIG', refusalStart);
+      const refusalBlock = source.slice(refusalStart, refusalEnd);
+      expect(refusalBlock).toContain('AFFECTED_TESTS_RESULT status=refused tasks=0 failed=n/a');
+      expect(refusalBlock).not.toContain('AFFECTED_TESTS_RESULT status=refused tasks=0 failed=0');
+    });
+
     it('prints status=failed immediately before the process.exit(1) that follows a real failure', () => {
       // Anchor on the whole `if (failed) { ... }` block so a future edit that
       // separates the print from the exit (the exact class of bug this guards

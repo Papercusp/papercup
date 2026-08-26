@@ -450,7 +450,7 @@ const MEM_AVAILABLE_MB = readMemAvailableMb();
 const TASK_CGROUP_MEMORY_MAX_MB = readTaskCgroupMemoryMaxMb();
 const TASK_CGROUP_PIDS_MAX = readTaskCgroupPidsMax();
 // EI-21472375431146082: a pre-launch TASK_BUDGET_REFUSAL (pids/memory ceiling below one
-// task envelope — e.g. capability:bash's confined cgroup at pids.max=512) used to escape
+// task envelope — e.g. a confined cgroup with pids.max=0) used to escape
 // as a raw throw, and the exit-handler fallback stamped it with the GENERIC
 // `status=aborted reason=exit-without-verdict` — indistinguishable from any crash, and
 // with tasks=0 failed=0 easy to skim as "nothing broke" when it means NOT MEASURED:
@@ -460,7 +460,7 @@ function refuseOnTaskBudget(error) {
   if (!message.includes("TASK_BUDGET_REFUSAL")) return false;
   terminalEmitted = true; // suppress the exit-handler's generic abort duplicate
   errSync(
-    `AFFECTED_TESTS_RESULT status=refused tasks=0 failed=0 ` +
+    `AFFECTED_TESTS_RESULT status=refused tasks=0 failed=n/a ` +
       `quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 ` +
       `reason=TASK_BUDGET_REFUSAL ${message}`,
   );

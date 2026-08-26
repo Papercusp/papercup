@@ -538,6 +538,36 @@ describe('resolveMemoryBudgetMb', () => {
     );
   });
 
+  it('adapts a 512-pid task scope to one serial task instead of refusing', () => {
+    const resolved = resolveTaskBudget({ ...config, taskCgroupPidsMax: 512 });
+    expect(resolved).toMatchObject({
+      mode: 'serial',
+      maxConcurrentTasks: 1,
+      configuredMaxConcurrentTasks: 2,
+      pidsMaxConcurrentTasks: 1,
+      taskBoundBy: 'pids',
+      pidsBudgetAdapted: true,
+      pidsReserve: 102,
+      pidsPerConcurrentTask: 410,
+    });
+    expect(resolved.pidsReserve + resolved.pidsPerConcurrentTask).toBe(512);
+  });
+
+  it('adapts a 4096-pid task scope to one serial task instead of refusing', () => {
+    const resolved = resolveTaskBudget({ ...config, taskCgroupPidsMax: 4096 });
+    expect(resolved).toMatchObject({
+      mode: 'serial',
+      maxConcurrentTasks: 1,
+      configuredMaxConcurrentTasks: 2,
+      pidsMaxConcurrentTasks: 1,
+      taskBoundBy: 'pids',
+      pidsBudgetAdapted: true,
+      pidsReserve: 819,
+      pidsPerConcurrentTask: 3277,
+    });
+    expect(resolved.pidsReserve + resolved.pidsPerConcurrentTask).toBe(4096);
+  });
+
   it('keeps two-task scheduling only when both 4096-task envelopes plus reserve fit', () => {
     expect(resolveTaskBudget({ ...config, taskCgroupPidsMax: 9216 })).toMatchObject({
       mode: 'parallel',
@@ -545,7 +575,7 @@ describe('resolveMemoryBudgetMb', () => {
       pidsMaxConcurrentTasks: 2,
       taskBoundBy: 'ceiling',
     });
-    expect(() => resolveTaskBudget({ ...config, taskCgroupPidsMax: 4096 })).toThrow(
+    expect(() => resolveTaskBudget({ ...config, taskCgroupPidsMax: 0 })).toThrow(
       /below one pidsPerConcurrentTask=4096 envelope; refusing before launch/,
     );
   });
@@ -559,7 +589,7 @@ describe('resolveMemoryBudgetMb', () => {
   it('emits a machine-readable refusal marker the shared parser recovers, on both refusal sites', () => {
     const pidsMessage = (() => {
       try {
-        resolveTaskBudget({ ...config, taskCgroupPidsMax: 512 });
+        resolveTaskBudget({ ...config, taskCgroupPidsMax: 0 });
         return null;
       } catch (err) {
         return (err as Error).message;
@@ -569,7 +599,7 @@ describe('resolveMemoryBudgetMb', () => {
     expect(parseTaskBudgetRefusal(pidsMessage!)).toEqual({
       kind: 'pids',
       unit: 'tasks',
-      limit: 512,
+      limit: 0,
       reserve: 1_024,
       requiredPerTask: 4_096,
     });
