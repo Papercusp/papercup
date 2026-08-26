@@ -52,7 +52,12 @@ function deps(taskWrite = true) {
   };
 }
 
-const scope = { workspaceId: 'workspace-1', harness: 'papercusp', sessionId: 'chat-1' };
+const scope = {
+  workspaceId: 'workspace-1',
+  harness: 'papercusp',
+  sessionId: 'chat-1',
+  actorId: 'pui:avi',
+};
 
 describe('agent-chat user task operations', () => {
   it('registers one loopback route on the existing agent-chat surface', () => {

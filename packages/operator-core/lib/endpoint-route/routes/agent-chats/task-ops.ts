@@ -29,6 +29,7 @@ export interface AgentChatTaskMutationInput {
   workspaceId: string;
   harness: string;
   sessionId: string;
+  actorId: string;
   action: AgentChatTaskAction;
   taskId?: string;
   content?: string;
@@ -82,7 +83,9 @@ function optionalText(value: unknown, field: string, max: number): string | unde
   return requiredText(value, field, max);
 }
 
-function parseMutationBody(body: unknown): Omit<AgentChatTaskMutationInput, 'workspaceId' | 'harness' | 'sessionId'> {
+function parseMutationBody(
+  body: unknown,
+): Omit<AgentChatTaskMutationInput, 'workspaceId' | 'harness' | 'sessionId' | 'actorId'> {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new AgentChatTaskMutationError('body_invalid', 'A JSON object body is required.', 400);
   }
@@ -95,7 +98,7 @@ function parseMutationBody(body: unknown): Omit<AgentChatTaskMutationInput, 'wor
       400,
     );
   }
-  const parsed: Omit<AgentChatTaskMutationInput, 'workspaceId' | 'harness' | 'sessionId'> = {
+  const parsed: Omit<AgentChatTaskMutationInput, 'workspaceId' | 'harness' | 'sessionId' | 'actorId'> = {
     action: action as AgentChatTaskAction,
     explanation: optionalText(raw.explanation, 'explanation', 2_000),
   };
@@ -232,10 +235,19 @@ export const taskOpsRoute = defineTool({
         throw new AgentChatTaskMutationError('body_invalid', 'A valid JSON object body is required.', 400);
       }
       const body = parseMutationBody(raw);
+      const actorId = ctx.principal?.slug;
+      if (!actorId) {
+        throw new AgentChatTaskMutationError(
+          'principal_required',
+          'An authenticated endpoint principal is required for task mutations.',
+          401,
+        );
+      }
       const result = await mutateAgentChatTask({
         workspaceId: activeWorkspaceId(),
         harness: ctx.params.slug,
         sessionId: ctx.params.chatId,
+        actorId,
         ...body,
       });
       return Response.json({ ok: true, ...result });
