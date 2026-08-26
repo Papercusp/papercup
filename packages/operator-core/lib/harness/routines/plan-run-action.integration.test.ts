@@ -15,14 +15,10 @@ import { hashPlanContent } from '@papercusp/plan-parser';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { runScheduledPlanFire } from './plan-run-action';
-import {
-  assignAndWakeActionableWorkItems,
-  type ActionableWorkItemDispatchDeps,
-  type StableAgentTargetState,
-} from '../../agent-tools/coordination/actionable-work-item-dispatch';
-import { inboxWakeKey, wakeRecipients } from '../../agent-tools/coordination/inbox-wake';
-import { planItemLaneBlockReason, planItemLiveClaimReason } from '../../scheduler/plan-item-lane-guard';
-import { claimWorkItem, observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
+import { inboxWakeKey } from '../../agent-tools/coordination/inbox-wake';
+import { observeWorkItem, readUnresolvedDepBlockers } from '../../work-items';
+import { recordAdvSession } from '../../adv-sessions';
+import { adoptAgentName } from '../../plan-items/agent-names';
 import { drainDetached } from '../../detached-imports';
 import { setAutoPumpEnabledForTests } from '../../events/await/engine';
 import { listRecentDeliveries, upsertInboxWakeAwait } from '../../events/await/store';
@@ -168,26 +164,6 @@ async function stampClaim(at: Date): Promise<void> {
   `;
 }
 
-/**
- * Exercise every direct-dispatch seam against the migrated test DB while
- * injecting only the live target boundary. Assignment remains keyed to the
- * stable agent name; the wake targets the ephemeral owner id below.
- */
-function realDispatchForTarget(
-  target: Omit<StableAgentTargetState, 'requested'>,
-): typeof assignAndWakeActionableWorkItems {
-  const deps: ActionableWorkItemDispatchDeps = {
-    observe: (id, opts) => observeWorkItem(id, opts),
-    claim: (id, assignee, opts) => claimWorkItem(id, assignee, opts),
-    blockers: (id, harness) => readUnresolvedDepBlockers(id, harness),
-    planBlock: (workItem) => planItemLaneBlockReason(workItem),
-    planClaim: (workItem) => planItemLiveClaimReason(workItem),
-    resolveTarget: async ({ targetAgent }) => ({ requested: targetAgent, ...target }),
-    wake: wakeRecipients,
-  };
-  return (args) => assignAndWakeActionableWorkItems(args, deps);
-}
-
 /** Complete through the real agent-facing saga so plan-item reflection and the
  * settled dependency event are both part of the acceptance boundary. */
 async function completeExecutionWorkItem(id: string, actor: string): Promise<Record<string, unknown>> {
@@ -280,19 +256,20 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       note: 'real plan-run acceptance wake target',
       minSleepSec: 0,
     });
+    await recordAdvSession({
+      workspaceId: WS,
+      mode: 'console',
+      agent: 'codex',
+      coordOwnerId: wakeOwner,
+    });
+    await adoptAgentName(WS, wakeOwner, execution.agentName, wakeOwner);
     setAutoPumpEnabledForTests(false);
     try {
-      const dispatch = realDispatchForTarget({
-        ownerId: wakeOwner,
-        present: true,
-        sessionState: 'parked',
-        wakeable: true,
+      const result = await runScheduledPlanFire(sql, {
+        installSlug: HARNESS,
+        workspaceId: WS,
+        templateSlug: TEMPLATE,
       });
-      const result = await runScheduledPlanFire(
-        sql,
-        { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE },
-        { dispatch },
-      );
 
       expect(result).toMatchObject({
         execution,
@@ -337,11 +314,11 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
 
       // A deterministic replay reuses the same run and execution records. It
       // may re-wake the retained root to heal a crash, but never duplicates rows.
-      const replay = await runScheduledPlanFire(
-        sql,
-        { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE },
-        { dispatch },
-      );
+      const replay = await runScheduledPlanFire(sql, {
+        installSlug: HARNESS,
+        workspaceId: WS,
+        templateSlug: TEMPLATE,
+      });
       expect(replay).toMatchObject({
         runId: result!.runId,
         replayed: true,
@@ -366,7 +343,7 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
 
       const rootAfter = await observeWorkItem(root.id, { harness: APP_HARNESS });
       const childAfter = await observeWorkItem(child.id, { harness: APP_HARNESS });
-      expect(rootAfter?.item).toMatchObject({ state: 'passed', assignee: null });
+      expect(rootAfter?.item).toMatchObject({ state: 'done', assignee: null });
       expect(await readUnresolvedDepBlockers(child.id, APP_HARNESS)).toEqual([]);
       expect(childAfter?.item).toMatchObject({ state: 'open', assignee: 'email-agent' });
 
@@ -394,23 +371,17 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}`;
     await stampClaim(new Date('2026-06-16T10:30:00.000Z'));
 
-    const dispatch = realDispatchForTarget({
-      ownerId: 'su-email-absent',
-      present: false,
-      sessionState: null,
-      wakeable: false,
+    const result = await runScheduledPlanFire(sql, {
+      installSlug: HARNESS,
+      workspaceId: WS,
+      templateSlug: TEMPLATE,
     });
-    const result = await runScheduledPlanFire(
-      sql,
-      { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE },
-      { dispatch },
-    );
 
     expect(result?.dispatch).toMatchObject({
       ok: false,
       failure: {
         code: 'target_absent',
-        target: 'su-email-absent',
+        target: 'missing-email-agent',
         recoverable: true,
         queuePreserved: true,
       },
