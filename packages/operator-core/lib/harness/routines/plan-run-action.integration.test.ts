@@ -21,7 +21,7 @@ import { recordAdvSession } from '../../adv-sessions';
 import { adoptAgentName } from '../../plan-items/agent-names';
 import { drainDetached } from '../../detached-imports';
 import { setAutoPumpEnabledForTests } from '../../events/await/engine';
-import { listRecentDeliveries, upsertInboxWakeAwait } from '../../events/await/store';
+import { listRecentDeliveries, registerAwait, upsertInboxWakeAwait } from '../../events/await/store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 
@@ -178,11 +178,14 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
       verifiedHow: 'integration',
     },
   });
-  const response = (await completeWorkItemTool.handler(parsed as never, {
-    uiClientId: actor,
-    isSuperuser: true,
-    workspaceId: WS,
-  } as never)) as { data?: { results?: Record<string, unknown>[] } };
+  const response = (await completeWorkItemTool.handler(
+    parsed as never,
+    {
+      uiClientId: actor,
+      isSuperuser: true,
+      workspaceId: WS,
+    } as never,
+  )) as { data?: { results?: Record<string, unknown>[] } };
   return response.data?.results?.[0] ?? {};
 }
 
@@ -245,6 +248,7 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
   it('drives template instance → canonical promotion → stable assignment/wake across replay and dependency release', async () => {
     const execution = { appHarnessSlug: APP_HARNESS, agentName: 'email-agent' };
     const wakeOwner = 'su-email-plan-run-it';
+    const genericWaiter = 'su-generic-claim-racer';
     await sql`
       UPDATE harness_shared.harness_plans
          SET schedule = ${JSON.stringify({ kind: 'rrule', rrule: 'FREQ=DAILY', execution })}::text::jsonb
@@ -333,6 +337,12 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
            AND payload -> 'plan_run' ->> 'runId' = ${String(result!.runId)}`;
       expect(count[0].n).toBe(2);
 
+      await registerAwait({
+        subscriberId: genericWaiter,
+        eventKey: 'work-item:claimable',
+        once: false,
+        minSleepSec: 0,
+      });
       const beforeSuccessorWake = (await listRecentDeliveries(wakeOwner)).length;
       const completed = await completeExecutionWorkItem(root.id, 'email-agent');
       expect(completed, JSON.stringify(completed, null, 2)).toMatchObject({
@@ -353,13 +363,33 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
         eventKey: inboxWakeKey(wakeOwner),
         payload: { kind: 'actionable-work-item-dispatch', workItemIds: [child.id] },
       });
+      expect(await listRecentDeliveries(genericWaiter)).toHaveLength(0);
 
       const ledger = await sql<Array<{ harness: string }>>`
         SELECT harness_slug AS harness FROM harness_shared.plan_runs
          WHERE workspace_id = ${WS} AND id = ${result!.runId}`;
       expect(ledger[0].harness).toBe(APP_HARNESS);
     } finally {
-      setAutoPumpEnabledForTests(true);
+      try {
+        // Let naked fail-soft invalidations from plans:set-status finish while
+        // the throwaway DB is still alive, then remove every standing/pending
+        // liveness row this acceptance created. Without this cleanup, the
+        // once:false generic waiter consumes later tests' ordinary promotion
+        // events and fail-on-console attributes the pump narration to them.
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        const subscribers = [wakeOwner, genericWaiter];
+        await sql`DELETE FROM harness_shared.event_wake_deliveries WHERE subscriber_id = ANY(${subscribers})`;
+        await sql`DELETE FROM harness_shared.event_awaits WHERE subscriber_id = ANY(${subscribers})`;
+        await sql`
+          DELETE FROM harness_shared.agent_name_sessions
+           WHERE workspace_id = ${WS} AND session_owner_id = ${wakeOwner}`;
+        await sql`
+          DELETE FROM harness_shared.agent_names
+           WHERE workspace_id = ${WS} AND agent_name = ${execution.agentName}`;
+        await sql`DELETE FROM harness_shared.adv_sessions WHERE coord_owner_id = ${wakeOwner}`;
+      } finally {
+        setAutoPumpEnabledForTests(true);
+      }
     }
   });
 
