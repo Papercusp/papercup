@@ -47,18 +47,31 @@ const MIN_CANDIDATES = 30;
  */
 const CROSS_SURFACE_PROBE_LIMIT = 5;
 
-const RETIREMENT_AUTHORITY_SLUG = 'agent-insights/mug-kettle-cup-tier-is-retired';
+export const RETIREMENT_AUTHORITY_SLUG = 'agent-insights/mug-kettle-cup-tier-is-retired';
 
-export type CurrentnessSearchHit = SearchHit & {
+type CurrentnessFields = {
   historical?: true;
   authority?: 'current';
   surface?: 'engineering';
 };
 
+export type CurrentnessSearchHit = SearchHit & CurrentnessFields;
+
 /** Retirement/current-mechanism questions need authority, not lexical density. */
 export function isRetirementAuthorityQuery(query: string): boolean {
-  return /\b(?:queen|mug|kettle|cup|bee)\b/i.test(query)
-    && /\b(?:current|retir(?:e|ed|ement)|replacement|replaced|supported|now)\b/i.test(query);
+  const tierTerms = [...query.matchAll(/\b(?:queen|mug|kettle|cup|bee)\b/gi)].map((match) => match[0].toLowerCase());
+  if (tierTerms.length === 0) return false;
+  if (!/\b(?:current(?:ly)?|retir(?:e[sd]?|ing|ement)|replacement|replaced|supported|now)\b/i.test(query)) {
+    return false;
+  }
+  // `mug`/`cup`/`kettle` are ordinary nouns too. Currentness alone ("current mug price") is
+  // insufficient unless the query also names retirement, an execution mechanism, or multiple tier
+  // roles. This keeps the authority route narrow without requiring one exact incident sentence.
+  return (
+    /\b(?:retir(?:e[sd]?|ing|ement)|replacement|replaced)\b/i.test(query)
+    || /\b(?:agent|role|work|assign(?:ment)?|wake|dispatch|plan|fleet|executor|runtime|spawn|orchestrat\w*|supported)\b/i.test(query)
+    || new Set(tierTerms).size > 1
+  );
 }
 
 /** Plan exports are historical records, even when their plan status was once active. */
@@ -67,9 +80,17 @@ export function isHistoricalDocsHit(hit: Pick<SearchHit, 'slug' | 'trust'>): boo
 }
 
 /** Stable current-authority ordering; ordinary queries remain byte-for-byte ordered. */
-export function rankRetirementAuthorityHits<T extends SearchHit>(query: string, hits: readonly T[]): CurrentnessSearchHit[] {
-  const labelled = hits.map((hit) => ({ ...hit, ...(isHistoricalDocsHit(hit) ? { historical: true as const } : {}) }));
-  if (!isRetirementAuthorityQuery(query)) return labelled;
+export function rankRetirementAuthorityHits<T extends SearchHit>(
+  query: string,
+  hits: readonly T[],
+): Array<T & CurrentnessFields> {
+  const retirementQuery = isRetirementAuthorityQuery(query);
+  const labelled: Array<T & CurrentnessFields> = hits.map((hit) => ({
+    ...hit,
+    ...(isHistoricalDocsHit(hit) ? { historical: true as const } : {}),
+    ...(retirementQuery && hit.slug === RETIREMENT_AUTHORITY_SLUG ? { authority: 'current' as const } : {}),
+  }));
+  if (!retirementQuery) return labelled;
   return labelled
     .map((hit, index) => ({ hit, index }))
     .sort((a, b) => {
@@ -108,7 +129,10 @@ export function shouldProbeSiblingSurface(input: {
   // resolveAdapter gates the engineering corpus to papercusp-su (D-005 / P-016); the probe must not
   // become a side door around that gate.
   if (!input.isSuperuser) return false;
-  if (input.query && input.hasHistoricalHits && isRetirementAuthorityQuery(input.query)) return true;
+  // Currentness questions about the retired tier have one canonical answer on the engineering
+  // surface. Route them there even if the caller's scoped corpus produced plausible semantic hits:
+  // those hits can be historical plans, which is the measured P-005 failure mode.
+  if (input.query && isRetirementAuthorityQuery(input.query)) return true;
   if (input.semanticLeg?.status !== 'ran') return false;
   return (input.semanticLeg.candidates ?? 0) === 0;
 }
@@ -475,34 +499,47 @@ export default defineTool({
     //     and genuinely matched nothing is evidence about the CORPUS rather than about the embedder.
     //   - superuser only — `resolveAdapter` gates the engineering surface to papercusp-su (D-005/P-016);
     //     probing it for a non-SU caller would leak a corpus they cannot otherwise reach.
-    //   - LEXICAL-only and small — the point is to name the right corpus, not to rank it perfectly. A
+    //   - retirement/currentness queries are the one explicit exception: they resolve the canonical
+    //     authority by its exact slug, because a historical plan can be a strong semantic match and
+    //     still be the wrong answer. Exact-slug lookup makes authority independent of lexical density.
+    //   - otherwise LEXICAL-only and small — the point is to name the right corpus, not to rank it perfectly. A
     //     hybrid probe would need a second embed round-trip on a path taken precisely when the embedder
     //     just told us it had nothing to say. A lexical hit on the RIGHT corpus beats a hybrid hit on
     //     the wrong one; the caller gets the exact `harness:'engineering'` call for the full ranking.
     //   - fail-soft — any probe failure leaves the response byte-identical to before this change.
     const legsAny = legs as { semantic?: { status?: string; candidates?: number } } | undefined;
+    const retirementAuthorityQuery = isRetirementAuthorityQuery(args.query);
+    const historicalPrimaryHits = finalHits.some((hit) => hit.historical);
     let crossSurface: Record<string, unknown> | undefined;
+    let authorityLookupAttempted = false;
     if (
       shouldProbeSiblingSurface({
         surface: resolved.surface,
         isSuperuser: Boolean(ctxAny.isSuperuser),
         semanticLeg: legsAny?.semantic,
         query: args.query,
-        hasHistoricalHits: finalHits.some((hit) => hit.historical),
+        hasHistoricalHits: historicalPrimaryHits,
       })
     ) {
       try {
+        authorityLookupAttempted = retirementAuthorityQuery;
         const probe = await searchDocs(
           engineeringAdapter,
-          { ...args, limit: Math.min(limit, CROSS_SURFACE_PROBE_LIMIT) },
+          retirementAuthorityQuery
+            ? { query: RETIREMENT_AUTHORITY_SLUG, limit: 1 }
+            : { ...args, limit: Math.min(limit, CROSS_SURFACE_PROBE_LIMIT) },
           { ...(ctxAny.signal && { signal: ctxAny.signal }) },
         );
         if (probe.hits.length > 0) {
           const rankedProbeHits = rankRetirementAuthorityHits(args.query, probe.hits);
           crossSurface = {
             surface: 'engineering',
-            mode: 'lexical-only',
-            why: `The semantic leg RAN against '${resolved.surface}' and matched nothing above the similarity floor, so the hits above are lexical-only and may be off-topic. These are keyword hits from the 'engineering' surface (agent-insights/ + the Papercusp framework reference), which this surface does not contain.`,
+            mode: retirementAuthorityQuery ? 'authority-lookup' : 'lexical-only',
+            why: retirementAuthorityQuery
+              ? historicalPrimaryHits
+                ? `This retirement/currentness query returned historical plan material on '${resolved.surface}', so the canonical current authority was resolved by exact slug from the 'engineering' surface.`
+                : `Retirement/currentness questions resolve the canonical current authority by exact slug from the 'engineering' surface rather than treating lexical or semantic density as authority.`
+              : `The semantic leg RAN against '${resolved.surface}' and matched nothing above the similarity floor, so the hits above are lexical-only and may be off-topic. These are keyword hits from the 'engineering' surface (agent-insights/ + the Papercusp framework reference), which this surface does not contain.`,
             rerunFor: "docs:search { harness: 'engineering', query: <same query> } — for the full hybrid ranking of this corpus.",
             hits: rankedProbeHits.map((h) => ({
               slug: h.slug,
@@ -512,6 +549,8 @@ export default defineTool({
               excerpt: h.excerpt,
               ...(h.trust ? { trust: h.trust } : {}),
               ...(h.historical ? { historical: true } : {}),
+              ...(h.authority ? { authority: h.authority } : {}),
+              ...(h.authority ? { surface: 'engineering' as const } : {}),
             })),
           };
         }
@@ -530,24 +569,48 @@ export default defineTool({
       resolved.surface === 'engineering'
         ? undefined
         : crossSurface
-          ? `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference. The semantic leg matched NOTHING here, so that retry was run FOR you — see \`crossSurface\` for keyword hits from the 'engineering' surface. Do not read the hits above as "no such page exists".`
+          ? retirementAuthorityQuery
+            ? `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference. This retirement/currentness query was routed to the canonical engineering authority — see \`currentAuthority\` and \`crossSurface\`; historical plan hits are labelled \`historical\`.`
+            : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference. The semantic leg matched NOTHING here, so that retry was run FOR you — see \`crossSurface\` for keyword hits from the 'engineering' surface. Do not read the hits above as "no such page exists".`
           : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference — those live on the separate 'engineering' surface. A weak or zero-looking result here does not mean no such page exists; retry with harness:'engineering' before concluding that (harness:'all' reaches the same corpus but is REJECTED with harness_forbidden on a workspace-scoped session — EI-18894866320087268).`;
 
-    const authorityHit = isRetirementAuthorityQuery(args.query)
-      ? ((crossSurface?.hits as CurrentnessSearchHit[] | undefined)?.find((hit) => hit.slug === RETIREMENT_AUTHORITY_SLUG)
-        ?? finalHits.find((hit) => hit.slug === RETIREMENT_AUTHORITY_SLUG))
+    let authorityHit = retirementAuthorityQuery
+      ? ((crossSurface?.hits as CurrentnessSearchHit[] | undefined)?.find(
+          (hit) => hit.slug === RETIREMENT_AUTHORITY_SLUG,
+        ) ?? finalHits.find((hit) => hit.slug === RETIREMENT_AUTHORITY_SLUG))
       : undefined;
-    const reportedHits = authorityHit && !finalHits.some((hit) => hit.slug === authorityHit.slug)
-      ? [{ ...authorityHit, authority: 'current' as const, surface: 'engineering' as const }, ...finalHits].slice(0, limit)
+    // An engineering-surface primary search can still truncate the canonical page before the final
+    // cut. Resolve the exact slug once in that case too; ordinary queries never pay this second read.
+    if (retirementAuthorityQuery && !authorityHit && !authorityLookupAttempted) {
+      try {
+        authorityLookupAttempted = true;
+        const exact = await searchDocs(
+          engineeringAdapter,
+          { query: RETIREMENT_AUTHORITY_SLUG, limit: 1 },
+          { ...(ctxAny.signal && { signal: ctxAny.signal }) },
+        );
+        authorityHit = rankRetirementAuthorityHits(args.query, exact.hits).find(
+          (hit) => hit.slug === RETIREMENT_AUTHORITY_SLUG,
+        );
+      } catch {
+        /* fail-soft: the primary ranked result remains valid even if authority lookup is unavailable */
+      }
+    }
+    const surfacedAuthority = authorityHit
+      ? { ...authorityHit, authority: 'current' as const, surface: 'engineering' as const }
+      : undefined;
+    const reportedHits = surfacedAuthority
+      ? [surfacedAuthority, ...finalHits.filter((hit) => hit.slug !== surfacedAuthority.slug)].slice(0, limit)
       : finalHits;
+    const reportedSemanticHitCount = reportedHits.filter((hit) => hit.semantic === true).length;
     const payload: Record<string, unknown> = {
       ...(lexicalResponse ?? { query: args.query, tokenCount: 0, hitCount: 0 }),
-      ...(authorityHit ? { currentAuthority: authorityHit } : {}),
+      ...(surfacedAuthority ? { currentAuthority: surfacedAuthority } : {}),
       hits: reportedHits,
       hitCount: lexicalResponse?.hitCount ?? 0,
       surface: resolved.surface,
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
-      ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
+      ...(reportedSemanticHitCount > 0 ? { semanticHitCount: reportedSemanticHitCount } : {}),
       // P-020 / EI-19478862482607876: inheriting the engine's leg report and
       // then DISCARDING it is half the migration. `legs.degraded` +
       // `legs.warning` are the ready-made verdict for "was this really a
@@ -563,8 +626,8 @@ export default defineTool({
       ...innerMeta,
       surface: resolved.surface,
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
-      returned: reportedHits.length - semanticHitCount,
-      ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
+      returned: reportedHits.length - reportedSemanticHitCount,
+      ...(reportedSemanticHitCount > 0 ? { semanticHitCount: reportedSemanticHitCount } : {}),
       ...(legs.degraded ? { legsDegraded: true, legsWarning: legs.warning } : {}),
       // P-004: measurable adoption — how often the probe fires, and whether it found anything.
       ...(crossSurface ? { crossSurfaceProbed: 'engineering', crossSurfaceHits: (crossSurface.hits as unknown[]).length } : {}),
