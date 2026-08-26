@@ -1314,6 +1314,54 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     expect(String(b.note)).toMatch(/force:true does not bypass/);
   });
 
+  it('allows ordinary launch to invoke detached dead-fixer recovery at the frozen repair head', async () => {
+    mockQueue(awaitingFixerQueue(), false);
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/x.log',
+      willJudge: {
+        candidate: CURRENT,
+        tip: CURRENT,
+        quietCutApplied: false,
+        quietCutSec: 240,
+        excludedCommits: [],
+        excludedPaths: [],
+        excludedEligibility: [],
+        soonestEligibleInSec: null,
+      },
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      assessPreLaunchExclusion: PRELAUNCH_OPEN,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(launchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        candidate: QUEUE_HEAD,
+        logicalAttemptId: expect.any(String),
+      }),
+    );
+    expect(b).toMatchObject({
+      ok: true,
+      willJudge: {
+        candidate: QUEUE_HEAD,
+        candidateSource: 'frozen-repair-queue',
+      },
+      candidateBinding: {
+        status: 'exact-transported',
+        transportedCandidate: QUEUE_HEAD,
+        actualCandidate: QUEUE_HEAD,
+      },
+    });
+  });
+
   it('EI-211596: preserves the ordinary frozen-repair source on the transported receipt', async () => {
     vi.doMock('../../release/checkpoint-required-ancestor', async (orig) => ({
       ...(await orig()),

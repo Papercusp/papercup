@@ -23,7 +23,7 @@ export type RequiredAncestorPreflight = {
 };
 
 export type FrozenRepairQueuePreflight = {
-  /** True when the detached writer can reach a suite-producing path. */
+  /** True when the detached writer can reach a suite-producing path or recover a dead fixer first. */
   proceed: boolean;
   reason: 'clear' | 'repair-in-progress' | 'queue-unreadable';
   candidate: string | null;
@@ -145,8 +145,11 @@ async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
 /**
  * Guard an ordinary detached launch against queue states whose writer returns
  * `repair-in-progress` without running a suite. Initial-candidate and repair verification
- * decisions continue into a suite-producing path, so they are allowed here;
- * every other queue decision refuses before the systemd unit is created.
+ * decisions continue into a suite-producing path, while a definitively dead fixer can be
+ * recovered by the detached writer before it re-runs the queue policy. Both are allowed here;
+ * every other queue decision refuses before the systemd unit is created. The required-ancestor
+ * path intentionally uses `resolveRunnableCandidate` directly, so it remains fail-closed for
+ * dead-fixer recovery until a candidate can be proven against the declared ancestor.
  */
 export async function assessFrozenRepairQueuePreflight(
   predictedCandidate: string | null = null,
@@ -163,12 +166,16 @@ export async function assessFrozenRepairQueuePreflight(
       queueDecision.kind === 'run-normal-gate' ||
       queueDecision.kind === 'test-candidate' ||
       queueDecision.kind === 'verify-repair';
+    const deadFixerRecoveryDecision = queueDecision.kind === 'recover-dead-fixer';
+    const progressRunnableDecision = suiteProducingDecision || deadFixerRecoveryDecision;
     const runnableCandidate = suiteProducingDecision
       ? resolveRunnableCandidate(queueDecision, repairQueue, predictedCandidate, root)
-      : null;
+      : deadFixerRecoveryDecision
+        ? { candidate: queueDecision.repairHead, source: 'frozen-repair-queue' as const }
+        : null;
     return {
-      proceed: suiteProducingDecision,
-      reason: suiteProducingDecision ? 'clear' : 'repair-in-progress',
+      proceed: progressRunnableDecision,
+      reason: progressRunnableDecision ? 'clear' : 'repair-in-progress',
       candidate: runnableCandidate?.candidate ?? repairQueue?.repairHead ?? null,
       candidateSource: runnableCandidate?.source ?? 'unresolved',
       repairQueue,
@@ -176,7 +183,7 @@ export async function assessFrozenRepairQueuePreflight(
       nextAttempt: queueDecision.kind === 'dispatch-fixer' ? queueDecision.nextAttempt : null,
       fixerSpawnId: repairQueue?.fixerSpawnId ?? null,
       fixerAlive,
-      ...(!suiteProducingDecision
+      ...(!progressRunnableDecision
         ? { detail: `frozen repair policy chose ${queueDecision.kind}; the writer will not run a suite` }
         : {}),
     };

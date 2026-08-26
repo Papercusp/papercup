@@ -192,7 +192,7 @@ describe('EI-20207763368144905 — nested HUD assertion quoting', () => {
   it('removes the per-run bridge token only after stopping the owned process tree', () => {
     const stopIndex = src.indexOf('"$WORK/stop.sh" >/dev/null 2>&1 || true');
     const tokenCleanupIndex = src.indexOf(
-      'rm -f -- "/tmp/tauri-dev-bridge-$BRIDGE_PID.token"',
+      'rm -f -- "${TMPDIR:-/tmp}/tauri-dev-bridge-$BRIDGE_PID.token"',
     );
     expect(stopIndex).toBeGreaterThan(0);
     expect(tokenCleanupIndex).toBeGreaterThan(stopIndex);

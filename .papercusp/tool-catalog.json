@@ -16024,7 +16024,7 @@
           "POST"
         ]
       },
-      "description": "Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with { read:true, ownerId?, harness? }; write { did, left, insight, next } (goal aliases next), { note }, or compatibility alias { checkpoint }; note wins and blank/null clears. Keyed by ownerId. walls/checks default to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL contention returns retryable timeout data, not a transport hang.",
+      "description": "Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with { read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, and nextAction are compatibility aliases), { note }, or compatibility alias { checkpoint }; canonical fields win and blank/null clears. Keyed by ownerId. walls/checks default to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL contention returns retryable timeout data, not a transport hang.",
       "capabilities": [
         "routines:write"
       ],
