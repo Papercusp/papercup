@@ -43,6 +43,10 @@ describe('capability:read', () => {
     expect(capabilityReadSeeAlso({}, { content_indexes: [0] })).toEqual([]);
     expect(capabilityReadSeeAlso({}, { evidence_class: 'test-verdict' })).toEqual([]);
     expect(capabilityReadSeeAlso({}, {})).toContain('capability:edit (exact-string edit)');
+    // ToolGuidance.seeAlso owns a generic `args: unknown` callback contract. A
+    // non-object value must be accepted and treated like an ordinary read rather
+    // than narrowing the callback signature enough to break defineTool inference.
+    expect(capabilityReadSeeAlso({}, null)).toContain('capability:edit (exact-string edit)');
   });
 
   it('recovers a project-relative read from a phantom root through the canonical integration checkout', async () => {

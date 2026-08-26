@@ -61,14 +61,27 @@ const CAPABILITY_READ_SEE_ALSO = [
  */
 export function capabilityReadSeeAlso(
   _result: unknown,
-  args: { raw?: boolean; byte_offset?: number; byte_limit?: number; content_indexes?: number[]; evidence_class?: string },
+  args: unknown,
 ): readonly string[] {
+  // ToolGuidance.seeAlso deliberately passes `args: unknown`; narrowing the callback
+  // parameter itself makes defineTool's role-tool overload inapplicable and TypeScript
+  // falls through to the unrelated route overload (EI-21534077294118083). Keep the public
+  // callback broad and narrow defensively inside it.
+  const readArgs = args && typeof args === 'object' && !Array.isArray(args)
+    ? args as {
+        raw?: boolean;
+        byte_offset?: number;
+        byte_limit?: number;
+        content_indexes?: number[];
+        evidence_class?: string;
+      }
+    : {};
   if (
-    args.raw ||
-    args.byte_offset !== undefined ||
-    args.byte_limit !== undefined ||
-    args.content_indexes !== undefined ||
-    args.evidence_class !== undefined
+    readArgs.raw ||
+    readArgs.byte_offset !== undefined ||
+    readArgs.byte_limit !== undefined ||
+    readArgs.content_indexes !== undefined ||
+    readArgs.evidence_class !== undefined
   ) return [];
   return CAPABILITY_READ_SEE_ALSO;
 }
