@@ -12,6 +12,7 @@
  * the top level.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { z } from 'zod';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
 // the cap re-tunes the test instead of breaking it — the guard is about the note being
 // truthful at the boundary, not about the boundary sitting at any particular number.
@@ -128,6 +129,18 @@ beforeEach(() => {
 describe('work_items:checkpoint (bulk keyed-array)', () => {
   it('opts out of the ambient workspace transaction because the handler owns its DB scopes', () => {
     expect((checkpoint as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
+  it('teaches that rowsMode controls rows only and gives the complete body+rows replacement recipe', () => {
+    const json = z.toJSONSchema(checkpoint.args as never) as {
+      properties?: { rowsMode?: { description?: string } };
+    };
+    const rowsMode = json.properties?.rowsMode?.description ?? '';
+    expect(rowsMode).toContain('controls CHECK ROWS only');
+    for (const token of ['append:false', "rowsMode:'replace'", 'confirmShrink:true', 'confirmRetire:true']) {
+      expect(rowsMode).toContain(token);
+      expect(checkpoint.description).toContain(token.replaceAll("'", '"'));
+    }
   });
 
   it('keys the checkpoint by the ITEM\'s harness (looked up), disambiguated by the ctx hint', async () => {

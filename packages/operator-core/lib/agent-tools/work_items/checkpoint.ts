@@ -234,7 +234,10 @@ function rowsModeSpec() {
     .describe(
       "P-013: how supplied `checks` rows are applied. `merge` (default) unions " +
         "supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + " +
-        "`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows.",
+        "`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows. This controls CHECK ROWS only, " +
+        "never the checkpoint body: a full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
+        "confirmShrink:true, confirmRetire:true`. Without confirmShrink, a >50% body shrink is auto-preserved and its " +
+        "checks become additive; without confirmRetire, omitted carried checks are refused before write.",
     );
 }
 
@@ -443,7 +446,8 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Writes are verify-read — a suspicious shrink can be BLOCKED; see `returns`. ' +
     'Refuses a peer-held item (`not_holder`) and active writes to terminal items (`terminal_item`); explicit clears remain allowed for finish cleanup. ' +
-    '`rowsMode:"merge"` is the default additive check-row form when the body should still replace; use `rowsMode:"replace"` to retire rows.',
+    '`rowsMode:"merge"` is the default additive check-row form when the body should still replace; use `rowsMode:"replace"` to retire rows. ' +
+    'For a complete authoritative body+rows replacement pass append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -463,7 +467,7 @@ export default defineTool({
       '`work_items:set_state { id, state:"open", force:true }`, then claim it before resuming work. ' +
       'A blocked write carries `errorCode` (`shrink_blocked` / `append_base_unreadable`) plus structured `recovery` args: ' +
       '`append:true` to preserve prior content (also the form for a concise successor addendum to a detailed prior note), ' +
-      'or `append:false, confirmShrink:true` for an intentional full replacement. ' +
+      'or `append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true` for an intentional full body+rows replacement. ' +
       'A verify-read miss is `checkpoint_verify_failed`.',
   },
   capability: 'work_items:write',
@@ -498,7 +502,9 @@ export default defineTool({
         'single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.',
       ),
       rowsMode: rowsModeSpec().describe(
-        'single shorthand default for `rowsMode`; also the items[] default. `merge` unions supplied checks without appending the body.',
+        "single shorthand default for `rowsMode`; also the items[] default. This controls CHECK ROWS only, not the body. " +
+          "`merge` unions supplied checks without appending the body. A complete body+rows replacement is " +
+          "append:false, rowsMode:'replace', confirmShrink:true, confirmRetire:true.",
       ),
       confirmRetire: looseBoolean().describe(
         "single shorthand default for `confirmRetire`; also the items[] default. Required only when rowsMode:'replace' would retire carried checks.",
