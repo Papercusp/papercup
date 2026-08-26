@@ -10,22 +10,31 @@
  *   2. the GC sweep (a maintenance write) is SKIPPED on the targeted point-read;
  *   3. the default (no-owner) read is UNCHANGED — full-roster joins + the sweep.
  *
+ * EI-21488009366204518 adds the FOURTH synthesis leg: an owner whose presence
+ * row was REAPED but whose adv_sessions records the death must answer a targeted
+ * `{ owner }` lookup with an explicit synthesized `ended` row — never an empty
+ * roster indistinguishable from "never existed". The tail of this file pins that.
+ *
  * Hermetic: every IO seam is mocked; the pure helpers (matchesOwner,
- * selectRosterRows, mergeTier1, toStableRosterRow, deriveSessionState) stay real
- * so the selected rows keep production semantics.
+ * selectRosterRows, mergeTier1, toStableRosterRow, deriveSessionState,
+ * synthesizeEndedRosterRows) stay real so the selected rows keep production
+ * semantics.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // vi.mock factories are hoisted above module-level consts — vi.hoisted() is the
 // sanctioned way to share spies with them (a bare `const` here hits the TDZ).
-const { listPresenceMock, sweepMock, tier1Mock, wakeabilityMock, fleetMock, findLiveHostMock } = vi.hoisted(() => ({
+const { listPresenceMock, sweepMock, tier1Mock, wakeabilityMock, fleetMock, findLiveHostMock, endedSessionsMock, endedOwnersMock } = vi.hoisted(() => ({
   listPresenceMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   sweepMock: vi.fn(async (..._a: unknown[]) => 0),
   tier1Mock: vi.fn(async (..._a: unknown[]) => new Map()),
   wakeabilityMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
   findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
+  // EI-21488009366204518: the targeted-miss session-log death leg.
+  endedSessionsMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  endedOwnersMock: vi.fn(async () => new Set<string>()),
 }));
 // importOriginal spread (not a bare factory): real presence-wakeability — kept
 // real below via its own importOriginal — imports PRESENCE_STALE_MS from
@@ -39,22 +48,21 @@ vi.mock('./presence', async (importOriginal) => ({
 vi.mock('./federated-presence', () => ({ listFederatedPresence: vi.fn(async () => []) }));
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../adv-sessions')>()),
-  endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+  endedRecordedOwnerIds: endedOwnersMock,
   listRecordedLiveSessions: vi.fn(async () => []),
   // Unification P-002: the snapshot's recorded-session oracle leg.
   recordedLiveOwnerIds: vi.fn(async () => new Set<string>()),
-  // EI-21488009366204518: the targeted-miss ended-session leg.
-  listEndedAdvSessionsByOwners: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  // EI-21488009366204518: the targeted-miss session-log death leg.
+  listEndedAdvSessionsByOwners: endedSessionsMock,
 }));
 // Pass-through reconcile: the test rows below are already RosterRow-shaped.
-// importOriginal keeps the REAL synthesizeEndedRosterRows so the EI-21488009366204518
-// leg runs its production synthesis in these fixtures.
+// importOriginal keeps the REAL synthesizeEndedRosterRows so the
+// EI-21488009366204518 leg runs its production synthesis in these fixtures.
 vi.mock('./recorded-sessions', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   reconcileRosterSources: (rows: unknown[]) => rows,
   RECORDED_SESSION_SOURCE: 'recorded-session',
 }));
-
 // EI-16639: the nursery-alias leg — no running nursery bees in these fixtures,
 // so it contributes nothing (existing counts/ids stay exactly as asserted below).
 vi.mock('./nursery-alias-liveness', () => ({
@@ -158,5 +166,56 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
 
     const snap = await assemblePresenceSnapshot(RESOLVED, {});
     expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('recorded');
+  });
+});
+
+describe('assemblePresenceSnapshot targeted { owner } lookup — reaped-row session-log leg (EI-21488009366204518)', () => {
+  const DEAD = 'su-reaped-dead';
+  const endedSessionRow = {
+    coordOwnerId: DEAD,
+    workspaceId: 'test-ws',
+    planSlug: null,
+    role: 'su',
+    pid: null,
+    startedAt: '2026-08-25T13:00:00.000Z',
+    endedAt: '2026-08-25T14:06:45.000Z',
+    label: null,
+  };
+
+  it('synthesizes an ENDED row for a reaped owner whose adv_sessions records the death', async () => {
+    endedSessionsMock.mockResolvedValue([endedSessionRow]);
+    // The oracle legs that classify the synthesized base row as explicit `ended`:
+    // not wakeable + positive recorded death evidence for its id.
+    wakeabilityMock.mockResolvedValue(new Map([[DEAD, { wakeable: false, liveTurn: false }]]));
+    endedOwnersMock.mockResolvedValue(new Set([DEAD]));
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, { owner: DEAD });
+    // The miss fired the leg with exactly the needle…
+    expect(endedSessionsMock).toHaveBeenCalledWith([DEAD]);
+    // …the synthesized row came back…
+    const emitted = snap.active.find((r) => r.ownerId === DEAD);
+    expect(emitted).toBeDefined();
+    // …and the oracle classified it explicitly dead, not unknown.
+    expect(emitted?.sessionState).toBe('ended');
+    // The summary says HOW the needle resolved (session-log evidence, not presence).
+    expect(snap.summary.ownerLookup).toEqual({ needle: DEAD, matched: 1, fromSessionLog: true });
+  });
+
+  it('a genuinely UNKNOWN id stays an explicit not-found, distinct from the ended case', async () => {
+    const snap = await assemblePresenceSnapshot(RESOLVED, { owner: 'su-never-existed' });
+    expect(endedSessionsMock).toHaveBeenCalledWith(['su-never-existed']); // the leg ran…
+    expect(snap.active).toEqual([]); // …found nothing…
+    // …and the summary says so EXPLICITLY instead of reading as silent absence.
+    expect(snap.summary.ownerLookup).toEqual({ needle: 'su-never-existed', matched: 0, fromSessionLog: false });
+  });
+
+  it('the ended-session leg is never queried when the needle matches the roster', async () => {
+    await assemblePresenceSnapshot(RESOLVED, { owner: 'su-bbb' });
+    expect(endedSessionsMock).not.toHaveBeenCalled();
+  });
+
+  it('the default (no-owner) read never pays the session-log leg', async () => {
+    await assemblePresenceSnapshot(RESOLVED, {});
+    expect(endedSessionsMock).not.toHaveBeenCalled();
   });
 });
