@@ -1909,22 +1909,24 @@ export function startSupervisorBeat(ownerId: any, { fetchImpl, intervalMs, opera
     onTerminalSession?: (() => never) | undefined;
 }): NodeJS.Timeout | null;
 /**
- * Best-effort "my child exited" report: stamps the tracked adv row's
+ * Acknowledged "my child exited" report: stamps the tracked adv row's
  * ended_at/exit_code (bootstrap-su/session-ended), so the resume picker and
  * roster stop showing dead sessions as `· active` and the session-dir GC's
  * open-row protection actually expires. psu is the live parent in BOTH launch
  * paths (the same property the supervisor beat rides), so child-exit is the
- * one reliable place to stamp it. Awaited with a short timeout because psu
- * process.exit()s right after; any failure — operator down, endpoint not yet
- * deployed (an older release 404s) — is swallowed: end-stamping is telemetry,
- * never a reason to hold the user's terminal open. Exported with injectables
- * for tests. Never rejects.
+ * one reliable place to stamp it. A stable attempt key makes overload and
+ * unknown-response replay safe. Before the request, psu writes a local pending
+ * witness; acknowledgement removes it, while an unavailable operator leaves it
+ * for the next resume to reconcile after its writer-liveness checks. Exported
+ * with injectables for tests. Never rejects.
  *
  * @param {number|string|null} advSessionId  the adv_sessions PK to stamp
  * @param {number|null|undefined} exitCode   the child's exit code (null when unknown)
  * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
- *           timeoutMs?: number, killedBySignal?: string|null,
- *           launchFailed?: boolean }} [opts]
+ *           timeoutMs?: number, connectBudgetMs?: number, timeoutRetries?: number,
+ *           killedBySignal?: string|null, launchFailed?: boolean,
+ *           endAttemptKey?: string, sleep?: (ms:number)=>Promise<void>,
+ *           now?: ()=>number, home?: string }} [opts]
  *   `killedBySignal` is the signal NAME that killed the child, or null for a voluntary
  *   exit. The server derives `ended_by` from it (WI-38054); omitting it makes every kill
  *   record as a clean self-reported exit. `launchFailed` is used when the launcher
@@ -1932,14 +1934,46 @@ export function startSupervisorBeat(ownerId: any, { fetchImpl, intervalMs, opera
  *   records that as cleanup so the row is immediately retryable rather than waiting
  *   for stale-claim recovery.
  */
-export function reportSessionEnded(advSessionId: number | string | null, exitCode: number | null | undefined, { fetchImpl, operatorUrl, token, timeoutMs, killedBySignal, launchFailed, }?: {
-    fetchImpl?: typeof fetch;
-    operatorUrl?: string;
-    token?: string | null;
-    timeoutMs?: number;
-    killedBySignal?: string | null;
-    launchFailed?: boolean;
-}): Promise<void>;
+export function pendingSessionEndWitnessPath(advSessionId: number | string | null, home?: string): string;
+export function readPendingSessionEndWitness(advSessionId: any, home?: string): any;
+export function reportSessionEnded(advSessionId: any, exitCode: any, { fetchImpl, operatorUrl, token, timeoutMs, connectBudgetMs, timeoutRetries, killedBySignal, launchFailed, endAttemptKey, sleep, now, home, }?: {
+    fetchImpl?: typeof fetch | undefined;
+    operatorUrl?: any;
+    token?: null | undefined;
+    timeoutMs?: number | undefined;
+    connectBudgetMs?: number | undefined;
+    timeoutRetries?: number | undefined;
+    killedBySignal?: null | undefined;
+    launchFailed?: boolean | undefined;
+    endAttemptKey?: `${string}-${string}-${string}-${string}-${string}` | undefined;
+    sleep?: ((ms: any) => Promise<any>) | undefined;
+    now?: (() => number) | undefined;
+    home?: string | undefined;
+}): Promise<{
+    reported: boolean;
+    reason: string;
+    status?: undefined;
+    endAttemptKey?: undefined;
+    detail?: undefined;
+} | {
+    reported: boolean;
+    reason: string;
+    status: number;
+    endAttemptKey: `${string}-${string}-${string}-${string}-${string}`;
+    detail?: undefined;
+} | {
+    reported: boolean;
+    endAttemptKey: `${string}-${string}-${string}-${string}-${string}`;
+    reason?: undefined;
+    status?: undefined;
+    detail?: undefined;
+} | {
+    reported: boolean;
+    reason: string;
+    detail: string;
+    endAttemptKey: `${string}-${string}-${string}-${string}-${string}`;
+    status?: undefined;
+}>;
 /**
  * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
  * `psu --resume` revives the agent process, but launchResume takes the no-POST
