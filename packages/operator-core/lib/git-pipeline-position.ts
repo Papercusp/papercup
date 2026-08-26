@@ -3514,7 +3514,7 @@ const realReadCheckpointRunLock = async (root: string): Promise<CheckpointRunLoc
       await import('./release-checkpoint-launch');
     const reading = isCheckpointRunLockHeldCheap(root);
     if (!reading.held) {
-      const authority = readCheckpointProcessAuthorityCheap(root);
+      const authority = await readCheckpointProcessAuthorityCheap(root);
       if (authority.probeFailed) return null;
       if (
         authority.active &&

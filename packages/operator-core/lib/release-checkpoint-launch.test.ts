@@ -1159,8 +1159,8 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
         ...over,
       });
 
-    it('detects a live pre-lock gate process from authority env + exact root + cgroup, without argv', () => {
-      expect(probe()).toEqual({
+    it('detects a live pre-lock gate process from authority env + exact root + cgroup, without argv', async () => {
+      await expect(probe()).resolves.toEqual({
         active: true,
         probeFailed: false,
         pid: 4242,
@@ -1177,25 +1177,64 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       ['harness authority', { PAPERCUSP_GATE_VERDICT_HARNESS: '' }, '/tree', '0::/run-u42.scope\n'],
       ['exact integration root', {}, '/other-tree', '0::/run-u42.scope\n'],
       ['unified cgroup', {}, '/tree', '2:cpu:/legacy-only\n'],
-    ])('does not manufacture liveness when %s is absent', (_label, envOver, integrationRoot, cgroup) => {
+    ])('does not manufacture liveness when %s is absent', async (_label, envOver, integrationRoot, cgroup) => {
       const reading = probe({
         readEnvironment: () => env({ ...envOver, PAPERCUSP_INTEGRATION_ROOT: integrationRoot }),
         readCgroup: () => cgroup,
       });
-      expect(reading.active).toBe(false);
-      expect(reading.probeFailed).toBe(false);
+      await expect(reading).resolves.toMatchObject({ active: false, probeFailed: false });
     });
 
-    it('returns UNKNOWN provenance when procfs enumeration itself fails', () => {
+    it('returns UNKNOWN provenance when procfs enumeration itself fails', async () => {
       const reading = probe({ listPids: () => { throw new Error('proc unavailable'); } });
+      await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
+    });
+
+    it('does not read cgroups until the environment proves the exact authority and root', async () => {
+      const readCgroup = vi.fn(() => '0::/run-u42.scope\n');
+      const reading = await probe({
+        listPids: () => [100, 200],
+        readEnvironment: (pid) => pid === 100 ? env({ PAPERCUSP_GATE_VERDICT_HARNESS: '' }) : env(),
+        readCgroup,
+      });
+      expect(reading.active).toBe(true);
+      expect(readCgroup).toHaveBeenCalledTimes(1);
+      expect(readCgroup).toHaveBeenCalledWith(200);
+    });
+
+    it('returns UNKNOWN when one procfs read exceeds its per-read deadline', async () => {
+      const startedAt = Date.now();
+      const reading = await probe({
+        readEnvironment: () => new Promise<string>(() => {}),
+        totalTimeoutMs: 100,
+        perReadTimeoutMs: 5,
+      });
       expect(reading.active).toBe(false);
       expect(reading.probeFailed).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(80);
     });
 
-    it('ignores an authority-stamped residue beyond the run-lock stale horizon', () => {
-      expect(
-        probe({ readProcessStartMs: () => now - CHECKPOINT_RUN_LOCK_STALE_MS - 1_000 }).active,
-      ).toBe(false);
+    it('returns UNKNOWN when the total census budget is exhausted', async () => {
+      const startedAt = Date.now();
+      const reading = await probe({
+        readEnvironment: () => new Promise<string>((resolve) => setTimeout(() => resolve(env()), 50)),
+        totalTimeoutMs: 5,
+        perReadTimeoutMs: 100,
+      });
+      expect(reading.active).toBe(false);
+      expect(reading.probeFailed).toBe(true);
+      expect(Date.now() - startedAt).toBeLessThan(80);
+    });
+
+    it('returns UNKNOWN when an async procfs dependency rejects', async () => {
+      const reading = probe({ readEnvironment: async () => { throw new Error('proc unavailable'); } });
+      await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
+    });
+
+    it('ignores an authority-stamped residue beyond the run-lock stale horizon', async () => {
+      await expect(
+        probe({ readProcessStartMs: () => now - CHECKPOINT_RUN_LOCK_STALE_MS - 1_000 }),
+      ).resolves.toMatchObject({ active: false, probeFailed: false });
     });
   });
 

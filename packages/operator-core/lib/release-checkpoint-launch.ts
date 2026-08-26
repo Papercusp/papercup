@@ -28,6 +28,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, openSync, readFileSync, readdirSync, readSync, statSync } from 'node:fs';
+import { readFile as readFileAsync, readdir as readdirAsync } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
@@ -1066,28 +1067,113 @@ export interface CheckpointProcessAuthorityReading {
   harness: string | null;
 }
 
+/** Keep the pre-lock authority read below the status surface's larger probe budget. */
+export const CHECKPOINT_PROCESS_AUTHORITY_PROBE_TIMEOUT_MS = 1_000;
+
+/** A single procfs read must not consume the entire authority census budget. */
+export const CHECKPOINT_PROCESS_AUTHORITY_READ_TIMEOUT_MS = 100;
+
+type ProbeAwaitable<T> = T | PromiseLike<T>;
+
 export interface CheckpointProcessAuthorityProbeDeps {
-  listPids?: () => number[];
-  readEnvironment?: (pid: number) => string | null;
-  readCgroup?: (pid: number) => string | null;
-  readProcessStartMs?: (pid: number) => number | null;
+  listPids?: () => ProbeAwaitable<number[]>;
+  readEnvironment?: (pid: number) => ProbeAwaitable<string | null>;
+  readCgroup?: (pid: number) => ProbeAwaitable<string | null>;
+  readProcessStartMs?: (pid: number) => ProbeAwaitable<number | null>;
   nowMs?: () => number;
+  /** Override the total census budget in tests or a caller with a tighter deadline. */
+  totalTimeoutMs?: number;
+  /** Override the per-operation budget in tests or a caller with a tighter deadline. */
+  perReadTimeoutMs?: number;
 }
 
-function defaultListProcPids(): number[] {
-  return readdirSync('/proc', { withFileTypes: true })
+async function defaultListProcPids(): Promise<number[]> {
+  const entries = await readdirAsync('/proc', { withFileTypes: true });
+  return entries
     .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
     .map((entry) => Number(entry.name));
 }
 
-function defaultReadProcFile(pid: number, name: 'environ' | 'cgroup'): string | null {
+async function defaultReadProcFile(pid: number, name: 'environ' | 'cgroup'): Promise<string | null> {
   try {
-    return readFileSync(`/proc/${pid}/${name}`, 'utf8');
+    return await readFileAsync(`/proc/${pid}/${name}`, 'utf8');
   } catch {
     // A process may exit between the directory listing and this read. That row simply
     // stopped being evidence; it does not poison the rest of the procfs census.
     return null;
   }
+}
+
+/** Async counterpart used only by the bounded authority probe. The synchronous process-start
+ * reader above remains the lock probe's cheap PID-identity hint and must not be widened into
+ * this census. */
+async function defaultReadProcessStartMsAsync(pid: number): Promise<number | null> {
+  if (process.platform !== 'linux') return null;
+  try {
+    const [stat, uptime] = await Promise.all([
+      readFileAsync(`/proc/${pid}/stat`, 'utf8'),
+      readFileAsync('/proc/uptime', 'utf8'),
+    ]);
+    const commEnd = stat.lastIndexOf(')');
+    if (commEnd < 0) return null;
+    const fields = stat
+      .slice(commEnd + 1)
+      .trim()
+      .split(/\s+/);
+    // After the comm field, fields[0] is stat field 3 (state); starttime is field 22.
+    const startTicks = Number(fields[19]);
+    const uptimeSec = Number(uptime.trim().split(/\s+/)[0]);
+    if (!Number.isFinite(startTicks) || !Number.isFinite(uptimeSec)) return null;
+    const clockTicksPerSecond = 100;
+    return Date.now() - uptimeSec * 1000 + (startTicks / clockTicksPerSecond) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+type ProbeReadResult<T> =
+  | { status: 'ok'; value: T }
+  | { status: 'timeout' }
+  | { status: 'error' };
+
+const PROC_PROBE_TIMEOUT = Symbol('checkpoint-process-authority-timeout');
+
+/** Race one async procfs operation against a deadline. The underlying fs request may finish
+ * later (Node's fs API has no universal cancellation seam), but the caller never waits for it
+ * and its rejection is consumed so a late procfs failure cannot become an unhandled rejection. */
+async function readProcWithTimeout<T>(
+  operation: () => ProbeAwaitable<T>,
+  timeoutMs: number,
+): Promise<ProbeReadResult<T>> {
+  const work = Promise.resolve().then(operation);
+  work.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof PROC_PROBE_TIMEOUT>((resolve) => {
+    timer = setTimeout(() => resolve(PROC_PROBE_TIMEOUT), Math.max(1, timeoutMs));
+  });
+  try {
+    const result = await Promise.race([work, timeout]);
+    return result === PROC_PROBE_TIMEOUT
+      ? { status: 'timeout' }
+      : { status: 'ok', value: result as T };
+  } catch {
+    return { status: 'error' };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function unknownCheckpointProcessAuthority(): CheckpointProcessAuthorityReading {
+  return {
+    active: false,
+    probeFailed: true,
+    pid: null,
+    startedAtMs: null,
+    elapsedSec: null,
+    cgroupPath: null,
+    workspace: null,
+    harness: null,
+  };
 }
 
 function nulEnvironment(raw: string): Map<string, string> {
@@ -1124,46 +1210,59 @@ function unifiedCgroupPath(raw: string): string | null {
  * already have moved below the original wrapper. A failed procfs census is UNKNOWN,
  * never a confident idle reading.
  */
-export function readCheckpointProcessAuthorityCheap(
+export async function readCheckpointProcessAuthorityCheap(
   root: string,
   deps: CheckpointProcessAuthorityProbeDeps = {},
-): CheckpointProcessAuthorityReading {
+): Promise<CheckpointProcessAuthorityReading> {
   const listPids = deps.listPids ?? defaultListProcPids;
-  const readEnvironment = deps.readEnvironment ?? ((pid: number) => defaultReadProcFile(pid, 'environ'));
+  const readEnvironment =
+    deps.readEnvironment ?? ((pid: number) => defaultReadProcFile(pid, 'environ'));
   const readCgroup = deps.readCgroup ?? ((pid: number) => defaultReadProcFile(pid, 'cgroup'));
-  const readProcessStartMs = deps.readProcessStartMs ?? defaultReadProcessStartMs;
+  const readProcessStartMs = deps.readProcessStartMs ?? defaultReadProcessStartMsAsync;
   const nowMs = (deps.nowMs ?? Date.now)();
-  let pids: number[];
-  try {
-    pids = listPids();
-  } catch {
-    return {
-      active: false,
-      probeFailed: true,
-      pid: null,
-      startedAtMs: null,
-      elapsedSec: null,
-      cgroupPath: null,
-      workspace: null,
-      harness: null,
-    };
+  const totalTimeoutMs = Math.max(1, deps.totalTimeoutMs ?? CHECKPOINT_PROCESS_AUTHORITY_PROBE_TIMEOUT_MS);
+  const perReadTimeoutMs = Math.max(1, deps.perReadTimeoutMs ?? CHECKPOINT_PROCESS_AUTHORITY_READ_TIMEOUT_MS);
+  const deadlineMs = Date.now() + totalTimeoutMs;
+  const remainingMs = () => deadlineMs - Date.now();
+  const readBounded = <T>(operation: () => ProbeAwaitable<T>) => {
+    const remaining = remainingMs();
+    return remaining > 0
+      ? readProcWithTimeout(operation, Math.min(perReadTimeoutMs, remaining))
+      : Promise.resolve<ProbeReadResult<T>>({ status: 'timeout' });
+  };
+
+  const listed = await readBounded(listPids);
+  if (listed.status !== 'ok' || !Array.isArray(listed.value)) {
+    return unknownCheckpointProcessAuthority();
   }
+  const pids = listed.value;
 
   const expectedRoot = path.resolve(root);
   const matches: Array<Omit<CheckpointProcessAuthorityReading, 'active' | 'probeFailed'>> = [];
   for (const pid of pids) {
-    const rawEnv = readEnvironment(pid);
-    const rawCgroup = readCgroup(pid);
-    if (rawEnv === null || rawCgroup === null) continue;
+    // Environment is the cheap authority/root filter. Do not touch cgroup files for the
+    // thousands of unrelated processes on a busy host.
+    const environment = await readBounded(() => readEnvironment(pid));
+    if (environment.status !== 'ok') return unknownCheckpointProcessAuthority();
+    const rawEnv = environment.value;
+    if (rawEnv === null) continue;
     const env = nulEnvironment(rawEnv);
     const workspace = (env.get(GATE_VERDICT_WORKSPACE_ENV) ?? '').trim();
     const harness = (env.get(GATE_VERDICT_HARNESS_ENV) ?? '').trim();
     const integrationRoot = (env.get('PAPERCUSP_INTEGRATION_ROOT') ?? '').trim();
-    const cgroupPath = unifiedCgroupPath(rawCgroup);
-    if (!workspace || !harness || !integrationRoot || !cgroupPath) continue;
+    if (!workspace || !harness || !integrationRoot) continue;
     if (path.resolve(integrationRoot) !== expectedRoot) continue;
 
-    const startedAtMs = readProcessStartMs(pid);
+    const cgroup = await readBounded(() => readCgroup(pid));
+    if (cgroup.status !== 'ok') return unknownCheckpointProcessAuthority();
+    const rawCgroup = cgroup.value;
+    if (rawCgroup === null) continue;
+    const cgroupPath = unifiedCgroupPath(rawCgroup);
+    if (!cgroupPath) continue;
+
+    const start = await readBounded(() => readProcessStartMs(pid));
+    if (start.status !== 'ok') return unknownCheckpointProcessAuthority();
+    const startedAtMs = start.value;
     const elapsedSec = Number.isFinite(startedAtMs)
       ? Math.max(0, Math.floor((nowMs - startedAtMs!) / 1000))
       : null;
@@ -1180,6 +1279,7 @@ export function readCheckpointProcessAuthorityCheap(
       (a.pid ?? Number.MAX_SAFE_INTEGER) - (b.pid ?? Number.MAX_SAFE_INTEGER),
   );
   const match = matches[0];
+  if (remainingMs() <= 0) return unknownCheckpointProcessAuthority();
   return match
     ? { active: true, probeFailed: false, ...match }
     : {

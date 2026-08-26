@@ -788,7 +788,9 @@ export interface GitPipelineSnapshotOpts {
   };
   /** P-009 test seam for pre-lock process authority. When probeActiveRun is injected
    * and this seam is omitted, no real procfs scan is performed. */
-  probeProcessAuthority?: (root: string) => CheckpointProcessAuthorityReading;
+  probeProcessAuthority?: (
+    root: string,
+  ) => CheckpointProcessAuthorityReading | PromiseLike<CheckpointProcessAuthorityReading>;
 }
 
 /** PURE (P-001): map a checkActiveCheckpointRun probe result onto the snapshot's
@@ -1206,7 +1208,7 @@ export async function gitPipelineSnapshot(
           (opts.probeActiveRun
             ? null
             : (await import('./release-checkpoint-launch')).readCheckpointProcessAuthorityCheap);
-        const authority = authorityProbe?.(resolvedActiveRunRoot) ?? null;
+        const authority = authorityProbe ? await authorityProbe(resolvedActiveRunRoot) : null;
         activeRun = applyCheckpointProcessAuthority(activeRun, authority);
       }
     } catch {
