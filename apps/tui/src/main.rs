@@ -781,6 +781,14 @@ async fn run<B: Backend>(
                 // Whole-fleet task list for the default Swarm dossier (#2) —
                 // fetched off the UI thread → Event::FleetAssignments.
                 tokio::spawn(fetch_fleet_assignments(tx.clone()));
+                if let Some(fleet) = app.fleet.leader_fleet.clone() {
+                    let harness = app
+                        .active_harness
+                        .lock()
+                        .map(|value| value.clone())
+                        .unwrap_or_default();
+                    tokio::spawn(fetch_fleet_leader_brief(fleet, harness, tx.clone()));
+                }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::SetWakeMode { agent, mode } => {
@@ -870,6 +878,13 @@ async fn run<B: Backend>(
                 if let Some(target) = app.context_projection_target.clone() {
                     tokio::spawn(fetch_context_projection(target, tx.clone()));
                 }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchSessionSwitcher { query } => {
+                // D-009: search the live + ended roster and indexed session
+                // corpus off the UI thread. The query rides the response so
+                // the reducer can reject a stale result after more typing.
+                tokio::spawn(fetch_session_switcher(query, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchPlanItemStates { harness, plan } => {
@@ -2954,6 +2969,19 @@ async fn fetch_context_projection(
     }
 }
 
+/// Fetch global session-switcher candidates (D-009) and preserve the request
+/// query on the event so the reducer can discard out-of-order completions.
+async fn fetch_session_switcher(query: String, tx: UnboundedSender<Event>) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .session_switcher_rows(&query)
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::SessionSwitcher { query, result });
+}
+
 /// Fetch one plan's per-item assignment/claim/liveness (pui-plans-status-board
 /// P-008) → `Event::PlanItemStates`, for the plans board's right-side work-items
 /// detail. The reducer guards the render on `plan == selected`, so a stale fetch
@@ -3042,6 +3070,21 @@ async fn fetch_fleet_assignments(tx: UnboundedSender<Event>) {
             let _ = tx.send(Event::Error(format!("fleet assignments: {e}")));
         }
     }
+}
+
+async fn fetch_fleet_leader_brief(
+    fleet: String,
+    harness: String,
+    tx: UnboundedSender<Event>,
+) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .fleet_leader_brief(&fleet, &harness)
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::FleetLeaderBrief { fleet, result });
 }
 
 /// Fetch one bee's dossier — its ranked work-list (`fleet:assignments { agent }`)
