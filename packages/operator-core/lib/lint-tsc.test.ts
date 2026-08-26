@@ -38,6 +38,7 @@ import {
   filesReferencingTypeNames,
   formatAttributionHeadline,
   formatNewFileGuidance,
+  formatStandingRedRow,
   formatStandingRedFooter,
   partitionNewFilesByLiveEdit,
   partitionBrokenFilesByLiveEdit,
@@ -1774,6 +1775,28 @@ describe('new files: a peer mid-edit is not the caller’s regression (EI-192782
     expect(r.newFiles!.map((x: { file: string; dirty?: boolean }) => [x.file, x.dirty])).toEqual([
       ['landed-new.ts', false],
     ]);
+  });
+
+  it('does not assert a clean diagnostic site is committed while another path is uncommitted', () => {
+    const text = formatStandingRedRow(
+      { file: 'fixture.test.ts', baseline: 0, current: 1, delta: 1 },
+      { dirtyPathCount: 1 },
+    );
+    expect(text).toMatch(/clean error site/i);
+    expect(text).toMatch(/causal origin unresolved/i);
+    expect(text).toMatch(/uncommitted/i);
+    expect(text).not.toContain('← COMMITTED:');
+    expect(text).not.toMatch(/WILL red the fleet/i);
+  });
+
+  it('retains the strong standing-red warning when the tree has no uncommitted alternative cause', () => {
+    const text = formatStandingRedRow(
+      { file: 'fixture.test.ts', baseline: 0, current: 1, delta: 1 },
+      { dirtyPathCount: 0 },
+    );
+    expect(text).toMatch(/COMMITTED/i);
+    expect(text).toMatch(/WILL red the fleet/i);
+    expect(text).not.toMatch(/causal origin unresolved/i);
   });
 
   it('NEVER greenwashes: a dirty peer new-file still fails the run', () => {
