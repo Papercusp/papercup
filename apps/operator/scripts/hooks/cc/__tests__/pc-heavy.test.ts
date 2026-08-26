@@ -2863,6 +2863,18 @@ describe('root affected-test entrypoints enable safe coalescing (EI-186999723658
   });
 });
 
+describe('root focused-test entrypoint survives exclusive materialization', () => {
+  const scripts = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).scripts as Record<
+    string,
+    string
+  >;
+
+  it('gives test:file bounded fresh attempts after an exact preemption', () => {
+    expect(scripts['test:file']).toContain('PC_HEAVY_RETRY_PREEMPTIONS=3');
+    expect(scripts['test:file']).toContain('PC_HEAVY_COALESCE=0');
+  });
+});
+
 describe('pc-heavy.sh — load-adaptive slot count (EI-19313096203661357)', () => {
   // A PATH-shimmed `nproc` pins the core count so the formula asserts the same
   // numbers on any host; PC_HEAVY_LOAD1_OVERRIDE pins load1 (same convention as
