@@ -39,6 +39,11 @@ import {
 } from '../../release/gate-red-ownership';
 import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 import { decideStallNotification, describeLadderPosition } from '../../release/stall-escalation-ladder';
+import {
+  summarizeStreakCause,
+  type StreakCauseDigest,
+  type StreakTick,
+} from '../../release/streak-cause-digest';
 // WI-37605: narrate under the RESOLVED tag, never a hardcoded '[green-checkpoint]'. This module's
 // own suite (release-actions*.test.ts) drives these code paths, and vitest captures their stdout
 // verbatim into the gate's persisted verdict log — so a hardcoded prefix emits a line
@@ -1317,6 +1322,11 @@ export function gateStallEscalationBody(opts: {
    *  (observed: 3 agents, same leg, inside 15 minutes). Optional so an unwired/legacy
    *  caller still renders exactly as before. */
   ownership?: GateRedOwnership;
+  /** WI-42118 (D-022(d)): the CROSS-STREAK cause digest. Everything else in this body is a
+   *  snapshot of the alerting tick, so nothing here could say whether the failing set is one
+   *  unfixed break or churn — the most decision-relevant fact about a long streak. Optional
+   *  so an unwired/legacy caller still renders exactly as before. */
+  causeDigest?: StreakCauseDigest | null;
 }): string {
   const tests = (opts.failingTests ?? []).slice(0, 20);
   return JSON.stringify({
@@ -1327,6 +1337,17 @@ export function gateStallEscalationBody(opts: {
     candidate: opts.candidate ? opts.candidate.slice(0, 12) : null,
     failingTests: tests,
     emitted_at: opts.nowMs,
+    cause: opts.causeDigest
+      ? {
+          stability: opts.causeDigest.stability,
+          persistent: opts.causeDigest.persistent,
+          intermittent: opts.causeDigest.intermittent.slice(0, 20),
+          redTicks: opts.causeDigest.redTicks,
+          namingTicks: opts.causeDigest.namingTicks,
+          silentRedTicks: opts.causeDigest.silentRedTicks,
+          spanMs: opts.causeDigest.spanMs,
+        }
+      : null,
     ownership: opts.ownership
       ? {
           state: opts.ownership.state,
@@ -1341,8 +1362,69 @@ export function gateStallEscalationBody(opts: {
       tests.length
         ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.`
         : ''
-    }${opts.ownership ? ` ${opts.ownership.label}` : ''}`,
+    }${opts.ownership ? ` ${opts.ownership.label}` : ''}${
+      opts.causeDigest ? ` ${opts.causeDigest.line}` : ''
+    }`,
   });
+}
+
+/**
+ * WI-42118 (ruling green-main-fast-2026-08-25 D-022(d)): the DB half of the cross-streak
+ * cause digest — see `streak-cause-digest.ts` for the pure decision half and why this
+ * DERIVES from the append-only event log instead of growing `gate_health` a history field.
+ *
+ * ⚠ ONE KNOWN BLIND SPOT, and it fails in the safe direction. `classifyGateStallStatus`
+ * routes a proven-stale candidate to `'record-only'` — a tick that judged nothing current —
+ * but that verdict comes from the RETRIAGE record, which `buildCheckpointDetail` does not
+ * persist onto the event. So from the log alone such a tick is indistinguishable from a
+ * real red and is counted as one. Its named files passed at tip, so including it can only
+ * ADD names to the intermittent bucket and SHRINK the persistent core: the digest can
+ * therefore understate stability ('stable' → 'mixed'), never manufacture a false 'stable'.
+ * Persisting the class on the event would close it — filed rather than smuggled in here.
+ *
+ * Fail-safe: any read error yields `null` and the bodies render exactly as they did before.
+ */
+async function readStreakCauseDigest(
+  sql: { unsafe: (q: string, p: unknown[]) => Promise<unknown> },
+  installSlug: string,
+  workspaceId: string,
+  streakStartMs: number | null,
+): Promise<StreakCauseDigest | null> {
+  try {
+    // Bound the window on BOTH axes: from the streak's own start (falling back to a week for
+    // a blob with no `firstRedAt`/`lastGreenAt`), and a hard row cap so a pathological streak
+    // cannot pull an unbounded page into an alarm path.
+    const sinceMs = streakStartMs ?? Date.now() - 7 * 24 * 3_600_000;
+    const rows = (await sql.unsafe(
+      `SELECT status, detail, created_at FROM harness_shared.pipeline_events
+        WHERE workspace_id = $1 AND install_slug = $2 AND kind = 'green_checkpoint'
+          AND created_at >= $3
+        ORDER BY created_at DESC LIMIT 80`,
+      [workspaceId, installSlug, new Date(sinceMs).toISOString()],
+    )) as Array<{ status: string | null; detail: unknown; created_at: string | Date }>;
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+
+    const ticks: StreakTick[] = rows.map((row) => {
+      const detail = (typeof row.detail === 'string' ? safeJson(row.detail) : (row.detail ?? {})) as Record<
+        string,
+        unknown
+      >;
+      const failing = Array.isArray(detail.failingTests)
+        ? detail.failingTests.filter((t): t is string => typeof t === 'string')
+        : [];
+      return {
+        atMs: new Date(row.created_at).getTime(),
+        // The SAME classifier the streak counter uses, so the digest's notion of "a red"
+        // cannot drift from `consecutiveReds`'. `pinMoved: false` because a moved pin is a
+        // property of the LIVE tick, not of a historical row.
+        verdictBearing: classifyGateStallStatus(String(row.status ?? ''), false) === 'red',
+        failingTests: failing,
+      };
+    });
+    return summarizeStreakCause(ticks);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -2624,6 +2706,16 @@ export async function trackGateStall(
       // reassurance is the version of this bug that leaves a gate unowned instead of
       // triple-owned. Same signature derivation as the dispatcher (P-012: sorted failing
       // files, candidate as fallback) so the two cannot key on different things.
+      // WI-42118 (D-022(d)): the CROSS-STREAK cause digest. Every other field in both bodies
+      // below is a snapshot of THIS tick, so neither could say whether the failing set is one
+      // unfixed break (fix that test) or churning (infrastructure — do not chase the names).
+      // Computed only on an alerting tick, so a quiet red pays nothing for it.
+      const causeDigest = await readStreakCauseDigest(
+        sql,
+        ctx.installSlug,
+        ctx.workspaceId,
+        firstRedAt ?? lastGreenAt,
+      );
       const currentSignature = gateFailureSignature(failingTests, candidate);
       const ownership = describeGateRedOwnership({
         ownerSignature: lastFixer?.signature ?? null,
@@ -2660,6 +2752,11 @@ export async function trackGateStall(
             staleness.commitsBehindTip != null && staleness.commitsBehindTip > 0
               ? ` NOTE: the judged candidate is ${staleness.commitsBehindTip} commit(s) behind staging${staleness.candidateCommittedAt ? `, committed ${staleness.candidateCommittedAt}` : ''} — confirm a named failure still reproduces AT TIP before chasing it.`
               : ''
+          }${
+            // WI-42118 (D-022(d)): until now this body named NO failing tests at all — the
+            // durable row carried the alerting tick's, the human surface carried none. This is
+            // the cross-streak answer instead of a snapshot: is it one unfixed break, or churn?
+            causeDigest ? ` ${causeDigest.line}` : ''
           } [${ladderPosition}]`,
           importance: 'urgent',
           // WI-42116: idempotent PER RUNG. The persisted marks already stop a second alert for
@@ -2682,6 +2779,11 @@ export async function trackGateStall(
             stallRung: ladder.rung,
             stallRungIndex: ladder.rungIndex,
             stallAgeMs,
+            // WI-42118: structured alongside the prose, so a consumer can route on the cause
+            // class (stable → one owner fixes one test; churning → infrastructure) without
+            // parsing the sentence.
+            causeStability: causeDigest?.stability ?? null,
+            causePersistent: causeDigest?.persistent ?? null,
           },
         });
       } catch (e) {
@@ -2718,6 +2820,7 @@ export async function trackGateStall(
                 failingTests,
                 nowMs: Date.now(),
                 ownership,
+                causeDigest,
               }),
               Date.now(),
               ctx.workspaceId,
