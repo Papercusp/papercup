@@ -108,6 +108,7 @@ import {
   itemIsArmB,
   judgeSelfReview,
   selfReviewLedgerQuery,
+  selfReviewRefusal,
   toSelfReviewLedgerRow,
   type SelfReviewLedgerRow,
 } from '../../work-item-self-review.js';
@@ -2124,27 +2125,14 @@ async function completeOne(
       .map((r) => toSelfReviewLedgerRow(r))
       .filter((r): r is SelfReviewLedgerRow => r !== undefined);
 
-    const judgement = judgeSelfReview({ evidence: it.completion.selfReview, ledger });
-
-    // Refuse ONLY on the three verdicts that mean the review did not happen against the
-    // state being closed. `rubberStampRisk` and `yieldedChange` are pilot MEASUREMENTS and
-    // must never refuse (D-020): a zero-findings review is a legitimate outcome, and
-    // refusing it would teach agents to invent findings — worse than the rubber-stamping
-    // the gate targets.
-    if (
-      judgement.verdict === 'not-claimed' ||
-      judgement.verdict === 'uncorroborated' ||
-      judgement.verdict === 'stale-review'
-    ) {
-      selfReviewError =
-        `REJECTED — ${it.id} is assigned to pilot arm B, which requires a corroborated ` +
-        `self-review before it can close. Verdict: ${judgement.verdict}` +
-        (judgement.reason ? ` — ${judgement.reason}` : '') +
-        `. Re-read the diff as it now stands (capability:git / capability:read), then ` +
-        `re-send the completion with completion.selfReview: ` +
-        `{ lookedAt: "<what you re-read>", findings: [...], changedAsResult: [...] }. ` +
-        `An EMPTY findings array is accepted and recorded — do not invent findings.`;
-    }
+    // Refuses ONLY on the verdicts meaning the review did not happen against the state
+    // being closed. `rubberStampRisk` and `yieldedChange` are pilot MEASUREMENTS and never
+    // block (D-020) — that rule lives in `selfReviewRefusal` so it is unit-testable rather
+    // than reachable only through a live ledger query.
+    selfReviewError = selfReviewRefusal(
+      judgeSelfReview({ evidence: it.completion.selfReview, ledger }),
+      it.id,
+    );
   }
   if (selfReviewError) {
     return {
