@@ -19,6 +19,8 @@ import factsListTool, {
   FACTS_LIST_MAX_LIMIT,
   clampFactsListLimit,
   factsListLimitDisclosure,
+  factSlotAliasCandidates,
+  selectFactKeyMatch,
 } from './list';
 import { clampFactBody, FACT_BODY_MAX_CHARS, type AgentFact } from '../../agent-facts/store';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
@@ -371,6 +373,38 @@ describe('facts:list key lookup — distinguish projection omission from live ab
     const description = factsListTool.args.shape.key.description ?? '';
     expect(description).toMatch(/without versions/i);
     expect(description).toMatch(/ONE live fact/i);
+  });
+
+  it('expands an unprefixed assert key across the typed fact slots', () => {
+    expect(factSlotAliasCandidates('same-key')).toEqual([
+      'dead-end:same-key',
+      'wall:same-key',
+      'guard-rail:same-key',
+    ]);
+  });
+
+  it('keeps already-prefixed key lookup exact', () => {
+    expect(factSlotAliasCandidates('guard-rail:same-key')).toEqual([]);
+    expect(factSlotAliasCandidates('WALL:same-key')).toEqual([]);
+  });
+
+  it('resolves exactly one live typed-slot alias', () => {
+    const guardRail = fact('guard', { key: 'guard-rail:same-key' });
+    expect(
+      selectFactKeyMatch('same-key', undefined, [
+        { key: 'dead-end:same-key', fact: undefined },
+        { key: 'guard-rail:same-key', fact: guardRail },
+      ]),
+    ).toEqual({ kind: 'match', key: 'guard-rail:same-key', fact: guardRail });
+  });
+
+  it('reports multiple live slots as ambiguous instead of guessing or returning absent', () => {
+    expect(
+      selectFactKeyMatch('same-key', undefined, [
+        { key: 'wall:same-key', fact: fact('wall', { key: 'wall:same-key' }) },
+        { key: 'guard-rail:same-key', fact: fact('guard', { key: 'guard-rail:same-key' }) },
+      ]),
+    ).toEqual({ kind: 'ambiguous', keys: ['wall:same-key', 'guard-rail:same-key'] });
   });
 });
 

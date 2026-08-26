@@ -12,6 +12,9 @@ import {
   factVersions,
   listFactEvictionDisclosures,
   FACT_SCOPES,
+  DEAD_END_KEY_PREFIX,
+  WALL_KEY_PREFIX,
+  GUARD_RAIL_KEY_PREFIX,
   isPermanentFactExpiry,
   validateFactScope,
   type AgentFact,
@@ -171,6 +174,39 @@ export function findLiveFactVersion(
   return versions.find((version) => isLiveFact(version, nowMs));
 }
 
+const FACT_SLOT_KEY_PREFIXES = [DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX, GUARD_RAIL_KEY_PREFIX] as const;
+
+/**
+ * Slot asserts encode their type in the stored key. Preserve exact-key semantics
+ * for already-prefixed callers, while allowing the original key passed to
+ * facts:assert to resolve when exactly one typed slot owns it.
+ */
+export function factSlotAliasCandidates(key: string): string[] {
+  const lower = key.toLowerCase();
+  if (FACT_SLOT_KEY_PREFIXES.some((prefix) => lower.startsWith(prefix))) return [];
+  return FACT_SLOT_KEY_PREFIXES.map((prefix) => `${prefix}${key}`);
+}
+
+export type FactKeyMatch =
+  | { kind: 'none' }
+  | { kind: 'match'; key: string; fact: AgentFact }
+  | { kind: 'ambiguous'; keys: string[] };
+
+/** Choose an exact or alias key result without ever guessing across slots. PURE. */
+export function selectFactKeyMatch(
+  requestedKey: string,
+  exact: AgentFact | undefined,
+  aliases: ReadonlyArray<{ key: string; fact: AgentFact | undefined }>,
+): FactKeyMatch {
+  if (exact) return { kind: 'match', key: requestedKey, fact: exact };
+  const matches = aliases.filter(
+    (row): row is { key: string; fact: AgentFact } => row.fact !== undefined,
+  );
+  if (matches.length === 0) return { kind: 'none' };
+  if (matches.length > 1) return { kind: 'ambiguous', keys: matches.map((match) => match.key) };
+  return { kind: 'match', key: matches[0].key, fact: matches[0].fact };
+}
+
 export default defineTool({
   name: 'facts:list',
   capability: 'coord:read',
@@ -288,19 +324,52 @@ export default defineTool({
     // keeps existence distinguishable from list truncation.
     const key = args.key?.trim();
     if (key) {
-      const versions = await factVersions({
+      const exactVersions = await factVersions({
         scope: args.scope,
         scopeRef: scopeRef ?? null,
         key,
         limit: 1,
       });
-      const live = findLiveFactVersion(versions);
+      const exact = findLiveFactVersion(exactVersions);
+      let aliasRows: Array<{ key: string; fact: AgentFact | undefined }> = [];
+      if (!exact) {
+        const aliases = factSlotAliasCandidates(key);
+        aliasRows = await Promise.all(
+          aliases.map(async (alias) => ({
+            key: alias,
+            fact: findLiveFactVersion(
+              await factVersions({
+                scope: args.scope,
+                scopeRef: scopeRef ?? null,
+                key: alias,
+                limit: 1,
+              }),
+            ),
+          })),
+        );
+      }
+      const match = selectFactKeyMatch(key, exact, aliasRows);
+      if (match.kind === 'ambiguous') {
+        return {
+          data: {
+            ok: false,
+            mode: 'key',
+            error: 'ambiguous_slot_key',
+            key,
+            detail: 'The unprefixed key exists in multiple typed fact slots; retry with one exact key.',
+            candidates: match.keys,
+          },
+        };
+      }
+      const live = match.kind === 'match' ? match.fact : undefined;
+      const resolvedKey = match.kind === 'match' ? match.key : key;
       const rows = live ? [projectFact(live, args.full === true)] : [];
       return {
         data: {
           ok: true,
           mode: 'key',
           key,
+          ...(resolvedKey !== key ? { resolvedKey, matchedSlotAlias: true } : {}),
           found: live !== undefined,
           count: rows.length,
           ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
