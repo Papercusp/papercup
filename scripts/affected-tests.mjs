@@ -449,20 +449,53 @@ function readMemAvailableMb() {
 const MEM_AVAILABLE_MB = readMemAvailableMb();
 const TASK_CGROUP_MEMORY_MAX_MB = readTaskCgroupMemoryMaxMb();
 const TASK_CGROUP_PIDS_MAX = readTaskCgroupPidsMax();
-const SCHEDULER_CONFIG = resolveTaskBudget({
-  workerBudget: SCHEDULER_WORKER_BUDGET,
-  memoryBudgetMb: resolveMemoryBudgetMb({
-    affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
-    memAvailableMb: MEM_AVAILABLE_MB,
-    taskCgroupMemoryMaxMb: TASK_CGROUP_MEMORY_MAX_MB,
-    workerBudget: SCHEDULER_WORKER_BUDGET,
-    workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
-  }),
-  workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
-  maxConcurrentTasks: process.env.AFFECTED_MAX_CONCURRENT_TASKS ?? 2,
-  reserveWorkers: 1,
-  taskCgroupPidsMax: TASK_CGROUP_PIDS_MAX,
-});
+// EI-21472375431146082: a pre-launch TASK_BUDGET_REFUSAL (pids/memory ceiling below one
+// task envelope — e.g. capability:bash's confined cgroup at pids.max=512) used to escape
+// as a raw throw, and the exit-handler fallback stamped it with the GENERIC
+// `status=aborted reason=exit-without-verdict` — indistinguishable from any crash, and
+// with tasks=0 failed=0 easy to skim as "nothing broke" when it means NOT MEASURED:
+// zero tasks were launched and there is NO verdict. Classify it loudly instead.
+function refuseOnTaskBudget(error) {
+  const message = String(error?.message ?? error);
+  if (!message.includes("TASK_BUDGET_REFUSAL")) return false;
+  terminalEmitted = true; // suppress the exit-handler's generic abort duplicate
+  errSync(
+    `AFFECTED_TESTS_RESULT status=refused tasks=0 failed=0 ` +
+      `quarantinedFailed=0 timedOutTasks=0 undeterminedTasks=0 ` +
+      `reason=TASK_BUDGET_REFUSAL ${message}`,
+  );
+  errSync(
+    "NOT MEASURED — zero test tasks were launched; this run produced NO verdict and " +
+      "must not be read as green. Re-run outside the constrained cgroup or raise its " +
+      "ceiling (see the remedy in the refusal above).",
+  );
+  // Exit 78 (sysexits EX_CONFIG): refused by an environment ceiling, deliberately
+  // distinct from the generic abort's exit 1 so tooling can classify without parsing.
+  process.exit(78);
+}
+const SCHEDULER_CONFIG = (() => {
+  try {
+    return resolveTaskBudget({
+      workerBudget: SCHEDULER_WORKER_BUDGET,
+      memoryBudgetMb: resolveMemoryBudgetMb({
+        affectedGlobalMemoryMb: process.env.AFFECTED_GLOBAL_MEMORY_MB,
+        memAvailableMb: MEM_AVAILABLE_MB,
+        taskCgroupMemoryMaxMb: TASK_CGROUP_MEMORY_MAX_MB,
+        workerBudget: SCHEDULER_WORKER_BUDGET,
+        workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
+      }),
+      workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
+      maxConcurrentTasks: process.env.AFFECTED_MAX_CONCURRENT_TASKS ?? 2,
+      reserveWorkers: 1,
+      taskCgroupPidsMax: TASK_CGROUP_PIDS_MAX,
+    });
+  } catch (error) {
+    // EI-21472375431146082: emit the loud refused verdict + exit 78 for a genuine
+    // pre-launch budget refusal; rethrow anything else unchanged.
+    refuseOnTaskBudget(error);
+    throw error;
+  }
+})();
 const TASK_DURATION_HISTORY_PATH =
   process.env.AFFECTED_TASK_HISTORY_PATH ??
   join(tmpdir(), "papercusp-affected-task-durations-v1.json");
