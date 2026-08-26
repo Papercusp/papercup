@@ -174,6 +174,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_design_artifacts': ['designSketches.byFeature'],
   'harness_shared.harness_project_files': ['harnessProjectFiles.byHarness'],
   'harness_shared.adaptive_telemetry': ['adaptiveTelemetry.byHarness'],
+  // Personal Vault archive uploads publish into durable jobs. Both table
+  // transitions invalidate the same owner-scoped Settings queue; the bridge
+  // full-busts because trigger payloads carry row/workspace identity, not the
+  // userId used by the consumer key.
+  'harness_shared.personal_vault_import_jobs': ['personalVault.importJobs'],
+  'harness_shared.personal_vault_import_uploads': ['personalVault.importJobs'],
   'harness_shared.harness_skills': ['harnessSkills.byHarness'],
   'harness_shared.harness_decisions': ['harnessDecisions.byHarness'],
   'harness_shared.harness_lanes': ['harnessLanes.byHarness', 'harnessLanes.snapshot'],

@@ -3671,6 +3671,41 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
+  // personalVault.importJobs — the Settings > Personal Vault archive queue.
+  // Like userMemory.list, the acting owner id is an explicit query argument:
+  // named-query resolvers carry no request/session identity, and Papercusp is a
+  // single-owner desktop app. The workspace remains server-derived so a caller
+  // cannot read another workspace by supplying an id. Both the durable jobs and
+  // pre-job upload reservations back the live surface; their row triggers are
+  // bridged through TABLE_TO_QUERY_NAMES.
+  'personalVault.importJobs': {
+    backingTables: [
+      'harness_shared.personal_vault_import_jobs',
+      'harness_shared.personal_vault_import_uploads',
+    ],
+    argsSchema: z.object({
+      userId: z.string().trim().min(1),
+      // Clamp in the resolver rather than rejecting a newer client's larger
+      // window. The data helper independently enforces the same 100-row cap.
+      limit: z.number().int().positive().optional(),
+    }),
+    resolve: async (args) => {
+      const { userId, limit } = args as { userId: string; limit?: number };
+      const [{ getOrgPg }, { activeWorkspaceId }, imports] = await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('../personal-vault/import-jobs'),
+      ]);
+      const jobs = await imports.listPersonalVaultImportJobs(
+        getOrgPg().sql,
+        activeWorkspaceId(),
+        userId,
+        Math.min(limit ?? 50, 100),
+      );
+      return jobs.map(imports.publicPersonalVaultImportJob) as unknown[];
+    },
+  },
+
   // userMemory.total — how many memories the Memory page COULD show, so its
   // bounded window can render a denominator ("Showing 500 of 2,465") instead
   // of a bare count (WI-39540). Without this the page's own row count was the
