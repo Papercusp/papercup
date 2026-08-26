@@ -136,7 +136,13 @@ import {
   type MemberSpec,
 } from '../../agent-launch-core';
 export type { MemberLaunchOpts } from '../../agent-launch-core';
-import { resolveGoalLaunch } from '../../goal-launch-settings';
+import { resolveGoalLaunch, readGoalLaunchSettingsForLauncher } from '../../goal-launch-settings';
+import {
+  applyGoalLaunchOverlay,
+  goalFleetLaunchOverlay,
+  goalPairedTypeNote,
+} from './goal-fleet-launch-options';
+import { goalFleetMemberSlot } from '../../goal-launch-settings-shared';
 // type-only: the runtime call is a LAZY dynamic import in the handler (the promotion failsafe),
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
@@ -1753,26 +1759,81 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    // Resolved FIRST, ahead of the option branch (P-006): the goal's launch
+    // settings can supply `fleetType` and the per-role profiles, and reading them
+    // needs the caller's workspace + owner id. All three resolvers below are
+    // synchronous and free of side effects — an identity read off ctx, the
+    // workspace fallback, and a slug derived from the name — so hoisting them
+    // changes nothing except when they are available.
+    const { identity, ownerId, workspaceId: callerWs } = resolveFleetCaller(ctx);
+    // An explicit `workspace` arg (psu --workspace) scopes the fleet + envelope + every
+    // member; otherwise the launch session's workspace (never the '*' wildcard).
+    const workspaceId = args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
+    const fleetSlug = fleetSlugFromName(args.name);
+
+    // P-006 / D-004: the goal's SETTINGS ONLY — no ceilings, no budget gate, no
+    // side effects. The ceiling-bearing `resolveGoalLaunch` still runs exactly
+    // ONCE, far below, with the post-capacity-clamp `openCount`. It cannot be
+    // reused here because that count does not exist yet: calling it now would
+    // check the ceilings against a provisional number and could fire the
+    // per-goal budget escalation for a launch that is never attempted.
+    const goalSettings = await readGoalLaunchSettingsForLauncher({
+      workspaceId,
+      launcherOwnerId: ownerId,
+    });
+    const goalOverlay = goalFleetLaunchOverlay({
+      goalId: goalSettings.goalId,
+      settings: goalSettings.settings,
+      fleetSlug,
+      drainFleetSlug: goalSettings.drainFleetSlug,
+      callerType: args.type,
+    });
+
     // D-009 / P-011: branch the option shape on the declared type BEFORE any
     // other work. A shape mismatch is a caller error that costs nothing to
     // detect and everything to discover late — after terminals have opened on
     // the wrong per-role settings there is no cheap undo.
-    const launchOptions = resolveLaunchOptions({
-      type: args.type,
-      count: args.count,
-      agent: args.agent,
-      // No flat `effort` knob exists on this tool — effort rides inside the
-      // model spec (`<modelId>[:<effort>]`). The per-role groups DO take it
-      // separately, which is why PER_ROLE_KNOBS still lists it.
-      model: args.model,
-      headless: args.headless,
-      account: args.account,
-      carry: args.carry,
-      directors: args.directors,
-      implementers: args.implementers,
-    });
+    const launchOptions = resolveLaunchOptions(
+      applyGoalLaunchOverlay(
+        {
+          type: args.type,
+          count: args.count,
+          agent: args.agent,
+          // No flat `effort` knob exists on this tool — effort rides inside the
+          // model spec (`<modelId>[:<effort>]`). The per-role groups DO take it
+          // separately, which is why PER_ROLE_KNOBS still lists it.
+          model: args.model,
+          headless: args.headless,
+          account: args.account,
+          carry: args.carry,
+          directors: args.directors,
+          implementers: args.implementers,
+        },
+        goalOverlay,
+      ),
+    );
     if (!launchOptions.ok) {
-      return err(launchOptions.message);
+      // D-006: when the GOAL is what made this launch paired, the stock refusal
+      // ("type:'paired' was declared") names the wrong author — the caller may
+      // have passed no `type` at all. Say who actually chose it.
+      return err(launchOptions.message + goalPairedTypeNote(goalOverlay));
+    }
+    // A goal knob that this launch shape cannot deliver is REPORTED, never
+    // dropped in silence: an owner who set it is entitled to know it did not
+    // bind, which is the whole complaint behind D-016/WI-38048. These ride out
+    // on the launch result beside the paired announcement.
+    const goalLaunchNotes: string[] = goalOverlay.unbindable.map(
+      (u) =>
+        `⚠ goal ${goalOverlay.goalId} pins \`${u.knob}\` on slot \`${u.slot}\`, which this paired ` +
+        `launch cannot bind: ${u.why}.`,
+    );
+    if (goalOverlay.goalId && goalOverlay.pinned) {
+      goalLaunchNotes.push(
+        goalOverlay.slots.type === 'paired'
+          ? `goal ${goalOverlay.goalId} launch profile applied — slots \`${goalOverlay.slots.director}\` / ` +
+            `\`${goalOverlay.slots.implementer}\`${goalOverlay.typeSource === 'goal' ? " (fleetType:'paired' from the goal)" : ''}`
+          : `goal ${goalOverlay.goalId} launch profile applied — slot \`${goalOverlay.slots.member}\``,
+      );
     }
     // Provisional: the AUTHORITATIVE type is re-read off the registry row after
     // createFleetIfAbsent, because a top-up joins an existing fleet whose stored
@@ -1815,11 +1876,9 @@ export default defineTool({
       pairedAnnouncement = describeLaunchRoles(launchOptions);
     }
 
-    const { identity, ownerId, workspaceId: callerWs } = resolveFleetCaller(ctx);
-    // An explicit `workspace` arg (psu --workspace) scopes the fleet + envelope + every
-    // member; otherwise the launch session's workspace (never the '*' wildcard).
-    const workspaceId = args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
-    const fleetSlug = fleetSlugFromName(args.name);
+    // (identity / ownerId / workspaceId / fleetSlug are resolved at the top of
+    // this handler — P-006 hoisted them above the option branch so the goal's
+    // launch settings could be read before the fleet shape is decided.)
     // D-008 (WI-40321): the headcount target is also the fleet's durable,
     // homogeneous launch profile. A later launch/top-up supplies only the fleet
     // name and any deliberate overrides; omitted values come from this one row.
@@ -3523,7 +3582,24 @@ export default defineTool({
       // here — psu's persona selector, `su` for ~every session — was the bug:
       // `settings.roles` is keyed by contract slot, so the lookup matched nothing
       // and every profile the owner configured was silently ignored.
-      goalRole: 'plan-fleet-member',
+      // P-006 / D-005 — the slot is DERIVED, not hardcoded, and it is derived
+      // from `launchFleetType` (the AUTHORITATIVE type re-read off the registry
+      // row) rather than from the provisional overlay: a top-up joins an
+      // existing fleet whose stored type wins over whatever this call asked for.
+      //
+      // On a SINGLE fleet that is the member slot for this fleet's family —
+      // `plan-fleet-member`, or `drain-fleet-member` when this IS the goal's
+      // declared drain fleet (mirroring resolveFleetHeadcountLaunchRole, whose
+      // fix EI-20219409083169975 was exactly this derivation for the governor).
+      //
+      // On a PAIRED fleet it is deliberately NULL. This one fold feeds
+      // `fleetDefaults`, which EVERY member inherits, so folding either the
+      // director or the implementer profile here would broadcast one role's
+      // model/account/carry to both — the precise coercion pair-launch-options
+      // refuses one layer down, smuggled back in one layer up. The per-role
+      // profiles reach their seats through `members[]` instead, where the
+      // member > fleet precedence keeps them apart.
+      goalRole: launchFleetType === 'paired' ? null : goalFleetMemberSlot(goalOverlay.family),
       fleetSlug,
       count: openCount,
       requested: {
@@ -4484,7 +4560,21 @@ export default defineTool({
         opened,
         failed,
         launchTransaction,
-        message: [...(pairedAnnouncement ?? []), ...lines].join('\n'),
+        // P-006: what the GOAL contributed to this launch, and anything it set
+        // that could not bind. Ahead of the per-role announcement because an
+        // owner reading "the goal chose this shape" needs it before the roles.
+        goalLaunch: goalOverlay.goalId
+          ? {
+              goalId: goalOverlay.goalId,
+              fleetType: goalOverlay.type,
+              typeSource: goalOverlay.typeSource,
+              slots: goalOverlay.slots,
+              applied: goalOverlay.pinned,
+              unbindable: goalOverlay.unbindable,
+              degraded: goalSettings.degradedReasons,
+            }
+          : null,
+        message: [...goalLaunchNotes, ...(pairedAnnouncement ?? []), ...lines].join('\n'),
       },
       launchTransaction.verifiedMemberIds.length === 0,
     );
