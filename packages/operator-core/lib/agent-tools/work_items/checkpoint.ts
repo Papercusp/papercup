@@ -242,6 +242,25 @@ function joinCheckpoint(prior: string | null, addendum: string): string {
 }
 
 /**
+ * EI-21472322403787688: the AUTO-preservation retry's join — newest-FIRST.
+ *
+ * When a concise deliberate replacement trips the >50% shrink guard, the
+ * automatic retry preserves the prior history instead of executing the loss.
+ * Joining it old-first (`PRIOR --- NEW`) buried the caller's fresh note at the
+ * TAIL while `storedHead` — and every head-reading consumer (cold-wake
+ * excerpts, recovery folds) — showed the superseded prior: the current
+ * authority was structurally the LEAST visible bytes of the note. Explicit
+ * `append:true` keeps its chronological old-first contract ({@link joinCheckpoint});
+ * only this system transform flips, because its purpose is precisely "history
+ * preserved BELOW, present authoritative ABOVE". No cap logic here by design:
+ * the shared render-cap branch owns trimming, direction-conditioned on
+ * `shouldAppendRefresh`.
+ */
+function joinCheckpointNewestFirst(freshBody: string, priorBody: string | null): string {
+  return priorBody && priorBody.length > 0 ? `${freshBody}\n\n---\n${priorBody}` : freshBody;
+}
+
+/**
  * P-007/D-013: the declared-dependency arg, shared by the single shorthand and
  * `items[]`. Tri-state — OMITTED preserves the existing declaration (so an append
  * or a plain re-write never silently drops it), `[]` clears it, a list re-stamps.
