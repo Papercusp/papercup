@@ -43,6 +43,7 @@ registerSystemAction('acceptance-grading-sweep', async () => {
       acceptanceGradingStallConditionKey,
       runAcceptanceGradingSweep,
     },
+    { observeAcceptanceGrader },
   ] = await Promise.all([
     import('@papercusp/db-org'),
     import('../../agent-tools/plans/rubric-template'),
@@ -51,6 +52,7 @@ registerSystemAction('acceptance-grading-sweep', async () => {
     import('../../task-manager/store'),
     import('../../coord/condition-upsert'),
     import('../../acceptance-grading-sweep-run'),
+    import('../../acceptance-grading-sweep-observe'),
   ]);
 
   const { sql } = getOrgPg();
@@ -134,43 +136,25 @@ registerSystemAction('acceptance-grading-sweep', async () => {
 
     /**
      * Grader liveness from the task ledger, via the SHARED label algebra that
-     * `scorecards:emit` already uses to reap a finished judge — so this observation
-     * and that reaping cannot disagree about which task is the grader.
+     * `scorecards:emit` already uses to reap a finished judge.
      *
-     * `live` counts only un-ended tasks; `lastDispatchMs` deliberately includes ended
-     * ones, because "when did we last try" is what governs the cooling window.
+     * This comment used to assert the two "cannot disagree about which task is the
+     * grader". They did: the reaper read `detail.label` and this read a top-level
+     * `label` that exists on neither the row nor the table, so the match was false on
+     * every row and the probe reported "no grader" forever (EI-21555395534019608).
+     * Sharing a PREFIX FUNCTION was never enough — they have to share the field it is
+     * matched against, which is what the extracted module now makes explicit and
+     * testable. The body deliberately does not live inline here: as a closure it was
+     * unreachable from any test, which is the blind spot the defect survived in.
      */
-    observeGrader: async (row) => {
-      const rubricRef = row.rubricRef;
-      if (!rubricRef) return { live: false, lastDispatchMs: null };
-      const prefix = acceptanceGraderLabelPrefix(rubricRef);
-      const workspaceId = (row as unknown as { workspaceId?: string }).workspaceId;
-
-      const all = await listTasks({
-        includeEnded: true,
-        limit: 200,
-        ...(workspaceId ? { workspaceId } : {}),
-      }).catch(() => []);
-
-      const mine = all.filter((t) => {
-        const label = String((t as unknown as { label?: unknown }).label ?? '');
-        return label.startsWith(prefix);
-      });
-      if (mine.length === 0) return { live: false, lastDispatchMs: null };
-
-      const startedMs = (t: unknown): number | null => {
-        const raw = (t as { startedAt?: unknown }).startedAt;
-        if (!raw) return null;
-        const ms = new Date(raw as string).getTime();
-        return Number.isFinite(ms) ? ms : null;
-      };
-      const live = mine.some((t) => !(t as unknown as { endedAt?: unknown }).endedAt);
-      const lastDispatchMs = mine.reduce<number | null>((acc, t) => {
-        const ms = startedMs(t);
-        return ms === null ? acc : acc === null ? ms : Math.max(acc, ms);
-      }, null);
-      return { live, lastDispatchMs };
-    },
+    observeGrader: async (row) =>
+      observeAcceptanceGrader(
+        {
+          rubricRef: row.rubricRef,
+          workspaceId: (row as unknown as { workspaceId?: string }).workspaceId,
+        },
+        { listTasks, labelPrefix: acceptanceGraderLabelPrefix },
+      ),
 
     /** An OPEN item holding this condition key means the stall already has an owner. */
     escalationExists: async (planSlug) => {

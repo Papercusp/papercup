@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { getTask } from './store';
+import { getTask, listTasks } from './store';
 
 function fakeSql(row: Record<string, unknown>): Sql {
   return (async () => [row]) as unknown as Sql;
@@ -61,5 +61,57 @@ describe('task-manager/store row mapping', () => {
 
     expect(malformed?.detail).toEqual({});
     expect(array?.detail).toEqual({});
+  });
+});
+
+/**
+ * The label pushdown (EI-21555395534019608).
+ *
+ * A label lookup that filters AFTER a capped `limit` silently misses matching rows
+ * outside the window — on this box, five figures of ledger rows against a default
+ * window of 200. These pin that the predicate actually reaches SQL, and that it uses
+ * the operator that treats the prefix literally.
+ */
+function recordingSql() {
+  const calls: Array<{ text: string; args: unknown[] }> = [];
+  const sql = ((strings: TemplateStringsArray, ...args: unknown[]) => {
+    calls.push({ text: Array.from(strings).join('?'), args });
+    return Promise.resolve([]);
+  }) as unknown as Sql;
+  (sql as unknown as { array: (v: unknown) => unknown }).array = (v: unknown) => v;
+  return { sql, calls, text: () => calls.map((c) => c.text).join('\n') };
+}
+
+describe('listTasks pushes a label prefix into the query', () => {
+  it('emits a starts_with predicate carrying the prefix as a bound parameter', async () => {
+    const { sql, calls, text } = recordingSql();
+    const prefix = 'acceptance-grader:acceptance-my_plan.v2-2026-08-26:';
+
+    await listTasks({ workspaceId: 'ws-1', includeEnded: true, limit: 200, labelPrefix: prefix }, sql);
+
+    expect(text()).toContain("starts_with(detail ->> 'label'");
+    // Bound, not interpolated into the SQL text.
+    expect(calls.flatMap((c) => c.args)).toContain(prefix);
+    expect(text()).not.toContain(prefix);
+  });
+
+  it('NEGATIVE CONTROL: no label predicate is emitted when none was asked for', async () => {
+    // Without this, the assertion above would pass just as happily against a query
+    // that always filters by label, or against a scan that matched nothing.
+    const { sql, text } = recordingSql();
+    await listTasks({ workspaceId: 'ws-1', includeEnded: true, limit: 200 }, sql);
+    expect(text()).not.toContain('starts_with');
+  });
+
+  it('uses starts_with rather than LIKE, because a label prefix contains `_`', async () => {
+    // `_` is a single-character LIKE wildcard, so `LIKE prefix || '%'` matches labels
+    // that merely RESEMBLE the prefix: verified against PostgreSQL 18.4,
+    // 'acceptance-grader:xZy:1' LIKE 'acceptance-grader:x_y:%' is true. Real prefixes
+    // carry `_` and `.` verbatim from the rubric ref, so this is reachable, not
+    // theoretical. starts_with takes the operand literally.
+    const { sql, text } = recordingSql();
+    await listTasks({ workspaceId: 'ws-1', labelPrefix: 'acceptance-grader:a_b:' }, sql);
+    expect(text()).toContain('starts_with');
+    expect(text()).not.toMatch(/LIKE/i);
   });
 });
