@@ -36,6 +36,7 @@ export const WORK_ITEM_ADMISSION_BULK_DEDUP = 'work-item-admission-bulk-dedup';
 export const BULK_DEDUP_ACTOR = `system:${WORK_ITEM_ADMISSION_BULK_DEDUP}`;
 export const DEFAULT_BULK_MAX_STAGES = 12;
 export const DEFAULT_BULK_PAIRS_PER_CALL = 150;
+export const DEFAULT_BULK_SHARD_CONCURRENCY = 4;
 
 export type BulkDedupScope = 'full-corpus' | 'machine-emitter-targeted';
 
@@ -105,6 +106,7 @@ export interface BulkDedupRunOptions {
   runId?: string;
   maxStages?: number;
   pairsPerCall?: number;
+  shardConcurrency?: number;
   census?: Omit<AdmissionCensusRunOptions, 'workspaceId' | 'harnessSlug' | 'sql' | 'runId' | 'withinTransaction'>;
   now?: () => number;
   /** Dependency seam used by the real-PG recurrence guard to inject a census rise. */
@@ -311,7 +313,7 @@ async function failBulkStage(sql: OrgSql, runId: string, error: unknown): Promis
 
 async function judgeBulkPairs(
   input: BulkInput,
-  opts: { llmCall: PromoterLlmCall; pairsPerCall: number },
+  opts: { llmCall: PromoterLlmCall; pairsPerCall: number; shardConcurrency: number },
 ): Promise<{ judgements: PromoterJudgement[]; modelCalls: number; tokensIn: number; tokensOut: number }> {
   const byShard = new Map<number, PromoterPair[]>();
   for (const pair of input.pairs) {
@@ -320,11 +322,19 @@ async function judgeBulkPairs(
     byShard.set(shard, [...(byShard.get(shard) ?? []), pair]);
   }
 
-  const judgements: PromoterJudgement[] = [];
-  let modelCalls = 0;
-  let tokensIn = 0;
-  let tokensOut = 0;
-  for (const [shard, shardPairs] of [...byShard.entries()].sort((a, b) => a[0] - b[0])) {
+  const shardEntries = [...byShard.entries()].sort((a, b) => a[0] - b[0]);
+  const results = new Array<{
+    judgements: PromoterJudgement[];
+    modelCalls: number;
+    tokensIn: number;
+    tokensOut: number;
+  }>(shardEntries.length);
+  let nextShardIndex = 0;
+  const judgeShard = async (shard: number, shardPairs: PromoterPair[]) => {
+    const judgements: PromoterJudgement[] = [];
+    let modelCalls = 0;
+    let tokensIn = 0;
+    let tokensOut = 0;
     const ghostItems = (input.ghostIdsByShard.get(shard) ?? [])
       .map((id) => input.items.get(id))
       .filter((item): item is PromoterItem => Boolean(item));
@@ -350,8 +360,23 @@ async function judgeBulkPairs(
       tokensIn += response.inputTokens;
       tokensOut += response.outputTokens;
     }
-  }
-  return { judgements, modelCalls, tokensIn, tokensOut };
+    return { judgements, modelCalls, tokensIn, tokensOut };
+  };
+  const workers = Array.from({ length: Math.min(opts.shardConcurrency, shardEntries.length) }, async () => {
+    while (nextShardIndex < shardEntries.length) {
+      const index = nextShardIndex;
+      nextShardIndex += 1;
+      const [shard, shardPairs] = shardEntries[index]!;
+      results[index] = await judgeShard(shard, shardPairs);
+    }
+  });
+  await Promise.all(workers);
+  return {
+    judgements: results.flatMap((result) => result.judgements),
+    modelCalls: results.reduce((sum, result) => sum + result.modelCalls, 0),
+    tokensIn: results.reduce((sum, result) => sum + result.tokensIn, 0),
+    tokensOut: results.reduce((sum, result) => sum + result.tokensOut, 0),
+  };
 }
 
 export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): Promise<BulkDedupRunResult> {
@@ -360,6 +385,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   const rootRunId = opts.runId ?? `bulk-dedup-${now()}-${randomUUID().slice(0, 8)}`;
   const maxStages = Math.max(1, Math.floor(opts.maxStages ?? DEFAULT_BULK_MAX_STAGES));
   const pairsPerCall = Math.max(1, Math.min(200, Math.floor(opts.pairsPerCall ?? DEFAULT_BULK_PAIRS_PER_CALL)));
+  const shardConcurrency = Math.max(
+    1,
+    Math.min(16, Math.floor(opts.shardConcurrency ?? DEFAULT_BULK_SHARD_CONCURRENCY)),
+  );
   const runCensus = opts.runCensus ?? runWorkItemAdmissionCensus;
   const censusBase = {
     ...(opts.census ?? {}),
@@ -434,7 +463,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
 
     const startedAt = now();
     try {
-      const judged = await judgeBulkPairs(input, { llmCall: opts.llmCall, pairsPerCall });
+      const judged = await judgeBulkPairs(input, { llmCall: opts.llmCall, pairsPerCall, shardConcurrency });
       const itemIds = new Set(input.pairs.flatMap((pair) => [pair.a.id, pair.b.id]));
       const stageItems = [...itemIds].map((id) => input.items.get(id)!).filter(Boolean);
       const plan = planPromoterDispositions(stageItems, input.pairs, judged.judgements);

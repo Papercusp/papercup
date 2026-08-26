@@ -6,27 +6,26 @@
  * executes only the D-002-selected scope. `confirm:true` is intentionally
  * mandatory because merge verdicts terminalize duplicate work-items.
  */
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
+import { getOrgPg, upsertRoutine } from '@papercusp/db-org';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { notifySyncInvalidate } from '../../sync-sse';
-import { gatewayLlmEnv } from '../../inference-gateway/spawn-env';
-import { runWorkItemAdmissionBulkDedup } from '../../work-items-admission-bulk-dedup';
+import { computeNextFireAt } from '../../harness/routines/cron';
+import { WORK_ITEM_ADMISSION_BULK_DEDUP } from '../../work-items-admission-bulk-dedup';
 
 export default defineTool({
   name: 'work_items:bulk_dedup',
   profile: 'engineer',
   description:
-    'Run the staged work-item bulk deduplicator for one harness. It creates a fresh pinned census/shard map, applies the promoter duplication-only charter to the D-002-selected full-corpus or machine-emitter-targeted scope, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true because accepted merge verdicts terminalize duplicate rows.',
+    'Enqueue the durable staged work-item bulk deduplicator for one harness and return immediately. The one-shot system action creates a fresh pinned census/shard map, applies the promoter duplication-only charter to the D-002-selected full-corpus or machine-emitter-targeted scope, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true because accepted merge verdicts terminalize duplicate rows.',
   guidance: {
     when: 'A reviewed bulk-dedup plan is ready to execute and its current corpus must converge under the admission census ratchet.',
     notWhen:
       'Quick filing or ordinary pending-item admission — the durable work-item admission promoter handles those automatically.',
     chaining:
-      'work_items:bulk_dedup { harness, confirm:true } → inspect workItemAdmission.runs / admin admission history for the stage and final census.',
+      'work_items:bulk_dedup { harness, confirm:true } → the durable one-shot runs independently → inspect workItemAdmission.runs / admin admission history for the stage and final census.',
     seeAlso: [
       'work_items:search (inspect candidate rows before an exceptional manual intervention)',
       'work_items:get (inspect one canonical or merged row)',
@@ -54,6 +53,13 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('Maximum pair verdicts per model call; default 150.'),
+    shardConcurrency: z
+      .number()
+      .int()
+      .min(1)
+      .max(16)
+      .optional()
+      .describe('Maximum shards judged concurrently; default 4.'),
     targetTokens: z
       .number()
       .int()
@@ -82,27 +88,48 @@ export default defineTool({
       args.workspace ??
       (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : ctx.principal?.workspaceId) ??
       activeWorkspaceId();
-    if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
-      for (const [key, value] of Object.entries(gatewayLlmEnv(true))) {
-        if (!process.env[key]) process.env[key] = value;
-      }
-    }
-    const { llmCall } = await import('../../llm-testing/llm-client');
-    const result = await runWorkItemAdmissionBulkDedup({
-      workspaceId,
-      harnessSlug: args.harness,
-      runId: args.runId,
-      maxStages: args.maxStages,
-      pairsPerCall: args.pairsPerCall,
-      census: {
-        targetTokens: args.targetTokens,
-        ceilingTokens: args.ceilingTokens,
-        chunkCount: args.chunkCount,
-        fullCorpusPairThreshold: args.fullCorpusPairThreshold,
+    const runId = args.runId ?? `bulk-dedup-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const routineName = `${WORK_ITEM_ADMISSION_BULK_DEDUP}-${runId}`.slice(0, 180);
+    const routine = await upsertRoutine(
+      getOrgPg().sql,
+      {
+        workspaceId,
+        installSlug: args.harness,
+        name: routineName,
+        triggerKind: 'cron',
+        triggerConfig: {},
+        targetRole: `system:${WORK_ITEM_ADMISSION_BULK_DEDUP}`,
+        payloadTemplate: {
+          runId,
+          maxStages: args.maxStages,
+          pairsPerCall: args.pairsPerCall,
+          shardConcurrency: args.shardConcurrency,
+          targetTokens: args.targetTokens,
+          ceilingTokens: args.ceilingTokens,
+          chunkCount: args.chunkCount,
+          fullCorpusPairThreshold: args.fullCorpusPairThreshold,
+        },
+        concurrency: 'skip',
+        catchup: 'skip-old',
+        active: true,
+        nextFireAt: new Date(),
       },
-      llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
-    });
-    await notifySyncInvalidate('workItemAdmission.runs');
-    return { data: { ok: true, ...result } };
+      computeNextFireAt,
+    );
+    return {
+      data: {
+        ok: true,
+        enqueued: true,
+        runId,
+        routineId: routine.id,
+        nextFireAt: routine.nextFireAt?.toISOString() ?? null,
+        targetRole: routine.targetRole,
+        completionEvidence: {
+          query: 'workItemAdmission.runs',
+          expectedRunPrefix: runId,
+          terminalStates: ['complete', 'failed'],
+        },
+      },
+    };
   },
 });
