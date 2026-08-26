@@ -240,12 +240,32 @@ export interface RepairOutcome {
    *  stale and is now fixed" from "the artifact was already current and something else
    *  is failing this check". */
   producedDiff: boolean;
+  /**
+   * Did the generator exit non-zero because it DELIBERATELY DECLINED to write, rather
+   * than because it broke? Supplied by the caller, never inferred here — a pure function
+   * cannot read a generator's output, and guessing would be worse than not knowing.
+   *
+   * The distinction is not cosmetic and not a nit. A crash means the generator is broken
+   * and someone should fix it. A refusal means the generator is WORKING — it is guarding
+   * data, and the thing that needs fixing is the data. Confusing the second for the first
+   * invites exactly one repair: "make it overwrite" — which destroys whatever the refusal
+   * was protecting. That is a real, live case, not a hypothetical: `gen:authored-docs`
+   * refuses because 24 doc files hold hand-edits that exist nowhere else (WI-41770).
+   *
+   * Omitted ⇒ unknown, which resolves to `repair-failed` with a reason that warns about
+   * this very ambiguity, so the dangerous misreading is guarded even when nobody sets it.
+   */
+  refused?: boolean;
 }
 
 export type RepairVerdict =
   /** Regenerated and the checker now passes. The red is retired on its merits. */
   | "repaired"
-  /** The generator itself failed. Nothing was fixed. */
+  /** The generator DECLINED to write, on purpose, to avoid destroying something. NOT a
+   *  code defect: the generator is working. The data needs a human decision. */
+  | "repair-refused"
+  /** The generator itself failed, or declined for a reason the caller did not classify.
+   *  Nothing was fixed. */
   | "repair-failed"
   /** Regeneration changed files but the checker still fails — a real, unfixed problem. */
   | "still-failing"
