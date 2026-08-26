@@ -571,7 +571,10 @@ export default defineTool({
      *     the question this caller demonstrably already has.
      */
     seeAlso: (result) => {
-      const j = readJsonResult<{ blockedOn?: string | null }>(result);
+      const j = readJsonResult<{
+        blockedOn?: string | null;
+        harnessMismatch?: { callerHarness?: string; reportedHarness?: string };
+      }>(result);
       // seeAlso runs on the SERIALIZED result — on the MCP transport the {data} envelope
       // may be TOON, so readJsonResult returns undefined and a JSON-only gate would
       // silently never fire. Same regex fallback coord:presence uses; fail open.
@@ -583,6 +586,26 @@ export default defineTool({
         raw && ['committed', 'pushed', 'gate', 'main', 'deployed', 'serving'].includes(raw)
           ? raw
           : null;
+
+      // EI-21515547059659539: a CROSS-HARNESS caller cannot reach these cells — the
+      // state plane is audience-filtered and its cell_absent error is deliberately
+      // indistinguishable from "does not exist". The reply already knows (the
+      // harnessMismatch block in the payload), so QUALIFY the pointers instead of
+      // letting them send a hive caller into two doomed calls. Option (b) from the
+      // report: teach the audience boundary rather than hide it.
+      const mismatch =
+        j?.harnessMismatch ??
+        (/harnessMismatch/.test(text)
+          ? {
+              callerHarness:
+                /callerHarness"?\s*[:=]\s*"?([a-z0-9-]+)/i.exec(text)?.[1] ?? 'your harness',
+              reportedHarness:
+                /reportedHarness"?\s*[:=]\s*"?([a-z0-9-]+)/i.exec(text)?.[1] ?? 'the reported harness',
+            }
+          : undefined);
+      const audienceNote = mismatch
+        ? ` — AUDIENCE: these cells live in the '${mismatch.reportedHarness}' state-plane audience; called from '${mismatch.callerHarness}' they return cell_absent (deliberately indistinguishable from nonexistent)`
+        : '';
 
       const out: SeeAlsoEntry[] = [
         'dev:restart (loads an edit into gateway / bg-host / embed-sidecar / :3170 — what `activation` points at)',
@@ -602,7 +625,8 @@ export default defineTool({
         tool: 'state:read',
         selector: `{ cell: '${cell}' }`,
         reason:
-          'these values drift mid-turn — re-read before you ACT on one or quote it into a plan/message, never transcribe it',
+          'these values drift mid-turn — re-read before you ACT on one or quote it into a plan/message, never transcribe it' +
+          audienceNote,
       });
 
       // Only where it is not a SECOND door for a wait that already has one: the deploy
@@ -615,7 +639,8 @@ export default defineTool({
         out.push({
           tool: 'state:subscribe',
           selector: `{ cell: 'gate.greenCheckpoint.verdict' }`,
-          reason: 'wait for the verdict to CHANGE instead of re-polling this tool',
+          reason:
+            'wait for the verdict to CHANGE instead of re-polling this tool' + audienceNote,
         });
       }
       return out;
