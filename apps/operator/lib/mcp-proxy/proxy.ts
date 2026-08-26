@@ -223,6 +223,23 @@ export interface McpProxyOptions {
    * disables waiting and preserves the immediate 429 behavior.
    */
   maxHandshakeQueue?: number;
+  /**
+   * EI-21504897841052086 — how long (ms) a session handshake may WAIT in the admission
+   * FIFO before it is shed with 429 `mcp_proxy_handshake_queue_dwell`. Bounded because
+   * observed clients give up at 16-44s anyway; an honest early 429 beats a silent
+   * multi-minute park (the WI-41398 wedge held "8 in flight, N waiting" for 13 minutes).
+   * Defaults to `DEFAULT_HANDSHAKE_QUEUE_WAIT_MS` (env
+   * `PAPERCUSP_MCP_PROXY_MAX_QUEUE_WAIT_MS`); 0 restores unbounded waiting.
+   */
+  maxHandshakeQueueWaitMs?: number;
+  /**
+   * EI-21504897841052086 — cadence (ms) for per-waiter queue telemetry
+   * (`handshake_queue_wait` records) while a handshake sits queued. Arrival-only
+   * recording left that wedge window with ZERO visibility into queue aging. Defaults to
+   * `DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS` (env
+   * `PAPERCUSP_MCP_PROXY_QUEUE_WAIT_LOG_MS`); 0 disables.
+   */
+  handshakeQueueWaitLogMs?: number;
   /** Slots kept available for scheduler control-plane pulls when ordinary tool traffic fills
    * the proxy. Reserved traffic also gets a separate upstream socket pool so an admitted
    * recovery probe cannot sit behind the ordinary pool it is trying to diagnose. The hard
@@ -657,6 +674,13 @@ export function backpressureRetryable(
   return retriesUsed < maxRetries && elapsedMs < windowMs;
 }
 
+/** EI-21504897841052086 — PURE + unit-tested via the queue-dwell behavior specs: a queued
+ *  handshake whose dwell reached the bound is shed with 429 instead of waiting indefinitely.
+ *  `maxWaitMs <= 0` disables expiry (the previous unbounded behavior). */
+export function handshakeQueueWaitExpired(waitedMs: number, maxWaitMs: number): boolean {
+  return maxWaitMs > 0 && waitedMs >= maxWaitMs;
+}
+
 /**
  * Parse a `Retry-After` DELTA-SECONDS header into ms, clamped to [0, maxMs] with a fallback
  * when the header is absent/invalid — so a missing value still backs off and a hostile huge
@@ -887,6 +911,25 @@ const configuredMaxHandshakeQueue = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_H
 export const DEFAULT_MAX_HANDSHAKE_QUEUE = Number.isFinite(configuredMaxHandshakeQueue)
   ? Math.max(0, Math.floor(configuredMaxHandshakeQueue))
   : 64;
+/**
+ * EI-21504897841052086 — bounded dwell for a handshake WAITING in the admission FIFO.
+ * During the measured wedge, clients hung 16-44s while the proxy held their handshakes
+ * indefinitely behind 8 stuck slots; shedding at ~30s answers honestly inside typical
+ * client budgets. 0 disables expiry.
+ */
+const configuredHandshakeQueueWaitMs = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_QUEUE_WAIT_MS ?? 30_000);
+export const DEFAULT_HANDSHAKE_QUEUE_WAIT_MS =
+  Number.isFinite(configuredHandshakeQueueWaitMs) && configuredHandshakeQueueWaitMs >= 0
+    ? Math.floor(configuredHandshakeQueueWaitMs)
+    : 30_000;
+/** EI-21504897841052086 — per-waiter queue telemetry cadence. The wedge window recorded ONLY
+ *  arrival rows, so 13 minutes of saturation left zero ledger evidence. Mirrors the
+ *  per-request heartbeat pattern (EI-19388661789704364). 0 disables. */
+const configuredQueueWaitLogMs = Number(process.env.PAPERCUSP_MCP_PROXY_QUEUE_WAIT_LOG_MS ?? 5_000);
+export const DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS =
+  Number.isFinite(configuredQueueWaitLogMs) && configuredQueueWaitLogMs > 0
+    ? Math.floor(configuredQueueWaitLogMs)
+    : 5_000;
 /**
  * EI-19305299022434394 — see `McpProxyOptions.maxHoldMs`. 10 minutes is comfortably above any
  * legitimate tool's real runtime (`build:typecheck` ~160s, `capability:bash` ~120s) while still
@@ -1131,6 +1174,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const maxHandshakeQueue = Number.isFinite(configuredHandshakeQueue)
     ? Math.max(0, Math.floor(configuredHandshakeQueue))
     : 0;
+  // EI-21504897841052086 — queue dwell bound + per-waiter telemetry cadence.
+  const maxHandshakeQueueWaitMs = opts.maxHandshakeQueueWaitMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
+  const queueWaitLogMs = opts.handshakeQueueWaitLogMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS;
   let handshakeInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const initializeSlowMs = opts.initializeSlowMs ?? DEFAULT_INITIALIZE_SLOW_MS;
@@ -1142,6 +1188,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     resolve: (granted: boolean) => void;
     cancelled: boolean;
     granted: boolean;
+    /** EI-21504897841052086 — when this waiter entered the FIFO (dwell accounting). */
+    enqueuedAtMs: number;
+    /** Set by the dwell watch before resolving false, so the continuation can answer 429. */
+    expired: boolean;
+    /** Per-waiter telemetry/expiry watch; cleared on grant, cancel, and after the await. */
+    waitTimer?: NodeJS.Timeout;
   }
   const handshakeQueue: QueuedHandshake[] = [];
   // Resolve one waiter at a time so the async continuation can increment the live counters
@@ -1165,6 +1217,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     waiter.cancelled = true;
     waiter.resolve(false);
     pumpHandshakeQueue();
+  };
+
+  /** EI-21504897841052086 — stop a waiter's dwell watch; idempotent. */
+  const clearQueuedWaitTimer = (waiter: QueuedHandshake): void => {
+    if (!waiter.waitTimer) return;
+    clearTimeout(waiter.waitTimer);
+    waiter.waitTimer = undefined;
   };
 
   pumpHandshakeQueue = (): void => {
@@ -1426,10 +1485,50 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           }
 
           let queuedHandshake!: QueuedHandshake;
+          const enqueuedAtMs = Date.now();
           const granted = await new Promise<boolean>((resolve) => {
-            queuedHandshake = { resolve, cancelled: false, granted: false };
+            queuedHandshake = { resolve, cancelled: false, granted: false, enqueuedAtMs, expired: false };
             handshakeQueue.push(queuedHandshake);
-            cancelQueuedAdmission = (): void => cancelQueuedHandshake(queuedHandshake);
+            cancelQueuedAdmission = (): void => {
+              clearQueuedWaitTimer(queuedHandshake);
+              cancelQueuedHandshake(queuedHandshake);
+            };
+            // EI-21504897841052086 — a queued waiter previously produced exactly ONE ledger
+            // row (at arrival), so the measured wedge showed "8 in flight, N waiting" for 13
+            // minutes with no evidence of whether the holders were progressing. Mirror the
+            // per-request stall-watch: while THIS waiter is still queued, beat on a fixed
+            // cadence; once dwell crosses the bound, expire it (resolves false below).
+            if (queueWaitLogMs > 0) {
+              const armQueueWaitWatch = (): void => {
+                queuedHandshake.waitTimer = setTimeout(() => {
+                  if (queuedHandshake.granted || queuedHandshake.cancelled) return;
+                  const waitedSoFarMs = Date.now() - queuedHandshake.enqueuedAtMs;
+                  if (handshakeQueueWaitExpired(waitedSoFarMs, maxHandshakeQueueWaitMs)) {
+                    queuedHandshake.expired = true;
+                    clearQueuedWaitTimer(queuedHandshake);
+                    cancelQueuedHandshake(queuedHandshake); // resolves false + pumps the queue
+                    return;
+                  }
+                  log(
+                    `session handshake still queued ${Math.round(waitedSoFarMs / 1000)}s — ` +
+                      `${handshakeInFlight} in flight, ${handshakeQueueLength()} waiting (max ${maxHandshakeQueue})`,
+                  );
+                  record({
+                    kind: 'handshake_queue_wait',
+                    method: req.method,
+                    path: req.url,
+                    waitedMs: waitedSoFarMs,
+                    handshakeInFlight,
+                    queueLength: handshakeQueueLength(),
+                    maxHandshakeInFlight,
+                    maxHandshakeQueue,
+                  });
+                  armQueueWaitWatch();
+                }, queueWaitLogMs);
+                queuedHandshake.waitTimer?.unref?.();
+              };
+              armQueueWaitWatch();
+            }
             log(`queued session handshake — ${handshakeInFlight} in flight, ${handshakeQueueLength()} waiting (max ${maxHandshakeQueue})`);
             record({
               kind: 'queue_handshake',
@@ -1442,11 +1541,34 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               maxHandshakeQueue,
             });
           });
+          clearQueuedWaitTimer(queuedHandshake);
           cancelQueuedAdmission = null;
           if (!granted || clientGone) {
             if (granted) {
               handshakeGrantReservations = Math.max(0, handshakeGrantReservations - 1);
               pumpHandshakeQueue();
+            } else if (queuedHandshake.expired && !clientGone) {
+              // Dwell expiry with a LIVE client: answer honestly instead of silently
+              // dropping it — the client's own budget (16-44s observed) may not have fired.
+              const waitedMs = Date.now() - queuedHandshake.enqueuedAtMs;
+              res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
+              res.end(
+                JSON.stringify({
+                  error: 'mcp_proxy_handshake_queue_dwell',
+                  detail: `session handshake waited ${waitedMs}ms in the admission queue (max ${maxHandshakeQueueWaitMs}ms) — shed; retry`,
+                  retryAfterSec: 2,
+                }),
+              );
+              log(`shed session handshake — queue dwell ${waitedMs}ms exceeded ${maxHandshakeQueueWaitMs}ms`);
+              record({
+                kind: 'shed_handshake_queue_dwell',
+                method: req.method,
+                path: req.url,
+                waitedMs,
+                handshakeInFlight,
+                queueLength: handshakeQueueLength(),
+                maxHandshakeQueueWaitMs,
+              });
             }
             return;
           }
@@ -1761,6 +1883,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   server.on('close', () => {
     for (const timer of stallTimers.values()) clearTimeout(timer);
     stallTimers.clear();
+    // EI-21504897841052086 — queued waiters' dwell watches must not hold the loop open.
+    for (const waiter of handshakeQueue) clearQueuedWaitTimer(waiter);
     if (ownsControlPlaneAgent) controlPlaneAgent.destroy();
     if (ownsWatchdogAgent) watchdogAgent.destroy();
     if (ownsCriticalContinuationAgent) criticalContinuationAgent.destroy();
