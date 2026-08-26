@@ -241,9 +241,11 @@ export interface McpProxyOptions {
    */
   handshakeQueueWaitLogMs?: number;
   /** Slots kept available for scheduler control-plane pulls when ordinary tool traffic fills
-   * the proxy. Reserved traffic also gets a separate upstream socket pool so an admitted
-   * recovery probe cannot sit behind the ordinary pool it is trying to diagnose. The hard
-   * `maxInFlight` ceiling still applies to every request. */
+   * the proxy. This is also the control-plane CLASS ceiling: ordinary and reserved traffic are
+   * bulkheaded instead of either class being allowed to consume the other's capacity. Reserved
+   * traffic also gets a separate upstream socket pool so an admitted recovery probe cannot sit
+   * behind the ordinary pool it is trying to diagnose. The already-isolated watchdog and critical
+   * continuation agents each retain one bounded emergency slot outside this partition. */
   controlPlaneReserve?: number;
   /** Injectable ordinary upstream agent for deterministic queue-saturation tests/embedders. */
   upstreamAgent?: http.Agent;
@@ -939,12 +941,12 @@ export function effectiveRetryWindowMs(url: string, windowMs: number): number {
 
 /**
  * EI-19305299022434394 — the admission-control ceiling on TOTAL concurrent forwards this proxy
- * instance will hold at once, independent of `DEFAULT_MAX_UPSTREAM_SOCKETS` (which bounds
- * upstream TCP connections). Deliberately well ABOVE the socket bound so ordinary agent-count
- * queuing behind a busy-but-healthy upstream is never shed — this ceiling exists to catch the
- * genuinely runaway case (thousands held open) that the socket bound alone would still allow to
- * pile up in the agent's internal pending-request queue rather than being surfaced to a caller
- * at all.
+ * instance will hold across the NORMAL ordinary + reserved partition, independent of
+ * `DEFAULT_MAX_UPSTREAM_SOCKETS` (which bounds upstream TCP connections). The one-socket
+ * watchdog and critical-continuation emergency lanes are deliberately outside that partition,
+ * so recovery remains possible at saturation without reopening unbounded admission. The normal
+ * ceiling is deliberately well ABOVE the socket bound so healthy queuing is not shed; it exists
+ * to catch the genuinely runaway case that would otherwise pile up invisibly in the agent queue.
  */
 export const DEFAULT_MAX_IN_FLIGHT = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_IN_FLIGHT ?? 200);
 export const DEFAULT_CONTROL_PLANE_RESERVE = Number(process.env.PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE ?? 8);
@@ -1279,11 +1281,30 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const maxHandshakeQueueWaitMs = opts.maxHandshakeQueueWaitMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_MS;
   const queueWaitLogMs = opts.handshakeQueueWaitLogMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS;
   let handshakeInFlight = 0;
+  // EI-21548622458694037 — admission must count the TWO normal traffic classes independently.
+  // The old one-way "reserve" compared every ordinary request against TOTAL in-flight traffic,
+  // while reserved requests compared only against the global hard ceiling. A sustained wave of
+  // fleet:leader-brief / fleet:assignments calls could therefore occupy all 200 slots, shedding
+  // both ordinary work and the recovery reads that were nominally "reserved". Production's
+  // 64-slot reserve is now a real 136 ordinary + 64 reserved bulkhead.
+  let ordinaryInFlight = 0;
+  let reservedControlPlaneInFlight = 0;
+  // These classes already own one-socket agents. Count them explicitly so their admission can
+  // exceed the normal partition without becoming an unbounded escape hatch.
+  let watchdogProbeInFlight = 0;
+  let criticalContinuationInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const initializeSlowMs = opts.initializeSlowMs ?? DEFAULT_INITIALIZE_SLOW_MS;
   const inFlightStarts = new Map<number, number>();
   const completedForwardAtMs: number[] = [];
   let nextInFlightId = 0;
+  const reservedControlPlaneCeiling =
+    maxInFlight > 1 && controlPlaneReserve > 0
+      ? Math.min(Math.floor(controlPlaneReserve), maxInFlight - 1)
+      : 0;
+  const ordinaryInFlightCeiling =
+    reservedControlPlaneCeiling > 0 ? maxInFlight - reservedControlPlaneCeiling : maxInFlight;
+  const partitionedAdmission = reservedControlPlaneCeiling > 0;
 
   const recordForwardCompletion = (completedAtMs: number): void => {
     completedForwardAtMs.push(completedAtMs);
@@ -1321,6 +1342,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const canGrantHandshake = (): boolean => {
     if (shouldShedForInFlight(handshakeInFlight + handshakeGrantReservations, maxHandshakeInFlight)) {
       return false;
+    }
+    if (partitionedAdmission) {
+      return !shouldShedForInFlight(
+        reservedControlPlaneInFlight + handshakeGrantReservations,
+        reservedControlPlaneCeiling,
+      );
     }
     return maxInFlight <= 0 || inFlightStarts.size + handshakeGrantReservations < maxInFlight;
   };
@@ -1470,7 +1497,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         target = null;
       }
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, target, inbound: inboundSnapshot() }));
+      res.end(JSON.stringify({
+        ok: true,
+        target,
+        inbound: inboundSnapshot(),
+        inFlight: {
+          total: inFlightStarts.size,
+          ordinary: ordinaryInFlight,
+          reservedControlPlane: reservedControlPlaneInFlight,
+          watchdog: watchdogProbeInFlight,
+          criticalContinuation: criticalContinuationInFlight,
+          maxInFlight,
+          ordinaryCeiling: ordinaryInFlightCeiling,
+          reservedControlPlaneCeiling,
+        },
+      }));
       return;
     }
     // WI-35737 — CLIENT-DISCONNECT TRACKING. Before this, the proxy had no client-side
@@ -1539,14 +1580,37 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const criticalContinuation = isCriticalContinuationCall(rawBody, req.url);
         const sessionHandshake = isMcpSessionHandshakeCall(rawBody);
         const watchdogSessionProbe = sessionHandshake && isMcpProxyWatchdogProbePath(req.url);
-        const admissionCeiling = reservedControlPlane
-          ? maxInFlight
-          : maxInFlight > 0
-            ? Math.max(1, maxInFlight - controlPlaneReserve)
+        const standardReservedControlPlane =
+          reservedControlPlane && !criticalContinuation && !watchdogSessionProbe;
+        const admissionClass = criticalContinuation
+          ? 'critical-continuation'
+          : watchdogSessionProbe
+            ? 'watchdog'
+            : standardReservedControlPlane
+              ? 'reserved-control-plane'
+              : 'ordinary';
+        const admissionCeiling = criticalContinuation || watchdogSessionProbe
+          ? 1
+          : partitionedAdmission
+            ? standardReservedControlPlane
+              ? reservedControlPlaneCeiling
+              : ordinaryInFlightCeiling
             : maxInFlight;
-        if (shouldShedForInFlight(inFlightNow, admissionCeiling)) {
+        const classInFlight = criticalContinuation
+          ? criticalContinuationInFlight
+          : watchdogSessionProbe
+            ? watchdogProbeInFlight
+            : standardReservedControlPlane
+              ? reservedControlPlaneInFlight
+              : ordinaryInFlight;
+        // Ordinary handshakes use the bounded FIFO below, which accounts for both their own
+        // handshake cap and the reserved-class cap. Shedding them here would bypass that queue.
+        const admissionSaturated = sessionHandshake && !watchdogSessionProbe
+          ? false
+          : shouldShedForInFlight(classInFlight, admissionCeiling);
+        if (admissionSaturated) {
           const retryAfterSec = retryAfterSecForDrainRate(
-            inFlightNow,
+            classInFlight,
             admissionCeiling,
             completedForwardAtMs,
             Date.now(),
@@ -1557,12 +1621,25 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               ok: false,
               error: 'mcp_proxy_overloaded',
               retryable: true,
-              detail: `proxy already has ${inFlightNow} request(s) in flight (admission max ${admissionCeiling}, hard max ${maxInFlight}) — shed before forwarding`,
+              detail: `proxy ${admissionClass} class already has ${classInFlight} request(s) in flight (class max ${admissionCeiling}, total ${inFlightNow}, normal hard max ${maxInFlight}) — shed before forwarding`,
               retryAfterSec,
             }),
           );
-          log(`shed request — ${inFlightNow} already in flight (max ${maxInFlight})`);
-          record({ kind: 'shed_max_in_flight', method: req.method, path: req.url, inFlight: inFlightNow, maxInFlight, admissionCeiling, reservedControlPlane, retryAfterSec });
+          log(`shed request — ${admissionClass} ${classInFlight}/${admissionCeiling}, ${inFlightNow} total`);
+          record({
+            kind: 'shed_max_in_flight',
+            method: req.method,
+            path: req.url,
+            inFlight: inFlightNow,
+            classInFlight,
+            maxInFlight,
+            admissionClass,
+            admissionCeiling,
+            ordinaryInFlight,
+            reservedControlPlaneInFlight,
+            reservedControlPlane,
+            retryAfterSec,
+          });
           return;
         }
         // EI-21391963810159383 — a proxy restart made ~60 clients reconnect at once. Because
@@ -1571,12 +1648,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // timeout retries and 96 total in flight in six minutes, including the watchdog behind
         // the herd it was trying to diagnose. Bound THIS write-free class before it opens an
         // upstream socket. The watchdog's exact named probe alone uses the socket deliberately
-        // left outside the production cap, while the global hard ceiling above still binds it.
+        // left outside the normal production partition; its one-socket agent is its hard bound.
         const countsTowardHandshakeCap = sessionHandshake && !watchdogSessionProbe;
-        if (
-          countsTowardHandshakeCap &&
-          shouldShedForInFlight(handshakeInFlight + handshakeGrantReservations, maxHandshakeInFlight)
-        ) {
+        if (countsTowardHandshakeCap && !canGrantHandshake()) {
           // Prune cancelled entries before enforcing the bounded FIFO length. A cancelled
           // request is not capacity, even when its promise has not yet reached the async
           // continuation that observes the false grant.
@@ -1699,6 +1773,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const inFlightId = nextInFlightId++;
         const inFlightStartedAt = Date.now();
         inFlightStarts.set(inFlightId, inFlightStartedAt);
+        if (criticalContinuation) criticalContinuationInFlight++;
+        else if (watchdogSessionProbe) watchdogProbeInFlight++;
+        else if (standardReservedControlPlane) reservedControlPlaneInFlight++;
+        else ordinaryInFlight++;
         if (countsTowardHandshakeCap) handshakeInFlight++;
         scheduleStallCheck(inFlightId, inFlightStartedAt);
         try {
@@ -1949,6 +2027,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // (success return, exhausted-window fallthrough, or an unexpected throw).
           const completedAtMs = Date.now();
           inFlightStarts.delete(inFlightId);
+          if (criticalContinuation) criticalContinuationInFlight = Math.max(0, criticalContinuationInFlight - 1);
+          else if (watchdogSessionProbe) watchdogProbeInFlight = Math.max(0, watchdogProbeInFlight - 1);
+          else if (standardReservedControlPlane) {
+            reservedControlPlaneInFlight = Math.max(0, reservedControlPlaneInFlight - 1);
+          } else ordinaryInFlight = Math.max(0, ordinaryInFlight - 1);
           recordForwardCompletion(completedAtMs);
           if (countsTowardHandshakeCap) handshakeInFlight = Math.max(0, handshakeInFlight - 1);
           // EI-19388661789704364: cancel this request's own stall timer so a fast forward

@@ -406,6 +406,13 @@ describe('WI-41257: inbound refusal and accept-pressure telemetry', () => {
 
     const health = JSON.parse((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body);
     expect(health.inbound).toMatchObject({ clientErrors: 1, socketResets: 1, drops: 1 });
+    expect(health.inFlight).toMatchObject({
+      total: 0,
+      ordinary: 0,
+      reservedControlPlane: 0,
+      watchdog: 0,
+      criticalContinuation: 0,
+    });
     expect(socket.destroyed).toBe(true);
     expect(logs.some((line) => line.includes('inbound client error'))).toBe(true);
     expect(logs.some((line) => line.includes('inbound connection dropped'))).toBe(true);
@@ -1757,6 +1764,90 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     releaseUpstream();
     const results = await Promise.all([...heldOrdinary, ...heldControlPlane]);
     expect(results.every((result) => result.status === 200)).toBe(true);
+  });
+
+  it('EI-21548622458694037: reserved traffic cannot consume ordinary capacity when the reserved class fills first', async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
+    const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+      retryWindowMs: 5_000, maxInFlight: 4, controlPlaneReserve: 2, log: () => {},
+    }));
+    await listen(proxy);
+
+    const controlPlaneBody = JSON.stringify({
+      method: 'tools/call', params: { name: 'fleet:leader-brief', arguments: {} },
+    });
+    const heldControlPlane = [request(port(proxy), controlPlaneBody), request(port(proxy), controlPlaneBody)];
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), controlPlaneBody)).status).toBe(429);
+
+    // The old one-way reserve compared ordinary admission against TOTAL in-flight traffic, so
+    // the two reserved calls above consumed the ordinary class before it had sent one request.
+    const ordinaryBody = JSON.stringify({
+      method: 'tools/call', params: { name: 'work_items:list', arguments: {} },
+    });
+    const heldOrdinary = [request(port(proxy), ordinaryBody), request(port(proxy), ordinaryBody)];
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
+
+    releaseUpstream();
+    const results = await Promise.all([...heldControlPlane, ...heldOrdinary]);
+    expect(results.every((result) => result.status === 200)).toBe(true);
+  });
+
+  it('EI-21548622458694037: watchdog and continuation emergency lanes survive a full normal partition', async () => {
+    let releaseNormal: () => void = () => {};
+    const normalGate = new Promise<void>((resolve) => { releaseNormal = resolve; });
+    const upstream = track(http.createServer((req, res) => {
+      const client = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('client');
+      if (client === 'critical-continuation' || client === 'mcp-proxy-watchdog') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(client === 'mcp-proxy-watchdog'
+          ? '{"result":{"tools":[{"name":"coord:orient"}]}}'
+          : '{"result":{"checkpoint":true}}');
+        return;
+      }
+      void normalGate.then(() => res.end('{"result":"normal-released"}'));
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+      retryWindowMs: 1_000, handshakeTimeoutMs: 250,
+      maxInFlight: 2, controlPlaneReserve: 1, log: () => {},
+    }));
+    await listen(proxy);
+
+    const heldOrdinary = request(
+      port(proxy),
+      JSON.stringify({ method: 'tools/call', params: { name: 'work_items:list', arguments: {} } }),
+      '/api/mcp?client=ordinary',
+    );
+    const heldReserved = request(
+      port(proxy),
+      JSON.stringify({ method: 'tools/call', params: { name: 'coord:orient', arguments: {} } }),
+      '/api/mcp?client=reserved',
+    );
+    await new Promise((r) => setTimeout(r, 40));
+
+    const critical = await request(
+      port(proxy),
+      JSON.stringify({ method: 'tools/call', params: { name: 'loop:checkpoint', arguments: {} } }),
+      '/api/mcp?client=critical-continuation',
+    );
+    const watchdog = await request(
+      port(proxy),
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+      '/api/mcp?superuser=1&client=mcp-proxy-watchdog&tools=coord%3Aorient',
+    );
+
+    expect(critical.status).toBe(200);
+    expect(watchdog.status).toBe(200);
+    releaseNormal();
+    expect((await heldOrdinary).status).toBe(200);
+    expect((await heldReserved).status).toBe(200);
   });
 
   it('EI-21266423740643882: tools/list bypasses a saturated ordinary upstream socket queue', async () => {
