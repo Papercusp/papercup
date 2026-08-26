@@ -17,6 +17,7 @@ import {
   judgeEmbedCaller,
   judgeEmbedLatency,
   runEmbedLatencySweepOnce,
+  type EmbedLatencyVerdict,
 } from './embed-latency-watchdog';
 
 function caller(over: Partial<EmbedCallerLatency> = {}): EmbedCallerLatency {
@@ -127,7 +128,9 @@ describe('runEmbedLatencySweepOnce — sweep plumbing', () => {
   });
 
   it('a breach escalates ONCE with a dedup signature naming caller:classification', async () => {
-    const escalate = vi.fn(async () => {});
+    const escalate = vi.fn(
+      async (_verdict: Extract<EmbedLatencyVerdict, { kind: 'breach' }>) => {},
+    );
     const out = await runEmbedLatencySweepOnce({
       flagEnabled: async () => true,
       readWindow: () =>

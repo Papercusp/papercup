@@ -75,10 +75,15 @@ export type EmbedCallerVerdict =
       errorCount: number;
     };
 
+export type EmbedCallerBreach = Extract<
+  EmbedCallerVerdict,
+  { kind: 'cold-start-spike' | 'sustained-slow' | 'unavailable' }
+> & { caller: string };
+
 export type EmbedLatencyVerdict =
   | { kind: 'nothing-to-grade' }
   | { kind: 'healthy'; breaches: [] }
-  | { kind: 'breach'; breaches: Array<EmbedCallerVerdict & { caller: string }> };
+  | { kind: 'breach'; breaches: EmbedCallerBreach[] };
 
 /** PURE: grade ONE caller's trailing window against its own budget. Split from
  *  the sweep so the classification ladder is testable with no timers, no PG
@@ -118,7 +123,7 @@ export function judgeEmbedLatency(window: EmbedLatencyWindow): EmbedLatencyVerdi
   if (graded.length === 0) return { kind: 'nothing-to-grade' };
   const breaches = graded
     .map((c) => ({ ...judgeEmbedCaller(c), caller: c.caller }))
-    .filter((v): v is EmbedCallerVerdict & { caller: string } => v.kind !== 'healthy' && v.kind !== 'ungraded');
+    .filter((v): v is EmbedCallerBreach => v.kind !== 'healthy' && v.kind !== 'ungraded');
   if (breaches.length === 0) return { kind: 'healthy', breaches: [] };
   return { kind: 'breach', breaches };
 }
@@ -141,7 +146,7 @@ async function defaultFlagEnabled(): Promise<boolean> {
   }
 }
 
-function describeBreach(v: EmbedCallerVerdict & { caller: string }): string {
+function describeBreach(v: EmbedCallerBreach): string {
   const ratio = v.kind === 'unavailable' ? null : Math.round((v.p99Ms / v.budgetMs) * 10) / 10;
   switch (v.kind) {
     case 'unavailable':
@@ -163,13 +168,10 @@ function describeBreach(v: EmbedCallerVerdict & { caller: string }): string {
         `a single cold request (~1.9s) against ~1ms warm ones. The sidecar WORKS — the spike lands on whoever ` +
         `holds the tight budget. Remedy: warm the model eagerly or revisit THIS caller's budget, not the service.`
       );
-    case 'healthy':
-    case 'ungraded':
-      return `${v.caller}: ${v.kind}`; // unreachable through judgeEmbedLatency's filter
   }
 }
 
-function bucketRatio(v: EmbedCallerVerdict & { caller: string }): number {
+function bucketRatio(v: EmbedCallerBreach): number {
   // Bucketed so a persistent same-shape condition dedups instead of re-alarming
   // every sweep, while a materially worse ratio still opens a fresh escalation —
   // mirrors the sibling watchdog's signature scheme.
