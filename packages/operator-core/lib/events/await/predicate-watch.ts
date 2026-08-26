@@ -269,9 +269,11 @@ export function comparePredicate(
 
 /** Pull the comparable payload out of a ToolResult: structuredContent when present,
  *  else a tolerant JSON.parse of the first text content block (raw string if it
- *  isn't JSON). */
+ *  isn't JSON), else the `data` from an in-process raw ToolResponse envelope. */
 export function extractToolPayload(result: unknown): unknown {
-  const r = result as { structuredContent?: unknown; content?: Array<{ type?: string; text?: string }> } | null;
+  const r = result as
+    | { structuredContent?: unknown; content?: Array<{ type?: string; text?: string }>; data?: unknown }
+    | null;
   if (r == null) return null;
   if (r.structuredContent !== undefined) return r.structuredContent;
   const text = r.content?.[0]?.text;
@@ -281,6 +283,14 @@ export function extractToolPayload(result: unknown): unknown {
     } catch {
       return text;
     }
+  }
+  // `dispatchProjectedTool`'s in-process transport returns the handler's raw
+  // ToolResponse. Content-encoded transports have already serialized `data` into
+  // structuredContent/text above, but this boundary has neither. Only unwrap the
+  // exact one-key envelope: a domain payload may legitimately contain a `data`
+  // field alongside other fields and must remain intact.
+  if (typeof r === 'object' && !Array.isArray(r) && Object.keys(r).length === 1 && Object.hasOwn(r, 'data')) {
+    return r.data;
   }
   return r;
 }
