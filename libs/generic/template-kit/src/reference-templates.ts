@@ -7,8 +7,9 @@
  * of MANY templates) splits template #1 three ways, extracted from what the
  * two internal reference apps actually are:
  *
- *   - PAPERCUSP_OPS_HIVES_TEMPLATE   (aspect) — the 2-hive ops construction:
- *     the judgment plane + the ONE seam. Carries both Tier B components.
+ *   - PAPERCUSP_OPS_HIVES_TEMPLATE   (aspect) — the app-owned agentic
+ *     plan/work-item execution plane + the ONE seam. Carries both Tier B
+ *     components.
  *   - TAURI_DESKTOP_SHELL_TEMPLATE   (aspect) — the app chassis: the
  *     deterministic plane's host stack + release pipeline.
  *   - AGENTIC_DESKTOP_APP_TEMPLATE   (app)    — a THIN pure composition (no
@@ -27,25 +28,25 @@
  */
 import type { TemplateManifest } from "./template-manifest.js";
 
-/** Aspect: the 2-hive ops construction — the judgment plane + the ONE seam. */
+/** Aspect: the agentic plan/work-item execution plane + the ONE app seam. */
 export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
   id: "papercusp-ops-pots",
   version: "0.1.0",
   scope: "aspect",
   category: "agentic",
   summary:
-    "The proven judgment-plane shape: a domain hive + an -ops hive over it " +
-    "(the Queen surveying a backlog and placing member harnesses), crossing into the app at exactly ONE " +
-    "seam — work_items of a declared kind go up, a typed contract comes down through a single parse gate " +
-    "into an app table. Nothing else crosses; confinement is enforced at install and the app's " +
+    "The agentic work plane: app-owned plan templates promote through Papercusp's canonical " +
+    "plan-to-work-item path, preserve their blocked-by DAG, assign only the actionable frontier to a " +
+    "configured stable app agent, and durably wake its live adopting session. Work crosses into the " +
+    "deterministic app at exactly ONE typed seam; confinement is enforced at install and the app's " +
     "blueprints/README.md states the rule.",
   components: [
     { id: "pot-app-seam", version: "0.1.0" },
     { id: "typed-contracts", version: "0.0.1" },
   ],
-  // Starter blueprints (P-006): ops-pot extends work, member extends
-  // research — placeholder lexicon, renamed per the domain at composition.
-  blueprints: ["ops-pot", "member"],
+  // One stable app-agent starter. It describes the session that adopts the
+  // configured agentName; plan promotion + direct dispatch own execution.
+  blueprints: ["app-agent"],
   // The CandidateSet analog — the typed down-leg contract template the
   // building agent specializes for its domain.
   contracts: ["candidate-set"],
@@ -54,6 +55,16 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
       id: "seam-work-item-kind",
       prompt:
         "What work_item kind crosses the seam (worked instances: purchase-research, bet-analysis)?",
+    },
+    {
+      id: "plan-template",
+      prompt:
+        "Which app-owned plan template defines the run inputs and blocked-by DAG for this work, and which external binding or schedule starts it?",
+    },
+    {
+      id: "execution-target",
+      prompt:
+        "Which app harness owns the plan runs/work queue, and which stable agent name adopts assignments and receives required wakes?",
     },
     {
       id: "contract-shape",
@@ -68,7 +79,7 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
     {
       id: "domain-roles",
       prompt:
-        "Which member roles does the domain hive place, and with what capability envelopes (confinement rule stays inviolable)?",
+        "Which role prompt and capability envelope does the stable app agent need to complete assigned work (confinement stays inviolable)?",
     },
     {
       id: "app-tables",
@@ -102,6 +113,21 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
     },
   ],
   musts: [
+    {
+      id: "canonical-plan-work-plane",
+      rule: "Every external or scheduled agentic run uses an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, or a parallel scheduler",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "stable-agent-direct-dispatch",
+      rule: "Every agentic binding/schedule carries execution { appHarnessSlug, agentName }; promotion assigns and durably wakes that stable agent for the actionable frontier only, while blocked descendants remain unassigned until canonical prerequisite completion",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "target-failure-is-loud",
+      rule: "A dead, absent, or unwakeable adopting session is a structured retryable failure with queue state preserved — never false execution success or a silent stall",
+      enforcedBy: "prose-only",
+    },
     {
       id: "seam-only-crossing",
       rule: "Every judgment-plane crossing composes @papercusp/pot-app-seam (bootstrap, work-items transport, ingest loop) — never hand-rolled calls against /api/harness/*",
@@ -896,21 +922,23 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
       id: "agents",
       prompt:
         "Does this app embed an agent plane? `none` is the ordinary answer and the default shape: a " +
-        "deterministic app with no hives and no seam. Answer `pots` and papercusp-ops-pots joins the " +
-        "composition, bringing the judgment plane and the ONE typed seam the app crosses to reach it — which " +
-        "is a real architectural commitment, not a feature flag. It is answered here rather than by picking a " +
-        "different template, because the agent plane was always a layer on the same app, never a different app.",
+        "deterministic app with no agent work plane or seam. Answer `pots` and papercusp-ops-pots joins the " +
+        "composition, bringing the canonical plan-to-work-item execution plane (app-owned plan runs, blocked-by " +
+        "DAG, stable-agent assignment + required wake) and the ONE typed seam the app crosses to reach it — " +
+        "which is a real architectural commitment, not a feature flag. It is answered here rather than by " +
+        "picking a different template, because the agent plane was always a layer on the same app, never a " +
+        "different app.",
       selects: {
         options: [
           {
             value: "none",
-            summary: "No agent plane. No hives, no seam — the deterministic app only.",
+            summary: "No agent plane or seam — the deterministic app only.",
             templates: [],
           },
           {
             value: "pots",
             summary:
-              "The judgment plane, layered on via papercusp-ops-pots and reached across exactly one typed seam.",
+              "The canonical plan/work-item/stable-agent execution plane, layered on via papercusp-ops-pots and reached across exactly one typed seam.",
             templates: [{ id: "papercusp-ops-pots", version: "0.1.0" }],
           },
         ],
@@ -982,12 +1010,17 @@ export const PAPERCUSP_APP_TEMPLATE: TemplateManifest = {
     },
     {
       id: "agents-are-explicit",
-      rule: "No hives and no seam unless `agents` was answered `pots` — the agent plane joins only by an explicit answer that puts papercusp-ops-pots in the composition, and is never implicit",
+      rule: "No agent work plane and no seam unless `agents` was answered `pots` — the plane joins only by an explicit answer that puts papercusp-ops-pots in the composition, and is never implicit",
       enforcedBy: "composition-integrity",
     },
     {
+      id: "agentic-plan-work-plane",
+      rule: "When `agents` is `pots`, every external or scheduled agentic run uses an app-owned plan template, canonical plan-item promotion, the blocked-by DAG, and execution { appHarnessSlug, agentName } for actionable-only assignment plus required wake — never an app-local orchestration loop",
+      enforcedBy: "prose-only",
+    },
+    {
       id: "one-seam",
-      rule: "When `agents` is `pots`, the deterministic and judgment planes meet at exactly ONE typed seam — the seam discipline is papercusp-ops-pots' Tier B MUST and is honored in full, not re-invented in app code",
+      rule: "When `agents` is `pots`, the deterministic app and agentic work plane meet at exactly ONE typed seam — the seam discipline is papercusp-ops-pots' Tier B MUST and is honored in full, not re-invented in app code",
       enforcedBy: "prose-only",
     },
   ],
