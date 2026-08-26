@@ -792,7 +792,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const r = await one({ id: 'WI-202309', checkpoint: 'fresh concise status' });
       expect(r).toMatchObject({ ok: true, autoAppended: true });
       expect(stored).toContain(prior.trim());
-      expect(stored).toContain('\n\n---\nfresh concise status');
+      // EI-21472322403787688: newest-FIRST. The old order (`prior\n\n---\nfresh`)
+      // buried the caller's authoritative note at the tail while storedHead — and
+      // every cold-wake excerpt that reads the head — showed superseded content.
+      expect(stored).toMatch(/^fresh concise status\n\n---\n/);
+      expect(r.storedHead?.startsWith('fresh concise status')).toBe(true);
       expect(calls).toBe(2);
       const retry = setWorkItemCheckpointWithPrior.mock.calls[1] as [
         unknown,
