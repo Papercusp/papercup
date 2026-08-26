@@ -453,8 +453,9 @@ describe("selection + apply", () => {
     apply.focus();
 
     // Chromium moves focus to BODY before React's layout effects run when the
-    // live data disables Apply. jsdom retains it, so reproduce the browser's
-    // null-related focusout explicitly before committing the applied rows.
+    // live data disables Apply. jsdom does not perform that transition
+    // reliably from blur(), so focus BODY explicitly before committing the
+    // applied rows; the shell treats BODY as the implicit focusout target.
     focusBody();
     expect(document.activeElement).toBe(document.body);
     rerender(<ReviewReportShell {...props} groups={applied} />);
@@ -565,10 +566,10 @@ describe("tri-state group checkbox", () => {
     check.focus();
 
     // Chromium moves focus to BODY before React's layout effects run when a
-    // focused native button becomes disabled. jsdom retains it, so reproduce
-    // the browser transition explicitly while preserving the null-related
-    // focusout context the shell observes in Chromium.
-    check.blur();
+    // focused native button becomes disabled. jsdom does not perform that
+    // transition reliably from blur(), so focus BODY explicitly while
+    // preserving the implicit focusout context the shell observes in Chromium.
+    focusBody();
     expect(document.activeElement).toBe(document.body);
     rerender(<ReviewReportShell {...props} groups={applied} />);
 

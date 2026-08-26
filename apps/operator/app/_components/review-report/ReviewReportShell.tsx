@@ -394,7 +394,7 @@ export default function ReviewReportShell({
         // emits focusout with no related target in Chromium. Preserve that
         // context for the layout-effect fallback, but forget it when focus
         // deliberately moves to a concrete outside node.
-        if (next !== null) {
+        if (next !== null && next !== document.body) {
           focusedGroupContent.current = null;
           focusedHeaderAction.current = null;
         }
