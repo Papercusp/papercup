@@ -38,6 +38,7 @@ import {
   sampleBusyMatches,
   formatBusy,
   formatProcessCmdline,
+  walkProcessTree,
 } from '../../../scripts/proc-guard.mjs';
 
 let fixtureRoot: string | null = null;
@@ -49,13 +50,15 @@ function fixtureProc(root: string, pid: number, ppid: number, argv: string[], co
   // Minimal realistic /proc/<pid>/stat: "pid (comm) state ppid ...". Real
   // stat lines have 50+ fields; parsePpid only needs the ones up to ppid.
   writeFileSync(join(dir, 'stat'), `${pid} (${comm}) S ${ppid} ${pid} ${pid} 0 -1 0 0 0 0 0`);
+  mkdirSync(join(dir, 'task', String(pid)), { recursive: true });
+  writeFileSync(join(dir, 'task', String(pid), 'children'), '');
 }
 
-function fixtureIdentity(
-  root: string,
-  pid: number,
-  options: { environment?: string[]; cgroupPath?: string },
-) {
+function fixtureChildren(root: string, pid: number, children: number[]) {
+  writeFileSync(join(root, String(pid), 'task', String(pid), 'children'), children.join(' '));
+}
+
+function fixtureIdentity(root: string, pid: number, options: { environment?: string[]; cgroupPath?: string }) {
   const dir = join(root, String(pid));
   if (options.environment) writeFileSync(join(dir, 'environ'), options.environment.join('\0') + '\0');
   if (options.cgroupPath) writeFileSync(join(dir, 'cgroup'), `0::${options.cgroupPath}\n`);
@@ -66,6 +69,38 @@ afterEach(() => {
     rmSync(fixtureRoot, { recursive: true, force: true });
     fixtureRoot = null;
   }
+});
+
+describe('walkProcessTree — PID-bounded diagnostics', () => {
+  it('walks only descendants of the requested root and preserves depth', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-tree-fixture-'));
+    fixtureProc(fixtureRoot, 10, 1, ['root']);
+    fixtureProc(fixtureRoot, 11, 10, ['child']);
+    fixtureProc(fixtureRoot, 12, 11, ['grandchild']);
+    fixtureProc(fixtureRoot, 99, 1, ['unrelated']);
+    fixtureChildren(fixtureRoot, 10, [11]);
+    fixtureChildren(fixtureRoot, 11, [12]);
+
+    const result = walkProcessTree(10, { procRoot: fixtureRoot });
+    expect(result).toMatchObject({ truncated: false, reason: null });
+    expect(result.rows.map(({ pid, depth }) => ({ pid, depth }))).toEqual([
+      { pid: 10, depth: 0 },
+      { pid: 11, depth: 1 },
+      { pid: 12, depth: 2 },
+    ]);
+  });
+
+  it('stops at the explicit node bound instead of expanding an unbounded tree', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-tree-fixture-'));
+    fixtureProc(fixtureRoot, 10, 1, ['root']);
+    fixtureProc(fixtureRoot, 11, 10, ['child-a']);
+    fixtureProc(fixtureRoot, 12, 10, ['child-b']);
+    fixtureChildren(fixtureRoot, 10, [11, 12]);
+
+    const result = walkProcessTree(10, { procRoot: fixtureRoot, maxNodes: 2 });
+    expect(result.rows.map((row) => row.pid)).toEqual([10, 11]);
+    expect(result).toMatchObject({ truncated: true, reason: 'max-nodes' });
+  });
 });
 
 describe('parseCmdline', () => {
@@ -115,11 +150,7 @@ describe('parseArgv and getOperationalArgv', () => {
       '--label=green-checkpoint-follow-up',
       '--model=sonnet:high',
     ];
-    expect(getOperationalArgv(argv)).toEqual([
-      'node',
-      '/repo/.papercusp/bin/psu',
-      '--model=sonnet:high',
-    ]);
+    expect(getOperationalArgv(argv)).toEqual(['node', '/repo/.papercusp/bin/psu', '--model=sonnet:high']);
   });
 });
 
@@ -283,7 +314,7 @@ describe('getAncestryChain', () => {
 });
 
 describe('matchExternalProcesses — the EI-18666147162251862 regression', () => {
-  it('does NOT self-match when the pattern only appears in the caller\'s own ancestor cmdline', () => {
+  it("does NOT self-match when the pattern only appears in the caller's own ancestor cmdline", () => {
     fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
     const PATTERN = 'definitely-not-a-real-process-zzqq';
     // pid 1: init. pid 50: the `bash -c '<whole command>'` wrapper — its own
@@ -350,11 +381,7 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
       '/home/dev/.papercusp/bin/psu',
       '--kickoff=The green-checkpoint gate is red.',
     ]);
-    fixtureProc(fixtureRoot, 781, 1, [
-      'node',
-      '/home/dev/.papercusp/bin/psu',
-      '--label=green-checkpoint-follow-up',
-    ]);
+    fixtureProc(fixtureRoot, 781, 1, ['node', '/home/dev/.papercusp/bin/psu', '--label=green-checkpoint-follow-up']);
 
     const report = matchExternalProcessesDetailed(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
     expect(report.matches.map((m) => m.pid)).toEqual([777]);
@@ -393,11 +420,7 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
       '{"id":"WI-38341","checkpoint":"blocked on green-checkpoint"}',
     ]);
     // A peer claude launcher carrying a --settings blob.
-    fixtureProc(fixtureRoot, 269557, 1, [
-      'claude',
-      '--settings',
-      '{"env":{"PAPERCUSP_GATE":"green-checkpoint"}}',
-    ]);
+    fixtureProc(fixtureRoot, 269557, 1, ['claude', '--settings', '{"env":{"PAPERCUSP_GATE":"green-checkpoint"}}']);
 
     const report = matchExternalProcessesDetailed(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
     // The verdict: one real process, not four.
@@ -563,7 +586,14 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
       let i = 0;
       const write = () => writeFileSync(statPath, `usage_usec ${usageSeries[i]}\n`);
       write();
-      return { procRoot, cgroupRoot, advance: () => { i = Math.min(i + 1, usageSeries.length - 1); write(); } };
+      return {
+        procRoot,
+        cgroupRoot,
+        advance: () => {
+          i = Math.min(i + 1, usageSeries.length - 1);
+          write();
+        },
+      };
     }
 
     it('divides by MEASURED elapsed, not the requested sample window', async () => {
@@ -576,7 +606,10 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
         procRoot,
         cgroupRoot,
         sampleMs: 10_000,
-        sleep: async () => { advance(); t = 500; },
+        sleep: async () => {
+          advance();
+          t = 500;
+        },
         now: () => t,
       });
 
@@ -637,24 +670,21 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
       let nowMs = 0;
       let active = 0;
       let maxActive = 0;
-      const results = await sampleBusyMatches(
-        [{ pid: 42 }, { pid: 43 }],
-        {
-          procRoot,
-          cgroupRoot,
-          sampleMs: 1_000,
-          budgetMs: 1_500,
-          sleep: async () => {
-            active += 1;
-            maxActive = Math.max(maxActive, active);
-            await Promise.resolve();
-            advance();
-            nowMs = 1_000;
-            active -= 1;
-          },
-          now: () => nowMs,
+      const results = await sampleBusyMatches([{ pid: 42 }, { pid: 43 }], {
+        procRoot,
+        cgroupRoot,
+        sampleMs: 1_000,
+        budgetMs: 1_500,
+        sleep: async () => {
+          active += 1;
+          maxActive = Math.max(maxActive, active);
+          await Promise.resolve();
+          advance();
+          nowMs = 1_000;
+          active -= 1;
         },
-      );
+        now: () => nowMs,
+      });
 
       expect(maxActive).toBe(2);
       expect(results.map((sample) => sample.status)).toEqual(['ok', 'ok']);
