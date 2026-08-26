@@ -58,6 +58,10 @@ afterEach(() => {
 });
 
 describe('accounts:probe-capacity — failure persistence', () => {
+  it('advertises provider in the MCP schema and accepts Codex probes', () => {
+    expect(tool.args.safeParse({ provider: 'codex' }).success).toBe(true);
+  });
+
   it('a no-reading result stamps lastProbeFailedAt on the account', async () => {
     probeM.mockResolvedValue([
       { accountId: 'a', ok: false, windows: {}, before: {}, unwalls: false, error: 'fetch failed' },
