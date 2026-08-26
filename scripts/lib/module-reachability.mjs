@@ -285,7 +285,7 @@ export function buildImportGraph({ files, readFile, workspaceDirByName = new Map
  * no live, non-test file executes it by path — iterated until stable, so a module kept
  * alive only by another dead population module dies with it.
  *
- * @param {{population:string[], importers:Map<string,Set<string>>, pathMentions?:Map<string,Set<string>>}} args
+ * @param {{population:string[], importers:Map<string,Set<string>>, pathMentions?:Map<string,Set<string>>, excludeReachers?:Set<string>}} args
  */
 export function findUnreachableModules({
   population,
