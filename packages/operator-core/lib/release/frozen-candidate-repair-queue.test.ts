@@ -476,6 +476,9 @@ describe('frozen-candidate repair queue', () => {
       reason: 'attempts-exhausted',
       candidate: C,
       repairHead: '3'.repeat(40),
+      // P-048: the default escape budget is 0, so exhaustion still holds the pin forever.
+      escapesUsed: 0,
+      maxCandidateEscapes: 0,
       gateDisposition: 'blocked',
       runSuite: false,
       recordVerdict: false,
