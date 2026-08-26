@@ -120,6 +120,7 @@
  *   0 — every declared guard is reachable, or allow-listed with a reason
  *   1 — an unreachable guard is not allow-listed, or an allowlist entry is STALE
  */
+import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, resolve, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -128,6 +129,8 @@ import {
   assessGraphHealth,
   buildImportGraph,
   findUnreachableModules,
+  NEW_MODULE_GRACE_DAYS,
+  partitionByGracePeriod,
   selectDetectorModules,
   selfExclusionPaths,
 } from './lib/module-reachability.mjs';
@@ -1286,6 +1289,50 @@ function runModuleReachability({ files, workspaceDirByName }) {
   };
 }
 
+/**
+ * Git add-date for each named module, as epoch ms, in ONE batched `git log`.
+ *
+ * ⚠ CALLED ONLY ON THE ABOUT-TO-FAIL PATH. The query costs ~1.5s, the guard's whole
+ * green run is ~6s, and the enforcing test spawns this script 20 times — paying it
+ * unconditionally would push that test past its 50s cap for a value the green path
+ * never reads. `unacknowledged` is empty on every healthy run, so this stays unpaid.
+ *
+ * Returns an EMPTY map on any failure rather than throwing: `partitionByGracePeriod`
+ * fails open on an unknown date, so a degraded git turns the axis advisory instead of
+ * red-pinning the fleet on a subprocess error.
+ *
+ * @param {string[]} modules repo-relative module paths
+ * @returns {Map<string, number>} module -> epoch ms it was ADDED
+ */
+function readModuleAddDates(modules) {
+  const added = new Map();
+  if (!modules.length) return added;
+  try {
+    const out = execFileSync(
+      'git',
+      ['log', '--diff-filter=A', '--name-only', '--format=@%ct', '--', ...modules],
+      { cwd: ROOT, encoding: 'utf8', timeout: 30_000, maxBuffer: 32 * 1024 * 1024 },
+    );
+    const wanted = new Set(modules);
+    let stamp = null;
+    for (const raw of out.split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith('@')) {
+        const secs = Number(line.slice(1));
+        stamp = Number.isFinite(secs) ? secs * 1000 : null;
+        continue;
+      }
+      // `git log` walks newest-first, so the LAST stamp seen for a path is its
+      // earliest (true) add. Overwrite unconditionally rather than keeping the first.
+      if (stamp !== null && wanted.has(line)) added.set(line, stamp);
+    }
+  } catch {
+    return new Map();
+  }
+  return added;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
@@ -1572,12 +1619,38 @@ function main() {
     // distrust this leg.
     console.warn(`⚠ module axis SKIPPED: ${moduleAxis.reason}.\n  Reporting the script axis only.`);
   } else {
-    if (moduleAxis.unacknowledged.length) {
+    // Only modules PAST the grace period may fail the build. A module added minutes ago
+    // is in-flight work mid-wiring, not certified-but-dead code, and git-sync commits
+    // that intermediate state on its own schedule. See partitionByGracePeriod.
+    // The date lookup runs ONLY here, where something is already about to fail.
+    const { judged: judgedDead, inFlight: inFlightDead } = moduleAxis.unacknowledged.length
+      ? partitionByGracePeriod({
+          modules: moduleAxis.unacknowledged,
+          addedAtByModule: readModuleAddDates(moduleAxis.unacknowledged.map((r) => r.module)),
+          now: Date.now(),
+        })
+      : { judged: [], inFlight: [] };
+
+    if (inFlightDead.length) {
+      // Report, never fail. Silence here would hide a module that is about to become
+      // real debt the moment its grace expires.
+      console.warn(
+        `\n⚠ ${inFlightDead.length} unreachable detector module(s) are still IN FLIGHT ` +
+          `(added < ${NEW_MODULE_GRACE_DAYS}d ago) — reported, NOT failed:`,
+      );
+      for (const r of inFlightDead) {
+        const age = r.ageDays === null ? 'add-date unknown' : `${r.ageDays.toFixed(1)}d old`;
+        console.warn(`     ${r.module} (${age})`);
+      }
+      console.warn('   Wire or delete before the grace expires, or this becomes a hard failure.');
+    }
+
+    if (judgedDead.length) {
       failed = true;
       console.error(
-        `\n❌ ${moduleAxis.unacknowledged.length} detector module(s) under lib/release/ are called by NO production path:`,
+        `\n❌ ${judgedDead.length} detector module(s) under lib/release/ are called by NO production path:`,
       );
-      for (const r of moduleAxis.unacknowledged) {
+      for (const r of judgedDead) {
         console.error(`     ${r.module}`);
         if (r.testedButUnwired) {
           console.error(
