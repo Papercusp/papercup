@@ -170,7 +170,19 @@ export type SelfReviewVerdict =
   | 'corroborated'
   | 'uncorroborated'
   | 'stale-review'
-  | 'not-claimed';
+  | 'not-claimed'
+  /**
+   * Neither ledger recorded ANY call by this agent in this window — so the instrument is
+   * blind, and "no review was found" carries no information. Distinct from `uncorroborated`,
+   * which means we could see this agent's calls and none of them was a review.
+   *
+   * This is self-falsifying rather than a courtesy: reaching `work_items:complete` at all
+   * requires having made at least one tool call in the window, so a totally empty ledger is
+   * POSITIVE evidence of blindness, not evidence of inactivity. Refusing on it would mean an
+   * ingestion outage silently converting arm B into a wall on the fleet's one unroutable
+   * verb. Non-refusing, and recorded so the pilot can report how often it fired.
+   */
+  | 'unobservable';
 
 export interface SelfReviewJudgement {
   readonly verdict: SelfReviewVerdict;
@@ -185,6 +197,13 @@ export interface SelfReviewJudgement {
   readonly rubberStampRisk: boolean;
   /** Arm-B pilot metric: did the review change anything? Feeds the per-arm review YIELD. */
   readonly yieldedChange: boolean;
+  /**
+   * Whether either ledger could see this agent at all in the window. False is what separates
+   * `unobservable` from `uncorroborated`, and it is a pilot measurement in its own right: a
+   * rising rate here means arm B is being judged on an instrument that cannot see its
+   * subjects.
+   */
+  readonly ledgerVisible: boolean;
   readonly reason?: string;
 }
 
@@ -200,23 +219,80 @@ const REVIEW_TOOLS: readonly string[] = [
   'capability:read', // re-reading a changed file
   'code:review',
   'lsp:query', // checking a symbol's real callers before closing
+  // Native client equivalents. Without these the gate could only see agents who happened to
+  // route their reads through MCP — see the two-ledger note on `selfReviewLedgerQuery`.
+  'Read',
+  'Grep',
+  'Glob',
 ];
 
-/** Tools that MUTATE the tree — the clock a review must beat. */
+/**
+ * Tools that MUTATE the tree — the clock a review must beat.
+ *
+ * ⚠ The native names here are NOT optional garnish. Widening REVIEW_TOOLS to native tools
+ * while leaving this list MCP-only would be worse than the bug it fixes: a native-editing
+ * agent would have no recorded edits, `lastEditAtMs` would be `undefined`, and the
+ * stale-review check could never fire for exactly the agents newly able to pass. Arm B would
+ * then corroborate reviews of states that were subsequently rewritten.
+ */
 const EDIT_TOOLS: readonly string[] = [
   'capability:edit',
   'capability:write',
   'capability:multi_edit',
   'capability:multiedit',
+  'Edit',
+  'Write',
+  'MultiEdit',
+  'NotebookEdit',
 ];
+
+/**
+ * `Bash` is deliberately in NEITHER list.
+ *
+ * It is the single highest-volume native tool (measured: 124 calls to 19 `Read`s in one
+ * session), and it is arbitrary: `git diff` is a review, `npm test` is not, `ls` is neither.
+ * Admitting the class would let routine traffic corroborate a review nobody performed —
+ * the failure the module docstring calls worse than having no gate at all, because it
+ * MANUFACTURES evidence rather than merely missing it. Admitting it to EDIT_TOOLS would be
+ * the mirror defect: any `Bash` after a review would read as a subsequent edit and turn
+ * honest closes into `stale-review`. Discriminating by parsing the command text out of the
+ * part payload was considered and rejected — a shell-command regex on the completion hot
+ * path fails in both directions and is untestable in the way that matters.
+ *
+ * The practical cost is bounded: an agent that genuinely re-reads code essentially always
+ * `Read`s something, and `selfReviewRefusal` names the qualifying tools so an agent refused
+ * on a Bash-only review can comply with one call.
+ */
+const AMBIGUOUS_NATIVE_TOOLS: readonly string[] = ['Bash'];
 
 const isOk = (row: SelfReviewLedgerRow): boolean =>
   row.status === undefined || row.status === 'ok';
 
+/**
+ * Collapse the THREE names the same tool wears across the two ledgers into one key.
+ *
+ * `tool_invocations` stores `capability:read`. `session_turn_parts` stores the
+ * CLIENT-MANGLED `mcp__papercusp-su__capability_read` for that identical call, and a bare
+ * `Read` for the native one. Comparing raw strings — or the previous `:`→`_` swap alone —
+ * matches none of the mangled forms, which is how a widened tool list could look correct
+ * and still corroborate nothing.
+ */
+export function normalizeToolName(toolName: string): string {
+  return toolName
+    .trim()
+    .replace(/^mcp__.+?__/, '') // mcp__papercusp-su__capability_read → capability_read
+    .replaceAll(':', '_')
+    .toLowerCase();
+}
+
 const matches = (toolName: string, set: readonly string[]): boolean => {
-  const name = toolName.trim();
-  return set.some((t) => name === t || name.replaceAll(':', '_') === t.replaceAll(':', '_'));
+  const name = normalizeToolName(toolName);
+  return set.some((t) => name === normalizeToolName(t));
 };
+
+/** True when the row is a tool whose class we deliberately refuse to judge either way. */
+const isAmbiguous = (row: SelfReviewLedgerRow): boolean =>
+  matches(row.toolName, AMBIGUOUS_NATIVE_TOOLS);
 
 /**
  * Whether this item is assigned to arm B, and so gated.
@@ -290,8 +366,9 @@ export function selfReviewRefusal(
     `REJECTED — ${itemId} is assigned to pilot arm B, which requires a corroborated ` +
     `self-review before it can close. Verdict: ${judgement.verdict}` +
     (judgement.reason ? ` — ${judgement.reason}` : '') +
-    `. Re-read the diff as it now stands (capability:git / capability:read), then re-send ` +
-    `the completion with completion.selfReview: { lookedAt: "<what you re-read>", ` +
+    `. Re-read the diff as it now stands — Read / Grep, or capability:git / capability:read; ` +
+    `a shell command does NOT corroborate, because it cannot be told apart from routine ` +
+    `traffic — then re-send the completion with completion.selfReview: { lookedAt: "<what you re-read>", ` +
     `findings: [...], changedAsResult: [...] }. An EMPTY findings array is accepted and ` +
     `recorded — do not invent findings.`
   );
@@ -307,29 +384,54 @@ export function judgeSelfReview(args: {
   const changed = evidence?.changedAsResult ?? [];
   const yieldedChange = changed.length > 0;
 
+  // Whether the instrument can see this agent AT ALL. Computed before any tool filtering,
+  // because that is exactly what distinguishes "no review happened" from "we are blind".
+  const ledgerVisible = ledger.length > 0;
+
   if (!claimsSelfReview(evidence)) {
+    // Refuses regardless of visibility: this is the agent declining to record a review, which
+    // needs no ledger to establish.
     return {
       verdict: 'not-claimed',
       reviewCalls: [],
       rubberStampRisk: false,
       yieldedChange: false,
+      ledgerVisible,
       reason: 'no self-review was recorded on this completion',
     };
   }
 
-  const reviewCalls = ledger
-    .filter((r) => isOk(r) && matches(r.toolName, REVIEW_TOOLS))
-    .sort((a, b) => a.invokedAtMs - b.invokedAtMs);
+  const reviewCalls = dedupeAcrossSources(
+    ledger.filter((r) => isOk(r) && matches(r.toolName, REVIEW_TOOLS)),
+  );
 
   if (reviewCalls.length === 0) {
+    if (!ledgerVisible) {
+      return {
+        verdict: 'unobservable',
+        reviewCalls: [],
+        rubberStampRisk: false,
+        yieldedChange,
+        ledgerVisible,
+        reason:
+          'neither the invocation ledger nor the session transcript recorded ANY call by ' +
+          'this agent in this window, so the absence of a review is not evidence that none ' +
+          'happened — the gate is blind here and does not refuse on it',
+      };
+    }
+    const sawAmbiguousOnly = ledger.some((r) => isOk(r) && isAmbiguous(r));
     return {
       verdict: 'uncorroborated',
       reviewCalls: [],
       rubberStampRisk: false,
       yieldedChange,
-      reason:
-        'a self-review was claimed but the invocation ledger records no read of the code ' +
-        'for this work item — the claim rests on prose alone (D-002)',
+      ledgerVisible,
+      reason: sawAmbiguousOnly
+        ? 'a self-review was claimed and this agent WAS active, but the only code-adjacent ' +
+          'calls recorded are shell commands, which cannot be told apart from routine ' +
+          'traffic — re-read a changed file with Read or capability:read (D-002)'
+        : 'a self-review was claimed but neither ledger records a read of the code for this ' +
+          'work item — the claim rests on prose alone (D-002)',
     };
   }
 
@@ -344,6 +446,7 @@ export function judgeSelfReview(args: {
       reviewCalls,
       rubberStampRisk: false,
       yieldedChange,
+      ledgerVisible,
       reason:
         'the last recorded review predates the last edit, so the state being closed was ' +
         'never reviewed — re-read the diff as it now stands',
@@ -355,5 +458,30 @@ export function judgeSelfReview(args: {
     reviewCalls,
     rubberStampRisk: findings.length === 0,
     yieldedChange,
+    ledgerVisible,
   };
+}
+
+/**
+ * One MCP call lands in BOTH ledgers — as `capability:read` and as
+ * `mcp__papercusp-su__capability_read` — so a naive union double-counts every review an
+ * MCP-routing agent performs. The verdict would survive that, but `reviewCalls` is recorded
+ * on the completion and read as a pilot measurement, and an arm whose review-count metric
+ * silently doubles for one half of its population is measuring tool routing again.
+ *
+ * Keyed on normalized name + whole second: the two tables timestamp the same call from
+ * different clocks, so they agree to within well under a second but rarely to the millisecond.
+ * Sorted ascending, since `judgeSelfReview` takes the last element as the latest review.
+ */
+function dedupeAcrossSources(rows: readonly SelfReviewLedgerRow[]): SelfReviewLedgerRow[] {
+  const seen = new Map<string, SelfReviewLedgerRow>();
+  for (const row of rows) {
+    const key = `${normalizeToolName(row.toolName)}@${Math.floor(row.invokedAtMs / 1000)}`;
+    // Prefer the invocations row: it is the only one carrying a real `status`.
+    const existing = seen.get(key);
+    if (!existing || (existing.source === 'turn-parts' && row.source === 'invocations')) {
+      seen.set(key, row);
+    }
+  }
+  return [...seen.values()].sort((a, b) => a.invokedAtMs - b.invokedAtMs);
 }
