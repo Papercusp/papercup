@@ -32,6 +32,10 @@ export const DEFAULT_PROMOTER_LIVENESS_MINUTES = 90;
 export const DEFAULT_RECENT_TERMINAL_DAYS = 30;
 export const PROMOTER_COSINE_FLOOR = 0.85;
 export const PROMOTER_TOP_K = 8;
+export const ADMISSION_PRESSURE_ELEVATED_PENDING = DEFAULT_PROMOTER_BATCH_SIZE;
+export const ADMISSION_PRESSURE_DEEP_PENDING = DEFAULT_PROMOTER_BATCH_SIZE * 2;
+export const ADMISSION_PRESSURE_ELEVATED_LATENCY_MS = DEFAULT_PROMOTER_LIVENESS_MINUTES * 60_000;
+export const ADMISSION_PRESSURE_DEEP_LATENCY_MS = ADMISSION_PRESSURE_ELEVATED_LATENCY_MS * 2;
 
 export type AdmissionPairVerdict = 'distinct' | 'r-finding-merge' | 'r-remedy-keep' | 'r-related' | 'hold';
 
@@ -146,19 +150,80 @@ export interface AdmissionCensusPoint {
   delta: number;
 }
 
+export interface WorkItemAdmissionQueueHealth {
+  pending: number;
+  unreviewed: number;
+  promotedToFirstClaim: {
+    sampleSize: number;
+    p50Ms: number | null;
+    p95Ms: number | null;
+  };
+}
+
 export interface WorkItemAdmissionSnapshot {
   runs: WorkItemAdmissionRun[];
   censusTrend: AdmissionCensusPoint[];
-  summary: {
-    pending: number;
-    unreviewed: number;
-    promotedToFirstClaim: {
-      sampleSize: number;
-      p50Ms: number | null;
-      p95Ms: number | null;
-    };
+  summary: WorkItemAdmissionQueueHealth & {
     latestCensus: AdmissionCensusPoint | null;
     latestCensusRise: AdmissionCensusPoint | null;
+  };
+}
+
+export type WorkItemAdmissionPressureLevel = 'normal' | 'elevated' | 'deep';
+
+export interface WorkItemAdmissionProducerPressure {
+  source: 'p005-queue-health' | 'unavailable';
+  level: WorkItemAdmissionPressureLevel;
+  pending: number | null;
+  latencySampleSize: number;
+  p95Ms: number | null;
+  /** Null preserves the configured Scout budget; a number is an upper bound. */
+  maxIdeators: number | null;
+  reasons: string[];
+}
+
+/** Pure P-010 policy over the P-005 writer's queue-health shape. */
+export function decideWorkItemAdmissionProducerPressure(
+  health: WorkItemAdmissionQueueHealth,
+): WorkItemAdmissionProducerPressure {
+  const pending = Number.isFinite(health.pending) ? Math.max(0, Math.floor(health.pending)) : 0;
+  const latencySampleSize = Number.isFinite(health.promotedToFirstClaim.sampleSize)
+    ? Math.max(0, Math.floor(health.promotedToFirstClaim.sampleSize))
+    : 0;
+  const rawP95 = health.promotedToFirstClaim.p95Ms;
+  const p95Ms = latencySampleSize > 0 && rawP95 != null && Number.isFinite(rawP95) ? Math.max(0, rawP95) : null;
+
+  const deep = pending > ADMISSION_PRESSURE_DEEP_PENDING || (p95Ms ?? 0) > ADMISSION_PRESSURE_DEEP_LATENCY_MS;
+  const elevated =
+    deep || pending > ADMISSION_PRESSURE_ELEVATED_PENDING || (p95Ms ?? 0) > ADMISSION_PRESSURE_ELEVATED_LATENCY_MS;
+  const level: WorkItemAdmissionPressureLevel = deep ? 'deep' : elevated ? 'elevated' : 'normal';
+  const reasons: string[] = [];
+  if (pending > ADMISSION_PRESSURE_DEEP_PENDING) {
+    reasons.push(`pending ${pending} exceeds two promoter batches (${ADMISSION_PRESSURE_DEEP_PENDING})`);
+  } else if (pending > ADMISSION_PRESSURE_ELEVATED_PENDING) {
+    reasons.push(`pending ${pending} exceeds one promoter batch (${ADMISSION_PRESSURE_ELEVATED_PENDING})`);
+  }
+  if (p95Ms != null && p95Ms > ADMISSION_PRESSURE_DEEP_LATENCY_MS) {
+    reasons.push(`claim-latency p95 ${Math.round(p95Ms)}ms exceeds ${ADMISSION_PRESSURE_DEEP_LATENCY_MS}ms`);
+  } else if (p95Ms != null && p95Ms > ADMISSION_PRESSURE_ELEVATED_LATENCY_MS) {
+    reasons.push(`claim-latency p95 ${Math.round(p95Ms)}ms exceeds ${ADMISSION_PRESSURE_ELEVATED_LATENCY_MS}ms`);
+  }
+  if (reasons.length === 0) {
+    reasons.push(
+      latencySampleSize === 0
+        ? 'queue is within one promoter batch; claim latency has no sample and is neutral'
+        : 'queue depth and claim latency are within the admission liveness window',
+    );
+  }
+
+  return {
+    source: 'p005-queue-health',
+    level,
+    pending,
+    latencySampleSize,
+    p95Ms,
+    maxIdeators: level === 'deep' ? 1 : level === 'elevated' ? 3 : null,
+    reasons,
   };
 }
 
@@ -646,6 +711,85 @@ async function failRun(sql: OrgSql, runId: string, mode: string, error: unknown,
 }
 
 /**
+ * The P-005 queue-health writer shared by the owner snapshot and P-010's Scout
+ * throttle. Keeping the SQL here prevents a producer governor from quietly
+ * inventing a second definition of pending depth or claim latency.
+ */
+export async function readWorkItemAdmissionQueueHealth(opts: {
+  workspaceId: string;
+  harnessSlug?: string;
+  sql?: OrgSql;
+}): Promise<WorkItemAdmissionQueueHealth> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const harnessSlug = opts.harnessSlug ?? null;
+  type RollupRow = {
+    pending: number | string;
+    unreviewed: number | string;
+    latency_sample_size: number | string;
+    p50_ms: number | string | null;
+    p95_ms: number | string | null;
+  };
+  const rows = await sql<RollupRow[]>`
+    SELECT (count(*) FILTER (WHERE wi.admission = 'pending'))::int AS pending,
+           (count(*) FILTER (WHERE wi.admission = 'unreviewed'))::int AS unreviewed,
+           (count(*) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+           ))::int AS latency_sample_size,
+           percentile_cont(0.50) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (wi.first_claimed_at - wi.admitted_at)) * 1000
+           ) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+           ) AS p50_ms,
+           percentile_cont(0.95) WITHIN GROUP (
+             ORDER BY EXTRACT(EPOCH FROM (wi.first_claimed_at - wi.admitted_at)) * 1000
+           ) FILTER (
+             WHERE wi.admitted_at IS NOT NULL
+               AND wi.first_claimed_at IS NOT NULL
+               AND wi.first_claimed_at >= wi.admitted_at
+           ) AS p95_ms
+      FROM harness_shared.work_items wi
+     WHERE wi.workspace_id = ${opts.workspaceId}
+       AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})`;
+  const row = rows[0];
+  const numberOrNull = (value: number | string | null | undefined): number | null =>
+    value == null ? null : Number(value);
+  return {
+    pending: Number(row?.pending ?? 0),
+    unreviewed: Number(row?.unreviewed ?? 0),
+    promotedToFirstClaim: {
+      sampleSize: Number(row?.latency_sample_size ?? 0),
+      p50Ms: numberOrNull(row?.p50_ms),
+      p95Ms: numberOrNull(row?.p95_ms),
+    },
+  };
+}
+
+/** Fail-open P-010 adapter used by both Scout production entry points. */
+export async function readWorkItemAdmissionProducerPressure(opts: {
+  workspaceId: string;
+  harnessSlug?: string;
+  sql?: OrgSql;
+}): Promise<WorkItemAdmissionProducerPressure> {
+  try {
+    return decideWorkItemAdmissionProducerPressure(await readWorkItemAdmissionQueueHealth(opts));
+  } catch (error) {
+    return {
+      source: 'unavailable',
+      level: 'normal',
+      pending: null,
+      latencySampleSize: 0,
+      p95Ms: null,
+      maxIdeators: null,
+      reasons: [`P-005 queue-health read unavailable: ${error instanceof Error ? error.message : String(error)}`],
+    };
+  }
+}
+
+/**
  * Owner-facing P-005 projection over the admission ledger and its two live
  * work-item rollups. One reader backs every sync transport so the admin pane,
  * REST fallback, and tests cannot drift into subtly different definitions.
@@ -688,13 +832,6 @@ export async function readWorkItemAdmissionSnapshot(opts: {
     tokens_out: bigint | number | string | null;
     latency_ms: number | string | null;
     detail: Record<string, unknown> | null;
-  };
-  type RollupRow = {
-    pending: number | string;
-    unreviewed: number | string;
-    latency_sample_size: number | string;
-    p50_ms: number | string | null;
-    p95_ms: number | string | null;
   };
   type CensusRow = {
     id: string;
@@ -741,31 +878,11 @@ export async function readWorkItemAdmissionSnapshot(opts: {
      ORDER BY ar.started_at DESC, ar.id DESC
      LIMIT ${limit}`;
 
-  const rollupRows = await sql<RollupRow[]>`
-    SELECT (count(*) FILTER (WHERE wi.admission = 'pending'))::int AS pending,
-           (count(*) FILTER (WHERE wi.admission = 'unreviewed'))::int AS unreviewed,
-           (count(*) FILTER (
-             WHERE wi.admitted_at IS NOT NULL
-               AND wi.first_claimed_at IS NOT NULL
-               AND wi.first_claimed_at >= wi.admitted_at
-           ))::int AS latency_sample_size,
-           percentile_cont(0.50) WITHIN GROUP (
-             ORDER BY EXTRACT(EPOCH FROM (wi.first_claimed_at - wi.admitted_at)) * 1000
-           ) FILTER (
-             WHERE wi.admitted_at IS NOT NULL
-               AND wi.first_claimed_at IS NOT NULL
-               AND wi.first_claimed_at >= wi.admitted_at
-           ) AS p50_ms,
-           percentile_cont(0.95) WITHIN GROUP (
-             ORDER BY EXTRACT(EPOCH FROM (wi.first_claimed_at - wi.admitted_at)) * 1000
-           ) FILTER (
-             WHERE wi.admitted_at IS NOT NULL
-               AND wi.first_claimed_at IS NOT NULL
-               AND wi.first_claimed_at >= wi.admitted_at
-           ) AS p95_ms
-      FROM harness_shared.work_items wi
-     WHERE wi.workspace_id = ${opts.workspaceId}
-       AND (${harnessSlug}::text IS NULL OR wi.harness_slug = ${harnessSlug})`;
+  const queueHealth = await readWorkItemAdmissionQueueHealth({
+    workspaceId: opts.workspaceId,
+    ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
+    sql,
+  });
 
   const censusRows = await sql<CensusRow[]>`
     SELECT ar.id,
@@ -823,21 +940,13 @@ export async function readWorkItemAdmissionSnapshot(opts: {
       delta: after - before,
     };
   });
-  const rollup = rollupRows[0];
-
   return {
     runs: normalizedRuns,
     // Sparklines consume chronological samples; the ledger query stays newest-first
     // so latest/alarm selection below is explicit and reviewable.
     censusTrend: [...newestFirstCensus].reverse(),
     summary: {
-      pending: Number(rollup?.pending ?? 0),
-      unreviewed: Number(rollup?.unreviewed ?? 0),
-      promotedToFirstClaim: {
-        sampleSize: Number(rollup?.latency_sample_size ?? 0),
-        p50Ms: numberOrNull(rollup?.p50_ms ?? null),
-        p95Ms: numberOrNull(rollup?.p95_ms ?? null),
-      },
+      ...queueHealth,
       latestCensus: newestFirstCensus[0] ?? null,
       latestCensusRise: newestFirstCensus.find((point) => point.delta > 0) ?? null,
     },
