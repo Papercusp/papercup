@@ -10065,7 +10065,7 @@
           "POST"
         ]
       },
-      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (alias `pattern`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer's status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Don't pass `scope`, `pot`, or `harness` filters; narrow with `q`/`pattern`/`family`.",
+      "description": "List the awaitable event-key families — the answer to \"what can I wait on instead of polling?\". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (alias `pattern`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer's status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.",
       "capabilities": [
         "events:read"
       ],
@@ -10083,7 +10083,7 @@
       ],
       "guidance": {
         "when": "Before polling for a deploy, gate, peer work-item, or service recovery; to check whether an event exists or who is listening.",
-        "notWhen": "You already know the exact key → events:await. For server reactions use events:graph; for your awaits/wakes use events:status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Don't pass `scope`, `pot`, or `harness` filters; narrow with `q`/`pattern`/`family`.",
+        "notWhen": "You already know the exact key → events:await. For server reactions use events:graph; for your awaits/wakes use events:status. Scope comes from request context; installed families use the call's harness, and announced gates use the reader's fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.",
         "chaining": "events:catalog → events:await { event: <key> } (or sugar) → end your turn."
       }
     },
