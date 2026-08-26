@@ -505,7 +505,29 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     });
   });
 
-  it('lets a new agent adopt and resubmit an unheld row once the submitter has ended', async () => {
+  /**
+   * 'ended' and 'suspect' are the two states DELIBERATELY absent from
+   * REBIND_BLOCKING_SESSION_STATES — a warm-dead predecessor derives the first, an
+   * abruptly-killed one the second. Both must adopt, or the abrupt-kill case (the one
+   * most likely to strand a row mid-review) silently keeps the old behaviour.
+   */
+  it.each(['ended', 'suspect'] as const)(
+    'lets a new agent adopt and resubmit an unheld row once the submitter is %s',
+    async (sessionState) => {
+      const h = harness(orphanRow());
+      h.state.submitterLiveness = { sessionState };
+
+      await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toEqual({
+        resubmitted: true,
+        state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+      });
+      expect(h.state.issue.payload).toEqual({
+        agentReview: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+      });
+    },
+  );
+
+  it('rebinds submittedBy to the adopter so the next round reaches someone alive', async () => {
     const h = harness(orphanRow());
     h.state.submitterLiveness = { sessionState: 'ended' };
 
