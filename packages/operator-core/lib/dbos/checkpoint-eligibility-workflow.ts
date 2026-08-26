@@ -29,11 +29,18 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import {
   PRE_SUITE_NO_VERDICT_REASONS,
+  recordStoredQualificationEligibility,
   reserveStoredQualificationRunner,
   waitStoredQualification,
   type PreSuiteNoVerdictReason,
   type StoredQualificationMutation,
 } from '../release/checkpoint-qualification-transaction';
+import {
+  buildCheckpointEligibilitySnapshot,
+  type CheckpointEligibilityPredicate,
+  type CheckpointEligibilityPredicateCode,
+  type CheckpointEligibilitySnapshot,
+} from '../release/checkpoint-eligibility-snapshot';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 
@@ -60,6 +67,9 @@ export interface CheckpointEligibilityWaitDeps {
   emit: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
   reserveQualification?: (input: Parameters<typeof reserveStoredQualificationRunner>[1]) => Promise<StoredQualificationMutation>;
   waitQualification?: (input: Parameters<typeof waitStoredQualification>[1]) => Promise<StoredQualificationMutation>;
+  recordEligibility?: (
+    input: Parameters<typeof recordStoredQualificationEligibility>[1],
+  ) => Promise<StoredQualificationMutation>;
 }
 
 function noVerdictReason(reason: string | undefined): PreSuiteNoVerdictReason {
@@ -81,6 +91,28 @@ export async function runCheckpointEligibilityWait(
   input: CheckpointEligibilityWaitRequest,
   deps: CheckpointEligibilityWaitDeps,
 ): Promise<CheckpointEligibilityWaitOutcome> {
+  let eligibilitySnapshot: CheckpointEligibilitySnapshot | null = input.eligibilitySnapshot ?? null;
+  const updateEligibility = async (
+    updates: Partial<Record<CheckpointEligibilityPredicateCode, Partial<CheckpointEligibilityPredicate>>>,
+  ): Promise<StoredQualificationMutation | null> => {
+    if (!input.logicalAttemptId || !eligibilitySnapshot) return null;
+    eligibilitySnapshot = buildCheckpointEligibilitySnapshot({
+      attemptId: input.logicalAttemptId,
+      candidate: eligibilitySnapshot.candidate,
+      predicates: eligibilitySnapshot.predicates.map((predicate) => ({
+        ...predicate,
+        ...(updates[predicate.code] ?? {}),
+        code: predicate.code,
+      })),
+    });
+    if (!deps.recordEligibility) {
+      return { status: 'unreadable', error: 'qualification eligibility writer is not wired' };
+    }
+    return deps.recordEligibility({
+      attemptId: input.logicalAttemptId,
+      snapshot: eligibilitySnapshot,
+    });
+  };
   const emitQualificationFailure = async (reason: string): Promise<void> => {
     await deps.emit({
       key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
@@ -89,6 +121,7 @@ export async function runCheckpointEligibilityWait(
         pendingId: input.pendingId,
         logicalAttemptId: input.logicalAttemptId ?? null,
         reason,
+        eligibilitySnapshot,
       },
       source: 'checkpoint-eligibility-wait',
     });
@@ -117,6 +150,33 @@ export async function runCheckpointEligibilityWait(
     force: input.force,
     root: input.root,
   });
+  const quietEligibility = await updateEligibility({
+    candidate: {
+      status: recheck.candidate ? 'clear' : 'unreadable',
+      detail: recheck.candidate
+        ? `candidate ${recheck.candidate}`
+        : 'durable eligibility recheck could not resolve a candidate',
+      evidenceRefs: recheck.candidate ? [`candidate:${recheck.candidate}`] : [],
+    },
+    'quiet-cut-containment': {
+      status: recheck.refuse || recheck.proceedReason === 'wait-exceeds-cap' ? 'waiting' : 'clear',
+      detail: recheck.refuse
+        ? `declared paths remain outside the candidate for ~${recheck.waitSec ?? 0}s`
+        : recheck.proceedReason ?? 'quiet-cut containment is clear',
+      clearEvents: recheck.refuse
+        ? checkpointEligibilityCompletionEvents(input.root ?? integrationRoot())
+        : [],
+      evidenceRefs: [
+        ...(recheck.candidate ? [`candidate:${recheck.candidate}`] : []),
+        ...(recheck.tip ? [`tip:${recheck.tip}`] : []),
+      ],
+    },
+  });
+  if (quietEligibility && !mutationAllowsContinuation(quietEligibility)) {
+    const reason = `qualification-eligibility-${quietEligibility.status}`;
+    await emitQualificationFailure(reason);
+    return { status: 'not-launched', reason };
+  }
 
   // A newly-arrived commit can move the candidate while this waiter sleeps. Do not silently
   // launch a run that is known to omit the caller's paths; emit the normal inconclusive gate
@@ -140,6 +200,7 @@ export async function runCheckpointEligibilityWait(
         tip: recheck.tip,
         wait_sec: recheck.waitSec,
         blocked_paths: recheck.blockedPaths,
+        eligibilitySnapshot,
       },
       source: 'checkpoint-eligibility-wait',
     });
@@ -153,6 +214,35 @@ export async function runCheckpointEligibilityWait(
       predictedCandidate: recheck.candidate,
       root: input.root,
     });
+    const ancestorEligibility = await updateEligibility({
+      'required-ancestor': {
+        status: requiredAncestor.ok
+          ? 'clear'
+          : requiredAncestor.reason === 'unverifiable' || requiredAncestor.reason === 'queue-unreadable'
+            ? 'unreadable'
+            : 'waiting',
+        detail: requiredAncestor.ok
+          ? `${input.requiredAncestorSha} is contained in ${requiredAncestor.candidate}`
+          : requiredAncestor.detail ?? requiredAncestor.reason,
+        clearEvents: requiredAncestor.ok ? [] : [`git-sync:egressed:${input.requiredAncestorSha}`],
+        evidenceRefs: [`required-ancestor:${input.requiredAncestorSha}`],
+      },
+      'frozen-repair-queue': {
+        status: requiredAncestor.ok
+          ? 'clear'
+          : requiredAncestor.reason === 'queue-unreadable' ? 'unreadable' : 'waiting',
+        detail: requiredAncestor.queueDecision ?? requiredAncestor.detail ?? requiredAncestor.reason,
+        clearEvents: requiredAncestor.ok
+          ? []
+          : checkpointEligibilityCompletionEvents(input.root ?? integrationRoot()),
+        evidenceRefs: ['reader:frozen-repair-queue'],
+      },
+    });
+    if (ancestorEligibility && !mutationAllowsContinuation(ancestorEligibility)) {
+      const reason = `qualification-eligibility-${ancestorEligibility.status}`;
+      await emitQualificationFailure(reason);
+      return { status: 'not-launched', reason };
+    }
     if (!requiredAncestor.ok) {
       const reason =
         requiredAncestor.reason === 'not-ancestor'
@@ -175,6 +265,7 @@ export async function runCheckpointEligibilityWait(
           candidateSource: requiredAncestor.candidateSource,
           queueDecision: requiredAncestor.queueDecision,
           fixerAlive: requiredAncestor.fixerAlive,
+          eligibilitySnapshot,
         },
         source: 'checkpoint-eligibility-wait',
       });
@@ -261,6 +352,10 @@ async function checkpointEligibilityWaitImpl(
     waitQualification: (wait) =>
       DBOS.runStep(() => waitStoredQualification(target, wait), {
         name: 'checkpoint-eligibility-wait-qualification',
+      }),
+    recordEligibility: (eligibility) =>
+      DBOS.runStep(() => recordStoredQualificationEligibility(target, eligibility), {
+        name: 'checkpoint-eligibility-record-snapshot',
       }),
   });
 }

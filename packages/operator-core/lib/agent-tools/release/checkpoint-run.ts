@@ -31,7 +31,9 @@ import {
   assessPreLaunchExclusion,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   CHECKPOINT_MAX_RUNTIME_SEC,
+  checkActiveCheckpointRun,
   checkpointCandidateContainment,
+  checkpointEligibilityCompletionEvents,
   checkpointEligibilityPendingId,
   classifyReplaceRequest,
   launchDetachedCheckpoint,
@@ -65,7 +67,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { assessCriticalClaimProgressLease } from '../work_items/release-force-guard';
 import { clampText, LIMITS, softText } from '../limits';
-import { readManualRunAdmission } from '../../release-checkpoint-config';
+import { readManualRunAdmission, readQualificationAdmission } from '../../release-checkpoint-config';
 import { GATE_VERDICT_CELL } from '../../cell-registrations';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
@@ -76,11 +78,16 @@ import {
   beginStoredQualification,
   qualificationIntentMatches,
   readStoredQualification,
+  recordStoredQualificationEligibility,
   reserveStoredQualificationRunner,
   waitStoredQualification,
   type PreSuiteNoVerdictReason,
   type StoredQualificationMutation,
 } from '../../release/checkpoint-qualification-transaction';
+import {
+  buildCheckpointEligibilitySnapshot,
+  type CheckpointEligibilityPredicate,
+} from '../../release/checkpoint-eligibility-snapshot';
 
 type SeeAlsoContext = { harnessSlug?: unknown };
 
@@ -983,6 +990,179 @@ export default defineTool({
     const launchCandidate =
       requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
 
+    // P-004 / WI-41489: one action-instant eligibility snapshot replaces the old
+    // cross-turn stable-zero checklist. The request-time readers stay in their
+    // existing owning modules; this fold makes their combined truth machine-readable,
+    // records exactly one safe next action, and names the durable wait tree. The
+    // detached candidate-migration/dependency/rendezvous stages are explicit
+    // `deferred` predicates — resolved to a fail-closed enforcement point, never
+    // misreported as already clear.
+    const [activeRun, qualificationAdmission] = await Promise.all([
+      Promise.resolve(checkActiveCheckpointRun(root)),
+      readQualificationAdmission(),
+    ]);
+    const completionEvents = checkpointEligibilityCompletionEvents(root);
+    const predicates: CheckpointEligibilityPredicate[] = [
+      {
+        code: 'serializer-authority',
+        status: 'clear',
+        detail:
+          serializerAuthority.status === 'held'
+            ? `caller owns serializer ${serializerAuthority.itemId}`
+            : 'no exclusive serializer fence is active',
+        clearEvents: [],
+        evidenceRefs: serializerAuthority.status === 'held'
+          ? [`work-item:${serializerAuthority.itemId}`]
+          : ['reader:checkpoint-serializer-authority'],
+      },
+      {
+        code: 'manual-run-admission',
+        status: 'clear',
+        detail: 'manual-run authority is clear for this request',
+        clearEvents: [],
+        evidenceRefs: ['reader:manual-run-admission'],
+      },
+      {
+        code: 'qualification-transaction',
+        status: 'clear',
+        detail: `logical attempt ${logicalAttemptId} is durable and non-terminal`,
+        clearEvents: [],
+        evidenceRefs: [`qualification:${logicalAttemptId}`],
+      },
+      {
+        code: 'active-run',
+        status: activeRun.active ? 'waiting' : 'clear',
+        detail: activeRun.active
+          ? `${activeRun.unit} already owns the physical run slot`
+          : `${activeRun.unit} is inactive and its run lock is clear`,
+        clearEvents: activeRun.active ? completionEvents : [],
+        evidenceRefs: [`systemd:${activeRun.unit}`],
+      },
+      {
+        code: 'frozen-repair-queue',
+        status:
+          preflight.refuse
+            ? 'deferred'
+            : frozenRepairQueuePreflight?.reason === 'queue-unreadable'
+              ? 'unreadable'
+              : frozenRepairQueuePreflight && !frozenRepairQueuePreflight.proceed
+                ? 'waiting'
+                : requiredAncestorPreflight && !requiredAncestorPreflight.ok
+                  ? requiredAncestorPreflight.reason === 'unverifiable' ? 'unreadable' : 'waiting'
+                  : 'clear',
+        detail:
+          preflight.refuse
+            ? 'queue selection is re-read after quiet-cut containment clears'
+            : frozenRepairQueuePreflight?.detail ??
+              frozenRepairQueuePreflight?.reason ??
+              requiredAncestorPreflight?.queueDecision ??
+              'no blocking frozen repair queue exists',
+        clearEvents:
+          frozenRepairQueuePreflight && !frozenRepairQueuePreflight.proceed
+            ? completionEvents
+            : [],
+        evidenceRefs: ['reader:frozen-repair-queue'],
+      },
+      {
+        code: 'candidate',
+        status: launchCandidate ? 'clear' : 'unreadable',
+        detail: launchCandidate
+          ? `candidate ${launchCandidate}`
+          : 'no candidate could be resolved from quiet-cut or repair-queue policy',
+        clearEvents: [],
+        evidenceRefs: launchCandidate ? [`candidate:${launchCandidate}`] : [],
+      },
+      {
+        code: 'required-ancestor',
+        status:
+          !args.requiredAncestorSha || requiredAncestorPreflight?.ok
+            ? 'clear'
+            : requiredAncestorPreflight?.reason === 'unverifiable'
+              ? 'unreadable'
+              : 'waiting',
+        detail:
+          !args.requiredAncestorSha
+            ? 'no required ancestor was requested'
+            : requiredAncestorPreflight?.ok
+              ? `${args.requiredAncestorSha} is contained in ${requiredAncestorPreflight.candidate}`
+              : requiredAncestorPreflight?.detail ?? requiredAncestorPreflight?.reason ?? 'required ancestor was not assessed',
+        clearEvents:
+          args.requiredAncestorSha && !requiredAncestorPreflight?.ok
+            ? [`git-sync:egressed:${args.requiredAncestorSha}`]
+            : [],
+        evidenceRefs: args.requiredAncestorSha ? [`required-ancestor:${args.requiredAncestorSha}`] : [],
+      },
+      {
+        code: 'quiet-cut-containment',
+        status: preflight.refuse ? 'waiting' : 'clear',
+        detail: preflight.refuse
+          ? `declared paths remain outside the candidate for ~${preflight.waitSec ?? 0}s`
+          : preflight.proceedReason ?? 'quiet-cut containment is clear',
+        clearEvents: preflight.refuse ? completionEvents : [],
+        evidenceRefs: [
+          ...(preflight.candidate ? [`candidate:${preflight.candidate}`] : []),
+          ...(preflight.tip ? [`tip:${preflight.tip}`] : []),
+        ],
+      },
+      {
+        code: 'candidate-migrations',
+        status: 'deferred',
+        detail: 'exact-candidate migrations are applied before dependency materialization and rechecked before the suite',
+        clearEvents: [],
+        evidenceRefs: ['stage:green-checkpoint:candidate-migrations'],
+      },
+      {
+        code: 'dependency-generation',
+        status: 'deferred',
+        detail: 'the exact candidate dependency generation is selected or published before the run lock',
+        clearEvents: [],
+        evidenceRefs: ['stage:green-checkpoint:dependency-prewarm'],
+      },
+      {
+        code: 'target-relation-reservation',
+        status: 'deferred',
+        detail: 'candidate migration apply acquires the shared backup/migration advisory reservation before DDL',
+        clearEvents: [],
+        evidenceRefs: ['lock:papercusp:backup:migration-rendezvous'],
+      },
+      {
+        code: 'backup-admission',
+        status: qualificationAdmission.status === 'unknown' ? 'clear' : qualificationAdmission.status === 'held' ? 'clear' : 'deferred',
+        detail:
+          qualificationAdmission.status === 'unknown'
+            ? `interval admission is unreadable and therefore defers fail-closed (${qualificationAdmission.reason}); manual/pre-destructive snapshots remain advisory-serialized`
+            : qualificationAdmission.status === 'held'
+              ? `interval snapshots defer under ${qualificationAdmission.hold.governingRef}; every snapshot trigger also shares the migration advisory reservation`
+              : 'interval admission is open; every snapshot trigger is still serialized by the shared migration advisory reservation',
+        clearEvents: [],
+        evidenceRefs: ['reader:qualification-admission', 'lock:papercusp:backup:migration-rendezvous'],
+      },
+    ];
+    const eligibilitySnapshot = buildCheckpointEligibilitySnapshot({
+      attemptId: logicalAttemptId,
+      candidate: launchCandidate,
+      predicates,
+    });
+    const eligibilityRecord = await recordStoredQualificationEligibility(qualificationTarget, {
+      attemptId: logicalAttemptId,
+      snapshot: eligibilitySnapshot,
+    });
+    if (!qualificationMutationContinues(eligibilityRecord)) {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            ok: false,
+            launched: false,
+            reason: `qualification_eligibility_${eligibilityRecord.status}`,
+            logical_attempt_id: logicalAttemptId,
+            eligibility_snapshot: eligibilitySnapshot,
+            error: 'error' in eligibilityRecord ? eligibilityRecord.error : undefined,
+          }),
+        }],
+      };
+    }
+
     const recordLogicalWait = async (
       reason: PreSuiteNoVerdictReason,
       code: string,
@@ -1067,6 +1247,7 @@ export default defineTool({
           force: args.force,
           replaceStale: args.replaceStale,
           logicalAttemptId,
+          eligibilitySnapshot,
           ...(args.requiredAncestorSha ? { requiredAncestorSha: args.requiredAncestorSha } : {}),
         });
       } catch (error) {

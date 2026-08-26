@@ -46,6 +46,7 @@ import {
 } from './release/gate-verdict-target';
 import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
+import type { CheckpointEligibilitySnapshot } from './release/checkpoint-eligibility-snapshot';
 import {
   callerEditsInCandidate,
   containingSubmodulePath,
@@ -1631,6 +1632,9 @@ export interface CheckpointEligibilityWaitRequest {
   requiredAncestorSha?: string;
   /** Resume the same logical attempt after the durable quiet-cut wait. */
   logicalAttemptId?: string;
+  /** The request-side action-instant snapshot. The durable waiter updates the
+   * predicates it rechecks instead of rebuilding a second, partial contract. */
+  eligibilitySnapshot?: CheckpointEligibilitySnapshot;
 }
 
 /** The immediate receipt returned while the durable waiter sleeps/rechecks. */
