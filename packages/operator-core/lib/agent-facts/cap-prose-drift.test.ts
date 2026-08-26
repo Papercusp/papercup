@@ -30,6 +30,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { FACTS_PER_SCOPE_CAP } from './store';
+import { orderAsSweepWould } from './sweep-ranking';
 import assertTool from '../agent-tools/facts/assert';
 
 /**
@@ -138,5 +139,148 @@ describe('facts per-scope cap — agent-facing prose must derive the number, not
     expect(
       hardcodedCapsIn(`* EI-19931982603802383: raised from the 50-per-scope cap. ${HISTORICAL_MARKER}`),
     ).toEqual([]);
+  });
+});
+
+/**
+ * EI-21393210182770949: the SECOND drift axis on the same prose.
+ *
+ * The guard above pins the cap NUMBER. Nothing pinned the cap's RANKING
+ * EXPLANATION, and it drifted: EI-19483432832662150 changed victim key 2 from
+ * an absolute TTL to the remaining FRACTION of the declared TTL, but the
+ * eviction receipt kept telling writers that "a SHORT TTL is what makes a fact
+ * cheap for the cap to choose, so an urgent short-lived fact is the most likely
+ * victim". Under a scale-invariant fraction that is not merely stale, it is
+ * BACKWARDS — a short-TTL fact that was just written ranks among the SAFEST.
+ *
+ * The cost was not theoretical. That sentence is quoted verbatim in the filing
+ * of EI-21393210182770949, whose central complaint ("the victim ranking prefers
+ * short-TTL facts, so active-incident records are the most likely victims") is
+ * true of the RECEIPT and false of the ORDER BY. Measured on
+ * workspace/papercusp-workspace at 2026-08-26T10:56Z: the 20 safest live facts
+ * included the shortest declared TTL in the comparison (48h) while all 20
+ * next-victims had TTLs of at least 168h — the discriminator was remaining
+ * fraction (0.984 vs 0.733), not TTL length.
+ *
+ * Prose that describes ranking behaviour is CODE-DESCRIBING METADATA, so it
+ * gets pinned to the ranking rather than hand-maintained beside it.
+ */
+const TTL_LENGTH_RISK_PATTERNS: readonly RegExp[] = [
+  /short[-\s]?(?:ttl|lived)[^.]{0,140}?(?:most likely victim|likel(?:y|ier) victim|cheap(?:er)? for the cap|evicted first|first to (?:go|be evicted))/i,
+  /(?:most likely victim|evicted first|first to be evicted)[^.]{0,140}?short[-\s]?(?:ttl|lived)/i,
+];
+
+/** Isolated so the falsifiability control can drive it with the real pre-fix string. */
+function ttlLengthRiskClaimsIn(text: string): { line: number; claim: string }[] {
+  const hits: { line: number; claim: string }[] = [];
+  text.split('\n').forEach((line, i) => {
+    for (const re of TTL_LENGTH_RISK_PATTERNS) {
+      const m = re.exec(line);
+      if (m) {
+        hits.push({ line: i + 1, claim: m[0] });
+        break;
+      }
+    }
+  });
+  return hits;
+}
+
+describe('fact-cap victim ranking — prose must not claim TTL LENGTH drives eviction risk', () => {
+  it('the ranking itself is scale-invariant: a short-TTL fact just written outranks a long-TTL fact near expiry', () => {
+    const now = Date.parse('2026-08-26T12:00:00Z');
+    const hour = 3_600_000;
+    // The exact pairing the drifted prose got backwards.
+    const shortJustWritten = {
+      id: 'short-1h-fresh',
+      confidence: null,
+      created_at: new Date(now - 1 * 60_000).toISOString(),
+      expires_at: new Date(now + 59 * 60_000).toISOString(),
+      updated_at: new Date(now - 1 * 60_000).toISOString(),
+    };
+    const longNearlyExpired = {
+      id: 'long-7d-stale',
+      confidence: null,
+      created_at: new Date(now - 166 * hour).toISOString(),
+      expires_at: new Date(now + 2 * hour).toISOString(),
+      updated_at: new Date(now - 166 * hour).toISOString(),
+    };
+    const ordered = orderAsSweepWould([longNearlyExpired, shortJustWritten], now);
+    expect(
+      ordered.map((r) => r.id),
+      'the 1h-TTL fact written a minute ago must rank SAFER than the 7d-TTL fact hours from expiry',
+    ).toEqual(['short-1h-fresh', 'long-7d-stale']);
+  });
+
+  it('TTL length is not a ranking input at all: at equal remaining fraction, order follows updated_at either way', () => {
+    // Calibration for the leg above — proves the ordering keyed on the FRACTION
+    // rather than merely happening to favour whichever row was newer.
+    const now = Date.parse('2026-08-26T12:00:00Z');
+    const hour = 3_600_000;
+    const halfSpent = (ttlHours: number, id: string, updatedAt: number) => ({
+      id,
+      confidence: null,
+      created_at: new Date(now - (ttlHours / 2) * hour).toISOString(),
+      expires_at: new Date(now + (ttlHours / 2) * hour).toISOString(),
+      updated_at: new Date(updatedAt).toISOString(),
+    });
+    // Both at fraction 0.5; TTL lengths differ by 168×.
+    const shortNewer = halfSpent(1, 'short', now - 1_000);
+    const longOlder = halfSpent(168, 'long', now - 2_000);
+    expect(orderAsSweepWould([longOlder, shortNewer], now).map((r) => r.id)).toEqual(['short', 'long']);
+
+    // Flip ONLY updated_at: the long-TTL row now wins. TTL length changed nothing.
+    const shortOlder = halfSpent(1, 'short', now - 2_000);
+    const longNewer = halfSpent(168, 'long', now - 1_000);
+    expect(orderAsSweepWould([shortOlder, longNewer], now).map((r) => r.id)).toEqual(['long', 'short']);
+  });
+
+  it('no facts-subsystem prose tells a writer that a short TTL makes their fact a likelier victim', () => {
+    // POSITIVE CONTROL for the scan itself: a `sourceFiles()` that reached zero
+    // files (a moved directory, a renamed suffix) would make this leg — and the
+    // cap-literal leg above, which shares the helper — pass vacuously while
+    // measuring nothing. Assert the scan actually reaches the file that carries
+    // the receipt this guard exists for.
+    const scanned = sourceFiles();
+    expect(scanned.length, 'sourceFiles() scanned nothing — the guard is measuring no source').toBeGreaterThan(0);
+    const receipt = scanned.find((f) => f.path.endsWith(join('agent-tools', 'facts', 'assert.ts')));
+    expect(receipt, 'the eviction receipt source was not scanned').toBeDefined();
+    expect(receipt!.text, 'assert.ts no longer contains the eviction receipt this guard pins').toContain(
+      'Seating this write EVICTED the fact(s) above',
+    );
+
+    const violations: string[] = [];
+    for (const { path, text } of sourceFiles()) {
+      for (const hit of ttlLengthRiskClaimsIn(text)) {
+        violations.push(
+          `${path}:${hit.line} claims "${hit.claim}". Victim key 2 is the REMAINING ` +
+            `FRACTION of the declared TTL (see sweepRemainingFraction), which is ` +
+            `scale-invariant — TTL length is not a risk factor, and a short-TTL fact ` +
+            `just written is among the SAFEST. Describe the fraction, not the length.`,
+        );
+      }
+    }
+    expect(violations).toEqual([]);
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL (permanent). The real receipt sentence as it stood at
+   * 2026-08-26T10:52Z, copied verbatim from the pre-fix source.
+   */
+  it('CONTROL: the real pre-fix receipt sentence is caught', () => {
+    const preFix =
+      'matters, re-assert it; note that a SHORT TTL is what makes a fact cheap ' +
+      'for the cap to choose, so an urgent short-lived fact is the most likely victim.';
+    expect(ttlLengthRiskClaimsIn(preFix).length, 'guard went blind to the pre-fix sentence').toBeGreaterThan(0);
+  });
+
+  it('CONTROL: the corrected sentence, which NEGATES the claim, is NOT flagged', () => {
+    // Without this the control above would also pass if the predicate simply
+    // flagged every line containing the words "short" and "TTL".
+    const corrected =
+      'Ranking: victims are chosen by confidence tier first (\'verified\' safest), then by the ' +
+      'REMAINING FRACTION of the author\'s declared TTL. That fraction is scale-invariant, so ' +
+      'TTL LENGTH is not what puts a fact at risk: a short-TTL fact just written ranks among ' +
+      'the SAFEST and only yields as it approaches its own expiry.';
+    expect(ttlLengthRiskClaimsIn(corrected)).toEqual([]);
   });
 });
