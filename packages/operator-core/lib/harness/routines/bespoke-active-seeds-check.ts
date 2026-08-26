@@ -120,6 +120,10 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     name: 'work-item-admission-fail-open',
     seedScript: 'seed-work-item-admission-fail-open-routine.ts',
   },
+  {
+    name: 'work-item-admission-delta-sweep',
+    seedScript: 'seed-work-item-admission-delta-sweep-routine.ts',
+  },
 ];
 
 /**
