@@ -32,10 +32,13 @@ Environment=PC_HEAVY_COALESCE=0
 Environment=PC_HEAVY_PREEMPTIBLE=1
 # systemd invokes pc-heavy BEFORE the gate's self-enrol wrapper, so duplicate
 # the wrapper's safety defaults here.  The gate publishes the after-ready
-# marker immediately, removes it once content-matrix has a concrete verdict,
-# and stays yieldable for the long from-repo/local-matrix tail.  If the generic
-# 600s protection bound expires first, retry only the exact typed
-# exclusive-materializer preemption once after that materializer drains.
+# marker only after selftests/build/repack, immediately before content-matrix,
+# removes it once that leg has a concrete verdict, and stays yieldable during
+# preparation and the long from-repo/local-matrix tail. A materializer arriving
+# during preparation gets ordinary preemption; retry only that exact typed
+# preemption once after it drains. The generic 600s protection bound therefore
+# covers the first real federation leg, not an arbitrarily slow build
+# (EI-214124 / D-084).
 Environment=PC_HEAVY_PREEMPT_AFTER_READY=1
 Environment=PC_HEAVY_RETRY_PREEMPTIONS=1
 # Join the same heavy-slot domain as agent verification. The script also
