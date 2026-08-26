@@ -11,30 +11,31 @@
  * look like "this test is broken" instead of "I ran it from the wrong place".
  *
  * THE CONTRACT this guard enforces on every documented `Run:` command:
- *   - EITHER the command states its working directory explicitly
- *     (`Run: cd packages/operator-core && npx vitest …`) and every referenced
- *     path exists relative to that directory,
+ *   - EITHER the command states its working directory explicitly (`cd <dir> …`,
+ *     or a "(from <dir>)" tail) and every extension-bearing path exists
+ *     relative to that directory,
  *   - OR the command is repository-root-executable as written (the canonical
- *     `npm run test:file -- packages/…` form), i.e. every referenced path
- *     exists relative to the repo root.
+ *     `npm run test:file -- packages/…` form).
  *
  *   node scripts/check-documented-test-run-cwd.mjs
  *
  * Scope: tracked *.ts/*.mts source; only comment lines shaped `* Run:` (plus
  * their `\`-continuation lines inside the same comment block) are commands —
- * prose mentioning vitest is ignored. The predicate is exported + unit-tested
+ * prose mentioning vitest is ignored. Extensionless positional args are vitest
+ * NAME FILTERS, not paths, and are not existence-checked. The predicate is
+ * exported + unit-tested
  * (packages/operator-core/lib/documented-test-run-cwd-guard.test.ts) so the
  * "fails on an unstated-cwd command" property is durably verified, not only
  * green-on-clean-tree.
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { listTrackedFiles } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
-/** Comment-line command opener: `* Run: <command>` (block-comment star optional-ish). */
+/** Comment-line command opener: `* Run: <command>`. */
 const RUN_LINE = /^\s*\*\s*Run:\s*(\S.*\S|\S)\s*$/;
 
 /**
@@ -67,36 +68,47 @@ export function extractDocumentedRunCommands(text) {
 /**
  * Validate ONE documented command against the tree. Returns an error string,
  * or null when the command is executable as documented.
- * @param {string} command
+ * @param {string} rawCommand
  * @param {(p: string) => boolean} exists path-exists probe (injectable for tests)
  */
-export function judgeDocumentedRunCommand(command, exists = (p) => existsSync(join(ROOT, p))) {
-  const rest = command.trim();
+export function judgeDocumentedRunCommand(rawCommand, exists = (p) => existsSync(join(ROOT, p))) {
+  let command = String(rawCommand).trim();
+  // A whole-command backtick quote (`…`) — grade the contents, drop the quotes.
+  if (command.startsWith('`')) {
+    const end = command.indexOf('`', 1);
+    command = (end === -1 ? command.slice(1) : command.slice(1, end)).trim();
+  }
+  // A parenthesized "(from <dir>)" tail also states the working directory.
+  let declaredCwd = null;
+  const fromMatch = /\(\s*from\s+([^\s)]+)\s*\)/.exec(command);
+  if (fromMatch) {
+    declaredCwd = fromMatch[1].replace(/\.?$/, '');
+    command = command.replace(fromMatch[0], ' ').trim();
+  }
   // Form 1 — explicit cwd: `cd <dir> [&&|;] …` (also tolerates a trailing `\` join).
-  const cdMatch = /^cd\s+(\S+)\s*(?:&&|;)\s*(.*)$/.exec(rest);
-  let cwd = '.';
-  let body = rest;
+  const cdMatch = /^cd\s+(\S+)\s*(?:&&|;)\s*(.*)$/.exec(command);
+  let cwd = declaredCwd ?? '.';
+  let body = command;
   if (cdMatch) {
     const dir = cdMatch[1].replace(/\\$/, '');
     if (!exists(dir)) return `stated working directory '${dir}' does not exist`;
     cwd = dir;
     body = cdMatch[2].trim();
-  } else if (!exists('.') === false) {
-    // repo root always exists; fall through with implicit root cwd
   }
-  // Collect every filesystem reference: --config values and bare path arguments.
+  // Collect every filesystem reference: --config/-c values and extension-bearing args.
   const refs = [];
-  const cfg = /--config[= ](\S+)/.exec(body);
+  const cfg = /(?:--config|-c)[= ](\S+)/.exec(body);
   if (cfg) refs.push(cfg[1]);
-  for (const token of body
-    .replace(/\\\s*$/g, ' ')
-    .split(/\s+/)
-    .map((t) => t.replace(/\\$/, '').trim())
-    .filter(Boolean)) {
-    if (/^(-|--)/.test(token)) continue; // flags
-    if (/^(npx|node|npm)$/.test(token)) continue;
-    if (/^(run|vitest|exec|test:file|--)$/.test(token)) continue;
-    if (token.includes('/') && !/^https?:/.test(token)) refs.push(token);
+  for (const rawToken of body.split(/\s+/)) {
+    const token = rawToken.replace(/\\$/g, '').replace(/[`,.;]+$/, '').trim();
+    if (!token || /^(-|--)/.test(token)) continue; // flags
+    if (/^(npx|node|npm|run|vitest|exec|test:file)$/.test(token)) continue;
+    if (/^[A-Z_][A-Z0-9_]*=/.test(token)) continue; // env assignment prefix
+    // Only extension-bearing refs are provable filesystem paths; bare words are
+    // vitest name filters and resolve regardless of cwd.
+    if (!/\.[A-Za-z]+$/.test(token)) continue;
+    if (/^https?:/.test(token)) continue;
+    refs.push(token);
   }
   for (const ref of refs) {
     const target = cwd === '.' ? ref : `${cwd.replace(/\/$/, '')}/${ref}`;
@@ -110,11 +122,15 @@ export function judgeDocumentedRunCommand(command, exists = (p) => existsSync(jo
 }
 
 /** @returns {string[]} human-readable violations */
-export function findViolations(files, read = (f) => readFileSyncSafe(f)) {
+export function findViolations(files, read = (f) => readFileSync(f, 'utf8')) {
   const violations = [];
   for (const file of files) {
-    const text = read(file);
-    if (!text) continue;
+    let text = '';
+    try {
+      text = read(file);
+    } catch {
+      continue;
+    }
     for (const { line, command } of extractDocumentedRunCommands(text)) {
       const err = judgeDocumentedRunCommand(command);
       if (err) violations.push(`${file}:${line} — ${err}\n    command: ${command}`);
@@ -123,20 +139,12 @@ export function findViolations(files, read = (f) => readFileSyncSafe(f)) {
   return violations;
 }
 
-function readFileSyncSafe(f) {
-  try {
-    // eslint-disable-next-line n/no-sync -- guard script, sync IO is the norm here
-    return require('node:fs').readFileSync(f, 'utf8');
-  } catch {
-    return '';
-  }
-}
-
 // ── CLI entry ────────────────────────────────────────────────────────────────
 if (process.argv[1] && process.argv[1].endsWith('check-documented-test-run-cwd.mjs')) {
-  const files = (await listTrackedFiles(['packages/', 'apps/', 'libs/'])).filter((f) =>
-    /\.(ts|mts)$/.test(f),
-  );
+  const { files: allFiles } = listTrackedFiles();
+  const files = allFiles
+    .filter((f) => /^(packages\/|apps\/|libs\/)/.test(f))
+    .filter((f) => /\.(ts|mts)$/.test(f));
   const violations = findViolations(files);
   if (violations.length > 0) {
     console.error(
@@ -146,5 +154,7 @@ if (process.argv[1] && process.argv[1].endsWith('check-documented-test-run-cwd.m
     );
     process.exit(1);
   }
-  console.log(`check-documented-test-run-cwd: ${files.length} files scanned, all documented Run: commands are executable as written.`);
+  console.log(
+    `check-documented-test-run-cwd: ${files.length} files scanned, all documented Run: commands are executable as written.`,
+  );
 }
