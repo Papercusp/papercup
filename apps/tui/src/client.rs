@@ -1447,6 +1447,29 @@ impl OperatorClient {
         serde_json::from_value(rows).with_context(|| format!("parse {name} rows"))
     }
 
+    /// Read the one server-normalized context projection consumed by both pui
+    /// and the operator GUI. An empty row set is a supported capability-tier
+    /// absence, not an error and not permission to synthesize local frames.
+    pub async fn conversation_context_projection(
+        &self,
+        target: &crate::models::ConversationContextProjectionTarget,
+    ) -> Result<Option<crate::models::ConversationContextProjection>> {
+        let mut args = serde_json::json!({
+            "sourceKind": target.source_kind,
+            "sessionId": target.session_id,
+        });
+        if let Some(harness) = &target.harness {
+            args["harness"] = serde_json::Value::String(harness.clone());
+        }
+        let mut rows = self
+            .rest_query_rows::<crate::models::ConversationContextProjection>(
+                "conversations.contextProjection",
+                &args,
+            )
+            .await?;
+        Ok(rows.drain(..).next())
+    }
+
     /// A foreign hive's beacon HISTORY (`network.hive.beacons`, hive-network-
     /// surface P-014 item 2): captured C-2 snapshots newest-first. `hive_key`
     /// is the C-3 tier-4 row key (pubkey-b64 or hiveId — either resolves).

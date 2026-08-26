@@ -296,6 +296,12 @@ pub enum Event {
     /// parked before this pane attached (or during a disconnect) is otherwise
     /// invisible here, leaving the turn stalled with no way to answer it.
     AgentChatApprovalsHydrated(Vec<crate::models::PendingApproval>),
+    /// Snapshot from the one shared conversations.contextProjection query.
+    /// `None` is an honest capability-tier absence for the requested target.
+    ConversationContextProjectionLoaded {
+        target: crate::models::ConversationContextProjectionTarget,
+        projection: Option<crate::models::ConversationContextProjection>,
+    },
     /// A tool call reached a terminal outcome (the seam's `tool_result` frame).
     /// Correlated back to its card by `call_id` — the same id the approvals
     /// route is keyed by. Without this the card never leaves its running state,

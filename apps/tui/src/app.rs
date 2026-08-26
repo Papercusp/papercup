@@ -7,6 +7,7 @@ use crate::event::Event;
 use crate::fleet::FleetState;
 use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, CrewMember, DocsResponse,
+    ConversationContextFrame, ConversationContextProjection, ConversationContextProjectionTarget,
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
     HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry, TestingDomain,
     TuiPaneContribution, ViewState, WorkItem,
@@ -44,6 +45,9 @@ pub enum Action {
     /// standard refetch loop already feeds plans + roster push-driven; this
     /// forces an immediate refresh (pui-plans-status-board-2026-06-14).
     FetchPlansBoard,
+    /// Re-read the canonical Context projection for the currently bound native
+    /// session. Used by `g`; SSE invalidations also refresh it automatically.
+    FetchContextProjection,
     /// Fetch the per-item assignment/claim/liveness for one plan
     /// (pui-plans-status-board-2026-06-14 P-008) so the plans board's right-side
     /// work-items detail updates the instant the selection moves — the active-
@@ -129,6 +133,13 @@ pub enum Action {
     ResolveAgentChatApproval {
         call_id: String,
         approved: bool,
+    },
+    /// Typed task-action seam owned by P-010. The Context renderer never writes
+    /// a task store directly; the run loop calls the agent-chat mutation route.
+    MutateAgentChatTask {
+        harness: String,
+        chat_id: String,
+        mutation: crate::agent_chats::AgentChatTaskMutation,
     },
     /// Answer the focused inline card (sentinel-tui-shared-backend-and-cards
     /// Phase 2a) — the run loop POSTs `/card-response`. The reducer has already
@@ -1154,6 +1165,13 @@ pub struct App {
     /// Highlight cursor for the pinned plans status board (`pui plans-pane`,
     /// pui-plans-status-board-2026-06-14). Indexes `plans_board::board_rows`.
     pub plans_board_sel: usize,
+    /// The one shared context-projection address and snapshot rendered by the
+    /// refitted plans-board pane. An explicit CLI target stays pinned; otherwise
+    /// each roster snapshot resolves the live Sentinel's native session id.
+    pub context_projection_target: Option<ConversationContextProjectionTarget>,
+    pub context_projection_target_explicit: bool,
+    pub context_projection: Option<ConversationContextProjection>,
+    pub context_task_sel: usize,
     /// Two-level pane nav for the Plans master-detail surface (owner ask
     /// 2026-06-16) — shared by `Tab::Plans` + `Tab::PlansBoard` (only one is the
     /// active tab at a time, so they share the cursor/focus/entered state):
@@ -1656,6 +1674,10 @@ impl App {
             plans: Vec::new(),
             plan_sel: 0,
             plans_board_sel: 0,
+            context_projection_target: None,
+            context_projection_target_explicit: false,
+            context_projection: None,
+            context_task_sel: 0,
             plans_focus: PlansFocus::List,
             plans_entered: false,
             plan_items_sel: 0,
@@ -2267,6 +2289,27 @@ impl App {
 
     pub fn set_roster(&mut self, roster: Vec<RosterEntry>) {
         self.roster = roster;
+        if !self.context_projection_target_explicit {
+            let next = self
+                .roster
+                .iter()
+                .filter(|row| row.is_live())
+                .filter(|row| {
+                    row.agent_pane_kind.as_deref() == Some("sentinel")
+                        || row.role.as_deref() == Some("sentinel")
+                        || row.agent.as_deref() == Some("sentinel")
+                })
+                .find_map(|row| {
+                    row.native_session.as_ref().and_then(|handle| {
+                        ConversationContextProjectionTarget::from_native_session(handle, None)
+                    })
+                });
+            if next != self.context_projection_target {
+                self.context_projection_target = next;
+                self.context_projection = None;
+                self.context_task_sel = 0;
+            }
+        }
         // The Fleet tab navigates the (plans-filtered, D-009) roster too —
         // keep its cursor in range of what actually renders.
         let len = self.visible_roster().len();
@@ -4199,47 +4242,74 @@ impl App {
         }
     }
 
-    /// Keymap for the pinned plans status board (`pui plans-pane`,
-    /// pui-plans-status-board-2026-06-14). Two-level pane nav (owner ask
-    /// 2026-06-16, the same idiom as the Colony tab): ←/→ (and ↑/↓ while
-    /// BROWSING) switch the focused pane (plans list ↔ work items); Enter drills
-    /// in; ↑/↓ then move WITHIN the focused pane; Enter again opens that row's
-    /// detail popup; Esc steps back out. `g` forces a refetch at any level.
+    /// Keymap for the refitted Context pane. Task mutations return a typed
+    /// Action and never touch task state locally; P-010 owns the route that
+    /// applies the mutation and returns a fresh canonical projection.
     fn plans_board_key(&mut self, code: KeyCode) -> Action {
         match code {
-            KeyCode::Char('g') => Action::FetchPlansBoard,
-            // ←/→ switch the focused pane at ANY level (browse or inside).
-            KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('l') | KeyCode::Right => {
-                self.plans_focus = self.plans_focus.toggle();
+            KeyCode::Char('g') => Action::FetchContextProjection,
+            KeyCode::Char('j') | KeyCode::Down => {
+                let len = self
+                    .context_projection
+                    .as_ref()
+                    .map(|projection| projection.tasks().len())
+                    .unwrap_or(0);
+                self.context_task_sel = step_clamped(self.context_task_sel, 1, len);
                 Action::Render
             }
-            // ↑/↓ while BROWSING switch panes; once INSIDE they move within.
-            KeyCode::Char('j') | KeyCode::Down if !self.plans_entered => {
-                self.plans_focus = self.plans_focus.toggle();
+            KeyCode::Char('k') | KeyCode::Up => {
+                let len = self
+                    .context_projection
+                    .as_ref()
+                    .map(|projection| projection.tasks().len())
+                    .unwrap_or(0);
+                self.context_task_sel = step_clamped(self.context_task_sel, -1, len);
                 Action::Render
             }
-            KeyCode::Char('k') | KeyCode::Up if !self.plans_entered => {
-                self.plans_focus = self.plans_focus.toggle();
-                Action::Render
+            KeyCode::Char('x') | KeyCode::Enter => {
+                self.context_task_action(crate::agent_chats::AgentChatTaskAction::Check)
             }
-            KeyCode::Char('j') | KeyCode::Down => self.plans_board_within_move(1),
-            KeyCode::Char('k') | KeyCode::Up => self.plans_board_within_move(-1),
-            // Enter drills in (browse → inside), then opens the focused row's
-            // detail popup; reusing the fleet-detail modal (owner ask 2026-06-15
-            // #1 for the plan body, extended to work items 2026-06-16).
-            KeyCode::Enter => {
-                if !self.plans_entered {
-                    self.plans_entered = true;
-                    Action::Render
-                } else {
-                    self.plans_open_focused_detail()
-                }
+            KeyCode::Char('d') => {
+                self.context_task_action(crate::agent_chats::AgentChatTaskAction::Drop)
             }
-            KeyCode::Esc if self.plans_entered => {
-                self.plans_entered = false;
-                Action::Render
+            KeyCode::Char('u') => {
+                self.context_task_action(crate::agent_chats::AgentChatTaskAction::ClearBlocker)
             }
             _ => Action::None,
+        }
+    }
+
+    fn context_task_action(
+        &self,
+        action: crate::agent_chats::AgentChatTaskAction,
+    ) -> Action {
+        let Some(target) = &self.context_projection_target else {
+            return Action::None;
+        };
+        let Some(projection) = &self.context_projection else {
+            return Action::None;
+        };
+        if !projection.capabilities.task_write || target.source_kind != "agent_chat" {
+            return Action::None;
+        }
+        let Some(ConversationContextFrame::Task { task_id, .. }) =
+            projection.tasks().get(self.context_task_sel).copied()
+        else {
+            return Action::None;
+        };
+        Action::MutateAgentChatTask {
+            harness: target
+                .harness
+                .clone()
+                .unwrap_or_else(|| self.harness.clone()),
+            chat_id: target.session_id.clone(),
+            mutation: crate::agent_chats::AgentChatTaskMutation {
+                action,
+                task_id: Some(task_id.clone()),
+                content: None,
+                active_form: None,
+                explanation: None,
+            },
         }
     }
 
@@ -5214,6 +5284,20 @@ impl App {
                             }
                         }
                     }
+                }
+                Action::Render
+            }
+            Event::ConversationContextProjectionLoaded { target, projection } => {
+                // A slow response for the previously focused native session is
+                // discarded rather than repainting Context with the wrong agent.
+                if self.context_projection_target.as_ref() == Some(&target) {
+                    self.context_projection = projection;
+                    let len = self
+                        .context_projection
+                        .as_ref()
+                        .map(|projection| projection.tasks().len())
+                        .unwrap_or(0);
+                    self.context_task_sel = self.context_task_sel.min(len.saturating_sub(1));
                 }
                 Action::Render
             }
