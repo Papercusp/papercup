@@ -517,9 +517,10 @@ export async function verifyTurnRefs(
       // transcript, same as pre-fix behavior; or the prefix matches it.
       path = currentFilePath;
     } else if (allowOwnerChainFallback) {
-      const resolved = await resolveOwnerIsolatedSessionByPrefix(ownerId, sessionPrefix, { home: opts.home }).catch(
-        () => null,
-      );
+      const resolved = await resolveOwnerIsolatedSessionByPrefix(ownerId, sessionPrefix, {
+        home: opts.home,
+        loadActiveSessions: opts.loadActiveSessions,
+      }).catch(() => null);
       path = resolved?.filePath ?? null;
       scope = 'owner-chain';
     }

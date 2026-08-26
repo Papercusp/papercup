@@ -171,14 +171,37 @@ async function defaultActiveSessions(ownerId: string): Promise<ActiveSessionRow[
 export async function resolveOwnerIsolatedSessionByPrefix(
   ownerId: string,
   sessionPrefix: string,
-  opts: { home?: string } = {},
+  opts: Pick<ResolveSelfSessionOptions, 'home' | 'loadActiveSessions' | 'codexHomeForSession'> = {},
 ): Promise<SelfSession | null> {
   if (!ownerId || !sessionPrefix) return null;
   const home = opts.home ?? HOME;
   const pfx = sessionPrefix.toLowerCase();
   const isoFiles = await listJsonlUnder(join(home, '.papercusp', 'session-claude', ownerId, 'projects'));
   const hit = isoFiles.find((f) => basename(f, '.jsonl').toLowerCase().startsWith(pfx));
-  return hit ? { sourceKind: 'claude', sessionId: basename(hit, '.jsonl'), filePath: hit } : null;
+  if (hit) return { sourceKind: 'claude', sessionId: basename(hit, '.jsonl'), filePath: hit };
+
+  // Codex fleet sessions are isolated by the owner's active adv-session id,
+  // exactly like resolveSelfSession's `session:'self'` path below. Reusing
+  // that mapping here keeps carry-surface [turn:codex-prefix@timestamp]
+  // verification aligned with sessions:read instead of falling through a
+  // Claude-only owner-chain lookup (EI-21394895717783013).
+  const activeSessions = await (opts.loadActiveSessions ?? defaultActiveSessions)(ownerId);
+  for (const row of activeSessions.filter((candidate) => candidate.agent === 'codex')) {
+    const codexHome = opts.codexHomeForSession
+      ? opts.codexHomeForSession(row.id)
+      : join(home, '.papercusp', 'su-codex-homes', `session-${row.id}`);
+    const codexFiles = await listJsonlUnder(join(codexHome, 'sessions'));
+    const codexHit = codexFiles.find((file) => {
+      const stem = basename(file, '.jsonl');
+      const sessionId = stem.match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i)?.[1];
+      return sessionId?.toLowerCase().startsWith(pfx);
+    });
+    if (codexHit) {
+      const sessionId = basename(codexHit, '.jsonl').match(/([0-9a-f]{8}-[0-9a-f-]{27,})$/i)?.[1];
+      if (sessionId) return { sourceKind: 'codex', sessionId, filePath: codexHit };
+    }
+  }
+  return null;
 }
 
 /** Resolve the caller's live transcript. Fail-soft: null when unresolvable. */
