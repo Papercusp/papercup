@@ -213,6 +213,12 @@ describe('detectScopeOverreach — the advisory lint', () => {
         recheck: 'npm run lint:tsc:operator | tail -25',
         verified: 'yes',
       },
+      {
+        claim:
+          'Says nothing about grading-integrity cards from other authors/subjects — the probe was never scoped to enumerate those.',
+        recheck: "scorecards:list { rubricRef:'grading-integrity', limit:25 }",
+        verified: 'three named cards',
+      },
     ];
 
     expect(detectScopeOverreach(narrowing)).toEqual([]);

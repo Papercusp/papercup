@@ -44,6 +44,7 @@
  *
  * Usage:
  *   npm run lint:tsc:workspaces                     # gate the discovered packages
+ *   npm run lint:tsc:workspaces -- --files=path.ts  # compile only the owning workspace
  *   npm run lint:tsc:workspaces -- --list           # discovery only, run nothing (what IS gated?)
  *   npm run lint:tsc:workspaces -- --list-invisible # name every invisible dir, not just counts
  */
@@ -96,6 +97,37 @@ export const SIBLING_GATE_PREFIXES = ['libs/papercusp'];
 /** True when `rel` is owned by a sibling gate (see SIBLING_GATE_PREFIXES). */
 export const ownedBySiblingGate = (rel, prefixes = SIBLING_GATE_PREFIXES) =>
   prefixes.some((p) => rel === p || rel.startsWith(`${p}/`));
+
+/** Parse repeated/comma-separated `--files` CLI arguments. */
+export function parseFilesArgs(argv = process.argv.slice(2)) {
+  const out = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    const raw = arg === '--files' ? argv[++i] : arg?.startsWith('--files=') ? arg.slice('--files='.length) : null;
+    if (raw == null) continue;
+    for (const file of raw.split(',')) {
+      const normalized = file.trim().replaceAll('\\', '/').replace(/^\.\//, '');
+      if (normalized) out.push(normalized);
+    }
+  }
+  return [...new Set(out)];
+}
+
+/** Select only the gated workspace(s) that own the requested repo-relative files. */
+export function selectPackagesForFiles(packages, files) {
+  if (!files?.length) return { packages, unmatched: [] };
+  const selected = new Map();
+  const unmatched = [];
+  for (const file of files) {
+    const owners = packages
+      .filter((pkg) => file === pkg.rel || file.startsWith(`${pkg.rel}/`))
+      .sort((a, b) => b.rel.length - a.rel.length);
+    const owner = owners[0];
+    if (!owner) unmatched.push(file);
+    else selected.set(owner.rel, owner);
+  }
+  return { packages: [...selected.values()].sort((a, b) => a.rel.localeCompare(b.rel)), unmatched };
+}
 
 /**
  * Roots where a bare `tsconfig.json` is enough to be GATED, with no `typecheck` script
@@ -459,6 +491,7 @@ export function main({
   untypecheckable = UNTYPECHECKABLE,
   listOnly = process.argv.includes('--list'),
   listInvisible = process.argv.includes('--list-invisible'),
+  files = parseFilesArgs(),
   spawn = realSpawn,
   // Production resolves the pinned CLI. Focused tests inject `spawn` and keep their synthetic
   // package commands untouched unless they explicitly exercise pinDirectTscCommands.
@@ -470,14 +503,29 @@ export function main({
   const {
     presentRoots,
     absentRoots,
-    packages,
-    promoted,
+    packages: discoveredPackages,
+    promoted: discoveredPromoted,
     exempted,
     heldBack,
     stillInvisible,
     unreadable,
     siblingOwned,
   } = selectGatedPackages({ repoRoot, roots, exempt, untypecheckable });
+  const focused = selectPackagesForFiles(discoveredPackages, files);
+  const packages = focused.packages;
+  const selectedRels = new Set(packages.map((pkg) => pkg.rel));
+  const promoted = files.length > 0 ? discoveredPromoted.filter((pkg) => selectedRels.has(pkg.rel)) : discoveredPromoted;
+
+  if (focused.unmatched.length > 0) {
+    error(
+      `✗ --files did not resolve to a gated workspace: ${focused.unmatched.join(', ')}. ` +
+        'Refusing to fall back to the full fan-out; pass a file beneath a discovered gated package.',
+    );
+    return 1;
+  }
+  if (files.length > 0) {
+    log(`focused file scope: ${files.length} file(s) → ${packages.length} owning workspace(s)`);
+  }
 
   for (const r of absentRoots) {
     warn(`⚠ root ${r} does not exist in this tree — skipping (nothing to gate there).`);

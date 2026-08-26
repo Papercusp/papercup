@@ -226,7 +226,7 @@ const QUANTIFIER_RE =
  * remains visible to the lint.
  */
 const SCOPE_DISCLAIMER_RE =
-  /\b(?:never|not)\s+(?:[a-z][a-z'-]*\s+){0,3}by\s+me\b|\b(?:the\s+)?(?:whole|entire)\s+of\s+what\s+my\s+probe(?:'s)?\s+(?:saw|observed|checked|measured)\b/gi;
+  /\b(?:never|not)\s+(?:[a-z][a-z'-]*\s+){0,3}by\s+me\b|\b(?:the\s+)?(?:whole|entire)\s+of\s+what\s+my\s+probe(?:'s)?\s+(?:saw|observed|checked|measured)\b|\bsays?\s+nothing\s+about\b|\b(?:was|were|is|are)\s+never\s+scoped\s+to\b|\b(?:does|do)\s+not\s+cover\b|\blimited\s+to\b|\boutside\s+(?:this|the)\s+probe\b/gi;
 
 function findClaimQuantifier(claim: string): RegExpExecArray | null {
   // Preserve offsets and the original match text while hiding only
