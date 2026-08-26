@@ -792,7 +792,7 @@ fn draw_dossier(f: &mut Frame, app: &App, area: Rect, focused: bool) {
 fn dossier_assignments_ordered(app: &App) -> Vec<&crate::models::BeeAssignment> {
     let mut ordered: Vec<&crate::models::BeeAssignment> =
         app.fleet.all_assignments.iter().collect();
-    ordered.sort_by(|a, b| b.load.cmp(&a.load));
+    ordered.sort_by_key(|assignment| std::cmp::Reverse(assignment.load));
     ordered
 }
 
