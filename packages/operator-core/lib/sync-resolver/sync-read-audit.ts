@@ -182,6 +182,7 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'agentLeaderBrief.byOwner': null,
   'chunkPlans.byFeature': null,
   'conversations.agentChatDetail': null,
+  'conversations.contextProjection': null, // a specific sourceKind + sessionId
   'conversations.agentMessageDetail': null, // a specific coord_event_log msg_id
   'conversations.deliberationDetail': null,
   'conversations.questionDetail': null,
