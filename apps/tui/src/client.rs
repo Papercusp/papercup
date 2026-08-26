@@ -217,6 +217,98 @@ pub struct OperatorClient {
     selection_source: String,
 }
 
+/// Fold indexed transcript hits into the live/ended roster without duplicating
+/// a session already represented by its native handle or coord owner.
+fn merge_session_switcher_rows(
+    mut rows: Vec<RosterEntry>,
+    inner: &serde_json::Value,
+) -> Vec<RosterEntry> {
+    for hit in inner
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(provenance) = hit.get("provenance") else {
+            continue;
+        };
+        let source = provenance
+            .get("source_kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let session_id = provenance
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if source.is_empty() || session_id.is_empty() {
+            continue;
+        }
+        let owner = provenance
+            .get("owner")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let already_present = rows.iter().any(|row| {
+            row.native_session
+                .as_ref()
+                .and_then(|native| {
+                    models::ConversationContextProjectionTarget::from_native_session(native, None)
+                })
+                .is_some_and(|target| {
+                    target.source_kind == source && target.session_id == session_id
+                })
+                || (!owner.is_empty() && row.owner_id == owner)
+        });
+        if already_present {
+            continue;
+        }
+        let missing = Some("indexed transcript has no resumable launch record".to_string());
+        let native_session = match source {
+            "claude" => Some(models::NativeSessionHandle::Claude {
+                source: source.to_string(),
+                owner_id: (!owner.is_empty()).then_some(owner.clone()),
+                session_id: Some(session_id.to_string()),
+                config_dir: None,
+                exact_resume_supported: false,
+                missing_reason: missing,
+            }),
+            "codex" => Some(models::NativeSessionHandle::Codex {
+                source: source.to_string(),
+                owner_id: (!owner.is_empty()).then_some(owner.clone()),
+                codex_home: String::new(),
+                rollout_id: Some(session_id.to_string()),
+                exact_resume_supported: false,
+                missing_reason: missing,
+            }),
+            "omp" => Some(models::NativeSessionHandle::Omp {
+                source: source.to_string(),
+                owner_id: (!owner.is_empty()).then_some(owner.clone()),
+                omp_thread_id: Some(session_id.to_string()),
+                agent_home: None,
+                exact_resume_supported: false,
+                missing_reason: missing,
+            }),
+            _ => None,
+        };
+        rows.push(RosterEntry {
+            owner_id: owner.clone(),
+            label: if owner.is_empty() {
+                format!("{source} · {}", &session_id[..session_id.len().min(12)])
+            } else {
+                owner
+            },
+            source: source.to_string(),
+            agent: Some(source.to_string()),
+            session_state: Some("recorded".to_string()),
+            native_session,
+            ..RosterEntry::default()
+        });
+    }
+    rows
+}
+
 impl OperatorClient {
     /// Resolve a backend. EXPLICIT selection wins (P-001 refit): `PUI_OPERATOR`
     /// = `staging` (:3170) | `release` (:3070) | a full http(s) URL pins the
@@ -861,92 +953,7 @@ impl OperatorClient {
         };
         let env = self.run_tool("sessions:search", args).await?;
         let inner = run_tool_inner_json(&env)?;
-        for hit in inner
-            .get("results")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            let Some(provenance) = hit.get("provenance") else {
-                continue;
-            };
-            let source = provenance
-                .get("source_kind")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .trim();
-            let session_id = provenance
-                .get("session_id")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .trim();
-            if source.is_empty() || session_id.is_empty() {
-                continue;
-            }
-            let owner = provenance
-                .get("owner")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            let already_present = rows.iter().any(|row| {
-                row.native_session
-                    .as_ref()
-                    .and_then(|native| {
-                        models::ConversationContextProjectionTarget::from_native_session(
-                            native, None,
-                        )
-                    })
-                    .is_some_and(|target| {
-                        target.source_kind == source && target.session_id == session_id
-                    })
-                    || (!owner.is_empty() && row.owner_id == owner)
-            });
-            if already_present {
-                continue;
-            }
-            let missing = Some("indexed transcript has no resumable launch record".to_string());
-            let native_session = match source {
-                "claude" => Some(models::NativeSessionHandle::Claude {
-                    source: source.to_string(),
-                    owner_id: (!owner.is_empty()).then_some(owner.clone()),
-                    session_id: Some(session_id.to_string()),
-                    config_dir: None,
-                    exact_resume_supported: false,
-                    missing_reason: missing,
-                }),
-                "codex" => Some(models::NativeSessionHandle::Codex {
-                    source: source.to_string(),
-                    owner_id: (!owner.is_empty()).then_some(owner.clone()),
-                    codex_home: String::new(),
-                    rollout_id: Some(session_id.to_string()),
-                    exact_resume_supported: false,
-                    missing_reason: missing,
-                }),
-                "omp" => Some(models::NativeSessionHandle::Omp {
-                    source: source.to_string(),
-                    owner_id: (!owner.is_empty()).then_some(owner.clone()),
-                    omp_thread_id: Some(session_id.to_string()),
-                    agent_home: None,
-                    exact_resume_supported: false,
-                    missing_reason: missing,
-                }),
-                _ => None,
-            };
-            rows.push(RosterEntry {
-                owner_id: owner.clone(),
-                label: if owner.is_empty() {
-                    format!("{source} · {}", &session_id[..session_id.len().min(12)])
-                } else {
-                    owner
-                },
-                source: source.to_string(),
-                agent: Some(source.to_string()),
-                session_state: Some("recorded".to_string()),
-                native_session,
-                ..RosterEntry::default()
-            });
-        }
-        Ok(rows)
+        Ok(merge_session_switcher_rows(rows, &inner))
     }
 
     pub async fn plans_typed(&self) -> Result<Vec<PlanSummary>> {
@@ -2512,6 +2519,58 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_switcher_merge_keeps_roster_and_dedupes_recorded_hits() {
+        let roster = vec![
+            RosterEntry {
+                owner_id: "su-live".into(),
+                label: "live row".into(),
+                session_state: Some("live".into()),
+                native_session: Some(models::NativeSessionHandle::Codex {
+                    source: "codex".into(),
+                    owner_id: Some("su-live".into()),
+                    codex_home: "/tmp/codex".into(),
+                    rollout_id: Some("rollout-live".into()),
+                    exact_resume_supported: true,
+                    missing_reason: None,
+                }),
+                ..Default::default()
+            },
+            RosterEntry {
+                owner_id: "su-ended".into(),
+                label: "ended row".into(),
+                session_state: Some("ended".into()),
+                ..Default::default()
+            },
+        ];
+        let hits = serde_json::json!({ "results": [
+            { "provenance": {
+                "source_kind": "codex", "session_id": "rollout-live", "owner": ""
+            }},
+            { "provenance": {
+                "source_kind": "claude", "session_id": "ended-transcript", "owner": "su-ended"
+            }},
+            { "provenance": {
+                "source_kind": "codex", "session_id": "recorded-only", "owner": "su-recorded"
+            }}
+        ]});
+
+        let rows = merge_session_switcher_rows(roster, &hits);
+        assert_eq!(rows.len(), 3, "both duplicate forms must be suppressed");
+        assert_eq!(rows[0].session_state.as_deref(), Some("live"));
+        assert_eq!(rows[1].session_state.as_deref(), Some("ended"));
+        assert_eq!(rows[2].owner_id, "su-recorded");
+        assert_eq!(rows[2].session_state.as_deref(), Some("recorded"));
+        assert!(matches!(
+            rows[2].native_session,
+            Some(models::NativeSessionHandle::Codex {
+                rollout_id: Some(ref id),
+                exact_resume_supported: false,
+                ..
+            }) if id == "recorded-only"
+        ));
+    }
 
     #[test]
     fn canonical_selection_rejects_conflicting_explicit_endpoints() {

@@ -6424,4 +6424,45 @@ mod tests {
             "operator must render exactly once on Overview"
         );
     }
+
+    #[test]
+    fn session_switcher_renders_all_states_in_normal_and_pinned_paths() {
+        let mut app = App::new();
+        app.session_switcher = Some(crate::app::SessionSwitcher {
+            query: "crew".into(),
+            rows: ["live", "parked", "ended", "recorded"]
+                .into_iter()
+                .enumerate()
+                .map(|(index, state)| RosterEntry {
+                    owner_id: format!("su-{state}"),
+                    label: format!("{state} crew"),
+                    source: "codex".into(),
+                    role: Some("member".into()),
+                    intent: Some("ship the cockpit".into()),
+                    session_state: Some(state.into()),
+                    adv_session_id: Some(index as i64 + 1),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        });
+
+        let normal = render(&app, 120, 30);
+        for expected in [
+            "Sessions · Ctrl-S",
+            "filter › crew",
+            "LIVE",
+            "PARKED",
+            "ENDED",
+            "RECORDED",
+        ] {
+            assert!(normal.contains(expected), "missing {expected:?}: {normal:?}");
+        }
+
+        app.pinned = Some(Tab::Fleet);
+        let pinned = render(&app, 120, 30);
+        assert!(pinned.contains("Sessions · Ctrl-S"));
+        assert!(pinned.contains("LIVE"));
+        assert!(pinned.contains("RECORDED"));
+    }
 }
