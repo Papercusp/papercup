@@ -1,0 +1,149 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { RouteContext } from '../../define-route';
+import {
+  UnsupportedWorkspaceHostInitializationTargetError,
+  WorkspaceHostDesiredSpecUnavailableError,
+  WorkspaceHostInitializationControllerProfileError,
+} from '../../../workspace-host/initialization-operations-resolver';
+import {
+  createWorkspaceHostCredentialLifecycleRoute,
+  type WorkspaceHostCredentialLifecycleRouteDependencies,
+} from './credential-lifecycle';
+
+const CTX: RouteContext = {
+  principal: null,
+  input: undefined,
+  params: { hostId: 'host-1' },
+  log: () => {},
+  signal: new AbortController().signal,
+};
+
+const step = {
+  id: 'bind-cloud',
+  kind: 'bind' as const,
+  channel: 'cloud' as const,
+  dependsOn: [],
+  idempotencyKey: 'workspace-credential:op-1:bind-cloud',
+  credentialRef: { kind: 'cloud' as const, ref: 'cloud://ref' },
+  delivery: {
+    kind: 'provider-identity' as const,
+    generation: 2,
+    audience: 'host-1',
+    revocationRef: 'cloud-revoke://ref/g2',
+  },
+};
+
+function harness() {
+  const execute = vi.fn(async () => ({
+    observedAt: '2026-08-26T10:01:00.000Z', publicEvidence: {},
+  }));
+  const runLifecycle = vi.fn<WorkspaceHostCredentialLifecycleRouteDependencies['runLifecycle']>(
+    async (input) => {
+      input.onPlanned?.({ action: input.action } as never);
+      await input.operations.execute(step);
+      return {
+        operationId: input.operationId ?? 'op-1',
+        plan: { action: input.action, steps: [step] } as never,
+        receipts: [{
+          stepId: step.id,
+          evidence: {
+            channel: 'cloud', operation: 'bind', generation: 2, referenceDigest: 'digest-1',
+          },
+        }] as never,
+      };
+    },
+  );
+  const dependencies: WorkspaceHostCredentialLifecycleRouteDependencies = {
+    activeWorkspaceId: () => 'workspace-1',
+    resolveControllerProfile: () => ({
+      sshUser: 'papercusp', knownHostsFile: '/known-hosts', remoteEntrypoint: '/initializer',
+    }),
+    resolveOperationsForHost: vi.fn(async () => ({ desired: {} as never, operations: { execute } as never })),
+    runLifecycle,
+  };
+  return { dependencies, execute, runLifecycle };
+}
+
+async function post(dependencies: WorkspaceHostCredentialLifecycleRouteDependencies, body: unknown) {
+  const route = createWorkspaceHostCredentialLifecycleRoute(dependencies);
+  return route.handler(new Request('http://operator.test/workspace-hosts/host-1/credential-lifecycle', {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }), CTX);
+}
+
+const bodies = {
+  rotate: {
+    action: 'rotate', currentCredentialRefs: {}, currentDelivery: {},
+    nextCredentialRefs: {}, nextDelivery: {},
+  },
+  revoke: { action: 'revoke', currentCredentialRefs: {}, currentDelivery: {}, channels: ['cloud'] },
+  reconnect: { action: 'reconnect', currentCredentialRefs: {}, currentDelivery: {} },
+  'restore-rebind': { action: 'restore-rebind', backup: {}, nextCredentialRefs: {}, nextDelivery: {} },
+} as const;
+
+beforeEach(() => vi.clearAllMocks());
+
+describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
+  it.each(Object.entries(bodies))('accepts and forwards the %s action', async (action, body) => {
+    const { dependencies, execute, runLifecycle } = harness();
+    const response = await post(dependencies, body);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ ok: true, action, receipts: [{ operation: 'bind' }] });
+    expect(runLifecycle).toHaveBeenCalledWith(expect.objectContaining({ action }));
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'bind-cloud', kind: 'bind', input: expect.objectContaining({ channel: 'cloud' }),
+    }));
+  });
+
+  it('returns 400 for malformed bodies before resolving controller state', async () => {
+    const { dependencies } = harness();
+    const controller = vi.spyOn(dependencies, 'resolveControllerProfile');
+    expect((await post(dependencies, { action: 'rotate' })).status).toBe(400);
+    expect((await post(dependencies, { action: 'revoke', currentCredentialRefs: {}, currentDelivery: {}, channels: 1 })).status).toBe(400);
+    expect(controller).not.toHaveBeenCalled();
+  });
+
+  it('maps missing intent, unsupported targets, and controller configuration without echoing thrown text', async () => {
+    const first = harness().dependencies;
+    first.resolveOperationsForHost = vi.fn(async () => {
+      throw new WorkspaceHostDesiredSpecUnavailableError('host-1', 'host-not-found');
+    });
+    expect((await post(first, bodies.reconnect)).status).toBe(404);
+
+    const second = harness().dependencies;
+    second.resolveOperationsForHost = vi.fn(async () => {
+      throw new WorkspaceHostDesiredSpecUnavailableError('host-1', 'no-recorded-spec');
+    });
+    expect((await post(second, bodies.reconnect)).status).toBe(409);
+
+    const third = harness().dependencies;
+    third.resolveOperationsForHost = vi.fn(async () => {
+      throw new UnsupportedWorkspaceHostInitializationTargetError('aws-secret-diagnostic');
+    });
+    const unsupported = await post(third, bodies.reconnect);
+    expect(unsupported.status).toBe(501);
+    expect(JSON.stringify(await unsupported.json())).not.toContain('Only');
+
+    const fourth = harness().dependencies;
+    fourth.resolveControllerProfile = () => {
+      throw new WorkspaceHostInitializationControllerProfileError(['internal secret path']);
+    };
+    expect((await post(fourth, bodies.reconnect)).status).toBe(503);
+  });
+
+  it('uses the onPlanned seam to separate contract rejection from execution failure', async () => {
+    const rejected = harness().dependencies;
+    rejected.runLifecycle = vi.fn(async () => { throw new Error('bad generation'); });
+    const rejectedResponse = await post(rejected, bodies.rotate);
+    expect(rejectedResponse.status).toBe(422);
+
+    const failed = harness().dependencies;
+    failed.runLifecycle = vi.fn(async (input) => {
+      input.onPlanned?.({} as never);
+      throw new Error('host output secret-must-not-echo');
+    });
+    const failedResponse = await post(failed, bodies.reconnect);
+    expect(failedResponse.status).toBe(500);
+    expect(JSON.stringify(await failedResponse.json())).not.toContain('secret-must-not-echo');
+  });
+});
