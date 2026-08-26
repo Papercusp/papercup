@@ -445,6 +445,18 @@ describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI
     // yields the event-loop turn the handler would need — so the trap buys no marker and
     // costs promptness, against a repo where kill discipline is load-bearing.
     //
+    // SECOND, INDEPENDENT REASON (WI-42144), because the first one alone reads as a
+    // tractable engineering problem someone may believe they have solved. This guard is
+    // ALSO what keeps a pc-heavy retry series from emitting contradictory verdict lines.
+    // test:affected runs under PC_HEAVY_RETRY_PREEMPTIONS=3 (up to 4 attempts), pc-heavy
+    // isolates only STDOUT between attempts, and affected-tests.mjs emits its entire
+    // FAILURE surface on stderr — status=failed, AFFECTED_TESTS_FAILING_FILES and the
+    // failing-task bullets — while status=passed goes to stdout; green-checkpoint parses
+    // the two concatenated. With no trap a preempted attempt dies before any terminal
+    // path and contributes no verdict line, so there is nothing to duplicate. Add the
+    // trap and preempted attempts begin writing terminal markers into a stream nothing
+    // deduplicates. Removing this guard is therefore not just a killability regression.
+    //
     // Judged over CODE lines only. The block that explains this rule necessarily
     // WRITES `process.on('SIGTERM', …)` to warn about it, so judging the whole file
     // fires on the documentation of the bug itself — the same prose-vs-code trap
