@@ -38,6 +38,7 @@ import {
   type GateRedOwnership,
 } from '../../release/gate-red-ownership';
 import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../release/fixer-liveness';
+import { decideStallNotification, describeLadderPosition } from '../../release/stall-escalation-ladder';
 // WI-37605: narrate under the RESOLVED tag, never a hardcoded '[green-checkpoint]'. This module's
 // own suite (release-actions*.test.ts) drives these code paths, and vitest captures their stdout
 // verbatim into the gate's persisted verdict log — so a hardcoded prefix emits a line
@@ -2062,6 +2063,13 @@ export async function trackGateStall(
       lastGreenAt?: number;
       firstRedAt?: number;
       stallAlerted?: boolean;
+      // WI-42116: the escalation LADDER's high-water marks. `stallAlerted` remains the
+      // one-shot flag for the CONDITION leg (mint-once, resolve-once); these two are the
+      // per-axis marks that let the HUMAN-NOTIFY leg re-fire at a new rung. Absent on a
+      // gate_health blob written before this shipped — the ladder seeds them from
+      // `stallAlerted` in that case rather than re-alerting for an announced stall.
+      stallAlertedAtReds?: number | null;
+      stallAlertedAtAgeMs?: number | null;
       lastFrom?: string;
       lastMainPin?: string | null;
       watchdogAlerted?: boolean;
