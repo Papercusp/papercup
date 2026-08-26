@@ -290,3 +290,127 @@ describe('detectContentOffenders — raw NUL is repaired at git-sync, not at the
     expect(writeText).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * EI-21230011589307899 — the RECURRENCE GUARD for the commit-time SECRETS class.
+ *
+ * The third sibling of the two blocks above, and the one whose miss is the only
+ * UNRECOVERABLE one here. ts-parse and nul-bytes guard a BUILD: a miss ships a
+ * broken file and the fix is another commit. This guards git HISTORY — a
+ * credential-shaped blob that lands in a commit freezes this pot's p2p egress
+ * permanently, because pot-git's own-head publish guard re-scans `(baseline,
+ * head]` and its baseline never advances past a refused range. Editing the file
+ * afterwards does not remove the earlier blob; only a path exemption clears it.
+ *
+ * ⚠ WHY THIS BLOCK EXISTS AT ALL, given secrets.test.ts already has wiring tests.
+ * Those assert the detector is present in the `DEFAULT_CONTENT_DETECTORS` ARRAY.
+ * That is a weaker claim than it looks: it would still pass if the guard consumed
+ * a different list, or if the credential shape never survived the guard's own
+ * path filtering and read seam. The claim that actually matters is END-TO-END —
+ * a credential-shaped DIRTY FILE, swept by the real `detectContentOffenders`
+ * with the real registry, comes back excluded from the commit. Only this block
+ * makes that claim, which is the same reason WI-6683's and EI-19393386475030577's
+ * blocks run against the production registry rather than an injected detector.
+ *
+ * ⚠ EVERY CREDENTIAL-SHAPED FIXTURE HERE IS ASSEMBLED AT RUNTIME — the same
+ * load-bearing technique as secrets.test.ts. A literal shape in this file's TEXT
+ * would be caught by the very scanner under test the moment git-sync swept the
+ * tree, freezing egress at this blob. Keeping it split means this file needs no
+ * exemption entry, and an exemption is a permanent security waiver where this is
+ * only a formatting choice.
+ */
+describe('detectContentOffenders — a credential shape is quarantined before it enters history (EI-21230011589307899)', () => {
+  /** AWS-access-key-shaped, assembled so this file's own text never carries the
+   *  contiguous shape. NOT suffixed `EXAMPLE`: the scanner treats AWS's reserved
+   *  docs suffix as a documented example, which would make this silently non-matching. */
+  const awsShape = (): string => 'AK' + 'IA' + 'QRSTUVWXYZ234567';
+  const CREDENTIAL_TS = `export const id = '${awsShape()}';\n`;
+  const CLEAN_TS = 'export const id = process.env.AWS_ACCESS_KEY_ID;\n';
+  const DIRTY = 'apps/operator/lib/thing.ts';
+
+  /** The guard reaches the runtime exemption reader through the detector, so it is
+   *  stubbed for determinism — unstubbed it would issue a real database read. */
+  const withExemptions = (paths: string[] = []) =>
+    setContentLintExemptionLoader(async () => new Set(paths));
+
+  afterEach(() => setContentLintExemptionLoader());
+
+  const sweep = (
+    files: Record<string, string>,
+    detectors = DEFAULT_CONTENT_DETECTORS,
+    writeText?: (relPath: string, text: string) => Promise<void>,
+  ) =>
+    detectContentOffenders({
+      repoPath: '/repo',
+      detectors,
+      runGit: statusRunGit(Object.keys(files).map((f) => ` M ${f}`)),
+      readText: async (rel) => files[rel] ?? null,
+      writeText,
+    });
+
+  it('QUARANTINES the credential-shaped file, naming the class and the fixer', async () => {
+    withExemptions();
+    const offenders = await sweep({ [DIRTY]: CREDENTIAL_TS });
+
+    const hit = offenders.find((o) => o.detectorKey === 'secrets');
+    expect(hit).toBeDefined();
+    expect(hit!.file).toBe(DIRTY);
+    expect(hit!.error).toContain('credential-shaped content would enter git history');
+    expect(hit!.error).toContain('aws-access-key-id');
+    expect(hit!.fixerRole).toBe('content-fixer');
+  });
+
+  /**
+   * The NEGATIVE CONTROL, and the reason the assertion above is not self-fulfilling.
+   *
+   * It runs the identical sweep with `secrets` filtered OUT of the real registry
+   * and asserts the same file comes back clean. That pins the quarantine to THIS
+   * detector's registration rather than to some sibling incidentally flagging the
+   * file — the failure mode a positive-only test cannot distinguish. It is also
+   * this block's falsifiability proof: it demonstrates in-file, permanently, and
+   * on every run that the assertion above has teeth, without mutating tracked
+   * source on an auto-committing tree, where there is no safe temporary mutation.
+   */
+  it('CONTROL: the same file is NOT quarantined once `secrets` is dropped from the registry', async () => {
+    withExemptions();
+    const withoutSecrets = DEFAULT_CONTENT_DETECTORS.filter((d) => d.key !== 'secrets');
+    // The control must actually remove something, or it passes vacuously.
+    expect(withoutSecrets).toHaveLength(DEFAULT_CONTENT_DETECTORS.length - 1);
+
+    expect(await sweep({ [DIRTY]: CREDENTIAL_TS }, withoutSecrets)).toEqual([]);
+  });
+
+  it('NEVER auto-repairs — a credential-shaped rewrite must be read before it is applied', async () => {
+    withExemptions();
+    const writeText = vi.fn(async () => {});
+    const offenders = await sweep({ [DIRTY]: CREDENTIAL_TS }, DEFAULT_CONTENT_DETECTORS, writeText);
+
+    // Unlike nul-bytes above, this class has no autoFix: quarantine, never rewrite.
+    expect(offenders.some((o) => o.detectorKey === 'secrets')).toBe(true);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('honours a RUNTIME path exemption through the whole guard, not just direct detect()', async () => {
+    // Proves the exemption reader is reachable at the seam that actually commits.
+    // If it were not, an exempted file would be quarantined from commit forever.
+    withExemptions(['apps/operator/lib/']);
+    expect(await sweep({ [DIRTY]: CREDENTIAL_TS })).toEqual([]);
+  });
+
+  it('leaves clean sources alone (no false quarantine of ordinary credential-ADJACENT code)', async () => {
+    withExemptions();
+    const offenders = await sweep({
+      [DIRTY]: CLEAN_TS,
+      'docs/runbook.md': 'Set `AWS_ACCESS_KEY_ID` in the environment before running.\n',
+    });
+    expect(offenders.filter((o) => o.detectorKey === 'secrets')).toEqual([]);
+  });
+
+  it('covers a NON-source path too — the shape is not a property of a file type', async () => {
+    // The historical instances were a .test.ts, a .mjs hook and a test harness;
+    // no suffix filter would have caught all three, so the guard must not have one.
+    withExemptions();
+    const offenders = await sweep({ 'apps/operator/scripts/hooks/cc/thing.mjs': CREDENTIAL_TS });
+    expect(offenders.some((o) => o.detectorKey === 'secrets')).toBe(true);
+  });
+});
