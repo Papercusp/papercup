@@ -1276,7 +1276,7 @@ export default defineTool({
         const row = await boundedRead(
           'dag',
           () => getPlanRow(args.plan as string, { workspaceId }),
-          undefined as Awaited<ReturnType<typeof getPlanRow>>,
+          null as Awaited<ReturnType<typeof getPlanRow>>,
         );
         if (row) {
           const items = resolveEffectiveStatusForItems(planItemsForRow(row)).items;

@@ -220,10 +220,10 @@ describe('fleet:assignments bounded handler reads', () => {
       expect(mocks.unanswered).toHaveBeenCalledTimes(1);
     });
 
-    wakeability.resolve(new Map());
+    wakeability.resolve(new Map<string, never>());
     parkedOn.resolve([]);
-    contextPressure.resolve(new Map());
-    unanswered.resolve(new Map());
+    contextPressure.resolve(new Map<string, never>());
+    unanswered.resolve(new Map<string, never>());
 
     const result = (await pending) as { data: { degraded?: boolean; summary: { agents: number } } };
     expect(result.data.summary.agents).toBe(1);
