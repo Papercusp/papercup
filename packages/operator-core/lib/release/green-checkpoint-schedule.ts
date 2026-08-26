@@ -46,16 +46,13 @@
  * monitor. Match on the routine NAME before assuming a literal is a copy of this one.
  */
 export function greenCheckpointCronForInstall(installSlug: string): string {
-  // FNV-1a is tiny, stable across processes/platforms, and has enough avalanche
-  // for this scheduling purpose. Use both seconds and minutes: 3,600 buckets
-  // keep a fleet of tens of installs from clustering on one second while the
-  // hour field preserves the existing once-per-hour cadence.
-  let hash = 0x811c9dc5;
-  for (const char of installSlug) {
-    hash ^= char.codePointAt(0) ?? 0;
-    hash = Math.imul(hash, 0x01000193);
-  }
-  const secondOfHour = (hash >>> 0) % 3_600;
+  // A position-weighted UTF-8 byte sum is deliberately mirrored in migration
+  // 976 so existing rows and future re-seeds converge on the same schedule.
+  const bytes = new TextEncoder().encode(installSlug);
+  const secondOfHour = bytes.reduce(
+    (sum, byte, index) => (sum + byte * (index + 1)) % 3_600,
+    0,
+  );
   return `${secondOfHour % 60} ${Math.floor(secondOfHour / 60)} * * * *`;
 }
 
