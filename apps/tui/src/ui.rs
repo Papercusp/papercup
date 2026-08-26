@@ -2420,9 +2420,8 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
             };
             let bar_w = inner_w.saturating_sub(20).clamp(8, 40);
             let filled = (frac * bar_w as f64).round() as usize;
-            let bar: String = std::iter::repeat('█')
-                .take(filled)
-                .chain(std::iter::repeat('░').take(bar_w.saturating_sub(filled)))
+            let bar: String = std::iter::repeat_n('█', filled)
+                .chain(std::iter::repeat_n('░', bar_w.saturating_sub(filled)))
                 .collect();
             lines.push(Line::from(vec![
                 Span::raw("  "),

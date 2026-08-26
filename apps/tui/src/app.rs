@@ -39,6 +39,11 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 /// (No `Eq`: `VoiceChan(VoiceCmd)` carries a `serde_json::Value` for prefs
 /// patches, which isn't `Eq`. `PartialEq` is all the run loop needs.)
 #[derive(Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    clippy::enum_variant_names,
+    reason = "Action is the stable reducer protocol; boxing or renaming variants is cross-cutting API churn"
+)]
 pub enum Action {
     None,
     /// Re-read the canonical Context projection for the currently bound native
@@ -2484,7 +2489,7 @@ impl App {
     /// Rows that carry NO slug stay visible (they can't be attributed, and
     /// hiding them would silently drop real data).
     fn in_scope(&self, h: Option<&str>) -> bool {
-        self.all_pots || h.map_or(true, |s| s.is_empty() || s == self.harness)
+        self.all_pots || h.is_none_or(|s| s.is_empty() || s == self.harness)
     }
 
     /// The Plans list under the current pot scope (what the Plans tab renders;

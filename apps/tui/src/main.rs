@@ -469,6 +469,7 @@ async fn run_chat_dock() -> Result<()> {
     std::process::exit(status.code().unwrap_or(0));
 }
 
+#[expect(clippy::too_many_arguments, reason = "top-level run wiring mirrors independent CLI launch dimensions")]
 async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     pinned: Option<app::Tab>,
@@ -1298,27 +1299,24 @@ async fn run<B: Backend>(
                             let _ = vs.set_muted(m);
                         }
                     }
-                    VC::MicOn => match &voice_chan {
-                        Some(vs) => match voice_stream::start_mic(vs.clone()) {
-                            Ok(h) => {
-                                // PTT → gate off (the held key IS the gate);
-                                // open-mic manual restart → VAD gate on (P-010).
-                                let open_mic = app
-                                    .voice_ui
-                                    .prefs
-                                    .as_ref()
-                                    .map(|p| p.input_mode == "open-mic")
-                                    .unwrap_or(false);
-                                vs.set_tx_gate(open_mic);
-                                voice_mic = Some(h);
-                                let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
-                            }
-                            Err(e) => {
-                                let _ = tx.send(Event::VoiceUi(VE::Error(format!("mic: {e}"))));
-                            }
-                        },
-                        None => {}
-                    },
+                    VC::MicOn => if let Some(vs) = &voice_chan { match voice_stream::start_mic(vs.clone()) {
+                        Ok(h) => {
+                            // PTT → gate off (the held key IS the gate);
+                            // open-mic manual restart → VAD gate on (P-010).
+                            let open_mic = app
+                                .voice_ui
+                                .prefs
+                                .as_ref()
+                                .map(|p| p.input_mode == "open-mic")
+                                .unwrap_or(false);
+                            vs.set_tx_gate(open_mic);
+                            voice_mic = Some(h);
+                            let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
+                        }
+                        Err(e) => {
+                            let _ = tx.send(Event::VoiceUi(VE::Error(format!("mic: {e}"))));
+                        }
+                    } },
 
                     VC::MicOff => {
                         voice_mic = None;
@@ -3085,9 +3083,9 @@ async fn fetch_fleet_leader_brief(fleet: String, harness: String, tx: UnboundedS
 
 /// Fetch one bee's dossier — its ranked work-list (`fleet:assignments { agent }`)
 /// + coord inbox/outbox (`fleet:bee_mail`) — and emit `Event::BeeDossier`. Each
-/// half is best-effort: a failure of one still ships the other (the reducer
-/// stale-guards on `owner_id`). On a total transport failure nothing is sent (the
-/// pane keeps its "loading…" state; the next selection re-triggers).
+///   half is best-effort: a failure of one still ships the other (the reducer
+///   stale-guards on `owner_id`). On a total transport failure nothing is sent (the
+///   pane keeps its "loading…" state; the next selection re-triggers).
 async fn bee_dossier_fetch(owner_id: String, tx: UnboundedSender<Event>) {
     let Ok(client) = OperatorClient::from_discovery().await else {
         return;
@@ -3324,6 +3322,7 @@ async fn agent_chat_load(
 ///
 /// The loop's `LoopEvent` vocabulary is mapped onto the pane's existing
 /// streaming-bubble events, so the reducer and renderer are untouched.
+#[expect(clippy::too_many_arguments, reason = "chat-turn boundary mirrors the explicit launch request fields")]
 async fn stream_agent_chat_turn(
     text: String,
     harness: String,
