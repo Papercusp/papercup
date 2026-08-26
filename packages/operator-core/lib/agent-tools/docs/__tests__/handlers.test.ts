@@ -653,6 +653,66 @@ describe('docs:search handler', () => {
     });
   });
 
+  describe('retirement/currentness authority route (P-005 / D-006)', () => {
+    it('injects exact-slug current authority ahead of a historical plan hit', async () => {
+      mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+      searchDocs
+        .mockResolvedValueOnce({
+          query: 'Queen Mug Kettle retired current work assignment wake agent',
+          tokenCount: 9,
+          hitCount: 1,
+          hits: [
+            {
+              slug: 'docs/plans/sentinel-tui-shared-backend-and-cards-2026-06-22',
+              title: 'Historical Queen architecture',
+              excerpt: 'The Queen surveys the backlog and places bees.',
+              score: 99,
+            },
+          ],
+        })
+        .mockResolvedValueOnce({
+          query: 'agent-insights/mug-kettle-cup-tier-is-retired',
+          tokenCount: 7,
+          hitCount: 1,
+          hits: [
+            {
+              slug: 'agent-insights/mug-kettle-cup-tier-is-retired',
+              title: 'The Mug · Kettle · Cup tier is RETIRED',
+              excerpt: 'su + GOAL mode are the current replacement.',
+              score: 1000,
+            },
+          ],
+        });
+
+      const tool = (await import('../search')).default;
+      const res = await tool.handler(
+        { query: 'Queen Mug Kettle retired current work assignment wake agent', limit: 8 } as never,
+        { harnessSlug: 'sheets', isSuperuser: true } as never,
+      );
+      const p = payloadOf(res);
+
+      expect(searchDocs).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(searchDocs).mock.calls[1][1]).toMatchObject({
+        query: 'agent-insights/mug-kettle-cup-tier-is-retired',
+        limit: 1,
+      });
+      expect(p.currentAuthority).toMatchObject({
+        slug: 'agent-insights/mug-kettle-cup-tier-is-retired',
+        authority: 'current',
+        surface: 'engineering',
+      });
+      expect(p.hits.map((entry: { slug: string }) => entry.slug)).toEqual([
+        'agent-insights/mug-kettle-cup-tier-is-retired',
+        'docs/plans/sentinel-tui-shared-backend-and-cards-2026-06-22',
+      ]);
+      expect(p.hits[1]).toMatchObject({ historical: true });
+      expect(p.crossSurface).toMatchObject({ surface: 'engineering', mode: 'authority-lookup' });
+      expect(p.crossSurface.why).toMatch(/historical plan material/);
+      expect(p.scopeNote).toMatch(/canonical engineering authority/);
+      expect(p.scopeNote).not.toMatch(/semantic leg matched NOTHING/);
+    });
+  });
+
   // EI-18894866320087268: harness:'all' is REJECTED with harness_forbidden at the transport
   // layer for a workspace-scoped session; 'engineering' is a distinct literal that is NOT
   // intercepted by that clamp and reaches the same corpus — even when ctx.harnessSlug is a

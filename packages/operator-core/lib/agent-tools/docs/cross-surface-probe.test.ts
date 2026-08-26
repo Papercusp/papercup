@@ -13,10 +13,25 @@
  * doubles its work forever.
  */
 import { describe, it, expect } from 'vitest';
-import { shouldProbeSiblingSurface } from './search';
+import type { SearchHit } from '@papercusp/docs-engine';
+import {
+  isHistoricalDocsHit,
+  isRetirementAuthorityQuery,
+  rankRetirementAuthorityHits,
+  RETIREMENT_AUTHORITY_SLUG,
+  shouldProbeSiblingSurface,
+} from './search';
 
 type Leg = { status?: string; candidates?: number } | undefined;
-const ask = (over: Partial<{ surface: 'harness' | 'engineering' | 'project'; isSuperuser: boolean; semanticLeg: Leg }> = {}) =>
+const ask = (
+  over: Partial<{
+    surface: 'harness' | 'engineering' | 'project';
+    isSuperuser: boolean;
+    semanticLeg: Leg;
+    query: string;
+    hasHistoricalHits: boolean;
+  }> = {},
+) =>
   shouldProbeSiblingSurface({
     surface: 'harness',
     isSuperuser: true,
@@ -61,6 +76,77 @@ describe('shouldProbeSiblingSurface', () => {
 
   it('does NOT fire for a non-superuser — the probe must not be a side door around the D-005/P-016 gate', () => {
     expect(ask({ isSuperuser: false })).toBe(false);
+  });
+
+  it('routes a retirement/currentness query even when this corpus has plausible semantic hits', () => {
+    expect(
+      ask({
+        query: 'Are Queen, Mug, and Kettle retired; what agent dispatch is current now?',
+        hasHistoricalHits: true,
+        semanticLeg: { status: 'ran', candidates: 7 },
+      }),
+    ).toBe(true);
+  });
+
+  it('routes retirement authority when the embedder is blocked, but only for an su outside engineering', () => {
+    const query = 'What replaced the Mug runtime and work-assignment role?';
+    expect(ask({ query, semanticLeg: { status: 'blocked', candidates: 0 } })).toBe(true);
+    expect(ask({ query, isSuperuser: false, semanticLeg: { status: 'blocked', candidates: 0 } })).toBe(false);
+    expect(ask({ query, surface: 'engineering', semanticLeg: { status: 'blocked', candidates: 0 } })).toBe(false);
+  });
+});
+
+const hit = (slug: string, score: number, trust?: SearchHit['trust']): SearchHit => ({
+  slug,
+  url: `/internal/docs/${slug}`,
+  title: slug,
+  score,
+  excerpt: slug,
+  ...(trust ? { trust } : {}),
+});
+
+describe('retirement authority/currentness ranking', () => {
+  it('recognizes retirement mechanism questions without hijacking ordinary ceramic searches', () => {
+    expect(isRetirementAuthorityQuery('Queen Mug Kettle retired current work assignment wake agent')).toBe(true);
+    expect(isRetirementAuthorityQuery('What replacement currently dispatches the Mug role?')).toBe(true);
+    expect(isRetirementAuthorityQuery('current coffee mug price')).toBe(false);
+    expect(isRetirementAuthorityQuery('best kettle available now')).toBe(false);
+    expect(isRetirementAuthorityQuery('how does work assignment wake an agent?')).toBe(false);
+  });
+
+  it('labels authored-superseded and plan-export hits as historical', () => {
+    expect(isHistoricalDocsHit(hit('agent-insights/old', 1, { tier: 'unverified', stale: false, superseded: true }))).toBe(true);
+    expect(isHistoricalDocsHit(hit('docs/plans/old-queen-architecture', 1))).toBe(true);
+    expect(isHistoricalDocsHit(hit('plans/old-queen-architecture', 1))).toBe(true);
+    expect(isHistoricalDocsHit(hit('agent-insights/current', 1))).toBe(false);
+  });
+
+  it('puts canonical current authority first, then current material, then historical plans', () => {
+    const ranked = rankRetirementAuthorityHits(
+      'Queen Mug Kettle retired current work assignment wake agent',
+      [
+        hit('docs/plans/queen-architecture', 99),
+        hit('agent-insights/current-assignment', 4),
+        hit(RETIREMENT_AUTHORITY_SLUG, 1),
+      ],
+    );
+    expect(ranked.map((entry) => entry.slug)).toEqual([
+      RETIREMENT_AUTHORITY_SLUG,
+      'agent-insights/current-assignment',
+      'docs/plans/queen-architecture',
+    ]);
+    expect(ranked[0]).toMatchObject({ authority: 'current' });
+    expect(ranked[2]).toMatchObject({ historical: true });
+  });
+
+  it('keeps ordinary-query order stable while still exposing authored historical status', () => {
+    const ranked = rankRetirementAuthorityHits('architecture background', [
+      hit('docs/plans/old', 9),
+      hit('agent-insights/live', 2),
+    ]);
+    expect(ranked.map((entry) => entry.slug)).toEqual(['docs/plans/old', 'agent-insights/live']);
+    expect(ranked[0]).toMatchObject({ historical: true });
+    expect(ranked.every((entry) => entry.authority === undefined)).toBe(true);
   });
 });
 
