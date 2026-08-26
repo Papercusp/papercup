@@ -502,22 +502,27 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
     [
       'wrong exit code',
       'dependency-generation.sh exited 75: no prewarmed dependency generation for input fingerprint abc123',
+      'infra-inconclusive',
+      undefined,
     ],
     // Some other tool exiting 74 must not borrow this classification.
     [
       'missing script identity',
       'some-other-tool exited 74: no prewarmed dependency generation for input fingerprint abc123',
+      'error',
+      true,
     ],
   ])(
     'keeps an incomplete signature on the generic crash path: %s',
-    (_label, message) => {
+    (_label, message, expectedReason, expectedCrashed) => {
       const r = buildTerminalFailureCheckpointResult({
         candidate: 'b3e519a1bfce',
         error: new Error(message),
         runId: 'run-generic',
       });
       expect(r.reason).not.toBe('dependency-prewarm-missing');
-      expect(r.crashed).toBe(true);
+      expect(r.reason).toBe(expectedReason);
+      expect(r.crashed).toBe(expectedCrashed);
     },
   );
 
