@@ -29115,7 +29115,7 @@
           "POST"
         ]
       },
-      "description": "Run the staged work-item bulk deduplicator for one harness. It creates a fresh pinned census/shard map, applies the promoter duplication-only charter to the D-002-selected full-corpus or machine-emitter-targeted scope, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true because accepted merge verdicts terminalize duplicate rows.",
+      "description": "Enqueue the durable staged work-item bulk deduplicator for one harness and return immediately. The one-shot system action creates a fresh pinned census/shard map, applies the promoter duplication-only charter to the D-002-selected full-corpus or machine-emitter-targeted scope, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true because accepted merge verdicts terminalize duplicate rows.",
       "capabilities": [
         "work_items:write"
       ],
@@ -29140,7 +29140,7 @@
       "guidance": {
         "when": "A reviewed bulk-dedup plan is ready to execute and its current corpus must converge under the admission census ratchet.",
         "notWhen": "Quick filing or ordinary pending-item admission — the durable work-item admission promoter handles those automatically.",
-        "chaining": "work_items:bulk_dedup { harness, confirm:true } → inspect workItemAdmission.runs / admin admission history for the stage and final census."
+        "chaining": "work_items:bulk_dedup { harness, confirm:true } → the durable one-shot runs independently → inspect workItemAdmission.runs / admin admission history for the stage and final census."
       }
     },
     {
