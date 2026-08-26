@@ -36,7 +36,14 @@ import { join } from 'node:path';
 
 const LIB_DIR = import.meta.dirname ?? __dirname;
 // operator-core/lib → operator-core → packages → repo root
-const REPO_ROOT = join(LIB_DIR, '..', '..', '..');
+//
+// FALSIFIABILITY SEAM. `PAPERCUSP_REMOTE_INIT_GUARD_ROOT` repoints every subject below at a copy
+// of the tree. It exists so this guard can be PROVEN to fail — mutate the copy, run the suite
+// against it, watch it go red — without mutating the shared checkout, which git-sync commits on a
+// schedule and would therefore publish the mutant (see CLAUDE.md, "Proving a guard is
+// falsifiable"). Unset in every normal run, so the default is the real tree.
+const REPO_ROOT =
+  process.env.PAPERCUSP_REMOTE_INIT_GUARD_ROOT ?? join(LIB_DIR, '..', '..', '..');
 
 const BUILD_SCRIPT = join(REPO_ROOT, 'papercusp-desktop', 'bin', 'build-desktop-sidecar.sh');
 const VERIFY_SCRIPT = join(REPO_ROOT, 'papercusp-desktop', 'bin', 'verify-sidecar-bundle.sh');
