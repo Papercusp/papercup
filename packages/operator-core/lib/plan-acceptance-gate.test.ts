@@ -293,6 +293,59 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(rejected.message).toContain('regression evidence remains unresolved');
   });
 
+  it('honors a legacy independent grading directly superseded by the standing author acceptance card', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    const independent = scorecard({
+      issueId: 'EI-independent',
+      createdAt: '2026-08-21T01:00:00Z',
+      createdBy: 'su-grader',
+      supersededBy: 'EI-author-accept',
+    });
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        issueId: 'EI-author-accept',
+        createdAt: '2026-08-21T02:00:00Z',
+        createdBy: 'su-implementer',
+        supersedes: independent.issueId,
+        acceptance: { verdict: 'accept', reasoning: 'The independent evidence meets the plan.' },
+      }),
+      independent,
+    ]);
+
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: true,
+      gradedBy: 'su-grader',
+    });
+    expect(mockScorecards).toHaveBeenCalledWith({
+      rubricRef: 'ar-some-plan',
+      limit: 50,
+      includeSuperseded: true,
+    });
+  });
+
+  it('does not revive an unrelated superseded grading outside a standing author-verdict lineage', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        issueId: 'EI-author-accept',
+        createdAt: '2026-08-21T02:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'accept', reasoning: 'Author-only evidence is insufficient.' },
+      }),
+      scorecard({
+        issueId: 'EI-old-independent',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-grader',
+        supersededBy: 'EI-unrelated-correction',
+      }),
+    ]);
+
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: false,
+      code: 'self_graded_only',
+    });
+  });
+
   it('accepts an audited successor verdict but never counts that successor as the independent grader', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
     mockAuthorIdentity.mockImplementation(

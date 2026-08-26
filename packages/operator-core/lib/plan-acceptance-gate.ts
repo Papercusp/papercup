@@ -559,9 +559,52 @@ export async function evaluatePlanAcceptanceGate(
 
   // A qualifying grading: complete (every criterion rated), agent-emitted (synthesized
   // floors are excluded by listScorecards' default), against THIS rubric.
-  const scorecards = await listScorecards({ rubricRef: rubric.rubricId, limit: 50 });
-  const complete = scorecards.filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
+  // Read the audit lineage as well as the standing cards. New writers refuse an
+  // acceptance-author verdict that `supersedes` its independent grading, because
+  // both halves must remain independently visible. Older deployed writers briefly
+  // allowed that shape, though, and the default read then hides the predecessor —
+  // stranding an otherwise-valid plan at `self_graded_only` forever. Below we admit
+  // only that one legacy edge: the direct predecessor named by a STANDING author
+  // acceptance card. Arbitrary superseded history remains ineligible.
+  const scorecards = await listScorecards({ rubricRef: rubric.rubricId, limit: 50, includeSuperseded: true });
+  const allComplete = scorecards.filter(
+    (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized,
+  );
   const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
+  const implementerIdentities = new Set<string>();
+  if (implementer) {
+    implementerIdentities.add(implementer);
+    const candidateIds = [...new Set(allComplete.map((s) => s.createdBy).filter((id): id is string => id != null))];
+    await Promise.all(
+      candidateIds.map(async (candidateId) => {
+        if (await isAcceptanceAuthorIdentity(implementer, candidateId, { workspaceId: rubric.workspaceId })) {
+          implementerIdentities.add(candidateId);
+        }
+      }),
+    );
+  }
+  const isImplementerScorecard = (scorecard: (typeof allComplete)[number]) =>
+    scorecard.createdBy != null && implementerIdentities.has(scorecard.createdBy);
+  const standingAuthorVerdicts = new Map(
+    allComplete
+      .filter(
+        (s) =>
+          !s.supersededBy &&
+          isImplementerScorecard(s) &&
+          s.acceptance != null &&
+          typeof s.supersedes === 'string',
+      )
+      .map((s) => [s.issueId, s.supersedes!] as const),
+  );
+  const complete = allComplete.filter(
+    (s) =>
+      !s.supersededBy ||
+      (standingAuthorVerdicts.get(s.supersededBy) === s.issueId &&
+        // A legacy author verdict may restore only an INDEPENDENT predecessor.
+        // Keeping this guard here prevents an author-authored correction chain
+        // from manufacturing its own independent grader.
+        !isImplementerScorecard(s)),
+  );
   if (complete.length === 0) {
     return {
       satisfied: false,
@@ -574,20 +617,6 @@ export async function evaluatePlanAcceptanceGate(
         `evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005).`,
     };
   }
-  const implementerIdentities = new Set<string>();
-  if (implementer) {
-    implementerIdentities.add(implementer);
-    const candidateIds = [...new Set(complete.map((s) => s.createdBy).filter((id): id is string => id != null))];
-    await Promise.all(
-      candidateIds.map(async (candidateId) => {
-        if (await isAcceptanceAuthorIdentity(implementer, candidateId, { workspaceId: rubric.workspaceId })) {
-          implementerIdentities.add(candidateId);
-        }
-      }),
-    );
-  }
-  const isImplementerScorecard = (scorecard: (typeof complete)[number]) =>
-    scorecard.createdBy != null && implementerIdentities.has(scorecard.createdBy);
   const independent = complete
     .filter((s) => !implementer || (s.createdBy != null && !isImplementerScorecard(s)))
     .slice()
