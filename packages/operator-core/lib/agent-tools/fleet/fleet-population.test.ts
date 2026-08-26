@@ -155,6 +155,37 @@ describe('liveness composition', () => {
     expect(census.liveness?.overstatesActivity).toBe(true);
   });
 
+  /**
+   * The DELIVERY property. renderPopulationCensus has no callers — the census
+   * ships to agents as JSON on `summary.population` — so a caveat that exists
+   * only in the rendered sentence reaches nobody, and `overstatesActivity: true`
+   * alone still assumes the reader knows what it means. If this fails, the fix
+   * is decorative.
+   */
+  it('carries the caveat IN THE PAYLOAD, not only in the unrendered sentence', () => {
+    const { census } = selectFleetPopulation(fleet415, (r) => r.alive, META, (r) => r.state);
+    expect(census.liveness?.note).toBeDefined();
+    expect(census.liveness?.note).toContain('only 4 of 415 are live');
+    expect(census.liveness?.note).toContain('not an activity measure');
+    // It must survive JSON serialization — that is the only form agents see.
+    const roundTripped = JSON.parse(JSON.stringify(census)) as typeof census;
+    expect(roundTripped.liveness?.note).toContain('not an activity measure');
+  });
+
+  it('omits the note when the population really is live — the caveat is not boilerplate', () => {
+    const { census } = selectFleetPopulation(
+      [
+        { alive: true, state: 'live' as const },
+        { alive: true, state: 'live' as const },
+        { alive: true, state: 'parked' as const },
+      ],
+      (r) => r.alive,
+      META,
+      (r) => r.state,
+    );
+    expect(census.liveness?.note).toBeUndefined();
+  });
+
   it('states in the rendered line that the count is NOT an activity measure', () => {
     const line = renderPopulationCensus(
       selectFleetPopulation(fleet415, (r) => r.alive, META, (r) => r.state).census,
@@ -195,6 +226,25 @@ describe('liveness composition', () => {
     // 1 of 2 live is not a majority-live population, so the caveat stands: an
     // unknown row must never be silently credited to the live column.
     expect(census.liveness?.overstatesActivity).toBe(true);
+  });
+
+  /**
+   * Pins the boundary decision. `live * 2 < counted` would leave a
+   * half-parked population uncaveated even though the total overstates activity
+   * twofold — so the rule is "live is not a MAJORITY", and this case is the one
+   * that discriminates the two formulas.
+   */
+  it('flags a population that is exactly half live — half still overstates twofold', () => {
+    const half = [
+      { alive: true, state: 'live' as const },
+      { alive: true, state: 'live' as const },
+      { alive: true, state: 'parked' as const },
+      { alive: true, state: 'parked' as const },
+    ];
+    const { census } = selectFleetPopulation(half, (r) => r.alive, META, (r) => r.state);
+    expect(census.liveness?.liveShare).toBe(0.5);
+    expect(census.liveness?.overstatesActivity).toBe(true);
+    expect(renderPopulationCensus(census)).toContain('NOT measure activity');
   });
 
   it('stays quiet when the population really is live — the caveat must not be boilerplate', () => {
