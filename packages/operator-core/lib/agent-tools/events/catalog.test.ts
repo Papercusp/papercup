@@ -33,12 +33,12 @@ beforeEach(() => {
 
 describe('events:catalog — live_awaiters', () => {
   it('stays within the prompt-weight hard cap', () => {
-    expect(promptWeight(catalog)).toBeLessThanOrEqual(HARD_CAP);
+    expect(promptWeight(catalog as unknown as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(HARD_CAP);
   });
 
   it('documents context-derived visibility instead of caller-supplied scope/pot filters', () => {
     expect(catalog.description).toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
-    expect(catalog.guidance.notWhen).toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
+    expect(catalog.guidance?.notWhen ?? '').toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
     expect(catalog.args.shape).not.toHaveProperty('scope');
     expect(catalog.args.shape).not.toHaveProperty('pot');
     expect(catalog.args.shape).not.toHaveProperty('harness');
