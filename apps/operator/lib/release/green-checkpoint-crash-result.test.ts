@@ -490,12 +490,6 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
       'missing script identity',
       'some-other-tool exited 74: no prewarmed dependency generation for input fingerprint abc123',
     ],
-    // The script has other exit-74 refusals (invalid selector, missing token); only the absent
-    // prewarm is a standing PRODUCER gap, so the marker line is load-bearing.
-    [
-      'a different exit-74 refusal from the same script',
-      'dependency-generation.sh exited 74: [dependency-generation] FATAL: invalid prewarmed dependency selector for abc123',
-    ],
   ])(
     'keeps an incomplete signature on the generic crash path: %s',
     (_label, message) => {
@@ -508,4 +502,73 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
       expect(r.crashed).toBe(true);
     },
   );
+
+  /**
+   * CLASS-LEVEL GUARD. The first version of this fix typed ONE of the script's eight `return 74`
+   * sites and left seven siblings on the anonymous-crash path — the instance fixed, the class
+   * left armed. These are the REAL messages, transcribed from
+   * apps/operator/bin/release/dependency-generation.sh.
+   *
+   * Every one of them must land as a typed STANDING no-verdict. If someone adds a ninth exit-74
+   * refusal, it inherits the classification automatically (the match is on the exit CODE, which
+   * is the script's contract, not on these strings) — and if someone changes 74's meaning, this
+   * block fails and forces the decision to be made deliberately rather than by drift.
+   */
+  it.each([
+    'prewarmed dependency generation gen-1 has no immutable token',
+    'prewarmed dependency generation gen-1 was replaced after validation',
+    'prewarmed dependency generation gen-1 has an invalid immutable marker',
+    'no prewarmed dependency generation for input fingerprint b0ea5991',
+    'invalid prewarmed dependency selector for b0ea5991',
+    'dependency generation gen-1 is missing or invalid',
+    'dependency generation gen-1 has no source fingerprint',
+    'dependency generation gen-1 disappeared before it could be leased',
+  ])('every exit-74 refusal is typed and STANDING, never an anonymous crash: %s', (fatal) => {
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(
+        'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo ' +
+          `exited 74: [dependency-generation] FATAL: ${fatal}`,
+      ),
+      runId: 'run-74-family',
+    });
+
+    // Never the anonymous crash bucket…
+    expect(r.reason).not.toBe('error');
+    expect(r.crashed).toBeUndefined();
+    // …always a recorded, named abort…
+    expect(isRecordedInconclusiveStatus(r.reason)).toBe(true);
+    // …and never advised as "just run it again", which is the harm the whole block exists to stop.
+    expect(classifyGateAbort(r.reason)).toBe('standing-condition');
+    expect(gateAbortLever(r.reason)).not.toMatch(/nothing is blocking a re-fire/i);
+    // …and it can never reach classifyGateStallStatus's `return 'red'` default.
+    expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
+    // No verdict about the code, in either direction.
+    expect(r.green).toBeNull();
+  });
+
+  it('routes the two exit-74 causes to DIFFERENT reasons, because their remedies differ', () => {
+    const missing = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(REAL_MISSING_PREWARM_DETAIL),
+      runId: 'run-a',
+    });
+    const unusable = buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(
+        'bash /repo/apps/operator/bin/release/dependency-generation.sh exited 74: ' +
+          '[dependency-generation] FATAL: dependency generation gen-1 has an invalid immutable marker',
+      ),
+      runId: 'run-b',
+    });
+
+    // Absent fingerprint -> the PRODUCER must publish it.
+    expect(missing.reason).toBe('dependency-prewarm-missing');
+    expect(missing.summary).toContain('WI-41491');
+    // Present but bad -> the generation STORE must be repaired. Collapsing these into one reason
+    // would send the reader at the wrong remedy half the time.
+    expect(unusable.reason).toBe('dependency-generation-unusable');
+    expect(unusable.summary).toMatch(/repaired or republished/i);
+    expect(unusable.summary).toMatch(/failing closed is correct/i);
+  });
 });
