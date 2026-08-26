@@ -27,6 +27,8 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
 
 const MAX_CATALOG_LIMIT = 200;
+const CATALOG_SCOPE_NOTE =
+  'Scope is derived from the request context: installed families use the call\'s harness context when present, and announced gates are filtered by the reader\'s identity-derived fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; use `q`/`pattern` or `family` to narrow catalog rows.';
 
 function catalogRowMatches(row: CatalogRow, query: string): boolean {
   return [
@@ -44,11 +46,11 @@ function catalogRowMatches(row: CatalogRow, query: string): boolean {
 export default defineTool({
   name: 'events:catalog',
   description:
-    'List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` (alias `pattern`) over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status.',
+    `List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and \`live_awaiters\` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text \`q\` (alias \`pattern\`) over family/key/description/emitter and a bounded \`limit\` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status. ${CATALOG_SCOPE_NOTE}`,
   capability: 'events:read',
   guidance: {
     when: 'Before you POLL for something (a deploy landing, the gate going green, a peer\'s work-item settling, a service recovering) — look here for an awaitable key so you can events:await + END YOUR TURN instead of re-polling. Also when you\'re unsure whether an event even exists for X, OR you (an emitter/leader) want to see WHO is actually listening on a key before you trust an events:emit alone (live_awaiters).',
-    notWhen: 'You already know the exact key — just events:await it. To see server REACTION wiring ("what fires what") use events:graph; to see YOUR OWN pending awaits + recent wakes use events:status.',
+    notWhen: `You already know the exact key — just events:await it. To see server REACTION wiring ("what fires what") use events:graph; to see YOUR OWN pending awaits + recent wakes use events:status. ${CATALOG_SCOPE_NOTE}`,
     chaining: 'events:catalog → pick a family → events:await { event: <its key> } (or its sugar verb, e.g. deploy:await) → end your turn.',
     seeAlso: [
       'events:await (arm a wait on a key you found here)',
@@ -230,7 +232,7 @@ export default defineTool({
             // pack author debugs a family that "just doesn't appear" with no signal.
             ...(collisions.length > 0 ? { collisions } : {}),
             note:
-              'Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. `provenance` says whether a family is a platform guarantee (builtin) or an installed unit\'s promise (installed:<unit>) — the two carry different trust and lifetime.',
+              `Awaiting beats polling: pick a family, events:await its key (or its sugar verb), then END YOUR TURN — you are re-invoked when it fires. awaitable_now:false = the emitter is being wired (Phase 2); the key shape is stable. live_awaiters:0 means nobody is currently registered on that key — a events:emit against it would reach no one. \`provenance\` says whether a family is a platform guarantee (builtin) or an installed unit's promise (installed:<unit>) — the two carry different trust and lifetime. ${CATALOG_SCOPE_NOTE}`,
             families: rowsOut,
           }),
         },

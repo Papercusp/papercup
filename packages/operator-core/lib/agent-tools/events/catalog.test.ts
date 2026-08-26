@@ -31,6 +31,14 @@ beforeEach(() => {
 });
 
 describe('events:catalog — live_awaiters', () => {
+  it('documents context-derived visibility instead of caller-supplied scope/pot filters', () => {
+    expect(catalog.description).toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
+    expect(catalog.guidance.notWhen).toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
+    expect(catalog.args.shape).not.toHaveProperty('scope');
+    expect(catalog.args.shape).not.toHaveProperty('pot');
+    expect(catalog.args.shape).not.toHaveProperty('harness');
+  });
+
   it('advertises and applies q/limit family filters', async () => {
     expect(catalog.args.safeParse({ q: 'deploy-failed', limit: 1 }).success).toBe(true);
 
