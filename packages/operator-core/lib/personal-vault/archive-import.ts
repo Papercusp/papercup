@@ -1,9 +1,18 @@
 import AdmZip from 'adm-zip';
+import { createReadStream } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import type { Readable } from 'node:stream';
+import { simpleParser } from 'mailparser';
+import * as yauzl from 'yauzl';
 import type { PersonalDocumentInput } from './types';
 import { dedupeKeyFor, normalizeParticipant, normalizePersonalSource } from './store';
 
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 50_000;
+const MAX_STREAMED_ARCHIVE_BYTES = 16 * 1024 * 1024 * 1024;
+const MAX_STREAMED_UNCOMPRESSED_BYTES = 64 * 1024 * 1024 * 1024;
+const MAX_STREAMED_ENTRY_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_MBOX_MESSAGE_BYTES = 64 * 1024 * 1024;
 
 export interface ParsedPersonalArchive {
   documents: PersonalDocumentInput[];
@@ -185,4 +194,231 @@ export function parsePersonalArchive(filename: string, bytes: Buffer): ParsedPer
   documents = documents.map((d) => ({ ...d, source: normalizePersonalSource(d.source), dedupeKey: dedupeKeyFor(d) }));
   if (!documents.length) warnings.push('No supported Gmail/Calendar/Contacts, Facebook/Instagram, or X records were found.');
   return { documents, sources: [...new Set(documents.map((d) => d.source))].sort(), warnings };
+}
+
+export interface PersonalArchiveCheckpoint {
+  entryIndex: number;
+  recordIndex: number;
+}
+
+export interface StreamedPersonalArchiveRecord {
+  document?: PersonalDocumentInput;
+  warning?: string;
+  /** Position of the next record. Persisting this after a batch makes replay safe. */
+  checkpoint: PersonalArchiveCheckpoint;
+  /** Monotonic, conservative progress; document counts remain the precise progress signal. */
+  bytesProcessed: number;
+}
+
+function supportedEntry(path: string): boolean {
+  return /\.(?:mbox|ics|vcf|json|js)$/i.test(path);
+}
+
+async function readableBuffer(stream: Readable, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const value of stream) {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    total += chunk.length;
+    if (total > limit) throw new Error('personal_archive_entry_too_large');
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function parsedAddressValues(value: unknown): string[] {
+  const groups = Array.isArray(value) ? value : value ? [value] : [];
+  return groups.flatMap((group) => {
+    const entries = (group as { value?: Array<{ address?: string; name?: string }> }).value ?? [];
+    return entries
+      .map((entry) => normalizeParticipant(entry.address ?? entry.name ?? ''))
+      .filter(Boolean);
+  });
+}
+
+async function parseMimeMboxMessage(raw: Buffer, index: number): Promise<PersonalDocumentInput> {
+  const firstLf = raw.indexOf(0x0a);
+  const message = raw.subarray(
+    raw.subarray(0, Math.max(0, firstLf)).toString('utf8').startsWith('From ')
+      ? firstLf + 1
+      : 0,
+  );
+  const parsed = await simpleParser(message, { skipHtmlToText: false, skipTextToHtml: true });
+  const externalId = parsed.messageId?.replace(/[<>]/g, '') ?? null;
+  const participants = [
+    ...parsedAddressValues(parsed.from),
+    ...parsedAddressValues(parsed.to),
+    ...parsedAddressValues(parsed.cc),
+  ];
+  const document: PersonalDocumentInput = {
+    source: 'gmail',
+    kind: 'message',
+    externalId,
+    occurredAt: parsed.date?.toISOString() ?? null,
+    participants: [...new Set(participants)],
+    title: parsed.subject ?? '(no subject)',
+    text: parsed.text ?? (typeof parsed.html === 'string' ? parsed.html : ''),
+    metadata: {
+      from: parsed.from?.text ?? null,
+      to: Array.isArray(parsed.to) ? parsed.to.map((value) => value.text) : parsed.to?.text ?? null,
+      cc: Array.isArray(parsed.cc) ? parsed.cc.map((value) => value.text) : parsed.cc?.text ?? null,
+      attachments: parsed.attachments.map((attachment) => ({
+        filename: attachment.filename ?? null,
+        contentType: attachment.contentType,
+        size: attachment.size,
+      })),
+    },
+  };
+  document.dedupeKey = externalId
+    ? `gmail:${externalId}`
+    : `gmail:mbox:${index}:${dedupeKeyFor(document)}`;
+  return document;
+}
+
+/**
+ * Split an mbox stream without retaining the archive. Memory is bounded to one
+ * message and mailparser supplies RFC/MIME transfer-decoding for the job path.
+ */
+async function* streamMboxMessages(stream: Readable): AsyncGenerator<Buffer> {
+  const boundary = Buffer.from('\nFrom ');
+  let pending = Buffer.alloc(0);
+  for await (const value of stream) {
+    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+    pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+    let boundaryAt = pending.indexOf(boundary);
+    while (boundaryAt >= 0) {
+      const message = pending.subarray(0, boundaryAt);
+      if (message.length > MAX_MBOX_MESSAGE_BYTES) throw new Error('personal_mbox_message_too_large');
+      if (message.length) yield message;
+      pending = pending.subarray(boundaryAt + 1);
+      boundaryAt = pending.indexOf(boundary);
+    }
+    if (pending.length > MAX_MBOX_MESSAGE_BYTES) throw new Error('personal_mbox_message_too_large');
+  }
+  if (pending.length) yield pending;
+}
+
+async function* streamOneEntry(
+  path: string,
+  stream: Readable,
+  entryIndex: number,
+  skipRecords: number,
+  bytesBefore: number,
+  entryBytes: number,
+): AsyncGenerator<StreamedPersonalArchiveRecord> {
+  if (path.toLowerCase().endsWith('.mbox')) {
+    let recordIndex = 0;
+    for await (const raw of streamMboxMessages(stream)) {
+      if (recordIndex >= skipRecords) {
+        try {
+          const document = await parseMimeMboxMessage(raw, recordIndex);
+          yield {
+            document,
+            checkpoint: { entryIndex, recordIndex: recordIndex + 1 },
+            bytesProcessed: bytesBefore,
+          };
+        } catch (error) {
+          yield {
+            warning: `${path} message ${recordIndex + 1}: ${(error as Error).message}`,
+            checkpoint: { entryIndex, recordIndex: recordIndex + 1 },
+            bytesProcessed: bytesBefore,
+          };
+        }
+      }
+      recordIndex += 1;
+    }
+    return;
+  }
+
+  const data = await readableBuffer(stream, Math.min(MAX_STREAMED_ENTRY_BYTES, entryBytes || MAX_STREAMED_ENTRY_BYTES));
+  const documents = parseEntry(path, data);
+  for (let recordIndex = skipRecords; recordIndex < documents.length; recordIndex += 1) {
+    yield {
+      document: documents[recordIndex],
+      checkpoint: { entryIndex, recordIndex: recordIndex + 1 },
+      bytesProcessed: bytesBefore + entryBytes,
+    };
+  }
+}
+
+/**
+ * Stream a durable on-disk archive. ZIP entries are opened lazily and mbox is
+ * decoded one message at a time. A crash can replay from the persisted
+ * entry/record checkpoint; document upserts remain the final idempotency rail.
+ */
+export async function* streamPersonalArchiveFile(
+  filename: string,
+  filePath: string,
+  checkpoint: Partial<PersonalArchiveCheckpoint> = {},
+): AsyncGenerator<StreamedPersonalArchiveRecord> {
+  const initial: PersonalArchiveCheckpoint = {
+    entryIndex: Math.max(0, Math.floor(checkpoint.entryIndex ?? 0)),
+    recordIndex: Math.max(0, Math.floor(checkpoint.recordIndex ?? 0)),
+  };
+  const archiveStat = await stat(filePath);
+  if (archiveStat.size > MAX_STREAMED_ARCHIVE_BYTES) throw new Error('personal_archive_too_large');
+
+  if (!filename.toLowerCase().endsWith('.zip')) {
+    if (!supportedEntry(filename)) {
+      yield {
+        warning: `${filename}: unsupported archive entry`,
+        checkpoint: { entryIndex: 1, recordIndex: 0 },
+        bytesProcessed: archiveStat.size,
+      };
+      return;
+    }
+    yield* streamOneEntry(
+      filename,
+      createReadStream(filePath),
+      0,
+      initial.entryIndex === 0 ? initial.recordIndex : Number.MAX_SAFE_INTEGER,
+      0,
+      archiveStat.size,
+    );
+    return;
+  }
+
+  const zip = await yauzl.openPromise(filePath, { lazyEntries: true, validateEntrySizes: true });
+  let entryIndex = 0;
+  let uncompressed = 0;
+  try {
+    if (zip.entryCount > MAX_ARCHIVE_ENTRIES) throw new Error('personal_archive_too_many_entries');
+    for await (const entry of zip.eachEntry()) {
+      const current = entryIndex++;
+      if (/\/$/.test(entry.fileName)) continue;
+      uncompressed += entry.uncompressedSize;
+      if (uncompressed > MAX_STREAMED_UNCOMPRESSED_BYTES) {
+        throw new Error('personal_archive_uncompressed_too_large');
+      }
+      if (entry.uncompressedSize > MAX_STREAMED_ENTRY_BYTES) {
+        yield {
+          warning: `${entry.fileName}: personal_archive_entry_too_large`,
+          checkpoint: { entryIndex: current + 1, recordIndex: 0 },
+          bytesProcessed: uncompressed,
+        };
+        continue;
+      }
+      if (current < initial.entryIndex || !supportedEntry(entry.fileName)) continue;
+      const skipRecords = current === initial.entryIndex ? initial.recordIndex : 0;
+      try {
+        const stream = await zip.openReadStreamPromise(entry);
+        yield* streamOneEntry(
+          entry.fileName,
+          stream,
+          current,
+          skipRecords,
+          uncompressed - entry.uncompressedSize,
+          entry.uncompressedSize,
+        );
+      } catch (error) {
+        yield {
+          warning: `${entry.fileName}: ${(error as Error).message}`,
+          checkpoint: { entryIndex: current + 1, recordIndex: 0 },
+          bytesProcessed: uncompressed,
+        };
+      }
+    }
+  } finally {
+    zip.close();
+  }
 }
