@@ -627,13 +627,17 @@ export default defineTool({
     const autoDetectedWorkItemForScope =
       !explicitWorkItem && carryForScope === 'cold' ? (detectDrivenWorkItemId(rawGoal) ?? undefined) : undefined;
     const scopeWorkItem = explicitWorkItem ?? monitorAuthorityWorkItem ?? autoDetectedWorkItemForScope;
-    const onlyWorkspaceScope = !isConcreteHarness(requestedHarness) && !isConcreteHarness(ctx.harnessSlug);
+    const explicitHarnessRequested = isConcreteHarness(requestedHarness);
+    const onlyWorkspaceScope = !explicitHarnessRequested && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
-    // EI-20245033088778955: an ACTIVE routine's install scope is authoritative
-    // for a wildcard re-arm. It is the scope the existing wake marker and cold
-    // carry reader already use, so changing it mid-loop would split one loop
-    // across harness namespaces.
-    if (onlyWorkspaceScope && isConcreteHarness(prior?.harnessSlug)) {
+    // EI-20245033088778955 / EI-21481296218316052: an ACTIVE routine's install
+    // scope is authoritative whenever the caller OMITS args.harness — not only
+    // through a wildcard transport. A concrete ctx harness describes where this
+    // invocation arrived; it is not an explicit request to migrate the durable
+    // loop. Letting it win silently rewrites routines.install_slug while leaving
+    // the cold carry-note under the old scope, so the next reset finds no note.
+    // An explicit args.harness remains the deliberate migration override.
+    if (!explicitHarnessRequested && prior?.active === true && isConcreteHarness(prior.harnessSlug)) {
       harness = resolvePotHomeSlug(prior!.harnessSlug!, undefined);
     }
     // EI-21302411209364135 / EI-21358731971685285 / EI-21448192328031315: a pinned or
