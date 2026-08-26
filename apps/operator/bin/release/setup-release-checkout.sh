@@ -52,6 +52,8 @@
 #                             [--node-modules-copy hardlink|copy]
 #                             [--node-modules-generation required|off]
 #                             [--node-modules-generation-id <v1-sha256>]
+#                             [--node-modules-generation-token <stat-token>]
+#                             [--node-modules-workspace-dir <repo-relative-dir>]...
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #                             [--source-only]
@@ -84,6 +86,8 @@ NODE_MODULES_COPY_MODE="${NODE_MODULES_COPY_MODE:-hardlink}"
 # default. The live deploy's `hardlink` mode keeps its existing fast path.
 NODE_MODULES_GENERATION_MODE="${NODE_MODULES_GENERATION_MODE:-required}"
 NODE_MODULES_GENERATION_ID="${NODE_MODULES_GENERATION_ID:-}"
+NODE_MODULES_GENERATION_TOKEN="${NODE_MODULES_GENERATION_TOKEN:-}"
+NODE_MODULES_WORKSPACE_DIRS=()
 DEPENDENCY_GENERATION_ROOT="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
 
 # Any error after exact-ID selection must release this process-owned reader
@@ -106,6 +110,8 @@ while [ $# -gt 0 ]; do
     --node-modules-copy) NODE_MODULES_COPY_MODE="$2"; shift 2 ;;
     --node-modules-generation) NODE_MODULES_GENERATION_MODE="$2"; shift 2 ;;
     --node-modules-generation-id) NODE_MODULES_GENERATION_ID="$2"; shift 2 ;;
+    --node-modules-generation-token) NODE_MODULES_GENERATION_TOKEN="$2"; shift 2 ;;
+    --node-modules-workspace-dir) NODE_MODULES_WORKSPACE_DIRS+=("$2"); shift 2 ;;
     --dependency-generation-root) DEPENDENCY_GENERATION_ROOT="$2"; shift 2 ;;
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
@@ -127,6 +133,10 @@ esac
 if [ -n "$NODE_MODULES_GENERATION_ID" ] \
   && { [ "$NODE_MODULES_GENERATION_MODE" != "required" ] || [ "$NODE_MODULES_COPY_MODE" != "copy" ]; }; then
   echo "[setup-release] --node-modules-generation-id requires --node-modules-generation required and --node-modules-copy copy" >&2
+  exit 2
+fi
+if [ -n "$NODE_MODULES_GENERATION_TOKEN" ] && [ -z "$NODE_MODULES_GENERATION_ID" ]; then
+  echo "[setup-release] --node-modules-generation-token requires --node-modules-generation-id" >&2
   exit 2
 fi
 if [ "$SOURCE_ONLY" = "1" ] && [ "$PREPARE_EXISTING" = "1" ]; then
@@ -787,11 +797,19 @@ if need_node_modules; then
   NODE_MODULES_SOURCE_ROOT="$INTEGRATION_ROOT"
   if [ "$NODE_MODULES_COPY_MODE" = "copy" ] && [ "$NODE_MODULES_GENERATION_MODE" = "required" ]; then
     DEPENDENCY_GENERATION_ROOT="${DEPENDENCY_GENERATION_ROOT:-$INTEGRATION_ROOT/.papercusp/dependency-generations}"
+    dependency_generation_configure_workspace_dirs \
+      "$INTEGRATION_ROOT" "${NODE_MODULES_WORKSPACE_DIRS[@]}"
     if [ -n "$NODE_MODULES_GENERATION_ID" ]; then
       # Lease BEFORE the full validation walk. Otherwise a retention pass can
       # remove this exact identity between selection and materialization.
       dependency_generation_acquire_selector_lease "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"
-      dependency_generation_select "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"
+      if [ -n "$NODE_MODULES_GENERATION_TOKEN" ]; then
+        dependency_generation_select_prevalidated \
+          "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID" \
+          "$NODE_MODULES_GENERATION_TOKEN"
+      else
+        dependency_generation_select "$DEPENDENCY_GENERATION_ROOT" "$NODE_MODULES_GENERATION_ID"
+      fi
     else
       dependency_generation_ensure "$INTEGRATION_ROOT" "$DEPENDENCY_GENERATION_ROOT"
       dependency_generation_acquire_selector_lease "$DEPENDENCY_GENERATION_ROOT" "$DEPENDENCY_GENERATION_ID"

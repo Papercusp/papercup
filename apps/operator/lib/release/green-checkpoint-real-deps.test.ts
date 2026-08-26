@@ -150,6 +150,7 @@ interface ExecResp {
 }
 
 const FIXTURE_DEPENDENCY_GENERATION_ID = `v1-${"d".repeat(64)}`;
+const FIXTURE_DEPENDENCY_GENERATION_TOKEN = "fixture-generation-token";
 
 /** A fake exec returning programmed results in call order, recording every call. */
 function makeExec(responses: ExecResp[]) {
@@ -161,24 +162,33 @@ function makeExec(responses: ExecResp[]) {
   let i = 0;
   const exec: CheckpointExec = async (cmd, args, opts) => {
     calls.push({ cmd, args, opts });
-    const isDependencyGenerationPublisher =
+    const isDependencyGenerationSelector =
       args.some((arg) => arg.endsWith("dependency-generation.sh")) &&
       args.includes("--integration");
-    // Exact-generation selection is now a setup precondition, not part of the
-    // downstream command sequence each older fixture is programming. Give it a
-    // stable successful identity by default so those fixtures keep describing
-    // their own seam; the dedicated setupTree tests assert the publisher call.
-    const programmed = isDependencyGenerationPublisher
-      ? undefined
-      : responses[i++];
     const isSetupRelease =
       cmd === "bash" &&
       args.some((arg) => arg.endsWith("setup-release-checkout.sh"));
-    const r = isDependencyGenerationPublisher
+    const isSourceOnlySetup = isSetupRelease && args.includes("--source-only");
+    // Exact-generation selection is now a setup precondition, not part of the
+    // downstream command sequence each older fixture is programming. Give it a
+    // stable successful identity by default so those fixtures keep describing
+    // their own seam; source-only preparation gets the same treatment because
+    // setupTree now establishes exact source before looking up its input key.
+    const programmed =
+      isDependencyGenerationSelector || isSourceOnlySetup
+      ? undefined
+      : responses[i++];
+    const r = isDependencyGenerationSelector
       ? {
           code: 0,
-          stdout: `DEPENDENCY_GENERATION_RESULT schema=1 identity=${FIXTURE_DEPENDENCY_GENERATION_ID} source=fixture reused=true path=/fixture/${FIXTURE_DEPENDENCY_GENERATION_ID}`,
+          stdout: `DEPENDENCY_GENERATION_RESULT schema=1 identity=${FIXTURE_DEPENDENCY_GENERATION_ID} source=fixture input=fixture scope=full reused=true token=${FIXTURE_DEPENDENCY_GENERATION_TOKEN} path=/fixture/${FIXTURE_DEPENDENCY_GENERATION_ID}`,
         }
+      : isSourceOnlySetup
+        ? {
+            code: 0,
+            stdout:
+              "[setup-release] SETUP_RELEASE_SOURCE_ONLY ref=fixture sha=fixture status=ready\n",
+          }
       : programmed ??
       (isSetupRelease
         ? {
@@ -405,8 +415,8 @@ const cfg: ReleaseConfig = releaseConfig({
 });
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");
 
-describe("WI-41720 / D-073: dependency-generation fatal path reaches the real CLI terminal controller", () => {
-  it("fails after the after-copy manifest and awaits exact-candidate marker, event, and cleanup before exit", async () => {
+describe("WI-41720 / D-073: dependency-selection fatal path reaches the real CLI terminal controller", () => {
+  it("fails on a missing prewarmed selector and awaits exact-candidate marker, event, and cleanup before exit", async () => {
     const candidate = "8104d3804ac4d134cead82a10c89c54d5efa53b7";
     const runId = "scheduled-05a2a744";
     const observed: string[] = [];
@@ -418,22 +428,24 @@ describe("WI-41720 / D-073: dependency-generation fatal path reaches the real CL
       );
       opts?.onOutput?.(
         "stdout",
-        "[dependency-generation] capturing live dependency manifest (after copy)\n",
+        "[dependency-generation] FATAL: no prewarmed dependency generation for input fingerprint fixture\n",
       );
       throw new Error(
         `${cmd} ${args.join(" ")} exited 1: ` +
-          "[dependency-generation] capturing live dependency manifest (after copy)",
+          "[dependency-generation] FATAL: no prewarmed dependency generation for input fingerprint fixture",
       );
     };
 
     try {
-      await realCheckpointDeps(cfg, exec, runId).setupTree(candidate);
+      await realCheckpointDeps(cfg, exec, runId).setupTree(candidate, {
+        preparedSource: true,
+      });
     } catch (error) {
       capturedFailure = error;
     }
     expect(capturedFailure).toBeInstanceOf(Error);
     expect(String(capturedFailure)).toContain(
-      "capturing live dependency manifest (after copy)",
+      "no prewarmed dependency generation",
     );
 
     let terminalOwner: "none" | "crash" = "none";
@@ -896,6 +908,20 @@ describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
       // file transport through the environment the subject forwards. Real submodule URLs
       // are ssh and never take this path.
       process.env.GIT_ALLOW_PROTOCOL = "file:git:ssh:https";
+      const prewarm = spawnSync(
+        "bash",
+        [
+          join(
+            __dirname,
+            "../../../..",
+            "apps/operator/bin/release/dependency-generation.sh",
+          ),
+          "--integration",
+          repo,
+        ],
+        { encoding: "utf8", env: process.env },
+      );
+      expect(prewarm.status, prewarm.stderr || prewarm.stdout).toBe(0);
       const deps = realCheckpointDeps({
         ...cfg,
         integrationRoot: repo,
@@ -2175,7 +2201,7 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", () => {
   const generationId = FIXTURE_DEPENDENCY_GENERATION_ID;
 
-  function expectMutexGuardedGenerationPublisher(
+  function expectMutexGuardedGenerationSelector(
     call: { cmd: string; args: string[] },
   ) {
     expect(call.cmd).toBe(process.execPath);
@@ -2189,16 +2215,13 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       expect.stringMatching(/apps\/operator\/bin\/release\/dependency-generation\.sh$/),
       "--integration",
       "/int",
+      "--select-inputs-from",
+      cpTree,
     ]);
   }
 
   it("P-007: prepares exact source-only checkout and probes related tests in that candidate tree", async () => {
     const { exec, calls } = makeExec([
-      {
-        code: 0,
-        stdout:
-          "[setup-release] SETUP_RELEASE_SOURCE_ONLY ref=cand123 sha=cand123 status=ready\n",
-      },
       {
         code: 0,
         stdout: [
@@ -2284,16 +2307,20 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       ),
       "--integration",
       "/int",
-      "--workspace-dir",
-      "apps/operator",
-      "--workspace-dir",
-      "packages/operator-core",
+      "--select-inputs-from",
+      cpTree,
     ]);
     expect(calls[1].args).toEqual(
       expect.arrayContaining([
         "--prepare-existing",
         "--node-modules-generation-id",
         generationId,
+        "--node-modules-generation-token",
+        FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+        "--node-modules-workspace-dir",
+        "apps/operator",
+        "--node-modules-workspace-dir",
+        "packages/operator-core",
       ]),
     );
   });
@@ -2306,8 +2333,10 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
           `copied checkpoint dependencies\n[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
       },
     ]);
-    const setup = await realCheckpointDeps(cfg, exec).setupTree("cand123");
-    expectMutexGuardedGenerationPublisher(calls[0]);
+    const setup = await realCheckpointDeps(cfg, exec).setupTree("cand123", {
+      preparedSource: true,
+    });
+    expectMutexGuardedGenerationSelector(calls[0]);
     expect(calls[0].opts?.timeoutMs).toBeTypeOf("number");
     expect(calls[0].opts).toMatchObject({
       timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
@@ -2345,6 +2374,8 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         "required",
         "--node-modules-generation-id",
         generationId,
+        "--node-modules-generation-token",
+        FIXTURE_DEPENDENCY_GENERATION_TOKEN,
       ]),
     );
     expect(calls[1].opts?.onOutput).toBeTypeOf("function");
@@ -2363,7 +2394,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     ]);
 
     await expect(
-      realCheckpointDeps(cfg, exec).setupTree("cand-without-generation"),
+      realCheckpointDeps(cfg, exec).setupTree("cand-without-generation", {
+        preparedSource: true,
+      }),
     ).rejects.toThrow(
       "completed without a pinned dependency-generation identity",
     );
@@ -2379,7 +2412,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     ]);
 
     await expect(
-      realCheckpointDeps(cfg, exec).setupTree("cand-moved-generation"),
+      realCheckpointDeps(cfg, exec).setupTree("cand-moved-generation", {
+        preparedSource: true,
+      }),
     ).rejects.toThrow(
       `expected selected identity ${generationId}`,
     );

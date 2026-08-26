@@ -250,6 +250,26 @@ describe('setup-release-checkout.sh dependency-generation retention wiring', () 
     expect(register).toBeGreaterThan(-1);
     expect(release).toBeGreaterThan(register);
   });
+
+  it('WI-41491: uses the immutable-token selector and transports the chosen workspace closure', () => {
+    const source = readFileSync(SCRIPT_PATH, 'utf8');
+    const configure = source.indexOf(
+      'dependency_generation_configure_workspace_dirs \\',
+    );
+    const tokenSelect = source.indexOf(
+      'dependency_generation_select_prevalidated \\',
+    );
+    const enumerate = source.indexOf(
+      'done < <(enumerate_node_modules "$NODE_MODULES_SOURCE_ROOT")',
+    );
+
+    expect(configure).toBeGreaterThan(-1);
+    expect(tokenSelect).toBeGreaterThan(configure);
+    expect(enumerate).toBeGreaterThan(tokenSelect);
+    expect(source).toContain(
+      '--node-modules-workspace-dir) NODE_MODULES_WORKSPACE_DIRS+=("$2")',
+    );
+  });
 });
 
 describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross-device guard', () => {

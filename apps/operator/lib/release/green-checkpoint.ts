@@ -11914,20 +11914,23 @@ export function realCheckpointDeps(
       return { workspace, passed: false, crashedAgain: true };
     return { workspace, passed: false, realFailure: true };
   };
-  // P-006 / WI-41199: choose and publish the immutable dependency input
-  // BEFORE any caller waits for the exclusive materialization barrier. The
-  // selected identity is then transported into setup-release, so a later
-  // install cannot silently move the checkpoint/repair-worktree input.
-  const publishDependencyGeneration = async (
+  interface PrewarmedDependencyGeneration {
+    identity: string;
+    token: string;
+  }
+  // WI-41491 / P-006: install-safe publishes immutable generations when the
+  // dependency inputs change. Qualification derives the small input fingerprint
+  // from its exact prepared source and opens that prewarmed identity by an
+  // immutable stat token; it never walks mutable node_modules inside the verdict
+  // slot. The selected identity + token are transported through setup-release so
+  // exact selection there remains O(1) as well.
+  const selectPrewarmedDependencyGeneration = async (
     ref: string,
-    workspaceDirs: string[] = [],
-  ): Promise<string> => {
-    // WI-41664: dependency-generation walks the live integration node_modules trees
-    // for minutes. Route that reader through the existing install-safe reader boundary
-    // so an npm install cannot acquire the repo writer mutex and reify those trees in
-    // the middle of the before/copy/after snapshot. The generation script's own
-    // fingerprint guard remains mandatory; the mutex prevents the avoidable race that
-    // otherwise turns a legitimate concurrent install into an rc75 torn snapshot.
+    inputRoot: string,
+  ): Promise<PrewarmedDependencyGeneration> => {
+    // Keep selector reads behind the existing install-safe boundary. Publication
+    // swaps the selector atomically, but the reader lock also ensures an install
+    // cannot finish between exact-input derivation and identity selection.
     const installSafeScript = path.join(
       toolingRoot(),
       "scripts/npm-install-safe.mjs",
@@ -11946,10 +11949,9 @@ export function realCheckpointDeps(
       generationScript,
       "--integration",
       cfg.integrationRoot,
+      "--select-inputs-from",
+      inputRoot,
     ];
-    for (const workspaceDir of workspaceDirs) {
-      generationArgs.push("--workspace-dir", workspaceDir);
-    }
     const outputRemainders: Record<"stdout" | "stderr", string> = {
       stdout: "",
       stderr: "",
@@ -11986,15 +11988,58 @@ export function realCheckpointDeps(
     const selectedDependencyGeneration = publishedGenerationOutput.match(
       /DEPENDENCY_GENERATION_RESULT\s+schema=1\s+identity=([^\s]+)/,
     )?.[1];
+    const selectedDependencyGenerationToken = publishedGenerationOutput.match(
+      /DEPENDENCY_GENERATION_RESULT[^\n]*\stoken=([^\s]+)/,
+    )?.[1];
     if (!selectedDependencyGeneration) {
       throw new Error(
-        `dependency-generation publisher completed without an identity for ${ref.slice(0, 64)}`,
+        `dependency-generation selector completed without an identity for ${ref.slice(0, 64)}`,
+      );
+    }
+    if (!selectedDependencyGenerationToken) {
+      throw new Error(
+        `dependency-generation selector completed without an immutable token for ${ref.slice(0, 64)}`,
       );
     }
     log(
       `selected immutable dependency generation ${selectedDependencyGeneration} for ${ref.slice(0, 12)}`,
     );
-    return selectedDependencyGeneration;
+    return {
+      identity: selectedDependencyGeneration,
+      token: selectedDependencyGenerationToken,
+    };
+  };
+  const prepareExactSource = async (ref: string): Promise<void> => {
+    const script = path.join(
+      toolingRoot(),
+      "apps/operator/bin/release/setup-release-checkout.sh",
+    );
+    const prepared = await exec(
+      "bash",
+      [
+        script,
+        "--ref",
+        ref,
+        "--integration",
+        cfg.integrationRoot,
+        "--release",
+        cfg.checkpointRoot,
+        "--source-only",
+      ],
+      {
+        timeoutMs: SETUP_TREE_TIMEOUT_MS,
+        killProcessGroupOnTimeout: true,
+      },
+    );
+    const output = prepared.stdout + prepared.stderr;
+    if (!/SETUP_RELEASE_SOURCE_ONLY\s+[^\n]*status=ready/.test(output)) {
+      throw new Error(
+        `source-only setup completed without exact-source readiness evidence for ${ref.slice(0, 64)}`,
+      );
+    }
+    log(
+      `prepared exact candidate source ${ref.slice(0, 12)} before dependency selection`,
+    );
   };
   const repairTarget = gateVerdictTargetFromEnv();
   return {
@@ -12175,7 +12220,10 @@ export function realCheckpointDeps(
             // a concurrent install in staging. `--prepare-existing` preserves the worktree and
             // the submodules initialized above while still rebuilding every node_modules tree.
             const selectedDependencyGeneration =
-              await publishDependencyGeneration(queue.repairHead);
+              await selectPrewarmedDependencyGeneration(
+                queue.repairHead,
+                queue.worktreePath,
+              );
             const dependencies = await exec(
               "bash",
               [
@@ -12200,7 +12248,9 @@ export function realCheckpointDeps(
                 "--node-modules-generation",
                 "required",
                 "--node-modules-generation-id",
-                selectedDependencyGeneration,
+                selectedDependencyGeneration.identity,
+                "--node-modules-generation-token",
+                selectedDependencyGeneration.token,
                 "--prepare-existing",
               ],
               {
@@ -12573,36 +12623,7 @@ export function realCheckpointDeps(
       }
     },
     async prepareSource(ref) {
-      const script = path.join(
-        toolingRoot(),
-        "apps/operator/bin/release/setup-release-checkout.sh",
-      );
-      const prepared = await exec(
-        "bash",
-        [
-          script,
-          "--ref",
-          ref,
-          "--integration",
-          cfg.integrationRoot,
-          "--release",
-          cfg.checkpointRoot,
-          "--source-only",
-        ],
-        {
-          timeoutMs: SETUP_TREE_TIMEOUT_MS,
-          killProcessGroupOnTimeout: true,
-        },
-      );
-      const output = prepared.stdout + prepared.stderr;
-      if (!/SETUP_RELEASE_SOURCE_ONLY\s+[^\n]*status=ready/.test(output)) {
-        throw new Error(
-          `source-only setup completed without exact-source readiness evidence for ${ref.slice(0, 64)}`,
-        );
-      }
-      log(
-        `prepared exact candidate source ${ref.slice(0, 12)} before dependency selection`,
-      );
+      await prepareExactSource(ref);
     },
     async selectMaterializationClosure({ candidate, base }) {
       const probe = await exec(
@@ -12682,9 +12703,10 @@ export function realCheckpointDeps(
           setupOutputRemainders[stream] = "";
         }
       };
-      const selectedDependencyGeneration = await publishDependencyGeneration(
+      if (!options?.preparedSource) await prepareExactSource(ref);
+      const selectedDependencyGeneration = await selectPrewarmedDependencyGeneration(
         ref,
-        options?.workspaceDirs ?? [],
+        cfg.checkpointRoot,
       );
       let setup: CheckpointExecResult;
       try {
@@ -12702,7 +12724,7 @@ export function realCheckpointDeps(
             cfg.integrationRoot,
             "--release",
             cfg.checkpointRoot,
-            ...(options?.preparedSource ? ["--prepare-existing"] : []),
+            "--prepare-existing",
             "--node-modules",
             "force",
             "--node-modules-copy",
@@ -12710,7 +12732,13 @@ export function realCheckpointDeps(
             "--node-modules-generation",
             "required",
             "--node-modules-generation-id",
-            selectedDependencyGeneration,
+            selectedDependencyGeneration.identity,
+            "--node-modules-generation-token",
+            selectedDependencyGeneration.token,
+            ...(options?.workspaceDirs ?? []).flatMap((workspaceDir) => [
+              "--node-modules-workspace-dir",
+              workspaceDir,
+            ]),
           ],
           {
             timeoutMs: SETUP_TREE_TIMEOUT_MS,
@@ -12730,9 +12758,9 @@ export function realCheckpointDeps(
           `setup-release-checkout completed without a pinned dependency-generation identity for ${ref.slice(0, 64)}`,
         );
       }
-      if (dependencyGeneration !== selectedDependencyGeneration) {
+      if (dependencyGeneration !== selectedDependencyGeneration.identity) {
         throw new Error(
-          `setup-release-checkout pinned dependency generation ${dependencyGeneration}, expected selected identity ${selectedDependencyGeneration}`,
+          `setup-release-checkout pinned dependency generation ${dependencyGeneration}, expected selected identity ${selectedDependencyGeneration.identity}`,
         );
       }
       return {

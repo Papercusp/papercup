@@ -49,6 +49,10 @@ function makeIntegration(): string {
   );
   writeFileSync(join(root, 'node_modules/pkg/index.js'), 'root-v1\n');
   writeFileSync(
+    join(root, 'package-lock.json'),
+    '{"name":"fixture","lockfileVersion":3,"packages":{}}\n',
+  );
+  writeFileSync(
     join(root, 'packages/a/node_modules/local/index.js'),
     'local-v1\n',
   );
@@ -97,6 +101,40 @@ function publishedIdentity(stdout: string): string {
   const match = stdout.match(/\bidentity=(v1-[0-9a-f]{64})\b/);
   if (!match) throw new Error(`missing generation identity in: ${stdout}`);
   return match[1];
+}
+
+function publishedToken(stdout: string): string {
+  const match = stdout.match(/\btoken=([^\s]+)/);
+  if (!match) throw new Error(`missing generation token in: ${stdout}`);
+  return match[1];
+}
+
+function selectPrewarmed(
+  generationRoot: string,
+  inputRoot: string,
+  env: NodeJS.ProcessEnv = {},
+): ShellResult {
+  const result = spawnSync(
+    'bash',
+    [
+      SCRIPT,
+      '--integration',
+      inputRoot,
+      '--generation-root',
+      generationRoot,
+      '--select-inputs-from',
+      inputRoot,
+    ],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    },
+  );
+  return {
+    status: result.status,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
 }
 
 function selectGeneration(
@@ -182,6 +220,72 @@ describe('immutable dependency generation', () => {
     expect(second.status, second.stderr).toBe(0);
     expect(second.stdout).toContain('reused=true');
     expect(publishedPath(second.stdout)).toBe(generation);
+  });
+
+  it('WI-41491: selects a prewarmed input by immutable identity without a generation walk', () => {
+    const integration = makeIntegration();
+    const published = publish(integration);
+    expect(published.status, published.stderr).toBe(0);
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+    const validationTrace = join(integration, 'selection-validation.trace');
+
+    const selected = selectPrewarmed(generationRoot, integration, {
+      DEPENDENCY_GENERATION_VALIDATION_TRACE: validationTrace,
+    });
+
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(publishedIdentity(selected.stdout)).toBe(
+      publishedIdentity(published.stdout),
+    );
+    expect(publishedToken(selected.stdout)).toBe(
+      publishedToken(published.stdout),
+    );
+    expect(existsSync(validationTrace)).toBe(false);
+  });
+
+  it('WI-41491: invalidates the selector when dependency inputs change and rewarms the new key', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/new":{}}}\n',
+    );
+    const miss = selectPrewarmed(generationRoot, integration);
+    expect(miss.status).toBe(74);
+    expect(miss.stderr).toContain('no prewarmed dependency generation');
+
+    const rewarmed = publish(integration);
+    expect(rewarmed.status, rewarmed.stderr).toBe(0);
+    const selected = selectPrewarmed(generationRoot, integration);
+    expect(selected.status, selected.stderr).toBe(0);
+    expect(publishedIdentity(selected.stdout)).toBe(
+      publishedIdentity(rewarmed.stdout),
+    );
+  });
+
+  it('WI-41491: refuses a selector whose immutable generation token changed after prewarm', () => {
+    const integration = makeIntegration();
+    const published = publish(integration);
+    expect(published.status, published.stderr).toBe(0);
+    const generation = publishedPath(published.stdout);
+    const marker = join(generation, '.papercusp-dependency-generation');
+    writeFileSync(marker, `${readFileSync(marker, 'utf8')}tampered=1\n`);
+
+    const selected = selectPrewarmed(
+      join(integration, '.papercusp/dependency-generations'),
+      integration,
+    );
+    expect(selected.status).toBe(74);
+    expect(selected.stderr).toContain('was replaced after validation');
   });
 
   it('P-007: publishes only root plus the selected workspace closure and binds it into identity', () => {

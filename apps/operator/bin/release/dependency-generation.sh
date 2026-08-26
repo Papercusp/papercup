@@ -30,6 +30,36 @@ dependency_generation_host() {
   hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown-host\n'
 }
 
+# A small, source-controlled description of the install inputs. The immutable
+# generation itself is keyed from the much larger node_modules metadata walk;
+# this fingerprint is the cheap lookup key a later checkpoint can derive from
+# its exact candidate without consulting mutable node_modules at all.
+dependency_generation_input_manifest() {
+  local root="$1" file rel digest
+  (
+    cd "$root" || exit 1
+    while IFS= read -r file; do
+      rel="${file#./}"
+      digest="$(dependency_generation_sha256 < "$file")" || exit 1
+      printf '%s\t%s\n' "$rel" "$digest"
+    done < <(
+      find . \
+        \( -type d \( -name .papercusp -o -name .git -o -name node_modules \) -prune \) -o \
+        \( -type f \( -name package-lock.json -o -name npm-shrinkwrap.json \) -print \) \
+        | LC_ALL=C sort
+    )
+  )
+}
+
+dependency_generation_input_fingerprint() {
+  local root="$1" manifest
+  manifest="$(dependency_generation_input_manifest "$root")" || return 1
+  {
+    printf 'schema\t1\n'
+    [ -z "$manifest" ] || printf '%s\n' "$manifest"
+  } | dependency_generation_sha256
+}
+
 dependency_generation_device() {
   local path="$1" parent
   while [ ! -e "$path" ]; do
@@ -318,6 +348,96 @@ dependency_generation_generation_token() {
     marker_token='missing'
   fi
   printf '%s|%s\n' "$generation_token" "$marker_token"
+}
+
+# Select a generation that was fully validated by its publisher. The selector
+# stores the stat token observed after that validation; matching the generation
+# directory + immutable marker is constant-time and detects replacement between
+# prewarm and use. Exact-id callers without a token retain the full-validation
+# dependency_generation_select path below.
+dependency_generation_select_prevalidated() {
+  local generation_root="$1" identity="$2" expected_token="$3"
+  local generation marker source scope snapshot current_token
+  if [[ ! "$identity" =~ ^v1-[0-9a-f]{64}$ ]]; then
+    dependency_generation_log "FATAL: invalid dependency-generation identity: $identity"
+    return 2
+  fi
+  [ -n "$expected_token" ] || {
+    dependency_generation_log "FATAL: prewarmed dependency generation $identity has no immutable token"
+    return 74
+  }
+  generation="$generation_root/$identity"
+  current_token="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
+  if [ -z "$current_token" ] || [ "$current_token" != "$expected_token" ]; then
+    dependency_generation_log "FATAL: prewarmed dependency generation $identity was replaced after validation"
+    return 74
+  fi
+  marker="$generation/.papercusp-dependency-generation"
+  source="$(dependency_generation_read_field "$marker" source)"
+  scope="$(dependency_generation_read_field "$marker" scope)"
+  snapshot="$(dependency_generation_read_field "$marker" snapshot)"
+  if [ "$(dependency_generation_read_field "$marker" identity)" != "$identity" ] \
+    || [ -z "$source" ] || [ "$identity" != "v1-$source" ] \
+    || [ "$scope" != 'full' ] || [ -z "$snapshot" ]; then
+    dependency_generation_log "FATAL: prewarmed dependency generation $identity has an invalid immutable marker"
+    return 74
+  fi
+  DEPENDENCY_GENERATION_ID="$identity"
+  DEPENDENCY_GENERATION_PATH="$generation"
+  DEPENDENCY_GENERATION_TREE="$generation/tree"
+  DEPENDENCY_GENERATION_SOURCE_FINGERPRINT="$source"
+  DEPENDENCY_GENERATION_REUSED='true'
+  DEPENDENCY_GENERATION_TOKEN="$current_token"
+}
+
+dependency_generation_publish_input_selector() {
+  local generation_root="$1" input_fingerprint="$2"
+  local selector_dir selector tmp token rc=0
+  [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'full' ] || return 0
+  token="$(dependency_generation_generation_token "$DEPENDENCY_GENERATION_PATH")" || return 1
+  selector_dir="$generation_root/.inputs"
+  selector="$selector_dir/$input_fingerprint"
+  tmp="$selector_dir/.${input_fingerprint}.tmp.$$"
+  mkdir -p "$selector_dir"
+  dependency_generation_acquire_publish_lock "$generation_root" || return $?
+  if ! dependency_generation_marker_matches \
+    "$DEPENDENCY_GENERATION_PATH" "$DEPENDENCY_GENERATION_ID"; then
+    dependency_generation_log "FATAL: refusing to index invalid dependency generation $DEPENDENCY_GENERATION_ID"
+    rc=74
+  else
+    printf 'schema=1\ninput=%s\nidentity=%s\ntoken=%s\ncreated=%s\n' \
+      "$input_fingerprint" "$DEPENDENCY_GENERATION_ID" "$token" "$(date +%s)" > "$tmp" \
+      && mv "$tmp" "$selector" || rc=$?
+  fi
+  rm -f -- "$tmp"
+  dependency_generation_release_publish_lock
+  [ "$rc" -eq 0 ] || return "$rc"
+  DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input_fingerprint"
+  DEPENDENCY_GENERATION_TOKEN="$token"
+  dependency_generation_log \
+    "indexed prewarmed dependency inputs $input_fingerprint as $DEPENDENCY_GENERATION_ID"
+}
+
+dependency_generation_select_inputs() {
+  local input_root="$1" generation_root="$2"
+  local input_fingerprint selector schema recorded_input identity token
+  input_fingerprint="$(dependency_generation_input_fingerprint "$input_root")" || return 1
+  selector="$generation_root/.inputs/$input_fingerprint"
+  if [ ! -f "$selector" ]; then
+    dependency_generation_log \
+      "FATAL: no prewarmed dependency generation for input fingerprint $input_fingerprint"
+    return 74
+  fi
+  schema="$(dependency_generation_read_field "$selector" schema)"
+  recorded_input="$(dependency_generation_read_field "$selector" input)"
+  identity="$(dependency_generation_read_field "$selector" identity)"
+  token="$(dependency_generation_read_field "$selector" token)"
+  if [ "$schema" != '1' ] || [ "$recorded_input" != "$input_fingerprint" ]; then
+    dependency_generation_log "FATAL: invalid prewarmed dependency selector for $input_fingerprint"
+    return 74
+  fi
+  dependency_generation_select_prevalidated "$generation_root" "$identity" "$token" || return $?
+  DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input_fingerprint"
 }
 
 dependency_generation_marker_matches() {
@@ -898,13 +1018,15 @@ dependency_generation_ensure() {
 }
 
 dependency_generation_main() {
-  local integration_root='' generation_root='' retention_rc=0
+  local integration_root='' generation_root='' select_inputs_from='' retention_rc=0
+  local input_before='' input_after=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --integration) integration_root="$2"; shift 2 ;;
       --generation-root) generation_root="$2"; shift 2 ;;
       --workspace-dir) workspace_dirs+=("$2"); shift 2 ;;
+      --select-inputs-from) select_inputs_from="$2"; shift 2 ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done
@@ -914,9 +1036,40 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   generation_root="${generation_root:-$integration_root/.papercusp/dependency-generations}"
+  if [ -n "$select_inputs_from" ]; then
+    [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--select-inputs-from cannot publish a workspace-scoped generation'
+      return 2
+    }
+    select_inputs_from="$(cd "$select_inputs_from" && pwd -P)"
+    dependency_generation_select_inputs "$select_inputs_from" "$generation_root" || return $?
+    printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
+      "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+      "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" \
+      "$DEPENDENCY_GENERATION_PATH"
+    return 0
+  fi
   dependency_generation_configure_workspace_dirs \
     "$integration_root" "${workspace_dirs[@]}" || return $?
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    input_before="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
+  fi
   dependency_generation_ensure "$integration_root" "$generation_root" || return $?
+  if [ "$DEPENDENCY_GENERATION_SCOPE_MODE" = 'full' ]; then
+    input_after="$(dependency_generation_input_fingerprint "$integration_root")" || return 1
+    if [ "$input_after" != "$input_before" ]; then
+      dependency_generation_log \
+        'FATAL: dependency inputs changed during generation prewarm; refusing a stale selector'
+      return 75
+    fi
+    dependency_generation_publish_input_selector \
+      "$generation_root" "$input_after" || return $?
+  else
+    DEPENDENCY_GENERATION_TOKEN="$(
+      dependency_generation_generation_token "$DEPENDENCY_GENERATION_PATH"
+    )" || return 1
+    DEPENDENCY_GENERATION_INPUT_FINGERPRINT='unindexed'
+  fi
   # Protect the just-published/reused identity even when several generations
   # share the same second-level `created` timestamp and retention ordering ties.
   dependency_generation_acquire_selector_lease "$generation_root" "$DEPENDENCY_GENERATION_ID" || return $?
@@ -926,10 +1079,12 @@ dependency_generation_main() {
     return "$retention_rc"
   }
   dependency_generation_release_selector_lease
-  printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s closure=%s scope=%s reused=%s path=%s\n' \
+  printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s closure=%s scope=%s reused=%s token=%s path=%s\n' \
     "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+    "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" \
     "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" "$DEPENDENCY_GENERATION_SCOPE_MODE" \
-    "$DEPENDENCY_GENERATION_REUSED" "$DEPENDENCY_GENERATION_PATH"
+    "$DEPENDENCY_GENERATION_REUSED" "$DEPENDENCY_GENERATION_TOKEN" \
+    "$DEPENDENCY_GENERATION_PATH"
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
