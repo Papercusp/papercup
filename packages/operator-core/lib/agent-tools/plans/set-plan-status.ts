@@ -251,7 +251,10 @@ function resolveRatifierOwnerId(ctx: unknown): string | null {
   }
 }
 
-const ACCEPTANCE_GRADER_GATE_CODES = new Set(['acceptance_ungraded', 'self_graded_only']);
+/** Exported so the acceptance-grading stall sweep can PIN its own copy of this set
+ * against the definition the live gate actually uses, instead of the two drifting
+ * apart silently (acceptance-grading-stall-sweep-2026-08-26 P-001). */
+export const ACCEPTANCE_GRADER_GATE_CODES = new Set(['acceptance_ungraded', 'self_graded_only']);
 
 /** D-006: a grading refusal recruits one grader. Keeping this decision in a
  * small exported seam makes the trigger independently testable and prevents
