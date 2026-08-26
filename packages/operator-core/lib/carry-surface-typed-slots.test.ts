@@ -88,6 +88,15 @@ describe('EI-19988500685566622: negation and third-party-subject suppression', (
     ).toBe(false);
   });
 
+  it('does NOT flag a peer/work-item owner confirming an event', () => {
+    expect(
+      lintOwnerQuestionSlots(
+        'await_id 93424 registered; ask WI-40086 peer owner to confirm the exact event emitter.',
+      ).flagged,
+    ).toBe(false);
+    expect(lintOwnerQuestionSlots('work-item owner to confirm the event emitter.').flagged).toBe(false);
+  });
+
   it('calibration: the SAME trigger phrase, undenied and about the writer, still flags', () => {
     expect(lintOwnerQuestionSlots('blocked on the owner: no idea when this unblocks.').flagged).toBe(true);
     expect(lintOwnerQuestionSlots('need to ask the owner here, this closes on its own.').flagged).toBe(true);

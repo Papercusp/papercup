@@ -71,6 +71,12 @@ const NEGATION_WINDOW_CHARS = 28;
  */
 const AGENT_SUBJECT_RE = /\b(?:su|claude)-[0-9a-f]{4,}(?:-[0-9a-f]{4,})*\b/i;
 
+/** A peer/work-item owner appearing before a trigger belongs to another
+ * agent's lane, not to the human owner. This covers the compact coordination
+ * phrasing used in carry notes, e.g. "WI-40086 peer owner to confirm the exact
+ * event emitter" (EI-21392657495371064). */
+const PEER_OWNER_SUBJECT_RE = /\b(?:peer|item|work[-\s]?item)\s+owner\b/i;
+
 /** Clause delimiters bounding how far back a suppression check looks — a
  *  negation or subject in an earlier, unrelated clause must not mask a real
  *  question in a later one on the same line. */
@@ -88,10 +94,15 @@ function clauseStartBefore(line: string, index: number): number {
 /** True when a trigger match at `matchIndex` on `line` should be suppressed —
  *  negated, or the grammatical subject is a named other agent — and so is
  *  not the writer's own unrouted question. */
-function isSuppressedMatch(line: string, matchIndex: number): boolean {
+function isSuppressedMatch(line: string, match: RegExpExecArray): boolean {
+  const matchIndex = match.index;
   const clauseStart = clauseStartBefore(line, matchIndex);
   const clauseBefore = line.slice(clauseStart, matchIndex);
-  if (AGENT_SUBJECT_RE.test(clauseBefore)) return true;
+  // Include the matched phrase: the `owner` in "peer owner to confirm" is
+  // itself the start of the trigger match, so looking only before matchIndex
+  // would miss the peer-owner subject.
+  const clauseThroughMatch = line.slice(clauseStart, matchIndex + match[0].length);
+  if (AGENT_SUBJECT_RE.test(clauseBefore) || PEER_OWNER_SUBJECT_RE.test(clauseThroughMatch)) return true;
   const negationWindowStart = Math.max(clauseStart, matchIndex - NEGATION_WINDOW_CHARS);
   const negationWindow = line.slice(negationWindowStart, matchIndex);
   if (NEGATION_RE.test(negationWindow)) return true;
@@ -135,7 +146,7 @@ export function lintOwnerQuestionSlots(text: string | null | undefined): TypedSl
     const hasUnsuppressedMatch = OWNER_QUESTION_RES.some((re) => {
       const m = re.exec(line); // none of these patterns carry the /g flag, so exec is stateless here
       if (!m) return false;
-      return !isSuppressedMatch(line, m.index);
+      return !isSuppressedMatch(line, m);
     });
     if (hasUnsuppressedMatch) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'owner-question-prose' });
