@@ -132,7 +132,12 @@ describe.skipIf(!desktopPresent)(
             '--minify-syntax',
             `--outfile=${output}`,
           ],
-          { cwd: join(REPO_ROOT, 'apps', 'operator'), encoding: 'utf8' },
+          {
+            cwd: join(REPO_ROOT, 'apps', 'operator'),
+            encoding: 'utf8',
+            timeout: 120_000,
+            killSignal: 'SIGKILL',
+          },
         );
         expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
         chmodSync(output, 0o755);
@@ -143,14 +148,19 @@ describe.skipIf(!desktopPresent)(
         const protocol = spawnSync(
           output,
           ['--protocol-version', 'papercusp-gcp-iap-initialization-v1', '--json-stdin'],
-          { input: '{}\n', encoding: 'utf8' },
+          { input: '{}\n', encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' },
         );
         expect(protocol.error).toBeUndefined();
         expect(protocol.status).toBe(1);
         expect(protocol.stdout).toBe('');
         expect(protocol.stderr).toContain('WorkspaceHostRemoteInitializerProtocolError');
 
-        const argv = spawnSync(output, ['--version'], { input: '{}\n', encoding: 'utf8' });
+        const argv = spawnSync(output, ['--version'], {
+          input: '{}\n',
+          encoding: 'utf8',
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
+        });
         expect(argv.error).toBeUndefined();
         expect(argv.status).toBe(1);
         expect(argv.stdout).toBe('');
