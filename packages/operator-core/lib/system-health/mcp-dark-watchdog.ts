@@ -409,12 +409,11 @@ export function evaluateInteractiveMcpDark(
   // has ≥1 beat (the loop:arm call itself is an MCP call), so the original
   // transport-death target — a session that WAS calling and then froze — is
   // unchanged.
-  if (s.presenceHeartbeatMs == null) {
-    // EI-21552041967359872 / D-004: null presence remains non-actionable BY
-    // ITSELF. The call-origin split supplies the positive evidence the old guard
-    // lacked: hook calls prove a Papercusp launch is taking turns through the
-    // operator; zero agent calls since the context epoch proves MCP never loaded.
-    if (!s.toolSurface) return { dark: false, reason: null };
+  // EI-21552041967359872 / D-004: the call-origin split is the strongest signal.
+  // Hook-origin dispatches also beat coord_presence, so a fresh presence row is
+  // not proof that agent-issued MCP tools are flowing. Evaluate this proof before
+  // the presence/loop cadence branches, including when presence is non-null.
+  if (s.toolSurface) {
     return {
       dark: true,
       reason:
@@ -423,6 +422,9 @@ export function evaluateInteractiveMcpDark(
         `the initial tool surface loaded empty (dark from birth).`,
     };
   }
+  // Null presence remains non-actionable BY ITSELF: there is no positive evidence
+  // that this session is a Papercusp agent whose transport died.
+  if (s.presenceHeartbeatMs == null) return { dark: false, reason: null };
   const staleMs = nowMs - s.presenceHeartbeatMs;
 
   if (s.loopActive) {
@@ -698,13 +700,14 @@ export async function checkInteractiveMcpDark(
       >();
       for (const h of hosts) {
         const presenceMs = presenceBy.get(h.ownerId) ?? null;
+        const toolSurface = toolSurfaceBy.get(h.ownerId) ?? null;
         const verdict = evaluateInteractiveMcpDark(
           {
             ownerId: h.ownerId,
             hostStartedMs: h.startedAt ?? null,
             hostLastActivityMs: h.lastActivityAt ?? null,
             presenceHeartbeatMs: presenceMs,
-            toolSurface: toolSurfaceBy.get(h.ownerId) ?? null,
+            toolSurface,
             loopActive: loopBy.has(h.ownerId),
             loopIntervalSec: loopBy.get(h.ownerId) ?? null,
           },
@@ -714,7 +717,9 @@ export async function checkInteractiveMcpDark(
         // POSITIVE-evidence recovery (2026-07-14 false-heal fix): tools are
         // demonstrably flowing NOW — a fresh tool-call-coupled beat. ¬dark alone
         // (idle session, reaped/absent presence row) proves nothing.
-        const recovered = presenceMs != null && now - presenceMs < RECOVERED_FRESH_MS;
+        // A hook-origin dispatch can produce that beat while the agent MCP
+        // surface is empty, so the call-origin proof explicitly excludes it.
+        const recovered = toolSurface === null && presenceMs != null && now - presenceMs < RECOVERED_FRESH_MS;
         verdictByOwner.set(h.ownerId, {
           dark: verdict.dark,
           recovered,

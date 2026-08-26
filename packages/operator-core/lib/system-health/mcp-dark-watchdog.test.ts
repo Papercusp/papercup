@@ -412,6 +412,31 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     vi.useRealTimers();
   });
 
+  it('fresh hook-origin presence does not mask the empty tool-surface proof or count as recovery', async () => {
+    const owner = 'su-dark-from-birth-hook-beat';
+    const { tag } = fakeSql({
+      openPhases: [],
+      // maybeBeatPresenceOnDispatch runs for hook-origin calls, so presence is
+      // fresh even though no agent-origin MCP call has completed.
+      presenceByOwner: { [owner]: INOW - 1 * M },
+      toolSurfaceByOwner: { [owner]: { hookCalls: 23, windowMinutes: 4 } },
+    });
+    listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+
+    const out = await checkInteractiveMcpDark(tag, {
+      jitterMaxMs: 0,
+      sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+    });
+
+    expect(out.darkOwners).toContain(owner);
+    expect(out.healSent).toContain(owner);
+    expect(out.recovered).not.toContain(owner);
+    expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owner);
+    vi.useRealTimers();
+  });
+
   it('a correlated dark-from-birth burst obeys the shared budget and reports every deferred owner', async () => {
     const owners = ['su-burst-a', 'su-burst-b', 'su-burst-c'];
     const { tag } = fakeSql({
