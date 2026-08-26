@@ -463,9 +463,11 @@ import './plugins/fire_event';
 import './plugins/tui_panes';
 import './tasks/create';
 // pui-agent-context-cockpit-2026-08-26 P-001 — one PG-backed task list per
-// owned-loop/chat session. TodoWrite/update_plan facades land in later items;
-// this is the canonical operation surface they translate into.
+// owned-loop/chat session. The model-family facades below translate their
+// familiar whole-list shapes into this canonical operation surface.
 import './tasks/ops';
+import './tasks/todo-write';
+import './tasks/update-plan';
 // messages:send / messages:dismiss RETIRED 2026-07-26 (P-008, owner-directed)
 // → _retired/work-item-mail/. coord:send absorbed the job at ~400x the volume.
 import './agent_chats/list';
