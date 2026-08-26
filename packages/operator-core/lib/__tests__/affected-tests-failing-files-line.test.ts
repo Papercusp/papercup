@@ -634,7 +634,8 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
   });
 
   it('stamps the same run token that names the full run log', () => {
-    expect(source).toContain('const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${RUN_TOKEN}.log`');
+    expect(source).toContain("const RUN_LOG_ROOT = join(tmpdir(), 'papercusp-affected-tests');");
+    expect(source).toContain('const RUN_LOG_PATH = join(RUN_LOG_ROOT, `${RUN_TOKEN}.log`);');
   });
 
   it('greps for the token via the shared constant, so a rename cannot desync', () => {

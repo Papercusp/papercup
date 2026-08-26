@@ -29,6 +29,7 @@ import {
   readFileSync,
   existsSync,
   appendFileSync,
+  mkdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -70,6 +71,7 @@ import {
   formatBatchProgress,
 } from "./lib/batch-watchdog.mjs";
 import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
+import { sweepStaleTestScratch } from "../libs/test-config/src/hermetic-tmpdir.ts";
 
 // EI-20767792192323374 — MUST happen HERE, in the launcher, and not in vitest.config.ts.
 // Vitest fixes its module-cache root as a class field initializer (`_tmpDir = join(tmpdir(),
@@ -168,7 +170,18 @@ import {
 // lines; a token that is also in the `Full run log:` path is what lets a reader tie a
 // break set to THIS run instead of to a fixture that hard-codes a different one.
 const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString("hex")}`;
-const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${RUN_TOKEN}.log`;
+// WI-41782: keep one attributable entry in the SHARED TMPDIR instead of one
+// top-level file per invocation. The log deliberately outlives this process so a
+// background-job notifier or later triager can read the complete verdict; deleting
+// it from an exit handler would remove the evidence it exists to preserve, and a
+// signal-killed process would not run that handler anyway. Reuse the existing
+// lifecycle-independent, rotating age sweep instead: recent diagnostics remain for
+// four hours, while every future invocation contributes cleanup without depending
+// on the dying process to cooperate.
+const RUN_LOG_ROOT = join(tmpdir(), "papercusp-affected-tests");
+mkdirSync(RUN_LOG_ROOT, { recursive: true });
+sweepStaleTestScratch(RUN_LOG_ROOT);
+const RUN_LOG_PATH = join(RUN_LOG_ROOT, `${RUN_TOKEN}.log`);
 // EI-21429853249887727: a near-tree-wide checkpoint forwarded 5,976 paths to
 // lint:required-field-strands as ONE `--files=...` argument. Linux caps a single argv
 // entry well below ARG_MAX, so node:child_process.spawn threw E2BIG synchronously and the
@@ -187,8 +200,8 @@ function explicitFilesArgs(files) {
     return [inline];
   }
   const responsePath = join(
-    tmpdir(),
-    `papercusp-affected-tests-${RUN_TOKEN}-files-${forwardedFilesResponsePaths.length}.json`,
+    RUN_LOG_ROOT,
+    `${RUN_TOKEN}-files-${forwardedFilesResponsePaths.length}.json`,
   );
   writeFileSync(responsePath, JSON.stringify(files), {
     flag: "wx",

@@ -40,9 +40,10 @@
  * pin CODE tokens (`resultLine('failed')`, `process.exit(1)`) and never prose.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { resolve, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -68,13 +69,16 @@ const REQUIRED_MARKER_FIELDS = [
   'undeterminedTasks',
 ] as const;
 
-function runAffected(args: string[]): { stdout: string; stderr: string; status: number | null } {
+function runAffected(
+  args: string[],
+  env: NodeJS.ProcessEnv = {},
+): { stdout: string; stderr: string; status: number | null } {
   const r = spawnSync(process.execPath, [AFFECTED_TESTS, ...args], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     timeout: 120_000,
     // Inherit nothing that could flip behaviour (AFFECTED_RETRY_FAILED et al).
-    env: { ...process.env, AFFECTED_RETRY_FAILED: '' },
+    env: { ...process.env, ...env, AFFECTED_RETRY_FAILED: '' },
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
 }
@@ -388,6 +392,36 @@ describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI
     // line whose pid belongs to some other run would be worse than no line at all.
     expect(begin).toMatch(new RegExp(`\\brun=${pid}-[0-9a-f]+\\b`));
     expect(runLog).toContain(String(pid));
+  });
+
+  it('nests full-run logs under one TMPDIR entry and sweeps only stale diagnostics (WI-41782)', () => {
+    const isolatedTmp = mkdtempSync(join(tmpdir(), 'affected-tests-log-root-'));
+    const logRoot = join(isolatedTmp, 'papercusp-affected-tests');
+    const stale = join(logRoot, 'stale.log');
+    const recent = join(logRoot, 'recent.log');
+    mkdirSync(logRoot);
+    writeFileSync(stale, 'old');
+    writeFileSync(recent, 'young');
+    const fiveHoursAgo = (Date.now() - 5 * 60 * 60 * 1_000) / 1_000;
+    utimesSync(stale, fiveHoursAgo, fiveHoursAgo);
+
+    try {
+      const { stdout, status } = runAffected(['--changed-paths', 'scripts/affected-tests.mjs', '--dry'], {
+        TMPDIR: isolatedTmp,
+        TMP: isolatedTmp,
+        TEMP: isolatedTmp,
+      });
+      const runLog = /Full run log: (\S+)/.exec(stdout)?.[1];
+
+      expect(status).toBe(0);
+      expect(runLog, `no run-log path announced in:\n${stdout}`).toBeTruthy();
+      expect(dirname(runLog!)).toBe(logRoot);
+      expect(existsSync(runLog!)).toBe(true);
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(recent)).toBe(true);
+    } finally {
+      rmSync(isolatedTmp, { recursive: true, force: true });
+    }
   });
 
   it('registers NO signal handler — the trap is the obvious fix and it breaks killability', () => {
