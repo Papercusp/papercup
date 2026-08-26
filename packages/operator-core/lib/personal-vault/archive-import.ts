@@ -364,7 +364,7 @@ export async function* streamPersonalArchiveFile(
       yield {
         warning: `${filename}: unsupported archive entry`,
         checkpoint: { entryIndex: 1, recordIndex: 0 },
-        bytesProcessed: archiveStat.size,
+        bytesProcessed: archiveBytes,
       };
       return;
     }

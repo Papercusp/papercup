@@ -9,6 +9,7 @@ import {
 } from './archive-import';
 import {
   PersonalArchiveEncryptedWriter,
+  verifyEncryptedPersonalArchiveDigest,
   type PersonalArchiveEncryptionOptions,
 } from './archive-encryption';
 import {
@@ -153,6 +154,7 @@ export interface PersonalVaultImportBatchOptions {
   streamArchive?: typeof streamPersonalArchiveFile;
   upsertDocuments?: typeof upsertPersonalDocuments;
   removeArchive?: typeof removePersonalVaultImportArchive;
+  verifyArchive?: typeof verifyEncryptedPersonalArchiveDigest;
 }
 
 export interface PersonalVaultImportBatchResult {
@@ -260,7 +262,6 @@ export async function storePersonalVaultImportArchive(
   await mkdir(root, { recursive: true, mode: 0o700 });
   const storagePath = join(root, `${randomUUID()}.archive`);
   const writer = await PersonalArchiveEncryptedWriter.create(workspaceId, storagePath, options);
-  const hash = createHash('sha256');
   let sizeBytes = 0;
   let complete = false;
   try {
@@ -269,13 +270,12 @@ export async function storePersonalVaultImportArchive(
       if (!chunk.length) continue;
       sizeBytes += chunk.length;
       if (sizeBytes > maxBytes) throw new Error('personal_archive_too_large');
-      hash.update(chunk);
       await writer.write(chunk);
     }
     if (sizeBytes === 0) throw new Error('personal_archive_empty');
-    await writer.finish();
+    const encrypted = await writer.finish();
     complete = true;
-    return { storagePath, contentSha256: hash.digest('hex'), sizeBytes };
+    return { storagePath, contentSha256: encrypted.contentSha256, sizeBytes };
   } finally {
     if (!complete) {
       await writer.abort();
@@ -653,6 +653,7 @@ async function processClaimedJob(
   const streamArchive = options.streamArchive ?? streamPersonalArchiveFile;
   const upsertDocuments = options.upsertDocuments ?? upsertPersonalDocuments;
   const removeArchive = options.removeArchive ?? removePersonalVaultImportArchive;
+  const verifyArchive = options.verifyArchive ?? verifyEncryptedPersonalArchiveDigest;
   const current = await refreshJob(sql, job);
   if (current.cancelRequested) {
     await finishJob(sql, current, 'cancelled');
@@ -709,6 +710,11 @@ async function processClaimedJob(
     );
   }
   if (exhausted) {
+    await verifyArchive(
+      current.workspaceId,
+      current.storagePath,
+      current.contentSha256,
+    );
     await finishJob(sql, current, 'completed');
     await cleanupJobArchive(sql, current, removeArchive);
   } else {

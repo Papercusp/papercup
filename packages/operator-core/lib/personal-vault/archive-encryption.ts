@@ -1,6 +1,7 @@
 import {
   createCipheriv,
   createDecipheriv,
+  createHash,
   createHmac,
   randomBytes,
 } from 'node:crypto';
@@ -9,8 +10,9 @@ import { Readable } from 'node:stream';
 import { getDbEncryptionKey } from '../db-encryption';
 
 const MAGIC = Buffer.from('PCPVIA01', 'ascii');
-const HEADER_BYTES = 32;
 const AUTH_TAG_BYTES = 16;
+const HEADER_PREFIX_BYTES = 64;
+const HEADER_BYTES = HEADER_PREFIX_BYTES + AUTH_TAG_BYTES;
 const NONCE_PREFIX_BYTES = 8;
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
@@ -21,6 +23,7 @@ export interface EncryptedPersonalArchiveMetadata {
   chunkBytes: number;
   chunkCount: number;
   noncePrefix: Buffer;
+  contentSha256: string;
 }
 
 export interface PersonalArchiveEncryptionOptions {
@@ -73,17 +76,44 @@ function assertChunkBytes(value: number | undefined): number {
   return resolved;
 }
 
-function header(metadata: Pick<EncryptedPersonalArchiveMetadata, 'plaintextBytes' | 'chunkBytes' | 'noncePrefix'>): Buffer {
-  const out = Buffer.alloc(HEADER_BYTES);
+function headerPrefix(
+  metadata: Pick<
+    EncryptedPersonalArchiveMetadata,
+    'plaintextBytes' | 'chunkBytes' | 'chunkCount' | 'noncePrefix' | 'contentSha256'
+  >,
+): Buffer {
+  const out = Buffer.alloc(HEADER_PREFIX_BYTES);
   MAGIC.copy(out, 0);
   out.writeUInt32BE(metadata.chunkBytes, 8);
   out.writeBigUInt64BE(BigInt(metadata.plaintextBytes), 12);
-  metadata.noncePrefix.copy(out, 20);
+  out.writeUInt32BE(metadata.chunkCount, 20);
+  metadata.noncePrefix.copy(out, 24);
+  Buffer.from(metadata.contentSha256, 'hex').copy(out, 32);
   return out;
 }
 
+function manifestAad(workspaceId: string, prefix: Buffer): Buffer {
+  return Buffer.concat([prefix, Buffer.from([0]), Buffer.from(workspaceId, 'utf8')]);
+}
+
+function authenticatedHeader(
+  workspaceId: string,
+  key: Buffer,
+  metadata: EncryptedPersonalArchiveMetadata,
+): Buffer {
+  const prefix = headerPrefix(metadata);
+  const cipher = createCipheriv(
+    'aes-256-gcm',
+    key,
+    nonce(metadata.noncePrefix, 0xffff_ffff),
+  );
+  cipher.setAAD(manifestAad(workspaceId, prefix));
+  cipher.final();
+  return Buffer.concat([prefix, cipher.getAuthTag()]);
+}
+
 function nonce(prefix: Buffer, chunkIndex: number): Buffer {
-  if (chunkIndex > 0xffff_ffff) throw new Error('personal_vault_import_chunk_index_overflow');
+  if (chunkIndex >= 0xffff_ffff) throw new Error('personal_vault_import_chunk_index_overflow');
   const out = Buffer.alloc(12);
   prefix.copy(out, 0);
   out.writeUInt32BE(chunkIndex, NONCE_PREFIX_BYTES);
@@ -134,6 +164,7 @@ export class PersonalArchiveEncryptedWriter {
   private pending = Buffer.alloc(0);
   private chunkIndex = 0;
   private plaintextBytes = 0;
+  private readonly plaintextHash = createHash('sha256');
 
   private constructor(
     private readonly workspaceId: string,
@@ -151,9 +182,16 @@ export class PersonalArchiveEncryptedWriter {
   ): Promise<PersonalArchiveEncryptedWriter> {
     const handle = await open(storagePath, 'wx', 0o600);
     const writer = new PersonalArchiveEncryptedWriter(workspaceId, handle, options);
+    const emptyMetadata: EncryptedPersonalArchiveMetadata = {
+      plaintextBytes: 0,
+      chunkBytes: writer.chunkBytes,
+      chunkCount: 0,
+      noncePrefix: writer.noncePrefix,
+      contentSha256: createHash('sha256').digest('hex'),
+    };
     await writeAll(
       handle,
-      header({ plaintextBytes: 0, chunkBytes: writer.chunkBytes, noncePrefix: writer.noncePrefix }),
+      authenticatedHeader(workspaceId, writer.key, emptyMetadata),
       0,
     );
     return writer;
@@ -172,6 +210,7 @@ export class PersonalArchiveEncryptedWriter {
 
   async write(value: Uint8Array): Promise<void> {
     let chunk = Buffer.from(value);
+    this.plaintextHash.update(chunk);
     while (chunk.length) {
       if (!this.pending.length && chunk.length >= this.chunkBytes) {
         await this.writeChunk(chunk.subarray(0, this.chunkBytes));
@@ -199,8 +238,9 @@ export class PersonalArchiveEncryptedWriter {
       chunkBytes: this.chunkBytes,
       chunkCount: this.chunkIndex,
       noncePrefix: this.noncePrefix,
+      contentSha256: this.plaintextHash.digest('hex'),
     };
-    await writeAll(this.handle, header(metadata), 0);
+    await writeAll(this.handle, authenticatedHeader(this.workspaceId, this.key, metadata), 0);
     await this.handle.sync();
     await this.handle.close();
     return metadata;
@@ -212,7 +252,9 @@ export class PersonalArchiveEncryptedWriter {
 }
 
 export async function readEncryptedPersonalArchiveMetadata(
+  workspaceId: string,
   storagePath: string,
+  options: Pick<PersonalArchiveEncryptionOptions, 'rootKey'> = {},
 ): Promise<EncryptedPersonalArchiveMetadata> {
   const handle = await open(storagePath, 'r');
   try {
@@ -226,7 +268,27 @@ export async function readEncryptedPersonalArchiveMetadata(
       throw new Error('personal_vault_import_plaintext_size_invalid');
     }
     const plaintextBytes = Number(plaintextBig);
-    const chunkCount = plaintextBytes === 0 ? 0 : Math.ceil(plaintextBytes / chunkBytes);
+    const chunkCount = raw.readUInt32BE(20);
+    const expectedChunkCount = plaintextBytes === 0 ? 0 : Math.ceil(plaintextBytes / chunkBytes);
+    if (chunkCount !== expectedChunkCount) {
+      throw new Error('personal_vault_import_chunk_count_invalid');
+    }
+    const noncePrefix = Buffer.from(raw.subarray(24, 24 + NONCE_PREFIX_BYTES));
+    const contentSha256 = raw.subarray(32, 64).toString('hex');
+    const key = derivePersonalArchiveEncryptionKey(workspaceId, options.rootKey);
+    const decipher = createDecipheriv(
+      'aes-256-gcm',
+      key,
+      nonce(noncePrefix, 0xffff_ffff),
+      { authTagLength: AUTH_TAG_BYTES },
+    );
+    decipher.setAAD(manifestAad(workspaceId, raw.subarray(0, HEADER_PREFIX_BYTES)));
+    decipher.setAuthTag(raw.subarray(HEADER_PREFIX_BYTES, HEADER_BYTES));
+    try {
+      decipher.final();
+    } catch {
+      throw new Error('personal_vault_import_manifest_authentication_failed');
+    }
     const expectedSize = HEADER_BYTES + plaintextBytes + chunkCount * AUTH_TAG_BYTES;
     const actual = await stat(storagePath);
     if (actual.size !== expectedSize) {
@@ -236,7 +298,8 @@ export async function readEncryptedPersonalArchiveMetadata(
       plaintextBytes,
       chunkBytes,
       chunkCount,
-      noncePrefix: Buffer.from(raw.subarray(20, 20 + NONCE_PREFIX_BYTES)),
+      noncePrefix,
+      contentSha256,
     };
   } finally {
     await handle.close();
@@ -281,7 +344,7 @@ export async function openEncryptedPersonalArchive(
   metadata: EncryptedPersonalArchiveMetadata;
   createReadStream(start?: number, end?: number): Readable;
 }> {
-  const metadata = await readEncryptedPersonalArchiveMetadata(storagePath);
+  const metadata = await readEncryptedPersonalArchiveMetadata(workspaceId, storagePath, options);
   const key = derivePersonalArchiveEncryptionKey(workspaceId, options.rootKey);
   return {
     metadata,
@@ -309,6 +372,22 @@ export async function openEncryptedPersonalArchive(
       })());
     },
   };
+}
+
+export async function verifyEncryptedPersonalArchiveDigest(
+  workspaceId: string,
+  storagePath: string,
+  expectedContentSha256?: string,
+  options: Pick<PersonalArchiveEncryptionOptions, 'rootKey'> = {},
+): Promise<string> {
+  const archive = await openEncryptedPersonalArchive(workspaceId, storagePath, options);
+  const hash = createHash('sha256');
+  for await (const value of archive.createReadStream()) hash.update(value as Buffer);
+  const digest = hash.digest('hex');
+  if (digest !== archive.metadata.contentSha256 || (expectedContentSha256 && digest !== expectedContentSha256)) {
+    throw new Error('personal_vault_import_content_digest_mismatch');
+  }
+  return digest;
 }
 
 export const PERSONAL_ARCHIVE_ENCRYPTION_HEADER_BYTES = HEADER_BYTES;
