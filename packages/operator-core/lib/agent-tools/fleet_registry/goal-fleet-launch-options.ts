@@ -1,0 +1,281 @@
+/**
+ * goal-fleet-launch-options — the PURE mapper from a goal's role profiles to the
+ * fleet layer's launch-option shape
+ * (goal-launch-headless-and-fleet-type-2026-08-26 P-006, D-001/D-004/D-005/D-006).
+ *
+ * THE TWO SHAPES IT BRIDGES, and why they are deliberately different (D-001):
+ *
+ *   goal record  → `roles`, a partialRecord keyed by the CLOSED launch-slot
+ *                  vocabulary (`plan-fleet-director`, `drain-fleet-member`, …).
+ *                  One shape, hand-edited by an owner through the goal panel.
+ *   fleet layer  → `resolveLaunchOptions`'s type-conditional input: FLAT knobs on
+ *                  a single fleet, nested `directors`/`implementers` groups on a
+ *                  paired one.
+ *
+ * Mirroring the nested groups onto the goal record would give one object two
+ * competing ways to say the same thing, so the goal keeps its slot vocabulary and
+ * the conversion happens HERE, at the boundary, in a pure function.
+ *
+ * Pure and side-effect free on purpose, exactly like `pair-launch-options.ts` next
+ * door: this is the branch worth pinning with tests, and per D-003 a settings
+ * change is proven by what a launch RECEIVES — which means the mapping has to be
+ * provable without opening a terminal.
+ */
+import type { FleetType } from '../../agent-fleets-store';
+import { foldLaunchProfile, type GoalLaunchSettings } from '../../goal-launch-settings';
+import {
+  goalFleetFamily,
+  goalFleetLaunchSlots,
+  type GoalFleetFamily,
+  type GoalFleetSlots,
+} from '../../goal-launch-settings-shared';
+import {
+  PER_ROLE_KNOBS,
+  type LaunchOptionInput,
+  type RoleLaunchOptions,
+} from './pair-launch-options';
+
+/**
+ * WHO chose the fleet shape (D-006).
+ *
+ * Carried rather than discarded because the launch door has to be able to SAY so:
+ * once a goal can supply `type`, a caller who passed flat knobs and no `type` at
+ * all can be refused for a shape they never declared, and a refusal that reads
+ * "type:'paired' was declared" would be pointing at the wrong author.
+ */
+export type FleetTypeSource = 'caller' | 'goal' | 'default';
+
+/**
+ * A goal knob that the goal accepted but this launch shape CANNOT bind.
+ *
+ * Surfaced rather than dropped silently. "Reads as configured while binding
+ * nothing" is the exact failure D-016/WI-38048 was about — a panel inviting
+ * owners to set six profiles that reached no launch — so anything this mapper
+ * cannot deliver is named, not swallowed.
+ */
+export interface UnbindableGoalKnob {
+  slot: string;
+  knob: string;
+  why: string;
+}
+
+export interface GoalFleetLaunchOverlay {
+  /** The resolved fleet shape, and who chose it. */
+  type: FleetType;
+  typeSource: FleetTypeSource;
+  /** The goal whose settings produced this, or null when no goal is in context. */
+  goalId: string | null;
+  family: GoalFleetFamily;
+  /** The slot(s) consulted — a discriminated union, so a single fleet has no director. */
+  slots: GoalFleetSlots;
+  /** SINGLE arm: the flat per-member knobs the goal pins. `{}` on a paired fleet. */
+  flat: RoleLaunchOptions;
+  /** PAIRED arm: the two independent role groups. Both `{}` on a single fleet. */
+  directors: RoleLaunchOptions;
+  implementers: RoleLaunchOptions;
+  /** True when the goal pinned at least one knob this launch will actually bind. */
+  pinned: boolean;
+  /** Knobs the goal set that this launch shape cannot deliver. Usually empty. */
+  unbindable: UnbindableGoalKnob[];
+}
+
+/**
+ * Narrow a goal `LaunchProfile` to the fleet layer's per-role knob set.
+ *
+ * The two vocabularies overlap but are not identical: `contextSize` is a real
+ * goal knob and is NOT in `PER_ROLE_KNOBS`, because the fleet layer applies it
+ * fleet-wide rather than per seat. Dropping it here is correct for the per-role
+ * groups; `unbindableKnobs` below is what stops that drop from being silent.
+ *
+ * Empty string is treated as absent, matching `foldLaunchProfile`'s own rule —
+ * a blank field in the goal panel means "unset", not "set to empty".
+ */
+function toRoleOptions(profile: Record<string, unknown>): RoleLaunchOptions {
+  const out: RoleLaunchOptions = {};
+  for (const k of PER_ROLE_KNOBS) {
+    const v = profile[k];
+    if (v !== undefined && v !== null && v !== '') (out as Record<string, unknown>)[k] = v;
+  }
+  return out;
+}
+
+/** Knobs present in the folded profile that the per-role groups cannot carry. */
+function unbindableKnobs(
+  profile: Record<string, unknown>,
+  slot: string,
+  why: string,
+): UnbindableGoalKnob[] {
+  const perRole = new Set<string>(PER_ROLE_KNOBS);
+  return Object.entries(profile)
+    .filter(([k, v]) => !perRole.has(k) && v !== undefined && v !== null && v !== '')
+    .map(([knob]) => ({ slot, knob, why }));
+}
+
+const hasAny = (o: RoleLaunchOptions): boolean => Object.keys(o).length > 0;
+
+/**
+ * Fold the goal's settings into the launch shape this fleet will open with.
+ *
+ * `callerType` is what the caller EXPLICITLY passed (undefined when they passed
+ * nothing) — it outranks the goal's `fleetType`, because the settings are the
+ * goal's standing policy and not an override of a decision the caller just made
+ * deliberately. That is the same precedence `foldLaunchProfile` applies one level
+ * down, stated once more here so the two layers cannot disagree.
+ */
+export function goalFleetLaunchOverlay(args: {
+  goalId: string | null;
+  settings: GoalLaunchSettings | null;
+  fleetSlug: string;
+  drainFleetSlug: string | null;
+  /** The caller's EXPLICIT `type`, or undefined when they passed none. */
+  callerType?: FleetType;
+}): GoalFleetLaunchOverlay {
+  const goalType = args.settings?.fleetType;
+  const type: FleetType = args.callerType ?? goalType ?? 'single';
+  const typeSource: FleetTypeSource =
+    args.callerType !== undefined ? 'caller' : goalType !== undefined ? 'goal' : 'default';
+
+  const family = goalFleetFamily({
+    fleetSlug: args.fleetSlug,
+    drainFleetSlug: args.drainFleetSlug,
+  });
+  const slots = goalFleetLaunchSlots(family, type);
+
+  // No goal in context ⇒ nothing to overlay. Returned as a fully-formed overlay
+  // rather than null so the call site has one shape to handle: the difference
+  // between "no goal" and "a goal that pinned nothing" is `goalId`, and neither
+  // needs a branch at the boundary.
+  if (!args.goalId) {
+    return {
+      type,
+      typeSource,
+      goalId: null,
+      family,
+      slots,
+      flat: {},
+      directors: {},
+      implementers: {},
+      pinned: false,
+      unbindable: [],
+    };
+  }
+
+  const unbindable: UnbindableGoalKnob[] = [];
+  const foldFor = (slot: string): Record<string, unknown> =>
+    foldLaunchProfile(args.settings, slot as never, null) as Record<string, unknown>;
+
+  if (slots.type === 'paired') {
+    // D-005/D-009: the two roles are folded INDEPENDENTLY. Each gets the goal's
+    // `defaults` layer plus its OWN slot layer and nothing from the other — a
+    // director's model must never be able to reach an implementer's seat, which
+    // is the whole reason the paired shape exists.
+    const directorProfile = foldFor(slots.director);
+    const implementerProfile = foldFor(slots.implementer);
+    const directors = toRoleOptions(directorProfile);
+    const implementers = toRoleOptions(implementerProfile);
+    const why =
+      'not a per-role knob at the fleet layer (PER_ROLE_KNOBS); it is applied fleet-wide, ' +
+      'so a per-role value cannot be delivered to one half of a pair';
+    unbindable.push(
+      ...unbindableKnobs(directorProfile, slots.director, why),
+      ...unbindableKnobs(implementerProfile, slots.implementer, why),
+    );
+    return {
+      type,
+      typeSource,
+      goalId: args.goalId,
+      family,
+      slots,
+      flat: {},
+      directors,
+      implementers,
+      pinned: hasAny(directors) || hasAny(implementers),
+      unbindable,
+    };
+  }
+
+  // SINGLE: one member slot, folded flat. `contextSize` is deliberately NOT
+  // reported unbindable here — the single arm's fleet-wide fold at the launch
+  // door still delivers it, so it binds; it is only the paired arm that cannot.
+  const memberProfile = foldFor(slots.member);
+  const flat = toRoleOptions(memberProfile);
+  return {
+    type,
+    typeSource,
+    goalId: args.goalId,
+    family,
+    slots,
+    flat,
+    directors: {},
+    implementers: {},
+    pinned: hasAny(flat),
+    unbindable,
+  };
+}
+
+/**
+ * Merge the overlay UNDER a caller's launch-option input.
+ *
+ * Caller-supplied values win knob by knob (D-006), so a goal's standing policy
+ * fills the gaps a caller left rather than overriding what they asked for.
+ *
+ * NOTE WHAT THIS DELIBERATELY DOES NOT DO: it never strips the caller's flat
+ * knobs to make a paired launch legal. `resolveLaunchOptions` refuses flat knobs
+ * on a paired fleet on purpose — coercing them would broadcast one value to both
+ * roles — and that refusal is preserved here rather than pre-empted. The caller
+ * is expected to enrich the refusal with `typeSource` when the goal is what made
+ * the launch paired.
+ */
+export function applyGoalLaunchOverlay(
+  caller: LaunchOptionInput,
+  overlay: GoalFleetLaunchOverlay,
+): LaunchOptionInput {
+  const merge = (
+    over: RoleLaunchOptions | undefined,
+    under: RoleLaunchOptions,
+  ): RoleLaunchOptions => {
+    const out: RoleLaunchOptions = { ...under };
+    for (const k of PER_ROLE_KNOBS) {
+      const v = over?.[k];
+      if (v !== undefined) (out as Record<string, unknown>)[k] = v;
+    }
+    return out;
+  };
+
+  if (overlay.type === 'paired') {
+    // A group is emitted when EITHER side configured it. `pair-launch-options`
+    // reads PRESENCE, not emptiness — `directors:{}` means "this role runs on the
+    // defaults" — so a goal that pins only implementers still yields a legal
+    // paired launch with an explicitly-defaulted director half.
+    const directors = merge(caller.directors, overlay.directors);
+    const implementers = merge(caller.implementers, overlay.implementers);
+    const emit =
+      caller.directors !== undefined ||
+      caller.implementers !== undefined ||
+      overlay.pinned ||
+      overlay.typeSource === 'goal';
+    return {
+      ...caller,
+      type: overlay.type,
+      ...(emit ? { directors, implementers } : {}),
+    };
+  }
+
+  return { ...caller, type: overlay.type, ...merge(caller, overlay.flat) };
+}
+
+/**
+ * The extra sentence a `flat_knobs_on_paired_fleet` refusal owes the caller when
+ * the GOAL, not the caller, is what made this launch paired (D-006).
+ *
+ * Empty string when the caller declared the type themselves — the stock message
+ * is already accurate then, and appending "the goal chose this" would be false.
+ */
+export function goalPairedTypeNote(overlay: GoalFleetLaunchOverlay): string {
+  if (overlay.typeSource !== 'goal' || overlay.type !== 'paired') return '';
+  return (
+    ` NOTE: you did not pass \`type\` — this launch is paired because goal ${overlay.goalId} ` +
+    `pins fleetType:'paired' in its launch settings. Configure the roles with directors:{…} / ` +
+    `implementers:{…}, or pass type:'single' explicitly to override the goal's policy for this launch.`
+  );
+}
