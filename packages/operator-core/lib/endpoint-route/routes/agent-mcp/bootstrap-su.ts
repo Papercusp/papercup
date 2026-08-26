@@ -30,9 +30,12 @@ import {
   NATIVE_SESSION_ID_RE,
   adoptStartingTerminalLaunch,
   endedRecordedOwnerIds,
+  acquireAdvSessionResume,
+  finalizeAdvSessionResume,
   markAdvSessionEnded,
   parseKilledBySignalReport,
   claimAdvSessionResume,
+  releaseAdvSessionResume,
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
   recordAdvSession,
@@ -3087,7 +3090,7 @@ const optionsForHeartbeat = defineTool({
 
 /**
  * POST /api/agent-mcp/console/bootstrap-su/session-ended
- *   { advSessionId, exitCode?, killedBySignal?, launchFailed? }
+ *   { advSessionId, exitCode?, killedBySignal?, launchFailed?, endAttemptKey }
  *
  * The psu launcher's exit report. psu stays alive as the agent's parent in
  * BOTH launch paths (the same property the supervisor beat rides), and on
@@ -3097,8 +3100,8 @@ const optionsForHeartbeat = defineTool({
  * "· active" in the `psu --resume` picker forever — and the session-dir GC's
  * open-row protection never expired, wedging collection of abandoned dirs.
  *
- * Best-effort contract like the sibling heartbeat: the launcher swallows any
- * failure (it is about to process.exit). A claimed resume that never starts a
+ * Acknowledged replay-safe contract: endAttemptKey stays stable across the
+ * launcher's bounded retries, and markAdvSessionEnded is idempotent. A claimed resume that never starts a
  * child reports `launchFailed:true`; that is a CLOSE, not an observed child
  * exit, so it maps to `ended_by='cleanup'` and becomes immediately retryable.
  * markAdvSessionEnded is idempotent — it only stamps an unset ended_at — so a
@@ -3115,12 +3118,14 @@ const sessionEnded = defineTool({
     let exitCode: number | null = null;
     let killedBySignal: string | null = null;
     let launchFailed = false;
+    let endAttemptKey: string | null = null;
     try {
       const body = (await req.json()) as {
         advSessionId?: unknown;
         exitCode?: unknown;
         killedBySignal?: unknown;
         launchFailed?: unknown;
+        endAttemptKey?: unknown;
       };
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
@@ -3132,11 +3137,18 @@ const sessionEnded = defineTool({
       // as the reason an agent died, so it must be a signal NAME and nothing else.
       killedBySignal = parseKilledBySignalReport(body.killedBySignal);
       launchFailed = body.launchFailed === true;
+      if (typeof body.endAttemptKey === 'string') {
+        const candidate = body.endAttemptKey.trim();
+        if (candidate && candidate.length <= 200) endAttemptKey = candidate;
+      }
     } catch {
       /* fall through to the 400 */
     }
     if (advSessionId == null || advSessionId <= 0) {
       return jsonRes({ error: 'advSessionId required' }, 400);
+    }
+    if (!endAttemptKey) {
+      return jsonRes({ error: 'endAttemptKey required' }, 400);
     }
     try {
       // WI-38054: 'self' is a claim about VOLUNTARINESS, not merely about who reported.
@@ -3151,8 +3163,9 @@ const sessionEnded = defineTool({
       const endedBy = launchFailed ? 'cleanup' : killedBySignal ? 'signal' : 'self';
       await markAdvSessionEnded(advSessionId, exitCode, endedBy, {
         signal: launchFailed ? null : killedBySignal,
+        throwOnError: true,
       });
-      return jsonRes({ ok: true });
+      return jsonRes({ ok: true, ended: true, endAttemptKey });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }
@@ -3169,16 +3182,18 @@ const optionsForSessionEnded = defineTool({
 });
 
 /**
- * POST /api/agent-mcp/console/bootstrap-su/session-resumed  { advSessionId }
+ * POST /api/agent-mcp/console/bootstrap-su/session-resumed
+ *   { advSessionId, resumeClaimKey? }
  *
- * The psu launcher's atomic RESUME claim. Manual resume can race an already-queued
- * loop wake after the prior process exits, and a winning claimant can die before
- * its agent process registers liveness. claimAdvSessionResume admits both a cleanly
- * ended row and a stale active row, while its started_at window preserves exactly
- * one winner during normal spawn/bootstrap latency.
+ * The psu launcher's atomic RESUME acquisition. A keyed caller receives an
+ * explicit short-lived reservation; acquisition preserves terminal evidence and
+ * therefore does not assert that a child exists. The caller must finalize that
+ * reservation from concrete spawn evidence, or release it on setup failure.
+ * Legacy no-key callers retain the historical one-step claim during rollout.
  *
- * The response keeps the historical `reactivated` field for launcher compatibility,
- * but false now unambiguously means "the claim was not acquired — do not spawn".
+ * The keyed response is typed (`acquired` + `status` and lease metadata) and also
+ * keeps the historical `reactivated` field for compatibility. In either shape,
+ * false means "the right to resume was not acquired — do not spawn".
  */
 const sessionResumed = defineTool({
   method: 'POST',
@@ -3210,11 +3225,97 @@ const sessionResumed = defineTool({
       return jsonRes({ error: 'advSessionId required' }, 400);
     }
     try {
-      const claimed = await claimAdvSessionResume(advSessionId, resumeClaimKey);
+      if (resumeClaimKey) {
+        const reservation = await acquireAdvSessionResume(advSessionId, resumeClaimKey);
+        return jsonRes({ ok: true, ...reservation, reactivated: reservation.acquired });
+      }
+      const claimed = await claimAdvSessionResume(advSessionId, null);
       return jsonRes({ ok: true, reactivated: claimed });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
     }
+  },
+});
+
+async function parseResumeTransitionBody(
+  req: Request,
+): Promise<{ advSessionId: number; resumeClaimKey: string } | Response> {
+  let advSessionId: number | null = null;
+  let resumeClaimKey: string | null = null;
+  try {
+    const body = (await req.json()) as { advSessionId?: unknown; resumeClaimKey?: unknown };
+    if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
+      advSessionId = body.advSessionId;
+    }
+    if (typeof body.resumeClaimKey === 'string') {
+      const candidate = body.resumeClaimKey.trim();
+      if (candidate && candidate.length <= 200) resumeClaimKey = candidate;
+    }
+  } catch {
+    /* return the shared validation response below */
+  }
+  if (advSessionId == null || advSessionId <= 0) {
+    return jsonRes({ error: 'advSessionId required' }, 400);
+  }
+  if (!resumeClaimKey) {
+    return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
+  }
+  return { advSessionId, resumeClaimKey };
+}
+
+/** Finalize a keyed resume reservation from concrete child/host spawn evidence. */
+const sessionResumeFinalized = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/console/bootstrap-su/session-resume-finalized',
+  auth: 'loopback',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    const parsed = await parseResumeTransitionBody(req);
+    if (parsed instanceof Response) return parsed;
+    try {
+      const finalized = await finalizeAdvSessionResume(parsed.advSessionId, parsed.resumeClaimKey);
+      return jsonRes({ ok: true, finalized, resumeClaimKey: parsed.resumeClaimKey });
+    } catch (err) {
+      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
+    }
+  },
+});
+
+const optionsForSessionResumeFinalized = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/session-resume-finalized',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  },
+});
+
+/** Release a keyed reservation after setup/pre-spawn failure without asserting liveness. */
+const sessionResumeReleased = defineTool({
+  method: 'POST',
+  path: '/agent-mcp/console/bootstrap-su/session-resume-released',
+  auth: 'loopback',
+  async handler(req) {
+    const denied = await gatePrincipal(req.headers);
+    if (denied) return denied;
+    const parsed = await parseResumeTransitionBody(req);
+    if (parsed instanceof Response) return parsed;
+    try {
+      const released = await releaseAdvSessionResume(parsed.advSessionId, parsed.resumeClaimKey);
+      return jsonRes({ ok: true, released, resumeClaimKey: parsed.resumeClaimKey });
+    } catch (err) {
+      return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
+    }
+  },
+});
+
+const optionsForSessionResumeReleased = defineTool({
+  method: 'OPTIONS',
+  path: '/agent-mcp/console/bootstrap-su/session-resume-released',
+  auth: 'public',
+  handler() {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
   },
 });
 
@@ -3378,6 +3479,10 @@ export default [
   optionsForSessionEnded,
   sessionResumed,
   optionsForSessionResumed,
+  sessionResumeFinalized,
+  optionsForSessionResumeFinalized,
+  sessionResumeReleased,
+  optionsForSessionResumeReleased,
   sessionRespawned,
   optionsForSessionRespawned,
 ];

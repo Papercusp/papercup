@@ -122,7 +122,11 @@ import {
   ompTitleMitigationArgs,
   ompResponsesCompatibilityEnv,
   reportSessionEnded,
+  pendingSessionEndWitnessPath,
+  readPendingSessionEndWitness,
   reportSessionResumed,
+  reportSessionResumeFinalized,
+  reportSessionResumeReleased,
   describeResumeClaimRefusal,
   reportSessionRespawned,
   reportSessionPortDelivery,
@@ -7428,6 +7432,35 @@ describe("usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 
 describe("spawnInherit — plain fallback owns and cleans up the backend process group (EI-20234301056067173)", () => {
   const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+  it("finalizes only after Node confirms the direct child spawned", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4141;
+    child.kill = vi.fn();
+    const onSpawn = vi.fn(async () => undefined);
+    const report = vi.fn(async () => undefined);
+
+    spawnInherit({
+      wrapperBin: "codex-su",
+      cwd: "/tmp",
+      env: { PAPERCUSP_ADV_SESSION_ID: "17" },
+      spawnImpl: vi.fn(() => child),
+      processApi: { pid: 9000, kill: vi.fn(), exit: vi.fn() },
+      signalSource: new EventEmitter(),
+      reportSessionEndedImpl: report,
+      onSpawn,
+    });
+
+    expect(onSpawn).not.toHaveBeenCalled();
+    child.emit("spawn");
+    await flush();
+    expect(onSpawn).toHaveBeenCalledOnce();
+    child.emit("exit", 0, null);
+    await flush();
+  });
+
   it("detaches the wrapper and kills its group plus direct child after exit", async () => {
     const child = new EventEmitter() as EventEmitter & {
       pid: number;
@@ -7505,6 +7538,40 @@ describe("spawnInherit — plain fallback owns and cleans up the backend process
     expect(signalSource.listenerCount("SIGINT")).toBe(0);
     expect(signalSource.listenerCount("SIGTERM")).toBe(0);
     expect(signalSource.listenerCount("SIGHUP")).toBe(0);
+    errorSpy.mockRestore();
+  });
+
+  it("releases a tracked reservation on a pre-spawn error", async () => {
+    const child = new EventEmitter() as EventEmitter & {
+      pid: number;
+      kill: ReturnType<typeof vi.fn>;
+    };
+    child.pid = 4545;
+    child.kill = vi.fn();
+    const release = vi.fn(async () => undefined);
+    const report = vi.fn(async () => undefined);
+    const processExit = vi.fn();
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    spawnInherit({
+      wrapperBin: "codex-su",
+      cwd: "/tmp",
+      env: { PAPERCUSP_ADV_SESSION_ID: "17" },
+      spawnImpl: vi.fn(() => child),
+      processApi: { pid: 9004, kill: vi.fn(), exit: processExit },
+      signalSource: new EventEmitter(),
+      reportSessionEndedImpl: report,
+      onSpawnFailure: release,
+    });
+
+    child.emit("error", new Error("ENOENT"));
+    await flush();
+
+    expect(release).toHaveBeenCalledOnce();
+    expect(report).not.toHaveBeenCalled();
+    expect(processExit).toHaveBeenCalledWith(127);
     errorSpy.mockRestore();
   });
 
@@ -8306,11 +8373,13 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
       fetchImpl,
       operatorUrl: "http://op:1",
       token: "t",
+      endAttemptKey: "end-undefined-17",
     });
     expect(JSON.parse(calls[0].opts.body)).toEqual({
       advSessionId: 17,
       exitCode: null,
       killedBySignal: null,
+      endAttemptKey: "end-undefined-17",
     });
   });
 
@@ -8328,11 +8397,13 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
       operatorUrl: "http://op:1",
       token: "t",
       killedBySignal: "SIGHUP",
+      endAttemptKey: "end-signal-17",
     });
     expect(JSON.parse(calls[0].opts.body)).toEqual({
       advSessionId: 17,
       exitCode: 0,
       killedBySignal: "SIGHUP",
+      endAttemptKey: "end-signal-17",
     });
   });
 
@@ -8347,12 +8418,14 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
       operatorUrl: "http://op:1",
       token: "t",
       launchFailed: true,
+      endAttemptKey: "end-cleanup-17",
     });
     expect(JSON.parse(calls[0].opts.body)).toEqual({
       advSessionId: 17,
       exitCode: null,
       killedBySignal: null,
       launchFailed: true,
+      endAttemptKey: "end-cleanup-17",
     });
   });
 
@@ -8390,7 +8463,8 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
     expect(calls).toHaveLength(0);
   });
 
-  it("swallows transport failures — psu is about to exit; end-stamping must never hold the terminal", async () => {
+  it("returns a transport outcome and keeps the pending witness when acknowledgement fails", async () => {
+    const home = mkdtempSync(join(tmpdir(), "psu-end-witness-"));
     const fetchImpl = async () => {
       throw new Error("ECONNREFUSED");
     };
@@ -8399,8 +8473,17 @@ describe("reportSessionEnded (acknowledged idempotent eligibility transition)", 
         fetchImpl,
         operatorUrl: "http://op:1",
         token: "t",
+        endAttemptKey: "end-transport-17",
+        connectBudgetMs: 0,
+        timeoutRetries: 0,
+        home,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ reported: false, reason: "transport" });
+    expect(readPendingSessionEndWitness(17, home)).toMatchObject({
+      advSessionId: 17,
+      endAttemptKey: "end-transport-17",
+    });
+    expect(existsSync(pendingSessionEndWitnessPath(17, home))).toBe(true);
   });
 });
 
@@ -8494,7 +8577,17 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
     const calls = [];
     const fetchImpl = async (url, opts) => {
       calls.push({ url, opts });
-      return { ok: true, json: async () => ({ ok: true, reactivated: true }) };
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          status: "acquired",
+          acquired: true,
+          replayed: false,
+          leaseExpiresAt: "2026-08-26T16:00:00.000Z",
+          reactivated: true,
+        }),
+      };
     };
     await expect(
       reportSessionResumed("42", {
@@ -8503,7 +8596,13 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         token: "tok-1",
         resumeClaimKey: "resume-claim-1",
       }),
-    ).resolves.toEqual({ claimed: true });
+    ).resolves.toEqual({
+      claimed: true,
+      status: "acquired",
+      resumeClaimKey: "resume-claim-1",
+      replayed: false,
+      leaseExpiresAt: "2026-08-26T16:00:00.000Z",
+    });
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(
       "http://op:1/api/agent-mcp/console/bootstrap-su/session-resumed",
@@ -8524,7 +8623,13 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         error.name = "TimeoutError";
         throw error;
       }
-      return Response.json({ ok: true, reactivated: true });
+      return Response.json({
+        ok: true,
+        status: "acquired",
+        acquired: true,
+        replayed: true,
+        reactivated: true,
+      });
     };
 
     await expect(
@@ -8537,7 +8642,12 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         sleep: async () => {},
         onNotice: () => {},
       }),
-    ).resolves.toEqual({ claimed: true });
+    ).resolves.toEqual({
+      claimed: true,
+      status: "acquired",
+      resumeClaimKey: "resume-claim-replay-1",
+      replayed: true,
+    });
     expect(calls).toEqual([
       { advSessionId: 42, resumeClaimKey: "resume-claim-replay-1" },
       { advSessionId: 42, resumeClaimKey: "resume-claim-replay-1" },
@@ -8560,29 +8670,47 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
     expect(calls).toHaveLength(0);
   });
 
-  it("false claim or a response without explicit reactivated:true is CONTENDED", async () => {
+  it("returns typed reservation refusal metadata instead of inventing a live contender", async () => {
     const falseClaim = async () => ({
       ok: true,
-      json: async () => ({ ok: true, reactivated: false }),
-    });
-    const noClaimField = async () => ({
-      ok: true,
-      json: async () => ({ ok: true }),
+      json: async () => ({
+        ok: true,
+        status: "reserved",
+        acquired: false,
+        retryAfterMs: 12_000,
+        leaseExpiresAt: "2026-08-26T16:00:12.000Z",
+        reactivated: false,
+      }),
     });
     await expect(
       reportSessionResumed(42, {
         fetchImpl: falseClaim,
         operatorUrl: "http://op:1",
         token: "t",
+        resumeClaimKey: "resume-claim-held",
       }),
-    ).resolves.toEqual({ claimed: false, reason: "contended" });
+    ).resolves.toEqual({
+      claimed: false,
+      reason: "contended",
+      status: "reserved",
+      resumeClaimKey: "resume-claim-held",
+      retryAfterMs: 12_000,
+      leaseExpiresAt: "2026-08-26T16:00:12.000Z",
+    });
+  });
+
+  it("rejects a legacy/untyped success instead of treating acquisition as liveness", async () => {
+    const legacyClaim = async () => ({
+      ok: true,
+      json: async () => ({ ok: true, reactivated: true }),
+    });
     await expect(
       reportSessionResumed(42, {
-        fetchImpl: noClaimField,
+        fetchImpl: legacyClaim,
         operatorUrl: "http://op:1",
         token: "t",
       }),
-    ).resolves.toEqual({ claimed: false, reason: "contended" });
+    ).resolves.toMatchObject({ claimed: false, reason: "http" });
   });
 
   it("an HTTP failure is reported as HTTP, not as a lost race", async () => {
@@ -8646,11 +8774,18 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
     const refusals = await Promise.all([
       reportSessionResumed(null, { operatorUrl: "http://op:1" }),
       reportSessionResumed(42, {
-        fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }),
+        fetchImpl: async () => ({
+          ok: false,
+          status: 500,
+          json: async () => ({}),
+        }),
         operatorUrl: "http://op:1",
       }),
       reportSessionResumed(42, {
-        fetchImpl: async () => ({ ok: true, json: async () => ({ reactivated: false }) }),
+        fetchImpl: async () => ({
+          ok: true,
+          json: async () => ({ status: "reserved", acquired: false }),
+        }),
         operatorUrl: "http://op:1",
       }),
       reportSessionResumed(42, {
@@ -8671,6 +8806,91 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
       "contended",
       "transport",
     ]);
+  });
+});
+
+describe("resume reservation finalize/release reporters", () => {
+  it("finalizes with the exact acquisition key after spawn evidence", async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const fetchImpl = async (url, opts) => {
+      const body = JSON.parse(String(opts.body));
+      calls.push({ url, body });
+      return {
+        ok: true,
+        json: async () => ({
+          ok: true,
+          finalized: true,
+          resumeClaimKey: body.resumeClaimKey,
+        }),
+      };
+    };
+
+    await expect(
+      reportSessionResumeFinalized(42, "resume-claim-1", {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "tok-1",
+      }),
+    ).resolves.toEqual({ finalized: true, resumeClaimKey: "resume-claim-1" });
+    expect(calls).toEqual([
+      {
+        url: "http://op:1/api/agent-mcp/console/bootstrap-su/session-resume-finalized",
+        body: { advSessionId: 42, resumeClaimKey: "resume-claim-1" },
+      },
+    ]);
+  });
+
+  it("retries an unknown release result with the SAME key", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const fetchImpl: typeof fetch = async (_url, opts) => {
+      const body = JSON.parse(String(opts?.body));
+      bodies.push(body);
+      if (bodies.length === 1) {
+        const error = new Error("response deadline elapsed after commit");
+        error.name = "TimeoutError";
+        throw error;
+      }
+      return Response.json({
+        ok: true,
+        released: true,
+        resumeClaimKey: body.resumeClaimKey,
+      });
+    };
+
+    await expect(
+      reportSessionResumeReleased(42, "resume-release-replay-1", {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        connectBudgetMs: 0,
+        timeoutRetries: 1,
+        sleep: async () => {},
+        onNotice: () => {},
+      }),
+    ).resolves.toEqual({
+      released: true,
+      resumeClaimKey: "resume-release-replay-1",
+    });
+    expect(bodies).toEqual([
+      { advSessionId: 42, resumeClaimKey: "resume-release-replay-1" },
+      { advSessionId: 42, resumeClaimKey: "resume-release-replay-1" },
+    ]);
+  });
+
+  it("fails closed on missing identity, key, or an untyped acknowledgement", async () => {
+    await expect(reportSessionResumeFinalized(null, "key")).resolves.toEqual({
+      finalized: false,
+      reason: "no-session",
+    });
+    await expect(reportSessionResumeReleased(42, "")).resolves.toEqual({
+      released: false,
+      reason: "no-key",
+    });
+    await expect(
+      reportSessionResumeFinalized(42, "key", {
+        fetchImpl: async () => ({ ok: true, json: async () => ({ ok: true }) }),
+        operatorUrl: "http://op:1",
+      }),
+    ).resolves.toMatchObject({ finalized: false, reason: "http" });
   });
 });
 
@@ -8708,13 +8928,17 @@ describe("launchResume wiring — claim before setup or spawn", () => {
   );
   const body = src.slice(src.indexOf("async function launchResume("));
 
-  it("claims the tracked ended row before config repair and runWrapper", () => {
+  it("reconciles a pending end witness, then acquires before config repair and spawn", () => {
+    const pendingEnd = body.indexOf("readPendingSessionEndWitness(session.id)");
+    const endReplay = body.indexOf("await reportSessionEnded(", pendingEnd);
     const claim = body.indexOf("await reportSessionResumed(session.id)");
     const configRepair = body.indexOf(
       "await ensureInteractiveConfigViaOperator",
     );
     const spawn = body.indexOf("runWrapper({");
-    expect(claim).toBeGreaterThan(-1);
+    expect(pendingEnd).toBeGreaterThan(-1);
+    expect(endReplay).toBeGreaterThan(pendingEnd);
+    expect(claim).toBeGreaterThan(endReplay);
     expect(configRepair).toBeGreaterThan(claim);
     expect(spawn).toBeGreaterThan(claim);
   });
@@ -8758,16 +8982,16 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(refusalBody).not.toContain("process.exitCode = 2;");
   });
 
-  it("wraps every post-claim setup failure in launch-failed cleanup", () => {
+  it("releases every post-acquire setup failure with the same key", () => {
     const cleanupHelper = body.indexOf(
       "const cleanupResumeClaim = async () => {",
     );
     const cleanupGuard = body.indexOf(
-      "if (!resumeClaimed || session.id == null) return;",
+      "if (!resumeClaimed || session.id == null || !resumeClaimKey) return;",
       cleanupHelper,
     );
     const cleanupReport = body.indexOf(
-      "await reportSessionEnded(session.id, null, { launchFailed: true });",
+      "await reportSessionResumeReleased(session.id, resumeClaimKey);",
       cleanupHelper,
     );
     const claimed = body.indexOf("resumeClaimed = true");
@@ -8779,6 +9003,25 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(claimed).toBeGreaterThan(-1);
     expect(catchBlock).toBeGreaterThan(cleanupReport);
     expect(cleanupCall).toBeGreaterThan(catchBlock);
+  });
+
+  it("finalizes the acquired key only through runWrapper's concrete spawn callback", () => {
+    const finalizeHelper = body.indexOf(
+      "const finalizeResumeClaim = async () => {",
+    );
+    const finalizeReport = body.indexOf(
+      "await reportSessionResumeFinalized(",
+      finalizeHelper,
+    );
+    const run = body.indexOf("runWrapper({", finalizeReport);
+    const runEnd = body.indexOf("});", run);
+    const runBody = body.slice(run, runEnd);
+
+    expect(finalizeHelper).toBeGreaterThan(-1);
+    expect(finalizeReport).toBeGreaterThan(finalizeHelper);
+    expect(run).toBeGreaterThan(finalizeReport);
+    expect(runBody).toContain("onSpawn: finalizeResumeClaim");
+    expect(runBody).toContain("onSpawnFailure: cleanupResumeClaim");
   });
 });
 

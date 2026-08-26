@@ -2169,6 +2169,33 @@ describe('every child.write() control byte is an ESCAPE, never a literal (EI-202
   });
 });
 
+describe("resume finalization uses concrete initial pty spawn evidence", () => {
+  const SOURCE = nodeFs.readFileSync(
+    new URL("../scripts/psu-pty-host.mjs", import.meta.url),
+    "utf8",
+  );
+  const initialSpawn = SOURCE.slice(
+    SOURCE.indexOf("  let child;\n"),
+    SOURCE.indexOf("  // RECYCLE state", SOURCE.indexOf("  let child;\n")),
+  );
+
+  it("invokes onSpawn only after the initial pty.spawn succeeds", () => {
+    const spawn = initialSpawn.indexOf("child = spawnChild();");
+    const spawnFailure = initialSpawn.indexOf("} catch (e) {", spawn);
+    const acknowledgement = initialSpawn.indexOf(
+      "const acknowledgement = onSpawn();",
+    );
+
+    expect(spawn).toBeGreaterThan(-1);
+    expect(spawnFailure).toBeGreaterThan(spawn);
+    expect(acknowledgement).toBeGreaterThan(spawnFailure);
+  });
+
+  it("does not re-finalize on later recycle spawns", () => {
+    expect(initialSpawn.match(/onSpawn\(\)/g)).toHaveLength(1);
+  });
+});
+
 describe('hostIdleMs — the fact the resume guard never reported (EI-20289007209260909)', () => {
   // The measured husk. A headless session whose kickoff said "acknowledge and
   // stop" did exactly that, then held its socket and identity for 4h15m while
