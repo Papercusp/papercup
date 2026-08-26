@@ -63,6 +63,12 @@ import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks, shortCarryHash } from '../.
 const ctx = { uiClientId: 'su-tester', workspaceId: 'default' } as never;
 const parse = (x: unknown) => (get.args as { parse: (x: unknown) => unknown }).parse(x);
 type Out = { data: any };
+
+it('documents checkpointUpdatedAtMs as the checkpoint-change marker, not workItem.updatedAt', () => {
+  const returns = (get as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
+  expect(returns).toContain('\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker');
+  expect(returns).toContain('do not infer checkpoint authorship from \`workItem.updatedAt\`');
+});
 const env = async (x: unknown) => {
   const res = (await get.handler(parse(x) as never, ctx)) as Out;
   return res.data;
