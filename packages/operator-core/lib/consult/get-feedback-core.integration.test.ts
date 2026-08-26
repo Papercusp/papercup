@@ -909,11 +909,12 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
     conv: string,
     state: string,
     posts: [author: string | null, kind: string][],
+    question = 'critique this rubric',
   ) {
     await rootSql`
       INSERT INTO harness_shared.consult_state
         (workspace_id, conversation_id, requester_id, state, question)
-      VALUES (${WSV}, ${conv}, ${REQUESTER}, ${state}, 'critique this rubric')
+      VALUES (${WSV}, ${conv}, ${REQUESTER}, ${state}, ${question})
     `;
     let postId = Math.floor(Math.random() * 1_000_000) * 100;
     for (const [author, kind] of posts) {
@@ -943,6 +944,41 @@ describe('readVettingConsultCritique — the vetting gate reads CRITIQUE, not ex
     ]);
     const v = await readVettingConsultCritique(rootSql, WSV, 'conv-answered', REQUESTER);
     expect(v).toMatchObject({ exists: true, critiquePosts: 2, declinePosts: 0, critics: ['su-reviewer'] });
+  });
+
+  it('binds relevance to the durable opening question', async () => {
+    await seedConsult(
+      'conv-question-relevant',
+      'active',
+      [['su-reviewer', 'answer']],
+      'Critique acceptance-rubric-alpha against the meta rubric',
+    );
+    const questionMatch = await readVettingConsultCritique(
+      rootSql,
+      WSV,
+      'conv-question-relevant',
+      REQUESTER,
+      ['acceptance-rubric-alpha', 'plan-alpha'],
+    );
+    expect(questionMatch.relevance).toEqual({
+      matched: true,
+      matchedRefs: ['acceptance-rubric-alpha'],
+      via: ['question'],
+    });
+    await seedConsult(
+      'conv-unrelated',
+      'active',
+      [['su-reviewer', 'answer']],
+      'Review a queue scheduling design',
+    );
+    const unrelated = await readVettingConsultCritique(
+      rootSql,
+      WSV,
+      'conv-unrelated',
+      REQUESTER,
+      ['acceptance-rubric-alpha', 'plan-alpha'],
+    );
+    expect(unrelated.relevance).toEqual({ matched: false, matchedRefs: [], via: [] });
   });
 
   it('EXCLUDES the requester’s own follow-ups — the ask is not the answer', async () => {

@@ -470,6 +470,36 @@ export interface VettingConsultCritique {
   declinePosts: number;
   /** Distinct authors of the critique posts, so the stamp can name the critics. */
   critics: string[];
+  /**
+   * Present when the caller supplied rubric/plan refs to bind the consult to a
+   * specific vetting subject. A match must occur in the durable opening
+   * question or an archive-served answer.
+   */
+  relevance?: {
+    matched: boolean;
+    matchedRefs: string[];
+    via: Array<'question' | 'critique-post' | 'archive-answer'>;
+  };
+}
+
+function vettingConsultRelevance(
+  refs: readonly string[],
+  sources: Array<{ via: 'question' | 'archive-answer'; text: unknown }>,
+): NonNullable<VettingConsultCritique['relevance']> | undefined {
+  const normalizedRefs = [...new Set(refs.map((ref) => ref.trim()).filter((ref) => ref.length > 0))];
+  if (normalizedRefs.length === 0) return undefined;
+  const matchedRefs = new Set<string>();
+  const via = new Set<'question' | 'critique-post' | 'archive-answer'>();
+  for (const source of sources) {
+    if (typeof source.text !== 'string') continue;
+    const haystack = source.text.toLocaleLowerCase();
+    for (const ref of normalizedRefs) {
+      if (!haystack.includes(ref.toLocaleLowerCase())) continue;
+      matchedRefs.add(ref);
+      via.add(source.via);
+    }
+  }
+  return { matched: matchedRefs.size > 0, matchedRefs: [...matchedRefs], via: [...via] };
 }
 
 /**
@@ -502,9 +532,10 @@ export async function readVettingConsultCritique(
   workspaceId: string,
   conversationId: string,
   emitterId: string,
+  relevanceRefs: readonly string[] = [],
 ): Promise<VettingConsultCritique> {
   const stateRows = (await sql`
-    SELECT state, requester_id, responder_id, outcome
+    SELECT state, requester_id, responder_id, question, outcome
       FROM harness_shared.consult_state
      WHERE workspace_id = ${workspaceId} AND conversation_id = ${conversationId}
      LIMIT 1
@@ -512,11 +543,21 @@ export async function readVettingConsultCritique(
     state: string;
     requester_id: string;
     responder_id: string | null;
+    question: string;
     outcome: unknown;
   }>;
   const stateRow = stateRows[0];
   if (!stateRow) {
-    return { exists: false, state: null, critiquePosts: 0, declinePosts: 0, critics: [] };
+    return {
+      exists: false,
+      state: null,
+      critiquePosts: 0,
+      declinePosts: 0,
+      critics: [],
+      ...(relevanceRefs.length > 0
+        ? { relevance: vettingConsultRelevance(relevanceRefs, [])! }
+        : {}),
+    };
   }
 
   // Archive-served wrappers are closed_answered consult_state rows with an
@@ -528,23 +569,32 @@ export async function readVettingConsultCritique(
   const archivedCritic = stateRow.responder_id ?? archivedCriticFromOutcome;
   const isArchiveAnswer = archivedCriticFromOutcome !== null;
   if (isArchiveAnswer && archivedCritic && archivedCritic !== emitterId && archivedCritic !== stateRow.requester_id) {
+    const archiveAnswer = (stateRow.outcome as { answer?: { answer?: unknown } }).answer?.answer;
     return {
       exists: true,
       state: stateRow.state,
       critiquePosts: 1,
       declinePosts: 0,
       critics: [archivedCritic],
+      ...(relevanceRefs.length > 0
+        ? {
+            relevance: vettingConsultRelevance(relevanceRefs, [
+              { via: 'question', text: stateRow.question },
+              { via: 'archive-answer', text: archiveAnswer },
+            ])!,
+          }
+        : {}),
     };
   }
 
   const postRows = (await sql`
     SELECT kind, author_id
-      FROM harness_shared.consult_post_meta
-     WHERE workspace_id = ${workspaceId}
-       AND conversation_id = ${conversationId}
-       AND author_id IS NOT NULL
-       AND author_id <> ${emitterId}
-       AND author_id <> ${stateRow.requester_id}
+      FROM harness_shared.consult_post_meta pm
+     WHERE pm.workspace_id = ${workspaceId}
+       AND pm.conversation_id = ${conversationId}
+       AND pm.author_id IS NOT NULL
+       AND pm.author_id <> ${emitterId}
+       AND pm.author_id <> ${stateRow.requester_id}
   `) as unknown as { kind: string; author_id: string }[];
 
   const critics = new Set<string>();
@@ -564,6 +614,9 @@ export async function readVettingConsultCritique(
     critiquePosts,
     declinePosts,
     critics: [...critics].sort(),
+    ...(relevanceRefs.length > 0
+      ? { relevance: vettingConsultRelevance(relevanceRefs, [{ via: 'question', text: stateRow.question }])! }
+      : {}),
   };
 }
 
