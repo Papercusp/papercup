@@ -18,6 +18,8 @@ import { describe, expect, it } from 'vitest';
 import {
   assessGraphHealth,
   buildImportGraph,
+  detectEntrypointMarkers,
+  findInaccurateAcknowledgements,
   findUnreachableModules,
   isTestFile,
   NEW_MODULE_GRACE_DAYS,
@@ -337,5 +339,83 @@ describe('helpers', () => {
     // relative to its own workspace must not read as an execution site.
     expect(parseReleasePathMentions(`run('${DETECTOR}')`)).toEqual([DETECTOR]);
     expect(parseReleasePathMentions("run('lib/release/prompt-divergence.ts')")).toEqual([]);
+  });
+});
+
+describe('detectEntrypointMarkers — the caller an import graph cannot see', () => {
+  it('detects each entrypoint shape, and reports NONE for an ordinary module', () => {
+    expect(detectEntrypointMarkers('const argv = process.argv.slice(2);')).toEqual(['process.argv']);
+    expect(detectEntrypointMarkers('if (import.meta.url === x) main();')).toEqual(['import.meta.url']);
+    expect(detectEntrypointMarkers('#!/usr/bin/env tsx\nconsole.log(1);')).toContain('shebang');
+
+    // The negative direction is what stops a gutted implementation (one that returns a
+    // marker for everything) from passing: an ordinary library module has no shape.
+    expect(detectEntrypointMarkers('export function pure(a: number) { return a + 1; }')).toEqual([]);
+    expect(detectEntrypointMarkers('')).toEqual([]);
+    expect(detectEntrypointMarkers(undefined as unknown as string)).toEqual([]);
+  });
+
+  it('does not credit prose that merely MENTIONS argv', () => {
+    // Word-boundary matching: a comment about argv is not an entrypoint. Over-crediting
+    // here would silently soften the report for a genuinely dead module.
+    expect(detectEntrypointMarkers('// unrelated: processArgvLike is not an entrypoint')).toEqual([]);
+  });
+});
+
+describe('findInaccurateAcknowledgements — the guard that guards the guard', () => {
+  const row = (over: Partial<Record<string, unknown>> = {}) => ({
+    module: 'apps/operator/lib/release/x.ts',
+    dead: true,
+    productionImporters: [] as string[],
+    testImporters: [] as string[],
+    ...over,
+  });
+
+  it('FLAGS a reason claiming no caller when production importers exist', () => {
+    const rows = [row({ productionImporters: ['apps/operator/lib/release/caller.ts'] })];
+    const acknowledgements = new Map([
+      ['apps/operator/lib/release/x.ts', 'no test, no caller — strongest retire candidate'],
+    ]);
+    const found = findInaccurateAcknowledgements({ rows, acknowledgements });
+    expect(found).toHaveLength(1);
+    expect(found[0].claim).toBe('no-caller');
+    expect(found[0].contradictedBy).toEqual(['apps/operator/lib/release/caller.ts']);
+  });
+
+  it('ACCEPTS the accurate phrasing for the very same row', () => {
+    // The calibration case. A check that flags the row above but ALSO flags this one is
+    // not measuring accuracy, it is just matching on "has importers" — and would force
+    // every transitively-dead family member to be described wrongly to stay green.
+    const rows = [row({ productionImporters: ['apps/operator/lib/release/caller.ts'] })];
+    const acknowledgements = new Map([
+      ['apps/operator/lib/release/x.ts', 'reached only from dead publication siblings'],
+    ]);
+    expect(findInaccurateAcknowledgements({ rows, acknowledgements })).toEqual([]);
+  });
+
+  it('ACCEPTS a no-caller claim that is TRUE', () => {
+    const rows = [row()];
+    const acknowledgements = new Map([['apps/operator/lib/release/x.ts', '1 test, 0 callers — wire-or-retire']]);
+    expect(findInaccurateAcknowledgements({ rows, acknowledgements })).toEqual([]);
+  });
+
+  it('FLAGS a false no-test claim against test importers', () => {
+    const rows = [row({ testImporters: ['apps/operator/lib/release/x.test.ts'] })];
+    const acknowledgements = new Map([['apps/operator/lib/release/x.ts', 'no test, no caller']]);
+    const found = findInaccurateAcknowledgements({ rows, acknowledgements });
+    expect(found).toHaveLength(1);
+    expect(found[0].claim).toBe('no-test');
+  });
+
+  it('SKIPS rows that are not dead — staleAcknowledged already reports those', () => {
+    const rows = [row({ dead: false, productionImporters: ['apps/operator/lib/release/live.ts'] })];
+    const acknowledgements = new Map([['apps/operator/lib/release/x.ts', 'no caller']]);
+    expect(findInaccurateAcknowledgements({ rows, acknowledgements })).toEqual([]);
+  });
+
+  it('SKIPS a module with no acknowledgement, and tolerates empty input', () => {
+    const rows = [row({ productionImporters: ['a.ts'] })];
+    expect(findInaccurateAcknowledgements({ rows, acknowledgements: new Map() })).toEqual([]);
+    expect(findInaccurateAcknowledgements({ rows: [], acknowledgements: new Map() })).toEqual([]);
   });
 });
