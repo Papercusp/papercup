@@ -1351,19 +1351,26 @@ export function gateStallEscalationBody(opts: {
  *
  * ── WHY THIS RIDES THE EXISTING EDGE RATHER THAN A NEW DETECTOR ────────────────
  * The state machine this needs already exists, immediately below: `consecutiveReds`
- * increments per red tick, `stallAlerted` makes the alert one-shot per episode, and
+ * increments per red tick, `stallAlerted` makes this CONDITION one-shot per episode, and
  * the green branch resets both. A second detector (the obvious build — sweep
  * `gate_health` from the watchdog) would be a SECOND answer to a question the first
  * already answers, and the two would disagree the first time either threshold moved.
  * So the condition is emitted at the exact edge that already fires the urgent alert,
  * and resolved at the exact edge that already clears the escalation.
  *
- * ⚠ THE OPEN EDGE IS `stalledByCount || stalledByAge`, NOT the count alone — and the
- * name says "red-streak" because the count is the dominant trigger. Both legs are
+ * ⚠ THE OPEN EDGE IS EITHER AXIS — red COUNT or stall AGE — NOT the count alone; the
+ * name says "red-streak" because the count is the dominant trigger. Both axes are
  * evaluated ONLY inside the red branch, so both mean "the gate is red and stuck";
  * binding to the existing one-shot flag is what keeps open and close symmetric.
  * Splitting the count out would need a SECOND dedup flag and would double-alarm on
  * the overlap.
+ *
+ * ⚠ WI-42116 SPLIT THE CADENCES, NOT THE EDGE. `decideStallNotification` now re-raises
+ * the HUMAN notification at geometric rungs on either axis, but THIS broadcast still
+ * fires exactly once per episode, gated on the pre-tick `stallAlerted`. Keep it that way:
+ * `oneShot: true` below plus a repeat open would mint a second owning work-item for one
+ * stall, and the resolve edge (which reads `gh.stallAlerted` on the green tick) would no
+ * longer be symmetric with it.
  *
  * The body names the sibling `green-stall:` condition on purpose: past 12h with no
  * green BOTH are open and one gate carries two owning work-items (see
@@ -2359,6 +2366,12 @@ export async function trackGateStall(
           lastGreenAt: Date.now(),
           firstRedAt: null,
           stallAlerted: false,
+          // WI-42116: a real green ENDS the episode, so the ladder resets to the bottom.
+          // Clearing both marks is the ONLY intended way back to null — the decision layer
+          // never regresses them — and it is what lets the NEXT stall alert at rung 1 again
+          // instead of resuming halfway up a previous episode's ladder.
+          stallAlertedAtReds: null,
+          stallAlertedAtAgeMs: null,
           lastVerdict: 'green',
           lastFrom: fromPin ?? gh.lastFrom ?? null,
           lastFromFresh: fromPin != null,
@@ -2386,6 +2399,13 @@ export async function trackGateStall(
           lastGreenAt: gh.lastGreenAt ?? null,
           firstRedAt: null,
           stallAlerted: gh.stallAlerted ?? false,
+          // WI-42116: CARRIED, not cleared — for the same reason `stallAlerted` is on this arm.
+          // `pinMoved` puts a NOT-GREEN verdict here: the stall STREAK is reset because `main`
+          // advanced by a path this routine never saw, but nothing greened and no alert was
+          // resolved. Nulling the marks would silently re-arm rung 1, and the next red tick
+          // would re-announce a stall the fleet was already told about (EI-7472's shape).
+          stallAlertedAtReds: gh.stallAlertedAtReds ?? null,
+          stallAlertedAtAgeMs: gh.stallAlertedAtAgeMs ?? null,
           lastVerdict: 'not-green',
           lastFrom: fromPin ?? gh.lastFrom ?? null,
           lastFromFresh: fromPin != null,
@@ -2537,12 +2557,67 @@ export async function trackGateStall(
     const consecutiveReds = carryStreak ? (gh.consecutiveReds ?? 0) : (gh.consecutiveReds ?? 0) + 1;
     const firstRedAt = carryStreak ? (gh.firstRedAt ?? null) : (gh.firstRedAt ?? Date.now());
     const lastGreenAt = gh.lastGreenAt ?? null;
+    const stallAgeMs = lastGreenAt != null ? Date.now() - lastGreenAt : null;
+    // WI-42116 (ruling green-main-fast-2026-08-25 D-022): the stall alarm is a BOUNDED,
+    // SUPER-LINEAR LADDER, not a one-shot. The old edge was
+    // `(stalledByCount || stalledByAge) && !stallAlerted`, and `stallAlerted` is carried on
+    // every subsequent red — so the alarm fired once at `stallReds` and never again, however
+    // deep the streak ran. Measured on papercusp 2026-08-26: `consecutiveReds: 43`, last green
+    // 5.12 days earlier, on ONE alert raised on day one. Reds #4–#43 were silent, which is why
+    // a livelocked gate read as "already alerted, someone's on it" for five days.
+    //
+    // ⚠ The obvious fix — re-alert while still red — is a REGRESSION, not an improvement:
+    // EI-7472 is exactly that failure (dedup flag clobbered per tick → the fleet re-spammed
+    // the STALLED severe-event ~hourly). The one-shot is an OVER-CORRECTED fix. So the rungs
+    // are geometric: alert count is O(log stall depth), ~3 alerts across the measured 43-red /
+    // 122.9h stall against 1 today and ~120 under a per-tick repeat.
+    //
+    // ⚠ TWO AXES, and the age axis is load-bearing rather than belt-and-braces: `carryStreak`
+    // above holds `consecutiveReds` FIXED on withheld / record-only ticks, so a livelocked gate
+    // (every red withheld as a stale candidate) can sit at a fixed red count indefinitely while
+    // time runs on. papercusp was in precisely that state, so a count-only ladder would go
+    // silent on the exact gate this exists to catch.
+    //
+    // ⚠ TWO LEGS, DIFFERENT CADENCES — do not collapse them back into one flag:
+    //   · the human `notifyAttention` → EVERY new rung. This is the decayed signal being fixed.
+    //   · the durable escalation row + the `gate-red-streak:<harness>` condition → the FIRST
+    //     rung of the episode ONLY, still keyed on the unchanged `stallAlerted` boolean.
+    //     WI-6228's `oneShot: true` and D-011's open/close symmetry both depend on that flag
+    //     staying one-per-episode: re-minting would hand one stall a second owning work-item,
+    //     and re-opening a condition the staleness sweep already resolved would strand it.
+    const ladder = decideStallNotification({
+      consecutiveReds,
+      stallAgeMs,
+      stallRedsThreshold: releaseCheckpointConfig().stallReds,
+      stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
+      marks: {
+        stallAlertedAtReds: gh.stallAlertedAtReds ?? null,
+        stallAlertedAtAgeMs: gh.stallAlertedAtAgeMs ?? null,
+        stallAlerted: gh.stallAlerted ?? false,
+      },
+    });
+    // Persisted UNCONDITIONALLY — including on a quiet tick — so the back-compat seeding of a
+    // legacy `stallAlerted: true` blob (written before this shipped) lands exactly once and
+    // cannot re-alert later for a stall that was already announced.
+    const stallAlertedAtReds = ladder.marks.stallAlertedAtReds;
+    const stallAlertedAtAgeMs = ladder.marks.stallAlertedAtAgeMs;
     let stallAlerted = gh.stallAlerted ?? false;
-    const stalledByCount = consecutiveReds >= releaseCheckpointConfig().stallReds;
-    const stalledByAge = lastGreenAt != null && Date.now() - lastGreenAt > releaseCheckpointConfig().stallAgeMs;
-    if ((stalledByCount || stalledByAge) && !stallAlerted) {
+    // Read BEFORE the assignment below, so the one-shot legs see the PRE-tick value. Same trap
+    // (and same fix) as the green path's `gh.stallAlerted` read at the resolve edge.
+    const firstRungOfEpisode = !stallAlerted;
+    if (ladder.shouldNotify) {
       stallAlerted = true;
       const heldHrs = lastGreenAt ? Math.round((Date.now() - lastGreenAt) / 3_600_000) : null;
+      const ladderPosition = describeLadderPosition({
+        consecutiveReds,
+        stallAgeMs,
+        stallRedsThreshold: releaseCheckpointConfig().stallReds,
+        stallAgeThresholdMs: releaseCheckpointConfig().stallAgeMs,
+        marks: {},
+      });
+      console.log(
+        `${orchestratorStdoutTag()} gate stall escalation — ${ladder.reason}; ${ladderPosition}`,
+      );
       // EI-18672078222841101: resolve the CURRENT owner before saying anything about one.
       // The old body asserted "A release-fixer is on it" unconditionally — which is simply
       // false whenever the dispatched fixer died without clearing the red, and that false
@@ -2567,7 +2642,13 @@ export async function trackGateStall(
         const { notifyAttention } = await import('../../attention-notify');
         await notifyAttention({
           kind: 'intervention',
-          title: 'Release pipeline STALLED — main frozen',
+          // WI-42116: the rung is IN the title. A re-escalation that reads identically to the
+          // day-one alert is indistinguishable from a duplicate, and a reader who files it as
+          // one has learned nothing — the whole point of rung 2 is that it says "still, and
+          // deeper". `rungIndex` is 0-based; humans count escalations from 1.
+          title: firstRungOfEpisode
+            ? 'Release pipeline STALLED — main frozen'
+            : `Release pipeline STILL STALLED — escalation ${(ladder.rungIndex ?? 0) + 1} (main frozen)`,
           // EI-19329732364513693: name the candidate's distance behind tip IN the alert. This is
           // the surface a human actually reads, and a red whose candidate is far behind staging
           // is very often already fixed — saying so here is what stops the chase, rather than
@@ -2576,8 +2657,14 @@ export async function trackGateStall(
             staleness.commitsBehindTip != null && staleness.commitsBehindTip > 0
               ? ` NOTE: the judged candidate is ${staleness.commitsBehindTip} commit(s) behind staging${staleness.candidateCommittedAt ? `, committed ${staleness.candidateCommittedAt}` : ''} — confirm a named failure still reproduces AT TIP before chasing it.`
               : ''
-          }`,
+          } [${ladderPosition}]`,
           importance: 'urgent',
+          // WI-42116: idempotent PER RUNG. The persisted marks already stop a second alert for
+          // the same rung on a later tick; this closes the other window — two trackGateStall
+          // calls racing the SAME tick (a retry, or a concurrent run) would otherwise each read
+          // the pre-write marks and each notify. The key is the rung itself, so it is stable
+          // across those callers and distinct at the next rung.
+          dedupeKey: `gate-stall:${ctx.installSlug}:${ladder.axis ?? 'count'}:${ladder.rung ?? 0}`,
           workspaceId: ctx.workspaceId,
           data: {
             consecutiveReds,
@@ -2586,72 +2673,90 @@ export async function trackGateStall(
             ownerSpawnId: ownership.spawnId,
             candidateCommittedAt: staleness.candidateCommittedAt,
             commitsBehindTip: staleness.commitsBehindTip,
+            // WI-42116: which rung this is, so a reader (and any consumer keying on `data`)
+            // can tell escalation 3 from a duplicate of escalation 1 without parsing prose.
+            stallAxis: ladder.axis,
+            stallRung: ladder.rung,
+            stallRungIndex: ladder.rungIndex,
+            stallAgeMs,
           },
         });
       } catch (e) {
         console.warn(`${orchestratorStdoutTag()} stall alert failed: ${e instanceof Error ? e.message : e}`);
       }
-      // P-003: ALSO write a durable harness_escalations row — the silent-stall
-      // gap (every other pipeline failure escalates; this one only notified +
-      // overwrote metadata). Its own phase, idempotent upsert; fail-safe.
-      try {
-        await sql.unsafe(
-          `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (harness_slug, phase)
-           DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
-          [
-            ctx.installSlug,
-            GATE_STALL_PHASE,
-            gateStallEscalationBody({
-              installSlug: ctx.installSlug,
-              consecutiveReds,
-              heldHrs,
-              candidate,
-              failingTests,
-              nowMs: Date.now(),
-              ownership,
-            }),
-            Date.now(),
-            ctx.workspaceId,
-          ],
-        );
-      } catch (e) {
-        console.warn(`${orchestratorStdoutTag()} stall escalation write failed: ${e instanceof Error ? e.message : e}`);
-      }
-      // P-005: OPEN the `gate-red-streak:<harness>` condition, which is what turns
-      // this red into exactly ONE claimable work-item (the condition bridge mints the
-      // owner; see condition-bridge.ts's ACTIONABLE_CONDITIONS entry). Deliberately
-      // inside the `!stallAlerted` edge with the two writes above, so all three fire
-      // once per episode and the condition's lifetime IS the stall's.
-      //
-      // `oneShot: true` is load-bearing, not decoration (WI-6228): without it the
-      // condition-staleness sweep reads this emitter's deliberate silence as recovery
-      // and auto-resolves the condition on a timer — closing the owning work-item
-      // while the gate is still red, which is worse than never minting one.
-      try {
-        const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
-        const { gateRedStreakConditionKey } = await import('../../coord/gate-ownership');
-        const ev = gateRedStreakBroadcast({
-          installSlug: ctx.installSlug,
-          consecutiveReds,
-          heldHrs,
-          candidate,
-          failingTests,
-          ownership,
-          commitsBehindTip: staleness.commitsBehindTip,
-        });
-        await broadcastSevereEvent({
-          summary: ev.summary,
-          body: ev.body,
-          category: 'severe-event',
-          conditionKey: gateRedStreakConditionKey(ctx.installSlug),
-          oneShot: true,
-        });
-      } catch (e) {
-        console.warn(
-          `${orchestratorStdoutTag()} red-streak condition broadcast failed: ${e instanceof Error ? e.message : e}`,
-        );
+      // ── FIRST RUNG OF THE EPISODE ONLY (WI-42116) ──────────────────────────────────
+      // A LATER rung re-notifies the human and stops there. Neither write below may repeat:
+      //   · the escalation row is keyed (harness_slug, phase) and its UPSERT refreshes
+      //     `mtime_ms` — re-writing it on rung 2 would make a five-day-old escalation look
+      //     newly-raised to every age-based reader, i.e. it would make the stall QUIETER the
+      //     longer it ran. That is the exact defect this work-item exists to remove.
+      //   · re-broadcasting the condition would mint a SECOND owning work-item for one stall
+      //     (WI-6228) and re-open a condition the staleness sweep may already have resolved.
+      // `firstRungOfEpisode` is the PRE-tick `stallAlerted`, so this stays the same edge those
+      // two legs have always fired on — only the human-notify leg above changed cadence.
+      if (firstRungOfEpisode) {
+        // P-003: ALSO write a durable harness_escalations row — the silent-stall
+        // gap (every other pipeline failure escalates; this one only notified +
+        // overwrote metadata). Its own phase, idempotent upsert; fail-safe.
+        try {
+          await sql.unsafe(
+            `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (harness_slug, phase)
+             DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
+            [
+              ctx.installSlug,
+              GATE_STALL_PHASE,
+              gateStallEscalationBody({
+                installSlug: ctx.installSlug,
+                consecutiveReds,
+                heldHrs,
+                candidate,
+                failingTests,
+                nowMs: Date.now(),
+                ownership,
+              }),
+              Date.now(),
+              ctx.workspaceId,
+            ],
+          );
+        } catch (e) {
+          console.warn(`${orchestratorStdoutTag()} stall escalation write failed: ${e instanceof Error ? e.message : e}`);
+        }
+        // P-005: OPEN the `gate-red-streak:<harness>` condition, which is what turns
+        // this red into exactly ONE claimable work-item (the condition bridge mints the
+        // owner; see condition-bridge.ts's ACTIONABLE_CONDITIONS entry). Deliberately
+        // inside the `!stallAlerted` edge with the two writes above, so all three fire
+        // once per episode and the condition's lifetime IS the stall's.
+        //
+        // `oneShot: true` is load-bearing, not decoration (WI-6228): without it the
+        // condition-staleness sweep reads this emitter's deliberate silence as recovery
+        // and auto-resolves the condition on a timer — closing the owning work-item
+        // while the gate is still red, which is worse than never minting one.
+        try {
+          const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
+          const { gateRedStreakConditionKey } = await import('../../coord/gate-ownership');
+          const ev = gateRedStreakBroadcast({
+            installSlug: ctx.installSlug,
+            consecutiveReds,
+            heldHrs,
+            candidate,
+            failingTests,
+            ownership,
+            commitsBehindTip: staleness.commitsBehindTip,
+          });
+          await broadcastSevereEvent({
+            summary: ev.summary,
+            body: ev.body,
+            category: 'severe-event',
+            conditionKey: gateRedStreakConditionKey(ctx.installSlug),
+            oneShot: true,
+          });
+        } catch (e) {
+          console.warn(
+            `${orchestratorStdoutTag()} red-streak condition broadcast failed: ${e instanceof Error ? e.message : e}`,
+          );
+        }
       }
     }
     // Seed/carry the pin so the NEXT tick can detect movement (first observation
@@ -2686,6 +2791,13 @@ export async function trackGateStall(
       lastGreenAt,
       firstRedAt,
       stallAlerted,
+      // WI-42116: the ladder's high-water marks, persisted on EVERY red tick — including a
+      // tick that did not notify, which is what makes the legacy `stallAlerted` seeding a
+      // one-time migration rather than a decision re-taken every hour. `stallAlerted` above
+      // stays the one-shot flag for the condition/escalation legs; these two carry the
+      // human-notify ladder's position.
+      stallAlertedAtReds,
+      stallAlertedAtAgeMs,
       // EI-20706962612084953: the explicit verdict marker. Every write path states it, so a
       // reader never has to infer green-ness from a side-effect field like `lastGreenAt`.
       lastVerdict: promotionPending ? 'decision-pending' : 'not-green',
