@@ -1243,6 +1243,30 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     0,
     opts.controlPlaneReserve ?? (opts.maxInFlight === undefined ? DEFAULT_CONTROL_PLANE_RESERVE : 0),
   );
+  const reservedControlPlaneGuaranteedFloor =
+    maxInFlight > 1 && controlPlaneReserve > 0
+      ? Math.min(Math.floor(controlPlaneReserve), maxInFlight - 1)
+      : 0;
+  const ordinaryInFlightCeiling = reservedControlPlaneGuaranteedFloor > 0
+    ? maxInFlight - reservedControlPlaneGuaranteedFloor
+    : maxInFlight;
+  // EI-21553301566833091 — a strict 136/64 partition stranded every standard control read
+  // while all 136 ordinary slots sat empty. Make the partition work-conserving without
+  // returning to the old one-way reserve: each normal class may borrow only down to the
+  // OTHER class's guaranteed floor, and the shared normal-partition cap remains maxInFlight.
+  // Production therefore permits a 136-request burst in either class while preserving at
+  // least 64 immediate slots for the other one.
+  const ordinaryGuaranteedFloor = Math.min(
+    ordinaryInFlightCeiling,
+    reservedControlPlaneGuaranteedFloor,
+  );
+  const reservedControlPlaneCeiling = reservedControlPlaneGuaranteedFloor > 0
+    ? Math.min(
+        maxInFlight,
+        Math.max(reservedControlPlaneGuaranteedFloor, maxInFlight - ordinaryGuaranteedFloor),
+      )
+    : maxInFlight;
+  const partitionedAdmission = reservedControlPlaneGuaranteedFloor > 0;
   const upstreamAgent = opts.upstreamAgent ?? UPSTREAM_AGENT;
   // Admission-only reservation is not end-to-end reservation: during the measured incident all
   // 64 ordinary sockets were occupied and even an admitted watchdog tools/list would have queued
@@ -1251,7 +1275,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const ownsControlPlaneAgent = opts.controlPlaneAgent === undefined;
   const controlPlaneAgent = opts.controlPlaneAgent ?? new http.Agent({
     keepAlive: false,
-    maxSockets: Math.max(1, controlPlaneReserve),
+    maxSockets: Math.max(1, reservedControlPlaneCeiling),
   });
   const ownsWatchdogAgent = opts.watchdogAgent === undefined;
   // Keep one independent upstream socket for the watchdog. Admission reservation alone is not
@@ -1296,15 +1320,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const initializeSlowMs = opts.initializeSlowMs ?? DEFAULT_INITIALIZE_SLOW_MS;
   const inFlightStarts = new Map<number, number>();
+  const ordinaryInFlightStarts = new Map<number, number>();
+  const reservedControlPlaneInFlightStarts = new Map<number, number>();
+  const watchdogProbeInFlightStarts = new Map<number, number>();
+  const criticalContinuationInFlightStarts = new Map<number, number>();
   const completedForwardAtMs: number[] = [];
   let nextInFlightId = 0;
-  const reservedControlPlaneCeiling =
-    maxInFlight > 1 && controlPlaneReserve > 0
-      ? Math.min(Math.floor(controlPlaneReserve), maxInFlight - 1)
-      : 0;
-  const ordinaryInFlightCeiling =
-    reservedControlPlaneCeiling > 0 ? maxInFlight - reservedControlPlaneCeiling : maxInFlight;
-  const partitionedAdmission = reservedControlPlaneCeiling > 0;
+
+  const oldestAgeMs = (starts: Map<number, number>, now = Date.now()): number | null => {
+    let oldest: number | null = null;
+    for (const startedAt of starts.values()) {
+      if (oldest == null || startedAt < oldest) oldest = startedAt;
+    }
+    return oldest == null ? null : Math.max(0, now - oldest);
+  };
 
   const recordForwardCompletion = (completedAtMs: number): void => {
     completedForwardAtMs.push(completedAtMs);
@@ -1344,10 +1373,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       return false;
     }
     if (partitionedAdmission) {
-      return !shouldShedForInFlight(
-        reservedControlPlaneInFlight + handshakeGrantReservations,
-        reservedControlPlaneCeiling,
-      );
+      const reservedWithGrant = reservedControlPlaneInFlight + handshakeGrantReservations;
+      const normalWithGrant = ordinaryInFlight + reservedWithGrant;
+      return !shouldShedForInFlight(reservedWithGrant, reservedControlPlaneCeiling) &&
+        !shouldShedForInFlight(normalWithGrant, maxInFlight);
     }
     return maxInFlight <= 0 || inFlightStarts.size + handshakeGrantReservations < maxInFlight;
   };
@@ -1496,6 +1525,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       } catch {
         target = null;
       }
+      const healthNow = Date.now();
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({
         ok: true,
@@ -1509,7 +1539,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           criticalContinuation: criticalContinuationInFlight,
           maxInFlight,
           ordinaryCeiling: ordinaryInFlightCeiling,
+          ordinaryGuaranteedFloor,
+          reservedControlPlaneGuaranteedFloor,
           reservedControlPlaneCeiling,
+          oldestAgeMs: {
+            ordinary: oldestAgeMs(ordinaryInFlightStarts, healthNow),
+            reservedControlPlane: oldestAgeMs(reservedControlPlaneInFlightStarts, healthNow),
+            watchdog: oldestAgeMs(watchdogProbeInFlightStarts, healthNow),
+            criticalContinuation: oldestAgeMs(criticalContinuationInFlightStarts, healthNow),
+          },
         },
       }));
       return;
@@ -1603,11 +1641,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             : standardReservedControlPlane
               ? reservedControlPlaneInFlight
               : ordinaryInFlight;
+        const normalInFlight = ordinaryInFlight + reservedControlPlaneInFlight;
+        const normalPartitionSaturated =
+          !criticalContinuation &&
+          !watchdogSessionProbe &&
+          shouldShedForInFlight(normalInFlight, maxInFlight);
         // Ordinary handshakes use the bounded FIFO below, which accounts for both their own
         // handshake cap and the reserved-class cap. Shedding them here would bypass that queue.
         const admissionSaturated = sessionHandshake && !watchdogSessionProbe
           ? false
-          : shouldShedForInFlight(classInFlight, admissionCeiling);
+          : shouldShedForInFlight(classInFlight, admissionCeiling) || normalPartitionSaturated;
         if (admissionSaturated) {
           const retryAfterSec = retryAfterSecForDrainRate(
             classInFlight,
@@ -1773,10 +1816,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const inFlightId = nextInFlightId++;
         const inFlightStartedAt = Date.now();
         inFlightStarts.set(inFlightId, inFlightStartedAt);
-        if (criticalContinuation) criticalContinuationInFlight++;
-        else if (watchdogSessionProbe) watchdogProbeInFlight++;
-        else if (standardReservedControlPlane) reservedControlPlaneInFlight++;
-        else ordinaryInFlight++;
+        if (criticalContinuation) {
+          criticalContinuationInFlight++;
+          criticalContinuationInFlightStarts.set(inFlightId, inFlightStartedAt);
+        } else if (watchdogSessionProbe) {
+          watchdogProbeInFlight++;
+          watchdogProbeInFlightStarts.set(inFlightId, inFlightStartedAt);
+        } else if (standardReservedControlPlane) {
+          reservedControlPlaneInFlight++;
+          reservedControlPlaneInFlightStarts.set(inFlightId, inFlightStartedAt);
+        } else {
+          ordinaryInFlight++;
+          ordinaryInFlightStarts.set(inFlightId, inFlightStartedAt);
+        }
         if (countsTowardHandshakeCap) handshakeInFlight++;
         scheduleStallCheck(inFlightId, inFlightStartedAt);
         try {
@@ -2027,11 +2079,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // (success return, exhausted-window fallthrough, or an unexpected throw).
           const completedAtMs = Date.now();
           inFlightStarts.delete(inFlightId);
-          if (criticalContinuation) criticalContinuationInFlight = Math.max(0, criticalContinuationInFlight - 1);
-          else if (watchdogSessionProbe) watchdogProbeInFlight = Math.max(0, watchdogProbeInFlight - 1);
+          if (criticalContinuation) {
+            criticalContinuationInFlight = Math.max(0, criticalContinuationInFlight - 1);
+            criticalContinuationInFlightStarts.delete(inFlightId);
+          } else if (watchdogSessionProbe) {
+            watchdogProbeInFlight = Math.max(0, watchdogProbeInFlight - 1);
+            watchdogProbeInFlightStarts.delete(inFlightId);
+          }
           else if (standardReservedControlPlane) {
             reservedControlPlaneInFlight = Math.max(0, reservedControlPlaneInFlight - 1);
-          } else ordinaryInFlight = Math.max(0, ordinaryInFlight - 1);
+            reservedControlPlaneInFlightStarts.delete(inFlightId);
+          } else {
+            ordinaryInFlight = Math.max(0, ordinaryInFlight - 1);
+            ordinaryInFlightStarts.delete(inFlightId);
+          }
           recordForwardCompletion(completedAtMs);
           if (countsTowardHandshakeCap) handshakeInFlight = Math.max(0, handshakeInFlight - 1);
           // EI-19388661789704364: cancel this request's own stall timer so a fast forward

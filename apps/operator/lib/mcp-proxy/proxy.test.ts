@@ -1798,6 +1798,62 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(results.every((result) => result.status === 200)).toBe(true);
   });
 
+  it('EI-21553301566833091: reserved traffic borrows idle capacity while preserving an ordinary floor and the global cap', async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
+    const hits: string[] = [];
+    const upstream = track(http.createServer((req, res) => {
+      hits.push(new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('client') ?? 'unknown');
+      void gate.then(() => res.end('{"result":"ok"}'));
+    }));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+      retryWindowMs: 5_000, maxInFlight: 6, controlPlaneReserve: 2, log: () => {},
+    }));
+    await listen(proxy);
+
+    const controlPlaneBody = JSON.stringify({
+      method: 'tools/call', params: { name: 'fleet:leader-brief', arguments: {} },
+    });
+    const heldControlPlane = Array.from({ length: 4 }, (_, index) => request(
+      port(proxy), controlPlaneBody, `/api/mcp?client=reserved-${index}`,
+    ));
+    await waitFor(() => hits.filter((value) => value.startsWith('reserved-')).length === 4);
+    expect((await request(
+      port(proxy), controlPlaneBody, '/api/mcp?client=reserved-overflow',
+    )).status).toBe(429);
+
+    const ordinaryBody = JSON.stringify({
+      method: 'tools/call', params: { name: 'work_items:list', arguments: {} },
+    });
+    const heldOrdinary = Array.from({ length: 2 }, (_, index) => request(
+      port(proxy), ordinaryBody, `/api/mcp?client=ordinary-${index}`,
+    ));
+    await waitFor(() => hits.filter((value) => value.startsWith('ordinary-')).length === 2);
+    expect((await request(
+      port(proxy), ordinaryBody, '/api/mcp?client=ordinary-overflow',
+    )).status).toBe(429);
+
+    const health = JSON.parse((await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body);
+    expect(health.inFlight).toMatchObject({
+      total: 6,
+      ordinary: 2,
+      reservedControlPlane: 4,
+      maxInFlight: 6,
+      ordinaryCeiling: 4,
+      ordinaryGuaranteedFloor: 2,
+      reservedControlPlaneGuaranteedFloor: 2,
+      reservedControlPlaneCeiling: 4,
+    });
+    expect(health.inFlight.oldestAgeMs.ordinary).toBeGreaterThanOrEqual(0);
+    expect(health.inFlight.oldestAgeMs.reservedControlPlane).toBeGreaterThanOrEqual(0);
+
+    releaseUpstream();
+    const results = await Promise.all([...heldControlPlane, ...heldOrdinary]);
+    expect(results.every((result) => result.status === 200)).toBe(true);
+  });
+
   it('EI-21548622458694037: watchdog and continuation emergency lanes survive a full normal partition', async () => {
     let releaseNormal: () => void = () => {};
     const normalGate = new Promise<void>((resolve) => { releaseNormal = resolve; });
