@@ -6704,6 +6704,8 @@ async function tryLongestGreenPrefix(
     const cancelSiblingKeysFor = [
       "green-checkpoint:red",
       `green-checkpoint:red:${pipeline}`,
+      "green-checkpoint:inconclusive",
+      `green-checkpoint:inconclusive:${pipeline}`,
     ];
     try {
       // EI-7646/WI-4957: fire BOTH the global key and the pipeline-scoped one, mirroring the
@@ -7356,7 +7358,12 @@ async function runGreenCheckpointInner(
       lineage: result.lineage ?? null,
       candidateSource,
     };
-    const cancelSiblingKeysFor = ["release:green", `release:green:${pipeline}`];
+    const cancelSiblingKeysFor = [
+      "release:green",
+      `release:green:${pipeline}`,
+      "green-checkpoint:inconclusive",
+      `green-checkpoint:inconclusive:${pipeline}`,
+    ];
     try {
       await deps.emitEvent?.({
         key: "green-checkpoint:red",
@@ -8964,6 +8971,8 @@ async function runGreenCheckpointInner(
       const cancelSiblingKeysFor = [
         "release:green",
         `release:green:${pipeline}`,
+        "green-checkpoint:inconclusive",
+        `green-checkpoint:inconclusive:${pipeline}`,
       ];
       try {
         await deps.emitEvent?.({
@@ -9881,6 +9890,8 @@ async function runGreenCheckpointInner(
     const cancelSiblingKeysFor = [
       "green-checkpoint:red",
       `green-checkpoint:red:${pipeline}`,
+      "green-checkpoint:inconclusive",
+      `green-checkpoint:inconclusive:${pipeline}`,
     ];
     try {
       await deps.emitEvent?.({

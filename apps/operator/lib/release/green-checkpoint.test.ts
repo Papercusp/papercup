@@ -635,7 +635,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     ).toBe(frozen);
     expect(
       events[`green-checkpoint:red:${pipeline}`].cancelSiblingKeysFor,
-    ).toEqual(["release:green", `release:green:${pipeline}`]);
+    ).toEqual([
+      "release:green",
+      `release:green:${pipeline}`,
+      "green-checkpoint:inconclusive",
+      `green-checkpoint:inconclusive:${pipeline}`,
+    ]);
     expect(calls).toEqual([
       `setup:${frozen.slice(0, 7)}`,
       "runGreen",
