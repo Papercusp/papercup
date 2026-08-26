@@ -27,10 +27,7 @@ const scheduleSchema = z
     rdate: z.array(z.string()).optional().describe('Extra one-off occurrences (RDATE, ISO).'),
     exdate: z.array(z.string()).optional().describe('Excluded occurrences (EXDATE, ISO) — holidays, etc.'),
     cron: z.string().optional().describe('Cron dialect (5/6-field) — the alternate input.'),
-    concurrency: z
-      .enum(['queue', 'skip', 'cancel-prev'])
-      .optional()
-      .describe('Overlap policy if a prior run is still going. Default skip.'),
+    concurrency: z.enum(['queue', 'skip', 'cancel-prev']).optional().describe('Overlap policy if a prior run is still going. Default skip.'),
     catchup: z.enum(['skip-old', 'run-all-backlog']).optional(),
     // EI-1388: `carryState` removed — it was accepted + stored but never actually
     // applied by the fire path (runScheduledPlanFire always mints a plain copy of
@@ -55,16 +52,8 @@ const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1).describe('Plan slug (the template).'),
   schedule: scheduleSchema.nullable().optional(),
-  scheduledAt: z
-    .string()
-    .nullable()
-    .optional()
-    .describe('One-shot fire time (ISO) — drag-onto-a-day. Fires once, then deactivates.'),
-  expiresAt: z
-    .string()
-    .nullable()
-    .optional()
-    .describe('Recurrence end/deadline (ISO). On expiry the schedule deactivates; the plan is not deleted.'),
+  scheduledAt: z.string().nullable().optional().describe('One-shot fire time (ISO) — drag-onto-a-day. Fires once, then deactivates.'),
+  expiresAt: z.string().nullable().optional().describe('Recurrence end/deadline (ISO). On expiry the schedule deactivates; the plan is not deleted.'),
   tzid: z.string().nullable().optional().describe('Per-plan timezone (overrides schedule.tzid for the column).'),
 });
 
@@ -76,8 +65,7 @@ export default defineTool({
     when: 'Turning a plan into a scheduled/recurring one, editing its cadence/expiry, or clearing its schedule.',
     notWhen:
       'Arming a saved schedule so it starts firing — that is the autonomy-gated arm step, not authoring. Flipping plan/item status uses plans:set-plan-status / plans:set-status.',
-    chaining:
-      'plans:set-schedule → (arm, autonomy-gated) → the routines engine fires system:plan-run; plans:run-now to fire one manually.',
+    chaining: 'plans:set-schedule → (arm, autonomy-gated) → the routines engine fires system:plan-run; plans:run-now to fire one manually.',
     seeAlso: [
       'plans:arm-schedule (arm it after authoring — autonomy-gated)',
       'plans:run-now (fire one run now)',

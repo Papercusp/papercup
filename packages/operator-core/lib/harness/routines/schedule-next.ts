@@ -203,7 +203,12 @@ export function expandOccurrences(
       const tzid = normTzid(cfg.tzid);
       if (tzid) {
         // Expand in the zone: bounds IN (real→floating), each occurrence OUT (floating→real).
-        const occ = set.between(realToFloating(rangeStart, tzid), realToFloating(rangeEnd, tzid), true, stopAtLimit);
+        const occ = set.between(
+          realToFloating(rangeStart, tzid),
+          realToFloating(rangeEnd, tzid),
+          true,
+          stopAtLimit,
+        );
         return occ.map((d) => floatingToReal(d, tzid));
       }
       return set.between(rangeStart, rangeEnd, true, stopAtLimit); // inclusive bounds

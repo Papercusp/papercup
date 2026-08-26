@@ -299,7 +299,9 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     // A null/missing projection can occur on a pre-861 row or an older federated
     // op. Full-row reads have content available, so self-heal from the canonical
     // log; index-only list reads pass content='' and stay null until backfilled.
-    forcedPast: (r.forced_past as ForcedPastSummary | null | undefined) ?? summarizeForcedPast(r.content),
+    forcedPast:
+      (r.forced_past as ForcedPastSummary | null | undefined) ??
+      summarizeForcedPast(r.content),
     schedule: (r.schedule as PlanSchedule | null) ?? null,
     scheduleActive: r.schedule_active ?? false,
     scheduledAt: r.scheduled_at,
@@ -431,7 +433,9 @@ export async function resolvePlanScope(
   } = {},
 ): Promise<{ workspaceId: string; harnessSlug: string }> {
   const rawInput = opts.harnessSlug?.trim();
-  const raw = rawInput && rawInput !== '*' && rawInput !== 'all' ? canonicalHarnessSlug(rawInput) : rawInput;
+  const raw = rawInput && rawInput !== '*' && rawInput !== 'all'
+    ? canonicalHarnessSlug(rawInput)
+    : rawInput;
   if (isOperatorHomeScope(raw)) {
     // Operator-home / wildcard branch — WI-148 part-B (owner GO 2026-06-16): honor an
     // explicit workspaceId, else PAPERCUSP_WORKSPACE_ID (flipped from
@@ -605,7 +609,8 @@ export async function resolveHarnessPlansDir(
     }
   }
   const plans = path.join(project.path, plansRelFor(project.path));
-  const workspaceId = (project as { workspaceId?: string }).workspaceId ?? opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
+  const workspaceId =
+    (project as { workspaceId?: string }).workspaceId ?? opts.workspaceId ?? DEFAULT_WORKSPACE_ID;
   return { harnessSlug: resolved, workspaceId, plans, archive: path.join(plans, 'archive') };
 }
 
@@ -627,7 +632,9 @@ export interface ListEntry {
 }
 
 /** List plan slugs for a harness (PG). Sorted by slug for a stable directory. */
-export async function listPlanFiles(opts: PlanSourceOpts & { includeArchived?: boolean } = {}): Promise<ListEntry[]> {
+export async function listPlanFiles(
+  opts: PlanSourceOpts & { includeArchived?: boolean } = {},
+): Promise<ListEntry[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<{ plan_slug: string; archived: boolean }[]>`
@@ -647,7 +654,10 @@ export async function listPlanFiles(opts: PlanSourceOpts & { includeArchived?: b
 }
 
 /** Fetch one plan's raw row (PG), or null when it doesn't exist. */
-export async function getPlanRow(slug: string, opts: PlanSourceOpts = {}): Promise<PlanRow | null> {
+export async function getPlanRow(
+  slug: string,
+  opts: PlanSourceOpts = {},
+): Promise<PlanRow | null> {
   if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   try {
@@ -668,23 +678,13 @@ export async function getPlanRow(slug: string, opts: PlanSourceOpts = {}): Promi
   } catch (err: unknown) {
     // Fallback for databases where migration 299 hasn't been applied yet
     // (schedule columns don't exist). Gracefully default them to null/false.
-    if (err instanceof Error && err.message?.includes('column') && err.message?.includes('does not exist')) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
-        return tx<
-          Omit<
-            PlanDbRow,
-            | 'schedule'
-            | 'schedule_active'
-            | 'scheduled_at'
-            | 'expires_at'
-            | 'tzid'
-            | 'template_slug'
-            | 'run_seq'
-            | 'template'
-            | 'template_data'
-            | 'input_schema'
-          >[]
-        >`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data' | 'input_schema'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -725,7 +725,10 @@ export async function getPlanRow(slug: string, opts: PlanSourceOpts = {}): Promi
  * "declared a file-only plan the store never ingested" (that remedy can
  * never succeed against it — nudging it every wake is pure noise).
  */
-export async function planSlugExistsInWorkspace(workspaceId: string, slug: string): Promise<boolean> {
+export async function planSlugExistsInWorkspace(
+  workspaceId: string,
+  slug: string,
+): Promise<boolean> {
   if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return false;
   const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<{ one: number }[]>`
@@ -764,7 +767,9 @@ export async function planTerminalityInWorkspace(
   if (!harnessSlug) return null;
   const row = await getPlanRow(slug, { workspaceId, harnessSlug });
   if (!row) return null;
-  const hasOpenItems = planItemsForRow(row).some((item) => !isTerminalItemStatus(item.storedStatus));
+  const hasOpenItems = planItemsForRow(row).some(
+    (item) => !isTerminalItemStatus(item.storedStatus),
+  );
   return { status: row.status, hasOpenItems };
 }
 
@@ -776,7 +781,10 @@ export async function planTerminalityInWorkspace(
  * store-backed in this workspace, or is ambiguous across harnesses (picks
  * the most recently updated row deterministically rather than guessing).
  */
-export async function resolvePlanHarnessSlug(workspaceId: string, slug: string): Promise<string | null> {
+export async function resolvePlanHarnessSlug(
+  workspaceId: string,
+  slug: string,
+): Promise<string | null> {
   if (typeof slug !== 'string' || !VALID_PLAN_SLUG.test(slug)) return null;
   const rows = await withWorkspace(workspaceId, async (tx) => {
     return tx<{ harness_slug: string }[]>`
@@ -788,6 +796,7 @@ export async function resolvePlanHarnessSlug(workspaceId: string, slug: string):
   });
   return rows[0]?.harness_slug ?? null;
 }
+
 
 /**
  * Batched exact-slug scope recovery (EI-21194994217912029) — the INVERSE
@@ -804,7 +813,9 @@ export async function planHarnessesForSlugs(
   workspaceId: string,
   slugs: readonly string[],
 ): Promise<Map<string, string[]>> {
-  const valid = [...new Set(slugs)].filter((s): s is string => typeof s === 'string' && VALID_PLAN_SLUG.test(s));
+  const valid = [...new Set(slugs)].filter(
+    (s): s is string => typeof s === 'string' && VALID_PLAN_SLUG.test(s),
+  );
   const out = new Map<string, string[]>();
   if (valid.length === 0) return out;
   const rows = await withWorkspace(workspaceId, async (tx) => {
@@ -846,7 +857,9 @@ export async function planSlugsForHarness(workspaceId: string, harnessSlug: stri
 
 /** All plan rows for a harness (PG), live + optionally archived. The archived
  *  filter runs in SQL — excluded rows' content blobs never leave PG (P-042). */
-export async function listPlanRows(opts: PlanSourceOpts & { includeArchived?: boolean } = {}): Promise<PlanRow[]> {
+export async function listPlanRows(
+  opts: PlanSourceOpts & { includeArchived?: boolean } = {},
+): Promise<PlanRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   try {
     const rows = await withWorkspace(workspaceId, async (tx) => {
@@ -866,24 +879,14 @@ export async function listPlanRows(opts: PlanSourceOpts & { includeArchived?: bo
     });
     return rows.map(rowFromDb);
   } catch (err: unknown) {
-    if (err instanceof Error && err.message?.includes('column') && err.message?.includes('does not exist')) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
         const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-        return tx<
-          Omit<
-            PlanDbRow,
-            | 'schedule'
-            | 'schedule_active'
-            | 'scheduled_at'
-            | 'expires_at'
-            | 'tzid'
-            | 'template_slug'
-            | 'run_seq'
-            | 'template'
-            | 'template_data'
-            | 'input_schema'
-          >[]
-        >`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data' | 'input_schema'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
@@ -1084,7 +1087,11 @@ export async function listPlanIndexRows(
       return rest;
     });
   } catch (err: unknown) {
-    if (err instanceof Error && err.message?.includes('column') && err.message?.includes('does not exist')) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
         const filters = normalizePlanIndexFilterValues(opts);
         return tx<Array<Omit<PlanDbRow, 'content'>>>`
@@ -1137,27 +1144,29 @@ export async function listPlanIndexRows(
  * `harnessSlug`. (In papercup's own workspace every plan is under the papercup
  * harness, so this returns the same set the old `harness:'all'` path did.)
  */
-export async function listPlanIndexRowsForWorkspace(opts: {
-  workspaceId: string;
-  includeArchived?: boolean;
-  status?: string;
-  limit?: number;
-  includeInstances?: boolean;
-  /** Filter to plans of a given template TYPE (P-005). */
-  template?: string;
-  /** Filter to per-run instances of a given template plan (P-005); implies instances. */
-  templateSlug?: string;
-  /** Only plans whose row `created_at >= this` (ISO timestamp). */
-  createdSince?: string;
-  /** Only plans whose row `updated_at >= this` (ISO timestamp). */
-  updatedSince?: string;
-  /** Row order: 'updated'/'created' = recency DESC, default = harness+slug ASC. */
-  order?: 'updated' | 'created' | 'slug';
-  /** Ship the `items` jsonb (P-006). Default true; false yields `[]` and is ~3x faster. */
-  includeItems?: boolean;
-  /** Ship `now_state` + `template_data` (P-006). Default false. */
-  heavyFields?: boolean;
-}): Promise<PlanIndexRow[]> {
+export async function listPlanIndexRowsForWorkspace(
+  opts: {
+    workspaceId: string;
+    includeArchived?: boolean;
+    status?: string;
+    limit?: number;
+    includeInstances?: boolean;
+    /** Filter to plans of a given template TYPE (P-005). */
+    template?: string;
+    /** Filter to per-run instances of a given template plan (P-005); implies instances. */
+    templateSlug?: string;
+    /** Only plans whose row `created_at >= this` (ISO timestamp). */
+    createdSince?: string;
+    /** Only plans whose row `updated_at >= this` (ISO timestamp). */
+    updatedSince?: string;
+    /** Row order: 'updated'/'created' = recency DESC, default = harness+slug ASC. */
+    order?: 'updated' | 'created' | 'slug';
+    /** Ship the `items` jsonb (P-006). Default true; false yields `[]` and is ~3x faster. */
+    includeItems?: boolean;
+    /** Ship `now_state` + `template_data` (P-006). Default false. */
+    heavyFields?: boolean;
+  },
+): Promise<PlanIndexRow[]> {
   const { workspaceId } = opts;
   try {
     const rows = await withWorkspace(workspaceId, async (tx) => {
@@ -1208,7 +1217,11 @@ export async function listPlanIndexRowsForWorkspace(opts: {
       return rest;
     });
   } catch (err: unknown) {
-    if (err instanceof Error && err.message?.includes('column') && err.message?.includes('does not exist')) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
         const filters = normalizePlanIndexFilterValues(opts);
         return tx<Array<Omit<PlanDbRow, 'content'>>>`
@@ -1280,7 +1293,9 @@ export async function setPlanSchedule(
          AND plan_slug = ${opts.slug}
       RETURNING plan_slug
     `;
-  const rows = opts.sql ? await run(opts.sql) : await withWorkspace(workspaceId, (tx) => run(tx as unknown as Sql));
+  const rows = opts.sql
+    ? await run(opts.sql)
+    : await withWorkspace(workspaceId, (tx) => run(tx as unknown as Sql));
   return rows.length > 0;
 }
 
@@ -1290,7 +1305,10 @@ export async function setPlanSchedule(
  * remote row whose projection didn't fill, audit P-042). One query, only
  * the named rows' blobs.
  */
-export async function getPlanContentsBySlugs(slugs: string[], opts: PlanSourceOpts = {}): Promise<Map<string, string>> {
+export async function getPlanContentsBySlugs(
+  slugs: string[],
+  opts: PlanSourceOpts = {},
+): Promise<Map<string, string>> {
   if (slugs.length === 0) return new Map();
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const rows = await withWorkspace(workspaceId, async (tx) => {
@@ -1350,24 +1368,14 @@ export async function listPlanRowsMatchingAnyToken(
     const truncated = rows.length > limit;
     return { rows: (truncated ? rows.slice(0, limit) : rows).map(rowFromDb), truncated };
   } catch (err: unknown) {
-    if (err instanceof Error && err.message?.includes('column') && err.message?.includes('does not exist')) {
+    if (
+      err instanceof Error &&
+      err.message?.includes('column') &&
+      err.message?.includes('does not exist')
+    ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
         const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-        return tx<
-          Omit<
-            PlanDbRow,
-            | 'schedule'
-            | 'schedule_active'
-            | 'scheduled_at'
-            | 'expires_at'
-            | 'tzid'
-            | 'template_slug'
-            | 'run_seq'
-            | 'template'
-            | 'template_data'
-            | 'input_schema'
-          >[]
-        >`
+        return tx<Omit<PlanDbRow, 'schedule' | 'schedule_active' | 'scheduled_at' | 'expires_at' | 'tzid' | 'template_slug' | 'run_seq' | 'template' | 'template_data' | 'input_schema'>[]>`
           SELECT workspace_id, harness_slug, plan_slug, content, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
