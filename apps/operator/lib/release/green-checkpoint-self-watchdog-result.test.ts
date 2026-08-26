@@ -1,0 +1,248 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  buildCrashCheckpointResult,
+  buildSelfWatchdogCheckpointResult,
+} from './green-checkpoint';
+// The CONSUMER halves of the seams this builder sits on, imported for real rather than restated
+// as literals — exactly as green-checkpoint-crash-result.test.ts does, and for the same reason:
+// the defect being fixed here existed precisely because the producer's vocabulary and the
+// consumer's class lists could drift apart while both suites stayed green.
+import { classifyGateStallStatus } from '@papercusp/operator-core/lib/harness/routines/release-actions';
+import {
+  classifyGateAbort,
+  gateAbortLever,
+  isRecordedInconclusiveStatus,
+} from '@papercusp/operator-core/lib/release/gate-abort-status';
+import {
+  classifyQualificationVerdict,
+  isTerminalQualificationOutcome,
+} from '@papercusp/operator-core/lib/release/checkpoint-qualification-transaction';
+
+const WATCHDOG_SUMMARY =
+  'self-watchdog fired after 3h with no normal exit — checkpoint run likely lost its ' +
+  'supervising parent; run-lock released and process group is being terminated.';
+
+const build = (failingTests: string[] = []) =>
+  buildSelfWatchdogCheckpointResult({
+    candidate: 'b3e519a1bfce',
+    runId: 'scheduled-231966bc',
+    summary: WATCHDOG_SUMMARY,
+    failingTests,
+    candidateSource: 'tip',
+  });
+
+/**
+ * WI-41740 — the SELF-WATCHDOG kill path.
+ *
+ * When `armSelfWatchdog`'s deadline fires, the run is SIGKILLed having rendered no verdict. The
+ * result it publishes carried `reason: 'not-green'`, which release-actions reads as a RED —
+ * usually a red naming nothing at all, since a killed run has no failing-test list unless the
+ * suite happened to finish before the kill landed.
+ *
+ * That is the same defect already fixed on the two sibling no-verdict paths (WI-39841
+ * deadline-exceeded, EI-21462211894072863 unreported crash, EI-21465187777146773 caught crash).
+ * This path was left behind DELIBERATELY, with an in-code comment arguing it was different
+ * because it can sometimes rescue a real failing-file list — so its red is "sometimes
+ * contentful". These tests pin the decision that closed that question, and pin the RATIONALE for
+ * it, not merely the value.
+ */
+describe('WI-41740: the self-watchdog kill publishes a no-verdict result, never a fabricated red', () => {
+  it('produces an INCONCLUSIVE, non-advancing verdict that is NOT flagged as crashed', () => {
+    const r = build();
+    expect(r.green).toBeNull();
+    expect(r.advanced).toBe(false);
+    expect(r.from).toBeNull();
+    expect(r.reason).toBe('error');
+    // The DISCRIMINATOR. release-actions tells a watchdog kill from a crash by `crashed` + the
+    // summary, so this leg must stay ABSENT rather than be written falsey — an explicit
+    // `crashed: false` would read as "we checked, and it did not crash".
+    expect(r.crashed).toBeUndefined();
+    expect('crashed' in r).toBe(false);
+    expect(r.candidate).toBe('b3e519a1bfce');
+    expect(r.runId).toBe('scheduled-231966bc');
+    expect(r.summary).toBe(WATCHDOG_SUMMARY);
+  });
+
+  it('is strictly null — not false — so the inconclusive-verdict dispatch fires', () => {
+    // The literal condition at the emitResult dispatch site (emitInconclusiveVerdict). `=== null`
+    // does not admit `false`, which is why this class of bug is invisible: both are falsy.
+    const r = build();
+    expect(r.green === null).toBe(true);
+    expect(r.green).not.toBe(false);
+  });
+
+  it('carries the rescued failing-file list verbatim, and an explicit empty array otherwise', () => {
+    // WI-4957: the empty array is load-bearing — it lets a consumer tell "the run never got far
+    // enough to know" from "nothing was failing". It must not degrade to an absent field.
+    expect(build().failingTests).toEqual([]);
+    expect(build(['a.test.ts', 'b.test.ts']).failingTests).toEqual([
+      'a.test.ts',
+      'b.test.ts',
+    ]);
+  });
+
+  /**
+   * ⭐ THE RATIONALE, and the reason this test file exists rather than a one-line value change.
+   *
+   * The obvious reading of this bug — the one its own title and the pre-fix in-code comment both
+   * took — is that the red is only wrong when the rescued list is EMPTY, so `reason` should be
+   * 'error' only in that case. That is wrong, and this is the assertion that pins why.
+   *
+   * `reason` classifies the EVENT: no verdict was rendered. Whether `failingTests` came back
+   * populated depends purely on whether the suite happened to finish before the SIGKILL landed —
+   * a RACE. Conditioning the reason on it would bank two different durable statuses for two
+   * identical watchdog kills, and make the ledger's classification unreproducible. The rescued
+   * evidence already travels structurally, in `failingTests`, which is the correct axis for it.
+   */
+  it('⭐ the reason is UNCONDITIONAL — a rescued failing-file list does not change the class', () => {
+    const withNothing = build();
+    const withFiles = build(['apps/operator/lib/release/some.test.ts']);
+
+    expect(withNothing.reason).toBe('error');
+    expect(withFiles.reason).toBe('error');
+    expect(withFiles.reason).toBe(withNothing.reason);
+
+    // …and it survives the consumer, which is what actually matters: the same kill must bank the
+    // same status either way.
+    expect(classifyGateStallStatus(withFiles.reason, false)).toBe(
+      classifyGateStallStatus(withNothing.reason, false),
+    );
+    // Only the evidence differs between them — never the classification.
+    expect(withFiles.failingTests).not.toEqual(withNothing.failingTests);
+  });
+
+  /**
+   * ⭐ The property the old 'not-green' was protecting, verified rather than assumed.
+   *
+   * The pre-fix comment kept 'not-green' "so the red streak / held-gate alarm still count it",
+   * and that concern was legitimate: a watchdog-LOOPING gate going silent is how `main` freezes
+   * with nobody told. It was also already answered — 'error' is EI-21462211894072863's
+   * no-verdict class, which counts in `gate_health.consecutiveNoVerdict` and escalates at the
+   * same `stallReds` threshold, saying WEDGED instead of RED.
+   */
+  it('⭐ still COUNTS — the reason routes to no-verdict, never red, never a silent noop', () => {
+    const r = build();
+    expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
+    expect(classifyGateStallStatus(r.reason, false)).not.toBe('red'); // the fabricated verdict
+    expect(classifyGateStallStatus(r.reason, false)).not.toBe('noop'); // the silence WI-39841 feared
+    // …and a moved pin still wins, exactly as for every other status.
+    expect(classifyGateStallStatus(r.reason, true)).toBe('reset');
+  });
+
+  it('⭐ and stays VISIBLE — a recorded abort a reader can actually be advised about', () => {
+    const r = build();
+    // Counting it is only half of "loud": a reason outside RECORDED_INCONCLUSIVE_STATUSES
+    // records a tick nobody can be told about.
+    expect(isRecordedInconclusiveStatus(r.reason)).toBe(true);
+    // A deadline kill really is transient — unlike a missing dependency prewarm, nothing about
+    // it guarantees the next run dies the same way.
+    expect(classifyGateAbort(r.reason)).toBe('transient');
+    // The advice must not send a reader at a failing-test list this tick may never have produced.
+    expect(gateAbortLever(r.reason)).toMatch(/do NOT triage/i);
+  });
+
+  /**
+   * ⭐ THE BEHAVIORAL DELTA this change actually makes, stated explicitly so a future reader can
+   * see it was decided rather than stumbled into.
+   *
+   * classifyQualificationVerdict routed `green: null` + 'not-green' to kind:'red' (its explicit
+   * `normalized === 'not-green'` branch). With 'error' it falls through to 'code-inconclusive'.
+   * That is semantically correct — the run is past the pre-suite phase but rendered no verdict —
+   * and it weakens nothing, because 'code-inconclusive' is TERMINAL exactly like 'red'.
+   */
+  it('⭐ qualifies as code-inconclusive — still terminal, so no guard is weakened', () => {
+    const r = build();
+    const outcome = classifyQualificationVerdict({ reason: r.reason, green: r.green });
+
+    expect(outcome.kind).toBe('code-inconclusive');
+    // Not the pre-suite class either: 'error' is deliberately absent from
+    // PRE_SUITE_NO_VERDICT_REASONS, so this never becomes a WAIT that leaves the attempt open.
+    expect(outcome.kind).not.toBe('pre-suite-no-verdict');
+    // The load-bearing half: terminality is what every settle/wait guard branches on, and
+    // 'code-inconclusive' satisfies it exactly as 'red' did.
+    expect(isTerminalQualificationOutcome(outcome)).toBe(true);
+    expect(
+      isTerminalQualificationOutcome(
+        classifyQualificationVerdict({ reason: 'not-green', green: null }),
+      ),
+    ).toBe(true);
+  });
+
+  /**
+   * The two no-verdict siblings must remain TELLABLE APART, or this fix would trade a fabricated
+   * red for an ambiguous ledger. They share `reason` by design — both rendered no verdict — and
+   * diverge on `crashed`, which is exactly the machine-readable discriminator release-actions
+   * documents for them.
+   */
+  it('shares the no-verdict CLASS with a crash while staying distinguishable from it', () => {
+    const watchdog = build();
+    const crash = buildCrashCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error('boom'),
+      runId: 'scheduled-231966bc',
+    });
+
+    expect(watchdog.reason).toBe(crash.reason);
+    expect(classifyGateStallStatus(watchdog.reason, false)).toBe(
+      classifyGateStallStatus(crash.reason, false),
+    );
+    // …and the discriminator holds in both directions.
+    expect(crash.crashed).toBe(true);
+    expect(watchdog.crashed).toBeUndefined();
+    expect(watchdog.summary).not.toBe(crash.summary);
+  });
+
+  /**
+   * PERMANENT FALSIFIABILITY CONTROL (repo convention: for a module you import, keep the
+   * deliberately-wrong implementation in the test file rather than mutating the shared tree — a
+   * mutation probe would hold a real source file modified for the life of the run, which
+   * git-sync's whole-tree sweep can commit even when nothing goes wrong).
+   *
+   * `preFix` is the real builder's output with ONLY `reason` put back to what it was before this
+   * change — constructed by spread rather than re-implemented, so the divergence is provably a
+   * single field. The calibration block pins that everything else agrees, so the failure it
+   * produces is attributable to THIS fix and not to some unrelated difference.
+   *
+   * Falsifiable in the right direction: if the builder ever went back to 'not-green', `real` and
+   * `preFix` would carry the same value and the divergence assertions would demand two different
+   * classes of it, failing here rather than silently passing.
+   */
+  it('CONTROL: the pre-fix watchdog result FAILS the property the fixed one satisfies', () => {
+    const real = build();
+    const preFix = { ...real, reason: 'not-green' as const };
+
+    // CALIBRATION — everything the fix did not touch must still agree, or the divergence below
+    // says nothing about this change. `green: null` in particular: the pre-fix path ALREADY
+    // returned it, which is exactly why the tri-state alone never stopped the fabricated red.
+    expect(preFix.green).toBe(real.green);
+    expect(preFix.green).toBeNull();
+    expect(preFix.crashed).toBe(real.crashed);
+    expect(preFix.summary).toBe(real.summary);
+    expect(preFix.advanced).toBe(real.advanced);
+    expect(preFix.failingTests).toEqual(real.failingTests);
+
+    // …and diverges at EXACTLY the defect: the old reason banked a RED for a run that judged
+    // nothing — with an empty failing-test list — and was not even a status a reader could be
+    // advised about.
+    expect(classifyGateStallStatus(preFix.reason, false)).toBe('red');
+    expect(classifyGateStallStatus(real.reason, false)).toBe('no-verdict');
+    expect(isRecordedInconclusiveStatus(preFix.reason)).toBe(false);
+    expect(classifyQualificationVerdict({ reason: preFix.reason, green: preFix.green }).kind).toBe(
+      'red',
+    );
+  });
+
+  it('is JSON-serializable (the CLI emits it verbatim on the result-marker line)', () => {
+    const r = build(['apps/operator/lib/release/some.test.ts']);
+    expect(() => JSON.stringify(r)).not.toThrow();
+    const parsed = JSON.parse(JSON.stringify(r));
+    // Survives the round-trip as null (the risk is it becoming absent, which downstream
+    // `?? null` coercions would then read as an ordinary missing field).
+    expect(parsed.green).toBeNull();
+    expect('green' in parsed).toBe(true);
+    expect(parsed.failingTests).toEqual(['apps/operator/lib/release/some.test.ts']);
+    // The absent leg must not reappear through serialization either.
+    expect('crashed' in parsed).toBe(false);
+  });
+});
