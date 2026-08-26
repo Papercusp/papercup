@@ -1349,3 +1349,167 @@ describe('EI-21462211894072863: a verdict-less tick counts as WEDGED, never as a
     warn.mockRestore();
   });
 });
+
+/**
+ * WI-42116 (ruling green-main-fast-2026-08-25 D-022): the stall alarm must ESCALATE with the
+ * stall, not decay to silence after one alert.
+ *
+ * ## The measured defect
+ * The old edge was `(stalledByCount || stalledByAge) && !stallAlerted`, and `stallAlerted` is
+ * carried on every red — so the alarm had exactly ONE rung. papercusp 2026-08-26:
+ * `consecutiveReds: 43`, last green 5.12 days earlier, ONE alert raised on day one. Reds #4–#43
+ * were silent, which is why a livelocked gate read as "already alerted, someone's on it".
+ *
+ * ## Why these are WIRING tests, not decision tests
+ * `stall-escalation-ladder.test.ts` already pins the decision function's arithmetic, including a
+ * permanent naive-implementation control. That suite would pass identically if the ladder were
+ * never called — which was the state this file's own P-005 block warns about. What can actually
+ * be wrong is HERE: which leg re-fires, which stays one-shot, and whether the marks survive the
+ * three separate `gate_health` write paths (red / green / pin-moved).
+ *
+ * ⚠ The two legs have DIFFERENT cadences on purpose. Re-notifying the human is the fix;
+ * re-broadcasting the condition or re-writing the escalation row would be a REGRESSION
+ * (EI-7472's fleet re-spam, and WI-6228's second owning work-item for one stall). Every test
+ * below that asserts a re-notify also asserts those two stayed silent — decoupling them is the
+ * whole change, so a test that only checked the notify could not tell the fix from the bug.
+ */
+describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', () => {
+  const written = (): Record<string, unknown> => {
+    const w = lastGateHealthWrite();
+    expect(w).not.toBeNull();
+    return w!;
+  };
+  const stallReds = releaseCheckpointConfig().stallReds;
+  const stallAgeMs = releaseCheckpointConfig().stallAgeMs;
+  /** The durable escalation-row UPSERT — a one-shot leg, so its ABSENCE is the assertion. */
+  const escalationWrites = () =>
+    calls.filter((c) => /INSERT\s+INTO\s+harness_shared\.harness_escalations/i.test(c.query));
+  const notifyArg = (i = 0) =>
+    notifyAttentionOnce.mock.calls[i]![0] as {
+      title: string;
+      body: string;
+      dedupeKey: string;
+      data: Record<string, unknown>;
+    };
+
+  it('⭐ RE-NOTIFIES at the next count rung — the deeper red that used to be silent', async () => {
+    // Rung 1 (stallReds) already announced. This tick lands ON rung 2 (stallReds * 3).
+    // A recent green keeps the AGE axis below its first rung, isolating the count trigger.
+    seededGh = {
+      consecutiveReds: stallReds * 3 - 1,
+      stallAlerted: true,
+      stallAlertedAtReds: stallReds,
+      lastGreenAt: Date.now(),
+    };
+
+    await trackGateStall(ctx, 'not-green');
+
+    expect(notifyAttentionOnce).toHaveBeenCalledTimes(1);
+    const alert = notifyArg();
+    expect(alert.data).toMatchObject({ stallAxis: 'count', stallRung: stallReds * 3, stallRungIndex: 1 });
+    // The rung is IN the title: a re-escalation that reads identically to the day-one alert is
+    // indistinguishable from a duplicate, and a reader who files it as one has learned nothing.
+    expect(alert.title).toContain('escalation 2');
+    // Per-rung idempotency at the delivery layer, for two callers racing the SAME tick.
+    expect(alert.dedupeKey).toBe(`gate-stall:test-slug:count:${stallReds * 3}`);
+    // ⚠ The half that makes this a fix rather than a regression — both one-shot legs held.
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+    expect(escalationWrites()).toHaveLength(0);
+    expect(written().stallAlertedAtReds).toBe(stallReds * 3);
+  });
+
+  it('⭐ HOLDS between rungs — a red past the threshold but below the next rung says nothing', async () => {
+    // This is EI-7472's guard, stated as a test: the naive "re-alert while still red" fix
+    // re-spammed the fleet ~hourly for the life of a streak. Between rungs, silence is correct.
+    seededGh = {
+      consecutiveReds: stallReds + 1,
+      stallAlerted: true,
+      stallAlertedAtReds: stallReds,
+      lastGreenAt: Date.now(),
+    };
+
+    await trackGateStall(ctx, 'not-green');
+
+    expect(notifyAttentionOnce).not.toHaveBeenCalled();
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+    // The mark does not regress on a quiet tick either.
+    expect(written().stallAlertedAtReds).toBe(stallReds);
+  });
+
+  it('⭐ escalates on AGE when the count axis is FROZEN — the livelocked gate this exists to catch', async () => {
+    // THE load-bearing case. `carryStreak = recordOnly || alreadyCountedPending` holds
+    // `consecutiveReds` FIXED on a record-only tick, so a gate whose every red is withheld as a
+    // proven-stale candidate sits at one red count indefinitely while time runs on. papercusp was
+    // in exactly that state. A COUNT-ONLY ladder would therefore go silent on the one gate it was
+    // built for — which is why the age axis is load-bearing, not belt-and-braces.
+    const CANDIDATE = '1a9e8a1f0000000000000000000000000000abcd';
+    const staleRetriage = {
+      classification: 'stale-candidate' as const,
+      tip: '9f7c3d2e1111111111111111111111111111beef',
+      detail: '2 failing file(s) PASS at tip',
+    };
+    seededGh = {
+      consecutiveReds: stallReds + 1,
+      stallAlerted: true,
+      stallAlertedAtReds: stallReds + 1,
+      stallAlertedAtAgeMs: stallAgeMs, // age rung 1 already announced
+      lastGreenAt: Date.now() - stallAgeMs * 3.5, // past age rung 2 (stallAgeMs * 3)
+    };
+
+    await trackGateStall(ctx, 'not-green', CANDIDATE, ['a/one.test.ts'], null, staleRetriage);
+
+    // The premise, asserted rather than assumed: this tick really did NOT advance the count.
+    // Without this the test could pass through the count axis and prove nothing about age.
+    expect(written().consecutiveReds).toBe(stallReds + 1);
+    expect(notifyAttentionOnce).toHaveBeenCalledTimes(1);
+    expect(notifyArg().data).toMatchObject({ stallAxis: 'age', stallRung: stallAgeMs * 3 });
+    expect(written().stallAlertedAtAgeMs).toBe(stallAgeMs * 3);
+    expect(broadcastSevereEvent).not.toHaveBeenCalled();
+  });
+
+  it('⭐ a legacy blob (stallAlerted, no marks) does NOT re-alert for a stall already announced', async () => {
+    // Back-compat is a one-time migration, not a decision re-taken hourly: seed each axis at its
+    // FIRST rung so the ladder resumes at rung 2 instead of re-announcing on the deploy tick.
+    seededGh = { consecutiveReds: stallReds + 1, stallAlerted: true, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green');
+
+    expect(notifyAttentionOnce).not.toHaveBeenCalled();
+    // And the seeding is PERSISTED on this quiet tick, so it happens once rather than every tick.
+    expect(written().stallAlertedAtReds).toBe(stallReds);
+    expect(written().stallAlertedAtAgeMs).toBe(stallAgeMs);
+  });
+
+  it('⭐ a GREEN resets the ladder to the bottom — both marks cleared', async () => {
+    // The ONLY intended way back to null: the decision layer never regresses a mark, so if green
+    // did not clear them the NEXT stall would resume halfway up the previous episode's ladder and
+    // skip its own rung-1 alert.
+    seededGh = {
+      consecutiveReds: stallReds * 3,
+      stallAlerted: true,
+      stallAlertedAtReds: stallReds * 3,
+      stallAlertedAtAgeMs: stallAgeMs * 3,
+      lastGreenAt: Date.now() - 60_000,
+    };
+
+    await trackGateStall(ctx, 'advanced');
+
+    expect(written().stallAlertedAtReds).toBeNull();
+    expect(written().stallAlertedAtAgeMs).toBeNull();
+  });
+
+  it('⭐ opens the one-shot legs on rung 1, exactly as before — the fix changed cadence, not the edge', async () => {
+    // The regression guard for the split itself: `firstRungOfEpisode` is the PRE-tick
+    // `stallAlerted`, so a fresh episode must still mint its escalation row AND its condition.
+    // If this ever goes quiet, the ladder has swallowed the leg that produces the ownable item.
+    seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green');
+
+    expect(notifyAttentionOnce).toHaveBeenCalledTimes(1);
+    expect(notifyArg().title).not.toContain('escalation');
+    expect(broadcastSevereEvent).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEvent.mock.calls[0]![0]!.oneShot).toBe(true);
+    expect(escalationWrites()).toHaveLength(1);
+  });
+});
