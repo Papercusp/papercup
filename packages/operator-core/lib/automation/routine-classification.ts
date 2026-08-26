@@ -319,6 +319,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Runs the reviewed staged corpus dedup pass through bounded strong-model shard judgements',
   },
+  'system:work-item-admission-delta-sweep': {
+    spend: 'llm',
+    why: 'Runs one strong-model call over the hourly admitted-item delta to detect shared-root-cause bursts',
+  },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
