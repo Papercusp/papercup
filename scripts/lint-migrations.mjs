@@ -49,7 +49,8 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { resolveScriptPgUrl } from "./lib/pg-url.mjs";
 import { selectExplicitBasenames } from "./lib/explicit-files.mjs";
 import {
@@ -949,24 +950,13 @@ async function main() {
   );
 }
 
-// BUNDLE-SAFE ENTRYPOINT GUARD. `import.meta.url` collapses to the BUNDLE's own path when this
-// script is bundled into apps/operator/dist-host/hono-host.mjs (migration-preapply-lint.ts imports
-// pure predicates from here, which pulls the whole module into the host bundle). At that point
-// import.meta.url EQUALS argv[1] — the host is started as `node dist-host/hono-host.mjs` — so the
-// bare identity comparison INVERTED to true and ran the entire migration lint during module init.
-// That crash-looped papercup-staging-api (:3170): the same collapse also makes
-// ROOT = dirname(import.meta.url)/.. resolve to apps/operator, so SQL_DIR pointed at the
-// non-existent apps/operator/libs/papercusp/libs/db/sql and main() threw ENOENT at import time.
-//
-// Requiring argv[1]'s own basename to be THIS script keeps the guard false whenever we are bundled
-// into some other entrypoint, while the retained URL identity check still pins a direct run to this
-// exact file. Do NOT reduce this back to a lone import.meta.url comparison.
-const entryPath = process.argv[1] ? resolve(process.argv[1]) : "";
-
-if (
-  entryPath &&
-  /[/\\]lint-migrations\.mjs$/.test(entryPath) &&
-  import.meta.url === pathToFileURL(entryPath).href
-) {
-  await main();
+// `migration-preapply-lint.ts` imports the pure predicates above, which pulls this module into
+// plain-node host bundles. A raw import.meta.url/argv comparison becomes true for every inlined
+// module and ran this CLI scan during :3170 boot (EI-21543544916409140). Keep the shared
+// bundle-aware guard here; do not hand-roll another path comparison.
+if (isCliEntry(import.meta.url)) {
+  main().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
 }

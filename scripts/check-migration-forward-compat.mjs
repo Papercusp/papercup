@@ -45,6 +45,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from 'node:fs';
 import { join, dirname, extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 import { stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
 import { selectExplicitBasenames } from './lib/explicit-files.mjs';
 
@@ -1138,5 +1139,7 @@ function main() {
 // nudge imports this module for `violationsFor` / `ACK_MARKER`, and an
 // unguarded `main()` would run the whole repo scan (and possibly process.exit(1))
 // inside a PostToolUse hook that must always fail open.
-const invokedDirectly = process.argv[1] && resolve(process.argv[1]) === resolve(fileURLToPath(import.meta.url));
-if (invokedDirectly) main();
+// `migration-preapply-lint.ts` imports the pure predicates above, so this module is also inlined
+// into the host bundle. The shared guard is compiled false in that bundle while preserving direct
+// `node scripts/check-migration-forward-compat.mjs` execution.
+if (isCliEntry(import.meta.url)) main();

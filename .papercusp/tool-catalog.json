@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 823,
+  "count": 824,
   "tools": [
     {
       "name": "ablation:report",
@@ -18163,12 +18163,12 @@
           "POST"
         ]
       },
-      "description": "OWNER-only verified deletion of Personal Vault data. Deletes a source (documents including vectors, sync cursor, source aliases) or the whole vault corpus; retained grant history is untouched. Requires confirm:true.",
+      "description": "OWNER-only verified deletion of Personal Vault data. Deletes one provider account/source identity, a broad source, or the whole vault corpus; retained grant history is untouched. Requires confirm:true.",
       "capabilities": [
         "memory:write"
       ],
       "guidance": {
-        "when": "The owner asks to remove one imported source or erase all Personal Vault content.",
+        "when": "The owner asks to remove one provider account, one imported source, or all Personal Vault content.",
         "notWhen": "Revoking agent access without deleting data — use the Personal Vault settings UI grant controls."
       }
     },
@@ -27138,6 +27138,81 @@
       }
     },
     {
+      "name": "tasks:ops",
+      "http": {
+        "path": "/api/agent-tools/tasks/ops",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Operate the canonical task list for this chat session. One compact op updates PG-backed state; the response always returns the complete ordered list.",
+      "capabilities": [
+        "tasks:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Track or update the concrete steps you are executing in this chat. Use init to replace the list, append to add one, start/done/drop/block/unblock for transitions, and view to read it.",
+        "notWhen": "Do not use this to create fleet/work coordination items; use work_items:* or plans:* for durable shared work. This list is per chat session.",
+        "chaining": "init or append → start → done; block requires blocker_ref. Omit op only for unambiguous init/append/block/view shapes."
+      }
+    },
+    {
       "name": "telemetry:set_buffer",
       "http": {
         "path": "/api/agent-tools/telemetry/set_buffer",
@@ -27714,7 +27789,7 @@
       ],
       "guidance": {
         "when": "You need a tool that is not in your loaded/core set and do not know its exact name — search by what you want to DO (\"set a feature flag\", \"spawn a worker bee\").",
-        "notWhen": "The tool is already in your core set or you know its exact name — just call it. `tools:find` is catalog-global and accepts only `{ query, limit? }`; do not pass a per-call `harness` (session scope is applied automatically). For a full permission-annotated dump use agent_tools:list.",
+        "notWhen": "The tool is already in your core set or you know its exact name — just call it. `tools:find` is catalog-global and accepts only `{ query, limit? }`; do not pass a per-call `harness` (session scope is applied automatically).",
         "chaining": "tools:find(\"<intent>\") → call the top hit through tools:invoke in the SAME turn. `activated:true` means the server surface grew and requested a client refresh; it does not guarantee this client has materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work."
       }
     },

@@ -1,7 +1,6 @@
 import { createWriteStream, readFileSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 /**
  * Reserved fields carried inside the existing systemd credential payload. They
@@ -214,6 +213,17 @@ export function main(argv = process.argv) {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+/**
+ * This runner is copied verbatim beside host bundles, so it cannot import the TypeScript
+ * `isCliEntry` helper. It is also imported by operator-core for its wire constants, which means a
+ * raw import.meta.url comparison is unsafe once esbuild inlines it. Pin the only executable copy
+ * by its fixed basename instead; an inlined host entry is named hono-host.mjs/serve.mjs and stays
+ * inert, while the copied runner still executes under bare node.
+ */
+export function isDirectSystemdScopeEnvRunnerInvocation(entryPath = process.argv[1]) {
+  return typeof entryPath === 'string' && /(?:^|[\\/])systemd-scope-env-runner\.mjs$/.test(entryPath);
+}
+
+if (isDirectSystemdScopeEnvRunnerInvocation()) {
   main();
 }
