@@ -145,7 +145,13 @@ type StateTable =
   // dedicated-bg-host topology (:3070/:3270, a SEPARATE systemd service from
   // papercup-bg-host — node:cluster IPC cannot cross that boundary) can read it.
   // See sync/hyperbee/substrate-booted-handles-pg.ts.
-  | 'substrate_booted_handles_status';
+  | 'substrate_booted_handles_status'
+  // Migration 967 — launch-declared SESSION tool confinements, keyed by coord ownerId
+  // (directed-pair-work-items-2026-08-25 P-004 / D-017). Read into a sync cache at the
+  // dispatch checkCapabilityEnvelope step; empty payload ⇒ every session unconfined ⇒
+  // byte-identical to no gate. Deliberately its OWN table rather than a field on
+  // session_briefs.control_state, which other writers replace wholesale (D-017 §3).
+  | 'operator_session_confinements';
 
 // ── operator-state read cache (infra-perf-robustness-audit-2026-06-18 P-004) ────
 //
