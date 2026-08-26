@@ -2,8 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
-  WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS,
+  encodeWorkspaceHostCredentialLifecycleStep,
+  parseWorkspaceHostRemoteInitializerRequest,
+  planWorkspaceHostCredentialLifecycle,
   planWorkspaceHostInitialization,
+  type WorkspaceHostCredentialDeliverySet,
   type WorkspaceHostCredentialRefs,
 } from '@papercusp/deployment-driver';
 import {
@@ -30,6 +34,28 @@ const REFS: WorkspaceHostCredentialRefs = {
   agentCredentialRef: { kind: 'agent', ref: 'agent-resolver:v1' },
 };
 
+const DELIVERY: WorkspaceHostCredentialDeliverySet = {
+  cloud: {
+    kind: 'provider-identity',
+    generation: 1,
+    audience: 'host-1',
+    revocationRef: 'revoke-cloud-v1',
+  },
+  git: {
+    kind: 'forwarded-agent',
+    generation: 1,
+    audience: 'host-1',
+    revocationRef: 'revoke-git-v1',
+  },
+  agent: {
+    kind: 'short-lived-delegation',
+    generation: 1,
+    audience: 'host-1',
+    revocationRef: 'revoke-agent-v1',
+    expiresAt: '2026-08-23T07:00:00Z',
+  },
+};
+
 function step() {
   return planWorkspaceHostInitialization({
     contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
@@ -39,27 +65,21 @@ function step() {
     requestedAt: '2026-08-23T06:00:00Z',
     source: { kind: 'empty' },
     credentialRefs: REFS,
-    credentialDelivery: {
-      cloud: {
-        kind: 'provider-identity',
-        generation: 1,
-        audience: 'host-1',
-        revocationRef: 'revoke-cloud-v1',
-      },
-      git: {
-        kind: 'forwarded-agent',
-        generation: 1,
-        audience: 'host-1',
-        revocationRef: 'revoke-git-v1',
-      },
-      agent: {
-        kind: 'short-lived-delegation',
-        generation: 1,
-        audience: 'host-1',
-        revocationRef: 'revoke-agent-v1',
-        expiresAt: '2026-08-23T07:00:00Z',
-      },
-    },
+    credentialDelivery: DELIVERY,
+  }).steps[0]!;
+}
+
+function lifecycleStep() {
+  return planWorkspaceHostCredentialLifecycle({
+    contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
+    operationId: 'revoke-1',
+    workspaceId: 'workspace-1',
+    hostId: 'host-1',
+    requestedAt: '2026-08-23T06:00:00Z',
+    action: 'revoke',
+    currentCredentialRefs: REFS,
+    currentDelivery: DELIVERY,
+    channels: ['git'],
   }).steps[0]!;
 }
 
@@ -101,13 +121,32 @@ describe('GCP IAP workspace-host initialization operations', () => {
     });
     const operations = new GcpIapWorkspaceHostInitializationOperations(PROFILE, { run });
 
-    expect(operations.supportedStepKinds).toEqual(WORKSPACE_HOST_INITIALIZATION_STEP_KINDS);
+    expect(operations.supportedStepKinds).toEqual(WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS);
+    expect(operations.supportedStepKinds).toHaveLength(10);
     expect(run).not.toHaveBeenCalled();
     await expect(operations.execute(step())).resolves.toEqual({
       observedAt: '2026-08-23T06:01:00Z',
       publicEvidence: { workspaceCreated: true },
     });
     expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('round-trips a planner-produced credential-lifecycle step through the command builder', () => {
+    const planned = lifecycleStep();
+    const command = buildGcpIapWorkspaceHostInitializationCommand(PROFILE, planned);
+    const request = parseWorkspaceHostRemoteInitializerRequest(JSON.parse(command.stdin));
+
+    expect(request.step).toEqual(encodeWorkspaceHostCredentialLifecycleStep(planned));
+    expect(request.step).toMatchObject({
+      id: 'revoke-git',
+      kind: 'revoke',
+      input: {
+        channel: 'git',
+        credentialRef: REFS.gitCredentialRef,
+        delivery: DELIVERY.git,
+      },
+    });
+    expect(request.step).not.toHaveProperty('channel');
   });
 
   it('fails closed on routing injection before invoking the transport', async () => {

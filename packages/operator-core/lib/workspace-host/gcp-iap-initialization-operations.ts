@@ -2,12 +2,17 @@ import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:ch
 import { createHash } from 'node:crypto';
 
 import {
+  WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
   WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
   WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS,
   assertWorkspaceHostSecretIsolation,
+  encodeWorkspaceHostCredentialLifecycleStep,
+  type WorkspaceHostCredentialLifecycleStep,
   type WorkspaceHostInitializationHostOperationResult,
   type WorkspaceHostInitializationHostOperations,
   type WorkspaceHostInitializationStep,
+  type WorkspaceHostInitializationStepKind,
 } from '@papercusp/deployment-driver';
 import { quotePosixShellArg } from './local-connection-manager';
 
@@ -107,6 +112,16 @@ function hostKeyAlias(profile: GcpIapWorkspaceHostInitializationProfile): string
     .slice(0, 32)}`;
 }
 
+export type GcpIapWorkspaceHostInitializationStep =
+  | WorkspaceHostInitializationStep
+  | WorkspaceHostCredentialLifecycleStep;
+
+function isWorkspaceHostCredentialLifecycleStep(
+  step: GcpIapWorkspaceHostInitializationStep,
+): step is WorkspaceHostCredentialLifecycleStep {
+  return (WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS as readonly string[]).includes(step.kind);
+}
+
 /**
  * Build one non-interactive OpenSSH invocation over GCP IAP. The remote side
  * receives one typed request on stdin; no shell script, scp staging, or resolved
@@ -114,7 +129,7 @@ function hostKeyAlias(profile: GcpIapWorkspaceHostInitializationProfile): string
  */
 export function buildGcpIapWorkspaceHostInitializationCommand(
   profile: GcpIapWorkspaceHostInitializationProfile,
-  step: WorkspaceHostInitializationStep,
+  step: GcpIapWorkspaceHostInitializationStep,
 ): GcpIapWorkspaceHostInitializationCommand {
   requireCondition(GCP_PROJECT_ID.test(profile.projectId), 'GCP project id has an invalid value');
   const zone = requireGcpName(profile.zone, 'GCP zone');
@@ -131,7 +146,9 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
 
   const protocolRequest = {
     protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
-    step,
+    step: isWorkspaceHostCredentialLifecycleStep(step)
+      ? encodeWorkspaceHostCredentialLifecycleStep(step)
+      : step,
   };
   assertWorkspaceHostSecretIsolation(protocolRequest, 'workspaceHost.gcpIap.initialization.request');
 
@@ -293,7 +310,8 @@ function parseResponse(stdout: string, stepId: string): WorkspaceHostInitializat
 
 /** Concrete capability-declaring adapter for the signed remote initializer. */
 export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHostInitializationHostOperations {
-  readonly supportedStepKinds = WORKSPACE_HOST_INITIALIZATION_STEP_KINDS;
+  readonly supportedStepKinds =
+    WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS as readonly WorkspaceHostInitializationStepKind[];
 
   private readonly profile: GcpIapWorkspaceHostInitializationProfile;
   private readonly runner: GcpIapWorkspaceHostInitializationCommandRunner;
@@ -306,7 +324,13 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
     this.runner = runner;
   }
 
-  async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult> {
+  async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult>;
+  async execute(
+    step: WorkspaceHostCredentialLifecycleStep,
+  ): Promise<WorkspaceHostInitializationHostOperationResult>;
+  async execute(
+    step: GcpIapWorkspaceHostInitializationStep,
+  ): Promise<WorkspaceHostInitializationHostOperationResult> {
     const command = buildGcpIapWorkspaceHostInitializationCommand(this.profile, step);
     const result = await this.runner.run(command);
     if (result.exitCode !== 0) {
