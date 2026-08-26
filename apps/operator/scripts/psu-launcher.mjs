@@ -3188,9 +3188,10 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // MANDATES for recording a cross-lane ruling. Full rationale lives beside the canonical
   // list in libs/papercusp/packages/orchestrator/src/invoke.ts.
   "plans:add-decision",
-  // mode:set and work_items:claimable stay Claude-only in CLAUDE_SEED_EXTRA_TOOL_NAMES
-  // below — the array is now EXACTLY 43 = the ratchet, so admitting either would raise a
-  // cap in the change that fills it. See plan D-006.
+  // MIRROR of the canonical CORE admission (EI-21503656260697108): the shared spine's
+  // spine now holds 45 entries, matching the canonical list and its <=45 ratchet. mode:set remains
+  // the only Claude-only deferred verb (CLAUDE_SEED_EXTRA_TOOL_NAMES below).
+  "work_items:claimable",
   "tools:find",
   "tools:invoke",
 ];
@@ -3287,20 +3288,17 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   "coord:presence",
   // Cross-role verbs whose measured demand is overwhelmingly su/psu traffic. P-003 first
   // rehomed all THREE here after overshooting the shared spine's ratchet; P-006 (D-006)
-  // then promoted plans:add-decision into the shared spine proper — it is therefore NOT
-  // listed here any more, and OMP/codex now reach it directly too. These two remain:
+  // promoted plans:add-decision into the shared spine proper, and EI-21503656260697108
+  // (2026-08-26) promoted work_items:claimable the same way (ratchet 44->45) — neither is
+  // listed here any more; OMP/codex reach both directly. ONE remains:
   //   mode:set             124 reaches/56 callers, 1,732 B, 73.3 reach/KB — an
   //     unregistered mode is invisible session state that a compaction silently drops.
-  //   work_items:claimable 135/55, 2,198 B, 62.9 — the SSOT claim floors; the documented
-  //     alternative (raw status='open') overcounts ~13x, so unreachability here actively
-  //     pushed callers onto a WRONG answer.
-  // NARROWED GAP: OMP/codex still cannot reach these TWO directly. The shared spine is now
-  // exactly at its <=43 ratchet, so admitting either means raising a cap in the change that
-  // fills it — the DARK_FLAGS-watermark anti-pattern. That needs a deliberate budget
-  // decision priced in WIRE BYTES per D-001, not another quiet append. Both stay reachable
-  // everywhere via tools:find/invoke.
+  // NARROWED GAP: OMP/codex still cannot reach it directly. The shared spine sits at its
+  // deliberate ratchet (44 here, 45 canonical), so admitting it means raising a cap in
+  // the change that fills it — the DARK_FLAGS-watermark anti-pattern. That needs a
+  // deliberate budget decision priced in WIRE BYTES per D-001, not another quiet append.
+  // deliberate ratchet (45 entries, canonical <=45), so admitting it means raising a cap in
   "mode:set",
-  "work_items:claimable",
 ];
 export function claudeSeedToolNames(env = process.env) {
   const seen = new Set();
