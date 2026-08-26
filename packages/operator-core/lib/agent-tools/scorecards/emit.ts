@@ -188,7 +188,7 @@ export const scorecardEmitArgs = z
       .boolean()
       .optional()
       .describe(
-        'Attest that the cited vetting consult received NO critique (every routed reviewer was dead/parked or it expired unanswered) and you are proceeding anyway. Requires `vettingUnansweredReason`, and is REFUSED when the consult did receive critique — this is the recorded-waiver path, not a way to skip reading replies. Stamped visibly as observation.vetting.unanswered so a later reader can tell a vetted rubric from an un-critiqued one.',
+        'Attest that the cited vetting consult received NO critique (every routed reviewer was dead/parked or it expired unanswered) and you are proceeding anyway. Requires BOTH `vettingConsult` and `vettingUnansweredReason`, and is REFUSED when the consult did receive critique — this is the recorded-waiver path, not a way to skip reading replies. Stamped visibly as observation.vetting.unanswered so a later reader can tell a vetted rubric from an un-critiqued one.',
       ),
     vettingUnansweredReason: z
       .string()
@@ -471,6 +471,15 @@ export async function emitScorecard(
         error:
           'pass EXACTLY ONE of vettingConsult / vettingWorkItem — they are alternate recording channels for the ' +
           'same attestation, and a card stamped from both would be unreadable as evidence',
+      };
+    }
+    if (args.vettingUnanswered && !args.vettingConsult) {
+      return {
+        ok: false as const,
+        error:
+          'vettingUnanswered requires vettingConsult — the waiver attests that a SPECIFIC consult received no critique, ' +
+          'and the acceptance gate can recognize it only when observation.vetting carries that consultId. Keep ' +
+          'vettingConsult in the call alongside vettingUnanswered + vettingUnansweredReason.',
       };
     }
     if (args.vettingWorkItem && args.vettingUnanswered) {
