@@ -2002,7 +2002,8 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  * refusal can say WHICH of the four happened.
  *
  * @typedef {{ claimed: true, status: 'acquired', resumeClaimKey: string,
- *             replayed?: boolean, leaseExpiresAt?: string }
+ *             replayed?: boolean, leaseExpiresAt?: string,
+ *             legacyReactivation?: true }
  *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport',
  *       detail?: string, status?: 'reserved' | 'live' | 'missing',
  *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
@@ -3163,6 +3164,7 @@ export type ResumeClaimOutcome = {
     resumeClaimKey: string;
     replayed?: boolean;
     leaseExpiresAt?: string;
+    legacyReactivation?: true;
 } | {
     claimed: false;
     reason: "no-session" | "http" | "contended" | "transport";
