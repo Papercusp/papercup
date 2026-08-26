@@ -88,7 +88,12 @@ import {
   readLastGateRunEvidence,
   judgeVerdictlessDeath,
   DEFAULT_VERDICTLESS_GRACE_MS,
+  decideVerdictlessRefire,
 } from './green-stall-watchdog';
+// Imported, never restated: the re-fire tests enumerate the REAL abort table, so adding a
+// status there (or reclassifying one) is reported by these tests instead of silently changing
+// what the gate will automatically fire on.
+import { RECORDED_INCONCLUSIVE_STATUSES, classifyGateAbort } from './gate-abort-status';
 
 const H = 60 * 60 * 1000;
 const NOW = 1_750_000_000_000; // fixed epoch ms
@@ -2499,5 +2504,165 @@ describe('checkReleaseTriggerFireStale DB wiring (EI-14003)', () => {
       alarmed: false,
       recovered: false,
     });
+  });
+});
+
+describe('decideVerdictlessRefire — D-006: detection does not authorize actuation (P-006 / WI-41755)', () => {
+  const base = { verdictless: true as const, nowMs: NOW, ownerWallActive: false };
+
+  /**
+   * PERMANENT FALSIFIABILITY CONTROL. The naive implementation this gate exists to prevent:
+   * "verdict-less ⇒ fire it again". Kept in the file forever so the assertions below are
+   * demonstrably capable of failing — a suite where the control and the real subject agree
+   * is a suite proving nothing.
+   */
+  const naiveRefire = (verdictless: boolean) => (verdictless ? 'refire' : 'none');
+
+  it('CALIBRATION: the real subject does re-fire the case it should, so the controls below are not passing merely because it always alarms', () => {
+    const d = decideVerdictlessRefire({ ...base, abortStatus: 'cancelled' });
+    expect(d.action).toBe('refire');
+    expect(d.reason).toBe('transient-retry');
+    expect(d.abortKind).toBe('transient');
+    expect(d.nextAttempt).toBe(1);
+  });
+
+  it('CONTROL: on a standing-condition abort the naive implementation re-fires and the real one refuses', () => {
+    const status = 'migrations-pending';
+    expect(naiveRefire(true)).toBe('refire'); // what we must NOT do
+    const d = decideVerdictlessRefire({ ...base, abortStatus: status });
+    expect(d.action).toBe('alarm');
+    expect(d.reason).toBe('not-transient');
+  });
+
+  it('the owner wall (D-080) makes `refire` structurally unreachable — for EVERY recorded status, transient included', () => {
+    for (const status of [...RECORDED_INCONCLUSIVE_STATUSES, 'totally-unknown-status']) {
+      const walled = decideVerdictlessRefire({
+        ...base,
+        ownerWallActive: true,
+        abortStatus: status,
+      });
+      expect(walled.action).not.toBe('refire');
+      expect(walled.reason).toBe('owner-wall');
+    }
+  });
+
+  it('an UNSPECIFIED owner wall fails CLOSED — omitting the flag must not silently authorize firing', () => {
+    const d = decideVerdictlessRefire({ verdictless: true, nowMs: NOW, abortStatus: 'cancelled' });
+    expect(d.action).toBe('alarm');
+    expect(d.reason).toBe('owner-wall');
+  });
+
+  it('classifies EVERY recorded abort status straight off the real table — never a restated copy', () => {
+    for (const status of RECORDED_INCONCLUSIVE_STATUSES) {
+      const kind = classifyGateAbort(status);
+      const d = decideVerdictlessRefire({ ...base, abortStatus: status });
+      expect(d.abortKind).toBe(kind);
+      if (kind === 'transient') {
+        expect(d.action).toBe('refire');
+      } else {
+        expect(d.action).toBe('alarm');
+        expect(d.reason).toBe('not-transient');
+      }
+    }
+  });
+
+  it('an UNCLASSIFIABLE abort is not transient — an unknown cause is not evidence of a harmless one', () => {
+    for (const status of [null, 'some-brand-new-status']) {
+      const d = decideVerdictlessRefire({ ...base, abortStatus: status });
+      expect(d.action).toBe('alarm');
+      expect(d.reason).toBe('unclassifiable');
+      expect(d.abortKind).toBe('unknown');
+    }
+  });
+
+  it('a peer-owned abort alarms rather than contending with the owner mid-repair', () => {
+    const d = decideVerdictlessRefire({ ...base, abortStatus: 'repair-in-progress' });
+    expect(d.abortKind).toBe('peer-owned');
+    expect(d.action).toBe('alarm');
+  });
+
+  /**
+   * The measured oddsmith case (2026-08-26): `error` classifies transient — correctly, it
+   * latches nothing — yet that install had reproduced it 530 consecutive times. "Nothing to
+   * clear" is not the same claim as "waiting fixes it", and only the second one justifies
+   * spending a ~55min suite.
+   */
+  it('STOPS on the first repeat: a transient abort that already came back is reproducible, not self-clearing', () => {
+    const d = decideVerdictlessRefire({
+      ...base,
+      abortStatus: 'error',
+      attempts: 1,
+      lastAttemptStatus: 'error',
+    });
+    expect(d.action).toBe('alarm');
+    expect(d.reason).toBe('reproduced');
+    // and it stops WELL inside the budget rather than burning it to re-learn the same fact
+    expect(d.nextAttempt).toBe(1);
+  });
+
+  it('CONTROL for the repeat rule: a DIFFERENT transient abort still re-fires, so `reproduced` is not just "any second attempt"', () => {
+    const d = decideVerdictlessRefire({
+      ...base,
+      abortStatus: 'error',
+      attempts: 1,
+      lastAttemptStatus: 'cancelled',
+    });
+    expect(d.action).toBe('refire');
+    expect(d.nextAttempt).toBe(2);
+  });
+
+  it('bounds attempts with the established budget rather than inventing a second one', () => {
+    const d = decideVerdictlessRefire({
+      ...base,
+      abortStatus: 'error',
+      attempts: 3,
+      lastAttemptStatus: 'cancelled',
+    });
+    expect(d.action).toBe('alarm');
+    expect(d.reason).toBe('max-attempts');
+  });
+
+  it('never stacks onto a run already in flight', () => {
+    const d = decideVerdictlessRefire({ ...base, abortStatus: 'cancelled', refireInFlight: true });
+    expect(d.action).toBe('none');
+    expect(d.reason).toBe('refire-in-flight');
+  });
+
+  it('waits out a cooldown longer than one full suite, so a second attempt cannot overlap the first', () => {
+    const cooling = decideVerdictlessRefire({
+      ...base,
+      abortStatus: 'cancelled',
+      attempts: 1,
+      lastAttemptStatus: 'error',
+      lastAttemptAtMs: NOW - 10 * 60_000,
+    });
+    expect(cooling.action).toBe('none');
+    expect(cooling.reason).toBe('cooling-down');
+
+    const elapsed = decideVerdictlessRefire({
+      ...base,
+      abortStatus: 'cancelled',
+      attempts: 1,
+      lastAttemptStatus: 'error',
+      lastAttemptAtMs: NOW - 3 * H,
+    });
+    expect(elapsed.action).toBe('refire');
+  });
+
+  it('says nothing at all when no verdict-less death was detected', () => {
+    const d = decideVerdictlessRefire({ ...base, verdictless: false, abortStatus: 'cancelled' });
+    expect(d.action).toBe('none');
+    expect(d.reason).toBe('not-verdictless');
+    expect(naiveRefire(false)).toBe('none'); // the one case the naive version also gets right
+  });
+
+  it('carries an operator-facing sentence on every arm — the judgement must be quotable into an alarm', () => {
+    const arms = [
+      decideVerdictlessRefire({ ...base, abortStatus: 'cancelled' }),
+      decideVerdictlessRefire({ ...base, abortStatus: 'migrations-pending' }),
+      decideVerdictlessRefire({ ...base, abortStatus: null }),
+      decideVerdictlessRefire({ ...base, ownerWallActive: true, abortStatus: 'cancelled' }),
+    ];
+    for (const a of arms) expect(a.detail.length).toBeGreaterThan(20);
   });
 });
