@@ -88,6 +88,13 @@ export interface StreakCauseDigest {
   intermittent: string[];
   /** ms between the first and last NAMING tick, or null with fewer than two. */
   spanMs: number | null;
+  /**
+   * The counts above were computed over a CAPPED fetch and are therefore FLOORS, not totals.
+   * Repo rule: a caller's row limit bounds row lists only — an aggregate derived from a
+   * capped fetch must say so ON THE AGGREGATE, or a bounded measurement reads as a confident
+   * number. The rendered `line` hedges itself when this is set.
+   */
+  truncatedByLimit: boolean;
   /** one line, ready to paste into an alarm body. */
   line: string;
 }
@@ -114,7 +121,11 @@ function renderSpan(spanMs: number | null): string {
  * `ticks` may be in any order and may include non-verdict rows; both are filtered here so
  * a caller can hand over a raw event page unmodified.
  */
-export function summarizeStreakCause(ticks: readonly StreakTick[]): StreakCauseDigest {
+export function summarizeStreakCause(
+  ticks: readonly StreakTick[],
+  /** True when the caller's fetch hit its row cap, so every count here is a FLOOR. */
+  truncatedByLimit = false,
+): StreakCauseDigest {
   const reds = ticks.filter((t) => t.verdictBearing);
   // Normalise each verdict's failing set: drop blanks, de-duplicate. A tick that named the
   // same file twice must not read as a different set from one that named it once.
@@ -138,7 +149,14 @@ export function summarizeStreakCause(ticks: readonly StreakTick[]): StreakCauseD
   const times = naming.map((n) => n.atMs).sort((a, b) => a - b);
   const spanMs = times.length >= 2 ? times[times.length - 1] - times[0] : null;
 
-  const base = { redTicks, namingTicks, silentRedTicks, persistent, intermittent, spanMs };
+  const base = { redTicks, namingTicks, silentRedTicks, persistent, intermittent, spanMs, truncatedByLimit };
+  // Every count below is a floor when the fetch was capped, so the sentence must not read
+  // as a total. "ALL 12 red verdicts" is a claim about a set; "the 12 most recent" is a
+  // claim about a sample, and only one of them survives a window bigger than the cap.
+  const all = truncatedByLimit ? 'the most recent' : 'ALL';
+  const capNote = truncatedByLimit
+    ? ' (window truncated at the row cap — counts are floors, and an older red may name more.)'
+    : '';
 
   if (redTicks === 0) {
     return { ...base, stability: 'unknown', line: 'CAUSE: no verdict-bearing red in this streak to judge from.' };
@@ -148,8 +166,9 @@ export function summarizeStreakCause(ticks: readonly StreakTick[]): StreakCauseD
       ...base,
       stability: 'silent',
       line:
-        `CAUSE: UNKNOWN — all ${redTicks} red verdict(s) in this streak named ZERO failing tests. ` +
-        `The gate is not reporting WHAT failed, so this alarm is about the GATE, not the code.`,
+        `CAUSE: UNKNOWN — ${truncatedByLimit ? 'the most recent' : 'all'} ${redTicks} red verdict(s) in this ` +
+        `streak named ZERO failing tests. The gate is not reporting WHAT failed, so this alarm is about the ` +
+        `GATE, not the code.${capNote}`,
     };
   }
   if (namingTicks === 1) {
@@ -170,8 +189,8 @@ export function summarizeStreakCause(ticks: readonly StreakTick[]): StreakCauseD
       ...base,
       stability: 'stable',
       line:
-        `CAUSE: STABLE — the same ${persistent.length} failure(s) were named by ALL ${namingTicks} red verdicts${span}: ` +
-        `${renderNames(persistent)}. This is one unfixed break, not flake — fix it.${silentNote}`,
+        `CAUSE: STABLE — the same ${persistent.length} failure(s) were named by ${all} ${namingTicks} red verdicts${span}: ` +
+        `${renderNames(persistent)}. This is one unfixed break, not flake — fix it.${silentNote}${capNote}`,
     };
   }
   if (persistent.length > 0) {
@@ -179,9 +198,9 @@ export function summarizeStreakCause(ticks: readonly StreakTick[]): StreakCauseD
       ...base,
       stability: 'mixed',
       line:
-        `CAUSE: MIXED — ${renderNames(persistent)} failed in ALL ${namingTicks} red verdicts${span}, ` +
+        `CAUSE: MIXED — ${renderNames(persistent)} failed in ${all} ${namingTicks} red verdicts${span}, ` +
         `alongside ${intermittent.length} test(s) that come and go. Fix the persistent core first; ` +
-        `treat the rest as flake until it survives that.${silentNote}`,
+        `treat the rest as flake until it survives that.${silentNote}${capNote}`,
     };
   }
   return {
@@ -190,6 +209,6 @@ export function summarizeStreakCause(ticks: readonly StreakTick[]): StreakCauseD
     line:
       `CAUSE: CHURNING — ${namingTicks} red verdicts${span} named ${union.size} distinct failing test(s) with ` +
       `NOTHING common to all. Suspect infrastructure or flake rather than one regression — do NOT chase the ` +
-      `individual names.${silentNote}`,
+      `individual names.${silentNote}${capNote}`,
   };
 }
