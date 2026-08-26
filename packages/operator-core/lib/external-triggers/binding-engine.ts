@@ -17,6 +17,7 @@ import {
 } from '../harness/routines/plan-run-action';
 import type { CanonicalExternalEvent, ExternalTriggerSink } from './ingestion';
 import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
+import { parseAgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -100,10 +101,7 @@ export interface TriggerDispatchResult {
   triggerRunIds: string[];
 }
 
-type RunPlan = (
-  sql: postgres.Sql,
-  opts: ScheduledPlanFireOptions,
-) => Promise<ScheduledPlanFireResult | null>;
+type RunPlan = (sql: postgres.Sql, opts: ScheduledPlanFireOptions) => Promise<ScheduledPlanFireResult | null>;
 
 export interface TriggerDispatchDeps {
   runPlan?: RunPlan;
@@ -345,7 +343,8 @@ async function claimPendingTriggerRuns(
   batchSize: number,
   staleAfterSeconds: number,
 ): Promise<ClaimedTriggerRun[]> {
-  return sql.begin(async (tx) => tx<ClaimedTriggerRun[]>`
+  return sql.begin(
+    async (tx) => tx<ClaimedTriggerRun[]>`
     WITH candidates AS (
       SELECT tr.workspace_id, tr.id
         FROM harness_shared.trigger_runs tr
@@ -384,7 +383,8 @@ async function claimPendingTriggerRuns(
         ON b.workspace_id = c.workspace_id
        AND b.id = c.binding_id
        AND b.detached_at IS NULL
-     ORDER BY c.triggered_at, c.id`);
+     ORDER BY c.triggered_at, c.id`,
+  );
 }
 
 async function resolvePlanRunId(
@@ -406,14 +406,16 @@ async function resolvePlanRunId(
 }
 
 async function announceRunWork(sql: postgres.Sql, workspaceId: string, runId: number): Promise<void> {
-  const rows = await sql<Array<{
-    id: string;
-    kind: string;
-    title: string;
-    harness: string;
-    state: string;
-    plan: string | null;
-  }>>`
+  const rows = await sql<
+    Array<{
+      id: string;
+      kind: string;
+      title: string;
+      harness: string;
+      state: string;
+      plan: string | null;
+    }>
+  >`
     SELECT feature_id AS id, item_kind AS kind, title, harness_slug AS harness,
            status AS state, source_plan_slug AS plan
       FROM harness_shared.work_items
@@ -521,6 +523,7 @@ export async function dispatchPendingTriggerRuns(
       if (!row.planHarnessSlug || !row.planSlug) {
         throw new Error('external_trigger_missing_plan_target');
       }
+      const execution = parseAgenticPlanExecutionTarget(row.action.execution);
       const launched = await runPlan(sql, {
         installSlug: row.planHarnessSlug,
         workspaceId: row.workspaceId,
@@ -528,9 +531,16 @@ export async function dispatchPendingTriggerRuns(
         trigger: 'event',
         runToken: triggerRunPlanToken(row.id),
         inputs: row.args,
+        ...(execution ? { execution } : {}),
       });
       if (!launched || launched.skippedForConcurrency) {
         throw new Error('external_trigger_plan_run_not_started');
+      }
+      if (execution && (!launched.dispatch || !launched.dispatch.ok)) {
+        const code = launched.dispatch
+          ? (launched.dispatch.failure?.code ?? 'assignment_failed')
+          : 'missing_dispatch_result';
+        throw new Error(`external_trigger_agentic_dispatch_failed:${code}`);
       }
       const planRunId = await resolvePlanRunId(
         sql,
@@ -539,7 +549,7 @@ export async function dispatchPendingTriggerRuns(
         launched.instanceSlug,
         launched.runId,
       );
-      await announce(sql, row.workspaceId, planRunId);
+      if (!execution) await announce(sql, row.workspaceId, planRunId);
       await sql`
         UPDATE harness_shared.trigger_runs
            SET status = 'succeeded', plan_run_ref = ${String(planRunId)},
@@ -548,6 +558,7 @@ export async function dispatchPendingTriggerRuns(
                  planRunId,
                  minted: launched.minted,
                  replayed: launched.replayed,
+                 ...(execution ? { execution, dispatch: launched.dispatch } : {}),
                })}::text::jsonb,
                error = NULL, completed_at = now(), updated_at = now()
          WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;

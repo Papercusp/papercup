@@ -13,6 +13,7 @@
  */
 import { createRequire } from 'node:module';
 import { computeNextFireAt } from './cron';
+import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
 
 // `rrule` is a CommonJS package: under the ESM/tsx host its classes are exposed on the
 // DEFAULT export, NOT as statically-detectable named exports, so `import { RRule } from
@@ -97,6 +98,8 @@ export interface ScheduleTrigger {
   exdate?: string[];
   /** Cron dialect (5/6-field) — the alternate input. */
   cron?: string;
+  /** Carried with the authored schedule; recurrence math deliberately ignores it. */
+  execution?: AgenticPlanExecutionTarget;
 }
 
 /**
@@ -200,12 +203,7 @@ export function expandOccurrences(
       const tzid = normTzid(cfg.tzid);
       if (tzid) {
         // Expand in the zone: bounds IN (real→floating), each occurrence OUT (floating→real).
-        const occ = set.between(
-          realToFloating(rangeStart, tzid),
-          realToFloating(rangeEnd, tzid),
-          true,
-          stopAtLimit,
-        );
+        const occ = set.between(realToFloating(rangeStart, tzid), realToFloating(rangeEnd, tzid), true, stopAtLimit);
         return occ.map((d) => floatingToReal(d, tzid));
       }
       return set.between(rangeStart, rangeEnd, true, stopAtLimit); // inclusive bounds

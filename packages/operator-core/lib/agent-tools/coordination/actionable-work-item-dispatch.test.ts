@@ -106,6 +106,7 @@ describe('assignActionableWorkItems', () => {
 
     expect(claim).not.toHaveBeenCalled();
     expect(result.executionWorkItemIds).toEqual([]);
+    expect(result.ok).toBe(false);
     expect(result.skipped[0]).toMatchObject({
       workItemId: 'WI-HELD',
       code: 'held_by_other',

@@ -586,6 +586,29 @@ async function emitUnblockedForClearedEdges(
     });
     if (stillBlocked) continue;
 
+    const execution = dependent.assignee ? null : planRunExecutionTarget(dependent.payload);
+    let dispatchFailure: unknown = null;
+    if (execution) {
+      try {
+        const dispatched = await dispatchActionable({
+          workItemIds: [dependent.id],
+          targetAgent: execution.agentName,
+          harness: execution.appHarnessSlug,
+          summary: `${dependent.id} became actionable after ${clearedById} settled`,
+          source: 'system:plan-run-successor-dispatch',
+        });
+        if (!dispatched.ok) {
+          dispatchFailure = new Error(
+            dispatched.failure?.message ?? dispatched.warning ?? 'stable-agent successor dispatch failed',
+          );
+        }
+      } catch (error) {
+        dispatchFailure = error;
+      }
+    }
+
+    // Dispatch first so a waiter woken by the canonical unblocked edge cannot
+    // win a generic claim race against the configured stable agent.
     await emit({
       key: `work-item:unblocked:${dependent.id}`,
       summary: `${dependent.id} is UNBLOCKED — its last blocker (${clearedById}) cleared: ${dependent.title}`,
@@ -598,15 +621,8 @@ async function emitUnblockedForClearedEdges(
         retireInterestEventAwaits({ kind: 'work-item-blocked', ref: dependent.id }),
       )
       .catch(() => {});
-    const execution = dependent.assignee ? null : planRunExecutionTarget(dependent.payload);
     if (execution) {
-      await dispatchActionable({
-        workItemIds: [dependent.id],
-        targetAgent: execution.agentName,
-        harness: execution.appHarnessSlug,
-        summary: `${dependent.id} became actionable after ${clearedById} settled`,
-        source: 'system:plan-run-successor-dispatch',
-      });
+      if (dispatchFailure) failSoft(`agentic successor dispatch for ${dependent.id}`, dispatchFailure);
       continue;
     }
     // P-007: an unblocked dependent may have just become pool-claimable — the

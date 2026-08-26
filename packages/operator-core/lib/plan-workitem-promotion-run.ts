@@ -53,6 +53,7 @@ import {
   evaluatePlanSpecQualityGate,
   type PlanSpecQualityGateVerdict,
 } from './agent-tools/plans/plan-spec-quality-gate';
+import type { AgenticPlanExecutionTarget } from './agentic-plan-execution-target';
 
 export interface PromotePlanResult {
   /** new work-items minted this call */
@@ -136,6 +137,8 @@ export interface PlanRunPromotionContext {
   instancePlanSlug: string;
   templateSlug: string;
   inputs?: unknown;
+  /** Direct-execution provenance inherited by every promoted descendant. */
+  execution?: AgenticPlanExecutionTarget;
 }
 
 /** One open plan item and the canonical work item that executes it. */
@@ -281,9 +284,7 @@ async function evaluateSpecTriadForPromotion(
 export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<PromotePlanResult> {
   if (opts.planRun) {
     if (opts.planRun.instancePlanSlug !== opts.planSlug) {
-      throw new Error(
-        `plan_run_instance_slug_mismatch:${opts.planRun.instancePlanSlug}:${opts.planSlug}`,
-      );
+      throw new Error(`plan_run_instance_slug_mismatch:${opts.planRun.instancePlanSlug}:${opts.planSlug}`);
     }
     if (!Number.isSafeInteger(opts.planRun.runId) || opts.planRun.runId <= 0) {
       throw new Error('plan_run_id_invalid');
@@ -404,9 +405,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     opts.harnessSlug,
     openItems.map((i) => i.id),
   );
-  const alreadyIds = openItems
-    .map((i) => i.id)
-    .filter((id) => coveredRefs.has(planItemRef(opts.planSlug, id)));
+  const alreadyIds = openItems.map((i) => i.id).filter((id) => coveredRefs.has(planItemRef(opts.planSlug, id)));
 
   const specs = computePromotions({
     planSlug: opts.planSlug,
@@ -436,10 +435,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // plan tags are the reusable source of truth and avoid a second classifier.
   // Topic routing enriches promotion; it must not become a new availability gate
   // on the primary plan→work path if the coordination store is temporarily down.
-  const planTopics = await listObjectTags(
-    'plan',
-    opts.planRun?.templateSlug ?? opts.planSlug,
-  ).catch(() => []);
+  const planTopics = await listObjectTags('plan', opts.planRun?.templateSlug ?? opts.planSlug).catch(() => []);
 
   const textById = new Map(openItems.map((i) => [i.id, i.text]));
   const stampForPlanItem = (itemId: string): PlanItemStamp => {
@@ -519,12 +515,10 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     // the created row's own `wi.harness` for exactly that reason.
     const wi = (await getWorkItem(minted.id, spec.harness)) ?? (await getWorkItem(minted.id));
     const winnerHarness = wi?.harness ?? spec.harness;
-    await linkWorkItem(
-      minted.id,
-      { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, itemId) },
-      IMPLEMENTS_REL,
-      { harness: winnerHarness ?? undefined, by: opts.createdBy },
-    );
+    await linkWorkItem(minted.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, itemId) }, IMPLEMENTS_REL, {
+      harness: winnerHarness ?? undefined,
+      by: opts.createdBy,
+    });
     // EI-14024: if this item's plan-level blockers are still open (or it needs a
     // human decision), gate it the SAME way the periodic lane-sync sweep
     // (reconcile-linked-work-items.ts's syncLinkedWorkItemsToPlanLane, EI-14699)
@@ -600,27 +594,25 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
       newlyPromotedPlanItemIds.add(item.id);
     }
     const wi = (await getWorkItem(adopted.id, spec.harness)) ?? (await getWorkItem(adopted.id));
-    await linkWorkItem(
-      adopted.id,
-      { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) },
-      IMPLEMENTS_REL,
-      { harness: wi?.harness ?? spec.harness, by: opts.createdBy },
-    );
+    await linkWorkItem(adopted.id, { kind: PLAN_ITEM_KIND, ref: planItemRef(opts.planSlug, item.id) }, IMPLEMENTS_REL, {
+      harness: wi?.harness ?? spec.harness,
+      by: opts.createdBy,
+    });
   }
 
   const workItems: PromotedPlanWorkItem[] = openItems.flatMap((item) => {
     const workItemId = workItemByPlanItem.get(item.id);
     if (!workItemId) return [];
     const effective = effectiveById.get(item.id);
-    return [{
-      planItemId: item.id,
-      workItemId,
-      newlyPromoted: newlyPromotedPlanItemIds.has(item.id),
-      actionable:
-        effective?.effectiveStatus === 'todo' &&
-        effective.unresolvedBlockers.length === 0 &&
-        !effective.needsHuman,
-    }];
+    return [
+      {
+        planItemId: item.id,
+        workItemId,
+        newlyPromoted: newlyPromotedPlanItemIds.has(item.id),
+        actionable:
+          effective?.effectiveStatus === 'todo' && effective.unresolvedBlockers.length === 0 && !effective.needsHuman,
+      },
+    ];
   });
 
   const edgeCounts = await writePromotedDependencyEdges({
@@ -734,9 +726,7 @@ async function writePromotedDependencyEdges(args: {
 
   // D-015: ONE read of the live blocks graph for the whole plan (not one per item) — the union
   // source. Loaded up front so a plan with no pre-existing edges costs exactly one query.
-  const existingBlockers = args.preserveExistingEdges
-    ? await getFeatureBlockers(args.harnessSlug)
-    : null;
+  const existingBlockers = args.preserveExistingEdges ? await getFeatureBlockers(args.harnessSlug) : null;
 
   if (args.cyclicPlanItemIds.size > 0) {
     // Loud, once per plan: the plan cannot express a valid ordering for these items, so their

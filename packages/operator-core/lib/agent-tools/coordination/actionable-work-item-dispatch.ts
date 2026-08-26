@@ -321,10 +321,11 @@ export async function assignActionableWorkItems(
   const failed = claimResults
     .filter((r): r is Extract<(typeof claimResults)[number], { ok: false }> => !r.ok)
     .map(({ workItemId, code, reason }) => ({ workItemId, code, reason }));
+  const hardSkips = new Set<WorkItemDispatchSkipCode>(['not_found', 'read_failed', 'held_by_other']);
   const executable = new Set([...assigned, ...retained]);
   const executionWorkItemIds = requested.filter((id) => executable.has(id));
   return {
-    ok: failed.length === 0,
+    ok: failed.length === 0 && !skipped.some((row) => hardSkips.has(row.code)),
     targetAgent: args.targetAgent,
     requested,
     actionable: [...toClaim.map((r) => r.workItemId), ...retained],

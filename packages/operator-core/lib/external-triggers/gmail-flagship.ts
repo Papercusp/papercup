@@ -7,10 +7,18 @@ import { ensureExternalTriggerBinding, type CreatedExternalTriggerBinding } from
 import { createGoogleGmailDraft, replySubjectFor, type GoogleGmailDraftResult } from './google-gmail';
 import { resolveGoogleWorkspaceAccessToken } from './google-workspace';
 import type { ExternalTriggerSourceRow } from './source-store';
+import type { AgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
-export const GMAIL_RESPOND_DRAFT_HARNESS = 'papercusp';
+export const GMAIL_RESPOND_DRAFT_HARNESS = 'email';
+export const GMAIL_RESPOND_DRAFT_AGENT_NAME = 'email-agent';
+export const GMAIL_RESPOND_DRAFT_EXECUTION: AgenticPlanExecutionTarget = {
+  appHarnessSlug: GMAIL_RESPOND_DRAFT_HARNESS,
+  agentName: GMAIL_RESPOND_DRAFT_AGENT_NAME,
+};
+/** Google Workspace credentials remain installed in the papercusp host. */
+export const GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS = 'papercusp';
 export const GMAIL_RESPOND_DRAFT_PLAN = 'gmail-respond-with-draft-2026-08-22';
 export const GMAIL_RESPOND_DRAFT_EVENT = 'ext:gmail:message.received';
 
@@ -157,6 +165,63 @@ export interface GmailFlagshipBindingResult {
   binding: CreatedExternalTriggerBinding;
 }
 
+/**
+ * Re-home the pre-agentic built-in binding from the papercusp queue to Email.
+ * Preserve its armed state and id; detach any redundant legacy copies so a
+ * reconnect cannot leave both paths firing the same inbound message.
+ */
+export async function migrateLegacyGmailRespondDraftBinding(
+  sql: postgres.Sql,
+  workspaceId: string,
+  sourceId: string,
+): Promise<{ migrated: number; detached: number }> {
+  const action = JSON.stringify({ type: 'launch-plan', execution: GMAIL_RESPOND_DRAFT_EXECUTION });
+  const eventFilter = JSON.stringify(GMAIL_RESPOND_DRAFT_EVENT_FILTER);
+  return sql.begin(async (tx) => {
+    const lockKey = ['gmail-respond-draft-binding', workspaceId, sourceId].join(':');
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+    const current = await tx<Array<{ id: string }>>`
+      SELECT id::text FROM harness_shared.trigger_bindings
+       WHERE workspace_id = ${workspaceId} AND source_id = ${sourceId}::uuid
+         AND plan_harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS}
+         AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}
+         AND event_pattern = ${GMAIL_RESPOND_DRAFT_EVENT}
+         AND detached_at IS NULL
+       ORDER BY created_at, id LIMIT 1`;
+    const legacy = await tx<Array<{ id: string }>>`
+      SELECT id::text FROM harness_shared.trigger_bindings
+       WHERE workspace_id = ${workspaceId} AND source_id = ${sourceId}::uuid
+         AND plan_harness_slug = ${GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS}
+         AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}
+         AND event_pattern = ${GMAIL_RESPOND_DRAFT_EVENT}
+         AND detached_at IS NULL
+       ORDER BY created_at, id`;
+    let migrated = 0;
+    let keepLegacyId: string | null = null;
+    if (!current[0] && legacy[0]) {
+      keepLegacyId = legacy[0].id;
+      await tx`
+        UPDATE harness_shared.trigger_bindings
+           SET plan_harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS},
+               event_filter = ${eventFilter}::text::jsonb,
+               action = ${action}::text::jsonb,
+               updated_at = now()
+         WHERE workspace_id = ${workspaceId} AND id = ${keepLegacyId}::uuid`;
+      migrated = 1;
+    }
+    let detached = 0;
+    for (const row of legacy) {
+      if (row.id === keepLegacyId) continue;
+      await tx`
+        UPDATE harness_shared.trigger_bindings
+           SET armed = FALSE, detached_at = COALESCE(detached_at, now()), updated_at = now()
+         WHERE workspace_id = ${workspaceId} AND id = ${row.id}::uuid`;
+      detached += 1;
+    }
+    return { migrated, detached };
+  });
+}
+
 /** Install the built-in template and one reconnect-idempotent, disarmed inbound binding. */
 export async function ensureGmailRespondDraftBinding(
   sql: postgres.Sql,
@@ -166,18 +231,21 @@ export async function ensureGmailRespondDraftBinding(
   deps: {
     ensurePlan?: typeof ensureGmailRespondDraftPlan;
     ensureBinding?: typeof ensureExternalTriggerBinding;
+    migrateLegacyBinding?: typeof migrateLegacyGmailRespondDraftBinding;
   } = {},
 ): Promise<GmailFlagshipBindingResult> {
   if (source.workspaceId !== workspaceId || source.kind !== 'gmail') {
     throw new Error('gmail_flagship_source_invalid');
   }
   const plan = await (deps.ensurePlan ?? ensureGmailRespondDraftPlan)(sql, workspaceId);
+  await (deps.migrateLegacyBinding ?? migrateLegacyGmailRespondDraftBinding)(sql, workspaceId, source.id);
   const binding = await (deps.ensureBinding ?? ensureExternalTriggerBinding)(sql, workspaceId, {
     sourceId: source.id,
     planHarnessSlug: GMAIL_RESPOND_DRAFT_HARNESS,
     planSlug: GMAIL_RESPOND_DRAFT_PLAN,
     eventPattern: GMAIL_RESPOND_DRAFT_EVENT,
     eventFilter: GMAIL_RESPOND_DRAFT_EVENT_FILTER,
+    execution: GMAIL_RESPOND_DRAFT_EXECUTION,
     createdBy,
   });
   return { plan, binding };
@@ -288,7 +356,7 @@ export async function draftResponseToGmailTriggerPlanRun(
       config: row.sourceConfig,
       cursor: row.sourceCursor,
     };
-    const installSlug = string(source.config.installSlug) || GMAIL_RESPOND_DRAFT_HARNESS;
+    const installSlug = string(source.config.installSlug) || GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS;
     const token = await (deps.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken)(source, installSlug);
     const created = await (deps.createDraft ?? createGoogleGmailDraft)(
       token,

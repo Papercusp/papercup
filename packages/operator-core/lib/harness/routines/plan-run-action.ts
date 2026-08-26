@@ -37,6 +37,11 @@ import {
   type PlanRunPromotionContext,
   type PromotePlanResult,
 } from '../../plan-workitem-promotion-run';
+import { parseAgenticPlanExecutionTarget, type AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
+import {
+  assignAndWakeActionableWorkItems,
+  type ActionableWorkItemDispatchResult,
+} from '../../agent-tools/coordination/actionable-work-item-dispatch';
 
 /** launched_by label for a scheduled run's plan_runs row. */
 const PLAN_RUN_LAUNCHER = 'system:plan-run';
@@ -70,6 +75,10 @@ export interface ScheduledPlanFireResult {
   /** true when this fire was skipped because a prior run of the same template was
    *  still 'running' and the schedule's concurrency policy is 'skip' (EI-1386). */
   skippedForConcurrency?: boolean;
+  /** Normalized stable-agent execution contract, when this is an agentic run. */
+  execution?: AgenticPlanExecutionTarget;
+  /** Structured assignment + required-wake result for the initial frontier. */
+  dispatch?: ActionableWorkItemDispatchResult;
 }
 
 interface PreparedPlanRun {
@@ -80,6 +89,8 @@ interface PreparedPlanRun {
   skippedForConcurrency?: boolean;
   itemKind: (typeof FEATURE_FAMILY_KINDS)[number];
   runInputs: unknown;
+  appHarnessSlug: string;
+  execution: AgenticPlanExecutionTarget | null;
 }
 
 export interface ScheduledPlanFireOptions {
@@ -92,6 +103,12 @@ export interface ScheduledPlanFireOptions {
   runToken?: number | string;
   /** The resolved, start-gate-validated inputs this run executes with. */
   inputs?: unknown;
+  /** Binding/manual override; otherwise inherited from schedule.execution. */
+  execution?: AgenticPlanExecutionTarget | null;
+}
+
+export interface ScheduledPlanFireDeps {
+  dispatch?: typeof assignAndWakeActionableWorkItems;
 }
 
 /**
@@ -117,13 +134,14 @@ async function runScheduledPlanFireTx(
   // logs "template not found — skip" and the schedule simply never fires again.
   // `routineStorageSlug` reproduces the same resolution (pot-membership.ts:199,
   // pgPotLookup.resolveRealPot collapses member → Pot home) and fails open to the
-  // literal slug, so the reads here, this function's OWN instance-plan INSERT, and
-  // the plans:* tool path all address the same rows by construction.
+  // literal slug, so the TEMPLATE read and the plans:* tool path address the same
+  // source row. An agentic execution target may then choose a DIFFERENT app
+  // harness; its instance plan is resolved through the same storage rule below.
   //
-  // ⚠ The `plan_runs` sites below deliberately keep the raw `installSlug`: that
-  // relation is per-install/workspace-scoped and NOT re-homed (audited WI-6978 —
-  // every writer, including this file's own ledger INSERT, stores the raw slug).
-  // Resolving it here would move the ledger reads off the rows the ledger writes.
+  // ⚠ `plan_runs` is per-install/workspace-scoped and NOT re-homed (audited
+  // WI-6978). It therefore keeps the raw execution app harness (or installSlug
+  // for an ordinary run), while the copied instance plan uses its resolved Pot
+  // home. Mixing those two keys makes replay miss its own ledger row.
   const planStorageSlug = await routineStorageSlug(installSlug, workspaceId);
 
   // 1. The template plan.
@@ -133,7 +151,7 @@ async function runScheduledPlanFireTx(
       content_hash: string;
       title: string | null;
       items: unknown;
-      schedule: { executorKind?: string } | null;
+      schedule: { executorKind?: string; execution?: unknown } | null;
       template: string | null;
       template_data: unknown;
       input_schema: unknown;
@@ -149,6 +167,12 @@ async function runScheduledPlanFireTx(
     return null;
   }
   const template = tpl[0];
+  const execution = parseAgenticPlanExecutionTarget(
+    opts.execution !== undefined ? opts.execution : template.schedule?.execution,
+  );
+  const appHarnessSlug = execution?.appHarnessSlug ?? installSlug;
+  const appPlanStorageSlug =
+    appHarnessSlug === installSlug ? planStorageSlug : await routineStorageSlug(appHarnessSlug, workspaceId);
 
   // P-006 start gate on the SCHEDULED fire path. P-008 already refused to arm a plan
   // whose required inputs were unset, but that verdict can go stale: the schema or the
@@ -196,15 +220,15 @@ async function runScheduledPlanFireTx(
       ? nextManualToken()
       : suppliedToken !== null
         ? suppliedToken
-      : rt[0]?.last_fired_at
-        ? new Date(rt[0].last_fired_at).getTime()
-        : Date.now();
+        : rt[0]?.last_fired_at
+          ? new Date(rt[0].last_fired_at).getTime()
+          : Date.now();
   const instanceSlug = planRunInstanceSlug(templateSlug, token);
 
   // Serialize callers racing on the same deterministic fire before the replay
   // check. Combined with the transaction wrapper, this makes the mint both atomic
   // and exactly-once visible even when two workers receive the same event.
-  const fireLockKey = `${workspaceId}:${installSlug}:${instanceSlug}`;
+  const fireLockKey = `${workspaceId}:${appHarnessSlug}:${instanceSlug}`;
   await sql`SELECT pg_advisory_xact_lock(hashtextextended(${fireLockKey}, 0))`;
 
   // 3. Idempotency: the instance already existing ⇒ recover the SAME ledger
@@ -218,12 +242,12 @@ async function runScheduledPlanFireTx(
         SELECT id, inputs
           FROM harness_shared.plan_runs
          WHERE workspace_id = ${workspaceId}
-           AND harness_slug = ${installSlug}
+           AND harness_slug = ${appHarnessSlug}
            AND instance_plan_slug = ${instanceSlug}
          ORDER BY id DESC
          LIMIT 1
       ) r ON TRUE
-     WHERE p.workspace_id = ${workspaceId} AND p.harness_slug = ${planStorageSlug}
+     WHERE p.workspace_id = ${workspaceId} AND p.harness_slug = ${appPlanStorageSlug}
        AND p.plan_slug = ${instanceSlug}
   `;
   if (existing[0]) {
@@ -238,6 +262,8 @@ async function runScheduledPlanFireTx(
       replayed: true,
       itemKind,
       runInputs: existing[0].inputs ?? runInputs,
+      appHarnessSlug,
+      execution,
     };
   }
 
@@ -256,13 +282,13 @@ async function runScheduledPlanFireTx(
   if (concurrency === 'skip') {
     const inFlight = await sql<Array<{ id: number }>>`
       SELECT id FROM harness_shared.plan_runs
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug}
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${appHarnessSlug}
          AND plan_slug = ${templateSlug} AND status = 'running'
        LIMIT 1
     `;
     if (inFlight[0]) {
       console.log(
-        `[plan-run] ${installSlug}: skipping fire of '${templateSlug}' — prior run ` +
+        `[plan-run] ${appHarnessSlug}: skipping fire of '${templateSlug}' — prior run ` +
           `${inFlight[0].id} still 'running' (concurrency='skip')`,
       );
       return {
@@ -273,6 +299,8 @@ async function runScheduledPlanFireTx(
         skippedForConcurrency: true,
         itemKind,
         runInputs,
+        appHarnessSlug,
+        execution,
       };
     }
   }
@@ -280,7 +308,7 @@ async function runScheduledPlanFireTx(
   // 4. run_seq = count of prior runs of this template (display ordinal, D-003).
   const seqRow = await sql<Array<{ n: number }>>`
     SELECT count(*)::int AS n FROM harness_shared.plan_runs
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${installSlug} AND plan_slug = ${templateSlug}
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${appHarnessSlug} AND plan_slug = ${templateSlug}
   `;
   const runSeq = seqRow[0]?.n ?? 0;
   const now = Date.now();
@@ -301,8 +329,7 @@ async function runScheduledPlanFireTx(
   //    agrees with its canonical row at the source, and rehash accordingly — the content
   //    hash must reflect what is actually stored, not the template's.
   const runInputsJson = runInputs === null || runInputs === undefined ? null : JSON.stringify(runInputs);
-  const inputSchemaJson =
-    template.input_schema == null ? null : JSON.stringify(template.input_schema);
+  const inputSchemaJson = template.input_schema == null ? null : JSON.stringify(template.input_schema);
   // The template's `items` jsonb is the canonical derived index consumed by
   // promotePlanItems. Copy it with the content snapshot: historical fixtures
   // (and imported plans) may have a populated index even when their markdown
@@ -315,7 +342,7 @@ async function runScheduledPlanFireTx(
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, title, status, content, content_hash,
        items, template_slug, run_seq, origin, template, template_data, input_schema)
-    VALUES (${workspaceId}, ${planStorageSlug}, ${instanceSlug}, ${template.title}, 'active',
+    VALUES (${workspaceId}, ${appPlanStorageSlug}, ${instanceSlug}, ${template.title}, 'active',
             ${instanceContent}, ${instanceContentHash}, ${itemsJson}::text::jsonb,
             ${templateSlug}, ${runSeq}, 'local',
             ${template.template}, ${runInputsJson}::text::jsonb, ${inputSchemaJson}::text::jsonb)
@@ -328,7 +355,7 @@ async function runScheduledPlanFireTx(
     INSERT INTO harness_shared.plan_runs
       (workspace_id, harness_slug, plan_slug, plan_content_hash, session_id, launched_by, launched_at,
        status, title, updated_at, run_type, trigger, instance_plan_slug, run_seq, inputs)
-    VALUES (${workspaceId}, ${installSlug}, ${templateSlug}, ${template.content_hash}, ${'sched:' + instanceSlug},
+    VALUES (${workspaceId}, ${appHarnessSlug}, ${templateSlug}, ${template.content_hash}, ${'sched:' + instanceSlug},
             ${PLAN_RUN_LAUNCHER}, ${now}, 'running', ${template.title}, ${now},
             'scheduled', ${trigger}, ${instanceSlug}, ${runSeq}, ${runInputsJson}::text::jsonb)
     RETURNING id
@@ -339,7 +366,7 @@ async function runScheduledPlanFireTx(
   // transaction commits, runScheduledPlanFire invokes promotePlanItems with
   // the run context. That one implementation owns identity, provenance,
   // blocker edges, lane gating, idempotency, and replay repair.
-  return { instanceSlug, runId, runSeq, replayed: false, itemKind, runInputs };
+  return { instanceSlug, runId, runSeq, replayed: false, itemKind, runInputs, appHarnessSlug, execution };
 }
 
 /**
@@ -350,6 +377,7 @@ async function runScheduledPlanFireTx(
 export async function runScheduledPlanFire(
   sql: Sql,
   opts: ScheduledPlanFireOptions,
+  deps: ScheduledPlanFireDeps = {},
 ): Promise<ScheduledPlanFireResult | null> {
   const prepared = await sql.begin((tx) => runScheduledPlanFireTx(tx, opts));
   if (!prepared) return null;
@@ -363,6 +391,7 @@ export async function runScheduledPlanFire(
       actionableWorkItemIds: [],
       replayed: prepared.replayed,
       skippedForConcurrency: true,
+      ...(prepared.execution ? { execution: prepared.execution } : {}),
     };
   }
 
@@ -371,13 +400,12 @@ export async function runScheduledPlanFire(
     runSeq: prepared.runSeq,
     instancePlanSlug: prepared.instanceSlug,
     templateSlug: opts.templateSlug,
-    ...(prepared.runInputs === null || prepared.runInputs === undefined
-      ? {}
-      : { inputs: prepared.runInputs }),
+    ...(prepared.runInputs === null || prepared.runInputs === undefined ? {} : { inputs: prepared.runInputs }),
+    ...(prepared.execution ? { execution: prepared.execution } : {}),
   };
   const promotion = await promotePlanItems({
     workspaceId: opts.workspaceId,
-    harnessSlug: opts.installSlug,
+    harnessSlug: prepared.appHarnessSlug,
     planSlug: prepared.instanceSlug,
     createdBy: PLAN_RUN_LAUNCHER,
     planRun,
@@ -402,11 +430,19 @@ export async function runScheduledPlanFire(
   }
 
   const workItemIds = promotion.workItems.map((item) => item.workItemId);
-  const actionableWorkItemIds = promotion.workItems
-    .filter((item) => item.actionable)
-    .map((item) => item.workItemId);
+  const actionableWorkItemIds = promotion.workItems.filter((item) => item.actionable).map((item) => item.workItemId);
+  const dispatch = prepared.execution
+    ? await (deps.dispatch ?? assignAndWakeActionableWorkItems)({
+        workItemIds: actionableWorkItemIds,
+        targetAgent: prepared.execution.agentName,
+        workspaceId: opts.workspaceId,
+        harness: prepared.appHarnessSlug,
+        summary: `Plan run ${prepared.instanceSlug} has ${actionableWorkItemIds.length} actionable work-item(s)`,
+        source: 'system:plan-run-direct-dispatch',
+      })
+    : undefined;
   console.log(
-    `[plan-run] ${opts.installSlug}: ${prepared.replayed ? 'replayed' : 'minted'} run #${prepared.runSeq} ` +
+    `[plan-run] ${prepared.appHarnessSlug}: ${prepared.replayed ? 'replayed' : 'minted'} run #${prepared.runSeq} ` +
       `of '${opts.templateSlug}' → ${prepared.instanceSlug} (plan_run ${prepared.runId}, ` +
       `${promotion.promoted} new / ${workItemIds.length} total work-item(s), ` +
       `${actionableWorkItemIds.length} actionable)`,
@@ -420,6 +456,8 @@ export async function runScheduledPlanFire(
     actionableWorkItemIds,
     promotion,
     replayed: prepared.replayed,
+    ...(prepared.execution ? { execution: prepared.execution } : {}),
+    ...(dispatch ? { dispatch } : {}),
   };
 }
 
@@ -438,11 +476,14 @@ export async function handlePlanRun(ctx: SystemActionCtx): Promise<void> {
       return;
     }
     const { sql } = getOrgPg();
-    await runScheduledPlanFire(sql, {
+    const fired = await runScheduledPlanFire(sql, {
       installSlug: ctx.installSlug,
       workspaceId: ctx.workspaceId,
       templateSlug,
     });
+    if (fired?.dispatch && !fired.dispatch.ok) {
+      throw new Error(`plan_run_agentic_dispatch_failed:${fired.dispatch.failure?.code ?? 'assignment_failed'}`);
+    }
   } catch (e) {
     // Durable-step contract: log + return, never throw (the next cadence fire retries).
     console.warn(

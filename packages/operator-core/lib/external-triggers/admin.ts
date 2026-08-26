@@ -15,6 +15,7 @@ import { socialCursorFreshness, type SocialCursorFreshness } from './social/curs
 import type { PlanSchedule } from '../agent-tools/plans/source';
 import { planScheduleRoutineName } from '../harness/routines/materialize-plan-schedule';
 import { redactSensitiveValue } from '../sensitive-text';
+import { parseAgenticPlanExecutionTarget, type AgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -55,6 +56,8 @@ export interface CreateExternalTriggerBindingInput {
   eventFilter?: Record<string, unknown>;
   stormPolicy?: Record<string, unknown>;
   createdBy?: string | null;
+  /** Optional stable-agent direct execution contract for plan-targeted bindings. */
+  execution?: AgenticPlanExecutionTarget | null;
 }
 
 export interface CreatedExternalTriggerBinding {
@@ -395,9 +398,7 @@ function iso(value: Date | string | number | null): string | null {
 }
 
 function object(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function text(value: unknown): string {
@@ -513,34 +514,66 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
   const planRunId = row.planRunId == null ? null : Number(row.planRunId);
   const planRunFinishedAt = row.planRunFinishedAt == null ? null : Number(row.planRunFinishedAt);
   const planRunLaunchedAt = row.planRunLaunchedAt == null ? null : Number(row.planRunLaunchedAt);
-  const planRun = planRunId == null || !Number.isFinite(planRunId)
-    ? null
-    : {
-        id: planRunId,
-        instancePlanSlug: row.instancePlanSlug,
-        status: row.planRunStatus ?? 'unknown',
-        launchedBy: row.planRunLaunchedBy,
-        workItems: { total, passed, failed, open: Math.max(0, total - passed - failed) },
-        agents: Array.isArray(row.agents)
-          ? row.agents.filter((agent): agent is string => typeof agent === 'string' && agent.length > 0)
-          : [],
-        durationMs:
-          planRunLaunchedAt == null || planRunFinishedAt == null
-            ? null
-            : Math.max(0, planRunFinishedAt - planRunLaunchedAt),
-        costUsd: Number(row.costUsd ?? 0),
-      };
+  const planRun =
+    planRunId == null || !Number.isFinite(planRunId)
+      ? null
+      : {
+          id: planRunId,
+          instancePlanSlug: row.instancePlanSlug,
+          status: row.planRunStatus ?? 'unknown',
+          launchedBy: row.planRunLaunchedBy,
+          workItems: { total, passed, failed, open: Math.max(0, total - passed - failed) },
+          agents: Array.isArray(row.agents)
+            ? row.agents.filter((agent): agent is string => typeof agent === 'string' && agent.length > 0)
+            : [],
+          durationMs:
+            planRunLaunchedAt == null || planRunFinishedAt == null
+              ? null
+              : Math.max(0, planRunFinishedAt - planRunLaunchedAt),
+          costUsd: Number(row.costUsd ?? 0),
+        };
   const receivedAt = iso(row.receivedAt);
   const triggeredAt = iso(row.triggeredAt) as string;
   const startedAt = iso(row.startedAt);
   const completedAt = iso(row.completedAt);
   const planCompletedAt = planRunFinishedAt == null ? null : iso(planRunFinishedAt);
   const timeline: ExternalTriggerTimelineStep[] = [
-    { stage: 'received', at: receivedAt, status: receivedAt ? 'done' : 'pending', detail: receivedAt ? 'Provider event normalized and deduplicated' : 'Provider delivery unavailable' },
-    { stage: 'matched', at: triggeredAt, status: 'done', detail: `${row.eventPattern} matched binding ${row.bindingId}` },
-    { stage: 'policy', at: triggeredAt, status: policy.disposition === 'failed' ? 'failed' : policy.disposition === 'dropped' ? 'dropped' : 'done', detail: policy.detail },
-    { stage: 'launched', at: planRunLaunchedAt == null ? startedAt : iso(planRunLaunchedAt), status: planRun ? 'done' : row.status === 'running' ? 'active' : 'pending', detail: planRun ? `Plan run #${planRun.id} launched` : 'Plan run not launched' },
-    { stage: 'completed', at: planCompletedAt, status: planCompletedAt ? (planRun?.status === 'failed' ? 'failed' : 'done') : planRun?.status === 'running' ? 'active' : 'pending', detail: planCompletedAt ? `Plan run ${planRun?.status ?? 'completed'}` : 'Plan run has not completed' },
+    {
+      stage: 'received',
+      at: receivedAt,
+      status: receivedAt ? 'done' : 'pending',
+      detail: receivedAt ? 'Provider event normalized and deduplicated' : 'Provider delivery unavailable',
+    },
+    {
+      stage: 'matched',
+      at: triggeredAt,
+      status: 'done',
+      detail: `${row.eventPattern} matched binding ${row.bindingId}`,
+    },
+    {
+      stage: 'policy',
+      at: triggeredAt,
+      status: policy.disposition === 'failed' ? 'failed' : policy.disposition === 'dropped' ? 'dropped' : 'done',
+      detail: policy.detail,
+    },
+    {
+      stage: 'launched',
+      at: planRunLaunchedAt == null ? startedAt : iso(planRunLaunchedAt),
+      status: planRun ? 'done' : row.status === 'running' ? 'active' : 'pending',
+      detail: planRun ? `Plan run #${planRun.id} launched` : 'Plan run not launched',
+    },
+    {
+      stage: 'completed',
+      at: planCompletedAt,
+      status: planCompletedAt
+        ? planRun?.status === 'failed'
+          ? 'failed'
+          : 'done'
+        : planRun?.status === 'running'
+          ? 'active'
+          : 'pending',
+      detail: planCompletedAt ? `Plan run ${planRun?.status ?? 'completed'}` : 'Plan run has not completed',
+    },
   ];
   return {
     id: row.id,
@@ -579,9 +612,7 @@ export async function loadExternalTriggerRunVisibilities(
     limit?: number;
   } = {},
 ): Promise<ExternalTriggerRunVisibility[]> {
-  const harnessFilter = opts.planHarnessSlug
-    ? sql`AND b.plan_harness_slug = ${opts.planHarnessSlug}`
-    : sql``;
+  const harnessFilter = opts.planHarnessSlug ? sql`AND b.plan_harness_slug = ${opts.planHarnessSlug}` : sql``;
   const planFilter = opts.planSlug ? sql`AND b.plan_slug = ${opts.planSlug}` : sql``;
   const planRunFilter = opts.planRunRef ? sql`AND tr.plan_run_ref = ${opts.planRunRef}` : sql``;
   const limit = Math.min(5_000, Math.max(1, Math.floor(opts.limit ?? 50)));
@@ -762,7 +793,12 @@ export async function createExternalTriggerBinding(
   }
 
   const eventFilter = JSON.stringify(input.eventFilter ?? {});
-  const action = JSON.stringify({ type: goalId ? 'start-goal' : 'launch-plan' });
+  const execution = parseAgenticPlanExecutionTarget(input.execution);
+  if (goalId && execution) throw new Error('external_trigger_goal_binding_execution_unsupported');
+  const action = JSON.stringify({
+    type: goalId ? 'start-goal' : 'launch-plan',
+    ...(execution ? { execution } : {}),
+  });
   // A binding with no explicit storm policy is UNBOUNDED under the landed
   // default (parseStormPolicy yields maxRuns:null). That is tolerable for mail,
   // where volume is bounded by how fast humans write, and unsafe for social,
@@ -770,9 +806,7 @@ export async function createExternalTriggerBinding(
   // comments. So a social source falls back to its per-platform coalesce-with-cap
   // default (P-023) instead of to unbounded. An explicit caller-supplied policy
   // still wins, and non-social sources are untouched.
-  const socialDefault = input.stormPolicy
-    ? null
-    : defaultSocialStormPolicyForSourceKind(sources[0].kind);
+  const socialDefault = input.stormPolicy ? null : defaultSocialStormPolicyForSourceKind(sources[0].kind);
   const stormPolicy = socialDefault ?? normalizedStormPolicy(input.stormPolicy);
   const stormPolicyJson = JSON.stringify(stormPolicy);
   const rows = await sql<
@@ -839,15 +873,9 @@ export async function ensureExternalTriggerBinding(
   const planSlug = required(input.planSlug, 'plan_slug');
   const eventPattern = required(input.eventPattern, 'event_pattern');
   const eventFilter = JSON.stringify(input.eventFilter ?? {});
-  const action = JSON.stringify({ type: 'launch-plan' });
-  const lockKey = [
-    'external-trigger-binding',
-    ws,
-    sourceId,
-    planHarnessSlug,
-    planSlug,
-    eventPattern,
-  ].join(':');
+  const execution = parseAgenticPlanExecutionTarget(input.execution);
+  const action = JSON.stringify({ type: 'launch-plan', ...(execution ? { execution } : {}) });
+  const lockKey = ['external-trigger-binding', ws, sourceId, planHarnessSlug, planSlug, eventPattern].join(':');
 
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
@@ -882,15 +910,42 @@ export async function ensureExternalTriggerBinding(
          AND b.plan_slug = ${planSlug}
          AND b.event_pattern = ${eventPattern}
          AND b.event_filter = ${eventFilter}::text::jsonb
-         AND b.action = ${action}::text::jsonb
          AND b.detached_at IS NULL
        ORDER BY b.created_at, b.id
        LIMIT 1`;
     if (rows[0]) {
+      const updated = await tx<
+        Array<
+          Omit<CreatedExternalTriggerBinding, 'createdAt' | 'updatedAt'> & {
+            createdAt: Date | string;
+            updatedAt: Date | string;
+          }
+        >
+      >`
+        UPDATE harness_shared.trigger_bindings b
+           SET action = ${action}::text::jsonb, updated_at = now()
+         WHERE b.workspace_id = ${ws} AND b.id = ${rows[0].id}::uuid
+           AND b.action IS DISTINCT FROM ${action}::text::jsonb
+        RETURNING b.id::text,
+                  b.source_id::text AS "sourceId",
+                  (SELECT kind FROM harness_shared.trigger_sources s
+                    WHERE s.workspace_id = ${ws} AND s.id = b.source_id) AS "sourceKind",
+                  b.plan_harness_slug AS "planHarnessSlug",
+                  b.plan_slug AS "planSlug",
+                  b.goal_id AS "goalId",
+                  b.event_pattern AS "eventPattern",
+                  b.event_filter AS "eventFilter",
+                  b.action,
+                  b.armed,
+                  b.storm_policy AS "stormPolicy",
+                  b.created_by AS "createdBy",
+                  b.created_at AS "createdAt",
+                  b.updated_at AS "updatedAt"`;
+      const row = updated[0] ?? rows[0];
       return {
-        ...rows[0],
-        createdAt: iso(rows[0].createdAt) as string,
-        updatedAt: iso(rows[0].updatedAt) as string,
+        ...row,
+        createdAt: iso(row.createdAt) as string,
+        updatedAt: iso(row.updatedAt) as string,
       };
     }
     return createExternalTriggerBinding(tx, ws, input);
@@ -914,11 +969,7 @@ export function disabledExternalTriggerAdminSnapshot(): ExternalTriggerAdminSnap
  * null for every kind the registry does not know, so that a gmail or slack
  * source can never pick up a social platform's rate budget by accident.
  */
-export function socialAdminFacts(
-  kind: string,
-  cursor: unknown,
-  nowMs: number,
-): ExternalTriggerSocialAdminFacts | null {
+export function socialAdminFacts(kind: string, cursor: unknown, nowMs: number): ExternalTriggerSocialAdminFacts | null {
   const row = getSocialPlatform(kind);
   if (!row) return null;
   // `read` for the cap: the poll loop is what spends budget continuously, and
@@ -1302,9 +1353,7 @@ export async function detachExternalTriggerBinding(
   id: string,
 ): Promise<{ id: string; detachedAt: string; updatedAt: string } | null> {
   return sql.begin(async (tx) => {
-    const rows = await tx<
-      Array<{ id: string; detachedAt: Date | string; updatedAt: Date | string }>
-    >`
+    const rows = await tx<Array<{ id: string; detachedAt: Date | string; updatedAt: Date | string }>>`
       UPDATE harness_shared.trigger_bindings
          SET armed = FALSE,
              detached_at = now(),
