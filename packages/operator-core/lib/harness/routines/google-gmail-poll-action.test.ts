@@ -38,6 +38,7 @@ describe('google-gmail-poll system action', () => {
   it('renews watches, reconciles matching mailboxes, and drains irrelevant broadcast doorbells', async () => {
     const sources = [source('source-a', 'a@example.com'), source('source-b', 'b@example.com')];
     const acknowledged: string[][] = [];
+    const ensureFlagshipBinding = vi.fn();
     const syncSource = vi.fn(async (_sql, current: ExternalTriggerSourceRow) => ({
       mode: current.id === 'source-a' ? ('incremental' as const) : ('full' as const),
       messages: current.id === 'source-a' ? 2 : 3,
@@ -66,6 +67,7 @@ describe('google-gmail-poll system action', () => {
         expiration: String(current.cursor.watchExpiration),
         source: current,
       })),
+      ensureFlagshipBinding,
       pull: vi.fn(async () => [
         doorbell('ack-a', 'a@example.com'),
         doorbell('ack-b', 'b@example.com'),
@@ -78,6 +80,21 @@ describe('google-gmail-poll system action', () => {
       }),
     });
 
+    expect(ensureFlagshipBinding).toHaveBeenCalledTimes(2);
+    expect(ensureFlagshipBinding).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      'papercusp-workspace',
+      sources[0],
+      'owner:22222222-2222-4222-8222-222222222222',
+    );
+    expect(ensureFlagshipBinding).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      'papercusp-workspace',
+      sources[1],
+      'owner:22222222-2222-4222-8222-222222222222',
+    );
     expect(result).toEqual({
       sources: 2,
       succeeded: 2,
@@ -117,6 +134,7 @@ describe('google-gmail-poll system action', () => {
         expiration: String(current.cursor.watchExpiration),
         source: current,
       })),
+      ensureFlagshipBinding: vi.fn(),
       pull: vi.fn(async () => [doorbell('ack-good', 'good@example.com'), doorbell('ack-bad', 'bad@example.com')]),
       syncSource: vi.fn(async (_sql, current) => {
         if (current.id === 'source-bad') throw new Error('google_gmail_history_list_503');
@@ -161,6 +179,7 @@ describe('google-gmail-poll system action', () => {
     const result = await runGoogleGmailPoll(CTX, {
       sql: {} as never,
       listSources: vi.fn(async () => sources),
+      ensureFlagshipBinding: vi.fn(),
       provision: vi.fn(async () => {
         throw new Error(provisionError);
       }),

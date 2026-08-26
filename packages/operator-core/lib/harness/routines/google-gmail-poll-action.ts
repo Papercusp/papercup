@@ -9,6 +9,7 @@ import {
   type GoogleGmailSyncResult,
   type GoogleGmailWatchResult,
 } from '../../external-triggers/google-gmail';
+import { ensureGmailRespondDraftBinding } from '../../external-triggers/gmail-flagship';
 import {
   acknowledgeGoogleGmailNotifications,
   provisionGoogleGmailPubSub,
@@ -56,6 +57,7 @@ export interface GoogleGmailPollDeps {
     topicName: string,
     input: { renewBeforeMs?: number },
   ) => Promise<GoogleGmailWatchResult>;
+  ensureFlagshipBinding?: typeof ensureGmailRespondDraftBinding;
   syncSource?: (
     sql: postgres.Sql,
     source: ExternalTriggerSourceRow,
@@ -96,6 +98,7 @@ export async function runGoogleGmailPoll(
   const acknowledge =
     provided.acknowledge ?? ((workspaceId, ackIds) => acknowledgeGoogleGmailNotifications({ workspaceId }, ackIds));
   const ensureWatch = provided.ensureWatch ?? ensureGoogleGmailWatch;
+  const ensureFlagshipBinding = provided.ensureFlagshipBinding ?? ensureGmailRespondDraftBinding;
   const syncSource = provided.syncSource ?? syncGoogleGmailSource;
   const updateSource = provided.updateSource ?? updateExternalTriggerSourceSyncState;
   const sources = await listSources(sql, ctx.workspaceId, 'gmail');
@@ -144,6 +147,14 @@ export async function runGoogleGmailPoll(
   );
   for (const source of sources) {
     try {
+      // Reconcile the built-in binding on every durable poll so sources connected
+      // before the flagship template existed are repaired without requiring OAuth.
+      await ensureFlagshipBinding(
+        sql,
+        ctx.workspaceId,
+        source,
+        source.ownerUserId ? `owner:${source.ownerUserId}` : null,
+      );
       const accessToken = await resolveAccessToken(source, ctx.installSlug);
       const watched = await ensureWatch(sql, source, accessToken, pubsub.topicName, { renewBeforeMs });
       sourceById.set(source.id, watched.source);
