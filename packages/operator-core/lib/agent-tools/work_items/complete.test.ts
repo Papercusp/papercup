@@ -2570,6 +2570,36 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
     expect(r.ephemeralDeliverableWarning).toContain('write was recorded');
     expect(r.completion.summary).toContain('.papercusp/scratch/readiness.md');
   });
+
+  it('does not treat a loopback URL in forensic verification as the deliverable', async () => {
+    getWorkItem.mockResolvedValue({ ...item, id: 'WI-loopback-forensics', kind: 'task', family: 'issue', state: 'open' });
+
+    const r = await one({
+      id: 'WI-loopback-forensics',
+      completion: {
+        summary: 'Fixed the automatic lock-release transport.',
+        verifiedHow: 'Live evidence showed hook authority http://localhost:3170 during the restart window.',
+      },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.ephemeralDeliverableWarning).toBeUndefined();
+  });
+
+  it('still warns when completion summary presents a loopback URL as the deliverable', async () => {
+    getWorkItem.mockResolvedValue({ ...item, id: 'WI-loopback-deliverable', kind: 'task', family: 'issue', state: 'open' });
+
+    const r = await one({
+      id: 'WI-loopback-deliverable',
+      completion: {
+        summary: 'Open the finished report at http://localhost:8765/report.',
+        verifiedHow: 'manual',
+      },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.ephemeralDeliverableWarning).toContain('http://localhost:8765/report');
+  });
 });
 
 /**
