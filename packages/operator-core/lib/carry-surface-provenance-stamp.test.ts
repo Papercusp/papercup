@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyOwnerTurnAutoVerify,
   carryProvenanceFields,
+  FALSIFIED_OWNER_ANCHOR_NOTE,
   falsifiedOwnerAnchors,
   mergeQuoteMismatchesIntoLint,
   OWNER_TURN_VERDICTS,
@@ -239,6 +240,22 @@ describe('falsifiedOwnerAnchors (WI-42142)', () => {
       `Separately, the nightly run is recorded at ${REF}.`,
     ].join('\n');
     expect(falsifiedOwnerAnchors(text, [anchorVerdict()])).toEqual([]);
+  });
+
+  it('KNOWN false positive, documented rather than accidental: the bare word "owner" beside an unrelated citation', () => {
+    // assertsOwnerAuthority matches the bare noun on purpose — it is what lets the
+    // conjunction see "Owner-directed ordering", D-085's actual phrasing, which no
+    // narrower detector in the lint module matches. The cost is this shape. It is
+    // acceptable because the escape is one line-break, the refusal note SAYS SO, and
+    // only ~5 decision-body lines in the corpus carry a turn ref at all. Narrowing
+    // the predicate to close it would reopen D-085.
+    const line = `The plan owner is listed in the frontmatter; the failing run is ${REF}.`;
+    expect(falsifiedOwnerAnchors(line, [anchorVerdict()])).toHaveLength(1);
+    expect(FALSIFIED_OWNER_ANCHOR_NOTE).toContain('put the citation on its own line');
+
+    // …and the documented escape actually works.
+    const split = ['The plan owner is listed in the frontmatter.', `The failing run is ${REF}.`].join('\n');
+    expect(falsifiedOwnerAnchors(split, [anchorVerdict()])).toEqual([]);
   });
 
   it('reports every offending line, not just the first', () => {

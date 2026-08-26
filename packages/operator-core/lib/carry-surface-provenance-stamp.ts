@@ -207,7 +207,9 @@ export const FALSIFIED_OWNER_ANCHOR_NOTE =
   'speaking. Re-read the turn verbatim (sessions:search { session:\'self\', mode:\'verbatim\' }), then either ' +
   'cite the real owner turn, or record the directive under its true source: [self-imposed] · [peer:<sid>] · ' +
   '[inferred]. A self-imposed constraint recorded honestly is worth more than an owner tag that cannot survive ' +
-  'being checked. See stable-candidate-related-gate-2026-08-23#D-085 / #D-086 / #D-089.';
+  'being checked. IF THIS LINE ASSERTS NO OWNER AUTHORITY and merely happens to contain the word "owner" beside ' +
+  'an unrelated turn citation, that is a false positive of a deliberately broad conjunction: put the citation on ' +
+  'its own line and the write proceeds. See stable-candidate-related-gate-2026-08-23#D-085 / #D-086 / #D-089.';
 
 /**
  * P-005 (cold-carry-system-hardening-2026-07-19), PURE: a hand-written [owner:…] tag
