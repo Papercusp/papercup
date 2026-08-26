@@ -811,6 +811,7 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
       };
       const out = renderCarryBriefColdExtras(brief);
       expect(out).toContain('NO MORE STATUS-REPORT ARTIFACTS');
+      expect(out).toContain("facts:list { scope: 'owner', key: 'status-report-policy' }");
     });
   });
 

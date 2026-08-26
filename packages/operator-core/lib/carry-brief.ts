@@ -1104,7 +1104,11 @@ export function renderCarryBriefColdExtras(
       (f) =>
         `  • ${f.key}: ${capPreservingOperative(f.body, COLD_FACT_BODY_CAP, {
           inlineNotice: true,
-          more: `facts:list { key: '${f.key}' }`,
+          // These rows come from listOwnerFactsFn, so preserve that selector in
+          // the recovery handle. facts:list requires an explicit scope even for
+          // a keyed lookup; the old key-only hint sent successors into a
+          // guaranteed invalid_args retry at exactly the recovery boundary.
+          more: `facts:list { scope: 'owner', key: '${f.key}' }`,
         })}`,
     );
     sections.push(
