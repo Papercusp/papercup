@@ -626,7 +626,10 @@ describe('the spec-proof check (first-class-spec-clauses-2026-08-20 P-008)', () 
       async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.PLAN_SPEC_COVERAGE_GATE,
     );
     mockRubric.mockResolvedValue(acceptanceRubric());
-    mockScorecards.mockResolvedValue([scorecard({ createdBy: 'su-implementer' }), scorecard({ createdBy: 'su-grader' })]);
+    mockScorecards.mockResolvedValue([
+      scorecard({ createdBy: 'su-implementer' }),
+      scorecard({ createdBy: 'su-grader' }),
+    ]);
   });
 
   it('a stale spec proof refuses the ship and carries the aggregate verdict', async () => {
@@ -657,9 +660,7 @@ describe('the spec-proof check (first-class-spec-clauses-2026-08-20 P-008)', () 
   });
 
   it('a satisfied ship still carries the coverage aggregate (advisory reports included)', async () => {
-    mockSpecCoverage.mockResolvedValue(
-      coverageVerdict({ reports: ['2-enforceable-clause(s)-with-no-evidence'] }),
-    );
+    mockSpecCoverage.mockResolvedValue(coverageVerdict({ reports: ['2-enforceable-clause(s)-with-no-evidence'] }));
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v.satisfied).toBe(true);
     // Reported, NOT refused — an uncovered clause is P-013's to enforce (D-018).

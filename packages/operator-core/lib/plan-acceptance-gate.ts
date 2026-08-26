@@ -43,10 +43,7 @@ import {
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
 } from './plan-audits';
-import {
-  detectEphemeralDeliverableReferences,
-  type EphemeralDeliverableReference,
-} from './turn-end-tracking';
+import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReference } from './turn-end-tracking';
 
 export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_missing'
@@ -247,9 +244,7 @@ export async function evaluatePlanAcceptanceGate(
   // ability to inspect the promised deliverable at all.
   const deliverableDurability = evaluateEphemeralDeliverableDurability(planContent ?? '');
   if (!deliverableDurability.satisfied) {
-    const listed = deliverableDurability.references
-      .map(({ kind, reference }) => `${kind} '${reference}'`)
-      .join(', ');
+    const listed = deliverableDurability.references.map(({ kind, reference }) => `${kind} '${reference}'`).join(', ');
     return {
       satisfied: false,
       code: 'ephemeral_deliverable_unbacked',
@@ -567,9 +562,7 @@ export async function evaluatePlanAcceptanceGate(
   // only that one legacy edge: the direct predecessor named by a STANDING author
   // acceptance card. Arbitrary superseded history remains ineligible.
   const scorecards = await listScorecards({ rubricRef: rubric.rubricId, limit: 50, includeSuperseded: true });
-  const allComplete = scorecards.filter(
-    (s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized,
-  );
+  const allComplete = scorecards.filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
   const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
   const implementerIdentities = new Set<string>();
   if (implementer) {
@@ -588,11 +581,7 @@ export async function evaluatePlanAcceptanceGate(
   const standingAuthorVerdicts = new Map(
     allComplete
       .filter(
-        (s) =>
-          !s.supersededBy &&
-          isImplementerScorecard(s) &&
-          s.acceptance != null &&
-          typeof s.supersedes === 'string',
+        (s) => !s.supersededBy && isImplementerScorecard(s) && s.acceptance != null && typeof s.supersedes === 'string',
       )
       .map((s) => [s.issueId, s.supersedes!] as const),
   );
