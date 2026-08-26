@@ -1999,7 +1999,11 @@ export async function setCarryNoteWithPrior(
     }
     const currentUpdatedAtMs =
       rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
-    if (Number.isFinite(currentUpdatedAtMs) && currentUpdatedAtMs > now) {
+    // Equal millisecond watermarks are possible because updated_ts is epoch-ms
+    // precision. Treat equality as stale too: an older writer queued behind a
+    // newer commit must not overwrite that checkpoint merely because both
+    // admitted in the same millisecond.
+    if (Number.isFinite(currentUpdatedAtMs) && currentUpdatedAtMs >= now) {
       return {
         stored: priorNote,
         priorLength,
