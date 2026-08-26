@@ -274,6 +274,7 @@ import './external-trigger-dispatch-action';
 import './facebook-personal-vault-poll-action';
 import './google-calendar-poll-action';
 import './google-gmail-poll-action';
+import './personal-vault-import-action';
 // overwatch-role-2026-06-15 B-04 (C-3): the `system:overwatch-launch` action the
 // one-shot `overwatch-wake` routine fires — computes the OverwatchBrief + launches
 // role=overwatch. Importing it here also registers the B-07 wake-bridge waker at
