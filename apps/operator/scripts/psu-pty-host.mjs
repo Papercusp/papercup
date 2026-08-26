@@ -3205,6 +3205,8 @@ export function injectTurn(sock, text) {
  *   default process.exit. `killedBySignal` is the signal NAME when the child was killed
  *   (WI-38054) and null on a voluntary exit — it is the only thing distinguishing the
  *   two, because node-pty reports a signal death with exitCode 0.
+ * @param {()=>any} [o.onSpawn] lifecycle callback invoked immediately after
+ *   the initial pty.spawn succeeds; this is concrete resume-finalization evidence.
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
  * @param {string | null} [o.kickoff]   first-turn text for a scripted launch
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
@@ -3243,7 +3245,10 @@ export function hostThroughPty(o) {
     // the same reason as the mints — the host must stay launcher-agnostic. The
     // default returns no file, which reproduces the pre-fix behaviour exactly: the
     // successor inherits the predecessor's rendered prompt.
-    refreshPersonaFile = async () => ({ promptFile: null, reason: 'not-wired' }),
+    refreshPersonaFile = async () => ({
+      promptFile: null,
+      reason: "not-wired",
+    }),
     onRespawn = () => {},
     // WI-38292: hand the session to a FRESH launcher process instead of respawning
     // the CLI child inside this stale one. Injected like the mints, and for a
@@ -3273,7 +3278,10 @@ export function hostThroughPty(o) {
     kickoffFile = null,
     sessionPort = null,
     onKickoffPersisted = async () => {},
-    nativePersistenceTimeoutMs = Number(env.PAPERCUSP_SESSION_PORT_PERSIST_TIMEOUT_MS) || 30_000,
+    onSpawn = () => {},
+    nativePersistenceTimeoutMs = Number(
+      env.PAPERCUSP_SESSION_PORT_PERSIST_TIMEOUT_MS,
+    ) || 30_000,
     signalSource = process,
     reapScopeResidue = reapDetachedPtyScopeResidue,
   } = o;
@@ -3373,6 +3381,18 @@ export function hostThroughPty(o) {
   } catch (e) {
     process.stderr.write(`psu: failed to spawn '${command}' under a pty: ${e.message}\n`);
     throw e;
+  }
+  try {
+    const acknowledgement = onSpawn();
+    void Promise.resolve(acknowledgement).catch((error) => {
+      process.stderr.write(
+        `psu: child spawned under pty, but its resume finalization report failed: ${error?.message ?? error}\n`,
+      );
+    });
+  } catch (error) {
+    process.stderr.write(
+      `psu: child spawned under pty, but its resume finalization callback failed: ${error?.message ?? error}\n`,
+    );
   }
   // RECYCLE state (su-cold-auto-mode P-004b). `recycling` guards the child-exit
   // handler so an intended kill+respawn does NOT tear the host down. The three

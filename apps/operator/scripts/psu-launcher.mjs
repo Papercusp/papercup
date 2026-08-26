@@ -7056,22 +7056,24 @@ export function startSupervisorBeat(
 }
 
 /**
- * Best-effort "my child exited" report: stamps the tracked adv row's
+ * Acknowledged "my child exited" report: stamps the tracked adv row's
  * ended_at/exit_code (bootstrap-su/session-ended), so the resume picker and
  * roster stop showing dead sessions as `· active` and the session-dir GC's
  * open-row protection actually expires. psu is the live parent in BOTH launch
  * paths (the same property the supervisor beat rides), so child-exit is the
- * one reliable place to stamp it. Awaited with a short timeout because psu
- * process.exit()s right after; any failure — operator down, endpoint not yet
- * deployed (an older release 404s) — is swallowed: end-stamping is telemetry,
- * never a reason to hold the user's terminal open. Exported with injectables
- * for tests. Never rejects.
+ * one reliable place to stamp it. A stable attempt key makes overload and
+ * unknown-response replay safe. Before the request, psu writes a local pending
+ * witness; acknowledgement removes it, while an unavailable operator leaves it
+ * for the next resume to reconcile after its writer-liveness checks. Exported
+ * with injectables for tests. Never rejects.
  *
  * @param {number|string|null} advSessionId  the adv_sessions PK to stamp
  * @param {number|null|undefined} exitCode   the child's exit code (null when unknown)
  * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
- *           timeoutMs?: number, killedBySignal?: string|null,
- *           launchFailed?: boolean }} [opts]
+ *           timeoutMs?: number, connectBudgetMs?: number, timeoutRetries?: number,
+ *           killedBySignal?: string|null, launchFailed?: boolean,
+ *           endAttemptKey?: string, sleep?: (ms:number)=>Promise<void>,
+ *           now?: ()=>number, home?: string }} [opts]
  *   `killedBySignal` is the signal NAME that killed the child, or null for a voluntary
  *   exit. The server derives `ended_by` from it (WI-38054); omitting it makes every kill
  *   record as a clean self-reported exit. `launchFailed` is used when the launcher
@@ -7079,26 +7081,97 @@ export function startSupervisorBeat(
  *   records that as cleanup so the row is immediately retryable rather than waiting
  *   for stale-claim recovery.
  */
-export async function reportSessionEnded(
-  advSessionId,
-  exitCode,
-  {
+export function pendingSessionEndWitnessPath(advSessionId, home = homedir()) {
+  return join(
+    home,
+    ".papercusp",
+    "psu-lifecycle",
+    `session-${Number(advSessionId)}-ended.json`,
+  );
+}
+
+export function readPendingSessionEndWitness(advSessionId, home = homedir()) {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(pendingSessionEndWitnessPath(advSessionId, home), "utf8"),
+    );
+    return parsed?.advSessionId === Number(advSessionId) &&
+      typeof parsed?.endAttemptKey === "string"
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingSessionEndWitness(witness, home = homedir()) {
+  const path = pendingSessionEndWitnessPath(witness.advSessionId, home);
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const tmp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify(witness)}\n`, { mode: 0o600 });
+  renameSync(tmp, path);
+  chmodSync(path, 0o600);
+  return path;
+}
+
+/**
+ * @typedef {object} SessionEndReportOptions
+ * @property {(input:any, init?:any)=>Promise<any>} [fetchImpl]
+ * @property {string} [operatorUrl]
+ * @property {string|null} [token]
+ * @property {number} [timeoutMs]
+ * @property {number} [connectBudgetMs]
+ * @property {number} [timeoutRetries]
+ * @property {string|null} [killedBySignal]
+ * @property {boolean} [launchFailed]
+ * @property {string} [endAttemptKey]
+ * @property {(ms:number)=>Promise<void>} [sleep]
+ * @property {()=>number} [now]
+ * @property {string} [home]
+ */
+
+/**
+ * @param {number|string|null} advSessionId
+ * @param {number|null|undefined} exitCode
+ * @param {SessionEndReportOptions} [opts]
+ */
+
+export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
+  const {
     fetchImpl = fetch,
     operatorUrl = OPERATOR_URL,
     token = null,
     timeoutMs = 2_000,
+    connectBudgetMs = 5_000,
+    timeoutRetries = 1,
     killedBySignal = null,
     launchFailed = false,
-  } = {},
-) {
-  if (!advSessionId) return;
+    endAttemptKey = randomUUID(),
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    home = homedir(),
+  } = opts;
+  if (!advSessionId) return { reported: false, reason: "no-session" };
+  const witness = {
+    advSessionId: Number(advSessionId),
+    exitCode: exitCode ?? null,
+    killedBySignal: killedBySignal ?? null,
+    launchFailed: launchFailed === true,
+    endAttemptKey,
+    observedAt: new Date(now()).toISOString(),
+  };
+  try {
+    writePendingSessionEndWitness(witness, home);
+  } catch {
+    // A read-only/broken home loses only crash recovery; the acknowledged
+    // server transition remains authoritative.
+  }
   try {
     const tok = token ?? readToken();
-    await fetchImpl(
+    const response = await fetchWithResilience(
       operatorUrl + "/api/agent-mcp/console/bootstrap-su/session-ended",
       {
         method: "POST",
-        signal: AbortSignal.timeout(timeoutMs),
         headers: {
           "content-type": "application/json",
           ...(tok ? { authorization: `Bearer ${tok}` } : {}),
@@ -7112,26 +7185,59 @@ export async function reportSessionEnded(
           exitCode: exitCode ?? null,
           killedBySignal: killedBySignal ?? null,
           ...(launchFailed ? { launchFailed: true } : {}),
+          endAttemptKey,
         }),
       },
+      {
+        fetchImpl,
+        sleep,
+        now,
+        timeoutMs,
+        connectBudgetMs,
+        timeoutRetries,
+        retryBootstrapFailures: true,
+        label: `session end report for #${advSessionId}`,
+      },
     );
-  } catch {
-    /* best-effort — never surface */
+    if (!response?.ok) {
+      return {
+        reported: false,
+        reason: "http",
+        status: response?.status ?? null,
+        endAttemptKey,
+      };
+    }
+    if (typeof response.json === "function") {
+      const body = await response.json().catch(() => null);
+      if (body && body.ok !== true) {
+        return {
+          reported: false,
+          reason: "http",
+          status: response?.status ?? null,
+          endAttemptKey,
+        };
+      }
+    }
+    rmSync(pendingSessionEndWitnessPath(advSessionId, home), { force: true });
+    return { reported: true, endAttemptKey };
+  } catch (error) {
+    return {
+      reported: false,
+      reason: "transport",
+      detail: error instanceof Error ? error.message : String(error),
+      endAttemptKey,
+    };
   }
 }
 
 /**
- * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
- * `psu --resume` revives the agent process, but launchResume takes the no-POST
- * path (it reuses the original coord identity + adv row), so the row keeps the
- * ended_at/exit_code from the prior exit and the running agent stays recorded as
- * DEAD → invisible to the roster + presence-as-a-view. This clears that stamp
- * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
- * instant it resumes, before it ever touches coord. psu is the live parent of
- * the resumed child (same property the supervisor beat + the end-report ride).
- * The endpoint's explicit `reactivated:true` response is the single-winner claim:
- * a manual resume must not spawn unless it successfully re-activates the ended row.
- * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
+ * Atomically ACQUIRE the right to resume a tracked session without claiming the
+ * child is live. `psu --resume` reuses the original coord identity + adv row, so
+ * it must reserve that row before backend-specific setup, then finalize only from
+ * a concrete direct-child/managed-pty spawn. The keyed endpoint preserves the
+ * prior terminal tuple until that second transition; an abandoned launcher lease
+ * therefore expires without creating a ghost live session. Bounded and
+ * fail-closed — a resume must never spawn after a lost/unknown acquisition.
  * Exported with injectables for tests.
  *
  * RETURNS A DISCRIMINATED OUTCOME, not a bare boolean (EI-21414979137146784).
@@ -7144,20 +7250,30 @@ export async function reportSessionEnded(
  * on spawning — the fail-closed property is unchanged; `reason` exists so the
  * refusal can say WHICH of the four happened.
  *
- * @typedef {{ claimed: true }
- *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport', detail?: string }
+ * @typedef {{ claimed: true, status: 'acquired', resumeClaimKey: string,
+ *             replayed?: boolean, leaseExpiresAt?: string }
+ *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport',
+ *       detail?: string, status?: 'reserved' | 'live' | 'missing',
+ *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
  * } ResumeClaimOutcome
+ * @typedef {object} ResumeClaimOptions
+ * @property {(input:any, init?:any)=>Promise<any>} [fetchImpl]
+ * @property {string} [operatorUrl]
+ * @property {string|null} [token]
+ * @property {number} [timeoutMs]
+ * @property {number} [connectBudgetMs]
+ * @property {number} [timeoutRetries]
+ * @property {(ms:number)=>Promise<void>} [sleep]
+ * @property {()=>number} [now]
+ * @property {(message:string)=>any} [onNotice]
+ * @property {string} [resumeClaimKey]
  *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
- * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
- *           timeoutMs?: number, connectBudgetMs?: number, timeoutRetries?: number,
- *           sleep?: (ms:number) => Promise<void>, now?: () => number,
- *           onNotice?: (message:string) => void, resumeClaimKey?: string }} [opts]
+ * @param {ResumeClaimOptions} [opts]
  * @returns {Promise<ResumeClaimOutcome>}
  */
-export async function reportSessionResumed(
-  advSessionId,
-  {
+export async function reportSessionResumed(advSessionId, opts = {}) {
+  const {
     fetchImpl = fetch,
     operatorUrl = OPERATOR_URL,
     token = null,
@@ -7168,9 +7284,16 @@ export async function reportSessionResumed(
     now = () => Date.now(),
     onNotice = (message) => process.stderr.write(message),
     resumeClaimKey = randomUUID(),
-  } = {},
-) {
+  } = opts;
   if (!advSessionId) return { claimed: false, reason: "no-session" };
+  const claimKey = String(resumeClaimKey || "").trim();
+  if (!claimKey) {
+    return {
+      claimed: false,
+      reason: "http",
+      detail: "resume acquisition requires a stable non-empty attempt key",
+    };
+  }
   try {
     const tok = token ?? readToken();
     const response = await fetchWithResilience(
@@ -7183,7 +7306,7 @@ export async function reportSessionResumed(
         },
         body: JSON.stringify({
           advSessionId: Number(advSessionId),
-          resumeClaimKey,
+          resumeClaimKey: claimKey,
         }),
       },
       {
@@ -7199,7 +7322,8 @@ export async function reportSessionResumed(
       },
     );
     if (!response?.ok || typeof response.json !== "function") {
-      const status = typeof response?.status === "number" ? response.status : null;
+      const status =
+        typeof response?.status === "number" ? response.status : null;
       return {
         claimed: false,
         reason: "http",
@@ -7222,10 +7346,46 @@ export async function reportSessionResumed(
         detail: `operator response body was unreadable (${err instanceof Error ? err.message : String(err)})`,
       };
     }
-    // The endpoint's explicit reactivated:true is the single-winner claim.
-    // Anything else means another writer holds the row: genuine contention.
-    if (body?.reactivated === true) return { claimed: true };
-    return { claimed: false, reason: "contended" };
+    // New callers require the two-phase typed reservation. Accepting only the
+    // legacy reactivated:true field here would recreate the old bug: acquisition
+    // would assert liveness before any child had spawned.
+    if (body?.acquired === true && body?.status === "acquired") {
+      return {
+        claimed: true,
+        status: "acquired",
+        resumeClaimKey: claimKey,
+        ...(typeof body.replayed === "boolean"
+          ? { replayed: body.replayed }
+          : {}),
+        ...(typeof body.leaseExpiresAt === "string"
+          ? { leaseExpiresAt: body.leaseExpiresAt }
+          : {}),
+      };
+    }
+    if (
+      body?.acquired === false &&
+      ["reserved", "live", "missing"].includes(body?.status)
+    ) {
+      return {
+        claimed: false,
+        reason: "contended",
+        status: body.status,
+        resumeClaimKey: claimKey,
+        ...(Number.isFinite(body.retryAfterMs)
+          ? { retryAfterMs: body.retryAfterMs }
+          : {}),
+        ...(typeof body.leaseExpiresAt === "string"
+          ? { leaseExpiresAt: body.leaseExpiresAt }
+          : {}),
+      };
+    }
+    return {
+      claimed: false,
+      reason: "http",
+      detail:
+        "operator response did not contain a typed resume reservation verdict",
+      resumeClaimKey: claimKey,
+    };
   } catch (err) {
     /* fail closed — never spawn without the atomic claim. The error was
        previously swallowed entirely; capture it so the refusal can name the
@@ -7236,6 +7396,143 @@ export async function reportSessionResumed(
       detail: err instanceof Error ? err.message : String(err),
     };
   }
+}
+
+/**
+ * Report a keyed post-acquire transition. The body is constructed once and
+ * replayed unchanged by fetchWithResilience, so a response lost after commit
+ * never creates a new claimant or substitutes a new key.
+ *
+ * @typedef {object} ResumeTransitionOptions
+ * @property {(input:any, init?:any)=>Promise<any>} [fetchImpl]
+ * @property {string} [operatorUrl]
+ * @property {string|null} [token]
+ * @property {number} [timeoutMs]
+ * @property {number} [connectBudgetMs]
+ * @property {number} [timeoutRetries]
+ * @property {(ms:number)=>Promise<void>} [sleep]
+ * @property {()=>number} [now]
+ * @property {(message:string)=>any} [onNotice]
+ */
+async function reportSessionResumeTransition(
+  transition,
+  advSessionId,
+  resumeClaimKey,
+  opts = {},
+) {
+  const {
+    fetchImpl = fetch,
+    operatorUrl = OPERATOR_URL,
+    token = null,
+    timeoutMs = 10_000,
+    connectBudgetMs = 10_000,
+    timeoutRetries = 1,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    onNotice = (message) => process.stderr.write(message),
+  } = /** @type {ResumeTransitionOptions} */ (opts);
+  const verdictField = transition === "finalized" ? "finalized" : "released";
+  if (!advSessionId) return { [verdictField]: false, reason: "no-session" };
+  const claimKey = String(resumeClaimKey || "").trim();
+  if (!claimKey) return { [verdictField]: false, reason: "no-key" };
+  try {
+    const tok = token ?? readToken();
+    const response = await fetchWithResilience(
+      operatorUrl + `/api/agent-mcp/console/bootstrap-su/session-resume-${transition}`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(tok ? { authorization: `Bearer ${tok}` } : {}),
+        },
+        body: JSON.stringify({
+          advSessionId: Number(advSessionId),
+          resumeClaimKey: claimKey,
+        }),
+      },
+      {
+        fetchImpl,
+        sleep,
+        now,
+        onNotice,
+        timeoutMs,
+        connectBudgetMs,
+        timeoutRetries,
+        retryBootstrapFailures: true,
+        label: `resume ${transition} for session #${advSessionId}`,
+      },
+    );
+    if (!response?.ok || typeof response.json !== "function") {
+      return {
+        [verdictField]: false,
+        reason: "http",
+        status: typeof response?.status === "number" ? response.status : null,
+        resumeClaimKey: claimKey,
+      };
+    }
+    const body = await response.json().catch(() => null);
+    if (
+      body?.ok !== true ||
+      typeof body?.[verdictField] !== "boolean" ||
+      body?.resumeClaimKey !== claimKey
+    ) {
+      return {
+        [verdictField]: false,
+        reason: "http",
+        resumeClaimKey: claimKey,
+      };
+    }
+    return {
+      [verdictField]: body[verdictField],
+      resumeClaimKey: claimKey,
+      ...(body[verdictField] ? {} : { reason: "not-held" }),
+    };
+  } catch (error) {
+    return {
+      [verdictField]: false,
+      reason: "transport",
+      detail: error instanceof Error ? error.message : String(error),
+      resumeClaimKey: claimKey,
+    };
+  }
+}
+
+/**
+ * @typedef {{ finalized:boolean, reason?:string, status?:number|null,
+ *             detail?:string, resumeClaimKey?:string }} ResumeFinalizeOutcome
+ * @param {number|string|null} advSessionId
+ * @param {string} resumeClaimKey
+ * @param {ResumeTransitionOptions} [opts]
+ * @returns {Promise<ResumeFinalizeOutcome>}
+ */
+export function reportSessionResumeFinalized(advSessionId, resumeClaimKey, opts = {}) {
+  return /** @type {Promise<ResumeFinalizeOutcome>} */ (
+    reportSessionResumeTransition(
+      "finalized",
+      advSessionId,
+      resumeClaimKey,
+      opts,
+    )
+  );
+}
+
+/**
+ * @typedef {{ released:boolean, reason?:string, status?:number|null,
+ *             detail?:string, resumeClaimKey?:string }} ResumeReleaseOutcome
+ * @param {number|string|null} advSessionId
+ * @param {string} resumeClaimKey
+ * @param {ResumeTransitionOptions} [opts]
+ * @returns {Promise<ResumeReleaseOutcome>}
+ */
+export function reportSessionResumeReleased(advSessionId, resumeClaimKey, opts = {}) {
+  return /** @type {Promise<ResumeReleaseOutcome>} */ (
+    reportSessionResumeTransition(
+      "released",
+      advSessionId,
+      resumeClaimKey,
+      opts,
+    )
+  );
 }
 
 /**
@@ -7784,21 +8081,42 @@ export function killSpawnProcessTree(
   return killed;
 }
 
+/**
+ * @typedef {object} SpawnInheritOptions
+ * @property {string} wrapperBin
+ * @property {string[]} [args]
+ * @property {string} cwd
+ * @property {Record<string, any>} env
+ * @property {(...args:any[])=>any} [spawnImpl]
+ * @property {any} [processApi]
+ * @property {any} [signalSource]
+ * @property {(...args:any[])=>any} [processKill]
+ * @property {(...args:any[])=>any} [processExit]
+ * @property {(...args:any[])=>any} [reportSessionEndedImpl]
+ * @property {()=>any} [onSpawn]
+ * @property {(()=>any)|null} [onSpawnFailure]
+ */
+
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
- *  start. */
-export function spawnInherit({
-  wrapperBin,
-  args = [],
-  cwd,
-  env,
-  spawnImpl = spawn,
-  processApi = process,
-  signalSource = processApi,
-  processKill = processApi.kill?.bind(processApi) ?? process.kill,
-  processExit = processApi.exit?.bind(processApi) ?? process.exit,
-  reportSessionEndedImpl = reportSessionEnded,
-}) {
+ *  start.
+ *  @param {SpawnInheritOptions} options
+ */
+export function spawnInherit(options) {
+  const {
+    wrapperBin,
+    args = [],
+    cwd,
+    env,
+    spawnImpl = spawn,
+    processApi = process,
+    signalSource = processApi,
+    processKill = processApi.kill?.bind(processApi) ?? process.kill,
+    processExit = processApi.exit?.bind(processApi) ?? process.exit,
+    reportSessionEndedImpl = reportSessionEnded,
+    onSpawn = () => {},
+    onSpawnFailure = null,
+  } = options;
   // Fleet color for the no-pty fallback (the managed-pty host writes its own at
   // startup — see hostThroughPty). Recolor THIS window before the child takes the
   // terminal over; no fleet ⇒ no write (the profile default stands).
@@ -7818,6 +8136,7 @@ export function spawnInherit({
   });
   const terminalSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
   let finished = false;
+  let spawnObserved = false;
   let forwardedSignal = null;
   const signalHandlers = new Map();
   const removeSignalHandlers = () => {
@@ -7842,6 +8161,21 @@ export function spawnInherit({
       signalSource.on(signal, handler);
     }
   }
+  child.once("spawn", () => {
+    spawnObserved = true;
+    try {
+      const acknowledgement = onSpawn();
+      void Promise.resolve(acknowledgement).catch((error) => {
+        console.error(
+          `psu: child spawned, but its resume finalization report failed: ${error?.message ?? error}`,
+        );
+      });
+    } catch (error) {
+      console.error(
+        `psu: child spawned, but its resume finalization callback failed: ${error?.message ?? error}`,
+      );
+    }
+  });
   child.on("error", (e) => {
     if (finished) return;
     finished = true;
@@ -7862,14 +8196,16 @@ export function spawnInherit({
         `psu: is ${wrapperBin} on PATH? run apps/operator/scripts/install-standalone-mcp.sh`,
       );
     }
-    // A tracked resume claims its row before setup/spawn. If the wrapper itself
-    // cannot be started, close that claim as an unobserved launcher cleanup so a
-    // retry is available immediately instead of waiting for stale recovery.
+    // A tracked resume reserves its row before setup/spawn. If the wrapper itself
+    // cannot be started, the injected pre-spawn callback releases that lease; a
+    // fresh/non-resume launch retains the historical cleanup end report.
     void Promise.resolve()
       .then(() =>
-        reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, null, {
-          launchFailed: true,
-        }),
+        !spawnObserved && onSpawnFailure
+          ? onSpawnFailure()
+          : reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, null, {
+              launchFailed: true,
+            }),
       )
       .catch(() => undefined)
       .finally(() => processExit(127));
@@ -7936,17 +8272,36 @@ function repoCwdOrRedirect(cwd) {
   return cwd; // no better answer — do not invent one
 }
 
-export function runWrapper({
-  wrapperBin,
-  args = [],
-  cwd,
-  envelopeEnv,
-  kickoff = null,
-  kickoffFile = null,
-  sessionPort = null,
-  preserveCwd = false,
-  reportSessionEndedImpl = reportSessionEnded,
-}) {
+/**
+ * @typedef {object} RunWrapperOptions
+ * @property {string} wrapperBin
+ * @property {string[]} [args]
+ * @property {string} cwd
+ * @property {Record<string, any>} envelopeEnv
+ * @property {string|null} [kickoff]
+ * @property {string|null} [kickoffFile]
+ * @property {any} [sessionPort]
+ * @property {boolean} [preserveCwd]
+ * @property {(...args:any[])=>any} [reportSessionEndedImpl]
+ * @property {()=>any} [onSpawn]
+ * @property {(()=>any)|null} [onSpawnFailure]
+ */
+
+/** @param {RunWrapperOptions} options */
+export function runWrapper(options) {
+  let {
+    wrapperBin,
+    args = [],
+    cwd,
+    envelopeEnv,
+    kickoff = null,
+    kickoffFile = null,
+    sessionPort = null,
+    preserveCwd = false,
+    reportSessionEndedImpl = reportSessionEnded,
+    onSpawn = () => {},
+    onSpawnFailure = null,
+  } = options;
   // EI-10938's `.papercusp` state-dir → checkout redirect is correct for a FRESH
   // launch, but a RESUME/FORK MUST keep the recorded cwd: `claude --resume` /
   // `--fork` locate the transcript under the cwd-derived projects dir
@@ -7958,6 +8313,12 @@ export function runWrapper({
   // launches keep the guard.
   if (!preserveCwd) cwd = repoCwdOrRedirect(cwd);
   const env = { ...sanitizeInheritedEnv(process.env), ...envelopeEnv };
+  const reportPreSpawnFailure = () =>
+    onSpawnFailure
+      ? onSpawnFailure()
+      : reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, null, {
+          launchFailed: true,
+        });
   // WI-5052 acceptance hardening: `default` is an active credential choice,
   // not merely the absence of a gateway overlay. Clear every prior Claude auth
   // source before restoring the system login below.
@@ -8135,6 +8496,7 @@ export function runWrapper({
         // coupling. The pty (and therefore the control socket + discovery file) still spawns.
         bridgeTty: env.PAPERCUSP_PSU_HEADLESS === "1" ? false : undefined,
         advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
+        onSpawn,
         // WI-1980: a cold-loop RECYCLE must respawn with a FRESH --session-id
         // (reusing the on-disk id storms the supervisor). Inject the arg-rewrite
         // + native→coord re-anchor here so the host stays launcher-agnostic.
@@ -8255,11 +8617,7 @@ export function runWrapper({
       `psu: session-port launch refused: a managed pty is required to deliver and verify the seed.\n`,
     );
     process.exitCode = 1;
-    void Promise.resolve(
-      reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, null, {
-        launchFailed: true,
-      }),
-    ).catch(() => undefined);
+    void Promise.resolve(reportPreSpawnFailure()).catch(() => undefined);
     if (sessionPort) {
       void reportSessionPortDelivery(sessionPort, {
         persisted: false,
@@ -8283,6 +8641,8 @@ export function runWrapper({
     cwd,
     env,
     reportSessionEndedImpl,
+    onSpawn,
+    onSpawnFailure: reportPreSpawnFailure,
   });
 }
 
@@ -8659,18 +9019,57 @@ async function launchResume(
     }
   }
   let resumeClaimed = false;
+  let resumeClaimKey = null;
   const cleanupResumeClaim = async () => {
-    if (!resumeClaimed || session.id == null) return;
+    if (!resumeClaimed || session.id == null || !resumeClaimKey) return;
     // Flip the local guard before the best-effort network call so a future
     // cleanup path cannot report the same claim twice.
     resumeClaimed = false;
-    await reportSessionEnded(session.id, null, { launchFailed: true });
+    await reportSessionResumeReleased(session.id, resumeClaimKey);
+  };
+  const finalizeResumeClaim = async () => {
+    if (!resumeClaimed || session.id == null || !resumeClaimKey) return;
+    const outcome = await reportSessionResumeFinalized(
+      session.id,
+      resumeClaimKey,
+    );
+    if (outcome.finalized) {
+      resumeClaimed = false;
+      return;
+    }
+    // The child is already demonstrably alive. Keep running and let genuine
+    // activity repair liveness, but say why the explicit acknowledgement is
+    // still pending; never acquire a replacement key for this child.
+    console.error(
+      `psu: session #${session.id} spawned, but resume finalization was not acknowledged ` +
+        `(${outcome.reason ?? "unknown"}); continuing under claim ${resumeClaimKey}.`,
+    );
   };
   // The manual resume and an already-queued loop wake can race after the old
-  // process exits. Claim the ended adv row BEFORE any config repair or spawn;
-  // claimAdvSessionResume's claim window makes this a stale-safe single-winner handoff.
-  // A lost/unknown claim must never launch a second exact-session writer.
+  // process exits. Reconcile a durable end witness, then ACQUIRE the ended adv
+  // row before any config repair or spawn. The short keyed lease is the
+  // single-winner handoff; started_at remains untouched until spawn finalization.
+  // A lost/unknown acquisition must never launch a second exact-session writer.
   if (!fork && session.id != null) {
+    const pendingEnd = readPendingSessionEndWitness(session.id);
+    if (pendingEnd) {
+      const reconciled = await reportSessionEnded(
+        session.id,
+        pendingEnd.exitCode,
+        {
+          killedBySignal: pendingEnd.killedBySignal,
+          launchFailed: pendingEnd.launchFailed === true,
+          endAttemptKey: pendingEnd.endAttemptKey,
+        },
+      );
+      if (!reconciled.reported) {
+        console.error(
+          `psu: refusing to resume session #${session.id} — its pending end witness ` +
+            `could not be reconciled (${reconciled.reason ?? "unknown"}); no agent process was spawned.`,
+        );
+        process.exit(2);
+      }
+    }
     const claim = await reportSessionResumed(session.id);
     if (!claim.claimed) {
       console.error(
@@ -8684,6 +9083,7 @@ async function launchResume(
       process.exit(2);
     }
     resumeClaimed = true;
+    resumeClaimKey = claim.resumeClaimKey;
   }
   try {
     if (addDir.length && session.agent === "omp") {
@@ -8827,8 +9227,7 @@ async function launchResume(
       // refresh), explicit --account=default would otherwise open a login prompt
       // despite ~/.codex/auth.json being healthy. Restore the same shared-auth
       // invariant a fresh CODEX_HOME gets before applying the account route.
-      if (accountEnv?.mode === "default")
-        rehealResumeCodexAuth(env.CODEX_HOME);
+      if (accountEnv?.mode === "default") rehealResumeCodexAuth(env.CODEX_HOME);
       applyCodexGatewayRoute(env.CODEX_HOME, {
         mode: accountEnv?.mode ?? "default",
         id: accountEnv?.id ?? null,
@@ -8902,6 +9301,8 @@ async function launchResume(
       kickoff: kickoff
         ? tagKickoffProvenance(kickoff, env.PAPERCUSP_SID || null)
         : null,
+      onSpawn: finalizeResumeClaim,
+      onSpawnFailure: cleanupResumeClaim,
     });
   } catch (error) {
     // Everything above runWrapper is post-claim setup. A config repair, model

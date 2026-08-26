@@ -1982,17 +1982,13 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
     status?: undefined;
 }>;
 /**
- * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
- * `psu --resume` revives the agent process, but launchResume takes the no-POST
- * path (it reuses the original coord identity + adv row), so the row keeps the
- * ended_at/exit_code from the prior exit and the running agent stays recorded as
- * DEAD → invisible to the roster + presence-as-a-view. This clears that stamp
- * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
- * instant it resumes, before it ever touches coord. psu is the live parent of
- * the resumed child (same property the supervisor beat + the end-report ride).
- * The endpoint's explicit `reactivated:true` response is the single-winner claim:
- * a manual resume must not spawn unless it successfully re-activates the ended row.
- * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
+ * Atomically ACQUIRE the right to resume a tracked session without claiming the
+ * child is live. `psu --resume` reuses the original coord identity + adv row, so
+ * it must reserve that row before backend-specific setup, then finalize only from
+ * a concrete direct-child/managed-pty spawn. The keyed endpoint preserves the
+ * prior terminal tuple until that second transition; an abandoned launcher lease
+ * therefore expires without creating a ghost live session. Bounded and
+ * fail-closed — a resume must never spawn after a lost/unknown acquisition.
  * Exported with injectables for tests.
  *
  * RETURNS A DISCRIMINATED OUTCOME, not a bare boolean (EI-21414979137146784).
@@ -2028,54 +2024,24 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  * @returns {Promise<ResumeClaimOutcome>}
  */
 export function reportSessionResumed(advSessionId: number | string | null, opts?: ResumeClaimOptions): Promise<ResumeClaimOutcome>;
-export function reportSessionResumeFinalized(advSessionId: any, resumeClaimKey: any, opts?: {}): Promise<{
-    [x: string]: string | boolean;
-    reason: string;
-    status?: undefined;
-    resumeClaimKey?: undefined;
-    detail?: undefined;
-} | {
-    [x: string]: string | number | boolean | null;
-    reason: string;
-    status: number | null;
-    resumeClaimKey: string;
-    detail?: undefined;
-} | {
-    reason?: string | undefined;
-    resumeClaimKey: string;
-    status?: undefined;
-    detail?: undefined;
-} | {
-    [x: string]: string | boolean;
-    reason: string;
-    detail: string;
-    resumeClaimKey: string;
-    status?: undefined;
-}>;
-export function reportSessionResumeReleased(advSessionId: any, resumeClaimKey: any, opts?: {}): Promise<{
-    [x: string]: string | boolean;
-    reason: string;
-    status?: undefined;
-    resumeClaimKey?: undefined;
-    detail?: undefined;
-} | {
-    [x: string]: string | number | boolean | null;
-    reason: string;
-    status: number | null;
-    resumeClaimKey: string;
-    detail?: undefined;
-} | {
-    reason?: string | undefined;
-    resumeClaimKey: string;
-    status?: undefined;
-    detail?: undefined;
-} | {
-    [x: string]: string | boolean;
-    reason: string;
-    detail: string;
-    resumeClaimKey: string;
-    status?: undefined;
-}>;
+/**
+ * @typedef {{ finalized:boolean, reason?:string, status?:number|null,
+ *             detail?:string, resumeClaimKey?:string }} ResumeFinalizeOutcome
+ * @param {number|string|null} advSessionId
+ * @param {string} resumeClaimKey
+ * @param {ResumeTransitionOptions} [opts]
+ * @returns {Promise<ResumeFinalizeOutcome>}
+ */
+export function reportSessionResumeFinalized(advSessionId: number | string | null, resumeClaimKey: string, opts?: ResumeTransitionOptions): Promise<ResumeFinalizeOutcome>;
+/**
+ * @typedef {{ released:boolean, reason?:string, status?:number|null,
+ *             detail?:string, resumeClaimKey?:string }} ResumeReleaseOutcome
+ * @param {number|string|null} advSessionId
+ * @param {string} resumeClaimKey
+ * @param {ResumeTransitionOptions} [opts]
+ * @returns {Promise<ResumeReleaseOutcome>}
+ */
+export function reportSessionResumeReleased(advSessionId: number | string | null, resumeClaimKey: string, opts?: ResumeTransitionOptions): Promise<ResumeReleaseOutcome>;
 /**
  * Render a refused {@link ResumeClaimOutcome} as the clause the operator reads
  * (EI-21414979137146784). Each reason gets its OWN sentence: the old single
@@ -2243,36 +2209,43 @@ export function ccTurnStartMemoryHookEnrollment(settingsText: any, { scriptExist
  * useful on Windows and when the group has already disappeared.
  */
 export function killSpawnProcessTree(child: any, signal?: string, kill?: (pid: number, signal?: string | number) => true): boolean;
+/**
+ * @typedef {object} SpawnInheritOptions
+ * @property {string} wrapperBin
+ * @property {string[]} [args]
+ * @property {string} cwd
+ * @property {Record<string, any>} env
+ * @property {(...args:any[])=>any} [spawnImpl]
+ * @property {any} [processApi]
+ * @property {any} [signalSource]
+ * @property {(...args:any[])=>any} [processKill]
+ * @property {(...args:any[])=>any} [processExit]
+ * @property {(...args:any[])=>any} [reportSessionEndedImpl]
+ * @property {()=>any} [onSpawn]
+ * @property {(()=>any)|null} [onSpawnFailure]
+ */
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
- *  start. */
-export function spawnInherit({ wrapperBin, args, cwd, env, spawnImpl, processApi, signalSource, processKill, processExit, reportSessionEndedImpl, onSpawn, onSpawnFailure, }: {
-    wrapperBin: any;
-    args?: never[] | undefined;
-    cwd: any;
-    env: any;
-    spawnImpl?: typeof spawn | undefined;
-    processApi?: NodeJS.Process | undefined;
-    signalSource?: any;
-    processKill?: any;
-    processExit?: any;
-    reportSessionEndedImpl?: typeof reportSessionEnded | undefined;
-    onSpawn?: (() => void) | undefined;
-    onSpawnFailure?: null | undefined;
-}): void;
-export function runWrapper({ wrapperBin, args, cwd, envelopeEnv, kickoff, kickoffFile, sessionPort, preserveCwd, reportSessionEndedImpl, onSpawn, onSpawnFailure, }: {
-    wrapperBin: any;
-    args?: never[] | undefined;
-    cwd: any;
-    envelopeEnv: any;
-    kickoff?: null | undefined;
-    kickoffFile?: null | undefined;
-    sessionPort?: null | undefined;
-    preserveCwd?: boolean | undefined;
-    reportSessionEndedImpl?: typeof reportSessionEnded | undefined;
-    onSpawn?: (() => void) | undefined;
-    onSpawnFailure?: null | undefined;
-}): void;
+ *  start.
+ *  @param {SpawnInheritOptions} options
+ */
+export function spawnInherit(options: SpawnInheritOptions): void;
+/**
+ * @typedef {object} RunWrapperOptions
+ * @property {string} wrapperBin
+ * @property {string[]} [args]
+ * @property {string} cwd
+ * @property {Record<string, any>} envelopeEnv
+ * @property {string|null} [kickoff]
+ * @property {string|null} [kickoffFile]
+ * @property {any} [sessionPort]
+ * @property {boolean} [preserveCwd]
+ * @property {(...args:any[])=>any} [reportSessionEndedImpl]
+ * @property {()=>any} [onSpawn]
+ * @property {(()=>any)|null} [onSpawnFailure]
+ */
+/** @param {RunWrapperOptions} options */
+export function runWrapper(options: RunWrapperOptions): void;
 /**
  * Classify the activity evidence in a discovery record. This is deliberately a
  * diagnostic helper, not an auto-release decision: a quiet interactive prompt
@@ -3135,17 +3108,13 @@ export type SessionEndReportOptions = {
     home?: string | undefined;
 };
 /**
- * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
- * `psu --resume` revives the agent process, but launchResume takes the no-POST
- * path (it reuses the original coord identity + adv row), so the row keeps the
- * ended_at/exit_code from the prior exit and the running agent stays recorded as
- * DEAD → invisible to the roster + presence-as-a-view. This clears that stamp
- * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
- * instant it resumes, before it ever touches coord. psu is the live parent of
- * the resumed child (same property the supervisor beat + the end-report ride).
- * The endpoint's explicit `reactivated:true` response is the single-winner claim:
- * a manual resume must not spawn unless it successfully re-activates the ended row.
- * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
+ * Atomically ACQUIRE the right to resume a tracked session without claiming the
+ * child is live. `psu --resume` reuses the original coord identity + adv row, so
+ * it must reserve that row before backend-specific setup, then finalize only from
+ * a concrete direct-child/managed-pty spawn. The keyed endpoint preserves the
+ * prior terminal tuple until that second transition; an abandoned launcher lease
+ * therefore expires without creating a ghost live session. Bounded and
+ * fail-closed — a resume must never spawn after a lost/unknown acquisition.
  * Exported with injectables for tests.
  *
  * RETURNS A DISCRIMINATED OUTCOME, not a bare boolean (EI-21414979137146784).
@@ -3174,17 +3143,13 @@ export type ResumeClaimOutcome = {
     resumeClaimKey?: string;
 };
 /**
- * Atomically claim "my session RESUMED" — the inverse of reportSessionEnded.
- * `psu --resume` revives the agent process, but launchResume takes the no-POST
- * path (it reuses the original coord identity + adv row), so the row keeps the
- * ended_at/exit_code from the prior exit and the running agent stays recorded as
- * DEAD → invisible to the roster + presence-as-a-view. This clears that stamp
- * (bootstrap-su/session-resumed) so a resumed-but-idle session shows live the
- * instant it resumes, before it ever touches coord. psu is the live parent of
- * the resumed child (same property the supervisor beat + the end-report ride).
- * The endpoint's explicit `reactivated:true` response is the single-winner claim:
- * a manual resume must not spawn unless it successfully re-activates the ended row.
- * Bounded and fail-closed — a resume must never spawn after a lost/unknown claim.
+ * Atomically ACQUIRE the right to resume a tracked session without claiming the
+ * child is live. `psu --resume` reuses the original coord identity + adv row, so
+ * it must reserve that row before backend-specific setup, then finalize only from
+ * a concrete direct-child/managed-pty spawn. The keyed endpoint preserves the
+ * prior terminal tuple until that second transition; an abandoned launcher lease
+ * therefore expires without creating a ghost live session. Bounded and
+ * fail-closed — a resume must never spawn after a lost/unknown acquisition.
  * Exported with injectables for tests.
  *
  * RETURNS A DISCRIMINATED OUTCOME, not a bare boolean (EI-21414979137146784).
@@ -3209,6 +3174,62 @@ export type ResumeClaimOptions = {
     onNotice?: ((message: string) => any) | undefined;
     resumeClaimKey?: string | undefined;
 };
-import { spawn } from "node:child_process";
+/**
+ * Report a keyed post-acquire transition. The body is constructed once and
+ * replayed unchanged by fetchWithResilience, so a response lost after commit
+ * never creates a new claimant or substitutes a new key.
+ */
+export type ResumeTransitionOptions = {
+    fetchImpl?: ((input: any, init?: any) => Promise<any>) | undefined;
+    operatorUrl?: string | undefined;
+    token?: string | null | undefined;
+    timeoutMs?: number | undefined;
+    connectBudgetMs?: number | undefined;
+    timeoutRetries?: number | undefined;
+    sleep?: ((ms: number) => Promise<void>) | undefined;
+    now?: (() => number) | undefined;
+    onNotice?: ((message: string) => any) | undefined;
+};
+export type ResumeFinalizeOutcome = {
+    finalized: boolean;
+    reason?: string;
+    status?: number | null;
+    detail?: string;
+    resumeClaimKey?: string;
+};
+export type ResumeReleaseOutcome = {
+    released: boolean;
+    reason?: string;
+    status?: number | null;
+    detail?: string;
+    resumeClaimKey?: string;
+};
+export type SpawnInheritOptions = {
+    wrapperBin: string;
+    args?: string[] | undefined;
+    cwd: string;
+    env: Record<string, any>;
+    spawnImpl?: ((...args: any[]) => any) | undefined;
+    processApi?: any;
+    signalSource?: any;
+    processKill?: ((...args: any[]) => any) | undefined;
+    processExit?: ((...args: any[]) => any) | undefined;
+    reportSessionEndedImpl?: ((...args: any[]) => any) | undefined;
+    onSpawn?: (() => any) | undefined;
+    onSpawnFailure?: (() => any) | null | undefined;
+};
+export type RunWrapperOptions = {
+    wrapperBin: string;
+    args?: string[] | undefined;
+    cwd: string;
+    envelopeEnv: Record<string, any>;
+    kickoff?: string | null | undefined;
+    kickoffFile?: string | null | undefined;
+    sessionPort?: any;
+    preserveCwd?: boolean | undefined;
+    reportSessionEndedImpl?: ((...args: any[]) => any) | undefined;
+    onSpawn?: (() => any) | undefined;
+    onSpawnFailure?: (() => any) | null | undefined;
+};
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
 export {};

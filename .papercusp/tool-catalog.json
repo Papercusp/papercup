@@ -16049,7 +16049,7 @@
       "guidance": {
         "when": "At a COLD loop turn's end, store compressed facts, not a transcript. Add a real same-line [turn:<session>@<iso-ts>] ref for owner directives/completed coordination; never invent a ref. Mark other sources [self-imposed], [peer:<sid>], or [inferred]. Use rowsMode:'replace' only when retiring rows; default merge mode preserves them. Pair with work_items:checkpoint.",
         "notWhen": "WARM loops (carry:'warm', the default) carry the live transcript and need no note. Use work_items:checkpoint for work-item state.",
-        "chaining": "Write last before a cold turn ends; also refresh work_items:checkpoint and facts:assert durable conclusions. To retune, call loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; intervalSec and goal are required even when only carry changes."
+        "chaining": "Write last before a cold turn ends; also refresh work_items:checkpoint and facts:assert durable conclusions. To retune an ACTIVE loop, call loop:arm { carry: 'cold'|'warm' }; omitted intervalSec and goal are inherited from the active loop, and either may be provided when changing it. A FRESH loop still requires intervalSec and goal."
       }
     },
     {
