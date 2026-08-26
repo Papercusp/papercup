@@ -2304,6 +2304,12 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     const integration = join(root, "integration");
     const checkpoint = join(root, "checkpoint");
     const logDir = join(root, "logs");
+    // This test exercises the REAL exclusive materializer, but it must not join the
+    // host-wide production queue: an unrelated release writer can legitimately hold
+    // that lock longer than this test's 120s correctness deadline. A private pc-heavy
+    // domain preserves the real writer/slot protocol while making the fixture
+    // deterministic and preventing ambient fleet work from deciding its verdict.
+    const pcHeavyDir = join(root, "pc-heavy");
     mkdirSync(join(integration, "node_modules", "fixture-dep"), {
       recursive: true,
     });
@@ -2335,7 +2341,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     let lock: ReturnType<typeof acquireCheckpointRunLock> | undefined;
     const priorAfterCopyHook =
       process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK;
+    const priorPcHeavyDir = process.env.PC_HEAVY_DIR;
     try {
+      process.env.PC_HEAVY_DIR = pcHeavyDir;
       git("init", "-q", "-b", "staging");
       git("config", "user.email", "fixture@example.invalid");
       git("config", "user.name", "fixture");
@@ -2454,6 +2462,9 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         candidateSource: "tip",
       });
       expect(
+        existsSync(join(pcHeavyDir, "exclusive-materialization.lock")),
+      ).toBe(true);
+      expect(
         readFileSync(
           join(checkpoint, "node_modules", ".papercusp-dependency-generation"),
           "utf8",
@@ -2483,6 +2494,8 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
       else
         process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK =
           priorAfterCopyHook;
+      if (priorPcHeavyDir === undefined) delete process.env.PC_HEAVY_DIR;
+      else process.env.PC_HEAVY_DIR = priorPcHeavyDir;
       if (lock?.acquired) lock.release();
       rmSync(root, { recursive: true, force: true });
     }
