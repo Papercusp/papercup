@@ -1691,6 +1691,46 @@ describe('scoped-superuser hive clamp', () => {
     expect(h.verifyExplicitPlanHarness).toHaveBeenCalledTimes(1);
   });
 
+  it('flag ON: rebinds an exact-slug plans:add-decision after the owner proof passes', async () => {
+    h.scopedClampFlag.value = true;
+    h.verifyExplicitPlanHarness.mockResolvedValue(true);
+    const args = {
+      harness: 'hiveB-home',
+      slug: 'recovered-plan',
+      title: 'Cross-lane ruling',
+      body: 'Record the verified ruling on its owning plan.',
+    };
+
+    const res = await callTool('plans:add-decision', args, hiveScoped());
+
+    expect(h.verifyExplicitPlanHarness).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: 'ws-test', harnessSlug: 'hiveA-home' }),
+      'hiveB-home',
+      args,
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+    expect(h.invocations[0]?.ctx.harnessSlug).toBe('hiveB-home');
+  });
+
+  it('flag ON: keeps sibling-hive plans:add-decision denied when the exact-slug owner proof fails', async () => {
+    h.scopedClampFlag.value = true;
+    h.verifyExplicitPlanHarness.mockResolvedValue(false);
+    const res = await callTool(
+      'plans:add-decision',
+      {
+        harness: 'hiveB-home',
+        slug: 'unverified-plan',
+        title: 'Unverified ruling',
+        body: 'Must not cross the hive boundary without ownership proof.',
+      },
+      hiveScoped(),
+    );
+
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('harness_forbidden');
+    expect(h.verifyExplicitPlanHarness).toHaveBeenCalledTimes(1);
+  });
+
   it('flag ON: does not extend the exact-slug rebind to plans:items', async () => {
     h.scopedClampFlag.value = true;
     h.verifyExplicitPlanHarness.mockResolvedValue(true);

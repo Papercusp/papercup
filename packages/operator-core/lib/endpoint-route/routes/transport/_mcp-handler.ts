@@ -2347,16 +2347,18 @@ const handler = createMcpHandler(
                   (argHarness === 'all' ||
                     argHarness === '*' ||
                     (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
-                // A resumed evidence-only monitor can retain an ambient Hive
-                // from its recovery session while naming the owning harness of
-                // one exact plan. Verify the row in this workspace BEFORE
-                // rebinding dispatch; every other tool/query keeps the normal
-                // sibling-Hive rejection.
-                const verifiedPlansGetRebind =
+                // A resumed fleet leader can retain an ambient Hive while
+                // naming the owning harness of one exact plan. Verify the row
+                // in this workspace BEFORE rebinding dispatch. Keep this
+                // exemption deliberately narrow: plans:get is the exact-plan
+                // read recovery surface, while plans:add-decision is the one
+                // cross-lane write leaders are required to make durable. Every
+                // other tool/query keeps the normal sibling-Hive rejection.
+                const verifiedExactPlanRebind =
                   escapes &&
-                  toolName === 'plans:get' &&
+                  (toolName === 'plans:get' || toolName === 'plans:add-decision') &&
                   (await verifyExplicitPlanHarness(spawnRes.ctx, argHarness, args));
-                if (verifiedPlansGetRebind) {
+                if (verifiedExactPlanRebind) {
                   effectiveHarnessSlug = argHarness;
                 } else if (escapes) {
                   const crossHiveClaimHint =
