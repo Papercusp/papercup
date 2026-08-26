@@ -10,6 +10,7 @@ import { DBOS, WorkflowQueue } from '@dbos-inc/dbos-sdk';
 import {
   assessPreLaunchExclusion,
   checkpointEligibilityCompletionEvents,
+  CHECKPOINT_MAX_RUNTIME_SEC,
   checkpointPipelineName,
   launchDetachedCheckpoint,
   type CheckpointEligibilityWaitRequest,
@@ -190,6 +191,7 @@ export async function runCheckpointEligibilityWait(
       attemptId: input.logicalAttemptId,
       runnerId: `eligibility:${input.pendingId}`,
       candidate: recheck.candidate,
+      leaseDurationMs: CHECKPOINT_MAX_RUNTIME_SEC * 1_000,
       evidenceRefs: [`checkpoint-eligibility:${input.pendingId}`],
     });
     if (!mutationAllowsContinuation(reservation)) {
