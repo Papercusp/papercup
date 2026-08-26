@@ -342,6 +342,21 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     expect(captureImprovement).not.toHaveBeenCalled();
   });
 
+  it('refuses a waiver without the consult id the acceptance gate requires', async () => {
+    const res = await emitScorecard(
+      vettingArgs({
+        vettingConsult: undefined,
+        vettingUnanswered: true,
+        vettingUnansweredReason: 'all routed reviewers ended before replying',
+      }) as never,
+      EMIT_INPUT,
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('vettingUnanswered requires vettingConsult');
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
   it('refuses a waiver when the consult DID receive critique — it cannot be passed reflexively', async () => {
     const res = await emitScorecard(
       vettingArgs({
