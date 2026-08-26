@@ -142,6 +142,16 @@ export {
   validateWorkspaceHostInitializationCanary,
 } from "./workspace-host-initialization";
 export type {
+  WorkspaceHostDestroyCanaryEvidenceContract,
+  WorkspaceHostCredentialTeardownObservation,
+  WorkspaceHostDestroyOperationObservation,
+  AdaptWorkspaceHostDestroyEvidenceInput,
+} from "./workspace-host-destroy-evidence";
+export {
+  WorkspaceHostDestroyEvidenceError,
+  adaptWorkspaceHostDestroyCanaryEvidence,
+} from "./workspace-host-destroy-evidence";
+export type {
   WorkspaceHostWorkflowIdentity,
   WorkspaceHostWorkflowKeys,
   WorkspaceHostRetryClass,
