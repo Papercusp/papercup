@@ -318,24 +318,23 @@ function validateVulnerabilities(
       typeof finding.id !== 'string' ||
       !finding.id.trim() ||
       typeof severity !== 'string' ||
-      !Object.hasOwn(SEVERITY_RANK, severity) ||
-      severity === 'unknown'
+      !Object.hasOwn(SEVERITY_RANK, severity)
     ) {
       failure(
         failures,
         'vulnerability-scan',
         'malformed-evidence',
-        'Every vulnerability requires an id and a known severity.',
+        'Every vulnerability requires an id and a declared severity.',
       );
       continue;
     }
-    const knownSeverity = severity as Exclude<VulnerabilitySeverity, 'unknown'>;
-    if (SEVERITY_RANK[knownSeverity] >= threshold) {
+    const declaredSeverity = severity as VulnerabilitySeverity;
+    if (SEVERITY_RANK[declaredSeverity] >= threshold) {
       failure(
         failures,
         'vulnerability-scan',
         'vulnerability-threshold',
-        `Vulnerability '${finding.id}' severity '${knownSeverity}' meets the denied '${policy.denyVulnerabilitiesAtOrAbove}' threshold.`,
+        `Vulnerability '${finding.id}' severity '${declaredSeverity}' meets the denied '${policy.denyVulnerabilitiesAtOrAbove}' threshold.`,
       );
     }
   }
