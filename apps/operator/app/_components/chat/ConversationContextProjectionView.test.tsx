@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ConversationContextProjection } from '@papercusp/operator-core/lib/conversation-context-projection';
 
 const H = vi.hoisted(() => ({
@@ -93,6 +93,31 @@ function HookProbe() {
   return <span>{projection?.session.sessionId ?? 'missing'}</span>;
 }
 
+function AcceptProjectionProbe() {
+  const { projection, acceptProjection } = useConversationContextProjection({
+    sourceKind: 'agent_chat',
+    sessionId: 'chat-1',
+    harness: 'papercusp',
+  });
+  const task = projection?.frames.find((frame) => frame.kind === 'task');
+  return (
+    <>
+      <span>{task?.status ?? 'missing'}</span>
+      <button
+        type="button"
+        onClick={() => acceptProjection({
+          ...PROJECTION,
+          frames: PROJECTION.frames.map((frame) => (
+            frame.kind === 'task' ? { ...frame, status: 'completed' as const } : frame
+          )),
+        })}
+      >
+        Accept mutation projection
+      </button>
+    </>
+  );
+}
+
 afterEach(() => {
   cleanup();
   H.rows = [];
@@ -109,6 +134,14 @@ describe('shared conversation/context GUI consumer', () => {
       args: { sourceKind: 'agent_chat', sessionId: 'chat-1', harness: 'papercusp' },
       enabled: true,
     });
+  });
+
+  it('paints an accepted mutation projection before the subscription advances', () => {
+    H.rows = [PROJECTION];
+    render(<AcceptProjectionProbe />);
+    expect(screen.getByText('in_progress')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Accept mutation projection' }));
+    expect(screen.getByText('completed')).toBeTruthy();
   });
 
   it('renders every available non-transcript frame without inventing missing sections', () => {
@@ -142,5 +175,97 @@ describe('shared conversation/context GUI consumer', () => {
   it('renders nothing for an unavailable capability tier', () => {
     const { container } = render(<ConversationContextProjectionView projection={null} />);
     expect(container.innerHTML).toBe('');
+  });
+
+  it('emits add, edit, check, and drop actions only through the supplied callback', async () => {
+    const onTaskAction = vi.fn(async () => {});
+    render(
+      <ConversationContextProjectionView
+        projection={PROJECTION}
+        onTaskAction={onTaskAction}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText('New task'), { target: { value: 'Add regression coverage' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    await waitFor(() => expect(onTaskAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'add',
+      content: 'Add regression coverage',
+    })));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit task: Ship projection' }));
+    fireEvent.change(screen.getByLabelText('Task content: Ship projection'), {
+      target: { value: 'Ship shared projection' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(onTaskAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'edit',
+      taskId: 't1',
+      content: 'Ship shared projection',
+    })));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check task: Ship projection' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Drop task: Ship projection' }));
+    await waitFor(() => {
+      expect(onTaskAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'check', taskId: 't1' }));
+      expect(onTaskAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'drop', taskId: 't1' }));
+    });
+  });
+
+  it('offers manual blocker clearing but hides every control for a read-only tier', async () => {
+    const onTaskAction = vi.fn(async () => {});
+    const blockedProjection: ConversationContextProjection = {
+      ...PROJECTION,
+      frames: PROJECTION.frames.map((frame) => frame.kind === 'task' ? {
+        ...frame,
+        status: 'blocked' as const,
+        blockerRef: 'Waiting for operator input',
+        blockerState: {
+          ref: 'Waiting for operator input',
+          kind: 'text',
+          target: 'Waiting for operator input',
+          typed: false,
+          status: 'manual',
+          autoUnblocks: false,
+        },
+      } : frame),
+    };
+    const { rerender } = render(
+      <ConversationContextProjectionView
+        projection={blockedProjection}
+        onTaskAction={onTaskAction}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Clear blocker for task: Ship projection' }));
+    await waitFor(() => expect(onTaskAction).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'clear_blocker',
+      taskId: 't1',
+    })));
+
+    rerender(
+      <ConversationContextProjectionView
+        projection={{
+          ...blockedProjection,
+          capabilities: { ...blockedProjection.capabilities, taskWrite: false },
+        }}
+        onTaskAction={onTaskAction}
+      />,
+    );
+    expect(screen.queryByLabelText('New task')).toBeNull();
+    expect(screen.queryByRole('button', { name: /task:/i })).toBeNull();
+  });
+
+  it('renders the shared busy and error props for task mutations', () => {
+    render(
+      <ConversationContextProjectionView
+        projection={PROJECTION}
+        onTaskAction={vi.fn()}
+        taskActionBusy
+        taskActionError="Task write failed"
+      />,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('Task write failed');
+    expect(screen.getByLabelText('New task')).toHaveProperty('disabled', true);
+    expect(screen.getByRole('button', { name: 'Edit task: Ship projection' })).toHaveProperty('disabled', true);
   });
 });
