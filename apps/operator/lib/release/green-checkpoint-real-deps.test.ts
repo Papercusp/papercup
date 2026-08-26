@@ -17,7 +17,15 @@
  * The actual FF-of-main (advance → advanceReady) is the orchestration test's
  * real-git temp-repo path; here we never touch a real branch.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  onTestFinished,
+  vi,
+} from "vitest";
 import {
   existsSync,
   mkdtempSync,
@@ -2269,6 +2277,29 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
   });
 
   it("D-081 joined guard: unseen exact inputs traverse the real prelock publisher and materializer to a normal candidate-bound verdict", async () => {
+    // This test deliberately drives the REAL dependency-generation prewarm (that is the
+    // whole point of the "unseen exact inputs" path). green-checkpoint.ts routes every
+    // line of that subprocess's output — stdout included — to console.error ON PURPOSE:
+    // the orchestrator's stdout is reserved for machine-parsed markers, so narration is
+    // kept off it. The suite's fail-on-console would otherwise fail this test on that
+    // expected progress narration (37 stderr + 1 stdout lines in a measured run), which
+    // is exactly what it did. Swallow it for this test only; every assertion below still
+    // validates behavior. Restored via onTestFinished because this repo configures no
+    // restoreMocks, so a bare spy would leak into sibling tests.
+    //
+    // NARROWED, NOT DISABLED: only the prewarm narration is swallowed. Anything else is
+    // forwarded to the captured console.error — which is fail-on-console's own wrapper,
+    // since it installs before this spy — so a genuine unexpected error still fails the
+    // test. A blanket mockImplementation(() => {}) would have silently hidden one.
+    const forwardConsoleError = console.error.bind(console);
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        const first = typeof args[0] === "string" ? args[0] : "";
+        if (/ dependency-prewarm (stdout|stderr): /.test(first)) return;
+        forwardConsoleError(...args);
+      });
+    onTestFinished(() => consoleErrorSpy.mockRestore());
     const root = mkdtempSync(join(tmpdir(), "green-cp-d081-joined-"));
     const integration = join(root, "integration");
     const checkpoint = join(root, "checkpoint");
