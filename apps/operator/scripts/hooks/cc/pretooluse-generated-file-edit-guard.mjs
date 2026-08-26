@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // apps/operator/scripts/hooks/cc/pretooluse-generated-file-edit-guard.mjs
 //
-// PreToolUse (Edit|Write|MultiEdit) BLOCKING guard: refuse a hand-edit to a file
+// PreToolUse file-writer BLOCKING guard: refuse a hand-edit to a file
 // that DECLARES ITSELF GENERATED in its own header, or to the canonical tracked
 // internal-docs build mirror whose older artifacts lack that declaration. Plan
 // claude-md-projection-from-pg-2026-08-10 P-006, extending the repo rule that
@@ -100,9 +100,10 @@
 //      the CLI process the hook inherits, so it cannot be set per tool call.
 //
 // CONTRACT
-//   - Scope: Edit / Write / MultiEdit. Write IS included (unlike the nul-byte
-//     guard, whose bug is specific to find/replace): a full-file overwrite of a
-//     generated artifact by hand is precisely the thing being prevented.
+//   - Scope: Edit / Write / MultiEdit / Codex apply_patch and their MCP writer
+//     twins. Write IS included (unlike the nul-byte guard, whose bug is specific
+//     to find/replace): a full-file overwrite of a generated artifact by hand is
+//     precisely the thing being prevented.
 //   - Trigger: the file ALREADY ON DISK carries the marker, or resolves beneath
 //     the canonical internal-docs build mirror. A Write CREATING a new file is
 //     always allowed — realpath resolution fails open until a target exists.
@@ -113,10 +114,10 @@
 //   - `--self-test` runs the embedded cases (no stdin needed) and exits non-zero
 //     on failure; mirrors pretooluse-secrets-guard.mjs's own flag.
 //
-import { readFileSync, realpathSync } from 'node:fs';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import process from 'node:process';
+import { readFileSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import process from "node:process";
 
 /** How much of the file's head may carry the banner. */
 export const HEADER_LINES = 10;
@@ -128,15 +129,21 @@ const GENERATED = /\b(?:auto[-\s]?)?generated\b/i;
 // "do not edit" / "do NOT edit" / "don't edit" / "dont edit"
 const DO_NOT_EDIT = /\bdo\s*n(?:o|')?t\s+edit\b/i;
 
-const BYPASS_ENV = 'PAPERCUSP_ALLOW_GENERATED_EDIT';
-const INTERNAL_DOCS_MIRROR_REL = join('apps', 'operator', 'public', 'internal', 'docs');
+const BYPASS_ENV = "PAPERCUSP_ALLOW_GENERATED_EDIT";
+const INTERNAL_DOCS_MIRROR_REL = join(
+  "apps",
+  "operator",
+  "public",
+  "internal",
+  "docs",
+);
 const SCRATCH_REMEDY =
-  'If you genuinely must hand-repair this artifact (a broken generator blocking the fleet), ' +
-  'create a temporary helper under `.papercusp/scratch/` inside the tree and execute it with ' +
-  '`capability:bash`, or use `code:run`. The scratch directory is gitignored and resolves ' +
-  'workspace imports. Direct shell writes (`node -e`, heredoc, `sed -i`) with literal tracked ' +
-  'targets are blocked by the Bash-resource gate; computed-path writes remain advisory. Prefer ' +
-  'fixing the generator.';
+  "If you genuinely must hand-repair this artifact (a broken generator blocking the fleet), " +
+  "create a temporary helper under `.papercusp/scratch/` inside the tree and execute it with " +
+  "`capability:bash`, or use `code:run`. The scratch directory is gitignored and resolves " +
+  "workspace imports. Direct shell writes (`node -e`, heredoc, `sed -i`) with literal tracked " +
+  "targets are blocked by the Bash-resource gate; computed-path writes remain advisory. Prefer " +
+  "fixing the generator.";
 
 /**
  * Run only when executed as the hook, never when imported (a test importing the
@@ -162,18 +169,18 @@ function invokedAsScript() {
 if (invokedAsScript()) main();
 
 async function main() {
-  if (process.argv.includes('--self-test')) return selfTest();
+  if (process.argv.includes("--self-test")) return selfTest();
   try {
     const hook = JSON.parse(await readStdin(250));
-    const tool = hook.tool_name || '';
+    const tool = hook.tool_name || "";
     if (!isFileWritingTool(tool)) return done();
-    const filePath = (hook.tool_input || {}).file_path || '';
-    if (!filePath) return done();
     if (bypassed()) return done();
-
-    if (isInternalDocsMirror(filePath)) return denyInternalDocsMirror(filePath, tool);
-    const marker = findGeneratedMarker(readHead(filePath));
-    if (marker) return denyGenerated(filePath, marker, tool);
+    for (const filePath of targetPathsForTool(tool, hook.tool_input)) {
+      if (isInternalDocsMirror(filePath))
+        return denyInternalDocsMirror(filePath, tool);
+      const marker = findGeneratedMarker(readHead(filePath));
+      if (marker) return denyGenerated(filePath, marker, tool);
+    }
   } catch {
     // fail-open: never wedge edits on a hook bug
   }
@@ -182,7 +189,7 @@ async function main() {
 
 function bypassed() {
   const v = process.env[BYPASS_ENV];
-  return v === '1' || v === 'true';
+  return v === "1" || v === "true";
 }
 
 /**
@@ -213,8 +220,48 @@ function bypassed() {
  * refuses to overwrite drift) remains what actually enforces the invariant.
  */
 export function isFileWritingTool(tool) {
-  if (tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit') return true;
-  return /(?:^|__)capability_(?:edit|write|multi_?edit)$/i.test(tool || '');
+  if (
+    tool === "Edit" ||
+    tool === "Write" ||
+    tool === "MultiEdit" ||
+    tool === "apply_patch"
+  )
+    return true;
+  return /(?:^|__)capability_(?:edit|write|multi_?edit)$/i.test(tool || "");
+}
+
+/** Every existing target whose bytes this call may alter or remove. Codex sends
+ * apply_patch either as the raw patch frame or wrapped under `input` / `patch`.
+ * Keep Add targets too: a new file fails open by contract, while a pre-existing
+ * target must still receive the same protection as Write. */
+export function targetPathsForTool(tool, input) {
+  if (tool === "apply_patch") return applyPatchPaths(input);
+  const filePath = input && typeof input === "object" ? input.file_path : "";
+  return typeof filePath === "string" && filePath ? [filePath] : [];
+}
+
+function patchText(input) {
+  if (typeof input === "string") return input;
+  if (!input || typeof input !== "object") return "";
+  for (const value of Object.values(input)) {
+    if (typeof value === "string" && value.includes("*** Begin Patch"))
+      return value;
+  }
+  return "";
+}
+
+/** Parse the path-bearing native patch headers. A move touches both the existing
+ * source and the destination; inspecting both keeps rename/delete from becoming
+ * an escape hatch while preserving the existing fail-open rule for new paths. */
+export function applyPatchPaths(input) {
+  const paths = new Set();
+  for (const line of patchText(input).split(/\r?\n/)) {
+    const file = /^\*\*\* (?:Add|Update|Delete) File: (.+)$/.exec(line);
+    if (file) paths.add(file[1].trim());
+    const move = /^\*\*\* Move to: (.+)$/.exec(line);
+    if (move) paths.add(move[1].trim());
+  }
+  return [...paths].filter(Boolean);
 }
 
 /** The file's first HEADER_LINES lines, or null when absent/unreadable
@@ -228,7 +275,11 @@ function readHead(filePath) {
   }
   // A binary file has no banner to honour, and decoding it is meaningless.
   if (buf.indexOf(0) !== -1) return null;
-  return buf.subarray(0, HEADER_BYTES).toString('utf8').split('\n').slice(0, HEADER_LINES);
+  return buf
+    .subarray(0, HEADER_BYTES)
+    .toString("utf8")
+    .split("\n")
+    .slice(0, HEADER_LINES);
 }
 
 /**
@@ -238,7 +289,7 @@ function readHead(filePath) {
 export function findGeneratedMarker(headLines) {
   if (!headLines) return null;
   for (const raw of headLines) {
-    const line = raw.replace(/\r$/, '');
+    const line = raw.replace(/\r$/, "");
     if (line.length > MAX_MARKER_LINE) continue;
     if (GENERATED.test(line) && DO_NOT_EDIT.test(line)) return line.trim();
   }
@@ -254,11 +305,17 @@ export function findGeneratedMarker(headLines) {
 export function isInternalDocsMirror(filePath) {
   try {
     const hookFile = realpathSync(fileURLToPath(import.meta.url));
-    const repoRoot = realpathSync(resolve(dirname(hookFile), '..', '..', '..', '..', '..'));
+    const repoRoot = realpathSync(
+      resolve(dirname(hookFile), "..", "..", "..", "..", ".."),
+    );
     const target = realpathSync(filePath);
     const rel = relative(repoRoot, target);
-    if (!rel || isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) return false;
-    return rel === INTERNAL_DOCS_MIRROR_REL || rel.startsWith(`${INTERNAL_DOCS_MIRROR_REL}${sep}`);
+    if (!rel || isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`))
+      return false;
+    return (
+      rel === INTERNAL_DOCS_MIRROR_REL ||
+      rel.startsWith(`${INTERNAL_DOCS_MIRROR_REL}${sep}`)
+    );
   } catch {
     return false;
   }
@@ -298,13 +355,13 @@ function deny(reason) {
     process.stdout.write(
       JSON.stringify({
         hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          permissionDecision: 'deny',
+          hookEventName: "PreToolUse",
+          permissionDecision: "deny",
           permissionDecisionReason: reason,
         },
-      }) + '\n',
+      }) + "\n",
     );
-    process.stderr.write(reason + '\n');
+    process.stderr.write(reason + "\n");
   } catch {
     /* ignore */
   }
@@ -317,8 +374,8 @@ function done() {
 
 function readStdin(timeoutMs) {
   return new Promise((resolve) => {
-    if (process.stdin.isTTY) return resolve('');
-    let data = '';
+    if (process.stdin.isTTY) return resolve("");
+    let data = "";
     let settled = false;
     const finish = () => {
       if (!settled) {
@@ -327,13 +384,13 @@ function readStdin(timeoutMs) {
       }
     };
     const timer = setTimeout(finish, timeoutMs);
-    process.stdin.setEncoding('utf8');
-    process.stdin.on('data', (c) => (data += c));
-    process.stdin.on('end', () => {
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (c) => (data += c));
+    process.stdin.on("end", () => {
       clearTimeout(timer);
       finish();
     });
-    process.stdin.on('error', () => {
+    process.stdin.on("error", () => {
       clearTimeout(timer);
       finish();
     });
@@ -341,56 +398,142 @@ function readStdin(timeoutMs) {
 }
 
 function selfTest() {
-  const L = (s) => s.split('\n');
+  const L = (s) => s.split("\n");
   const cases = [
     // ── the five real banner shapes in this tree (verbatim heads) ──────────
-    { name: 'projector banner (CLAUDE.md post-cutover)', head: L('<!-- GENERATED FILE — DO NOT EDIT BY HAND. -->\n<!-- Projected from Postgres -->'), expectDeny: true },
-    { name: 'AGENT-ENV.md', head: L('<!-- GENERATED by npx tsx scripts/gen-agent-env.ts — do NOT edit by hand. Regenerate after'), expectDeny: true },
-    { name: 'BORROWABLE.md (marker on line 3)', head: L('# Borrowable libraries\n\n> **Generated — do not edit by hand.** Run `npm run gen:borrowable`.'), expectDeny: true },
-    { name: 'release-video.ts', head: L(' * ⚠ GENERATED FILE — do not edit by hand. Run bin/gen-release-video.sh.'), expectDeny: true },
-    { name: 'style-dictionary CSS', head: L(' * Do not edit directly, this file was auto-generated.'), expectDeny: true },
-    { name: "apostrophe form (don't edit)", head: L('// Generated by X. don\'t edit.'), expectDeny: true },
+    {
+      name: "projector banner (CLAUDE.md post-cutover)",
+      head: L(
+        "<!-- GENERATED FILE — DO NOT EDIT BY HAND. -->\n<!-- Projected from Postgres -->",
+      ),
+      expectDeny: true,
+    },
+    {
+      name: "AGENT-ENV.md",
+      head: L(
+        "<!-- GENERATED by npx tsx scripts/gen-agent-env.ts — do NOT edit by hand. Regenerate after",
+      ),
+      expectDeny: true,
+    },
+    {
+      name: "BORROWABLE.md (marker on line 3)",
+      head: L(
+        "# Borrowable libraries\n\n> **Generated — do not edit by hand.** Run `npm run gen:borrowable`.",
+      ),
+      expectDeny: true,
+    },
+    {
+      name: "release-video.ts",
+      head: L(
+        " * ⚠ GENERATED FILE — do not edit by hand. Run bin/gen-release-video.sh.",
+      ),
+      expectDeny: true,
+    },
+    {
+      name: "style-dictionary CSS",
+      head: L(" * Do not edit directly, this file was auto-generated."),
+      expectDeny: true,
+    },
+    {
+      name: "apostrophe form (don't edit)",
+      head: L("// Generated by X. don't edit."),
+      expectDeny: true,
+    },
     // ── must NOT fire ──────────────────────────────────────────────────────
-    { name: 'hand-authored CLAUDE.md (pre-cutover)', head: L('# Papercup — agent guide\n\n> Invariants + pointers only.'), expectDeny: false },
-    { name: 'both tokens but on DIFFERENT lines', head: L('# Generated report\n\nPlease do not edit the fixture below.'), expectDeny: false },
-    { name: '"do not edit" alone (prose about something else)', head: L('// Do not edit this test without reading the header.'), expectDeny: false },
-    { name: '"generated" alone', head: L('// This module is generated at runtime from the registry.'), expectDeny: false },
-    { name: 'marker below the header window (line 11)', head: L('a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n<!-- GENERATED — do not edit -->').slice(0, HEADER_LINES), expectDeny: false },
-    { name: 'minified blob line >300 chars (the .js.map false positive)', head: [`{"x":"${'y'.repeat(400)} GENERATED do not edit"}`], expectDeny: false },
-    { name: 'unreadable/absent file (fail-open)', head: null, expectDeny: false },
+    {
+      name: "hand-authored CLAUDE.md (pre-cutover)",
+      head: L("# Papercup — agent guide\n\n> Invariants + pointers only."),
+      expectDeny: false,
+    },
+    {
+      name: "both tokens but on DIFFERENT lines",
+      head: L("# Generated report\n\nPlease do not edit the fixture below."),
+      expectDeny: false,
+    },
+    {
+      name: '"do not edit" alone (prose about something else)',
+      head: L("// Do not edit this test without reading the header."),
+      expectDeny: false,
+    },
+    {
+      name: '"generated" alone',
+      head: L("// This module is generated at runtime from the registry."),
+      expectDeny: false,
+    },
+    {
+      name: "marker below the header window (line 11)",
+      head: L(
+        "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n<!-- GENERATED — do not edit -->",
+      ).slice(0, HEADER_LINES),
+      expectDeny: false,
+    },
+    {
+      name: "minified blob line >300 chars (the .js.map false positive)",
+      head: [`{"x":"${"y".repeat(400)} GENERATED do not edit"}`],
+      expectDeny: false,
+    },
+    {
+      name: "unreadable/absent file (fail-open)",
+      head: null,
+      expectDeny: false,
+    },
   ];
   let failed = false;
   for (const c of cases) {
     const denied = findGeneratedMarker(c.head) !== null;
     const ok = denied === c.expectDeny;
     if (!ok) failed = true;
-    process.stdout.write(`${ok ? 'ok' : 'FAIL'} — ${c.name}\n`);
+    process.stdout.write(`${ok ? "ok" : "FAIL"} — ${c.name}\n`);
   }
 
   // ── which TOOL NAMES the guard inspects at all ─────────────────────────────
   // A marker predicate that is perfect is still worthless on a tool_name the
   // guard skips before it ever reads the file — the hole measured 2026-08-12.
   const toolCases = [
-    { name: 'native Edit', tool: 'Edit', expect: true },
-    { name: 'native Write', tool: 'Write', expect: true },
-    { name: 'native MultiEdit', tool: 'MultiEdit', expect: true },
-    { name: 'MCP capability:edit (the measured bypass)', tool: 'mcp__papercusp-su__capability_edit', expect: true },
-    { name: 'MCP capability:write (the measured bypass)', tool: 'mcp__papercusp-su__capability_write', expect: true },
-    { name: 'MCP server renamed — must still match', tool: 'mcp__some-other-server__capability_write', expect: true },
+    { name: "native Edit", tool: "Edit", expect: true },
+    { name: "native Write", tool: "Write", expect: true },
+    { name: "native MultiEdit", tool: "MultiEdit", expect: true },
+    {
+      name: "MCP capability:edit (the measured bypass)",
+      tool: "mcp__papercusp-su__capability_edit",
+      expect: true,
+    },
+    {
+      name: "MCP capability:write (the measured bypass)",
+      tool: "mcp__papercusp-su__capability_write",
+      expect: true,
+    },
+    {
+      name: "MCP server renamed — must still match",
+      tool: "mcp__some-other-server__capability_write",
+      expect: true,
+    },
     // must NOT fire — these do not write the target's bytes
-    { name: 'capability:read', tool: 'mcp__papercusp-su__capability_read', expect: false },
-    { name: 'capability:bash (documented accepted gap, not a tool-name miss)', tool: 'mcp__papercusp-su__capability_bash', expect: false },
-    { name: 'Read', tool: 'Read', expect: false },
-    { name: 'a tool merely CONTAINING the word edit', tool: 'mcp__x__plans_edit', expect: false },
-    { name: 'empty / absent tool_name', tool: '', expect: false },
+    {
+      name: "capability:read",
+      tool: "mcp__papercusp-su__capability_read",
+      expect: false,
+    },
+    {
+      name: "capability:bash (documented accepted gap, not a tool-name miss)",
+      tool: "mcp__papercusp-su__capability_bash",
+      expect: false,
+    },
+    { name: "Read", tool: "Read", expect: false },
+    {
+      name: "a tool merely CONTAINING the word edit",
+      tool: "mcp__x__plans_edit",
+      expect: false,
+    },
+    { name: "empty / absent tool_name", tool: "", expect: false },
   ];
   for (const c of toolCases) {
     const ok = isFileWritingTool(c.tool) === c.expect;
     if (!ok) failed = true;
-    process.stdout.write(`${ok ? 'ok' : 'FAIL'} — tool: ${c.name}\n`);
+    process.stdout.write(`${ok ? "ok" : "FAIL"} — tool: ${c.name}\n`);
   }
 
   const total = cases.length + toolCases.length;
-  process.stdout.write(failed ? 'SELF-TEST FAILED\n' : `ok — ${total} cases\n`);
+  process.stdout.write(failed ? "SELF-TEST FAILED\n" : `ok — ${total} cases\n`);
   process.exit(failed ? 1 : 0);
 }

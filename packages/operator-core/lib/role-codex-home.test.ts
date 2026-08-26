@@ -57,12 +57,14 @@ function installStaleExtendedWindowRecord(model: string) {
   writeFileSync(
     join(dir, 'models_cache.json'),
     JSON.stringify({
-      models: [{
-        slug: model,
-        context_window: 272_000,
-        max_context_window: 872_000,
-        effective_context_window_percent: 95,
-      }],
+      models: [
+        {
+          slug: model,
+          context_window: 272_000,
+          max_context_window: 872_000,
+          effective_context_window_percent: 95,
+        },
+      ],
     }),
   );
 }
@@ -80,6 +82,7 @@ async function installFakeHooks() {
   writeFileSync(join(dir, 'posttooluse-objective-title.sh'), '#!/bin/sh\n');
   writeFileSync(join(dir, 'posttooluse-write-byte-integrity-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-control-bytes-content-guard.mjs'), '#!/usr/bin/env node\n');
+  writeFileSync(join(dir, 'pretooluse-generated-file-edit-guard.mjs'), '#!/usr/bin/env node\n');
   writeFileSync(join(dir, 'pretooluse-bash-resource-gate.sh'), '#!/bin/sh\n');
   return dir;
 }
@@ -106,9 +109,7 @@ describe('writeRoleCodexHome', () => {
       model: 'sol:high',
     });
     const toml = readFileSync(out.configPath, 'utf8');
-    expect(toml).toMatch(
-      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
-    );
+    expect(toml).toMatch(/^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/);
     expect(toml.indexOf('model_context_window')).toBeLessThan(toml.indexOf('[features]'));
   });
 
@@ -286,6 +287,13 @@ describe('writeRoleCodexHome', () => {
     expect(controlBytes.matcher).toBe(
       '^(?:apply_patch|Edit|Write|MultiEdit|mcp__.*__capability_(?:edit|write|multi_?edit))$',
     );
+    const generatedFiles = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-generated-file-edit-guard.mjs'),
+    );
+    expect(generatedFiles).toBeTruthy();
+    expect(generatedFiles.matcher).toBe(
+      '^(?:apply_patch|Edit|Write|MultiEdit|mcp__.*__capability_(?:edit|write|multi_?edit))$',
+    );
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toContain('posttooluse-locks-release.sh');
     expect(hooks.hooks.PostToolUse[0].matcher).toBe(
       '^(?:apply_patch|Edit|Write|exec|functions\\.exec|functions__exec)$',
@@ -439,10 +447,7 @@ describe('writeSuCodexHome', () => {
 
   it.each([
     ['missing context roots', ''],
-    [
-      'superseded context roots',
-      'model_context_window = 872000\nmodel_auto_compact_token_limit = 784800\n',
-    ],
+    ['superseded context roots', 'model_context_window = 872000\nmodel_auto_compact_token_limit = 784800\n'],
   ])('upgrades a healthy managed SU home with %s before a model-less resume', async (_case, prefix) => {
     installStaleExtendedWindowRecord('gpt-5.6-sol');
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
@@ -466,9 +471,7 @@ describe('writeSuCodexHome', () => {
     });
     expect(upgraded.repaired).toBe(true);
     const upgradedToml = readFileSync(upgraded.configPath, 'utf8');
-    expect(upgradedToml).toMatch(
-      /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
-    );
+    expect(upgradedToml).toMatch(/^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/);
     expect(upgradedToml).not.toContain('872000');
     expect(upgradedToml).not.toContain('784800');
 
@@ -629,13 +632,23 @@ describe('writeSuCodexHome', () => {
       const { writeSuCodexHome } = await loadMod();
       writeSuCodexHome({ sessionKey: 'k2', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'OLD', sid: 's1' });
       // No isOwnerLive passed — the guard must be a complete no-op (default off).
-      const second = writeSuCodexHome({ sessionKey: 'k2', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'NEW', sid: 's2' });
+      const second = writeSuCodexHome({
+        sessionKey: 'k2',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'NEW',
+        sid: 's2',
+      });
       expect(readFileSync(second.agentsPath, 'utf8')).toContain('NEW');
     });
 
     it('REFUSES to rebuild a sessionKey whose home is still the LIVE Codex home of a different sid', async () => {
       const { writeSuCodexHome } = await loadMod();
-      writeSuCodexHome({ sessionKey: 'k3', mcpUrl: 'http://x/api/mcp?superuser=1', promptText: 'FIRST', sid: 'su-adf046e9' });
+      writeSuCodexHome({
+        sessionKey: 'k3',
+        mcpUrl: 'http://x/api/mcp?superuser=1',
+        promptText: 'FIRST',
+        sid: 'su-adf046e9',
+      });
       const isOwnerLive = vi.fn((sid: string) => sid === 'su-adf046e9');
       expect(() =>
         writeSuCodexHome({
@@ -948,6 +961,11 @@ describe('writeSuCodexHome', () => {
     );
     expect(controlBytes).toBeTruthy();
     expect(controlBytes.matcher).toContain('apply_patch');
+    const generatedFiles = hooks.hooks.PreToolUse.find((e: { hooks: { command: string }[] }) =>
+      e.hooks[0].command.includes('pretooluse-generated-file-edit-guard.mjs'),
+    );
+    expect(generatedFiles).toBeTruthy();
+    expect(generatedFiles.matcher).toContain('apply_patch');
     const byteGuard = hooks.hooks.PostToolUse.find((e: { hooks: { command: string }[] }) =>
       e.hooks[0].command.includes('posttooluse-write-byte-integrity-guard.mjs'),
     );

@@ -650,6 +650,18 @@ export function writeCodexLockHooks(
     });
   }
 
+  // WI-41770: keep the policy-bearing generated-artifact guard identical across
+  // Claude and managed Codex homes. The shared script understands Codex's raw or
+  // wrapped apply_patch frame, so projected docs cannot be hand-edited through a
+  // client whose tool payload has no top-level file_path.
+  const generatedFiles = join(dir, 'pretooluse-generated-file-edit-guard.mjs');
+  if (existsSync(generatedFiles)) {
+    preToolUse.push({
+      matcher: CODEX_CONTROL_BYTES_PRE_MATCHER,
+      hooks: [{ type: 'command', command: generatedFiles }],
+    });
+  }
+
   // Native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010):
   // AGENT homes (role sessions — never the human su home, D-003) get the
   // bash-resource-gate with the agent marker BAKED (codex hands hooks a
@@ -751,10 +763,7 @@ export function repairSuCodexHomeIdentity(
     /* missing/unreadable is a repair input */
   }
 
-  const hookOwners = Array.from(
-    hooksText.matchAll(/PAPERCUSP_(?:LOCK_)?SID='([^']+)'/g),
-    (match) => match[1],
-  );
+  const hookOwners = Array.from(hooksText.matchAll(/PAPERCUSP_(?:LOCK_)?SID='([^']+)'/g), (match) => match[1]);
   const hooksExpected = diagnostics.lockEnforcement === 'hooks-configured' || existsSync(hooksPath);
   const hooksMatch = hooksExpected
     ? hookOwners.length > 0 && hookOwners.every((owner) => owner === sid)
@@ -1023,9 +1032,13 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  * (or carry superseded values) are rewritten from this canonical renderer so a
  * model-less resume cannot silently fall back to Codex's smaller native window.
  */
-export function ensureSuCodexHomeConfig(
-  opts: SuCodexConfigInput & { sessionKey: string | number },
-): { codexHome: string; configPath: string; repaired: boolean; identityRepaired: boolean; reason?: 'no-home' } {
+export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey: string | number }): {
+  codexHome: string;
+  configPath: string;
+  repaired: boolean;
+  identityRepaired: boolean;
+  reason?: 'no-home';
+} {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(codexHome)) {
@@ -1042,10 +1055,11 @@ export function ensureSuCodexHomeConfig(
     const contextMatches = expectedContextConfig
       ? current.startsWith(expectedContextConfig)
       : !/^model_(?:context_window|auto_compact_token_limit)\s*=/m.test(current);
-    configReady = current.includes('[mcp_servers.papercusp-su]')
-      && current.includes(expectedClient)
-      && contextMatches
-      && current.includes(expectedLogDir);
+    configReady =
+      current.includes('[mcp_servers.papercusp-su]') &&
+      current.includes(expectedClient) &&
+      contextMatches &&
+      current.includes(expectedLogDir);
   } catch {
     /* absent or unreadable — that is precisely the repair case */
   }
