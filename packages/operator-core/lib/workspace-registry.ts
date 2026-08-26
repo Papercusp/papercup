@@ -271,6 +271,14 @@ export function activeWorkspaceId(): string {
   //    without following the process-global `reg.current`.
   const req = currentRequestWorkspaceId();
   if (req && req.trim() && !isMalformedWorkspaceId(req)) return req.trim();
+  // 2. Process pin — a dedicated single-workspace process (orchestrator agent,
+  //    durable-pipeline dispatcher) that must not follow the desktop UI's
+  //    volatile switches. Mirrors the orchestrator's `activeWorkspaceId()`.
+  //    EI-21412168682953521: an ambient value that is not a real workspace identity
+  //    (unexpanded template / quoted / a path) falls through instead of partitioning
+  //    writes under garbage.
+  const env = process.env.PAPERCUSP_WORKSPACE_ID;
+  if (env && env.trim() && !isMalformedWorkspaceId(env)) return env.trim();
   // 3. Global default — the workspace a new window opens into / background work
   //    uses when not told otherwise. No longer authoritative for request work.
   const reg = readRegistry();

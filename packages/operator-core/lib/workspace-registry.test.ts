@@ -404,3 +404,46 @@ describe('workspace-registry — a corrupt registry is not an empty one (WI-6734
     expect(readdirSync(root).filter((f) => f.includes('.tmp'))).toEqual([]);
   });
 });
+describe('workspace-registry — malformed ambient ids never become tenants (EI-21412168682953521)', () => {
+  const MALFORMED = [
+    '${PAPERCUSP_WORKSPACE}', // unexpanded env template
+    '"papercusp-workspace"', // JSON-double-quoted
+    '/home/dev/papercusp', // filesystem path
+  ];
+
+  it('activeWorkspaceId ignores a malformed PAPERCUSP_WORKSPACE_ID and reads the registry', () => {
+    writeRegistry({ current: 'papercusp-workspace', workspaces: [{ id: 'papercusp-workspace', name: 'P', createdAt: 1 }] });
+    const saved = process.env.PAPERCUSP_WORKSPACE_ID;
+    try {
+      for (const bad of MALFORMED) {
+        process.env.PAPERCUSP_WORKSPACE_ID = bad;
+        expect(activeWorkspaceId()).toBe('papercusp-workspace');
+      }
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = saved;
+    }
+  });
+
+  it('resolveConcreteWorkspaceId skips malformed candidates and returns the next valid one', () => {
+    for (const bad of MALFORMED) {
+      expect(resolveConcreteWorkspaceId(bad, 'papercusp-workspace')).toBe('papercusp-workspace');
+    }
+    // All-malformed falls through to activeWorkspaceId() — which, with a clean registry,
+    // is the registry default rather than any garbage candidate.
+    writeRegistry({ current: 'papercusp-workspace', workspaces: [{ id: 'papercusp-workspace', name: 'P', createdAt: 1 }] });
+    const saved = process.env.PAPERCUSP_WORKSPACE_ID;
+    delete process.env.PAPERCUSP_WORKSPACE_ID;
+    try {
+      expect(resolveConcreteWorkspaceId(...MALFORMED)).toBe('papercusp-workspace');
+    } finally {
+      if (saved === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
+      else process.env.PAPERCUSP_WORKSPACE_ID = saved;
+    }
+  });
+
+  it('still returns valid slug ids untouched (no false positives)', () => {
+    expect(resolveConcreteWorkspaceId('papercusp-workspace')).toBe('papercusp-workspace');
+    expect(resolveConcreteWorkspaceId('default')).toBe('default');
+  });
+});

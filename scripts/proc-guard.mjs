@@ -70,6 +70,11 @@
  *     argv-text-only count so prompt collisions are visible but cannot turn a
  *     liveness check into a permanent YES. Pass --verbose to print the full
  *     command line instead of the bounded display form.
+ *   node scripts/proc-guard.mjs tree <pid> [--max-nodes=<n>] [--max-depth=<n>] [--budget-ms=<n>]
+ *     Print one PID-rooted process tree without enumerating the host process
+ *     table. Child discovery reads only the target's per-thread `children`
+ *     files under /proc/<pid>/task and is
+ *     bounded by node count, depth, and wall-clock budget.
  *
  * Library (unit-tested against a fixture /proc — see proc-guard.test.ts;
  * `procRoot` / `selfPid` are both injectable for that reason):
@@ -81,12 +86,13 @@
  *   matchExternalProcesses(pattern, opts) -> operational matching rows, self + ancestors excluded
  *   matchExternalProcessesDetailed(...)   -> operational, full, and argv-text-only rows
  */
-import { readFileSync, readdirSync } from 'node:fs';
-import path from 'node:path';
+import { readFileSync, readdirSync } from "node:fs";
+import path from "node:path";
 
-const DEFAULT_PROC_ROOT = '/proc';
+const DEFAULT_PROC_ROOT = "/proc";
 const GREEN_CHECKPOINT_PATTERN = /green(?:\\?[-_])checkpoint/i;
-const GREEN_CHECKPOINT_CGROUP = /(?:^|\/)(?:papercup|papercusp)-green-checkpoint(?:[-./]|$)/i;
+const GREEN_CHECKPOINT_CGROUP =
+  /(?:^|\/)(?:papercup|papercusp)-green-checkpoint(?:[-./]|$)/i;
 
 /**
  * One live process, as read out of `/proc`.
@@ -127,9 +133,16 @@ const GREEN_CHECKPOINT_CGROUP = /(?:^|\/)(?:papercup|papercusp)-green-checkpoint
 
 /** @typedef {CgroupBusyOk | CgroupBusyUnknown} CgroupBusySample */
 
-const PROMPT_ARG_MARKERS = ['PAPERCUSP_KICKOFF_PROMPT=', '⟦turn-origin:'];
-const PROMPT_ARG_PREFIXES = ['--kickoff=', '--label='];
-const DEFAULT_INTERPRETER_BASENAMES = new Set(['node', 'nodejs', 'npx', 'npm', 'gitnexus', 'gitnexus.js']);
+const PROMPT_ARG_MARKERS = ["PAPERCUSP_KICKOFF_PROMPT=", "⟦turn-origin:"];
+const PROMPT_ARG_PREFIXES = ["--kickoff=", "--label="];
+const DEFAULT_INTERPRETER_BASENAMES = new Set([
+  "node",
+  "nodejs",
+  "npx",
+  "npm",
+  "gitnexus",
+  "gitnexus.js",
+]);
 const DEFAULT_PROCESS_CMDLINE_MAX_CHARS = 200;
 
 /**
@@ -139,7 +152,7 @@ const DEFAULT_PROCESS_CMDLINE_MAX_CHARS = 200;
  * @returns {string}
  */
 export function parseCmdline(raw) {
-  return parseArgv(raw).join(' ');
+  return parseArgv(raw).join(" ");
 }
 
 /**
@@ -150,8 +163,8 @@ export function parseCmdline(raw) {
  */
 export function parseArgv(raw) {
   return raw
-    .toString('utf8')
-    .split('\0')
+    .toString("utf8")
+    .split("\0")
     .filter((s) => s.length > 0);
 }
 
@@ -165,7 +178,8 @@ export function parseArgv(raw) {
  */
 export function formatProcessCmdline(cmdline, opts = {}) {
   const text = String(cmdline);
-  if (opts.verbose || text.length <= DEFAULT_PROCESS_CMDLINE_MAX_CHARS) return text;
+  if (opts.verbose || text.length <= DEFAULT_PROCESS_CMDLINE_MAX_CHARS)
+    return text;
   return `${text.slice(0, DEFAULT_PROCESS_CMDLINE_MAX_CHARS - 1)}…`;
 }
 
@@ -190,10 +204,11 @@ export function isStructuredPayloadArg(arg) {
   if (trimmed.length < 2) return false;
   const first = trimmed[0];
   const last = trimmed[trimmed.length - 1];
-  if (!((first === '{' && last === '}') || (first === '[' && last === ']'))) return false;
+  if (!((first === "{" && last === "}") || (first === "[" && last === "]")))
+    return false;
   try {
     const parsed = JSON.parse(trimmed);
-    return typeof parsed === 'object' && parsed !== null;
+    return typeof parsed === "object" && parsed !== null;
   } catch {
     return false;
   }
@@ -226,16 +241,17 @@ export function getOperationalArgv(argv) {
 }
 
 function argvBasename(arg) {
-  return path.basename(String(arg).replaceAll('\\', '/'));
+  return path.basename(String(arg).replaceAll("\\", "/"));
 }
 
 function isCommandToken(arg, commandName, commandBasenames) {
-  const normalized = String(arg).replaceAll('\\', '/');
+  const normalized = String(arg).replaceAll("\\", "/");
   if (commandBasenames.has(path.posix.basename(normalized))) return true;
 
-  const pathSegments = normalized.split('/');
+  const pathSegments = normalized.split("/");
   return pathSegments.some(
-    (segment, index) => segment === 'node_modules' && pathSegments[index + 1] === commandName,
+    (segment, index) =>
+      segment === "node_modules" && pathSegments[index + 1] === commandName,
   );
 }
 
@@ -261,19 +277,34 @@ export function matchesAdjacentArgvSequence(argv, sequence, opts = {}) {
   if (
     !Array.isArray(sequence) ||
     sequence.length < 2 ||
-    sequence.some((token) => typeof token !== 'string' || !token)
+    sequence.some((token) => typeof token !== "string" || !token)
   ) {
     return false;
   }
 
   const operationalArgv = getOperationalArgv(argv);
-  const interpreterBasenames = new Set(opts.interpreterBasenames ?? DEFAULT_INTERPRETER_BASENAMES);
-  if (!interpreterBasenames.has(argvBasename(operationalArgv[0] ?? ''))) return false;
+  const interpreterBasenames = new Set(
+    opts.interpreterBasenames ?? DEFAULT_INTERPRETER_BASENAMES,
+  );
+  if (!interpreterBasenames.has(argvBasename(operationalArgv[0] ?? "")))
+    return false;
 
-  const commandBasenames = new Set(opts.commandBasenames ?? [sequence[0], `${sequence[0]}.js`]);
-  for (let start = 0; start <= operationalArgv.length - sequence.length; start += 1) {
-    if (!isCommandToken(operationalArgv[start], sequence[0], commandBasenames)) continue;
-    if (sequence.slice(1).every((token, offset) => operationalArgv[start + offset + 1] === token)) return true;
+  const commandBasenames = new Set(
+    opts.commandBasenames ?? [sequence[0], `${sequence[0]}.js`],
+  );
+  for (
+    let start = 0;
+    start <= operationalArgv.length - sequence.length;
+    start += 1
+  ) {
+    if (!isCommandToken(operationalArgv[start], sequence[0], commandBasenames))
+      continue;
+    if (
+      sequence
+        .slice(1)
+        .every((token, offset) => operationalArgv[start + offset + 1] === token)
+    )
+      return true;
   }
   return false;
 }
@@ -292,14 +323,18 @@ function readProcessIdentity(procRoot, pid) {
   let greenCheckpointMarker = false;
   let releaseGateMarker = false;
   try {
-    const environment = String(readFileSync(path.join(procRoot, String(pid), 'environ')));
-    for (const entry of environment.split('\0')) {
-      const separator = entry.indexOf('=');
+    const environment = String(
+      readFileSync(path.join(procRoot, String(pid), "environ")),
+    );
+    for (const entry of environment.split("\0")) {
+      const separator = entry.indexOf("=");
       if (separator === -1) continue;
       const key = entry.slice(0, separator);
       const value = entry.slice(separator + 1);
-      if (key === 'GREEN_CHECKPOINT' && value === '1') greenCheckpointMarker = true;
-      if (key === 'PC_HEAVY_RELEASE_GATE' && value === '1') releaseGateMarker = true;
+      if (key === "GREEN_CHECKPOINT" && value === "1")
+        greenCheckpointMarker = true;
+      if (key === "PC_HEAVY_RELEASE_GATE" && value === "1")
+        releaseGateMarker = true;
     }
   } catch {
     // Processes can exit between cmdline and identity reads. argv remains useful.
@@ -307,7 +342,9 @@ function readProcessIdentity(procRoot, pid) {
 
   let cgroupPath = null;
   try {
-    cgroupPath = parseCgroupPath(readFileSync(path.join(procRoot, String(pid), 'cgroup'), 'utf8'));
+    cgroupPath = parseCgroupPath(
+      readFileSync(path.join(procRoot, String(pid), "cgroup"), "utf8"),
+    );
   } catch {
     // cgroup identity is supplementary; an unreadable file is not a match.
   }
@@ -323,7 +360,8 @@ function matchesGreenCheckpointIdentity(processRow) {
   if (!identity) return false;
   return (
     (identity.greenCheckpointMarker && identity.releaseGateMarker) ||
-    (identity.cgroupPath !== null && GREEN_CHECKPOINT_CGROUP.test(identity.cgroupPath))
+    (identity.cgroupPath !== null &&
+      GREEN_CHECKPOINT_CGROUP.test(identity.cgroupPath))
   );
 }
 
@@ -337,9 +375,12 @@ function matchesGreenCheckpointIdentity(processRow) {
  * @returns {number | null}
  */
 export function parsePpid(statLine) {
-  const closeParen = statLine.lastIndexOf(')');
+  const closeParen = statLine.lastIndexOf(")");
   if (closeParen === -1) return null;
-  const rest = statLine.slice(closeParen + 1).trim().split(/\s+/);
+  const rest = statLine
+    .slice(closeParen + 1)
+    .trim()
+    .split(/\s+/);
   // rest[0] = state, rest[1] = ppid
   const ppid = Number(rest[1]);
   return Number.isFinite(ppid) ? ppid : null;
@@ -367,15 +408,15 @@ export function listProcesses(procRoot = DEFAULT_PROC_ROOT, opts = {}) {
     const pid = Number(name);
     let argv;
     try {
-      argv = parseArgv(readFileSync(path.join(procRoot, name, 'cmdline')));
+      argv = parseArgv(readFileSync(path.join(procRoot, name, "cmdline")));
     } catch {
       continue; // process exited between readdir and read (or fixture has no cmdline) — skip
     }
-    const cmdline = argv.join(' ');
+    const cmdline = argv.join(" ");
     if (!cmdline) continue; // kernel threads / zombies have empty cmdline — never a real match
     let ppid = null;
     try {
-      ppid = parsePpid(readFileSync(path.join(procRoot, name, 'stat'), 'utf8'));
+      ppid = parsePpid(readFileSync(path.join(procRoot, name, "stat"), "utf8"));
     } catch {
       ppid = null;
     }
@@ -407,6 +448,90 @@ export function getAncestryChain(pid, byPid, maxHops = 512) {
     hops += 1;
   }
   return chain;
+}
+
+/**
+ * Read a PID-rooted process tree without a host-wide /proc scan. Linux records
+ * children per thread, so every bounded per-thread `children` file is consulted.
+ * Races are fail-soft: a process that exits while being read is omitted.
+ *
+ * @param {number} rootPid
+ * @param {{ procRoot?: string; maxNodes?: number; maxDepth?: number; budgetMs?: number; now?: () => number }} [opts]
+ * @returns {{ rows: Array<ProcRow & { depth: number }>; truncated: boolean; reason: string | null }}
+ */
+export function walkProcessTree(rootPid, opts = {}) {
+  const procRoot = opts.procRoot ?? DEFAULT_PROC_ROOT;
+  const maxNodes = opts.maxNodes ?? 256;
+  const maxDepth = opts.maxDepth ?? 32;
+  const budgetMs = opts.budgetMs ?? 1_000;
+  const now = opts.now ?? (() => Date.now());
+  const startedAt = now();
+  const queue = [{ pid: rootPid, depth: 0 }];
+  const seen = new Set();
+  const rows = [];
+  let truncated = false;
+  let reason = null;
+
+  while (queue.length > 0) {
+    if (rows.length >= maxNodes) {
+      truncated = true;
+      reason = "max-nodes";
+      break;
+    }
+    if (now() - startedAt >= budgetMs) {
+      truncated = true;
+      reason = "budget";
+      break;
+    }
+    const current = queue.shift();
+    if (!current || seen.has(current.pid)) continue;
+    seen.add(current.pid);
+    const pidDir = path.join(procRoot, String(current.pid));
+    let argv;
+    let ppid = null;
+    try {
+      argv = parseArgv(readFileSync(path.join(pidDir, "cmdline")));
+      ppid = parsePpid(readFileSync(path.join(pidDir, "stat"), "utf8"));
+    } catch {
+      continue;
+    }
+    rows.push({
+      pid: current.pid,
+      ppid,
+      argv,
+      cmdline: argv.join(" "),
+      depth: current.depth,
+    });
+    if (current.depth >= maxDepth) {
+      truncated = true;
+      reason ??= "max-depth";
+      continue;
+    }
+    let tids = [];
+    try {
+      tids = readdirSync(path.join(pidDir, "task"))
+        .filter((name) => /^\d+$/.test(name))
+        .slice(0, maxNodes);
+    } catch {
+      continue;
+    }
+    for (const tid of tids) {
+      let children = "";
+      try {
+        children = readFileSync(
+          path.join(pidDir, "task", tid, "children"),
+          "utf8",
+        );
+      } catch {
+        continue;
+      }
+      for (const token of children.trim().split(/\s+/)) {
+        if (/^\d+$/.test(token))
+          queue.push({ pid: Number(token), depth: current.depth + 1 });
+      }
+    }
+  }
+  return { rows, truncated, reason };
 }
 
 /**
@@ -454,16 +579,22 @@ export function matchExternalProcessesDetailed(pattern, opts = {}) {
           commandBasenames: opts.commandBasenames,
         }),
       )
-    : external.filter((p) => re.test(getOperationalArgv(p.argv).join(' ')));
+    : external.filter((p) => re.test(getOperationalArgv(p.argv).join(" ")));
   const matchedOperationalPids = new Set(operationalMatches.map((p) => p.pid));
-  const identityMatches = knownIdentity ? external.filter(matchesGreenCheckpointIdentity) : [];
+  const identityMatches = knownIdentity
+    ? external.filter(matchesGreenCheckpointIdentity)
+    : [];
   const matchedIdentityPids = new Set(identityMatches.map((p) => p.pid));
-  const matches = external.filter((p) => matchedOperationalPids.has(p.pid) || matchedIdentityPids.has(p.pid));
-  const argvTextOnly = fullMatches.filter((p) => !matchedOperationalPids.has(p.pid));
+  const matches = external.filter(
+    (p) => matchedOperationalPids.has(p.pid) || matchedIdentityPids.has(p.pid),
+  );
+  const argvTextOnly = fullMatches.filter(
+    (p) => !matchedOperationalPids.has(p.pid),
+  );
   return { matches, fullMatches, argvTextOnly, identityMatches };
 }
 
-const DEFAULT_CGROUP_ROOT = '/sys/fs/cgroup';
+const DEFAULT_CGROUP_ROOT = "/sys/fs/cgroup";
 const DEFAULT_SAMPLE_MS = 10_000;
 // One normal 10s measurement plus a measured-latency cushion. The shared
 // deadline is intentionally independent of the number of matching processes:
@@ -480,9 +611,9 @@ const NEAR_ZERO_CORES = 0.05;
  * @returns {string | null} null when there is no v2 line (cgroup v1-only host).
  */
 export function parseCgroupPath(raw) {
-  for (const line of String(raw).split('\n')) {
+  for (const line of String(raw).split("\n")) {
     const m = /^0::(.*)$/.exec(line.trim());
-    if (m) return m[1] || '/';
+    if (m) return m[1] || "/";
   }
   return null;
 }
@@ -543,24 +674,31 @@ export async function sampleCgroupBusy(pid, opts = {}) {
   const now = opts.now ?? (() => Date.now());
   const startedAt = now();
   if (!(sampleMs > 0) || !Number.isFinite(sampleMs)) {
-    return { status: 'unknown', reason: 'invalid-sample-window' };
+    return { status: "unknown", reason: "invalid-sample-window" };
   }
-  if (opts.budgetMs !== undefined && (!(opts.budgetMs >= 0) || !Number.isFinite(opts.budgetMs))) {
-    return { status: 'unknown', reason: 'invalid-budget' };
+  if (
+    opts.budgetMs !== undefined &&
+    (!(opts.budgetMs >= 0) || !Number.isFinite(opts.budgetMs))
+  ) {
+    return { status: "unknown", reason: "invalid-budget" };
   }
   if (opts.deadlineAt !== undefined && !Number.isFinite(opts.deadlineAt)) {
-    return { status: 'unknown', reason: 'invalid-deadline' };
+    return { status: "unknown", reason: "invalid-deadline" };
   }
-  const budgetDeadline = opts.budgetMs === undefined ? null : startedAt + opts.budgetMs;
+  const budgetDeadline =
+    opts.budgetMs === undefined ? null : startedAt + opts.budgetMs;
   const deadlineAt =
     opts.deadlineAt === undefined
       ? budgetDeadline
       : budgetDeadline === null
         ? opts.deadlineAt
         : Math.min(opts.deadlineAt, budgetDeadline);
-  const budgetExceeded = (cgroupPath, elapsedMs = Math.max(0, now() - startedAt)) => ({
-    status: 'unknown',
-    reason: 'budget-exhausted',
+  const budgetExceeded = (
+    cgroupPath,
+    elapsedMs = Math.max(0, now() - startedAt),
+  ) => ({
+    status: "unknown",
+    reason: "budget-exhausted",
     cgroupPath,
     elapsedMs,
   });
@@ -572,45 +710,62 @@ export async function sampleCgroupBusy(pid, opts = {}) {
 
   let cgPath = null;
   try {
-    cgPath = parseCgroupPath(readFileSync(path.join(procRoot, String(pid), 'cgroup'), 'utf8'));
+    cgPath = parseCgroupPath(
+      readFileSync(path.join(procRoot, String(pid), "cgroup"), "utf8"),
+    );
   } catch {
-    return { status: 'unknown', reason: 'no-cgroup-entry' };
+    return { status: "unknown", reason: "no-cgroup-entry" };
   }
-  if (!cgPath) return { status: 'unknown', reason: 'not-cgroup-v2' };
+  if (!cgPath) return { status: "unknown", reason: "not-cgroup-v2" };
   if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(cgPath);
 
-  const statPath = path.join(cgroupRoot, cgPath, 'cpu.stat');
+  const statPath = path.join(cgroupRoot, cgPath, "cpu.stat");
   const readUsage = () => {
     try {
-      return parseUsageUsec(readFileSync(statPath, 'utf8'));
+      return parseUsageUsec(readFileSync(statPath, "utf8"));
     } catch {
       return null;
     }
   };
 
   const a = readUsage();
-  if (a === null) return { status: 'unknown', reason: 'cpu-stat-unreadable', cgroupPath: cgPath };
-  if (deadlineAt !== null && deadlineAt - now() < sampleMs) return budgetExceeded(cgPath);
+  if (a === null)
+    return {
+      status: "unknown",
+      reason: "cpu-stat-unreadable",
+      cgroupPath: cgPath,
+    };
+  if (deadlineAt !== null && deadlineAt - now() < sampleMs)
+    return budgetExceeded(cgPath);
   const t0 = now();
   await sleep(sampleMs);
   const elapsedMs = now() - t0;
-  if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(cgPath, elapsedMs);
+  if (deadlineAt !== null && now() >= deadlineAt)
+    return budgetExceeded(cgPath, elapsedMs);
   const b = readUsage();
-  if (b === null) return { status: 'unknown', reason: 'cpu-stat-unreadable', cgroupPath: cgPath };
-  if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(cgPath, elapsedMs);
+  if (b === null)
+    return {
+      status: "unknown",
+      reason: "cpu-stat-unreadable",
+      cgroupPath: cgPath,
+    };
+  if (deadlineAt !== null && now() >= deadlineAt)
+    return budgetExceeded(cgPath, elapsedMs);
   const cores = computeCoresBusy(b - a, elapsedMs);
-  if (cores === null) return { status: 'unknown', reason: 'zero-elapsed', cgroupPath: cgPath };
+  if (cores === null)
+    return { status: "unknown", reason: "zero-elapsed", cgroupPath: cgPath };
 
   let procs = null;
   try {
-    procs = readFileSync(path.join(cgroupRoot, cgPath, 'cgroup.procs'), 'utf8')
-      .split('\n')
-      .filter((l) => l.trim() !== '').length;
+    procs = readFileSync(path.join(cgroupRoot, cgPath, "cgroup.procs"), "utf8")
+      .split("\n")
+      .filter((l) => l.trim() !== "").length;
   } catch {
     /* the proc count is a nicety; the rate is the answer */
   }
-  if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(cgPath, elapsedMs);
-  return { status: 'ok', cores, procs, elapsedMs, cgroupPath: cgPath };
+  if (deadlineAt !== null && now() >= deadlineAt)
+    return budgetExceeded(cgPath, elapsedMs);
+  return { status: "ok", cores, procs, elapsedMs, cgroupPath: cgPath };
 }
 
 /**
@@ -638,20 +793,22 @@ export async function sampleBusyMatches(matches, opts = {}) {
         : startedAt + opts.budgetMs;
   const sampleOpts = { ...opts, now, deadlineAt };
   delete sampleOpts.budgetMs;
-  return Promise.all(matches.map((match) => sampleCgroupBusy(match.pid, sampleOpts)));
+  return Promise.all(
+    matches.map((match) => sampleCgroupBusy(match.pid, sampleOpts)),
+  );
 }
 
 /** Render one `--busy` line (+ its falsifier when near-zero). Pure, so the
  *  wording is pinned by tests rather than by eyeballing terminal output. */
 export function formatBusy(sample) {
-  if (sample.status !== 'ok') {
+  if (sample.status !== "ok") {
     return [
       `busy: UNKNOWN (${sample.reason}) — this is NOT "idle"; the cgroup could not be read`,
     ];
   }
   const secs = (sample.elapsedMs / 1000).toFixed(1);
   const out = [
-    `busy: ${sample.cores.toFixed(2)} core(s) over ${secs}s across ${sample.procs ?? '?'} proc(s) in ${sample.cgroupPath}`,
+    `busy: ${sample.cores.toFixed(2)} core(s) over ${secs}s across ${sample.procs ?? "?"} proc(s) in ${sample.cgroupPath}`,
   ];
   if (sample.cores < NEAR_ZERO_CORES) {
     out.push(
@@ -662,25 +819,69 @@ export function formatBusy(sample) {
 }
 
 async function main(argv) {
-  const flags = argv.filter((a) => a.startsWith('--'));
-  const positional = argv.filter((a) => !a.startsWith('--'));
+  const flags = argv.filter((a) => a.startsWith("--"));
+  const positional = argv.filter((a) => !a.startsWith("--"));
   const [cmd, pattern] = positional;
-  const argvSequenceFlag = flags.find((f) => f.startsWith('--argv-sequence='));
+  const argvSequenceFlag = flags.find((f) => f.startsWith("--argv-sequence="));
   const argvSequence = argvSequenceFlag
     ? argvSequenceFlag
-        .slice('--argv-sequence='.length)
-        .split(',')
+        .slice("--argv-sequence=".length)
+        .split(",")
         .map((token) => token.trim())
         .filter(Boolean)
     : undefined;
-  const busy = flags.includes('--busy');
-  const verbose = flags.includes('--verbose');
-  const sampleMsFlag = flags.find((f) => f.startsWith('--sample-ms='));
-  const sampleMs = sampleMsFlag ? Number(sampleMsFlag.slice('--sample-ms='.length)) : DEFAULT_SAMPLE_MS;
-  const budgetMsFlag = flags.find((f) => f.startsWith('--budget-ms='));
-  const budgetMs = budgetMsFlag ? Number(budgetMsFlag.slice('--budget-ms='.length)) : DEFAULT_BUSY_BUDGET_MS;
+  const busy = flags.includes("--busy");
+  const verbose = flags.includes("--verbose");
+  const sampleMsFlag = flags.find((f) => f.startsWith("--sample-ms="));
+  const sampleMs = sampleMsFlag
+    ? Number(sampleMsFlag.slice("--sample-ms=".length))
+    : DEFAULT_SAMPLE_MS;
+  const budgetMsFlag = flags.find((f) => f.startsWith("--budget-ms="));
+  const budgetMs = budgetMsFlag
+    ? Number(budgetMsFlag.slice("--budget-ms=".length))
+    : DEFAULT_BUSY_BUDGET_MS;
+  const maxNodesFlag = flags.find((f) => f.startsWith("--max-nodes="));
+  const maxNodes = maxNodesFlag
+    ? Number(maxNodesFlag.slice("--max-nodes=".length))
+    : 256;
+  const maxDepthFlag = flags.find((f) => f.startsWith("--max-depth="));
+  const maxDepth = maxDepthFlag
+    ? Number(maxDepthFlag.slice("--max-depth=".length))
+    : 32;
+  if (cmd === "tree") {
+    const rootPid = Number(pattern);
+    if (
+      !Number.isInteger(rootPid) ||
+      rootPid <= 0 ||
+      !Number.isInteger(maxNodes) ||
+      maxNodes <= 0 ||
+      !Number.isInteger(maxDepth) ||
+      maxDepth < 0 ||
+      !(budgetMs > 0)
+    ) {
+      console.error(
+        "usage: node scripts/proc-guard.mjs tree <pid> [--max-nodes=<n>] [--max-depth=<n>] [--budget-ms=<n>]",
+      );
+      process.exit(2);
+      return;
+    }
+    const tree = walkProcessTree(rootPid, { maxNodes, maxDepth, budgetMs });
+    if (tree.rows.length === 0) {
+      console.log(`proc-guard: pid ${rootPid} unavailable`);
+      process.exit(1);
+      return;
+    }
+    for (const row of tree.rows)
+      console.log(
+        `${"  ".repeat(row.depth)}${row.pid}  ${formatProcessCmdline(row.cmdline, { verbose })}`,
+      );
+    if (tree.truncated)
+      console.log(`proc-guard: tree truncated (${tree.reason})`);
+    process.exit(0);
+    return;
+  }
   if (
-    cmd !== 'check' ||
+    cmd !== "check" ||
     !pattern ||
     (argvSequenceFlag && (!argvSequence || argvSequence.length < 2)) ||
     !(sampleMs > 0) ||
@@ -689,12 +890,12 @@ async function main(argv) {
     !Number.isFinite(budgetMs)
   ) {
     console.error(
-      'usage: node scripts/proc-guard.mjs check <pattern> [--argv-sequence=<first,second>] [--busy] [--verbose] [--sample-ms=<n>] [--budget-ms=<n>]\n' +
-        '  --argv-sequence=<csv>  require literal adjacent argv tokens; the first token is matched by basename\n' +
+      "usage: node scripts/proc-guard.mjs check <pattern> [--argv-sequence=<first,second>] [--busy] [--verbose] [--sample-ms=<n>] [--budget-ms=<n>]\n" +
+        "  --argv-sequence=<csv>  require literal adjacent argv tokens; the first token is matched by basename\n" +
         '  --busy  also answer "is it WORKING" — a two-sample cgroup CPU rate per match,\n' +
-        '          which sees every descendant at any depth (a /proc tree walk does not).\n' +
-        '  --verbose  print each matching process\'s full command line (default: first 200 chars)\n' +
-        '  --budget-ms=<n>  shared wall-clock budget for all --busy samples (default 15s).',
+        "          which sees every descendant at any depth (a /proc tree walk does not).\n" +
+        "  --verbose  print each matching process's full command line (default: first 200 chars)\n" +
+        "  --budget-ms=<n>  shared wall-clock budget for all --busy samples (default 15s).",
     );
     process.exit(2);
     return;
@@ -714,22 +915,30 @@ async function main(argv) {
   }
   const rawSuffix =
     fullMatches.length === matches.length && identityMatches.length === 0
-      ? ''
+      ? ""
       : ` (${fullMatches.length} full-argv match(es), ${identityMatches.length} identity match(es) via gate markers/cgroup; ${argvTextOnly.length} argv-text-only ignored)`;
-  console.log(`proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`);
-  const samples = busy ? await sampleBusyMatches(matches, { sampleMs, budgetMs }) : [];
+  console.log(
+    `proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`,
+  );
+  const samples = busy
+    ? await sampleBusyMatches(matches, { sampleMs, budgetMs })
+    : [];
   for (const [index, m] of matches.entries()) {
     console.log(`  ${m.pid}  ${formatProcessCmdline(m.cmdline, { verbose })}`);
     if (identityMatches.some((identityMatch) => identityMatch.pid === m.pid)) {
-      console.log('         identity: green-checkpoint gate markers or checkpoint cgroup');
+      console.log(
+        "         identity: green-checkpoint gate markers or checkpoint cgroup",
+      );
     }
     if (!busy) continue;
-    for (const line of formatBusy(samples[index])) console.log(`         ${line}`);
+    for (const line of formatBusy(samples[index]))
+      console.log(`         ${line}`);
   }
   process.exit(0);
 }
 
-const isMain = process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
+const isMain =
+  process.argv[1] && import.meta.url === `file://${process.argv[1]}`;
 if (isMain) {
   // main() is async now (--busy samples over time); without this catch a throw
   // becomes an unhandled rejection whose exit code is NOT the guard's contract.

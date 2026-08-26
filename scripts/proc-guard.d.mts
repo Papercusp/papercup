@@ -111,6 +111,28 @@ export function listProcesses(procRoot?: string, opts?: {
  */
 export function getAncestryChain(pid: number, byPid: Map<number, number | null>, maxHops?: number): Set<number>;
 /**
+ * Read a PID-rooted process tree without a host-wide /proc scan. Linux records
+ * children per thread, so every bounded per-thread `children` file is consulted.
+ * Races are fail-soft: a process that exits while being read is omitted.
+ *
+ * @param {number} rootPid
+ * @param {{ procRoot?: string; maxNodes?: number; maxDepth?: number; budgetMs?: number; now?: () => number }} [opts]
+ * @returns {{ rows: Array<ProcRow & { depth: number }>; truncated: boolean; reason: string | null }}
+ */
+export function walkProcessTree(rootPid: number, opts?: {
+    procRoot?: string;
+    maxNodes?: number;
+    maxDepth?: number;
+    budgetMs?: number;
+    now?: () => number;
+}): {
+    rows: Array<ProcRow & {
+        depth: number;
+    }>;
+    truncated: boolean;
+    reason: string | null;
+};
+/**
  * Processes matching `pattern` (a RegExp source) against operational argv,
  * EXCLUDING the caller's own pid and its whole ancestor chain. Operational argv
  * keeps the executable and real process arguments but excludes agent prompt
