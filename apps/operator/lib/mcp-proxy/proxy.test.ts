@@ -17,7 +17,10 @@ import {
   isBackpressureStatus,
   backpressureRetryable,
   retryAfterMs,
+  retryAfterSecForDrainRate,
   MAX_BACKPRESSURE_RETRIES,
+  MIN_SHED_RETRY_AFTER_SEC,
+  MAX_SHED_RETRY_AFTER_SEC,
   handshakeTimeoutRetryable,
   MAX_HANDSHAKE_TIMEOUT_RETRIES,
   isCheapRepeatingBeat,
@@ -264,6 +267,28 @@ describe('backpressure (429) absorption — pure decisions', () => {
   });
 });
 
+describe('retryAfterSecForDrainRate — bounded completion-derived shed hint', () => {
+  const nowMs = 60_000;
+
+  it('uses the conservative upper bound when no recent drain is observed', () => {
+    expect(retryAfterSecForDrainRate(200, 192, [], nowMs)).toBe(MAX_SHED_RETRY_AFTER_SEC);
+    expect(retryAfterSecForDrainRate(200, 192, [nowMs - 60_000], nowMs)).toBe(MAX_SHED_RETRY_AFTER_SEC);
+  });
+
+  it('estimates the completions needed from the observed completion cadence', () => {
+    const completions = [nowMs - 9_000, nowMs - 6_000, nowMs - 3_000]; // one completion every 3s
+    expect(retryAfterSecForDrainRate(192, 192, completions, nowMs)).toBe(3);
+    expect(retryAfterSecForDrainRate(194, 192, completions, nowMs)).toBe(9);
+  });
+
+  it('clamps a very fast or stalled estimate to the configured bounds', () => {
+    expect(retryAfterSecForDrainRate(192, 192, [nowMs - 2, nowMs - 1], nowMs)).toBe(MIN_SHED_RETRY_AFTER_SEC);
+    expect(
+      retryAfterSecForDrainRate(500, 1, [nowMs - 9_000, nowMs - 3_000], nowMs),
+    ).toBe(MAX_SHED_RETRY_AFTER_SEC);
+  });
+});
+
 const servers: http.Server[] = [];
 afterEach(() => {
   for (const s of servers) s.close();
@@ -294,12 +319,12 @@ function request(
   body = '{"jsonrpc":"2.0"}',
   path = '/api/mcp',
   headers: http.OutgoingHttpHeaders = {},
-): Promise<{ status: number; body: string }> {
+): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const r = http.request({ host: '127.0.0.1', port: p, method: 'POST', path, headers }, (res) => {
       let b = '';
       res.on('data', (d) => (b += d));
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b }));
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: b, headers: res.headers }));
     });
     r.on('error', reject);
     r.end(body);
@@ -2444,7 +2469,14 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
 
     const shed = await request(port(proxy));
     expect(shed.status).toBe(429);
-    expect(JSON.parse(shed.body).error).toBe('mcp_proxy_overloaded');
+    const shedBody = JSON.parse(shed.body);
+    expect(shedBody).toMatchObject({
+      ok: false,
+      error: 'mcp_proxy_overloaded',
+      retryable: true,
+    });
+    expect(shedBody.retryAfterSec).toBe(MAX_SHED_RETRY_AFTER_SEC);
+    expect(shed.headers['retry-after']).toBe(String(shedBody.retryAfterSec));
 
     releaseUpstream();
     const [r1, r2] = await Promise.all([held1, held2]);

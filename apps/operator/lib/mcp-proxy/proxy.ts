@@ -410,6 +410,15 @@ export const MAX_BACKPRESSURE_RETRIES = 20;
 /** Clamp for a Retry-After wait so a missing/hostile header value can't wedge the proxy loop. */
 const MAX_BACKPRESSURE_WAIT_MS = 3000;
 /**
+ * EI-21524426281638998 — shed responses carry a bounded estimate of how long it should take
+ * for an admission slot to drain. Keep only a short, bounded history: this is a hint for a
+ * caller, not a second queue or an unbounded telemetry buffer.
+ */
+export const SHED_DRAIN_RATE_WINDOW_MS = 30_000;
+export const MIN_SHED_RETRY_AFTER_SEC = 1;
+export const MAX_SHED_RETRY_AFTER_SEC = 30;
+const MAX_SHED_DRAIN_SAMPLES = 256;
+/**
  * EI-16883 — boot-window status absorption. During a :3070 restart there is a window where
  * the socket ACCEPTS but the route table is not yet mounted: /api/mcp answers 404/405 (and
  * a booting worker can shed 503 before admission control is up). Like a 429, these statuses
@@ -696,6 +705,53 @@ export function retryAfterMs(
   const secs = raw != null && raw !== '' ? Number(raw) : NaN;
   const ms = Number.isFinite(secs) && secs >= 0 ? secs * 1000 : fallbackMs;
   return Math.max(0, Math.min(ms, maxMs));
+}
+
+/**
+ * Estimate a bounded Retry-After hint from the proxy's observed forward completion cadence.
+ * `currentInFlight - admissionCeiling + 1` is the number of completions needed before a new
+ * request can be admitted. With no trustworthy recent cadence (zero/one samples, stale samples,
+ * or same-timestamp samples), return the conservative upper bound: zero observed drain means a
+ * short fixed delay would only teach callers to retry into the same saturated wall.
+ * PURE + unit-tested.
+ */
+export function retryAfterSecForDrainRate(
+  currentInFlight: number,
+  admissionCeiling: number,
+  completionTimesMs: readonly number[],
+  nowMs: number,
+  options: {
+    windowMs?: number;
+    minSec?: number;
+    maxSec?: number;
+  } = {},
+): number {
+  const windowMs = Number.isFinite(options.windowMs) && (options.windowMs ?? 0) > 0
+    ? options.windowMs!
+    : SHED_DRAIN_RATE_WINDOW_MS;
+  const configuredMinSec = Number.isFinite(options.minSec) && (options.minSec ?? 0) > 0
+    ? options.minSec!
+    : MIN_SHED_RETRY_AFTER_SEC;
+  const configuredMaxSec = Number.isFinite(options.maxSec) && (options.maxSec ?? 0) > 0
+    ? options.maxSec!
+    : MAX_SHED_RETRY_AFTER_SEC;
+  const minSec = Math.max(1, configuredMinSec);
+  const maxSec = Math.max(minSec, configuredMaxSec);
+  const cutoffMs = nowMs - windowMs;
+  const recent = completionTimesMs
+    .filter((timestamp) => Number.isFinite(timestamp) && timestamp >= cutoffMs && timestamp <= nowMs)
+    .slice()
+    .sort((a, b) => a - b);
+  const completionsNeeded = Math.max(1, currentInFlight - admissionCeiling + 1);
+  let waitMs = maxSec * 1000;
+  if (recent.length >= 2) {
+    const observedSpanMs = recent[recent.length - 1] - recent[0];
+    if (observedSpanMs > 0) {
+      const completionsPerMs = (recent.length - 1) / observedSpanMs;
+      waitMs = completionsNeeded / completionsPerMs;
+    }
+  }
+  return Math.max(minSec, Math.min(maxSec, Math.ceil(waitMs / 1000)));
 }
 
 interface ForwardOutcome {
@@ -1226,7 +1282,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const initializeSlowMs = opts.initializeSlowMs ?? DEFAULT_INITIALIZE_SLOW_MS;
   const inFlightStarts = new Map<number, number>();
+  const completedForwardAtMs: number[] = [];
   let nextInFlightId = 0;
+
+  const recordForwardCompletion = (completedAtMs: number): void => {
+    completedForwardAtMs.push(completedAtMs);
+    const cutoffMs = completedAtMs - SHED_DRAIN_RATE_WINDOW_MS;
+    while (completedForwardAtMs.length > 0 && completedForwardAtMs[0] < cutoffMs) {
+      completedForwardAtMs.shift();
+    }
+    while (completedForwardAtMs.length > MAX_SHED_DRAIN_SAMPLES) {
+      completedForwardAtMs.shift();
+    }
+  };
 
   /** A request waiting for a class-cap slot. It is resolved only after the slot is reserved. */
   interface QueuedHandshake {
@@ -1477,16 +1545,24 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             ? Math.max(1, maxInFlight - controlPlaneReserve)
             : maxInFlight;
         if (shouldShedForInFlight(inFlightNow, admissionCeiling)) {
-          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
+          const retryAfterSec = retryAfterSecForDrainRate(
+            inFlightNow,
+            admissionCeiling,
+            completedForwardAtMs,
+            Date.now(),
+          );
+          res.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(retryAfterSec) });
           res.end(
             JSON.stringify({
+              ok: false,
               error: 'mcp_proxy_overloaded',
+              retryable: true,
               detail: `proxy already has ${inFlightNow} request(s) in flight (admission max ${admissionCeiling}, hard max ${maxInFlight}) — shed before forwarding`,
-              retryAfterSec: 2,
+              retryAfterSec,
             }),
           );
           log(`shed request — ${inFlightNow} already in flight (max ${maxInFlight})`);
-          record({ kind: 'shed_max_in_flight', method: req.method, path: req.url, inFlight: inFlightNow, maxInFlight, admissionCeiling, reservedControlPlane });
+          record({ kind: 'shed_max_in_flight', method: req.method, path: req.url, inFlight: inFlightNow, maxInFlight, admissionCeiling, reservedControlPlane, retryAfterSec });
           return;
         }
         // EI-21391963810159383 — a proxy restart made ~60 clients reconnect at once. Because
@@ -1871,7 +1947,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         } finally {
           // EI-19305299022434394: always release the in-flight slot, on every exit path
           // (success return, exhausted-window fallthrough, or an unexpected throw).
+          const completedAtMs = Date.now();
           inFlightStarts.delete(inFlightId);
+          recordForwardCompletion(completedAtMs);
           if (countsTowardHandshakeCap) handshakeInFlight = Math.max(0, handshakeInFlight - 1);
           // EI-19388661789704364: cancel this request's own stall timer so a fast forward
           // never leaves a dangling scheduled check (and never fires one after completion).
