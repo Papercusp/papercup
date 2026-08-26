@@ -297,7 +297,7 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
       );
     });
 
-    it('emits resultLine(\'passed\') on the clean-run success path', () => {
+    it("emits resultLine('passed') on the clean-run success path", () => {
       // CODE token only. This used to also pin the prose '\nAll affected tests
       // passed.' — a latent third instance of the copy-edit-reds-the-gate bug
       // that EI-20103084274785576 removed. What a caller greps is the marker.
@@ -452,5 +452,43 @@ describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI
         'un-killable without buying the marker it was added for — see the comment at ' +
         "the process.on('exit') block. Read it before removing this guard.",
     ).toBeUndefined();
+  });
+
+  it('journals a settled task before publishing its finished pulse, then skips duplicate log replay (EI-21495798160539116)', () => {
+    // Executing the production path would require overlapping real workspace
+    // suites and killing the aggregate runner only after one child settles. Pin
+    // the two load-bearing order edges in source, while sync-write's behavioural
+    // test proves the actual multipart append survives the following SIGTERM.
+    const closeStart = source.indexOf("child.once('close', (status, signal) => {");
+    const journal = source.indexOf('result.__outputJournaled = journalCapturedTaskOutput(', closeStart);
+    const finishedPulse = source.indexOf('emitProgress(', journal);
+    const resolve = source.indexOf('resolveRun(result);', finishedPulse);
+
+    expect(closeStart).toBeGreaterThanOrEqual(0);
+    expect(journal, 'settled output must be synchronously journaled in the child close path').toBeGreaterThan(
+      closeStart,
+    );
+    expect(finishedPulse, 'the externally visible finished pulse must follow the durable journal').toBeGreaterThan(
+      journal,
+    );
+    expect(resolve, 'the scheduler may receive the result only after journaling and the pulse').toBeGreaterThan(
+      finishedPulse,
+    );
+
+    const journalStart = source.indexOf('function journalCapturedTaskOutput(');
+    const journalEnd = source.indexOf('\n}\n\nfunction emitCapturedTaskOutput(', journalStart);
+    const journalBody = source.slice(journalStart, journalEnd);
+    expect(journalBody).toContain('appendAllSync(RUN_LOG_PATH, [');
+    expect(journalBody).toContain('AFFECTED_TASK_OUTPUT_BEGIN');
+    expect(journalBody).toContain('stdout,');
+    expect(journalBody).toContain('stderr,');
+    expect(journalBody).toContain('AFFECTED_TASK_OUTPUT_END');
+
+    const replayStart = source.indexOf('function emitCapturedTaskOutput(');
+    const replayEnd = source.indexOf('\n}\n\n/** Return the exact exit-0', replayStart);
+    const replay = source.slice(replayStart, replayEnd);
+    expect(replay).toContain('if (!r.__outputJournaled) {');
+    expect(replay).toContain("logLine(r.stdout ?? '');");
+    expect(replay).toContain("logLine(r.stderr ?? '');");
   });
 });
