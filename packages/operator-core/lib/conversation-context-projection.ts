@@ -13,6 +13,10 @@ import { loadLoopSession, type LoopSessionRow } from './agent-loop/session-store
 import type { LoopEvent } from './agent-loop/loop';
 import type { ModelMessage } from './agent-loop/model-port';
 import { applySessionTaskOp, type SessionTask } from './session-tasks';
+import {
+  reconcileSessionTaskBlockers,
+  type SessionTaskBlockerState,
+} from './session-task-blockers';
 
 export const CONVERSATION_CONTEXT_PROJECTION_VERSION = 'conversation-context-v1' as const;
 
@@ -91,6 +95,7 @@ export interface ConversationTaskFrame extends FrameBase {
   activeForm: string;
   status: SessionTask['status'];
   blockerRef: string | null;
+  blockerState: SessionTaskBlockerState | null;
   explanation: string | null;
   position: number;
   updatedAt: string;
@@ -153,6 +158,7 @@ export interface ProjectConversationContextInput {
   transcript: TranscriptTurn[];
   loopSession: LoopSessionRow | null;
   tasks?: SessionTask[];
+  taskBlockerStates?: ReadonlyMap<string, SessionTaskBlockerState>;
   approvals?: LoopApprovalRequestRow[];
   context?: ConversationContextSectionFrame[];
 }
@@ -290,6 +296,7 @@ export function projectConversationContext(
     activeForm: task.activeForm,
     status: task.status,
     blockerRef: task.blockerRef,
+    blockerState: input.taskBlockerStates?.get(task.id) ?? null,
     explanation: task.explanation,
     position: task.position,
     updatedAt: task.updatedAt,
@@ -393,6 +400,7 @@ interface AgentChatProjectionRow {
   harness_slug: string;
   role: string;
   feature_id: string | null;
+  linked_plan_slug: string | null;
   transcript: TranscriptTurn[] | string | null;
 }
 
@@ -408,11 +416,20 @@ export async function readConversationContextProjection(args: {
   if (args.sourceKind !== 'agent_chat') return null;
   const { sql } = getOrgPg();
   const rows = await sql<AgentChatProjectionRow[]>`
-    SELECT id, harness_slug, role, feature_id, transcript
-      FROM harness_shared.agent_chats_consolidated
-     WHERE workspace_id = ${args.workspaceId}
-       AND id = ${args.sessionId}
-       AND (${args.harness ?? null}::text IS NULL OR harness_slug = ${args.harness ?? null})
+    SELECT chat.id, chat.harness_slug, chat.role, chat.feature_id, chat.transcript,
+           linked.source_plan_slug AS linked_plan_slug
+      FROM harness_shared.agent_chats_consolidated chat
+      LEFT JOIN LATERAL (
+        SELECT wi.source_plan_slug
+          FROM harness_shared.work_items wi
+         WHERE wi.workspace_id = chat.workspace_id
+           AND wi.feature_id = chat.feature_id
+         ORDER BY wi.updated_ts DESC NULLS LAST
+         LIMIT 1
+      ) linked ON true
+     WHERE chat.workspace_id = ${args.workspaceId}
+       AND chat.id = ${args.sessionId}
+       AND (${args.harness ?? null}::text IS NULL OR chat.harness_slug = ${args.harness ?? null})
      LIMIT 1`;
   const row = rows[0];
   if (!row) return null;
@@ -431,6 +448,14 @@ export async function readConversationContextProjection(args: {
       idFactory: () => 'unused-on-view',
     }),
   ]);
+  const reconciledTasks = await reconcileSessionTaskBlockers(sql, {
+    workspaceId: args.workspaceId,
+    harness: row.harness_slug,
+    planSlug: row.linked_plan_slug,
+    sessionId: row.id,
+    tasks: taskResult.tasks,
+    idFactory: () => 'unused-on-reconcile',
+  });
   return projectConversationContext({
     sourceKind: args.sourceKind,
     sessionId: row.id,
@@ -439,7 +464,8 @@ export async function readConversationContextProjection(args: {
     linkedWorkItemId: row.feature_id,
     transcript,
     loopSession,
-    tasks: taskResult.tasks,
+    tasks: reconciledTasks.tasks,
+    taskBlockerStates: reconciledTasks.states,
     approvals,
   });
 }

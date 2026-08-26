@@ -80,6 +80,7 @@ describe('conversation context projection', () => {
         activeForm: 'Implementing projection',
         status: 'in_progress',
         blockerRef: null,
+        blockerState: null,
         explanation: null,
         position: 0,
         createdAt: '2026-08-26T00:00:00Z',
