@@ -185,6 +185,68 @@ export function partitionByGracePeriod({ modules, addedAtByModule, now, graceMs,
     }[];
 };
 /**
+ * Source-level markers that a module is a HUMAN-INVOKED CLI ENTRYPOINT.
+ *
+ * ⚠ WHY THIS EXISTS. The reachability axis is keyed on IMPORT EDGES, so it structurally
+ * cannot see the caller of a module whose only caller is a person typing
+ * `tsx apps/operator/lib/release/foo.ts` per the module's own usage header. Measured
+ * 2026-08-26: 10 of the 20 acknowledged-unreachable modules are exactly this. For them
+ * "0 callers" is TRUE AND MEANINGLESS, and the natural reading of it — retire the module
+ * — deletes working operator tooling.
+ *
+ * This does NOT feed the dead/alive computation. An entrypoint with nothing invoking it
+ * anywhere in the tree really is unreachable FROM THE TREE, and that stays reportable.
+ * It changes what the report SAYS about such a module, so a reader is told which of the
+ * two very different remedies applies (wire it / retire it / neither — it is a tool).
+ *
+ * Heuristic and deliberately generous, matching this file's standing doctrine: a false
+ * ENTRYPOINT credit costs a slightly softer report line, while a missed one restores the
+ * misleading "0 callers — wire-or-retire" that this exists to stop.
+ *
+ * @param {string} source raw module text
+ * @returns {string[]} marker names, empty when the module shows no entrypoint shape
+ */
+export function detectEntrypointMarkers(source: string): string[];
+/**
+ * Cross-check each ACKNOWLEDGED module's hand-written REASON against what the import
+ * graph actually measured, and report the ones that disagree.
+ *
+ * ⚠ WHY A GUARD NEEDS A GUARD. The acknowledgement list pairs a path with a prose reason
+ * a human typed. That reason is code-describing metadata, and CLAUDE.md's standing rule
+ * is that such metadata must be DERIVED, PINNED, or ATTESTED — never hand-maintained.
+ * It was hand-maintained, and it drifted before it was a day old: measured 2026-08-26,
+ * 3 of 20 reasons asserted "no caller" / "0 callers" for modules with real production
+ * importers. Those strings are what a burn-down reads when deciding what to delete, so a
+ * false one nominates a module that two live siblings import as the "strongest retire
+ * candidate". This turns that from prose nobody re-checks into a build failure.
+ *
+ * Only DEAD rows are checked. A module that got WIRED is already reported by the
+ * staleAcknowledged path, and reporting it twice for one cause buries the second finding.
+ *
+ * ⚠ DELIBERATELY NOT CHECKED: numeric claims ("1 test", "3 tests"). Test FILES vs test
+ * CASES is genuinely ambiguous in the existing strings, so pinning counts would
+ * manufacture failures for prose that is arguably correct. Only the CATEGORICAL claims
+ * are unambiguous, and only those are pinned.
+ *
+ * @param {{rows: {module:string, dead:boolean, productionImporters:string[], testImporters:string[]}[],
+ *          acknowledgements: Map<string,string>}} args
+ * @returns {{module:string, reason:string, claim:string, contradictedBy:string[]}[]}
+ */
+export function findInaccurateAcknowledgements({ rows, acknowledgements }: {
+    rows: {
+        module: string;
+        dead: boolean;
+        productionImporters: string[];
+        testImporters: string[];
+    }[];
+    acknowledgements: Map<string, string>;
+}): {
+    module: string;
+    reason: string;
+    claim: string;
+    contradictedBy: string[];
+}[];
+/**
  * DEFAULT GRACE PERIOD for a newly-added detector module, in days.
  *
  * Sized from measurement, not taste: 16 new `lib/release/**` modules were added in the
