@@ -712,6 +712,32 @@ describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () 
     expect(body).not.toContain('PAUSED by a terminal guard');
   });
 
+  it('a malformed Authorization alert points to credential construction, not waiting out a cap', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockResolvedTyped(vi.mocked(captureImprovement).mockClear(), CAPTURE_OK);
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const raw =
+      `codex_api::endpoint::responses_websocket: failed to connect to websocket: UTF-8 encoding error: ` +
+      `failed to convert header to a str for header name 'authorization'\n` +
+      `with value: "Bearer abcDEF123456 fired — WI-40086"`;
+
+    await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({ stdoutTail: raw }),
+      { sql: sql as never, recordFire: vi.fn(async () => {}) },
+    );
+
+    const body = vi.mocked(captureImprovement).mock.calls.at(-1)?.[0]?.body as string;
+    expect(body).toContain('malformed Authorization header');
+    expect(body).toContain('credential-construction error');
+    expect(body).toContain('not a provider usage cap');
+    expect(body).toContain('do not wait for a reset');
+    expect(body).toContain('malformed-authorization terminal guard');
+    expect(body).not.toContain('every wake risks re-firing');
+    expect(body).not.toContain('waiting out the cap');
+    expect(body).not.toContain('abcDEF123456');
+  });
+
   it('a rate_limited death JUST UNDER the chronic floor still stays silent (no spam on ordinary longer waits)', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });

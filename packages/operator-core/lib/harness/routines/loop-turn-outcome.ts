@@ -499,6 +499,7 @@ export async function handleLoopResumeTurnExit(
     // respawn, never the notification.
     const contextOverflow = String(klass) === 'context_overflow';
     const authWall = String(klass) === 'auth';
+    const malformedAuthorization = authWall && outcome.error.message.startsWith('malformed Authorization header:');
     let delayMs: number | undefined;
     let rearmed = false;
     let recovery: ContextOverflowRecoveryResult | undefined;
@@ -507,7 +508,9 @@ export async function handleLoopResumeTurnExit(
       const pauseReason = contextOverflow
         ? `loop-turn-outcome: context overflow (${outcome.error.message}); paused to prevent repeated oversized warm wakes`
         : authWall
-          ? `loop-turn-outcome: auth wall (${outcome.error.message}); paused to prevent repeated resumes into a rejected credential — needs new creds or a relaunch on a different account`
+          ? malformedAuthorization
+            ? `loop-turn-outcome: malformed Authorization header (${outcome.error.message}); paused to prevent repeated resumes with a credential-construction error — inspect the bearer construction and relaunch with a valid credential`
+            : `loop-turn-outcome: auth wall (${outcome.error.message}); paused to prevent repeated resumes into a rejected credential — needs new creds or a relaunch on a different account`
           : `loop-turn-outcome: stale resume target (${outcome.error.message}); paused to prevent repeated resumes of a missing session`;
       await autoPause(
         sql,
@@ -595,6 +598,11 @@ export async function handleLoopResumeTurnExit(
                   `leaderless (coord:presence / fleet:assignments)? If the claims are already released and ` +
                   `no fleet is leaderless, the condition this alert describes is over — close the item as ` +
                   `already-resolved rather than re-investigating the loop.`
+                : malformedAuthorization
+                ? `This loop was PAUSED because its Authorization header could not be encoded. This is ` +
+                  `a credential-construction error, not a provider usage cap; do not wait for a reset. ` +
+                  `Inspect the bearer construction for text accidentally placed in the credential and ` +
+                  `relaunch with a valid credential/session.`
                 : `This loop wakes its owner session on a fixed cadence — while wedged ` +
                   `(rate-limited/capped/auth-locked), every wake risks re-firing into the same wall. The ` +
                   `fire-gate + 429-aware re-arm (loop-turn-outcome.ts) are backing off automatically, but ` +
@@ -609,6 +617,8 @@ export async function handleLoopResumeTurnExit(
                       ? 'a carry-respawn was queued and the loop will resume cold.'
                       : `recovery was not queued${recovery?.reason ? ` (${recovery.reason})` : ''}.`
                   }]`
+                : malformedAuthorization
+                ? ` [malformed-authorization terminal guard: the header value could not be encoded; do not wait for a provider reset. Inspect the credential-construction path and relaunch with a valid credential.]`
                 : staleResumeTarget
                 ? ` [stale-resume-target terminal guard: the loop was paused instead of re-arming a ` +
                   `missing native session; relaunch or rebind the owner before resuming the loop.]`
