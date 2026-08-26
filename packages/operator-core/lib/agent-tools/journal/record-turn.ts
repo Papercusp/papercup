@@ -79,10 +79,6 @@ export default defineTool({
       ? await resolveCurrentTurnStamp(ownerId, { filePath, sessionId: args.session_id }).catch(() => null)
       : null;
     const machineTurn = currentTurn?.verdict === 'agent-injected' || currentTurn?.verdict === 'machine-surface';
-    const ownerInteractiveTurn =
-      currentTurn?.verdict === 'owner-typed' ||
-      currentTurn?.verdict === 'owner-dialog' ||
-      currentTurn?.verdict === 'owner-turn';
     const extracted = extractJournalFromAssistantText(turn.text);
     if (!extracted) {
       return { data: { ok: false, recorded: false, reason: 'no_note' } };
@@ -102,15 +98,14 @@ export default defineTool({
     const ioMod = await import('../../turn-end-tracking-io');
     const artifactTripwire = claimTripwire ? null : await ioMod.boundedArtifactSweep(args.session_id, sinceIso);
     // P-005 (pui-agent-context-cockpit): pending/in_progress canonical session
-    // tasks require a visible, bounded continuation when no loop, bounded await,
-    // or owner-answer path already guarantees the next turn. The prior journal
+    // tasks require a visible, bounded continuation when no loop or bounded
+    // await guarantees the next turn. The prior journal
     // tripwire carries the unchanged-task attempt count across turns.
     const openTaskReminder =
       ownerId && !claimTripwire
         ? await ioMod.boundedOpenTaskReminderSweep({
             ownerId,
             workspaceId: journalWorkspaceId,
-            ownerInteractiveTurn,
           })
         : null;
     // P-015 turn-end sweep (re-wake guarantee): an AUTONOMOUS session ending a

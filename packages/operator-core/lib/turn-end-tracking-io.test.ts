@@ -187,12 +187,11 @@ describe('open-task reminder IO (P-005)', () => {
     const second = await sweepOpenTaskReminder({
       ownerId: 'su-owner-1',
       workspaceId: 'ws-1',
-      ownerInteractiveTurn: false,
     });
     expect(second?.tripwire.attempt).toBe(2);
   });
 
-  it('suppresses when a loop, bounded await, or owner answer already guarantees continuation', async () => {
+  it('suppresses when a loop or bounded await already guarantees continuation', async () => {
     applySessionTaskOp.mockResolvedValue({
       op: 'view',
       changedTaskId: null,
@@ -215,13 +214,7 @@ describe('open-task reminder IO (P-005)', () => {
     expect(await sweepOpenTaskReminder({ ownerId: 'su-1', workspaceId: 'ws-1' })).toBeNull();
 
     listActiveAwaits.mockResolvedValue([]);
-    expect(
-      await sweepOpenTaskReminder({
-        ownerId: 'su-1',
-        workspaceId: 'ws-1',
-        ownerInteractiveTurn: true,
-      }),
-    ).toBeNull();
+    expect(await sweepOpenTaskReminder({ ownerId: 'su-1', workspaceId: 'ws-1' })).not.toBeNull();
   });
 
   it('targets the owner with the persisted decision prompt', async () => {
@@ -253,5 +246,30 @@ describe('open-task reminder IO (P-005)', () => {
       source: 'turn-end-open-task-reminder',
       workspaceId: 'ws-1',
     });
+  });
+
+  it('reports false when the wake key has no queued recipient', async () => {
+    wakeRecipients.mockResolvedValue({ woken: 0 });
+    const decision = {
+      prompt: '⟦open-task-reminder 1/3⟧ Continue the task.',
+      tasks: [activeTask],
+      tripwire: {
+        kind: 'open-task-reminder' as const,
+        note: 'continue',
+        signature: 'abc',
+        attempt: 1,
+        maxAttempts: 3,
+        taskCount: 1,
+        taskIds: ['task-a'],
+      },
+    };
+
+    await expect(
+      wakeOpenTaskReminder({
+        ownerId: 'su-owner-1',
+        workspaceId: 'ws-1',
+        decision,
+      }),
+    ).resolves.toBe(false);
   });
 });

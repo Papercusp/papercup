@@ -301,7 +301,6 @@ export async function boundedUnguardedHaltSweep(input: {
 export async function sweepOpenTaskReminder(input: {
   ownerId: string;
   workspaceId: string;
-  ownerInteractiveTurn?: boolean;
 }): Promise<OpenTaskReminderDecision | null> {
   try {
     const [db, tasksMod, loopMod, awaitMod, journalMod] = await Promise.all([
@@ -328,7 +327,7 @@ export async function sweepOpenTaskReminder(input: {
     const priorTripwire: OpenTaskReminderTripwire | null = prior?.kind === 'open-task-reminder' ? prior : null;
     return decideOpenTaskReminder({
       tasks: view.tasks,
-      wakeGuaranteed: Boolean(input.ownerInteractiveTurn) || Boolean(loop?.active) || boundedAwaitActive,
+      wakeGuaranteed: Boolean(loop?.active) || boundedAwaitActive,
       priorTripwire,
     });
   } catch {
@@ -355,13 +354,13 @@ export async function wakeOpenTaskReminder(input: {
 }): Promise<boolean> {
   try {
     const { wakeRecipients } = await import('./agent-tools/coordination/inbox-wake');
-    await wakeRecipients([input.ownerId], {
+    const result = await wakeRecipients([input.ownerId], {
       summary: input.decision.prompt,
       payload: input.decision.tripwire,
       source: 'turn-end-open-task-reminder',
       workspaceId: input.workspaceId,
     });
-    return true;
+    return result.woken > 0;
   } catch {
     return false;
   }
