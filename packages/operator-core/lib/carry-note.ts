@@ -1673,6 +1673,11 @@ const CLAIM_NOUN_RE = /\b(hash|sha|generation|watermark|anchor|floor|denominator
 export function lintUncheckedExternalClaims(prose: string, probeText: string): string[] {
   const flagged: string[] = [];
   const probes = probeText.toLowerCase();
+  // EI-21494640395547961 — word set for the semantic-coverage limb below, built once
+  // per call; the per-line loop reuses it.
+  const probeWordSet = new Set(
+    (probeText ?? '').toLowerCase().match(/[a-z0-9][a-z0-9._:/-]*/g),
+  );
   const probeIdPatterns = [...(probeText ?? '').matchAll(PROBE_ROW_ID_RE)].map((m) => {
     const id = (m[1] ?? '').toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(?:^|[^a-z0-9._:-])${id}(?:$|[^a-z0-9._:-])`, 'i');
@@ -1692,7 +1697,22 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
       for (const m of line.matchAll(CLAIM_NOUN_RE)) tokens.push(m[0]);
     }
     if (tokens.length === 0) continue;
-    const covered = coveredByRowId || tokens.some((t) => probes.includes(t.toLowerCase()));
+    // EI-21494640395547961: exact-substring coverage misses a check row that carries
+    // the SAME concern in different words ("generation identity through its terminal
+    // boundary" ↔ a row about protecting qualified paths through terminal), which
+    // flagged generic verification rules behind ok:true writes twice in one session.
+    // Word-overlap limb: when most of the line's words appear anywhere in the
+    // checks/walls text, some row already carries this concern. Advisory lint, fail-
+    // generous: a rare missed advisory costs less than a recurring false positive.
+    // Very short lines stay on the exact paths above — overlap is too weak a signal.
+    const lineWords = (line.toLowerCase().match(/[a-z0-9][a-z0-9._:/-]*/g) ?? []).filter(
+      (w) => w.length >= 3,
+    );
+    const coveredByOverlap =
+      lineWords.length >= 6 &&
+      lineWords.filter((w) => probeWordSet.has(w)).length / lineWords.length >= 0.4;
+    const covered =
+      coveredByRowId || tokens.some((t) => probes.includes(t.toLowerCase())) || coveredByOverlap;
     if (!covered) {
       flagged.push(line.length > 160 ? `${line.slice(0, 157)}…` : line);
       if (flagged.length >= 3) break;
@@ -1700,6 +1720,7 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
   }
   return flagged;
 }
+
 
 /**
  * Carry-note commands are read as instructions by the next wake, but their
