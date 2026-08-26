@@ -22,17 +22,21 @@
  * THE GUARD. Assert the PRODUCER chain end to end, from source constant to packaged artifact:
  * the entrypoint constant, the bootstrap pin, the esbuild emission, the executable bit, the
  * fail-closed checks, the vm-release glob that carries it, and the finished-package verifier that
- * re-proves it on the built bundle. Deleting any link fails HERE, red, at unit-test speed.
+ * re-proves it on the built bundle. It also emits the initializer with the producer's exact esbuild
+ * flags and executes both reject probes. Deleting or corrupting any link fails HERE, red, at
+ * unit-test speed.
  *
- * WHAT THIS GUARD DOES NOT DO — stated so nobody reads it as more than it is. It is a STATIC
- * source assertion: it proves the build script CONTAINS the emission, never that a build RAN it.
- * The runtime half is `verify-sidecar-bundle.sh` section [7], which execs the packaged artifact
- * and drives a real protocol cycle against it. Both halves are required; this one is the half
- * that runs in CI without a built bundle.
+ * WHAT THIS GUARD DOES NOT DO — stated so nobody reads it as more than it is. The focused emission
+ * probe proves the initializer entrypoint can be bundled and executed; it does not prove the whole
+ * sidecar build ran or that this exact file reached the finished package. That remains
+ * `verify-sidecar-bundle.sh` section [7], which execs the packaged artifact and drives the same
+ * protocol cycle. Both halves are required.
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 const LIB_DIR = import.meta.dirname ?? __dirname;
 // operator-core/lib → operator-core → packages → repo root
@@ -42,21 +46,16 @@ const LIB_DIR = import.meta.dirname ?? __dirname;
 // against it, watch it go red — without mutating the shared checkout, which git-sync commits on a
 // schedule and would therefore publish the mutant (see CLAUDE.md, "Proving a guard is
 // falsifiable"). Unset in every normal run, so the default is the real tree.
-const REPO_ROOT =
-  process.env.PAPERCUSP_REMOTE_INIT_GUARD_ROOT ?? join(LIB_DIR, '..', '..', '..');
+const REPO_ROOT = process.env.PAPERCUSP_REMOTE_INIT_GUARD_ROOT ?? join(LIB_DIR, '..', '..', '..');
 
 const BUILD_SCRIPT = join(REPO_ROOT, 'papercusp-desktop', 'bin', 'build-desktop-sidecar.sh');
 const VERIFY_SCRIPT = join(REPO_ROOT, 'papercusp-desktop', 'bin', 'verify-sidecar-bundle.sh');
-const VM_RELEASE_CONF = join(
-  REPO_ROOT,
-  'papercusp-desktop',
-  'src-tauri',
-  'tauri.vm-release.conf.json',
-);
+const VM_RELEASE_CONF = join(REPO_ROOT, 'papercusp-desktop', 'src-tauri', 'tauri.vm-release.conf.json');
 const DRIVER_SRC = join(REPO_ROOT, 'libs', 'generic', 'deployment-driver');
 const MANIFEST_SRC = join(DRIVER_SRC, 'src', 'workspace-host-build-manifest.ts');
 const BOOTSTRAP_SRC = join(DRIVER_SRC, 'src', 'workspace-host-bootstrap.ts');
 const ENTRYPOINT_TS = join(DRIVER_SRC, 'bin', 'papercusp-remote-initializer.ts');
+const ESBUILD_BIN = join(REPO_ROOT, 'node_modules', 'esbuild', 'bin', 'esbuild');
 
 /** The one string all five surfaces must agree on. */
 const ENTRYPOINT_BASENAME = 'papercusp-remote-initializer';
@@ -95,19 +94,70 @@ describe.skipIf(!desktopPresent)(
       const script = read(BUILD_SCRIPT);
       // The emission itself: the .ts entrypoint is bundled to the exact packaged basename.
       expect(script).toContain(`bin/${ENTRYPOINT_BASENAME}.ts`);
-      expect(script).toMatch(
-        new RegExp(`REMOTE_INIT_BIN=.*SIDECAR_DIR/bin/${ENTRYPOINT_BASENAME}`),
-      );
+      expect(script).toMatch(new RegExp(`REMOTE_INIT_BIN=.*SIDECAR_DIR/bin/${ENTRYPOINT_BASENAME}`));
       expect(script).toMatch(/--outfile="\$REMOTE_INIT_BIN"/);
     });
 
-    it('marks the artifact executable and gives it a shebang', () => {
+    it('marks the artifact executable and preserves exactly the source-owned shebang', () => {
       const script = read(BUILD_SCRIPT);
+      const entrypoint = read(ENTRYPOINT_TS);
       // Both are load-bearing: the controller spawns the file BY PATH, so without the executable
       // bit exec() fails EACCES and without a `#!` line it fails ENOEXEC. Neither failure names
       // itself usefully over SSH, which is why the producer asserts them rather than assuming.
+      //
+      // The source already owns the shebang and esbuild preserves it. Adding the same text with
+      // --banner produces TWO shebangs; Node accepts only the first and parses line 2 as JavaScript,
+      // so every invocation dies with `SyntaxError: Invalid or unexpected token` before argv or
+      // protocol validation. Keep a single owner for this executable header.
       expect(script).toContain('chmod 755 "$REMOTE_INIT_BIN"');
-      expect(script).toMatch(/--banner:js='#!\/usr\/bin\/env node'/);
+      expect(entrypoint.startsWith('#!/usr/bin/env node\n')).toBe(true);
+      expect(script).not.toMatch(/--banner:js=['"]#!\/usr\/bin\/env node['"]/);
+    });
+
+    it('executes the exact emitted bundle through its protocol and argv reject paths', () => {
+      expect(existsSync(ESBUILD_BIN)).toBe(true);
+      const scratch = mkdtempSync(join(tmpdir(), 'papercusp-remote-initializer-'));
+      const output = join(scratch, ENTRYPOINT_BASENAME);
+
+      try {
+        const build = spawnSync(
+          ESBUILD_BIN,
+          [
+            ENTRYPOINT_TS,
+            '--bundle',
+            '--platform=node',
+            '--format=esm',
+            '--target=node22',
+            '--minify-whitespace',
+            '--minify-syntax',
+            `--outfile=${output}`,
+          ],
+          { cwd: join(REPO_ROOT, 'apps', 'operator'), encoding: 'utf8' },
+        );
+        expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
+        chmodSync(output, 0o755);
+
+        const bundle = read(output);
+        expect(bundle.match(/^#!\/usr\/bin\/env node$/gm)).toHaveLength(1);
+
+        const protocol = spawnSync(
+          output,
+          ['--protocol-version', 'papercusp-gcp-iap-initialization-v1', '--json-stdin'],
+          { input: '{}\n', encoding: 'utf8' },
+        );
+        expect(protocol.error).toBeUndefined();
+        expect(protocol.status).toBe(1);
+        expect(protocol.stdout).toBe('');
+        expect(protocol.stderr).toContain('WorkspaceHostRemoteInitializerProtocolError');
+
+        const argv = spawnSync(output, ['--version'], { input: '{}\n', encoding: 'utf8' });
+        expect(argv.error).toBeUndefined();
+        expect(argv.status).toBe(1);
+        expect(argv.stdout).toBe('');
+        expect(argv.stderr).toContain('remote initializer expects argv');
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
     });
 
     it('fails closed when the artifact is missing, empty, or not executable', () => {
@@ -153,9 +203,7 @@ describe.skipIf(!desktopPresent)(
       // Section [2] fails ANY unlisted `#!`-file in sidecar/bin. Emitting a shebanged bundle
       // without this allowlist entry would make the producer and the verifier contradict each
       // other — a build that cannot pass its own gate.
-      expect(script).toMatch(
-        new RegExp(`^\\s*${ENTRYPOINT_BASENAME}\\)[\\s\\S]{0,400}?allowlisted`, 'm'),
-      );
+      expect(script).toMatch(new RegExp(`^\\s*${ENTRYPOINT_BASENAME}\\)[\\s\\S]{0,400}?allowlisted`, 'm'));
     });
 
     it('runs a real protocol cycle against the packaged artifact', () => {
