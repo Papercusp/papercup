@@ -302,6 +302,7 @@ pub enum Event {
     /// so a finished turn still renders every tool as though it were in flight.
     ChatToolResult {
         call_id: String,
+        result: Option<serde_json::Value>,
         outcome: crate::models::ToolOutcome,
     },
     // --- Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a) ---

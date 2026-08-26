@@ -1797,6 +1797,9 @@ pub struct ChatToolCall {
     /// `input` above is bounded on arrival, so by render time the raw edit is
     /// already gone — this field is what survives it.
     pub diff: Option<crate::diff::ToolDiff>,
+    /// Bounded terminal result payload. Known tools use this for semantic rows;
+    /// unknown tools keep the generic card and never render the raw envelope.
+    pub result: Option<serde_json::Value>,
     /// Terminal outcome, or `Pending` while the loop is still working.
     pub outcome: ToolOutcome,
 }
@@ -1813,6 +1816,7 @@ impl ChatToolCall {
             needs_approval: false,
             input: None,
             diff: None,
+            result: None,
             outcome: ToolOutcome::Pending,
         }
     }

@@ -5177,7 +5177,11 @@ impl App {
                 self.resolve_approval(&call_id);
                 Action::Render
             }
-            Event::ChatToolResult { call_id, outcome } => {
+            Event::ChatToolResult {
+                call_id,
+                result,
+                outcome,
+            } => {
                 // A result is proof the call is no longer parked — whatever the
                 // outcome: approved-and-ran, failed, or refused. `resolve_approval`
                 // is idempotent (D-017 #3), so clearing a prompt some other route
@@ -5190,6 +5194,7 @@ impl App {
                     for tc in m.tools.iter_mut() {
                         if tc.id.as_deref() == Some(call_id.as_str()) {
                             tc.needs_approval = false;
+                            tc.result = result.clone();
                             tc.outcome = outcome.clone();
                         }
                     }
@@ -11393,6 +11398,7 @@ mod tests {
             needs_approval: true,
             input: None,
             diff: None,
+            result: None,
             outcome: crate::models::ToolOutcome::Pending,
         }));
         assert_eq!(a.pending_approvals.len(), 1);
@@ -11465,6 +11471,7 @@ mod tests {
             needs_approval: false,
             input: Some(serde_json::json!({ "command": "ls" })),
             diff: None,
+            result: None,
             outcome: ToolOutcome::Pending,
         }));
         a.update(Event::ChatToolCall(ChatToolCall {
@@ -11473,6 +11480,7 @@ mod tests {
             needs_approval: true,
             input: Some(serde_json::json!({ "command": "rm -rf /" })),
             diff: None,
+            result: None,
             outcome: ToolOutcome::Pending,
         }));
         assert_eq!(a.pending_approvals.len(), 1);
@@ -11480,10 +11488,12 @@ mod tests {
         // A result for call-1 must move call-1 ONLY.
         a.update(Event::ChatToolResult {
             call_id: "call-1".into(),
+            result: Some(serde_json::json!({ "ok": true })),
             outcome: ToolOutcome::Ok,
         });
         let tools = &a.chat_messages[1].tools;
         assert_eq!(tools[0].outcome, ToolOutcome::Ok);
+        assert_eq!(tools[0].result, Some(serde_json::json!({ "ok": true })));
         assert_eq!(tools[1].outcome, ToolOutcome::Pending);
         // The second call is still parked — a sibling's result is not a decision.
         assert_eq!(a.pending_approvals.len(), 1);
@@ -11492,6 +11502,7 @@ mod tests {
         // Denying call-2 clears its park AND stops it rendering as in-flight.
         a.update(Event::ChatToolResult {
             call_id: "call-2".into(),
+            result: None,
             outcome: ToolOutcome::Denied,
         });
         let tools = &a.chat_messages[1].tools;
@@ -11503,6 +11514,7 @@ mod tests {
         // and the loop's own frame both land here — changes nothing.
         a.update(Event::ChatToolResult {
             call_id: "call-2".into(),
+            result: None,
             outcome: ToolOutcome::Denied,
         });
         assert!(a.pending_approvals.is_empty());
@@ -11512,6 +11524,7 @@ mod tests {
         // from a previous chat must never take down the pane.
         a.update(Event::ChatToolResult {
             call_id: "call-nope".into(),
+            result: None,
             outcome: ToolOutcome::Failed("boom".into()),
         });
         assert_eq!(a.chat_messages[1].tools.len(), 2);

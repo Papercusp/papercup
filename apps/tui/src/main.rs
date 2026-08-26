@@ -37,6 +37,7 @@ mod notify;
 mod operator_voice_bus;
 mod plans_board;
 mod reap;
+mod semantic_tool_cards;
 mod session_config;
 mod session_panes;
 mod shared_cache;
@@ -3428,6 +3429,7 @@ async fn stream_agent_chat_turn(
                     // when the current lane has no use for it.
                     input,
                     diff,
+                    result: None,
                     outcome: models::ToolOutcome::Pending,
                 }));
             }
@@ -3456,12 +3458,17 @@ async fn stream_agent_chat_turn(
                 } else if let Some(message) = error {
                     models::ToolOutcome::Failed(message)
                 } else {
-                    // The payload itself belongs to a later slice (result bodies
-                    // want folding/scrolling); the card only needs that it landed.
-                    let _ = result;
                     models::ToolOutcome::Ok
                 };
-                let _ = tx.send(Event::ChatToolResult { call_id, outcome });
+                // Bound result payloads at ingest exactly like arguments. Semantic
+                // cards retain useful evidence without retaining an unbounded MCP
+                // envelope for the life of the session.
+                let result = result.and_then(|value| diff::ingest_tool_input(value).1);
+                let _ = tx.send(Event::ChatToolResult {
+                    call_id,
+                    result,
+                    outcome,
+                });
             }
             AgentChatEvent::Error { message } => {
                 let _ = tx.send(Event::ChatError(message));

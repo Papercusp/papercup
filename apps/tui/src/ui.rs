@@ -5,6 +5,7 @@ use crate::app::{App, HarnessFocus, PluginsFocus, Tab, TestingFocus};
 use crate::models::{
     contribution_count, contribution_names, tier_glyph, tier_label, Notif, ToolOutcome, INBOX_TIERS,
 };
+use crate::semantic_tool_cards::SemanticTone;
 use crate::theme::Theme;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -1808,6 +1809,7 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             }
         }
         for tc in &m.tools {
+            let semantic = crate::semantic_tool_cards::card_for_tool(tc);
             // Every label here is a RENDER concern applied from raw model fields
             // (D-017 #1): `name` stays the bare tool so the approval prompt and
             // the resolve POST both read it cleanly, and the status is derived
@@ -1835,13 +1837,34 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
                 ),
             };
             lines.push(Line::from(vec![
-                Span::styled(format!("  ⚙ {}", tc.name), Theme::dim()),
+                Span::styled(
+                    format!(
+                        "  ⚙ {}",
+                        semantic
+                            .as_ref()
+                            .map(|c| c.title.as_str())
+                            .unwrap_or(&tc.name)
+                    ),
+                    Theme::dim(),
+                ),
                 Span::styled(status, status_style),
             ]));
             // Arguments are TRUNCATED, never wrapped: a tool call carrying a file
             // body would otherwise push the whole transcript off screen, and the
             // card exists to let a turn be skimmed.
-            if let Some(args) = tc
+            if let Some(card) = semantic.as_ref() {
+                for row in &card.rows {
+                    let style = match row.tone {
+                        SemanticTone::Neutral => Theme::dim(),
+                        SemanticTone::Positive => Theme::success(),
+                        SemanticTone::Warning => Theme::warn(),
+                    };
+                    lines.push(Line::from(Span::styled(
+                        trunc(&format!("    {}: {}", row.label, row.value), inner_w),
+                        style,
+                    )));
+                }
+            } else if let Some(args) = tc
                 .input
                 .as_ref()
                 .and_then(|v| tool_input_summary(v, inner_w.saturating_sub(4)))
@@ -5353,6 +5376,45 @@ mod tests {
         let typing = render(&app, 100, 20);
         assert!(typing.contains("Enter send"));
         assert!(typing.contains("> hello"));
+    }
+
+    #[test]
+    fn chat_view_renders_semantic_tool_rows_and_generic_fallback() {
+        use crate::models::{ChatMessage, ChatToolCall};
+        use serde_json::json;
+
+        let mut semantic = ChatMessage::assistant("done");
+        semantic.tools.push(ChatToolCall {
+            name: "work_items:complete".into(),
+            id: Some("call-1".into()),
+            needs_approval: false,
+            input: Some(json!({
+                "id": "WI-7",
+                "completion": { "summary": "landed it", "testResult": "12 passed" }
+            })),
+            diff: None,
+            result: Some(json!({ "ok": true })),
+            outcome: ToolOutcome::Ok,
+        });
+        semantic.tools.push(ChatToolCall {
+            name: "capability:read".into(),
+            id: Some("call-2".into()),
+            needs_approval: false,
+            input: Some(json!({ "file_path": "src/main.rs" })),
+            diff: None,
+            result: None,
+            outcome: ToolOutcome::Ok,
+        });
+
+        let mut app = App::new();
+        app.tab = Tab::Operator;
+        app.set_chat_history("c1".into(), vec![semantic], false, None);
+        let text = render(&app, 120, 24);
+        assert!(text.contains("Completed WI-7"), "{text}");
+        assert!(text.contains("evidence: landed it"), "{text}");
+        assert!(text.contains("tests: 12 passed"), "{text}");
+        assert!(text.contains("capability:read"), "{text}");
+        assert!(text.contains(r#"{"file_path":"src/main.rs"}"#), "{text}");
     }
 
     #[test]
