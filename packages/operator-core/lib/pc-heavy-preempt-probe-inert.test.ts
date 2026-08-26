@@ -40,6 +40,16 @@ function probeBody(): string {
   return source.slice(start, end);
 }
 
+/** The release-gate bypass, isolated so a dedicated-key assertion cannot ban a
+ * legitimate GREEN_CHECKPOINT read in an unrelated proof-identity branch. */
+function releaseGateAdmissionBody(): string {
+  const start = source.indexOf('if [ "$_exclusive_all_slots" = 0 ] && [ "${PC_HEAVY_RELEASE_GATE:-}" = "1" ]; then');
+  expect(start, 'the release-gate admission exemption must exist').toBeGreaterThan(-1);
+  const end = source.indexOf('\nfi', start);
+  expect(end, 'the release-gate admission exemption must terminate').toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
 describe('pc-heavy preempt probe is inert (EI-21355065353185484)', () => {
   it('probes the INTENT file, never the writer mutex', () => {
     const body = probeBody();
@@ -90,10 +100,12 @@ describe('pc-heavy preempt probe is inert (EI-21355065353185484)', () => {
   });
 
   it('preserves the WI-6140 release-gate admission exemption', () => {
-    expect(source).toContain('PC_HEAVY_RELEASE_GATE:-');
+    const body = releaseGateAdmissionBody();
+    expect(body).toContain('PC_HEAVY_RELEASE_GATE:-');
     // Deliberately a dedicated key: GREEN_CHECKPOINT is double-duty and agents
-    // export it by hand, so keying admission off it reopens the hole.
-    expect(source).not.toContain('GREEN_CHECKPOINT:-');
+    // export it by hand, so keying ADMISSION off it reopens the hole. Other
+    // branches may read it for non-admission identity without weakening WI-6140.
+    expect(body).not.toContain('GREEN_CHECKPOINT');
   });
 
   it('is syntactically valid bash', () => {
