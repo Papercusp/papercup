@@ -197,8 +197,12 @@ function ProfileFields({
     <div className="hud-goal__set-grid">
       {PROFILE_FIELDS.map((field) => {
         const id = `${idPrefix}-${field}`;
+        // Indexed by `keyof GoalDetailLaunchOptions` rather than a re-spelled
+        // union of field names: the previous hardcoded list silently omitted any
+        // choice field added later, which is the panel-vs-validator drift D-011
+        // is about, expressed as a cast instead of as a copied array.
         const choices = PROFILE_CHOICE_FIELDS.has(field)
-          ? (options?.[field as 'agent' | 'carry' | 'contextSize'] ?? null)
+          ? (options?.[field as keyof GoalDetailLaunchOptions] ?? null)
           : null;
         return (
           <label key={field} className="hud-goal__set-field" htmlFor={id}>
