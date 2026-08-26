@@ -363,6 +363,60 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
       'deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }));',
     );
   });
+
+  it('runs independent hot-path readers concurrently (EI-21544761852770720)', async () => {
+    let resolveDeploy!: (value: DevDeployState) => void;
+    let resolveSnapshot!: (value: GitPipelineSnapshot) => void;
+    let resolveCheckpoint!: (value: null) => void;
+    let resolveLock!: (value: null) => void;
+    let resolveOwnership!: (value: never) => void;
+    const deployPending = new Promise<DevDeployState>((resolve) => (resolveDeploy = resolve));
+    const snapshotPending = new Promise<GitPipelineSnapshot>((resolve) => (resolveSnapshot = resolve));
+    const checkpointPending = new Promise<null>((resolve) => (resolveCheckpoint = resolve));
+    const lockPending = new Promise<null>((resolve) => (resolveLock = resolve));
+    const ownershipPending = new Promise<never>((resolve) => (resolveOwnership = resolve));
+    const started: string[] = [];
+
+    const pending = gitPipelinePosition(
+      {},
+      {
+        git: fakeGit({}),
+        loadDeploy: () => {
+          started.push('deploy');
+          return deployPending;
+        },
+        loadSnapshot: () => {
+          started.push('snapshot');
+          return snapshotPending;
+        },
+        readCheckpointRunSnapshot: () => {
+          started.push('checkpoint');
+          return checkpointPending;
+        },
+        readCheckpointRunLock: () => {
+          started.push('lock');
+          return lockPending;
+        },
+        readGateOwnership: () => {
+          started.push('ownership');
+          return ownershipPending;
+        },
+      },
+    );
+
+    await Promise.resolve();
+    expect(started).toEqual(['deploy', 'snapshot']);
+    resolveDeploy(deploy());
+    resolveSnapshot(snap());
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual(['deploy', 'snapshot', 'checkpoint', 'lock', 'ownership']);
+
+    resolveCheckpoint(null);
+    resolveLock(null);
+    resolveOwnership(null as never);
+    await expect(pending).resolves.toMatchObject({ repoRoot: '/repo' });
+  });
 });
 
 describe('gitPipelinePosition (P-002)', () => {
