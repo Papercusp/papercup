@@ -18,10 +18,10 @@
  */
 
 import { activeWorkspaceId } from '../../workspace-registry';
-import { listRecordedLiveSessions, recordedLiveOwnerIds } from '../../adv-sessions';
+import { listEndedAdvSessionsByOwners, listRecordedLiveSessions, recordedLiveOwnerIds } from '../../adv-sessions';
 import { listPresence, sweepStalePresence } from './presence';
 import { listFederatedPresence } from './federated-presence';
-import { reconcileRosterSources } from './recorded-sessions';
+import { reconcileRosterSources, synthesizeEndedRosterRows } from './recorded-sessions';
 import {
   listRunningNurseryAliasRows,
   synthesizeNurseryAliasRosterRows,
@@ -447,7 +447,7 @@ export async function assemblePresenceSnapshot(
     potId == null
       ? listRunningNurseryAliasRows({
           workspaceId: wsId,
-          ...(targeted ? { ownerIds: ownerSelectors } : {}),
+          ...(targeted ? { ownerIds: [...ownerSelectors] } : {}),
         }).catch(() => [] as NurseryAliasRow[])
       : Promise.resolve([] as NurseryAliasRow[]),
   ]);
@@ -471,7 +471,26 @@ export async function assemblePresenceSnapshot(
   // `coord:presence` (alias-BLIND until now) disagree on the same holder's liveness.
   const reconciledOwnerIds = new Set(reconciled.map((r) => r.ownerId));
   const nurserySynth = synthesizeNurseryAliasRosterRows(nurseryAliasRows, reconciledOwnerIds);
-  const all: RosterRow[] = nurserySynth.length ? [...reconciled, ...nurserySynth] : reconciled;
+  let all: RosterRow[] = nurserySynth.length ? [...reconciled, ...nurserySynth] : reconciled;
+  // EI-21488009366204518: a FOURTH synthesis leg, TARGETED-ONLY. An owner whose
+  // coord_presence row was REAPED but whose adv_sessions still records the death
+  // (ended_at) must answer a `{ owner }` point-lookup with an explicit `ended`
+  // row — never with an empty roster that reads as "never existed". Runs only
+  // when the needle matched nothing above (one bounded query on a miss), so the
+  // EI-9454 point-lookup cost discipline holds and full-roster reads are
+  // unaffected (the dead-row pile stays out of the default payload).
+  let endedFromSessionLog = false;
+  if (targeted) {
+    const needle = opts.owner as string;
+    if (!all.some((r) => matchesOwner(r, needle))) {
+      const endedRows = await listEndedAdvSessionsByOwners([needle]).catch(() => []);
+      const endedSynth = synthesizeEndedRosterRows(endedRows, new Set(all.map((r) => r.ownerId)));
+      if (endedSynth.length > 0) {
+        all = [...all, ...endedSynth];
+        endedFromSessionLog = true;
+      }
+    }
+  }
   // EI-9454 (targeted-lookup cost): when `owner` is set, filter EARLY — the base
   // rows already carry ownerId+ownerLabel (all matchesOwner needs), so the matched
   // row(s) are known BEFORE the enrichment fan-out. Everything downstream (the 5
@@ -714,6 +733,14 @@ export async function assemblePresenceSnapshot(
       viewerAttached,
       byState,
       byContextPressure,
+      // EI-21488009366204518: on a targeted read, say HOW the needle resolved —
+      // matched rows, and whether the answer came from session-log death
+      // evidence (a reaped presence row) rather than a live presence row. An
+      // unknown id reads as matched:0/fromSessionLog:false — an explicit
+      // not-found, distinct from the synthesized-ended case.
+      ...(targeted
+        ? { ownerLookup: { needle: opts.owner, matched: scoped.length, fromSessionLog: endedFromSessionLog } }
+        : {}),
     },
     active: activeRows,
     etag,

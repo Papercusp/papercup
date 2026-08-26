@@ -11,6 +11,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { selectRosterRows, matchesOwner } from './presence-snapshot';
+import presenceTool from './tools/presence';
 import type { RosterRow } from './presence-payload';
 import type { SessionState } from './presence-wakeability';
 
@@ -89,4 +90,14 @@ describe('matchesOwner — id/label fuzz (mirrors coord:dispatch findPresenceRow
     expect(matchesOwner(r, 'su-1234-abcd-extra')).toBe(true));
   it('does not match an unrelated needle', () => expect(matchesOwner(r, 'zzz')).toBe(false));
   it('an empty needle never matches', () => expect(matchesOwner(r, '')).toBe(false));
+});
+
+describe('coord:presence targeted-owner schema', () => {
+  it('accepts one owner or a bounded owner set, but not both', () => {
+    expect(presenceTool.args.safeParse({ owner: 'su-a' }).success).toBe(true);
+    expect(presenceTool.args.safeParse({ owners: ['su-a', 'su-b'] }).success).toBe(true);
+    expect(presenceTool.args.safeParse({ owner: 'su-a', owners: ['su-b'] }).success).toBe(false);
+    expect(presenceTool.args.safeParse({ owners: [] }).success).toBe(false);
+    expect(presenceTool.args.safeParse({ owners: Array.from({ length: 51 }, (_, i) => `su-${i}`) }).success).toBe(false);
+  });
 });
