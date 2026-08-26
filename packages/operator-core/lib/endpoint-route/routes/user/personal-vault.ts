@@ -11,7 +11,6 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { parsePlan } from '@papercusp/plan-parser';
 import { getSessionUserOrDefault } from '../../../auth';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { parsePersonalArchive } from '../../../personal-vault/archive-import';
 import {
   disconnectOwnedExternalTriggerSources,
   getExternalTriggerSource,
@@ -51,8 +50,17 @@ import {
   replacePersonalGrant,
   revokePersonalGrant,
   setPersonalVaultEnabled,
-  upsertPersonalDocuments,
 } from '../../../personal-vault/store';
+import {
+  MAX_PERSONAL_VAULT_IMPORT_BYTES,
+  createPersonalVaultImportJob,
+  listPersonalVaultImportJobs,
+  publicPersonalVaultImportJob,
+  removePersonalVaultImportArchive,
+  requestPersonalVaultImportCancellation,
+  retryPersonalVaultImportJob,
+  storePersonalVaultImportArchive,
+} from '../../../personal-vault/import-jobs';
 import type { PersonalPrincipalType } from '../../../personal-vault/types';
 
 const SUPPORTED_SOURCES = ['gmail', 'calendar', 'contacts', 'facebook', 'instagram', 'x'] as const;
@@ -160,6 +168,42 @@ function importError(err: unknown): Response {
     return Response.json({ ok: false, error }, { status: 409 });
   }
   return Response.json({ ok: false, error }, { status: 400 });
+}
+
+function importFilename(req: Request): string {
+  const encoded = req.headers.get('x-papercusp-filename')?.trim();
+  if (!encoded) throw new Error('filename_required');
+  try {
+    const filename = decodeURIComponent(encoded).trim();
+    if (!filename) throw new Error('filename_required');
+    return filename;
+  } catch (error) {
+    if (messageOf(error) === 'filename_required') throw error;
+    throw new Error('filename_invalid');
+  }
+}
+
+async function resolveImportProvenance(
+  workspaceId: string,
+  userId: string,
+  url: URL,
+): Promise<{ sourceId: string | null; providerAccountId: string | null }> {
+  const requestedSourceId = url.searchParams.get('sourceId')?.trim() ?? '';
+  const requestedProviderAccountId = url.searchParams.get('providerAccountId')?.trim() ?? '';
+  let sourceId: string | null = requestedSourceId || null;
+  let providerAccountId: string | null = requestedProviderAccountId || null;
+  if (!sourceId) return { sourceId, providerAccountId };
+  const owned = await getExternalTriggerSource(getOrgPg().sql, workspaceId, sourceId);
+  if (!owned?.ownerUserId || owned.ownerUserId !== userId) {
+    throw new Error('personal_import_source_not_owned');
+  }
+  if (!owned.providerAccountId) throw new Error('personal_import_source_account_required');
+  if (providerAccountId && providerAccountId !== owned.providerAccountId) {
+    throw new Error('personal_import_source_account_mismatch');
+  }
+  providerAccountId = owned.providerAccountId;
+  sourceId = owned.id;
+  return { sourceId, providerAccountId };
 }
 
 function safeLastSyncAt(source: OwnedExternalTriggerSourceRow): string | null {
@@ -769,61 +813,116 @@ const archiveImport = defineTool({
   method: 'POST',
   path: '/user/personal-vault/import',
   auth: 'loopback',
-  // Large offline exports legitimately take longer than the route stack's 30s
-  // default. Parsing is still bounded by archive-import's byte/entry guards.
+  // The request ends after a bounded disk stream + durable enqueue. Parsing is
+  // owned by the system routine, outside this request's memory and timeout.
   timeoutSec: 300,
   async handler(req) {
-    const form = await req.formData().catch(() => null);
-    const entry = form?.get('file');
-    if (!entry || typeof entry === 'string') {
-      return Response.json({ ok: false, error: 'file_required' }, { status: 400 });
-    }
-    const file = entry as File;
-    if (!file.name?.trim()) {
-      return Response.json({ ok: false, error: 'filename_required' }, { status: 400 });
-    }
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
+    let storedPath: string | null = null;
     try {
-      const parsed = parsePersonalArchive(file.name, Buffer.from(await file.arrayBuffer()));
-      const requestedSourceId = typeof form?.get('sourceId') === 'string'
-        ? String(form.get('sourceId')).trim()
-        : '';
-      const requestedProviderAccountId = typeof form?.get('providerAccountId') === 'string'
-        ? String(form.get('providerAccountId')).trim()
-        : '';
-      let sourceId: string | null = requestedSourceId || null;
-      let providerAccountId: string | null = requestedProviderAccountId || null;
-      if (sourceId) {
-        const owned = await getExternalTriggerSource(getOrgPg().sql, workspaceId, sourceId);
-        if (!owned?.ownerUserId || owned.ownerUserId !== user.id) throw new Error('personal_import_source_not_owned');
-        if (!owned.providerAccountId) throw new Error('personal_import_source_account_required');
-        if (providerAccountId && providerAccountId !== owned.providerAccountId) {
-          throw new Error('personal_import_source_account_mismatch');
-        }
-        providerAccountId = owned.providerAccountId;
-        sourceId = owned.id;
+      if (!(await isPersonalVaultEnabled(getOrgPg().sql, workspaceId, user.id))) {
+        throw new Error('personal_vault_disabled');
       }
-      const documents = parsed.documents.map((document) => ({
-        ...document,
+      const filename = importFilename(req);
+      if (!req.body) throw new Error('file_required');
+      const declaredSize = Number(req.headers.get('content-length'));
+      if (Number.isFinite(declaredSize) && declaredSize > MAX_PERSONAL_VAULT_IMPORT_BYTES) {
+        throw new Error('personal_archive_too_large');
+      }
+      const { sourceId, providerAccountId } = await resolveImportProvenance(
+        workspaceId,
+        user.id,
+        new URL(req.url),
+      );
+      const stored = await storePersonalVaultImportArchive(
+        workspaceId,
+        req.body as unknown as AsyncIterable<Uint8Array>,
+      );
+      storedPath = stored.storagePath;
+      const job = await createPersonalVaultImportJob(getOrgPg().sql, {
+        workspaceId,
+        userId: user.id,
+        filename,
+        storagePath: stored.storagePath,
+        contentType: req.headers.get('content-type'),
+        contentSha256: stored.contentSha256,
+        sizeBytes: stored.sizeBytes,
         sourceId,
         providerAccountId,
-      }));
-      const stored = documents.length
-        ? await upsertPersonalDocuments(getOrgPg().sql, workspaceId, user.id, documents)
-        : { insertedOrUpdated: 0, ids: [] as string[] };
+      });
+      const duplicate = job.storagePath !== stored.storagePath;
+      if (duplicate) {
+        await removePersonalVaultImportArchive(workspaceId, stored.storagePath);
+        storedPath = null;
+      }
       return Response.json({
         ok: true,
-        filename: file.name,
-        documents: stored.insertedOrUpdated,
-        sources: parsed.sources,
-        sourceId,
-        providerAccountId,
-        warnings: parsed.warnings,
-      });
+        duplicate,
+        job: publicPersonalVaultImportJob(job),
+      }, { status: 202 });
     } catch (err) {
+      if (storedPath) await removePersonalVaultImportArchive(workspaceId, storedPath).catch(() => undefined);
       return importError(err);
     }
+  },
+});
+
+const archiveImports = defineTool({
+  method: 'GET',
+  path: '/user/personal-vault/imports',
+  auth: 'public',
+  async handler(req) {
+    const user = await getSessionUserOrDefault(req.headers);
+    const jobs = await listPersonalVaultImportJobs(
+      getOrgPg().sql,
+      activeWorkspaceId(),
+      user.id,
+      50,
+    );
+    return Response.json({ ok: true, jobs: jobs.map(publicPersonalVaultImportJob) });
+  },
+});
+
+const cancelArchiveImport = defineTool({
+  method: 'DELETE',
+  path: '/user/personal-vault/imports',
+  auth: 'loopback',
+  async handler(req) {
+    const id = new URL(req.url).searchParams.get('id')?.trim();
+    if (!id) return Response.json({ ok: false, error: 'import_job_id_required' }, { status: 400 });
+    const user = await getSessionUserOrDefault(req.headers);
+    const job = await requestPersonalVaultImportCancellation(
+      getOrgPg().sql,
+      activeWorkspaceId(),
+      user.id,
+      id,
+    );
+    if (!job) return Response.json({ ok: false, error: 'import_job_not_found' }, { status: 404 });
+    return Response.json({ ok: true, job: publicPersonalVaultImportJob(job) });
+  },
+});
+
+const retryArchiveImport = defineTool({
+  method: 'POST',
+  path: '/user/personal-vault/imports/retry',
+  auth: 'loopback',
+  async handler(req) {
+    const body = await jsonBody<{ id?: unknown }>(req);
+    if (typeof body?.id !== 'string' || !body.id.trim()) {
+      return Response.json({ ok: false, error: 'import_job_id_required' }, { status: 400 });
+    }
+    const user = await getSessionUserOrDefault(req.headers);
+    const job = await retryPersonalVaultImportJob(
+      getOrgPg().sql,
+      activeWorkspaceId(),
+      user.id,
+      body.id.trim(),
+    );
+    if (!job) {
+      return Response.json({ ok: false, error: 'import_job_not_retryable' }, { status: 409 });
+    }
+    return Response.json({ ok: true, job: publicPersonalVaultImportJob(job) });
   },
 });
 
@@ -957,6 +1056,9 @@ export default [
   setGoogleCapability,
   disconnectFacebook,
   archiveImport,
+  archiveImports,
+  cancelArchiveImport,
+  retryArchiveImport,
   grants,
   previewGrant,
   approveGrant,
