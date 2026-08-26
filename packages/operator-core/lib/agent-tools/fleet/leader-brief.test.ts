@@ -109,17 +109,25 @@ describe('fleet:leader-brief announced gate projection (P-027)', () => {
         { listAnnouncements: async () => [], listAwaits: async () => [] },
       ),
     ).resolves.toEqual([]);
-    await expect(
-      readLeaderAnnouncedGates(
-        { fleetSlug: 'alpha' },
-        {
-          listAnnouncements: async () => {
-            throw new Error('store unavailable');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(
+        readLeaderAnnouncedGates(
+          { fleetSlug: 'alpha' },
+          {
+            listAnnouncements: async () => {
+              throw new Error('store unavailable');
+            },
+            listAwaits: async () => [],
           },
-          listAwaits: async () => [],
-        },
-      ),
-    ).resolves.toBeUndefined();
+        ),
+      ).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(
+        '[bounded-timeout] leader-brief:announced-gates failed: store unavailable — degrading to fallback',
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
