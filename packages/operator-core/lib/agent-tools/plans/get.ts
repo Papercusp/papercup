@@ -156,7 +156,7 @@ const argsSchema = z
       .min(1)
       .optional()
       .describe(
-        "Return one decision by id with its complete body. This is a narrow identity/CAS read; decisionSelection reports the requested, matched, and missing ids.",
+        "Return one decision by id with its complete body from the plan named by slug (decision ids are plan-local, so slug or slugs is still required). This is a narrow selection/CAS read; decisionSelection reports the requested, matched, and missing ids.",
       ),
     decisions: z
       .array(z.string().min(1))
@@ -164,7 +164,7 @@ const argsSchema = z
       .max(100)
       .optional()
       .describe(
-        "Return only these decision ids with complete bodies. This is a narrow identity/CAS read; counts still describe the whole plan and decisionSelection reports requested/matched/missing ids.",
+        "Return only these decision ids with complete bodies from the plans named by slug/slugs (decision ids are plan-local, so slug or slugs is still required). This is a narrow selection/CAS read; counts still describe the whole plan and decisionSelection reports requested/matched/missing ids.",
       ),
     mode: z
       .enum(["meta", "sections", "full"])
@@ -186,7 +186,7 @@ const argsSchema = z
       ),
   })
   .refine((v) => !!v.slug || !!v.slugs?.length, {
-    message: "Provide slug or slugs.",
+    message: "Provide slug or slugs; decisionId/decisions select within a plan because D-NNN ids are plan-local.",
   });
 
 interface PlanSection {
