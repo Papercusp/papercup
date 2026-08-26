@@ -13,7 +13,7 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 293
+  corpus-parts: 294
   corpus-blocks: 255
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
@@ -1645,11 +1645,7 @@ Review smell: a new registry/config field restating what code already knows. Lon
 
 ## Reaching for bash? These reads already have a tool
 
-Bash is still ~41% of all tool use here, and the audit behind this table found the
-cause is routing, not capability. Of the tools that replace a shell command,
-`dev:pg_query` was the only one this file already pointed at — and it is the only one
-with real adoption (~85%, against ~1% for equally-capable tools nobody was pointed
-at). So the table below is the lever — and it is **generated from the same registry
+The routing table below is the lever, and it is **generated from the same registry
 the PreToolUse gate enforces**, so the advice you read here and the advice the hook
 gives you cannot disagree.
 
@@ -1666,6 +1662,7 @@ of a tracked file bypasses the `PreToolUse` lock-arbitration hook — and, on th
 matcher, the secrets guard, content-lint, and the migration / generated-file guards —
 so it can silently clobber a peer's held file on this shared tree. Always edit via
 `Edit`/`Write` (or `capability:edit` / `capability:write`).
+Bash is still ~41% of all tool use here, and the audit behind this table found the cause is routing, not capability. Of the tools that replace a shell command, `dev:pg_query` was the only one this file already pointed at — and it is the only one with real adoption (~85%, against ~1% for equally-capable tools nobody was pointed at). That asymmetry is why the fix was to point at the tools rather than to build more of them.
 
 
 Each row was earned, not asserted: a frozen sample of real commands from this box was
