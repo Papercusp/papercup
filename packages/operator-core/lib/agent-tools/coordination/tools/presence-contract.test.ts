@@ -1,12 +1,12 @@
 /**
  * coord:presence argument discoverability contract (EI-20231966513487176).
  *
- * `ownerIds`/`ownerId`, `plan`, and `include_stale` were removed intentionally:
- * the targeted read is singular, plan-scoped reads belong to the claims lens,
- * and the full stale-roster dump was a payload and liveness footgun. The live
- * tool must say that plainly and point callers at the bounded replacement
- * lenses, otherwise callers reconstruct the removed shape and spend a failed
- * round-trip learning the replacement.
+ * `ownerIds`, `plan`, and `include_stale` were removed intentionally; `ownerId`
+ * remains as a compatibility alias for the canonical singular `owner` selector.
+ * Plan-scoped reads belong to the claims lens, and the full stale-roster dump was
+ * a payload and liveness footgun. The live tool must say that plainly and point
+ * callers at the bounded replacement lenses, otherwise callers reconstruct the
+ * removed shape and spend a failed round-trip learning the replacement.
  */
 import { describe, expect, it } from 'vitest';
 import tool from './presence';
@@ -21,7 +21,8 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
     expect(guidance).toMatch(/scope\/pot/i);
     expect(guidance).toMatch(/(?:explicit scope|widen)/i);
     expect(guidance).toMatch(/legacy/i);
-    for (const removed of ['harness', 'ownerId', 'ownerIds', 'plan', 'includeStale', 'include_stale']) {
+    expect(guidance).toMatch(/ownerId.*compatibility alias/i);
+    for (const removed of ['harness', 'ownerIds', 'plan', 'includeStale', 'include_stale']) {
       expect(guidance, `guidance must name removed ${removed}`).toContain(removed);
     }
     expect(guidance).toMatch(/(?:do not pass|invalid)/i);
@@ -31,7 +32,8 @@ describe('coord:presence argument discoverability (EI-20231966513487176)', () =>
     const keys = Object.keys((tool as { args: { shape: Record<string, unknown> } }).args.shape);
 
     expect(keys).toContain('owner');
-    for (const removed of ['harness', 'ownerId', 'ownerIds', 'plan', 'includeStale', 'include_stale']) {
+    expect(keys).toContain('ownerId');
+    for (const removed of ['harness', 'ownerIds', 'plan', 'includeStale', 'include_stale']) {
       expect(keys, `${removed} must remain removed`).not.toContain(removed);
     }
   });
