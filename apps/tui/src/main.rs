@@ -90,7 +90,7 @@ Subcommands:
   work-pane [OWNER]          Open the agent work board
   network-pane               Open the cross-Hive network board
   hive-pane <KEY>            Open a Hive dossier
-  plans-pane                 Open the plans status board
+  context-pane [SOURCE ID]   Open Context for the live Sentinel or an exact session
 
 Options:
   -h, --help                 Print this help text
@@ -164,10 +164,11 @@ async fn main() -> Result<()> {
         // network-pane / hive-pane (hive-network-surface-2026-06-11 B-09): the
         // dock `network` tab's cross-Hive board, and the per-hive drill-in
         // tab's dossier pane (B-10's generated tabs run `pui hive-pane <key>`).
-        // plans-pane (pui-plans-status-board-2026-06-14): the dock's plans
-        // status board — a pinned data board, the network-pane convention.
+        // context-pane: the dock's canonical context projection. `plans-pane`
+        // remains an unadvertised compatibility alias for existing layouts.
         Some("dock-driver") | Some("wake-pane") | Some("prompt-pane") | Some("mail-pane")
-        | Some("work-pane") | Some("network-pane") | Some("hive-pane") | Some("plans-pane") => {}
+        | Some("work-pane") | Some("network-pane") | Some("hive-pane") | Some("context-pane")
+        | Some("plans-pane") => {}
         None if std::env::var_os("ZELLIJ").is_none() => return run_workbench().await,
         _ => {}
     }
@@ -183,8 +184,7 @@ async fn main() -> Result<()> {
         // network-pane: the cross-Hive board; hive-pane: one row's dossier
         // (same tab — `network_focus` below selects the mode).
         Some("network-pane") | Some("hive-pane") => Some(app::Tab::Network),
-        // plans-pane: the dock's plans status board (pui-plans-status-board).
-        Some("plans-pane") => Some(app::Tab::PlansBoard),
+        Some("context-pane") | Some("plans-pane") => Some(app::Tab::PlansBoard),
         _ => None,
     };
     // Slim dock theme (owner ask 2026-06-23): a pinned dock pane renders base
@@ -213,6 +213,28 @@ async fn main() -> Result<()> {
                 std::process::exit(2);
             }
         },
+        _ => None,
+    };
+    // An explicit source/session pair pins Context to that exact producer. With
+    // no pair, the roster reducer binds the pane to the live Sentinel native
+    // session; one half of the pair is rejected rather than guessed.
+    let context_target = match subcommand.as_deref() {
+        Some("context-pane") | Some("plans-pane") => {
+            match (std::env::args().nth(2), std::env::args().nth(3)) {
+                (None, None) => None,
+                (Some(source), Some(id)) if !source.trim().is_empty() && !id.trim().is_empty() => {
+                    Some(models::ConversationContextProjectionTarget::new(
+                        source.trim(),
+                        id.trim(),
+                        std::env::args().nth(4).filter(|h| !h.trim().is_empty()),
+                    ))
+                }
+                _ => {
+                    eprintln!("usage: pui context-pane [SOURCE_KIND SESSION_ID [HARNESS]]");
+                    std::process::exit(2);
+                }
+            }
+        }
         _ => None,
     };
     // Wake-pane scope (owner ask 2026-06-11): bare `wake-pane` = the fleet-wide
@@ -289,6 +311,7 @@ async fn main() -> Result<()> {
         &mut terminal,
         pinned,
         network_focus,
+        context_target,
         wake_filter,
         agent_ctx_mode,
         dock_agent_panes,
@@ -450,6 +473,7 @@ async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     pinned: Option<app::Tab>,
     network_focus: Option<String>,
+    context_target: Option<models::ConversationContextProjectionTarget>,
     wake_filter: app::WakeFilter,
     agent_ctx_mode: app::AgentCtxMode,
     dock_agent_panes: bool,
@@ -478,6 +502,8 @@ async fn run<B: Backend>(
     }
     // hive-pane (B-09/B-10 drill-in): pin the dossier to one C-3 row key.
     app.network_focus = network_focus;
+    app.context_projection_target_explicit = context_target.is_some();
+    app.context_projection_target = context_target;
     app.dock_agent_panes = dock_agent_panes;
     app.hive_agent_tabs = hive_agent_tabs;
     app.reactive_launch_panes = reactive_launch_panes;
@@ -526,6 +552,9 @@ async fn run<B: Backend>(
     // operator conversation on open so the transcript is seeded from the same
     // thread the desktop surface shares.
     tokio::spawn(agent_chat_load(app.harness.clone(), None, tx.clone()));
+    if let Some(target) = app.context_projection_target.clone() {
+        tokio::spawn(fetch_context_projection(target, tx.clone()));
+    }
     // Inline cards (sentinel-tui-shared-backend-and-cards-2026-06-22 Phase 2a):
     // subscribe the state-channel snapshot SSE so open `chat:ask_choice` cards
     // render inline in the operator pane (and resolve the active workspace once
@@ -587,6 +616,7 @@ async fn run<B: Backend>(
 
     while let Some(ev) = rx.recv().await {
         let prior_harness = app.harness.clone();
+        let prior_context_target = app.context_projection_target.clone();
         let chat_terminal = matches!(&ev, Event::ChatDone | Event::ChatError(_));
         let is_key = matches!(ev, Event::Key(_));
         let is_tick = matches!(ev, Event::Tick);
@@ -599,12 +629,6 @@ async fn run<B: Backend>(
                 voice_stream::VoiceEvent::Disconnected
             ))
         );
-        // Plans-board initial/refresh detail load (pui-plans-status-board P-008):
-        // when the plans list (re)arrives while the board is pinned, deterministically
-        // fetch the selected plan's item states for the right-side work-items
-        // detail — the active-plan poller is racy for the FIRST load (the cell is
-        // published by THIS event, after refetch_all already read it).
-        let plans_arrived = matches!(&ev, Event::Plans(_));
         let action = app.update(ev);
         if chat_terminal {
             native_chat_turn = None;
@@ -618,9 +642,9 @@ async fn run<B: Backend>(
             app.agent_chat_summaries.clear();
             tokio::spawn(agent_chat_load(app.harness.clone(), None, tx.clone()));
         }
-        if plans_arrived && app.pinned == Some(app::Tab::PlansBoard) {
-            if let Some((harness, plan)) = app.selected_board_plan() {
-                tokio::spawn(fetch_plan_item_states(harness, plan, tx.clone()));
+        if app.context_projection_target != prior_context_target {
+            if let Some(target) = app.context_projection_target.clone() {
+                tokio::spawn(fetch_context_projection(target, tx.clone()));
             }
         }
 
@@ -842,12 +866,10 @@ async fn run<B: Backend>(
                 tokio::spawn(fetch_hive_directory(tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
-            Action::FetchPlansBoard => {
-                // pui-plans-status-board: the plans-pane's manual `g` refresh.
-                // The standard refetch loop already feeds plans + roster
-                // push-driven (SSE + 60s safety net); this forces an immediate
-                // re-pull so the board updates the instant the owner asks.
-                tokio::spawn(fetch_plans_board(tx.clone()));
+            Action::FetchContextProjection => {
+                if let Some(target) = app.context_projection_target.clone() {
+                    tokio::spawn(fetch_context_projection(target, tx.clone()));
+                }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchPlanItemStates { harness, plan } => {
@@ -2913,29 +2935,21 @@ async fn fetch_network_board(tx: UnboundedSender<Event>) {
     }
 }
 
-/// Fetch the plans status board's two inputs — the plans list + the live roster
-/// (pui-plans-status-board-2026-06-14) — off the UI thread and emit
-/// `Event::Plans` + `Event::Roster`, the same events the standard refetch loop
-/// feeds. The plans-pane's manual `g` refresh: errors surface in the status bar
-/// (the user asked, so a failure is an answer).
-async fn fetch_plans_board(tx: UnboundedSender<Event>) {
+/// Fetch the one canonical Context projection. Capability-tier absence is an
+/// explicit `None`; the client never reconstructs missing frames locally.
+async fn fetch_context_projection(
+    target: models::ConversationContextProjectionTarget,
+    tx: UnboundedSender<Event>,
+) {
     let Ok(client) = OperatorClient::from_discovery().await else {
         return;
     };
-    match client.plans_typed().await {
-        Ok(p) => {
-            let _ = tx.send(Event::Plans(p));
+    match client.conversation_context_projection(&target).await {
+        Ok(projection) => {
+            let _ = tx.send(Event::ConversationContextProjectionLoaded { target, projection });
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("plans: {e}")));
-        }
-    }
-    match client.roster_typed().await {
-        Ok((active, pending)) => {
-            let _ = tx.send(Event::Roster { active, pending });
-        }
-        Err(e) => {
-            let _ = tx.send(Event::Error(format!("roster: {e}")));
+            let _ = tx.send(Event::Error(format!("context projection: {e}")));
         }
     }
 }

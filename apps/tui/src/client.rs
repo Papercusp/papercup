@@ -1461,13 +1461,13 @@ impl OperatorClient {
         if let Some(harness) = &target.harness {
             args["harness"] = serde_json::Value::String(harness.clone());
         }
-        let mut rows = self
+        let rows = self
             .rest_query_rows::<crate::models::ConversationContextProjection>(
                 "conversations.contextProjection",
                 &args,
             )
             .await?;
-        Ok(rows.drain(..).next())
+        Ok(rows.into_iter().next())
     }
 
     /// A foreign hive's beacon HISTORY (`network.hive.beacons`, hive-network-

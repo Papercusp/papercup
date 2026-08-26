@@ -41,10 +41,6 @@ pub const FLEET_DETAIL_SCROLL_STEP: u16 = 6;
 #[derive(Debug, PartialEq)]
 pub enum Action {
     None,
-    /// Refetch the plans status board now (the plans-pane's manual `g`). The
-    /// standard refetch loop already feeds plans + roster push-driven; this
-    /// forces an immediate refresh (pui-plans-status-board-2026-06-14).
-    FetchPlansBoard,
     /// Re-read the canonical Context projection for the currently bound native
     /// session. Used by `g`; SSE invalidations also refresh it automatically.
     FetchContextProjection,
@@ -954,13 +950,10 @@ pub enum Tab {
     /// inside B-10's per-hive drill-in tabs). The user-facing name is
     /// "Network" — NEVER "Apiary" (C-5: reserved by the instance gym).
     Network,
-    /// Plans status board (pui-plans-status-board-2026-06-14): a read-only
-    /// summary of every plan — status, whether it is being worked on, the agent
-    /// count (roster rows whose `current_plan_slug` matches), and item progress
-    /// (done/total, plus wip/blocked/needs-human). PANE-ONLY like Wake/Network:
-    /// not in `ALL` (no tab-strip slot, no switch key) — it renders solely as
-    /// the dock `plans` tab's pinned `pui plans-pane`. A DATA board (owner
-    /// directive: dock data boards are pui-rendered, chats are live TUIs).
+    /// Context — the server-normalized context projection for the live Sentinel
+    /// session. PANE-ONLY like Wake/Network: it renders solely as the dock's
+    /// pinned `pui context-pane`; the variant name stays stable for persisted
+    /// view-state compatibility with the former plans-board surface.
     PlansBoard,
 }
 
@@ -1009,7 +1002,7 @@ impl Tab {
             Tab::Wake => "Wakes",
             Tab::AgentCtx => "Agent",
             Tab::Network => "Network",
-            Tab::PlansBoard => "PlansBoard",
+            Tab::PlansBoard => "Context",
         }
     }
     /// The DISPLAY label for this tab through the active Hive lexicon
@@ -4268,6 +4261,9 @@ impl App {
             }
             KeyCode::Char('u') => {
                 self.context_task_action(crate::agent_chats::AgentChatTaskAction::ClearBlocker)
+            }
+            KeyCode::Char('P') => {
+                self.context_task_action(crate::agent_chats::AgentChatTaskAction::Promote)
             }
             _ => Action::None,
         }

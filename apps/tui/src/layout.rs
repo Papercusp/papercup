@@ -216,9 +216,7 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 
 /// The chat-only DOCK layout (native-terminal-desktop-2026-06-06 P-013 / D-011;
 /// consolidated pui-dock-consolidation-2026-06-07): the surface the
-/// desktop-docked native terminal runs. A **three-tab** zellij session
-/// (hive-network-surface-2026-06-11 P-007 / B-10; plans tab added
-/// pui-plans-status-board-2026-06-14):
+/// desktop-docked native terminal runs. A **three-tab** zellij session:
 ///   * tab **"this hive"** (focus) — the live-TUI dock VERBATIM: the queen
 ///     split (`pui brain-view --queen` + her data boards) over the agent stack
 ///     (operator/sentinel chat, the reactive dock-driver, the fleet wake board).
@@ -226,9 +224,8 @@ fn kdl_pane_name(label: &str, fallback: &str) -> String {
 ///   * tab **"network"** — `pui network-pane`, the cross-hive capability-ladder
 ///     board (own hives, shared-Hive peer Swarms, foreign directory hives);
 ///     selecting a row drills into an on-demand per-hive tab (`hive_tab_kdl`).
-///   * tab **"plans"** — `pui plans-pane`, the plans status board: every plan's
-///     status, whether it is being worked on, its agent count, and item
-///     progress (done / wip / todo + blocked + needs-human).
+///   * tab **"context"** — `pui context-pane`, the shared projection for the
+///     live Sentinel (the former plans board refitted in place for P-006).
 /// The tab-bar + status-bar move into a `default_tab_template` shared by all
 /// tabs; "this hive" is the FIRST tab + focus=true so the dock opens where it
 /// always did (and tier-1 `GoToTab(1)` lands on it). The workbench swap presets
@@ -435,12 +432,11 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
 // active agents. Pane display names route through the lexicon. (The
 // hive-agent-tabs flag is RETIRED — this shape is the only shape.)
 //
-// Dock tabs (hive-network-surface-2026-06-11 P-007 / B-10; plans tab added
-// pui-plans-status-board-2026-06-14): the dock is a THREE-TAB zellij session.
+// Dock tabs: the dock is a THREE-TAB zellij session.
 // Tab 1 "this hive" holds the whole dock above VERBATIM (the queen split /
 // agent stack — nothing about it changed); tab 2 "network" hosts `pui
-// network-pane`, the cross-hive capability-ladder board; tab 3 "plans" hosts
-// `pui plans-pane`, the plans status board. The tab-bar + status-bar move into
+// network-pane`, the cross-hive capability-ladder board; tab 3 "context" hosts
+// `pui context-pane`, the canonical conversation-context projection. The tab-bar + status-bar move into
 // a `default_tab_template` so ALL tabs carry them; "this hive" is the first tab
 // + focus=true so the dock opens exactly where it always did. Selecting a row
 // in the network board opens an on-demand per-hive drill-in tab (see
@@ -490,10 +486,10 @@ layout {{
             args "network-pane"
         }}
     }}
-    tab name="plans" {{
-        pane name="plans" {{
+    tab name="context" {{
+        pane name="context" {{
             command "pui"
-            args "plans-pane"
+            args "context-pane"
         }}
     }}
 }}

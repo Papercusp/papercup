@@ -186,8 +186,8 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         Tab::Wake => crate::wake_board::draw_wake_board(f, app, body),
         // Pane-only (dock 4-pane split): the pinned brief/mail/work boards.
         Tab::AgentCtx => crate::agent_ctx::draw_agent_ctx(f, app, body),
-        // Pane-only (pui-plans-status-board): the pinned `pui plans-pane`
-        // plans status board.
+        // Pane-only Context: one server-normalized projection, never a local
+        // reconstruction from plans/roster/work-items.
         Tab::PlansBoard => crate::plans_board::draw_plans_board(f, app, body),
         // Pane-only (hive-network-surface B-09): the pinned `pui network-pane`
         // cross-Hive board / `pui hive-pane <key>` dossier.
@@ -3310,17 +3310,10 @@ fn draw_fleet_detail(f: &mut Frame, app: &App) {
 fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
     use crate::app::PlansFocus;
     use crate::fleet::FleetPanel;
-    // Both Plans surfaces (in-app tab + dock plans-pane) reuse this popup. The
-    // focused pane decides the body: the LIST pane → the selected plan's full
-    // detail (owner ask 2026-06-15 #1); the ITEMS pane → the selected work item's
-    // detail (owner ask 2026-06-16).
-    if matches!(
-        app.tab,
-        crate::app::Tab::Plans | crate::app::Tab::PlansBoard
-    ) {
+    if app.tab == crate::app::Tab::Plans {
         if app.plans_focus == PlansFocus::Items {
             let lines = match app.selected_plan_item() {
-                Some(it) => crate::plans_board::item_detail_lines(it),
+                Some(it) => plan_item_detail_lines(it),
                 None => vec![Line::from(Span::styled(
                     "(no work item selected)",
                     Theme::dim(),
@@ -3328,13 +3321,7 @@ fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
             };
             return (" work item · Esc close · j/k item · PgUp/Dn scroll ", lines);
         }
-        let selected_plan = if app.tab == crate::app::Tab::PlansBoard {
-            let rows = crate::plans_board::board_rows(app);
-            rows.get(app.plans_board_sel.min(rows.len().saturating_sub(1)))
-                .map(|r| crate::fleet::plan_detail_lines_for(r.plan))
-        } else {
-            app.selected_plan().map(crate::fleet::plan_detail_lines_for)
-        };
+        let selected_plan = app.selected_plan().map(crate::fleet::plan_detail_lines_for);
         let lines = selected_plan
             .unwrap_or_else(|| vec![Line::from(Span::styled("(no plan selected)", Theme::dim()))]);
         return (" plan · Esc close · j/k plan · PgUp/Dn scroll ", lines);
