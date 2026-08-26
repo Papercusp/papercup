@@ -296,10 +296,12 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(guidance?.when).toContain('[self-imposed]');
   });
 
-  it('guides carry retunes to pass loop:arm\'s required intervalSec and goal', () => {
+  it('guides active carry-only retunes while preserving fresh-arm requirements', () => {
     const chaining = (tool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
-    expect(chaining).toContain('loop:arm { intervalSec: <number>, goal: <string>, carry: \'cold\'|\'warm\' }');
-    expect(chaining).toMatch(/intervalSec and goal are required even when only carry changes/i);
+    expect(chaining).toContain("loop:arm { carry: 'cold'|'warm' }");
+    expect(chaining).toMatch(/active loop.*omitted intervalSec and goal are inherited/i);
+    expect(chaining).toMatch(/fresh loop still requires intervalSec and goal/i);
+    expect(chaining).not.toMatch(/intervalSec and goal are required even when only carry changes/i);
   });
 
   it('structured fields → renderCarryNote, keyed by caller ownerId + ctx harness (the loopScope the wake executor reads)', async () => {
