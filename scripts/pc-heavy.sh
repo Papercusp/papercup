@@ -2476,6 +2476,21 @@ _pc_heavy_run_with_retries() {
   fi
   trap 'rm -f "${_pc_heavy_retry_result_file:-}" 2>/dev/null || true' EXIT
 
+  # A resumable caller needs every fresh attempt in THIS bounded retry series to address the
+  # same proof group. Generate it once in the outer wrapper; affected-tests removes the transport
+  # variable from the child-environment hash and substitutes this value only for cache identity.
+  # Preserve a gate-supplied proof group when one exists so repair verification keeps its original
+  # candidate boundary instead of silently opening a second cache namespace.
+  if [ "${AFFECTED_TASK_VERDICT_RESUME:-0}" = 1 ] && [ -z "${AFFECTED_TASK_VERDICT_PROOF_GROUP:-}" ]; then
+    local _resume_proof_group=''
+    if [ "${GREEN_CHECKPOINT:-0}" = 1 ] && [ -n "${PAPERCUSP_TEST_RUN_GROUP:-}" ]; then
+      _resume_proof_group="$PAPERCUSP_TEST_RUN_GROUP"
+    else
+      _resume_proof_group="pc-heavy-resume-${PPID:-0}-$$-$(date +%s%N)"
+    fi
+    export AFFECTED_TASK_VERDICT_PROOF_GROUP="$_resume_proof_group"
+  fi
+
   local _retry_attempt=0 _retry_rc=0 _retry_marker=''
   while [ "$_retry_attempt" -le "$_retry_limit" ]; do
     rm -f "$_pc_heavy_retry_result_file" 2>/dev/null || true

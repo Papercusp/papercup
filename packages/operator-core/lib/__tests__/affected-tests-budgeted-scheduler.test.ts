@@ -92,6 +92,39 @@ describe('runBudgetedTasks', () => {
     expect(result.stats.observedMaxTasks).toBe(2);
   });
 
+  it('publishes a settled task before an in-flight sibling lets the pool return', async () => {
+    const tasks = [
+      { id: 'long', estimateMs: 100 },
+      { id: 'short', estimateMs: 5 },
+    ];
+    const gates = new Map(tasks.map((task) => [task.id, deferred<string>()]));
+    const settled: string[] = [];
+    let poolReturned = false;
+    const running = runBudgetedTasks(tasks, {
+      ...config,
+      estimateMs: (task: (typeof tasks)[number]) => task.estimateMs,
+      runTask: (task: (typeof tasks)[number]) => gates.get(task.id)!.promise,
+      onTaskSettled: (entry: { task: { id: string } }) => {
+        settled.push(entry.task.id);
+      },
+    });
+    void running.then(() => {
+      poolReturned = true;
+    });
+
+    await Promise.resolve();
+    gates.get('short')!.resolve('short-result');
+    await new Promise<void>((done) => setImmediate(done));
+    expect(settled).toEqual(['short']);
+    expect(poolReturned).toBe(false);
+
+    gates.get('long')!.resolve('long-result');
+    await expect(running).resolves.toMatchObject({
+      results: [{ task: { id: 'long' } }, { task: { id: 'short' } }],
+    });
+    expect(settled).toEqual(['short', 'long']);
+  });
+
   it('lets the memory budget reduce the worker ceiling independently', async () => {
     const allocations: number[] = [];
     const result = await runBudgetedTasks(['a', 'b'], {

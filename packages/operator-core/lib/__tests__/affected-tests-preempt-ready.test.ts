@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const AFFECTED_TESTS = resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
+const PC_HEAVY_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/pc-heavy.sh'), 'utf8');
 const PACKAGE_JSON = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')) as {
   scripts?: Record<string, string>;
 };
@@ -81,18 +82,29 @@ describe('affected-tests after-ready publication boundary (EI-21361599312981776)
 });
 
 describe('once-only package wiring', () => {
-  it('opts test:affected and its integration variant into the after-ready barrier', () => {
-    expect(PACKAGE_JSON.scripts?.['test:affected']).toContain(
-      'PC_HEAVY_PREEMPT_AFTER_READY=1',
-    );
-    expect(PACKAGE_JSON.scripts?.['test:affected:integration']).toContain(
-      'PC_HEAVY_PREEMPT_AFTER_READY=1',
-    );
+  it('creates one proof group outside the fresh-attempt retry loop', () => {
+    const proofGroup = PC_HEAVY_SRC.indexOf('export AFFECTED_TASK_VERDICT_PROOF_GROUP="$_resume_proof_group"');
+    const retryLoop = PC_HEAVY_SRC.indexOf('while [ "$_retry_attempt" -le "$_retry_limit" ]; do');
+    expect(proofGroup).toBeGreaterThan(-1);
+    expect(retryLoop).toBeGreaterThan(proofGroup);
+    expect(PC_HEAVY_SRC.match(/export AFFECTED_TASK_VERDICT_PROOF_GROUP=/g)).toHaveLength(1);
+    expect(PC_HEAVY_SRC).toContain('_resume_proof_group="$PAPERCUSP_TEST_RUN_GROUP"');
+    expect(PC_HEAVY_SRC).toContain('_resume_proof_group="pc-heavy-resume-');
+  });
+
+  it('opts test:affected variants into bounded, resumable after-ready execution', () => {
+    for (const name of ['test:affected', 'test:affected:integration']) {
+      expect(PACKAGE_JSON.scripts?.[name]).toContain('PC_HEAVY_PREEMPT_AFTER_READY=1');
+      expect(PACKAGE_JSON.scripts?.[name]).toContain('PC_HEAVY_RETRY_PREEMPTIONS=3');
+      expect(PACKAGE_JSON.scripts?.[name]).toContain('AFFECTED_TASK_VERDICT_RESUME=1');
+    }
   });
 
   it('does not silently widen the barrier to related or all-workspace sweeps', () => {
     for (const name of ['test:related', 'test:all', 'test:all:integration']) {
       expect(PACKAGE_JSON.scripts?.[name]).not.toContain('PC_HEAVY_PREEMPT_AFTER_READY=1');
+      expect(PACKAGE_JSON.scripts?.[name]).not.toContain('PC_HEAVY_RETRY_PREEMPTIONS=3');
+      expect(PACKAGE_JSON.scripts?.[name]).not.toContain('AFFECTED_TASK_VERDICT_RESUME=1');
     }
   });
 });

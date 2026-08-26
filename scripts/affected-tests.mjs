@@ -3583,12 +3583,15 @@ function spawnSpecFor(t, extraArgs) {
 // ── P-003/D-003: conservative passing-task reuse across candidate refires ───
 // setupTree() rebuilds the checkpoint checkout for every newer candidate. The cache therefore
 // lives outside ROOT, but its filename is scoped to this checkout root so another pipeline/tree
-// can never consume it accidentally. It is enabled only for the real green checkpoint; local
-// affected runs remain fresh feedback. PAPERCUSP_TEST_RUN_GROUP is part of the complete child-env
-// hash below, which normally confines reuse to one gate run. A frozen-repair verifier receives
-// AFFECTED_TASK_VERDICT_PROOF_GROUP from the queue; only the CACHE identity substitutes that
-// initial group while the real child keeps this verifier process's own run group.
-const TASK_VERDICT_CACHE_ENABLED = process.env.GREEN_CHECKPOINT === "1";
+// can never consume it accidentally. It is enabled for the real green checkpoint and for the
+// explicit `test:affected` bounded-resume wrapper; other local affected runs remain fresh
+// feedback. PAPERCUSP_TEST_RUN_GROUP is part of the complete child-env hash below, which normally
+// confines reuse to one gate run. A frozen-repair verifier or pc-heavy retry series receives
+// AFFECTED_TASK_VERDICT_PROOF_GROUP; only the CACHE identity substitutes that initial group while
+// the real child keeps this process's own run group.
+const TASK_VERDICT_CACHE_ENABLED =
+  process.env.GREEN_CHECKPOINT === "1" ||
+  process.env.AFFECTED_TASK_VERDICT_RESUME === "1";
 const TASK_VERDICT_PROOF_GROUP_APPLIED =
   typeof process.env.AFFECTED_TASK_VERDICT_PROOF_GROUP === "string" &&
   process.env.AFFECTED_TASK_VERDICT_PROOF_GROUP.trim() !== "";
@@ -3607,7 +3610,6 @@ const TASK_VERDICT_CACHE_PATH =
 const taskVerdictCacheRead = TASK_VERDICT_CACHE_ENABLED
   ? readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH)
   : null;
-const taskVerdictCacheUpdates = {};
 const taskVerdictDigestCache = new Map();
 const taskVerdictTrackedScan = TASK_VERDICT_CACHE_ENABLED
   ? listTrackedFiles(ROOT)
@@ -4105,6 +4107,63 @@ function emitCapturedTaskOutput(t, r, allocation, label = "initial") {
   logLine(r.stderr ?? "");
 }
 
+/** Return the exact exit-0/vitest-summary contradiction that makes a first pass unsafe to reuse. */
+function capturedTaskSummaryFailure(r) {
+  if (r.status !== 0 || !captureOutput()) return null;
+  const summary = parseSummaryFailedCounts(
+    `${r.stdout ?? ""}${r.stderr ?? ""}`,
+  );
+  return summary && (summary.testFiles > 0 || summary.tests > 0)
+    ? summary
+    : null;
+}
+
+/**
+ * Persist one clean first-pass verdict at task settlement, before any long sibling can be
+ * preempted. This is deliberately fail-open: losing reuse costs time, never changes the verdict.
+ */
+function persistCleanFirstPassTaskVerdict({ task: context, value }) {
+  const summaryFailure = capturedTaskSummaryFailure(value);
+  if (
+    !shouldStorePassingTaskVerdict({
+      enabled: TASK_VERDICT_CACHE_ENABLED,
+      cacheStatus: value.__cacheStatus,
+      initialStatus: value.status,
+      finalStatus: summaryFailure ? 1 : value.status,
+      absorptionRan: false,
+      identity: value.__cacheIdentity,
+    })
+  ) {
+    return;
+  }
+  const key = taskKey(context.t);
+  try {
+    // Re-read immediately before every replace so a prior settlement (or serialized follower)
+    // is retained. Node runs this synchronous critical section without interleaving callbacks;
+    // same-directory rename keeps readers on either the old or new complete document.
+    const latest = readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH);
+    const merged = mergePassingTaskVerdictUpdates(
+      latest.cache,
+      TASK_VERDICT_CACHE_GROUP,
+      { [key]: passingTaskVerdictEntry(value.__cacheIdentity) },
+    );
+    writePassingTaskVerdictCacheAtomic(
+      TASK_VERDICT_CACHE_PATH,
+      merged,
+      `${RUN_TOKEN}-${createHash("sha256").update(key).digest("hex").slice(0, 12)}`,
+    );
+    outSync(
+      `AFFECTED_TASK_CACHE_WRITE status=stored entries=1 task=${JSON.stringify(key)} ` +
+        `path=${TASK_VERDICT_CACHE_PATH}`,
+    );
+  } catch (error) {
+    errSync(
+      `AFFECTED_TASK_CACHE_WRITE status=failed task=${JSON.stringify(key)} ` +
+        `reason=${error.message} (continuing without reuse)`,
+    );
+  }
+}
+
 // This is the irreversible execution boundary: derivation, dry-run, and empty
 // task exits are all above it. Publish only now so an exclusive materializer
 // retains priority during setup but cannot destroy the once-only task run after
@@ -4119,6 +4178,7 @@ const initialPool = await runBudgetedTaskShards(TASK_CONTEXT_SHARD_PLAN, {
   estimateMs: (context) =>
     durationEstimate(durationHistory, taskKey(context.t)),
   runTask: (context, allocation) => runCapturedTask(context, allocation),
+  onTaskSettled: persistCleanFirstPassTaskVerdict,
 });
 for (const scheduled of initialPool.results) {
   if (scheduled.value.__cacheStatus !== "hit") {
@@ -4344,10 +4404,8 @@ for (const scheduled of initialPool.results) {
   // open for a genuinely red suite (the opposite mistake — an occasional false
   // failure on a truly-clean run — just costs a rerun, and is loudly explained).
   if (r.status === 0 && captureOutput()) {
-    const summary = parseSummaryFailedCounts(
-      `${r.stdout ?? ""}${r.stderr ?? ""}`,
-    );
-    if (summary && (summary.testFiles > 0 || summary.tests > 0)) {
+    const summary = capturedTaskSummaryFailure(r);
+    if (summary) {
       errSync(
         `\n⚠⚠ ${t.ws.name} exited 0 but its own vitest summary reports ${summary.testFiles} failed test file(s) / ` +
           `${summary.tests} failed test(s) — treating as a FAILURE (EI-18653696921091778: an exit-code/summary ` +
@@ -4467,53 +4525,6 @@ for (const scheduled of initialPool.results) {
         );
       }
     }
-  }
-  // Cache only a clean FIRST-PASS result after the exit-code/summary cross-check above. A retry
-  // that rescued a flake is useful evidence for this candidate but deliberately not strong
-  // enough to suppress the next candidate's full task. Hits retain their existing entry.
-  if (
-    shouldStorePassingTaskVerdict({
-      enabled: TASK_VERDICT_CACHE_ENABLED,
-      cacheStatus: scheduled.value.__cacheStatus,
-      initialStatus: scheduled.value.status,
-      finalStatus: r.status,
-      absorptionRan,
-      identity: scheduled.value.__cacheIdentity,
-    })
-  ) {
-    taskVerdictCacheUpdates[taskKey(t)] = passingTaskVerdictEntry(
-      scheduled.value.__cacheIdentity,
-    );
-  }
-}
-
-if (
-  TASK_VERDICT_CACHE_ENABLED &&
-  Object.keys(taskVerdictCacheUpdates).length > 0
-) {
-  try {
-    // Re-read immediately before replace so another serialized pipeline observation is retained.
-    // The root-scoped filename prevents unrelated checkout roots from contending in the first
-    // place; merge-before-rename protects same-root followers without weakening atomicity.
-    const latest = readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH);
-    const merged = mergePassingTaskVerdictUpdates(
-      latest.cache,
-      TASK_VERDICT_CACHE_GROUP,
-      taskVerdictCacheUpdates,
-    );
-    writePassingTaskVerdictCacheAtomic(
-      TASK_VERDICT_CACHE_PATH,
-      merged,
-      RUN_TOKEN,
-    );
-    outSync(
-      `AFFECTED_TASK_CACHE_WRITE status=stored entries=${Object.keys(taskVerdictCacheUpdates).length} ` +
-        `path=${TASK_VERDICT_CACHE_PATH}`,
-    );
-  } catch (error) {
-    errSync(
-      `AFFECTED_TASK_CACHE_WRITE status=failed reason=${error.message} (continuing without reuse)`,
-    );
   }
 }
 

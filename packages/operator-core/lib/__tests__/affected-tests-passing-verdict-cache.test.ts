@@ -13,6 +13,7 @@ import {
   mergePassingTaskVerdictUpdates,
   PASSING_TASK_VERDICT_CACHE_MAX_GROUPS,
   passingTaskVerdictCacheEntry,
+  passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
@@ -126,6 +127,26 @@ describe('passing affected-task verdict identity', () => {
     ).toEqual({ hit: true, reason: 'identity-match' });
   });
 
+  it('ignores per-attempt pc-heavy transport state while keeping the shared proof identity', () => {
+    const normalizeAttempt = (suffix: string) =>
+      passingTaskVerdictIdentityEnvironment({
+        CI: '1',
+        AFFECTED_TASK_VERDICT_PROOF_GROUP: 'bounded-series',
+        PC_HEAVY_PREEMPT_READY_FILE: `/tmp/ready-${suffix}`,
+        PC_HEAVY_PREEMPT_RESULT_FILE: `/tmp/result-${suffix}`,
+        PC_HEAVY_CALLER_PID: suffix === 'a' ? '100' : '200',
+        PC_HEAVY_CALLER_START_TICKS: suffix === 'a' ? '1000' : '2000',
+        PC_HEAVY_PREEMPT_NOTIFY_FD: suffix === 'a' ? '11' : '14',
+      });
+
+    expect(normalizeAttempt('a')).toEqual(normalizeAttempt('b'));
+    expect(normalizeAttempt('a')).toEqual({
+      environment: { CI: '1', PAPERCUSP_TEST_RUN_GROUP: 'bounded-series' },
+      proofGroupApplied: true,
+      cacheGroup: 'bounded-series',
+    });
+  });
+
   it('leaves missing or malformed proof state fail-closed on the verifier run identity', () => {
     const prior = identity({
       environment: { CI: '1', PAPERCUSP_TEST_RUN_GROUP: 'initial-run' },
@@ -170,6 +191,23 @@ describe('passing affected-task verdict identity', () => {
 });
 
 describe('dependency-closure hashing and persistence', () => {
+  it('keeps integration tasks non-reusable in resumable runs', () => {
+    expect(
+      passingTaskVerdictDependencyProvenance({
+        root: '/unused',
+        taskKey: '@papercusp/operator-core :: test:integration',
+        script: 'test:integration',
+        workspaceName: '@papercusp/operator-core',
+        workspaces: new Map(),
+        trackedScan: { files: ['package.json'], unscannedPresent: [] },
+        repoWideTaskKeys: new Set(),
+      }),
+    ).toEqual({
+      ok: false,
+      reason: 'provenance-incomplete:external-integration-task',
+    });
+  });
+
   it('binds paths, bytes, modes/symlink targets, and refuses enumeration gaps', () => {
     const root = mkdtempSync(join(tmpdir(), 'pc-verdict-content-'));
     try {
@@ -244,10 +282,23 @@ describe('dependency-closure hashing and persistence', () => {
 });
 
 describe('gate wiring safety contract', () => {
-  it('enables reuse only under the green checkpoint and leaves downstream assurance after the suite', () => {
+  it('enables reuse only for a green checkpoint or an explicit bounded resume series', () => {
     expect(AFFECTED_TESTS_SRC).toContain("process.env.GREEN_CHECKPOINT === '1'");
+    expect(AFFECTED_TESTS_SRC).toContain("process.env.AFFECTED_TASK_VERDICT_RESUME === '1'");
     expect(AFFECTED_TESTS_SRC).toContain('passingTaskVerdictIdentityEnvironment(childEnv)');
     expect(AFFECTED_TESTS_SRC).toContain('formatPassingTaskVerdictSummary(');
+  });
+
+  it('persists a validated clean first pass from the task-settlement callback', () => {
+    const persist = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
+    const pool = AFFECTED_TESTS_SRC.indexOf('const initialPool = await runBudgetedTaskShards');
+    expect(persist).toBeGreaterThan(-1);
+    expect(persist).toBeLessThan(pool);
+    expect(AFFECTED_TESTS_SRC).toContain('onTaskSettled: persistCleanFirstPassTaskVerdict');
+    expect(AFFECTED_TESTS_SRC).not.toContain('taskVerdictCacheUpdates');
+  });
+
+  it('leaves downstream assurance after the suite', () => {
     const suite = GREEN_CHECKPOINT_SRC.indexOf('const r = await exec(cmd, args');
     const postSuite = GREEN_CHECKPOINT_SRC.indexOf('runPostSuiteLegs(', suite);
     expect(suite).toBeGreaterThan(-1);
