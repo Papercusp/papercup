@@ -1682,10 +1682,24 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
     /** @type {{key: string, workspaceDir?: string, npmScript?: string, scoped: boolean} | null} */
     let route = null;
 
+    // Prefer a verified exact-file sibling gate over a workspace's generic
+    // `typecheck` script. The root command was previously selecting the broad
+    // workspace suggestion first, silently dropping the caller's --files scope
+    // and turning a two-file verification into a verdict over every peer edit.
+    const sibling = gateCoveringFile(siblingGates, file);
+    if (sibling) {
+      route = {
+        key: `sibling:${sibling.npmScript}`,
+        npmScript: sibling.npmScript,
+        scoped: true,
+      };
+    }
+
     // `suggestTypecheckGate` constructs this command from a repo-relative workspace directory.
     // Require the directory as a separate field so callers cannot turn an arbitrary display
     // string into a command to execute.
     if (
+      route === null &&
       suggestion?.command &&
       typeof suggestion.workspaceDir === 'string' &&
       suggestion.workspaceDir.length > 0 &&
@@ -1697,15 +1711,6 @@ export function collectAutoTypecheckRoutes({ files, suggestions, siblingGates = 
         workspaceDir: suggestion.workspaceDir,
         scoped: false,
       };
-    } else {
-      const sibling = gateCoveringFile(siblingGates, file);
-      if (sibling) {
-        route = {
-          key: `sibling:${sibling.npmScript}`,
-          npmScript: sibling.npmScript,
-          scoped: true,
-        };
-      }
     }
 
     if (!route) {
@@ -1804,6 +1809,15 @@ export function formatUncoveredFilesBanner({
   };
   for (const file of uncovered) {
     const s = suggestions.get(file);
+    // Keep the displayed route identical to the executable route assembled by
+    // collectAutoTypecheckRoutes: an exact-file sibling gate outranks a broad
+    // workspace typecheck whenever both exist.
+    const sibling = gateCoveringFile(siblingGates, file);
+    if (sibling) {
+      const command = `npm run ${sibling.npmScript}`;
+      addCommand(command, file, true);
+      continue;
+    }
     if (s?.command) {
       // A workspace's own `typecheck` script usually invokes raw `tsc` and does not promise
       // to accept the caller's `--files` selector. Run that command for the whole workspace;
@@ -1815,12 +1829,6 @@ export function formatUncoveredFilesBanner({
     // A workspace that declares no `typecheck` script but IS covered by a per-project
     // `lint:tsc:*` gate is the normal arrangement here, and it was the case this banner used to
     // declare permanently uncheckable.
-    const sibling = gateCoveringFile(siblingGates, file);
-    if (sibling) {
-      const command = `npm run ${sibling.npmScript}`;
-      addCommand(command, file, true);
-      continue;
-    }
     ungated.push({ file, workspaceDir: s?.workspaceDir ?? null });
   }
 
