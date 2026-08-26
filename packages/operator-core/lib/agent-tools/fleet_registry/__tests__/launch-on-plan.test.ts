@@ -90,6 +90,14 @@ vi.mock('../../../papercusp-root', () => ({
 }));
 
 vi.mock('../../../agent-fleets-store', () => ({
+  // The fleet-shape vocabulary, as a REAL value: `goal-launch-settings` builds
+  // `goalLaunchSettingsSchema.fleetType` from it with `z.enum(FLEET_TYPES)` at
+  // module scope, and this handler imports that module — so an omitted export
+  // here does not fail one assertion, it fails COLLECTION of the whole file.
+  // (It did: from the P-004 landing until this line was added.) Spelled with the
+  // same values the store exports rather than mocked away, because a schema
+  // enum built from a stub would accept a vocabulary the real one refuses.
+  FLEET_TYPES: ['single', 'paired'] as const,
   createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
   getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
