@@ -111,6 +111,15 @@ describe('Gmail flagship desktop flow', () => {
     // Upgrade guard: reconnecting an installation provisioned before direct
     // execution existed updates the one semantic binding instead of duplicating it.
     await sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items, input_schema)
+      SELECT workspace_id, ${GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS}, plan_slug,
+             title, status, content, content_hash, items, input_schema
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${WS} AND harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS}
+         AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}
+      ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING`;
+    await sql`
       UPDATE harness_shared.trigger_bindings
          SET plan_harness_slug = ${GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS},
              action = '{"type":"launch-plan"}'::jsonb

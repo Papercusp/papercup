@@ -341,15 +341,9 @@ describe('resolveStableAgentTarget', () => {
     ]);
     d.listSessions = vi.fn(async () => []);
 
-    const result = await resolveStableAgentTarget(
-      { targetAgent: 'su-direct', workspaceId: 'ws', harness: 'email' },
-      d,
-    );
+    const result = await resolveStableAgentTarget({ targetAgent: 'su-direct', workspaceId: 'ws', harness: 'email' }, d);
 
     expect(result.ownerId).toBe('su-direct');
-    expect(d.snapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ wsId: 'ws' }),
-      { owner: 'su-direct' },
-    );
+    expect(d.snapshot).toHaveBeenCalledWith(expect.objectContaining({ wsId: 'ws' }), { owner: 'su-direct' });
   });
 });

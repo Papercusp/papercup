@@ -356,10 +356,7 @@ export async function resolveStableAgentTarget(
     );
     const adoptions: AdoptionRow[] = scope.wsId ? await deps.listSessions(scope.wsId, args.targetAgent) : [];
     const candidateOwnerIds = adoptions.length > 0 ? adoptions.map((row) => row.sessionOwnerId) : [args.targetAgent];
-    const snapshot = await deps.snapshot(
-      scope,
-      adoptions.length === 0 ? { owner: args.targetAgent } : {},
-    );
+    const snapshot = await deps.snapshot(scope, adoptions.length === 0 ? { owner: args.targetAgent } : {});
     const rows = snapshot.active as Array<Record<string, unknown>>;
     const byOwnerId = new Map(
       rows
@@ -371,13 +368,10 @@ export async function resolveStableAgentTarget(
       .filter((row): row is Record<string, unknown> & { ownerId: string } => Boolean(row));
     const directRow =
       adoptions.length === 0
-        ? rows.find((candidate) => candidate.ownerId === args.targetAgent) ??
-          rows.find((candidate) => matchesOwner(candidate as never, args.targetAgent))
+        ? (rows.find((candidate) => candidate.ownerId === args.targetAgent) ??
+          rows.find((candidate) => matchesOwner(candidate as never, args.targetAgent)))
         : undefined;
-    const row =
-      adoptedRows.find((candidate) => candidate.wakeable === true) ??
-      adoptedRows[0] ??
-      directRow;
+    const row = adoptedRows.find((candidate) => candidate.wakeable === true) ?? adoptedRows[0] ?? directRow;
     if (!row) {
       return {
         requested: args.targetAgent,
