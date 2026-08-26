@@ -46,6 +46,7 @@ interface VaultStatus {
 
 interface IntegrationSourceStatus {
   kind: string;
+  providerAccountId: string | null;
   status: string;
   lastConnectedAt: string | null;
   lastSyncAt: string | null;
@@ -58,7 +59,7 @@ interface IntegrationStatus {
   status: "needs-app-config" | "available" | "connected" | "degraded" | "error";
   sources: IntegrationSourceStatus[];
   capabilities?: GoogleCapabilityStatus[];
-  accounts?: GoogleAccountStatus[];
+  accounts?: Array<GoogleAccountStatus | FacebookAccountStatus>;
 }
 
 type GoogleCapabilityId = "gmail" | "calendar" | "contacts" | "youtube";
@@ -87,6 +88,14 @@ interface GoogleAccountStatus {
   sources: IntegrationSourceStatus[];
   grantedScopes: string[];
   capabilities: GoogleCapabilityStatus[];
+}
+
+interface FacebookAccountStatus {
+  providerAccountId: string;
+  displayName: string;
+  connected: boolean;
+  status: IntegrationStatus["status"];
+  sources: IntegrationSourceStatus[];
 }
 
 interface GrantPreview {
@@ -152,13 +161,16 @@ export function googleWorkspaceConnectHref(
   return "/api/oauth/start?" + params.toString();
 }
 
-export function facebookPersonalVaultConnectHref(): string {
+export function facebookPersonalVaultConnectHref(
+  providerAccountId?: string,
+): string {
   const params = new URLSearchParams({
     provider: "facebook",
     plugin: "facebook-personal-vault",
     harness: "papercusp",
     field: "owner",
   });
+  if (providerAccountId) params.set("account", providerAccountId);
   return "/api/oauth/start?" + params.toString();
 }
 
@@ -335,25 +347,30 @@ export default function PersonalVaultSettingsPage() {
     [busy, load, status],
   );
 
-  const disconnectFacebook = useCallback(async () => {
-    if (!status || busy) return;
-    setBusy("disconnect-facebook");
-    try {
-      await responseJson<{ ok: true; disconnectedSources: number }>(
-        await fetch("/api/user/personal-vault/integrations/facebook", {
-          method: "DELETE",
-        }),
-      );
-      toast.success(
-        "Facebook disconnected. Existing Personal Vault documents were kept.",
-      );
-      await load();
-    } catch (err) {
-      toast.error("Facebook disconnect failed: " + (err as Error).message);
-    } finally {
-      setBusy(null);
-    }
-  }, [busy, load, status]);
+  const disconnectFacebook = useCallback(
+    async (providerAccountId: string) => {
+      if (!status || busy) return;
+      setBusy(`disconnect-facebook:${providerAccountId}`);
+      try {
+        await responseJson<{ ok: true; disconnectedSources: number }>(
+          await fetch(
+            "/api/user/personal-vault/integrations/facebook?" +
+              new URLSearchParams({ account: providerAccountId }).toString(),
+            { method: "DELETE" },
+          ),
+        );
+        toast.success(
+          `${providerAccountId} disconnected. Existing Personal Vault documents were kept.`,
+        );
+        await load();
+      } catch (err) {
+        toast.error("Facebook disconnect failed: " + (err as Error).message);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, load, status],
+  );
 
   const importFiles = useCallback(
     async (files: FileList | File[]) => {
@@ -719,7 +736,7 @@ export default function PersonalVaultSettingsPage() {
             status: "needs-app-config" as const,
             sources: [],
           };
-          const accounts = google.accounts ?? [];
+          const accounts = (google.accounts ?? []) as GoogleAccountStatus[];
           return (
             <article
               aria-labelledby="vault-google-heading"
@@ -983,6 +1000,7 @@ export default function PersonalVaultSettingsPage() {
             status: "needs-app-config" as const,
             sources: [],
           };
+          const accounts = (facebook.accounts ?? []) as FacebookAccountStatus[];
           return (
             <article
               aria-labelledby="vault-facebook-heading"
@@ -1016,21 +1034,84 @@ export default function PersonalVaultSettingsPage() {
                   {integrationStatusLabel(facebook.status)}
                 </strong>
               </div>
-              {facebook.sources.length ? (
-                <dl className="pc-settings-status">
-                  {facebook.sources.map((source) => (
-                    <div key={source.kind}>
-                      <dt>Profile, posts, photo metadata</dt>
-                      <dd>
-                        {source.status}
-                        {source.lastSyncAt
-                          ? " · synced " + formatDate(source.lastSyncAt)
-                          : ""}
-                      </dd>
-                    </div>
+              {accounts.length ? (
+                <div style={{ display: "grid", gap: 12 }}>
+                  {accounts.map((account) => (
+                    <section
+                      key={account.providerAccountId}
+                      aria-label={`Facebook account ${account.displayName}`}
+                      style={{
+                        padding: 12,
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 12,
+                          alignItems: "center",
+                          justifyContent: "space-between",
+                        }}
+                      >
+                        <h4 style={{ margin: 0 }}>{account.displayName}</h4>
+                        <strong
+                          aria-label={`${account.displayName} Facebook status: ${account.status}`}
+                        >
+                          {integrationStatusLabel(account.status)}
+                        </strong>
+                      </div>
+                      <dl className="pc-settings-status">
+                        {account.sources.map((source) => (
+                          <div
+                            key={`${source.kind}:${source.providerAccountId ?? account.providerAccountId}`}
+                          >
+                            <dt>Profile, posts, photo metadata</dt>
+                            <dd>
+                              {source.status}
+                              {source.lastSyncAt
+                                ? " · synced " + formatDate(source.lastSyncAt)
+                                : ""}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                      <div className="pc-settings-actions" style={{ marginTop: 12 }}>
+                        <Button
+                          disabled={!facebook.configured || busy !== null}
+                          onClick={() =>
+                            window.location.assign(
+                              facebookPersonalVaultConnectHref(
+                                account.providerAccountId,
+                              ),
+                            )
+                          }
+                        >
+                          Reconnect {account.displayName}
+                        </Button>
+                        {account.connected ? (
+                          <Button
+                            variant="destructive"
+                            disabled={busy !== null}
+                            onClick={() =>
+                              void disconnectFacebook(account.providerAccountId)
+                            }
+                          >
+                            {busy ===
+                            `disconnect-facebook:${account.providerAccountId}`
+                              ? "Disconnecting…"
+                              : `Disconnect ${account.displayName}`}
+                          </Button>
+                        ) : null}
+                      </div>
+                    </section>
                   ))}
-                </dl>
-              ) : null}
+                </div>
+              ) : (
+                <p className="pc-settings-note">
+                  No Facebook accounts are connected yet.
+                </p>
+              )}
               {!facebook.configured ? (
                 <p className="pc-settings-note" role="status">
                   Add a Meta app client ID and <code>clientSecretFile</code> to{" "}
@@ -1047,22 +1128,14 @@ export default function PersonalVaultSettingsPage() {
                     window.location.assign(facebookPersonalVaultConnectHref())
                   }
                 >
-                  {facebook.connected
-                    ? "Reconnect Facebook"
-                    : "Connect Facebook"}
+                  {accounts.length ? "Add Facebook Account" : "Connect Facebook"}
                 </Button>
-                {facebook.connected ? (
-                  <Button
-                    variant="destructive"
-                    disabled={busy !== null}
-                    onClick={() => void disconnectFacebook()}
-                  >
-                    {busy === "disconnect-facebook"
-                      ? "Disconnecting…"
-                      : "Disconnect"}
-                  </Button>
-                ) : null}
               </div>
+              <p className="pc-settings-note">
+                Add Account always starts a new consent flow. Reconnect and
+                Disconnect are scoped to the selected account and keep settled
+                documents; use Purge only for verified deletion.
+              </p>
               <p className="pc-settings-note" style={{ marginBottom: 0 }}>
                 For fuller Facebook history—especially Messages—use the archive
                 export and local importer below. Live connection and archive

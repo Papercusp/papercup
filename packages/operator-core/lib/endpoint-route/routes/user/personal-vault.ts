@@ -387,6 +387,35 @@ function googleAccountSelectionError(error: unknown): Response {
   return Response.json({ ok: false, error: message }, { status });
 }
 
+function selectOwnedFacebookProviderAccount(owned: OwnedExternalTriggerSourceRow[], requested: string): string {
+  const accountIds = [
+    ...new Set(
+      facebookOwnedSources(owned)
+        .map((source) => source.providerAccountId?.trim() ?? '')
+        .filter(Boolean),
+    ),
+  ];
+  const normalized = requested.trim();
+  if (normalized) {
+    if (!accountIds.includes(normalized)) throw new Error('facebook_personal_vault_account_not_found');
+    return normalized;
+  }
+  if (accountIds.length === 1) return accountIds[0]!;
+  if (accountIds.length === 0) throw new Error('facebook_personal_vault_not_connected');
+  throw new Error('facebook_personal_vault_account_required');
+}
+
+function facebookAccountSelectionError(error: unknown): Response {
+  const message = messageOf(error);
+  const status =
+    message === 'facebook_personal_vault_account_not_found'
+      ? 404
+      : message === 'facebook_personal_vault_not_connected'
+        ? 409
+        : 400;
+  return Response.json({ ok: false, error: message }, { status });
+}
+
 async function integrationStatuses(
   workspaceId: string,
   ownerUserId: string,
@@ -653,9 +682,24 @@ const disconnectFacebook = defineTool({
   async handler(req) {
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
-    const disconnected = await disconnectOwnedExternalTriggerSources(getOrgPg().sql, workspaceId, user.id, [
-      ...FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS,
-    ]);
+    const sql = getOrgPg().sql;
+    const owned = await listOwnedExternalTriggerSources(sql, workspaceId, user.id);
+    let providerAccountId: string;
+    try {
+      providerAccountId = selectOwnedFacebookProviderAccount(
+        owned,
+        new URL(req.url).searchParams.get('account') ?? '',
+      );
+    } catch (error) {
+      return facebookAccountSelectionError(error);
+    }
+    const disconnected = await disconnectOwnedExternalTriggerSources(
+      sql,
+      workspaceId,
+      user.id,
+      [...FACEBOOK_PERSONAL_VAULT_SOURCE_KINDS],
+      providerAccountId,
+    );
     for (const credentialRef of disconnected.credentialRefs) {
       const field = facebookPersonalVaultOAuthField(credentialRef);
       await fsTokenStorage.update(FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN, 'papercusp', {
@@ -668,6 +712,7 @@ const disconnectFacebook = defineTool({
     return Response.json({
       ok: true,
       provider: 'facebook',
+      providerAccountId,
       disconnectedSources: disconnected.sources,
     });
   },
