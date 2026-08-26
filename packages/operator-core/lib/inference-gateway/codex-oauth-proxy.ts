@@ -274,14 +274,22 @@ export async function aggregateCodexNonStreamResponse(
       /* best-effort cancellation; the fetch signal is the hard stop */
     }
   };
-  const fail = (code: CodexNonStreamAggregateErrorCode, message: string): never => {
+  // The explicit type ANNOTATION on the binding (not just the `: never` return
+  // type on the arrow) is what lets control-flow analysis treat a `fail(...)`
+  // call as unreachable-after. Without it TS keeps `next` as the full
+  // `'aborted' | 'timeout' | IteratorResult<...>` union past the guards below.
+  const fail: (code: CodexNonStreamAggregateErrorCode, message: string) => never = (code, message) => {
     stopIterator();
     throw new CodexNonStreamAggregateError(code, message);
   };
 
   let timeoutResolve!: () => void;
   const timeout = new Promise<'timeout'>((resolve) => {
-    timeoutResolve = resolve;
+    // Wrap rather than aliasing `resolve` directly: the promise is
+    // `Promise<'timeout'>`, so its resolver requires the value, while the
+    // cleanup in `finally` calls `timeoutResolve()` with no argument. Aliasing
+    // settled it with `undefined` — a value outside its own declared type.
+    timeoutResolve = () => resolve('timeout');
     timer = setTimeout(() => {
       opts.onTimeout?.();
       resolve('timeout');
