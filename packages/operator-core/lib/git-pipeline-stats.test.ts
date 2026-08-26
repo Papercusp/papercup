@@ -5,6 +5,7 @@
  * verified live.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   resolverModel,
   toRoutineInfo,
@@ -21,6 +22,29 @@ import {
   type RawGateCounters,
 } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
+
+describe('gitPipelineSnapshot latency topology', () => {
+  it('starts every independent snapshot read before consuming the routines result', () => {
+    const source = readFileSync(new URL('./git-pipeline-stats.ts', import.meta.url), 'utf8');
+    const start = source.indexOf('export async function gitPipelineSnapshot(');
+    const end = source.indexOf('\n/**', start + 1);
+    const body = source.slice(start, end < 0 ? undefined : end);
+    const firstConsumption = body.indexOf('const routineRows = await routineRowsPromise;');
+
+    expect(firstConsumption).toBeGreaterThan(0);
+    for (const declaration of [
+      'const routineRowsPromise =',
+      'const openConflictRowsPromise =',
+      'const dayPromise =',
+      'const weekPromise =',
+      'const recentPromise =',
+      'const deployPromise =',
+    ]) {
+      expect(body.indexOf(declaration)).toBeGreaterThan(0);
+      expect(body.indexOf(declaration)).toBeLessThan(firstConsumption);
+    }
+  });
+});
 
 describe('resolverModel', () => {
   afterEach(() => vi.unstubAllEnvs());
