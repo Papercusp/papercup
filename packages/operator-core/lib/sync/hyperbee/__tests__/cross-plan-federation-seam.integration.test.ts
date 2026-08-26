@@ -59,8 +59,9 @@ import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-key
 import type { OpEnvelope } from '../op-envelope-types';
 // The real coord:inbox read seam — drives the subscribe→inject half end-to-end.
 import { PgCoordLog } from '@papercusp/coordination/event-log';
-import { readInbox } from '../../../agent-tools/coordination/messages';
+import { readInbox, sendMessage } from '../../../agent-tools/coordination/messages';
 import { configureCoordLog, resetCoordLog } from '../../../agent-tools/coordination/log';
+import type { AgentIdentity } from '../../../agent-tools/coordination/identity';
 
 // getOrgPg → peer B's DB: buildHarnessProjectionApply's projections write through
 // it, so applying an op lands on peer B. Peer A is driven by its own raw client.
@@ -94,6 +95,13 @@ const WS = 'ws_fed';
 const HARNESS = 'fed';
 const PEER_A_LOG = 'a'.repeat(64); // peer A's own-log hex key (the "remote" source on B)
 const PEER_B_LOG = 'b'.repeat(64); // peer B's own-log hex key
+const SENDER_A: AgentIdentity = {
+  ownerId: 'su-A',
+  ownerLabel: 'su-A',
+  source: 'omp-hook-session',
+  workspaceId: WS,
+  userId: null,
+};
 
 /** Stand up the column-faithful federated schema + the real capture triggers
  *  (mig 102 outbox/fn, 144 conversations, 140 assignments table, 145 assignment
@@ -389,19 +397,16 @@ describe("the brief's marquee SUBSCRIBE→INJECT seam — a coord message round-
     configureCoordLog(new PgCoordLog({ getSql: () => dbB.sql, ensureSchema: async () => {}, workspaceId: WS }));
   afterEach(() => resetCoordLog());
 
-  /** Write a harness-scoped, ORIGINAL (local-origin) coord message on peer A —
-   *  exactly what coord:send projects to coord_event_log. surface='messages' +
-   *  harness_slug set + no notify_kind ⇒ mig-150's capture trigger enqueues it to
-   *  substrate_outbox, so it federates. `to[]` is the addressing the inbox filters on. */
+  /** Drive the REAL production send seam against peer A. `sendMessage` builds
+   *  the envelope and appends it through PgCoordLog; surface='messages' + a
+   *  harness_slug then makes mig-150's capture trigger enqueue it to
+   *  substrate_outbox, so it federates. `to[]` is the addressing the inbox
+   *  filters on. This deliberately does not hand-build the row that the seam is
+   *  meant to prove. */
   async function sendOnA(msgId: string, to: string[], summary: string): Promise<void> {
-    const env = {
-      ts: '2026-06-05T00:00:00.000Z', msg_id: msgId, from: 'su-A', to, kind: 'message',
-      summary, harness_slug: HARNESS,
-    };
-    await dbA.sql`
-      INSERT INTO harness_shared.coord_event_log
-        (workspace_id, surface, writer_key, msg_id, body, harness_slug, origin)
-      VALUES (${WS}, 'messages', 'su-A', ${msgId}, ${JSON.stringify(env)}::text::jsonb, ${HARNESS}, 'local')`;
+    configureCoordLog(new PgCoordLog({ getSql: () => dbA.sql, ensureSchema: async () => {}, workspaceId: WS }));
+    const sent = await sendMessage(SENDER_A, { msgId, to, summary, harnessSlug: HARNESS });
+    expect(sent).toMatchObject({ msg_id: msgId, from: 'su-A', to, summary, harness_slug: HARNESS });
   }
 
   it("an ADDRESSED message on A lands in B's coord_event_log AND surfaces via the real readInbox — a non-addressed peer's inbox does NOT", async () => {
