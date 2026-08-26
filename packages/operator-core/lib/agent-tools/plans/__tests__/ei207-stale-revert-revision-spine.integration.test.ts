@@ -58,7 +58,7 @@ const CTX = {
 const planBody = (slug: string, marker: string) => `---
 title: ${slug}
 slug: ${slug}
-status: active
+status: draft
 created: 2026-06-09
 updated: 2026-06-09
 ---
@@ -92,6 +92,8 @@ async function recordedWrite(slug: string, body: string): Promise<string> {
     async () => ({ newBody: body, value: { ok: true } }),
   );
   expect(res.kind).toBe('applied');
+  if (res.kind !== 'applied') throw new Error('recordedWrite unexpectedly returned busy');
+  expect(res.value).toEqual({ ok: true });
   return body;
 }
 
