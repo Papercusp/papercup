@@ -42,6 +42,7 @@
 import type { Duplex } from 'node:stream';
 import { type RunGit, defaultRunGit, deviceNamespaceKey } from './storage';
 import { fetchPeerNamespace } from './fetch-transport';
+import { fetchCoalescerKey, withFetchCoalescing } from './fetch-coalescer';
 import { STAGING_REF } from './integrator';
 import {
   type AcceptStagingAdvanceOpts,
@@ -113,6 +114,11 @@ export type StagingAdvanceBridgeResult =
       /** The transport fetch failed — try again on the next announcement. */
       outcome: 'fetch-failed';
       detail: string;
+    }
+  | {
+      /** Another driver is already fetching this exact repo+device. Hold the
+       * cursor and retry later, but do not report a transport failure. */
+      outcome: 'already-in-flight';
     }
   | {
       /** Accepted: the canonical staging moved. PERSIST `watermark`. The
@@ -225,20 +231,35 @@ export async function handleStagingAdvance(
         cfg.bareRepoPath,
       );
       if (haveSha.code !== 0) {
-        let duplex: Duplex;
-        try {
-          duplex = await cfg.openDuplex(incoming.device_pubkey);
-        } catch (e) {
-          return {
-            outcome: 'fetch-failed',
-            detail: `openDuplex failed: ${e instanceof Error ? e.message : String(e)}`,
-          };
-        }
-        const fetched = await fetchPeerNamespace(cfg.bareRepoPath, duplex, incoming.device_pubkey, {
-          timeoutMs: cfg.fetchTimeoutMs,
-        });
-        if (fetched.code !== 0) {
-          return { outcome: 'fetch-failed', detail: fetched.stderr.trim() || `fetch exited ${fetched.code}` };
+        // WI-6418: worktree-bridge is a THIRD fetch driver, alongside
+        // ref-announce and bootstrap. Every managed harness's git-sync routine
+        // can reach this path against the same shared mirror, so leaving it
+        // outside the process-wide coalescer still let a later routine open a
+        // rival session while the first was streaming. Reuse ref-announce's
+        // exact (repoPath, device) key so the two drivers exclude each other.
+        const coalesced = await withFetchCoalescing(
+          fetchCoalescerKey(cfg.bareRepoPath, incoming.device_pubkey),
+          async (): Promise<{ ok: true } | { ok: false; detail: string }> => {
+            let duplex: Duplex;
+            try {
+              duplex = await cfg.openDuplex!(incoming.device_pubkey);
+            } catch (e) {
+              return {
+                ok: false,
+                detail: `openDuplex failed: ${e instanceof Error ? e.message : String(e)}`,
+              };
+            }
+            const fetched = await fetchPeerNamespace(cfg.bareRepoPath, duplex, incoming.device_pubkey, {
+              timeoutMs: cfg.fetchTimeoutMs,
+            });
+            return fetched.code === 0
+              ? { ok: true }
+              : { ok: false, detail: fetched.stderr.trim() || `fetch exited ${fetched.code}` };
+          },
+        );
+        if (!coalesced.ran) return { outcome: 'already-in-flight' };
+        if (!coalesced.result.ok) {
+          return { outcome: 'fetch-failed', detail: coalesced.result.detail };
         }
       }
     }

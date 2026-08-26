@@ -28,7 +28,85 @@
  *
  * `withheld: 0` is as informative as a nonzero one — it says the filter had
  * nothing to hide, which is the reading a bare count cannot give you.
+ *
+ * ── The SECOND way a headcount misleads (EI-21550192883916303) ───────────────
+ * Saying which population you counted is not enough, because the remaining
+ * number still reads as ACTIVITY. Measured 2026-08-26: an agent diagnosing a
+ * saturated MCP proxy counted 415 processes carrying a fleet's slug and reported
+ * "415 members are saturating the proxy". 411 of them were PARKED — zero in a
+ * running state, ~9% of the box between them. The count was right; the word
+ * "active" was the reader's, and nothing in the answer contradicted it.
+ *
+ * A census that says `counted: 415` and stops has told the reader the filter's
+ * verdict and left the composition — the part that decides whether the number
+ * means anything about load — to be assumed. So {@link composeLiveness} keys the
+ * counted rows by `sessionState`, the SHARED liveness oracle, and
+ * {@link renderPopulationCensus} states the split inline. Note the vocabulary
+ * gap this closes: both call sites filter on `alive`, which is raw heartbeat
+ * FRESHNESS, while `sessionState: 'live'` is the derived verdict "taking turns".
+ * A warm-dead session is `alive: true, sessionState: 'ended'`, so the filter that
+ * produces the count cannot itself answer the question the count gets read for.
  */
+
+import type { SessionState } from '../coordination/presence-wakeability';
+
+/** How a row's liveness verdict is read. Null/undefined ⇒ counted as unknown. */
+export type SessionStateOf<T> = (row: T) => SessionState | null | undefined;
+
+/**
+ * The liveness composition of the rows a census COUNTED.
+ *
+ * `counted` says how many rows passed the filter. This says what they are — and
+ * it is the half that determines whether the count supports a conclusion about
+ * work being done.
+ */
+export interface FleetLivenessComposition {
+  /** Count per `sessionState`. Only states actually present appear. */
+  byState: Partial<Record<SessionState, number>>;
+  /** Counted rows whose `sessionState` did not resolve. */
+  unknown: number;
+  /** Rows with `sessionState: 'live'` — the only ones that are taking turns. */
+  live: number;
+  /** `live / counted`, 0 when nothing was counted. */
+  liveShare: number;
+  /**
+   * True when fewer than half the counted rows are `live` — i.e. exactly when
+   * reading this count as a measure of activity would overstate it. Named for
+   * the misreading rather than the data so a caller cannot render the number
+   * without the caveat being in reach.
+   */
+  overstatesActivity: boolean;
+}
+
+/**
+ * PURE: bucket rows by liveness verdict.
+ *
+ * Kept separate from the filter because the two call sites learn `sessionState`
+ * at different times — leader-brief's rows arrive decorated, while
+ * fleet:assignments stamps the verdict only after `decorateMemberVerdicts` runs,
+ * which is why {@link withLivenessComposition} exists alongside the resolver
+ * argument on {@link selectFleetPopulation}.
+ */
+export function composeLiveness<T>(
+  rows: readonly T[],
+  sessionStateOf: SessionStateOf<T>,
+): FleetLivenessComposition {
+  const byState: Partial<Record<SessionState, number>> = {};
+  let unknown = 0;
+  for (const row of rows) {
+    const state = sessionStateOf(row);
+    if (state == null) unknown += 1;
+    else byState[state] = (byState[state] ?? 0) + 1;
+  }
+  const live = byState.live ?? 0;
+  return {
+    byState,
+    unknown,
+    live,
+    liveShare: rows.length > 0 ? live / rows.length : 0,
+    overstatesActivity: rows.length > 0 && live * 2 < rows.length,
+  };
+}
 
 /** What a response counted, stated beside the count itself. */
 export interface FleetPopulationCensus {
@@ -46,6 +124,13 @@ export interface FleetPopulationCensus {
   withheldReason: string | null;
   /** The exact argument that would include them; null when there is no such lever. */
   reveal: string | null;
+  /**
+   * What the counted rows ARE, by liveness verdict. Present whenever the caller
+   * could resolve `sessionState`; absent means nobody asked, NOT that every row
+   * is live — a distinction `renderPopulationCensus` states out loud rather than
+   * letting the omission read as a clean bill of health.
+   */
+  liveness?: FleetLivenessComposition;
   /**
    * Rows actually PRESENT in the payload, when a later byte/row budget dropped
    * some of what `counted` counts. Omitted when the payload carries them all.

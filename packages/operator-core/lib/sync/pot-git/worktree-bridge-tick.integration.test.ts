@@ -507,4 +507,59 @@ describe('worktree-bridge-tick (P-204: batch of pending staging-advance announce
     // even though a terminal rejection also occurred.
     expect(out.watermark).toEqual({ epochSeq: { epoch: 2, seq: 7 }, stagingSha: s4 });
   });
+
+  it('WI-6418: concurrent worktree-bridge drives share one fetch and the collapsed tick holds without an error', async () => {
+    await writeFile(join(src, 'f.txt'), 'v5\n');
+    await git(['add', '.'], src);
+    await git(['commit', '-q', '-m', 'S5'], src);
+    const s5 = await git(['rev-parse', 'HEAD'], src);
+    await publishToPeer(s5, s4);
+
+    let releaseFetch!: () => void;
+    const fetchGate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const dialsBefore = dials;
+    const incoming = await announce(2, 8, s5);
+    const prior = { epochSeq: { epoch: 2, seq: 7 }, stagingSha: s4 };
+
+    const holder = runWorktreeBridgeTick({
+      bareRepoPath: localMirror,
+      worktreePath: wt,
+      pending: [incoming],
+      prior,
+      accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+      openDuplex: async () => {
+        markEntered();
+        await fetchGate;
+        return openDuplex();
+      },
+    });
+    await entered;
+
+    const collapsed = await runWorktreeBridgeTick({
+      bareRepoPath: localMirror,
+      worktreePath: wt,
+      pending: [incoming],
+      prior,
+      accept: { expectedDevice: integrator.pubkeyBase64, maxGrantedEpoch: 2 },
+      openDuplex: () => Promise.reject(new Error('collapsed drive must not dial')),
+    });
+    expect(collapsed.results[0].bridge).toEqual({ outcome: 'already-in-flight' });
+    expect(collapsed.unprocessedFromIndex).toBe(0);
+    expect(collapsed.stoppedOnFetchFailure).toBe(false);
+    expect(collapsed.errors).toEqual([]);
+    expect(dials).toBe(dialsBefore);
+
+    releaseFetch();
+    const completed = await holder;
+    expect(completed.results[0].bridge.outcome).toBe('accepted');
+    expect(completed.unprocessedFromIndex).toBe(null);
+    expect(dials).toBe(dialsBefore + 1);
+    expect(await git(['rev-parse', 'HEAD'], wt)).toBe(s5);
+  });
 });

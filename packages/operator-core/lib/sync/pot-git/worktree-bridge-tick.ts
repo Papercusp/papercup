@@ -27,12 +27,10 @@
  *   - `rejected` (stale/malformed/forged/non-ff/unknown-sha) ⇒ skip it and
  *     continue — one bad/stale envelope in the batch must never starve the
  *     rest (mirrors `ref-announce-tick.ts`'s receive-tick contract).
- *   - `fetch-failed` ⇒ STOP processing further pending items this tick and
- *     return what's been done so far. Unlike a rejection, a transport failure
- *     usually means every LATER item (same integrator, same transport) will
- *     fail identically — better to stop cleanly and retry the whole
- *     unprocessed tail next tick than burn n transport attempts on one dead
- *     link.
+ *   - `fetch-failed` / `already-in-flight` ⇒ STOP processing further pending
+ *     items this tick and return what's been done so far. The latter is a
+ *     healthy coalescer refusal, so it holds the cursor without adding an
+ *     error; the in-flight driver will finish the shared mirror fetch.
  *
  * The caller MUST persist the returned `watermark` (unconditionally — even
  * when nothing advanced this tick, so a resumed/retried caller doesn't
@@ -287,6 +285,21 @@ export async function runWorktreeBridgeTick(
         results,
         watermark,
         stoppedOnFetchFailure: true,
+        unprocessedFromIndex: index,
+        errors,
+        acceptedCount,
+        terminalRejections,
+      };
+    }
+    if (bridge.outcome === 'already-in-flight') {
+      // WI-6418: a sibling git-sync routine (or ref-announce) already owns the
+      // shared repo+device fetch. The announcement is not durably processed,
+      // so hold the cursor at it; nothing failed, so keep `errors` empty.
+      return {
+        ran: true,
+        results,
+        watermark,
+        stoppedOnFetchFailure: false,
         unprocessedFromIndex: index,
         errors,
         acceptedCount,
