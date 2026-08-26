@@ -415,13 +415,44 @@ describe('P-023 — a social binding defaults to coalesce-with-cap, never to unb
     expect(binding.stormPolicy.basis).toMatchObject({ kind: 'rate-budget', requestsPerMinute: 60 });
   });
 
-  it('CONTROL: a non-social source is untouched and still defaults to unbounded', async () => {
-    // Proves the change is SCOPED. Without this, the social default passing
-    // would be equally consistent with having silently capped every mail and
-    // chat binding in the system.
+  it('CONTROL: a non-social source gets the GENERIC bounded default, not the social one', async () => {
+    // Still proves the P-023 change is SCOPED — a mail binding gets neither
+    // `mode: coalesce-with-cap` nor a platform `basis`, and its numbers are the
+    // generic ones, so the social tests above cannot be passing merely because
+    // every binding was given the social policy.
+    //
+    // What this assertion no longer says is "and therefore it is unbounded".
+    // It asserted exactly that until 2026-08-26, when a Gmail poller closed a
+    // 2h35m resync gap and the uncapped mail binding minted 228 autonomous
+    // plan runs in 68s (EI-21500982767775449). "Mail volume is bounded by how
+    // fast humans write" was the premise, and a replayed backlog falsifies it:
+    // ingestion, not authorship, sets the burst rate.
     const binding = await bindOn('gmail');
-    expect(binding.stormPolicy.maxRuns).toBeUndefined();
-    expect(binding.stormPolicy).toMatchObject({ windowSeconds: 60 });
+    expect(binding.stormPolicy).toMatchObject({ maxRuns: 12, windowSeconds: 60 });
+    expect(binding.stormPolicy.mode).toBeUndefined();
+    expect(binding.stormPolicy.basis).toBeUndefined();
+  });
+
+  it('GUARD: no source kind can produce a binding with a window but no cap', async () => {
+    // The incident shape was `{"windowSeconds":60}` — half-specified config,
+    // which is more dangerous than absent config because the present field
+    // READS as rate limiting in every dump of the row while the absent one is
+    // invisible. This asserts the shape is unreachable, not merely unused.
+    for (const kind of ['gmail', 'gcal', 'slack', 'bluesky', 'reddit']) {
+      const stated = await bindOn(kind, { windowSeconds: 60 });
+      expect(
+        typeof stated.stormPolicy.maxRuns,
+        `${kind} accepted a window with no cap: ${JSON.stringify(stated.stormPolicy)}`,
+      ).toBe('number');
+      expect(Number(stated.stormPolicy.maxRuns)).toBeGreaterThan(0);
+
+      const silent = await bindOn(kind);
+      expect(
+        typeof silent.stormPolicy.maxRuns,
+        `${kind} defaulted to no cap: ${JSON.stringify(silent.stormPolicy)}`,
+      ).toBe('number');
+      expect(Number(silent.stormPolicy.maxRuns)).toBeGreaterThan(0);
+    }
   });
 
   it('an explicit caller policy still wins on a social source', async () => {
