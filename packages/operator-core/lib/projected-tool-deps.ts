@@ -36,6 +36,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
 import { recordToolAuthzEvent } from './tool-authz-audit';
 import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
+import { beginInFlightCall, endInFlightCall } from './in-flight-calls';
 import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
 import { checkSessionConfinement } from './capability-envelope/session-confinement-port';
 // Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
@@ -182,6 +183,14 @@ interface RecordInvocationInput {
      * constraint (verified via pg_constraint), only NOT NULL.
      */
     | 'replayed';
+  /**
+   * Per-call correlation id from the dispatcher (see DispatchStartEvent['callId']).
+   * Used to close THIS call's in-flight registry entry — the entry `onDispatchStart`
+   * opened — without heuristic matching that would mis-settle an agent's concurrent
+   * calls to the same tool. Absent for calls that never reached runDispatchStack
+   * (the `replayed` branch returns before dispatch).
+   */
+  callId?: string;
   outputRef?: string | null;
   outputSize?: number | null;
   errorMessage?: string | null;
@@ -648,6 +657,12 @@ export function isPaletteUiPollRead(input: {
 }
 
 async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
+  // Close this call's in-flight entry FIRST — before every early return below.
+  // Placement is load-bearing: the palette-poll drop and the buildTelemetryRow bail
+  // both `return` without writing a row, and settling after either of them would
+  // leak an entry that then reports as a call still running. A leaked entry is worse
+  // than a missing one, because it actively asserts work that is not happening.
+  endInFlightCall(input.callId);
   // Keep the settle-time beat as a fallback for transport failures that happen
   // before the generic dispatcher can initialize its execution state and invoke
   // onDispatchStart. The shared throttle makes the normal start + settle pair
@@ -784,8 +799,28 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // Turn-level presence beat (liveness-hardening P-001): mark activity as soon
   // as a projected dispatch starts, so a long-running handler remains visible
   // while it is still in flight rather than only after settlement.
-  onDispatchStart: ({ ctx }) => {
+  onDispatchStart: ({ ctx, toolName, callId }) => {
     maybeBeatPresenceOnDispatch(ctx);
+    // Open an in-flight entry so "is this agent executing right now?" is answerable
+    // WHILE the handler runs, not only after it settles (EI-21548894457555139). The
+    // presence beat above proves the agent is alive; it cannot say what it is doing,
+    // which is why an idle member and one 20 minutes into a long call read alike.
+    if (!callId) return;
+    let ownerId: string | null = null;
+    try {
+      // Same resolution the telemetry row uses. THROWS on an unattributable ctx, so
+      // it is guarded here exactly as it is there — an unattributed call still gets a
+      // registry entry, just without an owner to group it under.
+      ownerId = resolveAgentIdentity(ctx).ownerId ?? null;
+    } catch {
+      ownerId = null;
+    }
+    try {
+      beginInFlightCall({ callId, toolName, ownerId, spawnId: ctx.spawnId ?? null });
+    } catch {
+      // The dispatcher swallows throws from this hook, but keep the failure contained
+      // here too: a liveness marker must never be able to change a tool result.
+    }
   },
   // Papercusp quota windowing: workers→chunk/perChunk, power-user→session,
   // everyone else→run/perRun (plan P-011, formerly baked in the engine).
