@@ -60,6 +60,7 @@ import {
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
+import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 // P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
 // it never files and never promotes. Actuation (the condition flip below, and filing the
 // returned drafts) stays here, deliberately, for the same reason green-stall-watchdog's
@@ -971,6 +972,66 @@ export async function retireInFlightCandidateAfterResult(
   if (result.reason === "skipped-locked") return false;
   await clear();
   return true;
+}
+
+/**
+ * EI-21533914348699873: every terminal checkpoint verdict resolves the three-way
+ * `checkpoint:await` fan-in for the candidate. Keep the global and pipeline-scoped
+ * green/red registrations together so an inconclusive result cannot leave either
+ * sibling alive to fire on a later candidate. The await engine still applies the
+ * current subscriber/note and candidate filters, so unrelated waits remain armed.
+ */
+export function checkpointVerdictSiblingKeys(pipeline: string): string[] {
+  return [
+    "release:green",
+    `release:green:${pipeline}`,
+    "green-checkpoint:red",
+    `green-checkpoint:red:${pipeline}`,
+  ];
+}
+
+/**
+ * Emit the inconclusive verdict pair used by the green-checkpoint CLI.
+ * Keeping the event construction outside the `require.main` block makes the
+ * sibling-cancellation contract directly unit-testable.
+ */
+export async function emitInconclusiveCheckpointVerdict(
+  result: CheckpointResult,
+  pipeline: string,
+  emit: (opts: EmitAwaitedEventOpts) => Promise<unknown>,
+): Promise<void> {
+  const summary = `[${pipeline}] green-checkpoint: ${result.candidate.slice(0, 8)} INCONCLUSIVE (${result.reason}) — no verdict rendered${result.summary ? `: ${result.summary}` : ""}`;
+  const payload = {
+    sha: result.candidate,
+    from: result.from,
+    pipeline,
+    candidateSource: result.candidateSource ?? "tip",
+    ...(result.diagnostic ? { diagnostic: result.diagnostic } : {}),
+    reason: result.reason,
+    summary: result.summary ?? null,
+    runId: result.runId ?? null,
+    // EI-20702428259478130: CONDITIONALLY copied (absent stays absent, matching the
+    // lineage/cleanGreen convention) — the self-watchdog path rescues a failing-file list
+    // from the run-lock marker when the suite finished before the kill, and that used to
+    // reach consumers only on the `green-checkpoint:red` emit this path no longer makes.
+    // The other inconclusive reasons (skipped-locked, migrations-pending, …) carry none.
+    ...(result.failingTests ? { failingTests: result.failingTests } : {}),
+  };
+  const cancelSiblingKeysFor = checkpointVerdictSiblingKeys(pipeline);
+  await emit({
+    key: "green-checkpoint:inconclusive",
+    summary,
+    payload,
+    source: "green-checkpoint",
+    cancelSiblingKeysFor,
+  });
+  await emit({
+    key: `green-checkpoint:inconclusive:${pipeline}`,
+    summary,
+    payload,
+    source: "green-checkpoint",
+    cancelSiblingKeysFor,
+  });
 }
 
 export interface CheckpointRunLock {
@@ -14524,46 +14585,19 @@ if (require.main === module) {
    * gate is WEDGED, not merely red. Fire a dedicated `green-checkpoint:inconclusive`
    * event (global + pipeline-scoped, matching every other verdict key's shape) so
    * `checkpoint:await` can arm it alongside the other two and "await the decision" covers
-   * every way the decision can end. Deliberately NOT `cancelSiblingKeysFor` — an
-   * inconclusive tick says nothing about whether THIS candidate will eventually resolve
-   * green or red, so any still-pending green/red await for it must stay armed.
+   * every way the decision can end. EI-21533914348699873: this branch is terminal for the
+   * current await group even though a later run may eventually resolve the candidate green
+   * or red, so the emitter retires the global and pipeline-scoped green/red siblings. The
+   * await engine's candidate and registration-group filters protect unrelated waits.
    */
   const emitInconclusiveVerdict = async (
     r: CheckpointResult,
   ): Promise<void> => {
     try {
       const pipeline = pipelineName(cfg.integrationRoot);
-      const summary = `[${pipeline}] green-checkpoint: ${r.candidate.slice(0, 8)} INCONCLUSIVE (${r.reason}) — no verdict rendered${r.summary ? `: ${r.summary}` : ""}`;
-      const payload = {
-        sha: r.candidate,
-        from: r.from,
-        pipeline,
-        candidateSource: r.candidateSource ?? "tip",
-        ...(r.diagnostic ? { diagnostic: r.diagnostic } : {}),
-        reason: r.reason,
-        summary: r.summary ?? null,
-        runId: r.runId ?? null,
-        // EI-20702428259478130: CONDITIONALLY copied (absent stays absent, matching the
-        // lineage/cleanGreen convention) — the self-watchdog path rescues a failing-file list
-        // from the run-lock marker when the suite finished before the kill, and that used to
-        // reach consumers only on the `green-checkpoint:red` emit this path no longer makes.
-        // The other inconclusive reasons (skipped-locked, migrations-pending, …) carry none.
-        ...(r.failingTests ? { failingTests: r.failingTests } : {}),
-      };
       const { emitAwaitedEvent } =
         await import("@papercusp/operator-core/lib/events/await/engine");
-      await emitAwaitedEvent({
-        key: "green-checkpoint:inconclusive",
-        summary,
-        payload,
-        source: "green-checkpoint",
-      });
-      await emitAwaitedEvent({
-        key: `green-checkpoint:inconclusive:${pipeline}`,
-        summary,
-        payload,
-        source: "green-checkpoint",
-      });
+      await emitInconclusiveCheckpointVerdict(r, pipeline, emitAwaitedEvent);
     } catch (e) {
       console.error(
         `${orchestratorStdoutTag()} green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,

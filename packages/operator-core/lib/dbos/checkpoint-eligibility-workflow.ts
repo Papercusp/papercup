@@ -92,6 +92,16 @@ export async function runCheckpointEligibilityWait(
   deps: CheckpointEligibilityWaitDeps,
 ): Promise<CheckpointEligibilityWaitOutcome> {
   let eligibilitySnapshot: CheckpointEligibilitySnapshot | null = input.eligibilitySnapshot ?? null;
+  const pipeline = checkpointPipelineName(input.root ?? integrationRoot());
+  // EI-21533914348699873: an inconclusive eligibility outcome is terminal for this
+  // checkpoint:await registration. Retire both outcome families in both key scopes;
+  // emitAwaitedEvent keeps unrelated subscribers and candidate-bound waits isolated.
+  const cancelSiblingKeysFor = [
+    'release:green',
+    `release:green:${pipeline}`,
+    'green-checkpoint:red',
+    `green-checkpoint:red:${pipeline}`,
+  ];
   const updateEligibility = async (
     updates: Partial<Record<CheckpointEligibilityPredicateCode, Partial<CheckpointEligibilityPredicate>>>,
   ): Promise<StoredQualificationMutation | null> => {
@@ -115,7 +125,7 @@ export async function runCheckpointEligibilityWait(
   };
   const emitQualificationFailure = async (reason: string): Promise<void> => {
     await deps.emit({
-      key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
+      key: `green-checkpoint:inconclusive:${pipeline}`,
       summary: `checkpoint eligibility wait ${input.pendingId} did not launch: ${reason}`,
       payload: {
         pendingId: input.pendingId,
@@ -124,6 +134,7 @@ export async function runCheckpointEligibilityWait(
         eligibilitySnapshot,
       },
       source: 'checkpoint-eligibility-wait',
+      cancelSiblingKeysFor,
     });
   };
   const recordWait = async (
@@ -179,9 +190,9 @@ export async function runCheckpointEligibilityWait(
   }
 
   // A newly-arrived commit can move the candidate while this waiter sleeps. Do not silently
-  // launch a run that is known to omit the caller's paths; emit the normal inconclusive gate
-  // event so a `checkpoint:await` waiter gets an actionable wake and can retry with a fresh
-  // preflight instead.
+  // launch a run that is known to omit the caller's paths; emit the inconclusive gate event
+  // so a `checkpoint:await` waiter gets an actionable wake, retires the sibling verdict waits,
+  // and can retry with a fresh preflight instead.
   if (recheck.refuse || recheck.proceedReason === 'wait-exceeds-cap') {
     const reason = recheck.refuse ? 'still-would-exclude-declared-paths' : 'eligibility-wait-exceeds-cap';
     const waitMutation = await recordWait('would-exclude-declared-paths', 'quiet-cut', reason);
@@ -191,7 +202,7 @@ export async function runCheckpointEligibilityWait(
       return { status: 'not-launched', reason: mutationReason };
     }
     await deps.emit({
-      key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
+      key: `green-checkpoint:inconclusive:${pipeline}`,
       summary: `checkpoint eligibility wait ${input.pendingId} did not launch: ${reason}`,
       payload: {
         pendingId: input.pendingId,
@@ -203,6 +214,7 @@ export async function runCheckpointEligibilityWait(
         eligibilitySnapshot,
       },
       source: 'checkpoint-eligibility-wait',
+      cancelSiblingKeysFor,
     });
     return { status: 'not-launched', reason };
   }
@@ -255,7 +267,7 @@ export async function runCheckpointEligibilityWait(
         return { status: 'not-launched', reason: mutationReason };
       }
       await deps.emit({
-        key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
+        key: `green-checkpoint:inconclusive:${pipeline}`,
         summary: `checkpoint eligibility wait ${input.pendingId} did not launch: ${reason}`,
         payload: {
           pendingId: input.pendingId,
@@ -268,6 +280,7 @@ export async function runCheckpointEligibilityWait(
           eligibilitySnapshot,
         },
         source: 'checkpoint-eligibility-wait',
+        cancelSiblingKeysFor,
       });
       return { status: 'not-launched', reason };
     }
@@ -313,9 +326,10 @@ export async function runCheckpointEligibilityWait(
 
   // The standard checkpoint verdict events cover a successful detached run. If the launch
   // itself is refused (probe failure, an already-running run, etc.), surface an inconclusive
-  // event instead of leaving the receipt with no completion signal.
+  // event and retire the sibling verdict waits instead of leaving the receipt with no
+  // completion signal.
   await deps.emit({
-    key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
+    key: `green-checkpoint:inconclusive:${pipeline}`,
     summary: `checkpoint eligibility wait ${input.pendingId} did not launch: ${result.reason ?? 'unknown'}`,
     payload: {
       pendingId: input.pendingId,
@@ -323,6 +337,7 @@ export async function runCheckpointEligibilityWait(
       unit: result.unit,
     },
     source: 'checkpoint-eligibility-wait',
+    cancelSiblingKeysFor,
   });
   return { status: 'not-launched', reason: result.reason ?? 'not-launched', result };
 }

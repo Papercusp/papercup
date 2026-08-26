@@ -27,6 +27,13 @@ vi.mock('@dbos-inc/dbos-sdk', () => ({
 
 import { runCheckpointEligibilityWait } from './checkpoint-eligibility-workflow';
 
+const INCONCLUSIVE_SIBLING_KEYS = [
+  'release:green',
+  'release:green:papercusp',
+  'green-checkpoint:red',
+  'green-checkpoint:red:papercusp',
+];
+
 const REFUSAL: PreLaunchExclusion = {
   refuse: true,
   proceedReason: null,
@@ -66,6 +73,7 @@ describe('checkpoint eligibility waiter', () => {
       expect.objectContaining({
         key: 'green-checkpoint:inconclusive:papercusp',
         source: 'checkpoint-eligibility-wait',
+        cancelSiblingKeysFor: INCONCLUSIVE_SIBLING_KEYS,
       }),
     );
     expect(result).toEqual({ status: 'not-launched', reason: 'still-would-exclude-declared-paths' });
@@ -155,6 +163,7 @@ describe('checkpoint eligibility waiter', () => {
         key: 'green-checkpoint:inconclusive:papercusp',
         source: 'checkpoint-eligibility-wait',
         payload: expect.objectContaining({ reason: 'required-ancestor-missing', requiredAncestorSha: 'repair-sha' }),
+        cancelSiblingKeysFor: INCONCLUSIVE_SIBLING_KEYS,
       }),
     );
     expect(result).toEqual({ status: 'not-launched', reason: 'required-ancestor-missing' });
@@ -292,6 +301,7 @@ describe('checkpoint eligibility waiter', () => {
     expect(result).toEqual({ status: 'not-launched', reason: 'qualification-reservation-conflict' });
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({
       key: 'green-checkpoint:inconclusive:papercusp',
+      cancelSiblingKeysFor: INCONCLUSIVE_SIBLING_KEYS,
       payload: expect.objectContaining({
         logicalAttemptId: 'attempt-conflict',
         reason: 'qualification-reservation-conflict',

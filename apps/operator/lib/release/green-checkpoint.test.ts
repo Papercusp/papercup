@@ -17,6 +17,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   runGreenCheckpoint,
+  emitInconclusiveCheckpointVerdict,
+  checkpointVerdictSiblingKeys,
   checkpointCandidateProvenance,
   checkpointCandidateSourceFromCli,
   normalizeCheckpointMaterializationSelection,
@@ -3524,6 +3526,45 @@ describe("runGreenCheckpoint", () => {
     // Recorded by the time the promise resolves ⇒ it was awaited, not fire-and-forget.
     expect(calls).toContain("emit:release:green"); // global key (back-compat)
     expect(calls).toContain(`emit:release:green:${pipelineName(repo)}`); // pipeline-scoped (EI-7646)
+  });
+
+  it("EI-21533914348699873: emits inconclusive verdicts with global and pipeline-scoped green/red sibling keys", async () => {
+    const emit = vi.fn(async () => ({ ok: true }));
+    const result = {
+      advanced: false,
+      candidate: "a".repeat(40),
+      from: "b".repeat(40),
+      green: null,
+      reason: "migrations-pending",
+      summary: "schema is behind",
+      runId: "run-inconclusive-1",
+    } as const;
+    const pipeline = "papercusp";
+    const siblings = checkpointVerdictSiblingKeys(pipeline);
+
+    await emitInconclusiveCheckpointVerdict(result, pipeline, emit);
+
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(emit).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        key: "green-checkpoint:inconclusive",
+        cancelSiblingKeysFor: siblings,
+      }),
+    );
+    expect(emit).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        key: "green-checkpoint:inconclusive:papercusp",
+        cancelSiblingKeysFor: siblings,
+      }),
+    );
+    expect(siblings).toEqual([
+      "release:green",
+      "release:green:papercusp",
+      "green-checkpoint:red",
+      "green-checkpoint:red:papercusp",
+    ]);
   });
 
   it("WI-4957: green-path verdict (result + event payloads) carries this run's runId", async () => {
