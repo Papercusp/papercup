@@ -104,6 +104,13 @@ import {
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
+import {
+  itemIsArmB,
+  judgeSelfReview,
+  selfReviewLedgerQuery,
+  toSelfReviewLedgerRow,
+  type SelfReviewLedgerRow,
+} from '../../work-item-self-review.js';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
 import { independentSiblingRepos } from '../../plan-audits';
@@ -1705,6 +1712,14 @@ export async function synchronizeFinishWork(
 /** Complete ONE item — confirm it exists, optionally transition state (a failed
  *  state write NEVER loses the completion, EI-24), fill provenance defaults, and
  *  return the reflect step. Self-describes its id. */
+/**
+ * Ledger lookback for an arm-B item that was never claimed, so has no `takenAt` window.
+ * Bounded deliberately: scanning the item's whole lifetime would let a review performed
+ * weeks ago corroborate today's close, which is the corroboration gap the gate exists to
+ * catch rather than to launder.
+ */
+const SELF_REVIEW_UNCLAIMED_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+
 async function completeOne(
   it: CompleteItem,
   ident: { ownerId: string; ownerLabel?: string },
@@ -2073,6 +2088,70 @@ async function completeOne(
       id: it.id,
       error: verificationCoverageError,
       verificationCoverageError,
+    };
+  }
+
+  // ---- Arm-B pilot self-review gate (D-020 / D-021) --------------------------------
+  // INERT unless this specific item is assigned to pilot arm B. The default-false in
+  // `itemIsArmB` is load-bearing twice over: a gate that fired by default would make arms
+  // A and B identical, so the pilot could no longer say what the gate is worth (D-020);
+  // and it would turn every in-flight close in the fleet into a refusal, on the one verb
+  // no agent can route around.
+  //
+  // Placed here, beside the coverage gate and BEFORE any state write, for the reason
+  // EI-20962416980274656 records: a late rejection produced a recorded completion plus a
+  // still-open item — a non-atomic half-write needing a second call to repair.
+  let selfReviewError: string | undefined;
+  if (closeIntentRequested && itemIsArmB(existing)) {
+    // Scope the ledger to this item's work window. `takenAt` is null only when the item
+    // was never claimed, in which case there is no window to read; fall back to a bounded
+    // lookback rather than scanning the item's whole lifetime, which would let a review
+    // performed weeks ago corroborate today's close.
+    const takenAtMs = existing?.takenAt ? Date.parse(existing.takenAt) : NaN;
+    const sinceMs = Number.isFinite(takenAtMs)
+      ? takenAtMs
+      : Date.now() - SELF_REVIEW_UNCLAIMED_LOOKBACK_MS;
+
+    const { sql } = getOrgPg();
+    const query = selfReviewLedgerQuery({
+      workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+      coordOwnerId: ident.ownerId,
+      goalRef: it.id,
+      sinceMs,
+    });
+    const rawRows = await sql.unsafe(query.text, query.values as never[]);
+    const ledger = (rawRows as Array<Record<string, unknown>>)
+      .map((r) => toSelfReviewLedgerRow(r))
+      .filter((r): r is SelfReviewLedgerRow => r !== undefined);
+
+    const judgement = judgeSelfReview({ evidence: it.completion.selfReview, ledger });
+
+    // Refuse ONLY on the three verdicts that mean the review did not happen against the
+    // state being closed. `rubberStampRisk` and `yieldedChange` are pilot MEASUREMENTS and
+    // must never refuse (D-020): a zero-findings review is a legitimate outcome, and
+    // refusing it would teach agents to invent findings — worse than the rubber-stamping
+    // the gate targets.
+    if (
+      judgement.verdict === 'not-claimed' ||
+      judgement.verdict === 'uncorroborated' ||
+      judgement.verdict === 'stale-review'
+    ) {
+      selfReviewError =
+        `REJECTED — ${it.id} is assigned to pilot arm B, which requires a corroborated ` +
+        `self-review before it can close. Verdict: ${judgement.verdict}` +
+        (judgement.reason ? ` — ${judgement.reason}` : '') +
+        `. Re-read the diff as it now stands (capability:git / capability:read), then ` +
+        `re-send the completion with completion.selfReview: ` +
+        `{ lookedAt: "<what you re-read>", findings: [...], changedAsResult: [...] }. ` +
+        `An EMPTY findings array is accepted and recorded — do not invent findings.`;
+    }
+  }
+  if (selfReviewError) {
+    return {
+      ok: false,
+      id: it.id,
+      error: selfReviewError,
+      selfReviewError,
     };
   }
   // P-004: the whole decision, in one call. `completionEvidenceFromRecord` returning

@@ -513,6 +513,29 @@ export const CompletionRecordSchema = z.object({
       'A boolean FLAG — did this completion add or change tests? true/false, NOT a description of ' +
         'what was added (put that prose in `testsRun` / `testResult`).',
     ),
+  /**
+   * Arm-B pilot self-review (plan `directed-pair-work-items-2026-08-25`, D-020/D-021).
+   *
+   * OPTIONAL, and must stay optional: arms A and C — and every ordinary close outside the
+   * pilot — record a valid completion without it. Making it required would strand every
+   * caller of `work_items:complete`, which is the one verb no agent in the fleet can route
+   * around (the `lint:required-field-strands` class).
+   *
+   * An EMPTY `findings` array is a legitimate recorded outcome, not an omission: a review
+   * that turned nothing up is a data point, and the gate reports it as `rubberStampRisk`
+   * rather than refusing it. Refusing a zero-findings review would teach agents to invent
+   * findings, which is worse than the rubber-stamping it was meant to catch.
+   */
+  selfReview: z
+    .object({
+      /** What was re-read — the diff, the changed files. Corroborated against the ledger. */
+      lookedAt: z.string().min(1).optional(),
+      /** What the review turned up. `[]` is meaningful; see the note above. */
+      findings: z.array(z.string().min(1)).optional(),
+      /** What was fixed because of the review — the arm's review YIELD. */
+      changedAsResult: z.array(z.string().min(1)).optional(),
+    })
+    .optional(),
   /** Deploy note, e.g. "additive, loads next :3070 restart" | "restarted :3070". */
   deploy: z.string().min(1).optional(),
   /**

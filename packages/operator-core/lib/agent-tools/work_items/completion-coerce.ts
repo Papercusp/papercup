@@ -59,6 +59,10 @@ export const COMPLETION_FIELDS: readonly string[] = [
   'filesChanged',
   'verification',
   'coverage',
+  // Arm-B pilot self-review (D-021). Listed here so a FLAT completion carrying
+  // `selfReview` is still recognised as structured rather than being swept into the
+  // free-text residue — the gate reads it off the parsed record.
+  'selfReview',
 ];
 
 /** Exact object-form example shared by the schema error and the tool guidance. */
