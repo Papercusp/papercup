@@ -25,13 +25,21 @@ const judgement = (over: Partial<SelfReviewJudgement>): SelfReviewJudgement => (
   reviewCalls: [],
   rubberStampRisk: false,
   yieldedChange: false,
+  ledgerVisible: true,
   ...over,
 });
 
 /** Every verdict `judgeSelfReview` can actually emit, produced rather than hand-listed. */
 const REACHABLE_VERDICTS: readonly SelfReviewVerdict[] = [
   judgeSelfReview({ evidence: undefined, ledger: [] }).verdict, // not-claimed
-  judgeSelfReview({ evidence: { lookedAt: 'the diff' }, ledger: [] }).verdict, // uncorroborated
+  judgeSelfReview({
+    evidence: { lookedAt: 'the diff' },
+    // NOT an empty ledger. An empty one means the instrument is blind, which is
+    // `unobservable` (EI-21481919801123128); `uncorroborated` requires that we could SEE
+    // this agent's calls and none of them was a read of the code.
+    ledger: [{ toolName: 'coord:send', invokedAtMs: 1_000 }],
+  }).verdict, // uncorroborated
+  judgeSelfReview({ evidence: { lookedAt: 'the diff' }, ledger: [] }).verdict, // unobservable
   judgeSelfReview({
     evidence: { lookedAt: 'the diff' },
     ledger: [
@@ -119,8 +127,18 @@ describe('selfReviewRefusal', () => {
       const message = selfReviewRefusal(judgement({ verdict }), 'WI-1');
       expect(Boolean(message), verdict).toBe(refuses);
     }
-    // ...and the judge really does reach all four, so the loop above is not vacuous.
-    expect(new Set(REACHABLE_VERDICTS).size).toBe(4);
+    // ...and the judge really does reach all five, so the loop above is not vacuous.
+    expect(new Set(REACHABLE_VERDICTS).size).toBe(5);
+  });
+
+  it('PERMITS `unobservable` — a blind instrument must not wall the fleet', () => {
+    // EI-21481919801123128. Reaching work_items:complete requires having made at least one
+    // tool call in the window, so a ledger with ZERO rows is positive evidence that the
+    // instrument cannot see this agent — not evidence that it did nothing. Refusing on it
+    // would let an ingestion outage convert arm B into a wall on the one verb no agent can
+    // route around.
+    expect(selfReviewRefusal(judgement({ verdict: 'unobservable' }), 'WI-1')).toBeUndefined();
+    expect(SELF_REVIEW_REFUSING_VERDICTS.has('unobservable')).toBe(false);
   });
 });
 
