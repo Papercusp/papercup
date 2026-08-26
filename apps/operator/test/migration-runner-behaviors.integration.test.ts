@@ -117,6 +117,33 @@ afterAll(async () => {
 });
 
 describe('migration runner — failure paths + recording contract (synthetic sql dir)', () => {
+  it('bulk fresh-schema replay disables parallel query inside each migration transaction', async () => {
+    const before = await sql.unsafe(`SELECT current_setting('max_parallel_workers_per_gather') AS value`);
+    const files: Record<string, string> = {
+      '001-observe.sql': `
+        CREATE TABLE mrb0_parallel_setting (value text NOT NULL);
+        INSERT INTO mrb0_parallel_setting(value)
+        VALUES (current_setting('max_parallel_workers_per_gather'));
+      `,
+    };
+    // The runner's bulk threshold is 20 pending files. The remaining fixtures
+    // are intentional no-ops: they make this a fresh-schema-shaped replay while
+    // keeping the assertion focused on the session setting migration 001 saw.
+    for (let i = 2; i <= 20; i += 1) {
+      files[`${String(i).padStart(3, '0')}-noop.sql`] = 'SELECT 1;\n';
+    }
+    const dir = await makeSqlDir(files);
+
+    const res = await applyPendingMigrations({ client: sql, sqlDir: dir });
+
+    expect(res.appliedCount).toBe(20);
+    const observed = await sql.unsafe('SELECT value FROM mrb0_parallel_setting');
+    expect(observed).toEqual([{ value: '0' }]);
+    // SET LOCAL must not retune the shared session after the migration commits.
+    const after = await sql.unsafe(`SELECT current_setting('max_parallel_workers_per_gather') AS value`);
+    expect(after).toEqual(before);
+  });
+
   it('applies a new file and records its filename + sha256 of the RAW contents', async () => {
     const raw = 'CREATE TABLE mrb1_widgets (id int PRIMARY KEY);\n';
     const dir = await makeSqlDir({ '001-widgets.sql': raw });
