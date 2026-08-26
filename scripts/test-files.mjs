@@ -1428,7 +1428,28 @@ function run(command, args, options) {
 // The supported testing:run surface uses the same five-minute whole-run budget. Keep the direct
 // test:file CLI bounded too: unlike Vitest's per-test timeout, this parent timer can still fire when
 // a fork worker is synchronously spinning and its own event loop cannot run timers.
-export const TEST_FILE_RUN_TIMEOUT_MS = 300_000;
+export const DEFAULT_TEST_FILE_RUN_TIMEOUT_MS = 300_000;
+export const MAX_TEST_FILE_RUN_TIMEOUT_MS = 30 * 60_000;
+
+/** Resolve the whole-file watchdog from the CLI environment. Unlike an outer
+ * task timeout, this is the deadline that owns and reaps the Vitest process
+ * tree, so slow-but-progressing files need a supported way to widen it. */
+export function testFileRunTimeoutMs(env = process.env) {
+  const raw = env.PAPERCUSP_TEST_FILE_TIMEOUT_MS;
+  if (raw == null || raw.trim() === '') return DEFAULT_TEST_FILE_RUN_TIMEOUT_MS;
+  if (!/^\d+$/.test(raw.trim())) {
+    throw new Error('PAPERCUSP_TEST_FILE_TIMEOUT_MS must be a positive integer number of milliseconds');
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > MAX_TEST_FILE_RUN_TIMEOUT_MS) {
+    throw new Error(
+      `PAPERCUSP_TEST_FILE_TIMEOUT_MS must be between 1 and ${MAX_TEST_FILE_RUN_TIMEOUT_MS} milliseconds`,
+    );
+  }
+  return parsed;
+}
+
+export const TEST_FILE_RUN_TIMEOUT_MS = testFileRunTimeoutMs();
 export const TEST_FILE_PROGRESS_INTERVAL_MS = 10_000;
 const TEST_FILE_KILL_GRACE_MS = 2_000;
 const TEST_FILE_MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
@@ -1862,7 +1883,9 @@ export async function main(
     if (result.timedOut) {
       console.error(
         `TEST_FILE_WATCHDOG cwd=${cwdLabel} files=${JSON.stringify(exact)} ` +
-          `timeoutMs=${TEST_FILE_RUN_TIMEOUT_MS} status=timed-out — owned child tree reaped`,
+          `timeoutMs=${TEST_FILE_RUN_TIMEOUT_MS} status=timed-out — owned child tree reaped; ` +
+          'NOT MEASURED — no test-failure verdict was produced. Widen with ' +
+          'PAPERCUSP_TEST_FILE_TIMEOUT_MS=<milliseconds> and rerun the same npm run test:file command.',
       );
     }
     if (result.error) {
@@ -1920,7 +1943,9 @@ export async function main(
           if (detailResult.timedOut) {
             console.error(
               `TEST_FILE_DETAIL_RECOVERY_TIMEOUT cwd=${cwdLabel} file=${JSON.stringify(file)} ` +
-                `timeoutMs=${TEST_FILE_RUN_TIMEOUT_MS} status=timed-out — owned child tree reaped`,
+                `timeoutMs=${TEST_FILE_RUN_TIMEOUT_MS} status=timed-out — owned child tree reaped; ` +
+                'NOT MEASURED — no test-failure verdict was produced. Widen with ' +
+                'PAPERCUSP_TEST_FILE_TIMEOUT_MS=<milliseconds> and rerun.',
             );
           }
         }

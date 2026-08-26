@@ -26,6 +26,7 @@ import {
   transformFailureMarker,
   perGroupVitestArgs,
   runCapturedTestProcess,
+  testFileRunTimeoutMs,
   vitestRunFailed,
   warnIfInstallInFlight,
   withoutOutputFileArg,
@@ -43,6 +44,14 @@ import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs'
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
 describe('test-files router', () => {
+  it('supports a bounded CLI watchdog override for slow-but-progressing files', () => {
+    expect(testFileRunTimeoutMs({})).toBe(300_000);
+    expect(testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '540000' })).toBe(540_000);
+    expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '0' })).toThrow(/between 1 and/);
+    expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: 'not-a-number' })).toThrow(/positive integer/);
+    expect(() => testFileRunTimeoutMs({ PAPERCUSP_TEST_FILE_TIMEOUT_MS: '1800001' })).toThrow(/between 1 and/);
+  });
+
   it('publishes and cleans the pc-heavy after-ready marker at the execution boundary', () => {
     const dir = mkdtempSync(join(tmpdir(), 'test-file-ready-'));
     const marker = join(dir, 'ready');
