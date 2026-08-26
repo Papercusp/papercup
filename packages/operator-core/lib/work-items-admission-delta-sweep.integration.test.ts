@@ -91,12 +91,7 @@ beforeEach(async () => {
     harness_shared.delta_sweep_test_links`;
 });
 
-async function seedItem(input: {
-  id: string;
-  title: string;
-  summary: string;
-  admittedAt: string;
-}): Promise<void> {
+async function seedItem(input: { id: string; title: string; summary: string; admittedAt: string }): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
@@ -112,7 +107,11 @@ describe('work-item admission hourly delta sweep (real PostgreSQL)', () => {
       ['WI-2', 'Release queue stops advancing', 'Promotion is blocked behind the same stale checkout lock holder.'],
       ['WI-3', 'Sync deadline expires', 'The synchronization worker cannot enter its checkout critical section.'],
       ['WI-4', 'Test runner appears frozen', 'A dead process left the repository checkout lease behind.'],
-      ['WI-5', 'Operator startup misses readiness', 'Startup waits for a shared checkout lock that no live process owns.'],
+      [
+        'WI-5',
+        'Operator startup misses readiness',
+        'Startup waits for a shared checkout lock that no live process owns.',
+      ],
     ] as const;
     for (const [index, [id, title, summary]] of burst.entries()) {
       await seedItem({ id, title, summary, admittedAt: `2026-08-26T11:${20 + index}:00Z` });
