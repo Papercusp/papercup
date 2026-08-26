@@ -133,6 +133,9 @@ describe('computeDeployStatus — decision tree', () => {
       decision: 'recover-dead-fixer',
       retireAllowed: true,
       retireRefusal: null,
+      escapesUsed: 0,
+      maxCandidateEscapes: 0,
+      escapeAvailable: false,
       nextAction: 'release:repair-queue',
     } as const;
     const s = computeDeployStatus(mkSnap({ repairQueue }, {}));
