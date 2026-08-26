@@ -1613,7 +1613,7 @@ function carriesEvidence(row: { verified?: string; contested?: string }): boolea
  *  cap that cuts from the tail cuts the cheapest-to-reproduce rows first. Stable WITHIN each
  *  tier: two rows of equal evidence status keep their established relative order, so this
  *  reorders a note only when the cap was about to destroy evidence anyway. */
-function evidenceFirst<T extends { verified?: string; contested?: string }>(rows: ReadonlyArray<T>): T[] {
+export function evidenceFirst<T extends { verified?: string; contested?: string }>(rows: ReadonlyArray<T>): T[] {
   const withEvidence: T[] = [];
   const predicted: T[] = [];
   for (const row of rows) (carriesEvidence(row) ? withEvidence : predicted).push(row);
