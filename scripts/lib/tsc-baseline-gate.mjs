@@ -151,9 +151,32 @@ const LOCATED_DIAGNOSTIC = /^(.+?)\((\d+),(\d+)\): error (TS\d+):/;
  */
 export function parseTscErrors(tscOutput) {
   const errors = [];
+  // EI-21523730940957057 — a compiler stream that repeats a diagnostic VERBATIM used to inflate
+  // that file's count once per copy, because this loop counts lines and `countByFile` increments
+  // per entry. A tripled stream became a tripled count, and the gate reported `status=regressed`
+  // for files whose DISTINCT error count still equalled their baseline. The false red is shaped
+  // exactly like a real one, so it costs a full triage every time it fires.
+  //
+  // The identity of a located diagnostic is file+line+column+code, and this is the LAST point
+  // where it exists: the emitted entry is deliberately `{file, code}` (asserted with strict
+  // equality by lint-tsc.test.ts, and explained in packages/operator-core/lib/tsc-diagnostics.ts),
+  // so nothing downstream CAN tell a duplicate from a distinct error. Hence dedupe HERE, using
+  // line/column without carrying them — the documented narrow shape is unchanged.
+  //
+  // Scoped deliberately to BYTE-IDENTICAL repeats, keyed on the raw pre-normalization spelling:
+  //   - Unattributed diagnostics (the bare branch) carry no position, so they have no identity to
+  //     dedupe on — two distinct global errors may share a code. They are left alone.
+  //   - The same source reported under two path spellings (`pkg/x.ts` vs `../../../pkg/x.ts`,
+  //     EI-21142032293145491) is NOT collapsed here: those are different keys at parse time, and
+  //     `nested worktree diagnostic paths` in lint-tsc.test.ts asserts that two genuinely
+  //     different errors arriving that way must still count as 2.
+  const seenLocated = new Set();
   for (const line of String(tscOutput).split('\n')) {
     const m = line.match(LOCATED_DIAGNOSTIC);
     if (m) {
+      const identity = `${m[1]}\x00${m[2]}\x00${m[3]}\x00${m[4]}`;
+      if (seenLocated.has(identity)) continue;
+      seenLocated.add(identity);
       errors.push({ file: m[1], code: m[4] });
       continue;
     }
