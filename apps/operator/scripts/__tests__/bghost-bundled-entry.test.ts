@@ -7,17 +7,49 @@ const BUNDLE_HOST = join(SCRIPTS_DIR, '..', 'bin', 'bundle-host.sh');
 const DROP_IN = join(SCRIPTS_DIR, 'systemd', 'papercup-bg-host.service.d', '95-bundled-entry.conf');
 const README = join(SCRIPTS_DIR, 'systemd', 'README.md');
 
-describe('papercup-bg-host bundled-entry systemd contract (EI-21434335931587523)', () => {
+/**
+ * The path as the UNIT spells it — systemd's %h specifier, not an absolute path.
+ * This deliberately does NOT reuse BUNDLE_HOST (an absolute fs path derived from
+ * __dirname): asserting the drop-in contains this checkout's absolute path is what
+ * previously pinned a build-box home directory into shipped source, which the
+ * identity-lint leg of green-checkpoint rejects.
+ */
+const BUNDLE_HOST_UNIT_PATH = '%h/papercupai-workspace/papercusp/apps/operator/bin/bundle-host.sh';
+
+/**
+ * SCOPE — THIS SUITE READS REPO FILES ONLY. It cannot see systemd and must never be
+ * read as evidence that the drop-in is installed on any host.
+ *
+ * It was previously named a "systemd contract" while containing no systemd, and that
+ * naming did real damage: 95-bundled-entry.conf sat absent from the live unit's
+ * DropInPaths for a full day while this suite was green, and three other components
+ * were written assuming it was active (bghost-watchdog.mjs, check-host-bundle-builds.mjs,
+ * and this file). See plan substrate-observability-bug-wave-2026-08-26 D-002/D-004.
+ *
+ * The host-side fact — "is this drop-in actually loaded by the unit?" — is asserted by
+ * scripts/check-systemd-dropins-installed.mjs, which reads live DropInPaths. That check
+ * cannot live here: CI has no user systemd session, so the fact is unobservable from a
+ * vitest by construction.
+ */
+describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', () => {
   const bundleHost = readFileSync(BUNDLE_HOST, 'utf8');
   const dropIn = readFileSync(DROP_IN, 'utf8');
   const readme = readFileSync(README, 'utf8');
 
-  it('keeps the bundle-host consumer map aligned with the installed bg-host drop-in', () => {
+  it('keeps the bundle-host consumer map aligned with the tracked bg-host drop-in', () => {
     expect(bundleHost).toContain(':3271 bg-host');
     expect(bundleHost).toContain('95-bundled-entry.conf');
-    expect(bundleHost).not.toContain('has NO ExecStartPre');
-    expect(bundleHost).not.toContain('missing drop-in is filed separately');
     expect(bundleHost).not.toContain('(:3270 bg-host');
+
+    // REMOVED 2026-08-26 (D-004): two assertions used to live here —
+    //   expect(bundleHost).not.toContain('has NO ExecStartPre');
+    //   expect(bundleHost).not.toContain('missing drop-in is filed separately');
+    // Those phrases described the drop-in being un-installed, which was STILL TRUE when
+    // the assertions were added. They made the build fail if anyone wrote the accurate
+    // sentence back into bundle-host.sh, so the suite's green state was maintained by
+    // deleting a true statement about the world. Do not reintroduce a not.toContain that
+    // forbids describing a real condition; assert the condition itself instead — here,
+    // scripts/check-systemd-dropins-installed.mjs does that against live DropInPaths.
   });
 
   it('fails closed when the bundled CLI-entry recurrence guard rejects the graph', () => {
@@ -36,7 +68,7 @@ describe('papercup-bg-host bundled-entry systemd contract (EI-21434335931587523)
     const execLines = serviceLines.filter((line) => line.startsWith('ExecStart'));
 
     expect(execLines).toEqual([
-      `ExecStartPre=${BUNDLE_HOST}`,
+      `ExecStartPre=${BUNDLE_HOST_UNIT_PATH}`,
       'ExecStart=',
       'ExecStart=/usr/bin/bash -c "set -a; [ -f .env.local ] && . ./.env.local; set +a; exec env \\',
     ]);
@@ -63,6 +95,26 @@ describe('papercup-bg-host bundled-entry systemd contract (EI-21434335931587523)
     ]) {
       expect(dropIn).toContain(`  ${assignment} \\`);
     }
+  });
+
+  it('raises TimeoutStartSec, because ExecStartPre spends the start budget (D-003)', () => {
+    // ExecStartPre time counts against TimeoutStartSec for Type=simple. The base unit
+    // inherits systemd's 90s default and nothing else raises it, so the drop-in that ADDS
+    // an ExecStartPre owns the timeout too — shipping one without the other leaves a
+    // bundle build racing a 90s deadline on a box measured at load 421.
+    const match = dropIn.match(/^TimeoutStartSec=(\d+)$/m);
+    expect(match, 'the drop-in adds an ExecStartPre, so it must also raise TimeoutStartSec').not.toBeNull();
+    // Measured 2026-08-26: bundle-host.sh takes 36.61s warm. That figure is a FLOOR
+    // (n=1, warm cache, unloaded box), so require real headroom over it rather than a fit.
+    expect(Number(match![1])).toBeGreaterThanOrEqual(180);
+  });
+
+  it('spells paths with systemd %h rather than a build-box home directory', () => {
+    // A hardcoded /home/<user>/ path here is shipped source and reds the identity-lint
+    // leg of green-checkpoint, freezing main fleet-wide. %h is already the convention in
+    // this directory (llm-test-nightly.service, marketplace-api.service).
+    expect(dropIn).not.toMatch(/\/home\/[a-z]/i);
+    expect(dropIn).toContain('ExecStartPre=%h/');
   });
 
   it('documents the canonical symlink installation without restarting bg-host', () => {

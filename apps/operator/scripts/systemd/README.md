@@ -97,19 +97,47 @@ Do not copy the drop-in or edit the generated service. Do not restart bg-host
 as part of this installation; activate it at the next coordinated/managed
 bg-host restart.
 
+The drop-in also carries `TimeoutStartSec=300`. That is not decoration and must not be
+dropped: `ExecStartPre` time counts against `TimeoutStartSec` for `Type=simple`, and the
+base unit inherits systemd's 90s default with nothing else raising it. The bundle was
+measured at 36.61s warm on 2026-08-26 — a fit, but only ~2.5x margin on a host observed
+that same day at load 421 with a measured degradation knee near load 230. If the start
+job does blow the deadline, `Restart=always` (drop-in 40) + `RestartSec=5` +
+`RestartSteps=0` retry the same losing boot, so the failure does not self-clear while the
+load persists. Any unit that gains an `ExecStartPre` owns its start timeout too.
+
 ## Verify
 
 ```bash
-systemd-analyze --user verify papercup-bg-host.service
-systemctl --user show papercup-bg-host.service \
-  -p WorkingDirectory -p ExecStartPre -p ExecStart
+node scripts/check-systemd-dropins-installed.mjs   # from the repo root
 ```
 
-The effective unit should show `bundle-host.sh` as `ExecStartPre` and
-`node dist-host/hono-host.mjs` as the final command, while retaining the
-`PAPERCUSP_HONO_PORT=3271`, `PAPERCUSP_BACKGROUND_WORKERS=1`, and DBOS/routine
-assignments from the base unit. A configured drop-in is not proof that the
-running service has loaded it; verify after the next managed restart.
+That is the authoritative check and it is the one to trust: it reads the unit's live
+`DropInPaths` and fails when a tracked drop-in is not actually loaded. It covers every
+tracked `*.service.d/*.conf`, not just this one.
+
+For a manual look:
+
+```bash
+systemd-analyze --user verify papercup-bg-host.service
+systemctl --user show papercup-bg-host.service --property=DropInPaths --value \
+  | tr ' ' '\n' | grep 95-bundled-entry.conf
+systemctl --user show papercup-bg-host.service \
+  -p WorkingDirectory -p ExecStartPre -p ExecStart -p TimeoutStartUSec
+```
+
+Check `DropInPaths` **first**. `ExecStartPre` alone cannot distinguish "the drop-in is
+loaded" from "the drop-in is configured but the unit never picked it up" — and the second
+is not hypothetical: this drop-in sat un-installed for a day after being committed, while
+`bghost-bundled-entry.test.ts`, `bghost-watchdog.mjs` and `check-host-bundle-builds.mjs`
+were all written as though it were active. None of them could see the host. See plan
+`substrate-observability-bug-wave-2026-08-26` D-002/D-004.
+
+Once loaded, the effective unit should show `bundle-host.sh` as `ExecStartPre` and
+`node dist-host/hono-host.mjs` as the final command, `TimeoutStartUSec=5min`, and retain
+the `PAPERCUSP_HONO_PORT=3271`, `PAPERCUSP_BACKGROUND_WORKERS=1`, and DBOS/routine
+assignments from the base unit. A configured drop-in is not proof that the running
+service has loaded it; verify after the next managed restart.
 
 ---
 
