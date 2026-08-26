@@ -739,9 +739,7 @@ describe('emitWorkItemClaimableEvent (composable-event-awaits P-007)', () => {
     const keys = emit.mock.calls.map((call) => call[0].key);
     expect(keys).toContain(`work-item:unblocked:${dependent.id}`);
     expect(keys).not.toContain('work-item:claimable');
-    expect((dispatchActionable as any).mock.invocationCallOrder[0]).toBeLessThan(
-      emit.mock.invocationCallOrder[0],
-    );
+    expect((dispatchActionable as any).mock.invocationCallOrder[0]).toBeLessThan(emit.mock.invocationCallOrder[0]);
   });
 
   it('CO-FIRES from emitWorkItemCreatedEvent for an unclaimed-claimable create (one hook at the call site)', async () => {
