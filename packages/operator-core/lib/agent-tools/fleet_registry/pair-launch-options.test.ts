@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   describeLaunchRoles,
   expandPairedMembers,
+  implementersToConfine,
   PAIR_ROLE_DIRECTOR,
   PAIR_ROLE_IMPLEMENTER,
   pairIndexOfSeat,
@@ -399,5 +400,48 @@ describe('expandPairedMembers routes each role through the EXISTING per-member o
     for (const m of expandPairedMembers(pairedFixture(), 4)) {
       for (const key of Object.keys(m)) expect(memberSpecFields.has(key as never)).toBe(true);
     }
+  });
+});
+
+// ── P-004: which seats get confined before they are spawned ─────────────────────
+describe('implementersToConfine', () => {
+  const seats = (m: Record<number, string>) =>
+    new Map(Object.entries(m).map(([k, v]) => [Number(k), v]));
+
+  it('selects the implementer seat of each pair, never the director', () => {
+    const out = implementersToConfine(
+      seats({ 0: 'su-dir-0', 1: 'su-imp-0', 2: 'su-dir-1', 3: 'su-imp-1' }),
+    );
+    expect(out.map((o) => o.implementer)).toEqual(['su-imp-0', 'su-imp-1']);
+    expect(out.map((o) => o.director)).toEqual(['su-dir-0', 'su-dir-1']);
+    expect(out.map((o) => o.pairIndex)).toEqual([0, 1]);
+  });
+
+  // The deliberate divergence from pairsToCouple. Coupling skips a half-open pair because a
+  // dangling edge hides the missing half; confinement must NOT skip, because what it would
+  // leave behind is an UNCONFINED implementer — free to complete its own work items — and
+  // that is invisible, since an unconfined session looks like one with nothing to deny.
+  it('STILL confines an implementer whose director seat is absent', () => {
+    const out = implementersToConfine(seats({ 1: 'su-imp-0' }));
+    expect(out).toHaveLength(1);
+    expect(out[0].implementer).toBe('su-imp-0');
+    expect(out[0].director).toBeNull();
+  });
+
+  it('diverges from pairsToCouple on exactly that case', () => {
+    const halfPair = seats({ 1: 'su-imp-0' });
+    expect(pairsToCouple(halfPair)).toHaveLength(0);
+    expect(implementersToConfine(halfPair)).toHaveLength(1);
+  });
+
+  it('uses ABSOLUTE seats, so a top-up wave still picks the implementer half', () => {
+    // A wave opening seats 2..3 is pair 1 — its implementer is seat 3, not the wave's index 1.
+    const out = implementersToConfine(seats({ 2: 'su-dir-1', 3: 'su-imp-1' }));
+    expect(out.map((o) => o.implementer)).toEqual(['su-imp-1']);
+    expect(out[0].seat).toBe(3);
+  });
+
+  it('is empty for a wave of directors only', () => {
+    expect(implementersToConfine(seats({ 0: 'su-dir-0', 2: 'su-dir-1' }))).toEqual([]);
   });
 });
