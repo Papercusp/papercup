@@ -169,7 +169,7 @@
   },
   "devDependencies": {
     "@papercusp/test-config": "*",
-    "@types/yauzl": "^2.10.3",
+    "@types/yauzl": "^3.4.0",
     "js-tiktoken": "*",
     "lost-pixel": "^3.22.0",
     "playwright-core": "^1.59.1",
