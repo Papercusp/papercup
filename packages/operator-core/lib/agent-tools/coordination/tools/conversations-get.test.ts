@@ -35,7 +35,14 @@ const detail = (id: string) => ({
   posts: [{ id: 1, author_id: 'b1', body: 'reply', created_ts: 't2', secret: 'DROP_ME' }],
 });
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Default: no consult rows — the ordinary (non-consult) conversation path.
+  // No `as never`: getConsultStates' real return type is
+  // Promise<Map<string, ConsultLifecycleState>>, which an empty Map satisfies
+  // outright, so the fixture stays genuinely typechecked against the signature.
+  consultM.mockResolvedValue(new Map());
+});
 
 describe('conversations:get handler (bulk keyed-array)', () => {
   it('maps a missing conversation to a per-item { ok:false, reason→error:not_found }', async () => {
@@ -85,5 +92,56 @@ describe('conversations:get handler (bulk keyed-array)', () => {
     getM.mockResolvedValue(null as never);
     await body({ id: 'c1' });
     expect(getM).toHaveBeenCalledWith('c1', undefined);
+  });
+
+  // EI-21510601647367544 — the divergence that makes this necessary.
+  describe('consult lifecycle state', () => {
+    const consultRow = (id: string) => ({
+      conversation_id: id,
+      state: 'expired',
+      latency_contract: 'proceed',
+      responder_id: 'su-884f6b9f',
+      expires_at: '2026-08-26T07:44:56.262Z',
+      closed_at: '2026-08-26T07:48:28.261Z',
+      wakes_used: 1,
+    });
+
+    it('surfaces `consult` for a consult conversation whose CONVERSATION row still reads open', async () => {
+      // The real observed shape: conversation.state 'open' while the consult
+      // itself expired and closed 49 minutes earlier. Reading only the
+      // conversation cannot tell that apart from a live consult, which is
+      // exactly the wrong inference this field exists to prevent.
+      getM.mockResolvedValue({
+        ...detail('c-consult'),
+        conversation: { ...detail('c-consult').conversation, kind: 'consult', state: 'open' },
+      } as never);
+      consultM.mockResolvedValue(new Map([['c-consult', consultRow('c-consult')]]));
+
+      const r = (await body({ id: 'c-consult' })).results[0];
+      expect(r.conversation.state).toBe('open'); // unchanged — still the conversation's own state
+      expect(r.consult).toEqual({
+        state: 'expired',
+        latency_contract: 'proceed',
+        responder_id: 'su-884f6b9f',
+        expires_at: '2026-08-26T07:44:56.262Z',
+        closed_at: '2026-08-26T07:48:28.261Z',
+        wakes_used: 1,
+      });
+    });
+
+    it('omits `consult` entirely for a non-consult conversation (no consumer shape changes)', async () => {
+      getM.mockResolvedValue(detail('c1') as never);
+      const r = (await body({ id: 'c1' })).results[0];
+      expect(r).not.toHaveProperty('consult');
+    });
+
+    it('batches the lifecycle read ONCE for the whole ids:[…] set, not per id', async () => {
+      // Guards the N+1 this was deliberately written to avoid: conversations:get
+      // accepts up to 100 ids.
+      getM.mockImplementation(async (id: string) => detail(id) as never);
+      await body({ ids: ['c1', 'c2', 'c3'] });
+      expect(consultM).toHaveBeenCalledTimes(1);
+      expect(consultM).toHaveBeenCalledWith(['c1', 'c2', 'c3'], undefined);
+    });
   });
 });
