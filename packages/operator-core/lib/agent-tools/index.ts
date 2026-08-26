@@ -1080,6 +1080,9 @@ import './work_items/checkpoint';
 import './work_items/amend';
 import './work_items/expand';
 import './work_items/promote';
+// work-queue-admission-and-bulk-dedup P-006 — model-backed staged corpus pass,
+// reusing the admission census + promoter charter under a transactional ratchet.
+import './work_items/bulk_dedup';
 // Blackboard tuple-space primitives (fleet-as-supervised-blackboard D-004): claim_next
 // is the associative `in` (self-select / work-steal via SKIP LOCKED); observe is `rd`.
 import './work_items/claim_next';

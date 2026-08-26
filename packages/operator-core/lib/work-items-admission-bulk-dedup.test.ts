@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  assertAdmissionCensusRatchet,
-  buildBulkDedupPrompt,
-} from './work-items-admission-bulk-dedup';
+import { assertAdmissionCensusRatchet, buildBulkDedupPrompt } from './work-items-admission-bulk-dedup';
 import type { PromoterItem, PromoterPair } from './work-items-admission-promoter';
 
 function item(id: string, title = id): PromoterItem {
@@ -49,8 +46,6 @@ describe('assertAdmissionCensusRatchet', () => {
   });
 
   it('fails loudly on an injected rise', () => {
-    expect(() => assertAdmissionCensusRatchet(2, 4)).toThrow(
-      'admission census ratchet violated: 2 -> 4 (+2)',
-    );
+    expect(() => assertAdmissionCensusRatchet(2, 4)).toThrow('admission census ratchet violated: 2 -> 4 (+2)');
   });
 });

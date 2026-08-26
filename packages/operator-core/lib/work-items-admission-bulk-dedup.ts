@@ -244,10 +244,7 @@ export function buildBulkDedupPrompt(
     )
     .join('\n\n');
   const pairSet = pairs
-    .map(
-      (pair) =>
-        `${pair.pairKey} | signals=${pair.signals.join(',')} | cosine=${pair.cosine?.toFixed(4) ?? 'n/a'}`,
-    )
+    .map((pair) => `${pair.pairKey} | signals=${pair.signals.join(',')} | cosine=${pair.cosine?.toFixed(4) ?? 'n/a'}`)
     .join('\n');
   const ghosts = ghostItems
     .filter((item) => !endpointItems.has(item.id))
