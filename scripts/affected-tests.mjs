@@ -137,6 +137,7 @@ import {
 // prints under another workspace's header. Emit our own lines synchronously so
 // they stay glued to the child output they label. See scripts/lib/sync-write.mjs.
 import {
+  appendAllSync,
   writeAllSync,
   outSync as rawOutSync,
   errSync as rawErrSync,
@@ -3761,6 +3762,7 @@ function runCapturedTask(
   allocation,
   extraArgs = [],
   scriptOverride = null,
+  journalLabel = "initial",
 ) {
   const spawnTask = scriptOverride
     ? { ...context.t, script: scriptOverride }
@@ -3923,15 +3925,7 @@ function runCapturedTask(
         signal: null,
         settled: true,
       });
-      rawErrSync(
-        `AFFECTED_TASK_PROGRESS state=spawn-error task=${progressTask} ` +
-          `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=0 ` +
-          `stalledForSec=0 timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
-          `durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
-          `exitStatus=${outcome.exitStatus} signal=${outcome.signal} ` +
-          `watchdogDeadlineMs=${taskTimeoutMs}`,
-      );
-      resolveRun({
+      const result = {
         status: 1,
         signal: null,
         stdout: "",
@@ -3952,7 +3946,25 @@ function runCapturedTask(
               __cacheIdentity: cacheIdentity,
             }
           : {}),
-      });
+      };
+      // EI-21495798160539116: publish the durable record BEFORE the live
+      // settlement pulse. A supervisor may terminate the aggregate runner as
+      // soon as it observes that pulse; the record must already be recoverable.
+      result.__outputJournaled = journalCapturedTaskOutput(
+        spawnTask,
+        result,
+        allocation,
+        journalLabel,
+      );
+      rawErrSync(
+        `AFFECTED_TASK_PROGRESS state=spawn-error task=${progressTask} ` +
+          `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=0 ` +
+          `stalledForSec=0 timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
+          `durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
+          `exitStatus=${outcome.exitStatus} signal=${outcome.signal} ` +
+          `watchdogDeadlineMs=${taskTimeoutMs}`,
+      );
+      resolveRun(result);
       return;
     }
     // EI-21048499991398082: `status`/`signal` are Node's `child.close(code, signal)` pair,
@@ -4064,19 +4076,7 @@ function runCapturedTask(
       settled = true;
       watchdog.stop();
       if (progressTimer) clearTimeout(progressTimer);
-      emitProgress(
-        watchdogTimedOut
-          ? "watchdog-killed"
-          : captureError
-            ? "capture-killed"
-            : spawnError
-              ? "spawn-error"
-              : "finished",
-        status,
-        signal,
-        /* settled */ true,
-      );
-      resolveRun({
+      const result = {
         status,
         signal,
         stdout: Buffer.concat(stdout).toString("utf8"),
@@ -4097,9 +4097,75 @@ function runCapturedTask(
               __cacheIdentity: cacheIdentity,
             }
           : {}),
-      });
+      };
+      // The ordered console replay still waits for the whole shard, but its
+      // durable counterpart cannot: a later task may run for minutes and the
+      // aggregate process may be TERM/KILLed meanwhile. Persist this completed
+      // task first, synchronously, then advertise state=finished.
+      result.__outputJournaled = journalCapturedTaskOutput(
+        spawnTask,
+        result,
+        allocation,
+        journalLabel,
+      );
+      emitProgress(
+        watchdogTimedOut
+          ? "watchdog-killed"
+          : captureError
+            ? "capture-killed"
+            : spawnError
+              ? "spawn-error"
+              : "finished",
+        status,
+        signal,
+        /* settled */ true,
+      );
+      resolveRun(result);
     });
   });
+}
+
+/**
+ * Persist one completed task before the aggregate scheduler advances.
+ *
+ * Child bytes remain buffered for declaration-ordered console replay. The run
+ * log has a different durability requirement: it must retain every task that
+ * already settled even if a signal kills the parent while another task is still
+ * running. The BEGIN/END envelope keeps settlement-ordered records attributable.
+ */
+function journalCapturedTaskOutput(t, r, allocation, label) {
+  const task = JSON.stringify(taskKey(t));
+  const outcome = formatTaskOutcomeFields({
+    status: r.status,
+    signal: r.signal,
+    settled: true,
+  });
+  const stdout = r.stdout ?? "";
+  const stderr = r.stderr ?? "";
+  const lastOutput = stderr || stdout;
+  const beforeFooter = lastOutput && !lastOutput.endsWith("\n") ? "\n" : "";
+  const error = r.error ? JSON.stringify(r.error.message) : "none";
+  try {
+    appendAllSync(RUN_LOG_PATH, [
+      `\nAFFECTED_TASK_OUTPUT_BEGIN task=${task} label=${label} ` +
+        `lane=${allocation.lane} workers=${allocation.workers} memoryMb=${allocation.memoryMb} ` +
+        `exitStatus=${outcome.exitStatus} signal=${outcome.signal} ` +
+        `capturedBytes=${r.__capturedBytes ?? 0} error=${error}\n`,
+      stdout,
+      stderr,
+      beforeFooter,
+      `AFFECTED_TASK_OUTPUT_END task=${task} label=${label}\n`,
+    ]);
+    return true;
+  } catch (error) {
+    // Preserve the clean-run fallback: emitCapturedTaskOutput will still append
+    // the child bytes later when this early journal write could not be completed.
+    rawErrSync(
+      `AFFECTED_TASK_OUTPUT_JOURNAL status=failed task=${task} label=${label} ` +
+        `reason=${JSON.stringify(String(error?.message ?? error))}`,
+    );
+    return false;
+  }
 }
 
 function emitCapturedTaskOutput(t, r, allocation, label = "initial") {
@@ -4116,8 +4182,13 @@ function emitCapturedTaskOutput(t, r, allocation, label = "initial") {
   if (r.error) errSync(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
   writeAllSync(1, r.stdout ?? "");
   writeAllSync(2, r.stderr ?? "");
-  logLine(r.stdout ?? "");
-  logLine(r.stderr ?? "");
+  // A settled task is already in the run log, before its finished pulse. Keep
+  // the declaration-ordered console replay, but do not duplicate up to 256 MiB
+  // of child output in the durable log. A failed early journal falls back here.
+  if (!r.__outputJournaled) {
+    logLine(r.stdout ?? "");
+    logLine(r.stderr ?? "");
+  }
 }
 
 /** Return the exact exit-0/vitest-summary contradiction that makes a first pass unsafe to reuse. */
@@ -4257,7 +4328,13 @@ for (const scheduled of initialPool.results) {
       ...SCHEDULER_CONFIG,
       readMemAvailableMb,
       runTask: (context, allocation) =>
-        runCapturedTask(context, allocation, extraArgs, scriptOverride),
+        runCapturedTask(
+          context,
+          allocation,
+          extraArgs,
+          scriptOverride,
+          "retry",
+        ),
     });
     const retry = retryPool.results[0];
     recordLeg(t, retry.value.__elapsedMs);

@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
-import { writeAllSync, outSync, errSync } from '../../../../scripts/lib/sync-write.mjs';
+import { appendAllSync, writeAllSync, outSync, errSync } from '../../../../scripts/lib/sync-write.mjs';
 
 /**
  * The dotted name of a call's callee (`console.log`, `process.stderr.write`), built
@@ -122,6 +122,37 @@ describe('sync-write helper (EI-10542)', () => {
     expect(readFileSync(file, 'utf8')).toBe('line\n');
     rmSync(dir, { recursive: true, force: true });
   });
+
+  it('appendAllSync durably finishes a multipart failure record before a following SIGTERM', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sw-journal-'));
+    const file = join(dir, 'settled-task.log');
+    const fixture = [
+      `import { appendAllSync } from ${JSON.stringify(SYNC_WRITE)};`,
+      `appendAllSync(${JSON.stringify(file)}, [`,
+      '  \'AFFECTED_TASK_OUTPUT_BEGIN task=\\"fast-fail\\" exitStatus=1\\n\',',
+      "  'FAIL src/example.test.ts > preserves diagnostics\\n',",
+      '  \'AFFECTED_TASK_OUTPUT_END task=\\"fast-fail\\"\\n\',',
+      ']);',
+      "process.kill(process.pid, 'SIGTERM');",
+    ].join('\n');
+    try {
+      const r = spawnSync(process.execPath, ['--input-type=module', '-e', fixture], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+
+      expect(r.status).toBeNull();
+      expect(r.signal).toBe('SIGTERM');
+      expect(readFileSync(file, 'utf8')).toBe(
+        'AFFECTED_TASK_OUTPUT_BEGIN task="fast-fail" exitStatus=1\n' +
+          'FAIL src/example.test.ts > preserves diagnostics\n' +
+          'AFFECTED_TASK_OUTPUT_END task="fast-fail"\n',
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 /**
@@ -202,8 +233,11 @@ console.log('FOOTER-MARK');
     let sawMisorder = false;
     for (let i = 0; i < 6; i++) {
       const out = clean(runFixture(buggy));
-      if (out.indexOf('CHILD-MARK') >= 0 && out.indexOf('HEADER-MARK') >= 0 &&
-          out.indexOf('CHILD-MARK') < out.indexOf('HEADER-MARK')) {
+      if (
+        out.indexOf('CHILD-MARK') >= 0 &&
+        out.indexOf('HEADER-MARK') >= 0 &&
+        out.indexOf('CHILD-MARK') < out.indexOf('HEADER-MARK')
+      ) {
         sawMisorder = true;
         break;
       }
