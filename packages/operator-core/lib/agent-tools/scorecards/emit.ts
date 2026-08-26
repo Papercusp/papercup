@@ -473,15 +473,6 @@ export async function emitScorecard(
           'same attestation, and a card stamped from both would be unreadable as evidence',
       };
     }
-    if (args.vettingUnanswered && !args.vettingConsult) {
-      return {
-        ok: false as const,
-        error:
-          'vettingUnanswered requires vettingConsult — the waiver attests that a SPECIFIC consult received no critique, ' +
-          'and the acceptance gate can recognize it only when observation.vetting carries that consultId. Keep ' +
-          'vettingConsult in the call alongside vettingUnanswered + vettingUnansweredReason.',
-      };
-    }
     if (args.vettingWorkItem && args.vettingUnanswered) {
       return {
         ok: false as const,
@@ -489,6 +480,15 @@ export async function emitScorecard(
           'vettingUnanswered is consult-only — it waives a consult nobody answered. A work-item with no ' +
           'third-party comment is not attestable evidence; route a consult (vettingConsult) and waive THAT if no ' +
           'reviewer can be had',
+      };
+    }
+    if (args.vettingUnanswered && !args.vettingConsult) {
+      return {
+        ok: false as const,
+        error:
+          'vettingUnanswered requires vettingConsult — the waiver attests that a SPECIFIC consult received no critique, ' +
+          'and the acceptance gate can recognize it only when observation.vetting carries that consultId. Keep ' +
+          'vettingConsult in the call alongside vettingUnanswered + vettingUnansweredReason.',
       };
     }
     if (args.vettingConsult || args.vettingWorkItem) {
