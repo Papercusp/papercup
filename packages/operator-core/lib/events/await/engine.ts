@@ -350,7 +350,7 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
         rows.push(wake);
         wokenBySubscriber.set(wake.subscriberId, rows);
       }
-      const deadIds: number[] = [];
+      const deadIds = new Set<number>();
       for (const key of opts.cancelSiblingKeysFor) {
         const rows = await listActiveAwaitsForKey(key).catch((e) => {
           log(`sibling-await scan failed for ${key}: ${e instanceof Error ? e.message : e}`);
@@ -360,13 +360,13 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
           const subscriberWakes = wokenBySubscriber.get(row.subscriberId);
           if (!subscriberWakes) continue; // never touch a peer's wait
           if (row.payloadFilter != null) {
-            if (payloadMatchesFilter(row.payloadFilter, opts.payload)) deadIds.push(row.id);
+            if (payloadMatchesFilter(row.payloadFilter, opts.payload)) deadIds.add(row.id);
             continue;
           }
-          if (subscriberWakes.some((wake) => wake.note === row.note)) deadIds.push(row.id);
+          if (subscriberWakes.some((wake) => wake.note === row.note)) deadIds.add(row.id);
         }
       }
-      if (deadIds.length > 0) await cancelAwaitsByIds(deadIds);
+      if (deadIds.size > 0) await cancelAwaitsByIds([...deadIds]);
     } catch (e) {
       log(`sibling-await cancellation failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
     }
