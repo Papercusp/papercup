@@ -259,9 +259,15 @@ export const BLUEPRINT_SPEND: Readonly<Record<string, SpendEntry>> = {
   'deferral-interest': { spend: 'none', why: 'Runs the deterministic SQL/math pricing refit; no agent or LLM turn' },
   'fleet-ekg': { spend: 'none', why: 'Runs the deterministic Fleet EKG SQL scan; no agent or LLM turn' },
   graduation: { spend: 'none', why: 'Runs the deterministic graduation SQL scan; no agent or LLM turn' },
-  'memory-live-recall-canary': { spend: 'none', why: 'Runs the deterministic live-memory canary; no agent or LLM turn' },
+  'memory-live-recall-canary': {
+    spend: 'none',
+    why: 'Runs the deterministic live-memory canary; no agent or LLM turn',
+  },
   'memory-precision': { spend: 'none', why: 'Runs the deterministic memory-precision bench; no agent or LLM turn' },
-  'negative-space': { spend: 'none', why: 'Runs the deterministic negative-space SQL/filesystem miner; no agent or LLM turn' },
+  'negative-space': {
+    spend: 'none',
+    why: 'Runs the deterministic negative-space SQL/filesystem miner; no agent or LLM turn',
+  },
   neologism: { spend: 'none', why: 'Runs the deterministic SQL/filesystem neologism miner; no agent or LLM turn' },
   'red-queen': { spend: 'none', why: 'Runs the deterministic red-queen drill; no agent or LLM turn' },
 };
@@ -305,6 +311,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   },
   'system:goal-holder-launch': { spend: 'llm', why: 'Launches a replacement agent for an existing goal' },
   'system:goal-start': { spend: 'llm', why: 'Activates an existing goal by launching its holder session' },
+  'system:work-item-admission-promoter': {
+    spend: 'llm',
+    why: 'Runs at most one batched strong-model duplicate judgement over the pending work-item batch',
+  },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
@@ -319,6 +329,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:google-gmail-poll': {
     spend: 'none',
     why: 'Renews Gmail watches, reconciles Pub/Sub doorbells through history, and emits local trigger/vault deliveries',
+  },
+  'system:work-item-admission-fail-open': {
+    spend: 'none',
+    why: 'Deterministically admits over-age pending rows and checks the promoter success watermark; no model call',
   },
   'system:unshipped-plans-audit': {
     spend: 'none',

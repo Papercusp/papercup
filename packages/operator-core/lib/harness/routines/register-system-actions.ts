@@ -480,6 +480,10 @@ import './corpus-term-df-action';
 // row it writes each night is the pre-ship baseline a later night's no-fall check reads,
 // and `tool_invocations` is pruned to 14 days so that history cannot be recomputed.
 import './sql-read-census-action';
+// work-queue-admission-and-bulk-dedup P-003/P-004: one durable 30-minute
+// duplication-only promoter plus an independently scheduled deterministic
+// fail-open/liveness guard. Neither action spawns an agent.
+import './work-item-admission-promoter-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`
 // — the failed-unit reconciler, a bespoke ephemeral (tier:'ephemeral', 60s) operator-HOME cadence
 // (same reasoning as hive-git-gc-action's deviation from the generic per-install triggers.schedule

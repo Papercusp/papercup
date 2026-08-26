@@ -111,6 +111,14 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'unclaimed-work-digest', seedScript: 'seed-unclaimed-work-digest-routine.ts' },
   { name: 'wake-brain', seedScript: 'seed-wake-brain-routine.ts' },
   { name: 'worker-breaker-watch', seedScript: 'seed-worker-breaker-watch-routine.ts' },
+  {
+    name: 'work-item-admission-promoter',
+    seedScript: 'seed-work-item-admission-promoter-routine.ts',
+  },
+  {
+    name: 'work-item-admission-fail-open',
+    seedScript: 'seed-work-item-admission-fail-open-routine.ts',
+  },
 ];
 
 /**
@@ -182,10 +190,12 @@ export async function checkBespokeActiveSeeds(opts: {
   const entries = opts.entries ?? BESPOKE_ACTIVE_SEEDS;
   const now = opts.now ?? Date.now();
   type Row = { name: string; active: boolean; metadata: { pause?: PauseMeta } | null };
-  const resolvedEntries = entries.map((entry): CheckedBespokeActiveSeed => ({
-    ...entry,
-    installSlug: resolveInstallSlug(entry.scope, opts.installSlug),
-  }));
+  const resolvedEntries = entries.map(
+    (entry): CheckedBespokeActiveSeed => ({
+      ...entry,
+      installSlug: resolveInstallSlug(entry.scope, opts.installSlug),
+    }),
+  );
   const entriesByScope = new Map<string, CheckedBespokeActiveSeed[]>();
   for (const entry of resolvedEntries) {
     const scoped = entriesByScope.get(entry.installSlug);
