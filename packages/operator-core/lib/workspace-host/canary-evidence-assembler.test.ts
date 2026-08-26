@@ -3,10 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
+  WORKSPACE_HOST_CREDENTIAL_NAMESPACE_VERSION,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   planWorkspaceHostCredentialLifecycle,
   type WorkspaceHostAgentAuthenticationReport,
+  type WorkspaceHostCredentialChannel,
   type WorkspaceHostCredentialDeliverySet,
+  type WorkspaceHostCredentialEvidence,
+  type WorkspaceHostCredentialFamily,
   type WorkspaceHostCredentialLifecyclePlan,
   type WorkspaceHostCredentialRefs,
 } from '@papercusp/deployment-driver';
@@ -93,14 +97,41 @@ function revokePlan(): WorkspaceHostCredentialLifecyclePlan {
   });
 }
 
+const FAMILY_BY_CHANNEL = {
+  cloud: 'cloud-workload-identity',
+  git: 'git-short-lived-delegation',
+  agent: 'agent-forwarded-reference',
+} as const satisfies Record<WorkspaceHostCredentialChannel, WorkspaceHostCredentialFamily>;
+
+/**
+ * Build the evidence a real resolver would return for a step.
+ *
+ * Deliberately a full, well-typed `WorkspaceHostCredentialEvidence` rather than a stub cast into
+ * place: the derivation under test joins receipts to plan steps, so a loosely-typed fixture
+ * would let the test keep passing if that contract changed underneath it.
+ */
+function evidenceFor(
+  step: WorkspaceHostCredentialLifecyclePlan['steps'][number],
+): WorkspaceHostCredentialEvidence {
+  return {
+    namespaceVersion: WORKSPACE_HOST_CREDENTIAL_NAMESPACE_VERSION,
+    channel: step.channel,
+    family: FAMILY_BY_CHANNEL[step.channel],
+    operation: step.kind,
+    deliveryKind: step.delivery.kind,
+    generation: step.delivery.generation,
+    audience: step.delivery.audience,
+    revocationRef: step.delivery.revocationRef,
+    referenceDigest: `digest-${step.channel}-${step.delivery.generation}`,
+    detail: {},
+  };
+}
+
 /** A run in which the host answered every planned step. */
 function fullyObserved(plan: WorkspaceHostCredentialLifecyclePlan): WorkspaceHostCanaryLifecycleRun {
   return {
     plan,
-    receipts: plan.steps.map((step) => ({
-      stepId: step.id,
-      evidence: { channel: step.channel, generation: step.delivery.generation },
-    })),
+    receipts: plan.steps.map((step) => ({ stepId: step.id, evidence: evidenceFor(step) })),
   };
 }
 
@@ -207,7 +238,7 @@ describe('deriveWorkspaceHostCanaryChannelObservations', () => {
         plan,
         receipts: plan.steps
           .filter((step) => step.kind === 'bind' || step.kind === 'revoke')
-          .map((step) => ({ stepId: step.id, evidence: {} })),
+          .map((step) => ({ stepId: step.id, evidence: evidenceFor(step) })),
       },
     ]);
 
@@ -238,7 +269,10 @@ describe('deriveWorkspaceHostCanaryChannelObservations', () => {
     const plan = reconnectPlan();
     expect(() =>
       deriveWorkspaceHostCanaryChannelObservations([
-        { plan, receipts: [{ stepId: 'not-a-planned-step', evidence: {} }] },
+        {
+          plan,
+          receipts: [{ stepId: 'not-a-planned-step', evidence: evidenceFor(plan.steps[0]) }],
+        },
       ]),
     ).toThrow(/not in its own plan/);
   });
