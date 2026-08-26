@@ -5,8 +5,26 @@
  * (withPlanLock + revision + legacy/not-found guards) mirrors the tested
  * plans:add-decision.
  */
-import { describe, it, expect } from 'vitest';
-import { setDecisionBodyInBody } from './set-decision-body';
+import { describe, it, expect, vi } from 'vitest';
+
+// WI-42142: the provenance stamp does transcript IO. Mocked so the handler test
+// below pins the WIRING; falsifiedOwnerAnchors itself stays REAL here (its contract
+// is unit-tested in carry-surface-provenance-stamp.test.ts).
+const stampMocks = vi.hoisted(() => ({
+  carryProvenanceFields: vi.fn(async () => ({}) as Record<string, unknown>),
+}));
+vi.mock('../../carry-surface-provenance-stamp', async (orig) => ({
+  ...(await orig<typeof import('../../carry-surface-provenance-stamp')>()),
+  carryProvenanceFields: stampMocks.carryProvenanceFields,
+}));
+vi.mock('./with-plan-lock', () => ({
+  withPlanLock: vi.fn(async () => {
+    throw new Error('withPlanLock must not be reached on the refusal path');
+  }),
+  bumpUpdatedDate: (body: string) => body,
+}));
+
+import tool, { setDecisionBodyInBody } from './set-decision-body';
 import { parsePlan } from './parser';
 
 const PLAN = [
@@ -91,5 +109,65 @@ describe('setDecisionBodyInBody', () => {
     expect(found).toBe(false);
     expect(oldBody).toBe('');
     expect(newBody).toBe(PLAN);
+  });
+});
+
+describe('plans:set-decision-body — falsified owner anchor (WI-42142)', () => {
+  const ref = '[turn:codex:01a03d76-8954-76d3-a211-dc9717f3e07c@2026-08-26T09:46:32.215Z]';
+
+  const payload = async (args: Record<string, unknown>) =>
+    JSON.parse(
+      ((await tool.handler(args as never, { workspaceId: 'ws', harnessSlug: 'h' } as never)) as {
+        content: { text: string }[];
+      }).content[0].text,
+    ) as Record<string, unknown>;
+
+  it('refuses a rewrite whose owner claim is anchored to a NON-owner turn', async () => {
+    // The bypass this closes: a decision refused by plans:add-decision must not be
+    // reachable by recording a clean one and then rewriting its body here.
+    stampMocks.carryProvenanceFields.mockResolvedValue({
+      turnProvenance: {
+        refs: [
+          {
+            ref,
+            found: true,
+            checked: true,
+            verdict: 'agent-injected',
+            origin: 'self-compaction',
+            snippet: 'Continue where you left off',
+            quote: null,
+            quoteMatch: null,
+          },
+        ],
+      },
+    });
+
+    const out = await payload({
+      slug: 'test',
+      decisionId: 'D-001',
+      body: `Owner-directed ordering, source turn ${ref}.`,
+    });
+
+    // withPlanLock is mocked to throw, so reaching it would fail this test loudly
+    // rather than silently writing.
+    expect(out).toMatchObject({ error: 'falsified_owner_anchor', slug: 'test', decisionId: 'D-001' });
+    expect(out.anchors).toHaveLength(1);
+  });
+
+  it('CONTROL: an owner tag with no falsified anchor is not refused — it proceeds to the write', async () => {
+    // Without this, a guard that refused EVERYTHING would pass the test above.
+    // withPlanLock is mocked to throw, so "proceeds to the write" is observable as
+    // that exact throw rather than a falsified_owner_anchor refusal.
+    stampMocks.carryProvenanceFields.mockResolvedValue({
+      provenanceLint: {
+        flagged: true,
+        note: 'sync note',
+        matches: [{ line: '[owner 2026-08-26] ship it', kind: 'manual-owner-tag' }],
+      },
+    });
+
+    await expect(
+      payload({ slug: 'test', decisionId: 'D-001', body: '[owner 2026-08-26] ship it' }),
+    ).rejects.toThrow('withPlanLock must not be reached on the refusal path');
   });
 });
