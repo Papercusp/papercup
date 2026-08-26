@@ -1064,7 +1064,14 @@ export async function getFeedbackCore(
 
   return {
     ok: true,
-    verdict: finalChosen ? 'routed' : 'no_qualified_responder',
+    // Derived from `reason` rather than re-testing `snapshot.degraded`, so the
+    // verdict and the reason can never drift into disagreeing about the same
+    // route (EI-21485716602970457).
+    verdict: finalChosen
+      ? 'routed'
+      : reason === 'embed_unavailable'
+        ? 'relevance_unmeasured'
+        : 'no_qualified_responder',
     ...(reason ? { reason } : {}),
     conversation_id: opened.conversation_id,
     thread_id: opened.thread_id,
