@@ -1002,6 +1002,43 @@ describe('work_items:complete (keyed-array)', () => {
     );
   });
 
+  // EI-21478999218933285: these fields were accepted and rendered into the
+  // completion broadcast, but silently disappeared from the work-item row. A
+  // later audit reading work_items:get therefore treated a known-positive close
+  // as if it had disclosed no deferrals or landed work at all.
+  it('persists deferred, whatLanded, and coordNotes without treating narrative as verification authority', async () => {
+    getWorkItem.mockResolvedValue(item);
+    setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+    await one({
+      id: 'F-12',
+      state: 'passed',
+      completion: {
+        summary: 'shipped the bounded slice',
+        whatLanded: ['complete.ts now carries the narrative record'],
+        deferred: ['live deploy verification remains on EI-42'],
+        coordNotes: 'leader should read the deferred set before closing the plan',
+      },
+    });
+
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'F-12',
+      'passed',
+      expect.objectContaining({
+        completionAuthority: 'proposed',
+        completionEvidence: expect.objectContaining({
+          summary: 'shipped the bounded slice',
+          whatLanded: ['complete.ts now carries the narrative record'],
+          deferred: ['live deploy verification remains on EI-42'],
+          coordNotes: 'leader should read the deferred set before closing the plan',
+        }),
+      }),
+    );
+    const persisted = setWorkItemStateWithAliasInfo.mock.calls[0][2].completionEvidence;
+    for (const authorityBearingField of ['testsRun', 'testResult', 'verifiedHow']) {
+      expect(persisted).not.toHaveProperty(authorityBearingField);
+    }
+  });
+
   // The summary-only case: NO structured fields at all. Before this fix
   // `completionEvidenceFromRecord` returned `undefined` here (nothing structured to
   // report) and the summary went with it. The summary must still land, even though

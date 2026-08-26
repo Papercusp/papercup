@@ -84,7 +84,10 @@ import {
 import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
 import type { TopicTagMirrorOutcome, TopicTagMirrorResult } from './work-item-topic-tags';
 import { auditPredicateSql, completionAuthorityPredicateSql, type CompletionAudit } from './completion-audit';
-import type { CompletionAttestation, CompletionVerificationEvidence } from './coord-lifecycle/records';
+import type {
+  CompletionAttestation,
+  PersistedCompletionEvidence,
+} from './coord-lifecycle/records';
 import {
   isSufficientEvidence,
   isWorkItemCompletionAuthority,
@@ -332,8 +335,8 @@ export interface WorkItem {
    *  or plan-item ref) recorded for the CURRENT terminal state. A terminal
    *  transition without both is rejected by setWorkItemState / setIssueState. */
   terminalCompletionRef: string | null;
-  /** Queryable structured verification evidence recorded beside terminalCompletionRef. */
-  terminalCompletionEvidence: CompletionVerificationEvidence | null;
+  /** Queryable persisted completion record: verification evidence plus non-authority narrative fields. */
+  terminalCompletionEvidence: PersistedCompletionEvidence | null;
   /**
    * agent-protocol-authority-semantics-2026-07-26 P-004 — how TRUSTWORTHY this row's
    * CURRENT terminal claim is, orthogonal to the lifecycle `state`. Written by the
@@ -460,7 +463,7 @@ const tsIso = pgTimestampToIso;
  *  an empty string that a consumer would read as a real value. */
 const tsIsoOrNull = pgTimestampToIsoOrNull;
 
-function extractTerminalCompletionEvidence(payload: unknown): CompletionVerificationEvidence | null {
+function extractTerminalCompletionEvidence(payload: unknown): PersistedCompletionEvidence | null {
   let obj = payload;
   if (typeof obj === 'string') {
     try {
@@ -479,7 +482,7 @@ function extractTerminalCompletionEvidence(payload: unknown): CompletionVerifica
     }
   }
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
-  return v as CompletionVerificationEvidence;
+  return v as PersistedCompletionEvidence;
 }
 
 /** Allocate the next kind-independent WI-NNN id (D-008). */
@@ -2878,7 +2881,7 @@ export async function attachCompletionEvidenceToSettledItem(
     harness?: string;
     by: string;
     completionRef?: string;
-    completionEvidence?: CompletionVerificationEvidence;
+    completionEvidence?: PersistedCompletionEvidence;
     assumptions?: StoredAssumptionDeclaration;
     completionAuthority?: WorkItemCompletionAuthority | null;
     /** Same callback shape the state-write path uses, so callers reuse one result field. */
@@ -3044,7 +3047,7 @@ export async function setWorkItemState(
     by?: string;
     allowNonCanonical?: boolean;
     completionRef?: string;
-    completionEvidence?: CompletionVerificationEvidence;
+    completionEvidence?: PersistedCompletionEvidence;
     /**
      * P-008 (d) / D-050 / D-079 — the RESOLVED assumption declaration this close
      * rests on, stored under {@link TERMINAL_ASSUMPTIONS_KEY}.
@@ -3693,7 +3696,7 @@ export async function setWorkItemState(
       (result as { terminalOwner?: string | null }).terminalOwner = null;
       (result as { terminalCompletionRef?: string | null }).terminalCompletionRef = null;
       (result as { completionAuthority?: WorkItemCompletionAuthority | null }).completionAuthority = reopenedAuthority;
-      (result as { terminalCompletionEvidence?: CompletionVerificationEvidence | null }).terminalCompletionEvidence =
+      (result as { terminalCompletionEvidence?: PersistedCompletionEvidence | null }).terminalCompletionEvidence =
         null;
     } catch {
       /* best-effort — see above */

@@ -266,6 +266,19 @@ export const CompletionVerificationEvidenceSchema = z.object({
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 
 /**
+ * EI-21478999218933285: the row-persisted close record is deliberately wider
+ * than the caller-facing `verification` object. These narrative fields remain
+ * top-level completion inputs, but ride beside verification evidence under
+ * `_completionEvidence` so work_items:get can recover the whole close later.
+ * They never participate in completion-authority calculation.
+ */
+export type PersistedCompletionEvidence = CompletionVerificationEvidence & {
+  whatLanded?: string[];
+  deferred?: string[];
+  coordNotes?: string;
+};
+
+/**
  * EI-10867 — the ONE key under which a terminal row's structured verification evidence
  * is stored, for BOTH work-item families (`harness_features_consolidated.payload` and
  * `engineer_issues.payload`, each jsonb).
@@ -404,7 +417,7 @@ export function stripNulBytesDeep<T>(value: T): { value: T; stripped: boolean } 
  * it accompanies can never disagree about whether a NUL-bearing close landed).
  */
 export function terminalPayloadMergeJson(
-  evidence: CompletionVerificationEvidence | undefined,
+  evidence: PersistedCompletionEvidence | undefined,
   assumptions?: StoredAssumptionDeclaration | undefined,
 ): string | null {
   const merge: Record<string, unknown> = {};
@@ -462,7 +475,7 @@ export interface CompletionAttestation {
   state: string;
   completionRef: string | null;
   completionAuthority: string | null;
-  evidence: CompletionVerificationEvidence | null;
+  evidence: PersistedCompletionEvidence | null;
   /**
    * P-008 (d) / D-079 R4: the assumptions THIS close declared.
    *

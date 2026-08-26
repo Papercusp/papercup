@@ -85,4 +85,15 @@ describe('terminalPayloadMergeJson NUL defense-in-depth (EI-18764241942332131)',
     const json = terminalPayloadMergeJson({ testResult: 'clean', verifiedHow: 'unit' });
     expect(JSON.parse(json!)).toEqual({ _completionEvidence: { testResult: 'clean', verifiedHow: 'unit' } });
   });
+
+  it('persists completion narrative on the shared terminal payload surface (EI-21478999218933285)', () => {
+    const narrative = {
+      whatLanded: ['the existing terminal read now carries the close narrative'],
+      deferred: ['deployment proof remains on EI-42'],
+      coordNotes: 'leader should inspect the deferred set',
+    };
+
+    const json = terminalPayloadMergeJson(narrative);
+    expect(JSON.parse(json!)).toEqual({ _completionEvidence: narrative });
+  });
 });
