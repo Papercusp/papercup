@@ -1011,6 +1011,45 @@ function toAgentFactValue(row: Record<string, unknown>): AgentFactWireRow {
     // mig 671 (WI-6052): evidence-strength tier — CONTENT, same pass-through
     // pattern as audience_scope/source_provenance above.
     confidence: strOrNull(row.confidence),
+    // ── EI-21467654382027859: the claim's own substance. Each of these was
+    // already handled on the RECEIVE side (or trivially could be) while no
+    // sender ever produced it, so every peer saw the column as permanently
+    // NULL. They are CONTENT — what the fact asserts — not receiver-local
+    // provenance, so they ride the wire with the body they qualify.
+    //
+    // P-008 (b): the claim MODALITY and its typed restatement.
+    kind: strOrNull(row.kind),
+    claim:
+      row.claim && typeof row.claim === 'object' && !Array.isArray(row.claim)
+        ? (row.claim as Record<string, unknown>)
+        : null,
+    // P-018: how a convention is enforced ({tier, floor?, reviewBy?}).
+    enforcement:
+      row.enforcement && typeof row.enforcement === 'object' && !Array.isArray(row.enforcement)
+        ? (row.enforcement as Record<string, unknown>)
+        : null,
+    // P-002: MUST travel WITH `kind` — an undecidable that lands on a peer
+    // without its stated exit invites exactly the re-derivation the modality
+    // exists to prevent.
+    settled_by: strOrNull(row.settled_by),
+    // P-010: {probe, falsifier}. Same coupling — a fact whose probe is lost on
+    // a peer is unfalsifiable there. The receiver shape-guards it
+    // (isFactRecheck); an ill-shaped value is dropped to null here rather than
+    // refusing the whole op, since the rest of the fact is still worth carrying.
+    recheck:
+      row.recheck && typeof row.recheck === 'object' && !Array.isArray(row.recheck)
+        ? (row.recheck as { probe: string; falsifier: string })
+        : null,
+    // P-008 (b): the cells this fact rests on. A jsonb ARRAY — note the guard
+    // here is the inverse of the object columns above.
+    depends_on: Array.isArray(row.depends_on) ? (row.depends_on as unknown[]) : null,
+    // ── Liveness/audit provenance. retracted_at ALREADY federated, so without
+    // these a peer saw a fact retracted with no actor and no reason, and could
+    // not tell a per-scope cap EVICTION from a deliberate facts:retract.
+    superseded_at: strOrNull(row.superseded_at),
+    retracted_by: strOrNull(row.retracted_by),
+    retraction_reason: strOrNull(row.retraction_reason),
+    evicted_at: strOrNull(row.evicted_at),
   };
 }
 

@@ -62,6 +62,42 @@ export interface AgentFactWireRow {
    *  upgrade it. OPTIONAL on the wire — pre-671 history ops lack it (absent
    *  ⇒ NULL, the legacy/unbadged shape). */
   confidence?: string | null;
+  /** ── EI-21467654382027859. All OPTIONAL: `decodeValue` is all-or-nothing, so
+   *  making any of these required would drop every pre-existing history op on
+   *  the floor. P-008 (b) claim substance — the modality, its typed
+   *  restatement, a convention's enforcement tier, and an undecidable's stated
+   *  exit. `settled_by` is meaningless without `kind`, which is why they
+   *  federate together. */
+  kind?: string | null;
+  claim?: Record<string, unknown> | null;
+  enforcement?: Record<string, unknown> | null;
+  settled_by?: string | null;
+  /** P-008 (b): the cells this fact rests on, as [{cell, observedAt, digest?, …}].
+   *  A jsonb ARRAY, unlike the object columns above.
+   *
+   *  KNOWN AND DELIBERATE: `evaluateDependencyStaleness` compares the stored
+   *  digest against a CURRENT LOCAL cell read, so on a peer a machine-local
+   *  cell (deploy.3070.sha, gate.greenCheckpoint.verdict) legitimately reports
+   *  CHANGED. That is the conservative reading, not a false positive — the
+   *  fact's footing genuinely does not hold on that machine. Dropping the
+   *  column instead would arm NO staleness at all on peers, so a federated
+   *  assumption would calcify as permanently fresh, which is the exact failure
+   *  dependsOn exists to prevent. */
+  depends_on?: unknown[] | null;
+  /** mig 689 / P-008 (a): NULL = this row is the CURRENT version of its
+   *  identity; non-NULL = a superseded prior version. Carried so the receiver
+   *  can TELL THE DIFFERENCE — see writeToPg, which refuses to apply a
+   *  superseded op to the live partition. Before this shipped, a supersede
+   *  UPDATE federated its stale content with the marker stripped and could
+   *  overwrite the peer's live row, presenting an outdated version as current. */
+  superseded_at?: string | null;
+  /** WI-6935: set ALONGSIDE retracted_at when the per-scope cap evicted the row.
+   *  Its own column comment carries the discriminator — "NULL alongside a
+   *  non-NULL retracted_at means a DELIBERATE facts:retract" — so while
+   *  retracted_at federated and this did not, every cap eviction arrived on
+   *  every peer misread as a deliberate retraction. It federates because its
+   *  sibling does. */
+  evicted_at?: string | null;
 }
 
 function isString(v: unknown): v is string {
@@ -76,7 +112,19 @@ const FACT_SCOPES = ['workspace', 'role', 'owner', 'harness', 'work_item'];
 // locally rather than imported — same style already used for FACT_SCOPES
 // above, keeping this wire-validation module dependency-free of the store.
 const FACT_CONFIDENCES = ['verified', 'provisional', 'suspected'];
+// P-008 (b) / mig 689: mirrors the agent_facts_kind CHECK constraint, replicated
+// locally in the same style as FACT_SCOPES/FACT_CONFIDENCES above. Validating
+// here is not belt-and-braces: the column carries a CHECK, so an unrecognized
+// sender value would raise on INSERT and poison the whole projection write —
+// refusing the single malformed op at decode is strictly the softer failure.
+const FACT_KINDS = ['conclusion', 'assumption', 'convention', 'undecidable'];
+const FACT_ENFORCEMENT_TIERS = ['structural', 'gate', 'detector'];
 const FACT_RECHECK_FIELD_MAX_CHARS = 500;
+
+/** A plain jsonb object (not an array, not null) — the shape claim/enforcement take. */
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
 
 function isFactRecheck(v: unknown): v is { probe: string; falsifier: string } {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return false;
@@ -133,6 +181,25 @@ export function isAgentFactWireRow(input: unknown): input is AgentFactWireRow {
     if (!isStringOrNull(r.confidence)) return false;
     if (r.confidence !== null && !FACT_CONFIDENCES.includes(r.confidence)) return false;
   }
+  // ── EI-21467654382027859 additions. All optional (pre-existing history ops
+  // omit them); when present they must be well-typed or the op is malformed.
+  // `kind` and `enforcement.tier` carry DB CHECK constraints, so an
+  // unrecognized value is refused here rather than left to raise on INSERT.
+  if (r.kind !== undefined) {
+    if (!isStringOrNull(r.kind)) return false;
+    if (r.kind !== null && !FACT_KINDS.includes(r.kind)) return false;
+  }
+  if (r.claim !== undefined && r.claim !== null && !isPlainObject(r.claim)) return false;
+  if (r.enforcement !== undefined && r.enforcement !== null) {
+    if (!isPlainObject(r.enforcement)) return false;
+    const tier = r.enforcement.tier;
+    if (typeof tier !== 'string' || !FACT_ENFORCEMENT_TIERS.includes(tier)) return false;
+  }
+  if (r.settled_by !== undefined && !isStringOrNull(r.settled_by)) return false;
+  // depends_on is a jsonb ARRAY — the inverse of the object guards above.
+  if (r.depends_on !== undefined && r.depends_on !== null && !Array.isArray(r.depends_on)) return false;
+  if (r.superseded_at !== undefined && !isStringOrNull(r.superseded_at)) return false;
+  if (r.evicted_at !== undefined && !isStringOrNull(r.evicted_at)) return false;
   return true;
 }
 
@@ -183,6 +250,25 @@ async function writeToPg(
   provenance?: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
+  // ── EI-21467654382027859. A SUPERSEDED op is history, and this projection is
+  // deliberately NOT append-versioned (see the ON CONFLICT note below): it holds
+  // one row per identity × source, the peer's CURRENT observation. So a prior
+  // version has no row to land in and is dropped here.
+  //
+  // This is the fix, not merely an optimization. `assertFact` supersedes by
+  // stamping superseded_at on the OLD row and inserting a NEW one — and that
+  // UPDATE fires the shareable capture trigger, so the old version federates
+  // too. Both ops share the identity (scope/ref/key), so before superseded_at
+  // rode the wire the old version arrived looking live and, being the later
+  // write, could win the fed_ts LWW against the new one and present STALE
+  // content as current.
+  //
+  // Skipping is also the only shape that stays idempotent: because
+  // agent_facts_identity_current is PARTIAL (WHERE superseded_at IS NULL), a
+  // proposed row carrying a non-NULL superseded_at generates no index entry, so
+  // ON CONFLICT could never match it — every replay of that op would INSERT
+  // another copy rather than update one.
+  if (row.superseded_at != null) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const origin = provenance?.origin ?? 'local';
   // The projection applies LOCAL echoes too (origin 'local' = our own op folding
@@ -204,18 +290,33 @@ async function writeToPg(
   const confidence = row.confidence ?? null;
   const retractedBy = row.retracted_by ?? null;
   const retractionReason = row.retraction_reason ?? null;
+  // EI-21467654382027859 — jsonb columns bind via the same `::text::jsonb` form
+  // as source_provenance above; NULL passes through the casts unchanged.
+  const kind = row.kind ?? null;
+  const claim = row.claim != null ? JSON.stringify(row.claim) : null;
+  const enforcement = row.enforcement != null ? JSON.stringify(row.enforcement) : null;
+  const settledBy = row.settled_by ?? null;
+  const dependsOn = row.depends_on != null ? JSON.stringify(row.depends_on) : null;
+  const evictedAt = row.evicted_at ?? null;
   await sql`
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref,
        created_by, expires_at, retracted_at, retracted_by, retraction_reason, shareable,
-       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance, measurement, recheck, confidence)
+       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance, measurement, recheck, confidence,
+       -- EI-21467654382027859. superseded_at is deliberately ABSENT: the guard
+       -- at the top of writeToPg returns before we get here unless it is NULL,
+       -- so every row this statement inserts is a live one and the column takes
+       -- its NULL default. Naming it would imply this path can write history.
+       kind, claim, enforcement, settled_by, depends_on, evicted_at)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.scope}, ${row.scope_ref},
        ${row.key}, ${row.body}, ${row.source_ref}, ${row.created_by},
        ${row.expires_at}::timestamptz, ${row.retracted_at}::timestamptz,
        ${retractedBy}, ${retractionReason}, true,
        ${authorPubkey}, ${origin}, ${fedTs}, ${sourceHive},
-       ${audienceScope}, ${sourceProvenance}::text::jsonb, ${measurement}::text::jsonb, ${recheck}::text::jsonb, ${confidence})
+       ${audienceScope}, ${sourceProvenance}::text::jsonb, ${measurement}::text::jsonb, ${recheck}::text::jsonb, ${confidence},
+       ${kind}, ${claim}::text::jsonb, ${enforcement}::text::jsonb, ${settledBy},
+       ${dependsOn}::text::jsonb, ${evictedAt}::timestamptz)
     -- ⚠ P-008 (a) / migration 689: the identity index is now PARTIAL
     -- (agent_facts_identity_current ... WHERE superseded_at IS NULL), and an
     -- ON CONFLICT inference spec that omits the predicate matches NO index —
@@ -235,8 +336,23 @@ async function writeToPg(
       source_ref    = EXCLUDED.source_ref,
       expires_at    = EXCLUDED.expires_at,
       retracted_at  = EXCLUDED.retracted_at,
-      retracted_by  = EXCLUDED.retracted_by,
-      retraction_reason = EXCLUDED.retraction_reason,
+      -- EI-21467654382027859 — WRITE-ONCE audit provenance, so COALESCE and not
+      -- a bare EXCLUDED. These describe an event that already happened; a peer
+      -- still running pre-fix code sends NULL for all three, and a bare
+      -- EXCLUDED would let that peer's next ordinary content update ERASE the
+      -- actor, the reason, and the eviction marker from a row that has them.
+      -- COALESCE lets them be filled in once and never blanked.
+      retracted_by  = COALESCE(EXCLUDED.retracted_by, harness_shared.agent_facts.retracted_by),
+      retraction_reason = COALESCE(EXCLUDED.retraction_reason, harness_shared.agent_facts.retraction_reason),
+      evicted_at    = COALESCE(EXCLUDED.evicted_at, harness_shared.agent_facts.evicted_at),
+      -- Plain CONTENT — the current version's claim substance replaces wholesale,
+      -- exactly like body above. A cleared kind/claim/enforcement/settled_by/
+      -- depends_on is a real authoring change and must propagate as one.
+      kind          = EXCLUDED.kind,
+      claim         = EXCLUDED.claim,
+      enforcement   = EXCLUDED.enforcement,
+      settled_by    = EXCLUDED.settled_by,
+      depends_on    = EXCLUDED.depends_on,
       author_pubkey = EXCLUDED.author_pubkey,
       origin        = EXCLUDED.origin,
       fed_ts        = EXCLUDED.fed_ts,
