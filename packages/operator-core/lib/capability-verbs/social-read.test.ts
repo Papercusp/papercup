@@ -269,6 +269,8 @@ describe('searchSocialPosts — scoping and minting under a real grant shape', (
       id: 'row-1',
       source: 'reddit',
       scopeKey: 'personal:reddit',
+      sourceId: null,
+      providerAccountId: 'owner@example.com',
       kind: 'social-post',
       externalId: 't3_abc123',
       occurredAt: '2026-08-23T00:00:00.000Z',

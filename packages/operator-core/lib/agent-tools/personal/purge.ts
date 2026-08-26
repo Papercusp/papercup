@@ -9,13 +9,15 @@ export default defineTool({
   needsWorkspaceTx: true,
   capability: 'memory:write',
   description:
-    'OWNER-only verified deletion of Personal Vault data. Deletes a source (documents including vectors, sync cursor, source aliases) or the whole vault corpus; retained grant history is untouched. Requires confirm:true.',
+    'OWNER-only verified deletion of Personal Vault data. Deletes one provider account/source identity, a broad source, or the whole vault corpus; retained grant history is untouched. Requires confirm:true.',
   guidance: {
-    when: 'The owner asks to remove one imported source or erase all Personal Vault content.',
+    when: 'The owner asks to remove one provider account, one imported source, or all Personal Vault content.',
     notWhen: 'Revoking agent access without deleting data — use the Personal Vault settings UI grant controls.',
   },
   args: z.object({
     source: z.string().min(1).max(64).optional(),
+    sourceId: z.string().uuid().optional(),
+    providerAccountId: z.string().min(1).max(512).optional(),
     confirm: z.literal(true),
   }),
   async handler(args, ctx: PapercuspToolContext) {
@@ -26,7 +28,12 @@ export default defineTool({
       data: {
         ok: true,
         source: args.source ?? 'all',
-        deleted: await purgePersonalSource(ctx.tx!, workspaceId, user.id, args.source),
+        sourceId: args.sourceId ?? null,
+        providerAccountId: args.providerAccountId ?? null,
+        deleted: await purgePersonalSource(ctx.tx!, workspaceId, user.id, args.source, {
+          sourceId: args.sourceId,
+          providerAccountId: args.providerAccountId,
+        }),
       },
     };
   },

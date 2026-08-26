@@ -43,8 +43,37 @@ describe('Personal Vault defineTool response contract', () => {
       data: {
         ok: true,
         source: 'gmail',
+        sourceId: null,
+        providerAccountId: null,
         deleted: { documents: 2, cursors: 1, aliases: 1, identities: 0 },
       },
+    });
+    expect(mocks.purge).toHaveBeenCalledWith({}, 'ws-1', 'user-1', 'gmail', {
+      sourceId: undefined,
+      providerAccountId: undefined,
+    });
+  });
+
+  it('personal:purge forwards account provenance for surgical deletion', async () => {
+    const sourceId = '00000000-0000-4000-8000-000000000101';
+    const result = await purgeTool.handler(
+      {
+        source: 'gmail',
+        sourceId,
+        providerAccountId: 'owner@example.com',
+        confirm: true,
+      },
+      {
+        principal: { kind: 'user', workspaceId: 'ws-1' },
+        tx: {},
+      } as never,
+    );
+    expect(result).toMatchObject({
+      data: { source: 'gmail', sourceId, providerAccountId: 'owner@example.com' },
+    });
+    expect(mocks.purge).toHaveBeenCalledWith({}, 'ws-1', 'user-1', 'gmail', {
+      sourceId,
+      providerAccountId: 'owner@example.com',
     });
   });
 

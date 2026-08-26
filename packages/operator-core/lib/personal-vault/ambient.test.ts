@@ -26,6 +26,8 @@ function result(overrides: Partial<PersonalSearchResult> = {}): PersonalSearchRe
     id: 'doc-1',
     source: 'gmail',
     scopeKey: 'personal:gmail',
+    sourceId: '00000000-0000-4000-8000-000000000101',
+    providerAccountId: 'owner@example.com',
     kind: 'mail',
     externalId: 'thread-1',
     occurredAt: '2026-08-20T14:00:00.000Z',
@@ -113,7 +115,7 @@ describe('buildPersonalAmbientContextBlock', () => {
     expect(block).toContain('## Granted Personal Vault context');
     expect(block).toContain('scopes: personal:gmail');
     expect(block).toContain('Acme review follow-up');
-    expect(block).toContain('[personal:gmail · 2026-08-20 · thread-1]');
+    expect(block).toContain('[personal:gmail · account:owner@example.com · 2026-08-20 · thread-1]');
     expect(d.search).toHaveBeenCalledWith(d.sql, 'ws-1', 'user-1', {
       query: input.query,
       scopes: ['personal:gmail'],
