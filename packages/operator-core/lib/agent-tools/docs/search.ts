@@ -47,6 +47,42 @@ const MIN_CANDIDATES = 30;
  */
 const CROSS_SURFACE_PROBE_LIMIT = 5;
 
+const RETIREMENT_AUTHORITY_SLUG = 'agent-insights/mug-kettle-cup-tier-is-retired';
+
+export type CurrentnessSearchHit = SearchHit & {
+  historical?: true;
+  authority?: 'current';
+  surface?: 'engineering';
+};
+
+/** Retirement/current-mechanism questions need authority, not lexical density. */
+export function isRetirementAuthorityQuery(query: string): boolean {
+  return /\b(?:queen|mug|kettle|cup|bee)\b/i.test(query)
+    && /\b(?:current|retir(?:e|ed|ement)|replacement|replaced|supported|now)\b/i.test(query);
+}
+
+/** Plan exports are historical records, even when their plan status was once active. */
+export function isHistoricalDocsHit(hit: Pick<SearchHit, 'slug' | 'trust'>): boolean {
+  return hit.trust?.superseded === true || /(?:^|\/)docs\/plans\//.test(hit.slug) || /^plans\//.test(hit.slug);
+}
+
+/** Stable current-authority ordering; ordinary queries remain byte-for-byte ordered. */
+export function rankRetirementAuthorityHits<T extends SearchHit>(query: string, hits: readonly T[]): CurrentnessSearchHit[] {
+  const labelled = hits.map((hit) => ({ ...hit, ...(isHistoricalDocsHit(hit) ? { historical: true as const } : {}) }));
+  if (!isRetirementAuthorityQuery(query)) return labelled;
+  return labelled
+    .map((hit, index) => ({ hit, index }))
+    .sort((a, b) => {
+      const authorityA = a.hit.slug === RETIREMENT_AUTHORITY_SLUG ? 0 : 1;
+      const authorityB = b.hit.slug === RETIREMENT_AUTHORITY_SLUG ? 0 : 1;
+      if (authorityA !== authorityB) return authorityA - authorityB;
+      const historyA = a.hit.historical ? 1 : 0;
+      const historyB = b.hit.historical ? 1 : 0;
+      return historyA - historyB || a.index - b.index;
+    })
+    .map(({ hit }) => hit);
+}
+
 /**
  * P-004: should this response probe the sibling 'engineering' surface on the caller's behalf?
  *
@@ -64,12 +100,15 @@ export function shouldProbeSiblingSurface(input: {
   surface: 'harness' | 'engineering' | 'project';
   isSuperuser: boolean;
   semanticLeg: { status?: string; candidates?: number } | undefined;
+  query?: string;
+  hasHistoricalHits?: boolean;
 }): boolean {
   // The engineering surface IS the sibling — probing it from itself is a self-query.
   if (input.surface === 'engineering') return false;
   // resolveAdapter gates the engineering corpus to papercusp-su (D-005 / P-016); the probe must not
   // become a side door around that gate.
   if (!input.isSuperuser) return false;
+  if (input.query && input.hasHistoricalHits && isRetirementAuthorityQuery(input.query)) return true;
   if (input.semanticLeg?.status !== 'ran') return false;
   return (input.semanticLeg.candidates ?? 0) === 0;
 }
@@ -395,7 +434,7 @@ export default defineTool({
     });
 
     let semanticHitCount = 0;
-    const finalHits: Array<SearchHit & { semantic?: true; similarity?: number; anchor?: string }> = results.map(
+    const fusedHits: Array<SearchHit & { semantic?: true; similarity?: number; anchor?: string }> = results.map(
       (r) => {
         const entry = hydration.get(r.source_id);
         const base: SearchHit = entry?.hit ?? {
@@ -418,6 +457,7 @@ export default defineTool({
         return similarity !== undefined ? { ...base, similarity } : base;
       },
     );
+    const finalHits = rankRetirementAuthorityHits(args.query, fusedHits);
 
     // P-004 (knowledge-at-symptom-time-2026-08-09): ADVISING a retry is not the same as RUNNING one.
     // EI-18804433041289369 added the `scopeNote` below, and it was still not enough — measured
@@ -447,6 +487,8 @@ export default defineTool({
         surface: resolved.surface,
         isSuperuser: Boolean(ctxAny.isSuperuser),
         semanticLeg: legsAny?.semantic,
+        query: args.query,
+        hasHistoricalHits: finalHits.some((hit) => hit.historical),
       })
     ) {
       try {
@@ -456,17 +498,20 @@ export default defineTool({
           { ...(ctxAny.signal && { signal: ctxAny.signal }) },
         );
         if (probe.hits.length > 0) {
+          const rankedProbeHits = rankRetirementAuthorityHits(args.query, probe.hits);
           crossSurface = {
             surface: 'engineering',
             mode: 'lexical-only',
             why: `The semantic leg RAN against '${resolved.surface}' and matched nothing above the similarity floor, so the hits above are lexical-only and may be off-topic. These are keyword hits from the 'engineering' surface (agent-insights/ + the Papercusp framework reference), which this surface does not contain.`,
             rerunFor: "docs:search { harness: 'engineering', query: <same query> } — for the full hybrid ranking of this corpus.",
-            hits: probe.hits.map((h) => ({
+            hits: rankedProbeHits.map((h) => ({
               slug: h.slug,
               url: h.url,
               title: h.title,
               score: h.score,
               excerpt: h.excerpt,
+              ...(h.trust ? { trust: h.trust } : {}),
+              ...(h.historical ? { historical: true } : {}),
             })),
           };
         }
@@ -488,9 +533,17 @@ export default defineTool({
           ? `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference. The semantic leg matched NOTHING here, so that retry was run FOR you — see \`crossSurface\` for keyword hits from the 'engineering' surface. Do not read the hits above as "no such page exists".`
           : `This '${resolved.surface}' surface (${resolved.adapter.name}) does NOT include agent-insights/ or the Papercusp framework reference — those live on the separate 'engineering' surface. A weak or zero-looking result here does not mean no such page exists; retry with harness:'engineering' before concluding that (harness:'all' reaches the same corpus but is REJECTED with harness_forbidden on a workspace-scoped session — EI-18894866320087268).`;
 
+    const authorityHit = isRetirementAuthorityQuery(args.query)
+      ? ((crossSurface?.hits as CurrentnessSearchHit[] | undefined)?.find((hit) => hit.slug === RETIREMENT_AUTHORITY_SLUG)
+        ?? finalHits.find((hit) => hit.slug === RETIREMENT_AUTHORITY_SLUG))
+      : undefined;
+    const reportedHits = authorityHit && !finalHits.some((hit) => hit.slug === authorityHit.slug)
+      ? [{ ...authorityHit, authority: 'current' as const, surface: 'engineering' as const }, ...finalHits].slice(0, limit)
+      : finalHits;
     const payload: Record<string, unknown> = {
       ...(lexicalResponse ?? { query: args.query, tokenCount: 0, hitCount: 0 }),
-      hits: finalHits,
+      ...(authorityHit ? { currentAuthority: authorityHit } : {}),
+      hits: reportedHits,
       hitCount: lexicalResponse?.hitCount ?? 0,
       surface: resolved.surface,
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
@@ -510,7 +563,7 @@ export default defineTool({
       ...innerMeta,
       surface: resolved.surface,
       ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}),
-      returned: finalHits.length - semanticHitCount,
+      returned: reportedHits.length - semanticHitCount,
       ...(semanticHitCount > 0 ? { semanticHitCount } : {}),
       ...(legs.degraded ? { legsDegraded: true, legsWarning: legs.warning } : {}),
       // P-004: measurable adoption — how often the probe fires, and whether it found anything.
