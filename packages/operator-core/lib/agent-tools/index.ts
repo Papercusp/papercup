@@ -1005,6 +1005,12 @@ import './scorecards/evaluate';
 import './scorecards/emit';
 import './scorecards/retract';
 
+// Directed-pair pilot P-007 — production runtime over the existing work-item,
+// scorecard and usage ledgers. Assignment is a dry-run by default and arm B is
+// fail-closed on the live probe; collection refuses missing/partial evidence.
+import './pilot/assign';
+import './pilot/collect';
+
 // System health — the Health tab's owner acknowledge/snooze verbs
 // (health-tab-v2-2026-07-12 P-004, D-A: the one deliberate amendment to the
 // tab's read-only stance — a view-level attention judgment, not a control).
