@@ -158,6 +158,31 @@ describe('findTopRecipeForWake', () => {
     expect(hit).toBeNull();
   });
 
+  // EI-21459619725350397: the gate-parking recipe was unbound and therefore
+  // surfaced here even though its loop.arm overwrote the caller's active
+  // mission. Loop mutators are caller-scoped state and must be skipped before
+  // the wake splice can recommend the next candidate.
+  it('skips a caller-scoped loop mutator and falls through to the next candidate', async () => {
+    const mutatingScript = `
+      await tools.events.await({ event: 'release:green:papercusp' });
+      return await tools.loop.arm({ intervalSec: 300, goal: 'db-performance-remediation' });
+    `;
+    const hit = await findTopRecipeForWake('wait for completion', {
+      sql: stubSql([
+        { id: 'r-mutating-loop', title: 'Park on gate', script: mutatingScript, run_count: 2, sim: 0.91 },
+        {
+          id: 'r-safe',
+          title: 'Read verification state',
+          script: 'return await tools.docs.search({ query: "verification" });',
+          run_count: 4,
+          sim: 0.74,
+        },
+      ]),
+      embedder: okEmbedder,
+    });
+    expect(hit).toEqual({ id: 'r-safe', title: 'Read verification state', runCount: 4, sim: 0.74 });
+  });
+
   it('skips an entity-bound recipe and falls through to an unbound candidate', async () => {
     const boundScript =
       "return await tools.work_items.complete({ id: 'EI-OTHER', completion: { summary: 'done' } });";

@@ -326,6 +326,33 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it.each([
+    [
+      'loop.arm',
+      `await tools.events.await({ event: 'release:green:papercusp' });
+       return await tools.loop.arm({ intervalSec: 300, goal: 'db-performance-remediation' });`,
+    ],
+    ['loop.end', `return await tools.loop.end({});`],
+  ])('fails closed for caller-scoped %s state', async (tool, script) => {
+    await expect(deriveRecipeAuthority(script)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: { kind: 'volatile-session-state', tool },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script,
+      updatedAt: '2026-08-26T00:00:00.000Z',
+      context: { fleet: 'current-fleet', harness: 'papercusp' },
+    })).resolves.toBeNull();
+    await expect(validateRecipeAuthorityProof({
+      script,
+      updatedAt: '2026-08-26T00:00:00.000Z',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: 'authority_unresolved',
+      reason: expect.stringContaining('caller-scoped'),
+    });
+  });
+
   it('revalidates the stored revision and live entity identity at run time', async () => {
     const updatedAt = '2026-07-13T12:00:00.000Z';
     const proof = {
