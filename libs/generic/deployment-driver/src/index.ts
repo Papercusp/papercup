@@ -386,3 +386,26 @@ export {
   readAllStdin,
   runWorkspaceHostRemoteInitializerCli,
 } from "./workspace-host-remote-initializer-cli";
+
+// The PRODUCTION adapter behind that CLI (D-110). Exported through "." for the same reason the
+// CLI is: the bin file lives outside this package and the exports map offers no deep import, so
+// without these names the entrypoint could be wired only to a test double.
+export type {
+  WorkspaceHostCommandInput,
+  WorkspaceHostCommandResult,
+  WorkspaceHostSystem,
+  ProductionWorkspaceHostOptions,
+  ProductionWorkspaceHostRemoteInitializerOptions,
+} from "./workspace-host-remote-initializer-host";
+export {
+  WORKSPACE_HOST_DEFAULT_WORKSPACE_ROOT,
+  WORKSPACE_HOST_DEFAULT_WORKSPACE_COMMAND,
+  WORKSPACE_HOST_DEFAULT_COMMAND_TIMEOUT_MS,
+  WORKSPACE_HOST_CREDENTIAL_MATERIAL_ROOT,
+  WorkspaceHostOperationError,
+  NodeWorkspaceHostSystem,
+  ProductionWorkspaceHostRemoteInitializerHost,
+  ProductionWorkspaceHostCredentialMaterializer,
+  createProductionWorkspaceHostCredentialMaterializers,
+  createProductionWorkspaceHostRemoteInitializerDeps,
+} from "./workspace-host-remote-initializer-host";
