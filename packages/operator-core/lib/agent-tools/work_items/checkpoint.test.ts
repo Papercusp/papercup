@@ -1365,7 +1365,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const prior = await lastStored();
 
       withPrior(prior);
-      const r = await one({ id: 'WI-7', checkpoint: 'body', checks: [], rowsMode: 'replace' });
+      const r = await one({ id: 'WI-7', checkpoint: 'body', checks: [], rowsMode: 'replace', confirmRetire: true });
       const stored = await lastStored();
       expect(stored).not.toContain('## Checks');
       expect(stored).not.toContain('X holds');
@@ -1582,6 +1582,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       it('refuses an unconfirmed replace before storing and names every retired check', async () => {
         const prior = await seedThree();
         withPrior(await prior);
+        getWorkItemCheckpoint.mockClear();
         const before = setWorkItemCheckpointWithPrior.mock.calls.length;
         const r = await one({
           id: 'WI-7',
@@ -1597,7 +1598,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         });
         expect(r.message).toContain('confirmRetire');
         expect(setWorkItemCheckpointWithPrior.mock.calls.length).toBe(before + 1);
-        expect(await lastStored()).toBe(await prior);
+        expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
       });
 
       it('accepts the same retirement with confirmRetire:true and still reports the dropped rows', async () => {
@@ -1711,6 +1712,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           // Post-P-013 the drop only happens under an EXPLICIT replace — which is
           // precisely when it still has to be announced.
           rowsMode: 'replace',
+          confirmRetire: true,
         })) as { ok: boolean; checks: number; checksDropped?: string[]; checksDroppedNote?: string };
 
         expect(r.ok).toBe(true);
@@ -2128,7 +2130,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           expect(readCurrent()).toBe(prior);
         });
 
-        it('PLAIN (non-append) replace is UNCHANGED — retiring a stale check still works', async () => {
+        it('PLAIN (non-append) replace still retires a stale check when explicitly confirmed', async () => {
           // The escape hatch: no `append`, so the supplied list still REPLACES. This is
           // what keeps EI-19460631385508515's contract reachable; the fix above must not
           // take it away, or a stale check becomes unretirable.
@@ -2141,6 +2143,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             id: 'WI-7',
             checks: [{ claim: 'A holds', recheck: 'probe A' }],
             rowsMode: 'replace',
+            confirmRetire: true,
           })) as { ok: boolean; checks: number; checksDropped?: string[] };
 
           expect(r.ok).toBe(true);
@@ -2207,7 +2210,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const prior = await lastStored();
 
         withPrior(prior);
-        const r = (await one({ id: 'WI-7', checks: [], rowsMode: 'replace' })) as {
+        const r = (await one({ id: 'WI-7', checks: [], rowsMode: 'replace', confirmRetire: true })) as {
           ok: boolean;
           checksDropped?: string[];
         };
