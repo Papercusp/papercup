@@ -982,6 +982,39 @@ function completionFilesChanged(completion: unknown): string[] {
   return [...strings(rec.filesChanged), ...strings(nested.filesChanged)];
 }
 
+/**
+ * Completion evidence legitimately names loopback service/API origins while
+ * explaining HOW a fix was verified. That is diagnostic provenance, not a
+ * terminal deliverable. A loopback URL becomes durability-relevant only when
+ * the completion presents it in deliverable-facing prose (`summary` or
+ * `whatLanded`). Scratch paths and account-scoped artifact URLs remain suspect
+ * anywhere in the persisted evidence because they can make the evidence itself
+ * disappear.
+ */
+export function completionEphemeralDeliverableReferences(
+  completion: unknown,
+  evidence: unknown,
+) {
+  const all = detectEphemeralDeliverableReferences(JSON.stringify({ completion, evidence }));
+  if (all.every((reference) => reference.kind !== 'loopback-url')) return all;
+  const record = completion && typeof completion === 'object' && !Array.isArray(completion)
+    ? completion as Record<string, unknown>
+    : {};
+  const deliverableText = JSON.stringify({
+    summary: record.summary,
+    whatLanded: record.whatLanded,
+  });
+  const deliverableLoopbacks = new Set(
+    detectEphemeralDeliverableReferences(deliverableText)
+      .filter((reference) => reference.kind === 'loopback-url')
+      .map((reference) => reference.reference.toLowerCase()),
+  );
+  return all.filter(
+    (reference) => reference.kind !== 'loopback-url'
+      || deliverableLoopbacks.has(reference.reference.toLowerCase()),
+  );
+}
+
 function completionStructuredEvidenceTexts(completion: unknown): {
   testsRun: string[];
   testResult: string[];
@@ -2272,8 +2305,10 @@ async function completeOne(
   // advisory detector encounters malformed input.
   let ephemeralDeliverableWarning: string | undefined;
   try {
-    const evidenceText = JSON.stringify({ completion: it.completion, evidence: completionEvidenceToPersist });
-    const references = detectEphemeralDeliverableReferences(evidenceText ?? '');
+    const references = completionEphemeralDeliverableReferences(
+      it.completion,
+      completionEvidenceToPersist,
+    );
     ephemeralDeliverableWarning = renderEphemeralDeliverableWarning(`completion for ${it.id}`, references);
   } catch {
     /* fail-open: the completion record must never be lost to an advisory check */
