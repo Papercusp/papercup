@@ -930,18 +930,40 @@ export async function gitPipelineSnapshot(
 ): Promise<GitPipelineSnapshot> {
   const { sql } = getOrgPg();
 
+  // EI-21544761852770720: every read below is independent.  Starting the
+  // routines read, conflict read, window summaries, and deploy snapshot in
+  // separate phases made their queueing latency additive on a busy host.  The
+  // state-cell caller has a 10s totality bound, so an otherwise healthy set of
+  // reads could intermittently cross it.  Start the complete fan-out before
+  // consuming any result; the derivation below still observes exactly one
+  // settled result from each source and retains every existing fail-soft path.
+  const routineRowsPromise = sql<RoutineRow[]>`
+    SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at
+      FROM harness_shared.routines
+     WHERE install_slug = ${slug}
+       AND name IN ('git-sync', 'green-checkpoint', 'release-trigger')
+  `.catch(() => [] as RoutineRow[]);
+  const openConflictRowsPromise = sql<
+    {
+      escalation: Record<string, unknown>;
+      mtime_ms: unknown;
+    }[]
+  >`
+    SELECT escalation, mtime_ms
+      FROM harness_shared.harness_escalations
+     WHERE harness_slug = ${slug}
+       AND escalation IS NOT NULL
+       AND (escalation::jsonb ->> 'kind') = 'git-sync-conflict'
+     ORDER BY mtime_ms DESC
+     LIMIT 1
+  `.catch(() => []);
+  const dayPromise = summarizePipelineWindow(slug, 24 * 60 * 60);
+  const weekPromise = summarizePipelineWindow(slug, 7 * 24 * 60 * 60);
+  const recentPromise = recentPipelineEvents(slug, 25);
+  const deployPromise = devDeployState({ useSpawnerSidecar: opts.useSpawnerSidecar });
+
   // The three pipeline routines + git-sync's latest metadata, in one read.
-  let routineRows: RoutineRow[] = [];
-  try {
-    routineRows = await sql<RoutineRow[]>`
-      SELECT name, active, trigger_config, metadata, last_fired_at, next_fire_at
-        FROM harness_shared.routines
-       WHERE install_slug = ${slug}
-         AND name IN ('git-sync', 'green-checkpoint', 'release-trigger')
-    `;
-  } catch {
-    routineRows = [];
-  }
+  const routineRows = await routineRowsPromise;
   const byName = (n: string) => routineRows.find((r) => r.name === n);
   const gitSyncRow = byName('git-sync');
   const meta = (gitSyncRow?.metadata ?? {}) as Record<string, unknown>;
@@ -985,20 +1007,7 @@ export async function gitPipelineSnapshot(
   // The currently-open merge conflict (git-sync-conflict escalation), if any.
   let openConflict: GitPipelineSnapshot['openConflict'] = null;
   try {
-    const escRows = await sql<
-      {
-        escalation: Record<string, unknown>;
-        mtime_ms: unknown;
-      }[]
-    >`
-      SELECT escalation, mtime_ms
-        FROM harness_shared.harness_escalations
-       WHERE harness_slug = ${slug}
-         AND escalation IS NOT NULL
-         AND (escalation::jsonb ->> 'kind') = 'git-sync-conflict'
-       ORDER BY mtime_ms DESC
-       LIMIT 1
-    `;
+    const escRows = await openConflictRowsPromise;
     const esc = escRows[0]?.escalation;
     const escMtimeMs = num(escRows[0]?.mtime_ms);
     const lastMergeCompleted = strArr(meta.last_merge_completed);
@@ -1030,10 +1039,10 @@ export async function gitPipelineSnapshot(
 
   // EI-19399662484764592: derived from `recent` BELOW — no extra query. See pickRetriageVerdict.
   const [day, week, recent, deploy] = await Promise.all([
-    summarizePipelineWindow(slug, 24 * 60 * 60),
-    summarizePipelineWindow(slug, 7 * 24 * 60 * 60),
-    recentPipelineEvents(slug, 25),
-    devDeployState({ useSpawnerSidecar: opts.useSpawnerSidecar }),
+    dayPromise,
+    weekPromise,
+    recentPromise,
+    deployPromise,
   ]);
 
   // WI-4489: is the recorded RED still trustworthy? The green pin is the ground truth (it only
