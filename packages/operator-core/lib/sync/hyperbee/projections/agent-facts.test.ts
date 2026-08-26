@@ -108,7 +108,24 @@ describe('writeToPg — H6 source partitioning', () => {
     expect(calls[0]).toContain(null);
   });
 
-  it('carries deliberate retraction actor and reason across federation', async () => {
+  // ── EI-21474421983228518: the two tests below verify the RECEIVE half ONLY,
+  // and are named for that. They previously read "carries X across federation",
+  // which claimed a property no test in this file can hold: nothing here can
+  // detect an absent SENDER, because the test supplies the wire row itself and
+  // so passes whether or not any mapper ever produces those keys.
+  //
+  // That is not hypothetical. `toAgentFactValue` emitted none of retracted_by /
+  // retraction_reason / recheck for a long stretch, so those columns were
+  // permanently NULL across real federation while both tests sat green under
+  // end-to-end names — reassurance sitting directly beside the defect.
+  //
+  // The SEND half lives in ../feature-issue-op-keys.test.ts (the mapper emits
+  // the keys, and its output is asserted to pass isAgentFactWireRow — the
+  // cheapest true end-to-end assertion available without a DB). The
+  // column -> mapper-key correspondence itself is enforced by the
+  // federated-column-completeness drift guard, which is what actually caught
+  // the gap.
+  it('writeToPg binds the retraction actor and reason (receive half — see note above)', async () => {
     const { sql, calls } = fakeSql();
     await buildAgentFactsProjection(opts(sql)).writeToPg(
       row({ retracted_at: new Date().toISOString(), retracted_by: 'su-author', retraction_reason: 'condition cleared' }),
@@ -118,7 +135,7 @@ describe('writeToPg — H6 source partitioning', () => {
     expect(calls[0]).toContain('condition cleared');
   });
 
-  it('carries the recheck pair across federation', async () => {
+  it('writeToPg binds the recheck pair (receive half — see note above)', async () => {
     const { sql, calls } = fakeSql();
     const recheck = { probe: 'run release status', falsifier: 'the pins differ' };
     await buildAgentFactsProjection(opts(sql)).writeToPg(row({ recheck }), {
