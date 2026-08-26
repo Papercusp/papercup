@@ -881,6 +881,16 @@ const CHECK_LINE_RE = new RegExp(
     `(?:\\s+—\\s+re-check:\\s+(.+?))?(?:\\s+—\\s+evidence:\\s+(.+?))?(?:\\s+\\(since\\s+([^)]+)\\))?\\s*$`,
 );
 
+/** WI-41774: a work-item flight record renders its telemetry as
+ *  `- at=<ts> tool=<verb> status=… duration_ms=… error_code=… args_keys=[…]
+ *  args_key_digest=<hex>`, which satisfies {@link CHECK_LINE_RE} — it only
+ *  requires a leading `- `. Such a line is NOT a claim and must never become a
+ *  carry row. The shape is PINNED to the real emitter by a test that formats an
+ *  actual record and asserts every one of its lines is refused here, so a change
+ *  to `formatWorkItemFlightRecord` fails loudly instead of silently re-opening
+ *  this hole. Matched against the parsed CLAIM (markers already stripped). */
+const FLIGHT_RECORD_TELEMETRY_CLAIM_RE = /^at=\S.*\btool=\S.*\bargs_key_digest=[0-9a-f]+$/;
+
 /** Parse one checks-section line back into a {@link CheckEntry}; null for a
  *  non-row line (blank, the legend, prose, malformed). Review fold #6: the ✓|?
  *  marker is OPTIONAL on parse — an agent hand-writing a row in walls syntax
@@ -895,6 +905,14 @@ export function parseCheckLine(line: string): CheckEntry | null {
   // grow the claim by one marker on every wake.
   const claim = stripProbeScopeMarker((m[3] ?? '').trim());
   if (!claim) return null;
+  // WI-41774: refuse flight-record telemetry. Once such a line parses as a claim
+  // it is re-rendered as a canonical check row, LOSING the ⟦…⟧ wrapper that let
+  // mergeWorkItemFlightRecord bound it — after which nothing can ever identify it
+  // again and it multiplies on every write (measured: 252 rows on one item, 1,237
+  // across the workspace, crowding out 1,026 real claims). Refusing the shape here
+  // is both the recurrence guard and the migration: rows already absorbed drain on
+  // each note's next write, so no data backfill is needed.
+  if (FLIGHT_RECORD_TELEMETRY_CLAIM_RE.test(claim)) return null;
   const out: CheckEntry = { claim };
   const id = sanitizeCarryRowId(m[2]);
   if (id) out.id = id;
@@ -1149,6 +1167,14 @@ export function normalizeWallEntries(
  *  their established last-position anchor. */
 export function withCarryNoteChecks(body: string, checks: CheckEntry[]): string {
   const { body: strippedAll, walls } = splitCarryNoteWalls(splitCarryNoteChecks(body).body);
+  // WI-41774: the render path is DELIBERATELY uncapped — do not "fix" this by
+  // slicing to CARRY_NOTE_MAX_CHECKS. An over-cap legacy note must keep its tail so
+  // that patching a keyed row cannot silently evict rows nobody mentioned (P-013:
+  // a loss made VISIBLE is not yet a loss AVOIDED); carry-note.test.ts pins that.
+  // The runaway this bug was filed for is fixed at ADMISSION instead — parseCheckLine
+  // refuses flight-record telemetry — because the growth came from junk being
+  // admitted as claims, not from the absence of a render cap. A cap here would
+  // destroy real carried rows to contain junk that should never have parsed.
   const kept = checks.filter((c) => (c.claim ?? '').trim().length > 0);
   const parts: string[] = [];
   if (strippedAll) parts.push(strippedAll);
