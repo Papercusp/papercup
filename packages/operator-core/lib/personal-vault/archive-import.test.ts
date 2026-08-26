@@ -10,7 +10,10 @@ import {
   parseVcard,
   streamPersonalArchiveFile,
 } from './archive-import';
-import { PersonalArchiveEncryptedWriter } from './archive-encryption';
+import {
+  PersonalArchiveEncryptedWriter,
+  assertPersonalArchiveDataChunkIndex,
+} from './archive-encryption';
 
 const tempDirs: string[] = [];
 afterEach(async () => {
@@ -18,6 +21,13 @@ afterEach(async () => {
 });
 
 describe('Personal Vault archive importers', () => {
+  it('keeps the manifest nonce structurally outside the data-chunk domain', () => {
+    expect(() => assertPersonalArchiveDataChunkIndex(0xffff_fffe)).not.toThrow();
+    expect(() => assertPersonalArchiveDataChunkIndex(0xffff_ffff)).toThrow(
+      'personal_vault_import_chunk_index_overflow',
+    );
+  });
+
   it('parses Gmail mbox messages with stable ids and participants', () => {
     const docs = parseMbox('From sender@example.com Tue Jan 1 00:00:00 2026\nMessage-ID: <m1@example.com>\nDate: Tue, 01 Jan 2026 00:00:00 +0000\nFrom: Ada <ada@example.com>\nTo: Bob <bob@example.com>\nSubject: Planning\n\nBring the notes.');
     expect(docs).toHaveLength(1);
