@@ -51,7 +51,9 @@ describe('highestRungCrossed', () => {
     expect(highestRungCrossed(80, 3)).toEqual({ rung: 27, index: 2 });
     expect(highestRungCrossed(81, 3)).toEqual({ rung: 81, index: 3 });
     // A pathological depth must not need a pathological number of rungs.
-    expect(highestRungCrossed(1_000_000, 3).index).toBeLessThan(20);
+    const deep = highestRungCrossed(1_000_000, 3);
+    expect(deep).not.toBeNull();
+    expect(deep!.index).toBeLessThan(20);
   });
 
   it('goes SILENT on a misconfigured threshold rather than looping or alerting forever', () => {
@@ -241,6 +243,55 @@ describe('the sparsity property — the whole point of the ladder', () => {
     const long = alertsFor(120 * STALL_LADDER_GROWTH * STALL_LADDER_GROWTH);
     // 9x the depth must cost at most a small constant more alerts, never 9x.
     expect(long - short).toBeLessThanOrEqual(4);
+  });
+});
+
+/**
+ * FALSIFIABILITY CONTROL. A guard that has never failed is a guard nobody has tested, and
+ * the sparsity property above would pass just as happily against a broken subject if the
+ * assertions were vacuous. Mutating the tracked source to prove otherwise is unsafe here
+ * (git-sync sweeps the whole tree on a schedule and can commit the mutant), so the repo's
+ * prescribed tier for an IMPORTED module applies: keep a deliberately-wrong implementation
+ * permanently beside the real one, plus a calibration case the REAL subject must pass.
+ *
+ * `naiveReAlertWhileRed` is the EI-7472 behaviour: re-alert on every tick while still red.
+ */
+function naiveReAlertWhileRed(reds: number, stallReds: number): boolean {
+  return reds >= stallReds;
+}
+
+describe('falsifiability control — the sparsity assertions can actually fail', () => {
+  const replay = (decide: (tick: number, marks: StallLadderMarks) => { notify: boolean; marks: StallLadderMarks }) => {
+    let marks: StallLadderMarks = {};
+    let alerts = 0;
+    for (let tick = 1; tick <= 120; tick += 1) {
+      const r = decide(tick, marks);
+      if (r.notify) alerts += 1;
+      marks = r.marks;
+    }
+    return alerts;
+  };
+
+  it('the WRONG implementation is CAUGHT by the sparsity bound', () => {
+    const naiveAlerts = replay((tick, marks) => ({
+      notify: naiveReAlertWhileRed(tick, STALL_REDS),
+      marks,
+    }));
+    // 120 ticks, red from tick 3 onward → 118 alerts. This is the bug, reproduced.
+    expect(naiveAlerts).toBe(118);
+    // and it would fail the very bound the real subject is held to
+    expect(naiveAlerts).toBeGreaterThan(8);
+  });
+
+  it('CALIBRATION: the real subject passes the same bound the wrong one fails', () => {
+    const realAlerts = replay((tick, marks) => {
+      const d = decideStallNotification(
+        input({ consecutiveReds: tick, stallAgeMs: tick * HOUR, marks }),
+      );
+      return { notify: d.shouldNotify, marks: d.marks };
+    });
+    expect(realAlerts).toBeLessThanOrEqual(8);
+    expect(realAlerts).toBeGreaterThan(1);
   });
 });
 
