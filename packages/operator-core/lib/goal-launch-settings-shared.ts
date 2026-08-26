@@ -83,6 +83,82 @@ export function isGoalLaunchRole(value: unknown): value is GoalLaunchRole {
 }
 
 /**
+ * Which FAMILY of fleet this is, in the goal's own terms.
+ *
+ * The goal's `metadata.drainFleet` declaration (written by `mintDrainFleetForGoal`)
+ * is the canonical identity: that one fleet is the drain fleet, and every other
+ * fleet attached to the goal is a plan fleet. Nothing on `AgentFleetRecord` or
+ * `FleetHeadcountConfig` carries a family, which is why the declaration is read
+ * rather than inferred from the fleet row.
+ */
+export type GoalFleetFamily = 'plan' | 'drain';
+
+/**
+ * PURE: the family, from the goal's drain-fleet declaration.
+ *
+ * Extracted from `resolveFleetHeadcountLaunchRole` (EI-20219409083169975), which
+ * now delegates here — the derivation had to be shared the moment a SECOND caller
+ * (the fleet-launch boundary, P-006) needed it, or the governor and the launch
+ * door would disagree about which fleet is the drain fleet.
+ */
+export function goalFleetFamily(args: {
+  fleetSlug: string;
+  drainFleetSlug: string | null;
+}): GoalFleetFamily {
+  return args.drainFleetSlug === args.fleetSlug ? 'drain' : 'plan';
+}
+
+/**
+ * The launch SLOTS each family binds, per fleet shape.
+ *
+ * `satisfies` is doing real work here: it proves at COMPILE time that all six
+ * strings are members of `GOAL_LAUNCH_ROLES`. Renaming a slot in that closed
+ * vocabulary without updating this table is then a build failure rather than a
+ * lookup that silently matches nothing — which is exactly the failure mode
+ * D-016/WI-38048 was about (a profile the owner configured binding nothing, with
+ * the panel still reporting it as set).
+ */
+const FAMILY_SLOTS = {
+  plan: {
+    member: 'plan-fleet-member',
+    director: 'plan-fleet-director',
+    implementer: 'plan-fleet-implementer',
+  },
+  drain: {
+    member: 'drain-fleet-member',
+    director: 'drain-fleet-director',
+    implementer: 'drain-fleet-implementer',
+  },
+} as const satisfies Record<GoalFleetFamily, Record<'member' | 'director' | 'implementer', GoalLaunchRole>>;
+
+/**
+ * Which slot(s) a launch of this family and shape binds.
+ *
+ * The shape is expressed as a DISCRIMINATED UNION rather than three optional
+ * fields on one object, so a caller cannot read `.director` off a single fleet —
+ * there is no such slot, and a `undefined` there would fold as "no role layer"
+ * and look like a deliberate choice (D-005's trap, one level down).
+ *
+ * `fleetType` is taken as the narrow `'single' | 'paired'` union rather than
+ * imported from the fleet store, only because this module must stay import-free
+ * (see the header). `FleetType` is structurally that union and the fleet-boundary
+ * caller passes a real `FleetType`, so the vocabulary is still owned in one place.
+ */
+export type GoalFleetSlots =
+  | { type: 'single'; member: GoalLaunchRole }
+  | { type: 'paired'; director: GoalLaunchRole; implementer: GoalLaunchRole };
+
+export function goalFleetLaunchSlots(
+  family: GoalFleetFamily,
+  fleetType: 'single' | 'paired',
+): GoalFleetSlots {
+  const slots = FAMILY_SLOTS[family];
+  return fleetType === 'paired'
+    ? { type: 'paired', director: slots.director, implementer: slots.implementer }
+    : { type: 'single', member: slots.member };
+}
+
+/**
  * What happens to a HOLDER-REQUIRED goal when its holder stops being live
  * (goal-live-holder-guarantee-2026-08-18 P-002, D-001).
  *
