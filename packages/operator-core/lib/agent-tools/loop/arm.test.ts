@@ -733,6 +733,35 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(homePotM).not.toHaveBeenCalled();
   });
 
+  it('EI-21481296218316052: omitted harness preserves an active routine scope despite a different concrete ctx', async () => {
+    // The session can be dispatched through a concrete project harness that differs
+    // from the loop it is retuning. Omitting args.harness is not an authorization to
+    // migrate the durable routine (and strand its cold carry-note) into that transient
+    // context; only an explicit harness request may change the installed scope.
+    priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'sb-devboard-hive' } as never);
+    potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? 'home-hive');
+
+    const out = (await tool.handler(
+      { intervalSec: 120, goal: 're-arm the existing cold loop' } as never,
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' } as never,
+    )) as Out;
+    const b = body(out);
+
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'sb-devboard-hive', carry: 'cold' } });
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug: 'sb-devboard-hive', carry: 'cold' }),
+    );
+  });
+
+  it('EI-21481296218316052: an explicit harness still overrides the active routine scope', async () => {
+    priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'sb-devboard-hive' } as never);
+
+    const b = body(await call({ harness: 'papercusp', goal: 'explicitly migrate the loop' }));
+
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp', carry: 'cold' } });
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }));
+  });
+
   // EI-7734 regression: every superuser/operator-scope session sets ctx.harnessSlug='*'
   // (the wildcard sentinel, _harness-scope.ts). A raw `args.harness ?? ctx.harnessSlug ?? …`
   // chain would let that truthy '*' win outright — bypassing resolvePotHomeSlug's own
