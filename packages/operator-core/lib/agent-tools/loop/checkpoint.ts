@@ -99,6 +99,18 @@ class ReplaceWouldDropError extends Error {
   }
 }
 
+/** A merge whose union exceeds the durable row cap must not commit a partial set.
+ * The caller can retire rows explicitly with a confirmed replace, then retry the
+ * merge; silently choosing which carried commitment to forget is never safe. */
+class MergeWouldEvictError extends Error {
+  constructor(
+    readonly droppedWalls: string[],
+    readonly droppedChecks: string[],
+  ) {
+    super('checkpoint_merge_would_evict_rows');
+  }
+}
+
 /**
  * Can the CURRENT loop row actually deliver one more wake if this turn settles now?
  *
@@ -782,6 +794,12 @@ export default defineTool({
             ) {
               throw new ReplaceWouldDropError(merged.droppedWalls, merged.droppedChecks);
             }
+            if (
+              rowsMode === 'merge' &&
+              (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0)
+            ) {
+              throw new MergeWouldEvictError(merged.droppedWalls, merged.droppedChecks);
+            }
             return merged.note;
           },
         },
@@ -859,6 +877,29 @@ export default defineTool({
                   "rowsMode:'replace' would RETIRE the carried rows named above and confirmRetire was not true — " +
                   'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
                   "rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      if (error instanceof MergeWouldEvictError) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'checkpoint_merge_would_evict_rows',
+                retryable: true,
+                harness,
+                ownerId,
+                wallsDropped: error.droppedWalls,
+                checksDropped: error.droppedChecks,
+                message:
+                  "rowsMode:'merge' would exceed the durable row cap and evict the carried rows named above — " +
+                  "NOTHING was written. Retire rows you no longer need with rowsMode:'replace' and " +
+                  'confirmRetire:true, then retry the merge.',
               }),
             },
           ],

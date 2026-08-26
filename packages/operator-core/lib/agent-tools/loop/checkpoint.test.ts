@@ -1793,31 +1793,28 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.rowsModeNote).toContain("rowsMode:'replace'");
   });
 
-  it('keeps supplied rows and reports CAP EVICTION of the carried tail', async () => {
+  it('refuses a merge that would evict a carried check at the cap', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
     );
     const b = body(await call({ did: 'progress', checks: [{ claim: 'one row past the cap' }], rowsMode: 'merge' }));
 
-    expect(b.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.checksDropped).toEqual([`carried ${CARRY_NOTE_MAX_CHECKS}`]);
-    expect(b.checksOverflowed).toBeUndefined();
-    expect(b.checksDroppedNote).toContain('CAP EVICTION');
-    expect(b.checksDroppedNote).not.toContain('REPLACES the carried set');
-    expect(b.checksDroppedNote).not.toMatch(/re-send the full set/i);
-    expect(b.checksDroppedNote).toMatch(/RETIRE/);
+    expect(b.message).toContain('NOTHING was written');
   });
 
-  it('uses the same CAP EVICTION diagnosis for supplied walls', async () => {
+  it('refuses a merge that would evict a carried wall at the cap', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior([], Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({ claim: `carried wall ${i + 1}` }))),
     );
     const b = body(await call({ did: 'progress', walls: [{ claim: 'new wall' }], rowsMode: 'merge' }));
 
-    expect(b.walls).toBe(CARRY_NOTE_MAX_WALLS);
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.wallsDropped).toEqual([`carried wall ${CARRY_NOTE_MAX_WALLS}`]);
-    expect(b.wallsDroppedNote).toContain('CAP EVICTION');
-    expect(b.wallsDroppedNote).not.toContain('REPLACES the carried set');
+    expect(b.message).toContain('confirmRetire:true');
   });
 
   it('says nothing about overflow on an ordinary write', async () => {
