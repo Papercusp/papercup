@@ -402,7 +402,7 @@ async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Ru
     return rows
       .map(planRowToRubric)
       .filter((r): r is Rubric => r !== null && (kind === 'any' || r.kind === kind));
-  } catch {
+  } catch (error) {
     return [];
   }
 }
@@ -1343,16 +1343,25 @@ async function resolveRubricWriteScope(
   const workspaceId = rubricsScopeWorkspace();
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ harness_slug: string }[]>`
-      SELECT harness_slug
+    const rows = await sql<{ harness_slug: string; template: string | null }[]>`
+      SELECT harness_slug, template
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId}
          AND plan_slug = ${rubricId}
-         AND template = ${RUBRIC_TEMPLATE_NAME}
        LIMIT 1`;
-    if (rows[0]?.harness_slug) return { workspaceId, harnessSlug: rows[0].harness_slug };
+    const existing = rows[0];
+    if (existing && existing.template !== RUBRIC_TEMPLATE_NAME) {
+      throw new Error(
+        `invalid_args: proposeRubric: rubricId '${rubricId}' collides with an existing ` +
+          `non-rubric plan (template=${existing.template ?? 'none'}, harness=${existing.harness_slug}); ` +
+          `choose a distinct rubricRef (for acceptance rubrics, use 'acceptance-${rubricId}')`,
+      );
+    }
+    if (existing?.harness_slug) return { workspaceId, harnessSlug: existing.harness_slug };
   } catch {
-    /* fall through to the default home harness */
+    // Database availability failures retain the historical default-home fallback, but a
+    // namespace collision is caller input and must remain fail-closed.
+    if (error instanceof Error && error.message.startsWith('invalid_args: proposeRubric: rubricId')) throw error;
   }
   return { workspaceId, harnessSlug: defaultRubricWriteHarness() };
 }
@@ -1542,7 +1551,22 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
         templateData,
       ),
     },
-    async () => ({ newBody: body, templateData: { data: templateData }, value: true }),
+    async (current) => {
+      // The slug namespace is shared with ordinary work plans. Re-check under the
+      // plan's advisory lock so a plan created after resolveRubricWriteScope cannot
+      // be silently converted into a rubric by this whole-document upsert.
+      if (current) {
+        const existingTemplate = deriveIndexFromContent(current).template;
+        if (existingTemplate !== RUBRIC_TEMPLATE_NAME) {
+          throw new Error(
+            `invalid_args: proposeRubric: rubricId '${input.rubricId}' collides with an existing ` +
+              `non-rubric plan (template=${existingTemplate ?? 'none'}, harness=${scope.harnessSlug}); ` +
+              `choose a distinct rubricRef (for acceptance rubrics, use 'acceptance-${input.rubricId}')`,
+          );
+        }
+      }
+      return { newBody: body, templateData: { data: templateData }, value: true };
+    },
   );
   if (result.kind === 'busy') {
     throw new Error(`proposeRubric: plan '${input.rubricId}' is being written by another caller`);
