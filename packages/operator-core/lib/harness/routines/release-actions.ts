@@ -1835,6 +1835,33 @@ export function classifyGateStallStatus(
   // P-006: same class, same reasoning — the sibling exit-74 condition where the selected
   // generation exists but is unusable. Both must be mapped here or they hit the 'red' default.
   if (status === 'dependency-generation-unusable') return 'no-verdict';
+  /**
+   * WI-42207 — 'candidate-fossil' is a WITHHELD verdict, so it is 'no-verdict', never a red.
+   *
+   * The producer refuses to publish a red whose candidate was already older than
+   * CANDIDATE_FOSSIL_AGE_MS at verdict time: "No failing-test signature was published; the next
+   * run must re-judge a fresh tip." By construction it establishes NOTHING about the code — the
+   * suite's own opinion was discarded as describing a tree that no longer exists.
+   *
+   * This word never reached this list, so it hit the `return 'red'` default below and FABRICATED
+   * a code red — precisely the drift the P-006 comment above warns about ("producer vocabulary and
+   * consumer class list must land together"), and precisely the failure the 'error' comment
+   * measured on 2026-08-25, one reason-code earlier.
+   *
+   * Measured 2026-08-26 on papercusp: `consecutiveReds` reached 44 and `main` sat frozen 6 days at
+   * a2d69cef, while `gate_health.failingTests` stayed `[]` the entire time because no run ever
+   * published a signature. Every read surface therefore reported "RED, 44 consecutive" with a
+   * failing-test list no run had named. Multiple agents — including this one, twice — read that
+   * empty list as "no tests are failing" and went hunting for phantom test breakage. The gate was
+   * not red. It was WEDGED, and it had no vocabulary to say so.
+   *
+   * 'no-verdict' rather than 'noop' for the same reason as 'error': this condition is NOT
+   * self-clearing (the frozen pin resumes the same sha until something releases it), so it must
+   * stay COUNTED. It advances `consecutiveNoVerdict` — which escalates on the same threshold
+   * saying WEDGED — while leaving `consecutiveReds`, a count of actual code verdicts, alone.
+   * Loud, and true.
+   */
+  if (status === 'candidate-fossil') return 'no-verdict';
   // WI-39450: a pass whose own re-triage watched the failing files PASS at tip produced no
   // verdict about the code — see isProvenStaleCandidate. Its diagnostics are still written
   // (EI-13288); only the streak is left alone.
