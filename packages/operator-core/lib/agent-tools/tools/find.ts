@@ -184,17 +184,45 @@ function nestedObjectProperties(
   return null;
 }
 
+/**
+ * EI-21490971340666010: one property's nested-fields block is bounded so the
+ * braces marking nesting stay visually attachable to their parent. A wide
+ * object (improvements:capture's `observation`) rendered >1,500 chars of
+ * comma-joined fields whose closing brace sat ~1,900 chars from the opener —
+ * past other fields' brace-bearing descriptions — and callers read a late
+ * nested field (`linkTo`) as a TOP-LEVEL arg, then hit invalid_args on the
+ * strict schema (three filings). Over budget: drop descriptions first, then
+ * elide the tail with an explicit `…+N`. Field NAMES stay visible at every
+ * depth (the EI-13190 contract); only aggregate width is capped.
+ */
+const NESTED_FIELDS_SEGMENT_MAX_CHARS = 320;
+
 function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptions = true): string {
   if (depth >= MAX_NESTED_SCHEMA_DEPTH) return '';
   const nested = nestedObjectProperties(node);
   if (!nested) return '';
-  const names = Object.entries(nested.properties).map(([name, raw]) => {
+  const renderEntry = (name: string, raw: unknown, withDescription: boolean): string => {
     const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
-    const shape = schemaShape(child, depth, includeDescriptions);
-    const description = includeDescriptions ? nestedDescription(child, depth) : '';
+    const shape = schemaShape(child, depth, withDescription);
+    const description = withDescription ? nestedDescription(child, depth) : '';
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
-  });
-  return names.length > 0 ? `{${names.join(',')}}` : '';
+  };
+  let entries = Object.entries(nested.properties).map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
+  if (includeDescriptions && entries.join(',').length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+    entries = Object.entries(nested.properties).map(([name, raw]) => renderEntry(name, raw, false));
+  }
+  let body = '';
+  let dropped = 0;
+  for (const entry of entries) {
+    const candidate = body ? `${body},${entry}` : entry;
+    if (body && candidate.length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+      dropped += 1;
+      continue;
+    }
+    body = candidate;
+  }
+  if (dropped > 0) body = `${body},…+${dropped}`;
+  return body.length > 0 ? `{${body}}` : '';
 }
 
 /**

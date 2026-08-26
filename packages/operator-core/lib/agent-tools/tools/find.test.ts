@@ -221,6 +221,43 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 
+  it('bounds a verbose nested-fields segment so nesting stays readable (EI-21490971340666010)', () => {
+    const manyFields: Record<string, unknown> = {};
+    for (let i = 0; i < 40; i += 1) {
+      manyFields[`field${i}`] = { type: 'string', description: 'x'.repeat(180) };
+    }
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        observation: { type: 'object', properties: manyFields, required: ['field0'] },
+        tail: { type: 'boolean' },
+      },
+    });
+
+    expect(compact).toContain('tail?:boolean');
+    // The nested block stays visually attachable to its parent: per-field
+    // descriptions drop first, then the tail elides with an explicit marker.
+    const segment = /\{(.*)\}/.exec(compact ?? '')?.[1] ?? '';
+    expect(segment.length).toBeLessThanOrEqual(400);
+    expect(segment).toContain('field0:string');
+    expect(segment).not.toContain('xxxxxxx');
+    expect(segment).toMatch(/…\+\d+$/);
+  });
+
+  it('keeps nested descriptions when a block fits the budget', () => {
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        wait: {
+          type: 'object',
+          properties: { max_sec: { type: 'integer', description: 'seconds' } },
+          required: ['max_sec'],
+        },
+      },
+    });
+    expect(compact).toBe('wait?:object{max_sec:integer seconds}');
+  });
+
 });
 
 describe('confirmed hive discovery visibility (WI-39255)', () => {
