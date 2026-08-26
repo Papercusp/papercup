@@ -24,13 +24,19 @@ const row = (over: Partial<AgentFactWireRow> = {}): AgentFactWireRow => ({
 });
 
 /** Tagged-template sql fake capturing interpolated values per call. */
-function fakeSql(): { sql: postgres.Sql; calls: unknown[][] } {
+function fakeSql(): { sql: postgres.Sql; calls: unknown[][]; texts: string[] } {
   const calls: unknown[][] = [];
-  const fn = (_s: TemplateStringsArray, ...vals: unknown[]) => {
+  // The statement text too, so a test can assert the STATEMENT SHAPE (which
+  // columns a conflict updates wholesale vs. COALESCEs). That is a structural
+  // check, not a DB-semantics one — the real behavior is covered by the
+  // federated-column-completeness guard against a migrated schema.
+  const texts: string[] = [];
+  const fn = (s: TemplateStringsArray, ...vals: unknown[]) => {
     calls.push(vals);
+    texts.push(s.join('?'));
     return Promise.resolve([]);
   };
-  return { sql: fn as unknown as postgres.Sql, calls };
+  return { sql: fn as unknown as postgres.Sql, calls, texts };
 }
 
 describe('composeKey — matches mig 462 fed_key exactly', () => {
@@ -120,6 +126,123 @@ describe('writeToPg — H6 source partitioning', () => {
       origin: 'remote',
     } as never);
     expect(calls[0]).toContain(JSON.stringify(recheck));
+  });
+
+  // ── EI-21467654382027859
+  describe('claim-substance + liveness columns', () => {
+    it('binds kind / claim / enforcement / settled_by / depends_on / evicted_at', async () => {
+      const { sql, calls } = fakeSql();
+      const claim = { subject: 'cell:deploy.3070.sha', assertion: 'unchanged' };
+      const enforcement = { tier: 'detector', floor: 0.9, reviewBy: '2026-12-01' };
+      const dependsOn = [{ cell: 'deploy.3070.sha', observedAt: '2026-08-01T00:00:00.000Z', digest: 'abc' }];
+      await buildAgentFactsProjection(opts(sql)).writeToPg(
+        row({
+          kind: 'undecidable',
+          claim,
+          enforcement,
+          settled_by: 'a blob-containment check',
+          depends_on: dependsOn,
+          evicted_at: '2026-08-02T00:00:00.000Z',
+        }),
+        { authorPubkey: 'stamped-source-log-key', origin: 'remote' } as never,
+      );
+      expect(calls[0]).toContain('undecidable');
+      expect(calls[0]).toContain(JSON.stringify(claim));
+      expect(calls[0]).toContain(JSON.stringify(enforcement));
+      expect(calls[0]).toContain('a blob-containment check');
+      expect(calls[0]).toContain(JSON.stringify(dependsOn));
+      expect(calls[0]).toContain('2026-08-02T00:00:00.000Z');
+    });
+
+    it('a SUPERSEDED op is not applied to the live partition — no SQL issued', async () => {
+      const { sql, calls } = fakeSql();
+      await buildAgentFactsProjection(opts(sql)).writeToPg(
+        row({ superseded_at: '2026-08-02T00:00:00.000Z', body: 'the PRIOR version of this identity' }),
+        { authorPubkey: 'stamped-source-log-key', origin: 'remote' } as never,
+      );
+      // This projection holds one row per identity × source — the peer's CURRENT
+      // observation — so a prior version has no row to land in. Applying it
+      // would overwrite the live row with stale content, and could not even be
+      // idempotent: agent_facts_identity_current is PARTIAL (WHERE superseded_at
+      // IS NULL), so a non-NULL proposed row can never match the ON CONFLICT
+      // arbiter and every replay would insert another copy.
+      expect(calls.length).toBe(0);
+    });
+
+    it('a LIVE op (superseded_at explicitly null) is still applied', async () => {
+      // The negative control for the guard above — it must key on non-NULL, not
+      // on the field merely being present.
+      const { sql, calls } = fakeSql();
+      await buildAgentFactsProjection(opts(sql)).writeToPg(row({ superseded_at: null }), {
+        authorPubkey: 'stamped-source-log-key',
+        origin: 'remote',
+      } as never);
+      expect(calls.length).toBe(1);
+    });
+
+    it('write-once audit provenance COALESCEs; claim substance replaces wholesale', async () => {
+      const { sql, texts } = fakeSql();
+      await buildAgentFactsProjection(opts(sql)).writeToPg(row(), {
+        authorPubkey: 'stamped-source-log-key',
+        origin: 'remote',
+      } as never);
+      const stmt = texts[0].replace(/\s+/g, ' ');
+      // A peer still on pre-fix code sends NULL for these three; a bare EXCLUDED
+      // would let its next ordinary content update ERASE the actor, the reason
+      // and the eviction marker from a row that already has them.
+      for (const col of ['retracted_by', 'retraction_reason', 'evicted_at']) {
+        expect(stmt, `${col} must COALESCE, not overwrite`).toContain(
+          `${col} = COALESCE(EXCLUDED.${col}, harness_shared.agent_facts.${col})`,
+        );
+      }
+      // Claim substance is real authoring content: clearing it is a change and
+      // must propagate as one.
+      for (const col of ['kind', 'claim', 'enforcement', 'settled_by', 'depends_on']) {
+        expect(stmt, `${col} must replace wholesale`).toContain(`${col} = EXCLUDED.${col}`);
+      }
+      // superseded_at is never inserted: the guard above means every row this
+      // statement writes is live, so it takes its NULL default.
+      expect(stmt).not.toContain('superseded_at =');
+    });
+  });
+});
+
+describe('decodeValue — EI-21467654382027859 additions', () => {
+  it('accepts rows omitting all of them (pre-existing history ops)', () => {
+    expect(decodeValue(row())).not.toBeNull();
+  });
+
+  it('accepts well-formed values', () => {
+    expect(
+      decodeValue(
+        row({
+          kind: 'convention',
+          claim: { subject: 's', assertion: 'a' },
+          enforcement: { tier: 'gate', floor: 1, reviewBy: '2026-12-01' },
+          settled_by: 'a probe',
+          depends_on: [{ cell: 'deploy.3070.sha' }],
+          superseded_at: null,
+          evicted_at: null,
+        }),
+      ),
+    ).not.toBeNull();
+  });
+
+  it('REFUSES an unrecognized kind or enforcement tier rather than letting it raise on INSERT', () => {
+    // Both columns carry DB CHECK constraints, so an unrecognized sender value
+    // would abort the projection write; refusing the single op is the softer
+    // failure. Same stance the confidence tier already takes.
+    expect(decodeValue(row({ kind: 'made-up-modality' } as never))).toBeNull();
+    expect(decodeValue(row({ enforcement: { tier: 'prompt' } } as never))).toBeNull();
+    expect(decodeValue(row({ enforcement: { floor: 0.9 } } as never))).toBeNull();
+  });
+
+  it('REFUSES the wrong JSON container shape in either direction', () => {
+    // depends_on is an array and claim/enforcement are objects — a swap is the
+    // easy mistake, and each would land in a jsonb column that then reads wrong.
+    expect(decodeValue(row({ depends_on: { cell: 'x' } } as never))).toBeNull();
+    expect(decodeValue(row({ claim: [{ subject: 's' }] } as never))).toBeNull();
+    expect(decodeValue(row({ superseded_at: 12345 } as never))).toBeNull();
   });
 });
 
