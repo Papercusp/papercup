@@ -3272,6 +3272,63 @@ pub(crate) fn block_with_header_rows(
     rows[1]
 }
 
+/// The Plans tab's item-detail body. This stays local to the Plans surface now
+/// that the refitted Context pane renders only the shared projection contract.
+fn plan_item_detail_lines(it: &crate::models::PlanItemState) -> Vec<Line<'static>> {
+    let mut out = vec![
+        Line::from(Span::styled(it.item_id.clone(), Theme::title())),
+        Line::from(vec![
+            Span::styled("status      ", Theme::dim()),
+            Span::raw(it.item_status.clone().unwrap_or_else(|| "—".to_string())),
+            Span::styled("   disposition  ", Theme::dim()),
+            Span::raw(if it.disposition.is_empty() {
+                "—".to_string()
+            } else {
+                it.disposition.clone()
+            }),
+        ]),
+    ];
+    let who = it
+        .claim_owner_name
+        .clone()
+        .or_else(|| it.claim_owner.clone())
+        .or_else(|| it.assignee_name.clone());
+    if let Some(who) = who.filter(|value| !value.is_empty()) {
+        out.push(Line::from(vec![
+            Span::styled("who         ", Theme::dim()),
+            Span::raw(who),
+        ]));
+    }
+    if let Some(mode) = it
+        .claim_liveness_mode
+        .clone()
+        .filter(|value| !value.is_empty())
+    {
+        out.push(Line::from(vec![
+            Span::styled("liveness    ", Theme::dim()),
+            Span::raw(mode),
+        ]));
+    }
+    if let Some(expires) = it
+        .claim_expires_ts
+        .clone()
+        .filter(|value| !value.is_empty())
+    {
+        out.push(Line::from(vec![
+            Span::styled("lease ends  ", Theme::dim()),
+            Span::raw(expires),
+        ]));
+    }
+    if let Some(intent) = it.claim_intent.clone().filter(|value| !value.is_empty()) {
+        out.push(Line::from(Span::styled("─".repeat(40), Theme::dim())));
+        out.push(Line::from(Span::styled("intent", Theme::info())));
+        for line in intent.lines() {
+            out.push(Line::from(line.to_string()));
+        }
+    }
+    out
+}
+
 /// The Fleet comms detail popup (owner ask 2026-06-14): the full mail message or
 /// conversation thread under the comms cursor, centered over the dock. Modal —
 /// the key handler closes it on Esc/`q`/Enter and steps the item with `j`/`k`.
