@@ -155,6 +155,7 @@ import {
   type CarryArgRepair,
   normalizeCheckEntries,
   patchExistingCheckEntries,
+  sanitizeCarryRowId,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
   truncateCarryField,
@@ -185,6 +186,69 @@ function appendChecksOverflowCount(
       .map((row) => carryRowKey(row)),
   );
   return Math.max(0, unionKeys.size - CARRY_NOTE_MAX_CHECKS);
+}
+
+type AppendChecksOverflowRow = {
+  id?: string;
+  claim: string;
+  recheck?: string;
+  verified?: string;
+  contested?: string;
+  sinceMs?: number;
+};
+
+/**
+ * Return the exact PRIOR check rows that the additive normalizer would evict.
+ *
+ * This deliberately mirrors the transform rather than deriving victims from the
+ * overflow count: `carryRowKey` is identity, supplied rows are ordered first when
+ * the union overflows, and `normalizeCheckEntries` applies the same telemetry and
+ * cap rules as the eventual write. The prior note is read by the store under its
+ * lock before this guard runs, so the result describes the row set the refused
+ * write actually would have changed.
+ *
+ * The result is bounded for legacy notes that predate the current row cap. Normal
+ * notes can evict at most the carried tail; the bound keeps an unexpectedly large
+ * legacy note from turning a refusal into an unbounded response.
+ */
+function appendChecksOverflowRows(
+  priorNote: string | null,
+  suppliedChecks: ReadonlyArray<{
+    id?: string;
+    claim: string;
+    recheck?: string;
+    verified?: string;
+    contested?: string;
+    sinceMs?: number;
+  }>,
+): AppendChecksOverflowRow[] {
+  if (suppliedChecks.length === 0) return [];
+  const priorChecks = splitCarryNoteChecks(priorNote).checks;
+
+  // An all-existing keyed refresh is patched in place and deliberately preserves
+  // over-cap legacy rows, so it cannot produce an additive-cap eviction.
+  if (patchExistingCheckEntries(suppliedChecks, priorChecks) !== null) return [];
+
+  const merged = normalizeCheckEntries([...suppliedChecks, ...priorChecks], priorChecks);
+  const keptKeys = new Set(merged.map((row) => carryRowKey(row)));
+  const evicted = priorChecks.filter(
+    (row) => row.claim.trim().length > 0 && !keptKeys.has(carryRowKey(row)),
+  );
+
+  return evicted.slice(0, CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE).map((row) => {
+    const id = sanitizeCarryRowId(row.id);
+    const recheck = row.recheck?.trim();
+    const verified = row.verified?.trim();
+    const contested = row.contested?.trim();
+    return {
+      ...(id ? { id } : {}),
+      claim: row.claim.trim(),
+      ...(recheck ? { recheck } : {}),
+      ...(verified ? { verified } : {}),
+      ...(contested ? { contested } : {}),
+      ...(row.sinceMs !== undefined && Number.isFinite(row.sinceMs) ? { sinceMs: row.sinceMs } : {}),
+    };
+  });
 }
 
 /**
@@ -391,7 +455,7 @@ function checksSpec() {
         'you omit them, so re-sending a claim never loses its evidence. Supplying `verified` clears an inherited ' +
         '`contested` and vice versa — they are two renderings of ONE evidence slot, not independent fields — and ' +
         'evidence that contradicts itself (for example "STILL RUNNING") is auto-downgraded to ⚠ CONTESTED rather ' +
-        'than rendering as ✓ VERIFIED. Rows dropped come back as `checksDropped`. A bare string row is accepted as shorthand for `{ claim: <that string> }`.',
+        'than rendering as ✓ VERIFIED. Rows dropped come back as `checksDropped`; additive-cap refusals also include the exact stored rows as `checksDroppedRows` with sanitized ids. A bare string row is accepted as shorthand for `{ claim: <that string> }`.',
     );
 }
 
@@ -1035,6 +1099,7 @@ export default defineTool({
          * reading both flags at call time, inside the store's lock — is what stops the
          * retry from evicting the rows the first attempt refused to lose.
          */
+        let appendChecksOverflowDiagnostics: AppendChecksOverflowRow[] = [];
         const overflowGuard: CheckpointGuard | null = !wantsConfirmShrink && suppliedChecks !== undefined
           ? (_priorNote) => {
               // An explicitly empty list is the documented additive no-op for both
@@ -1043,12 +1108,14 @@ export default defineTool({
               if (suppliedChecks.length === 0) return null;
               if (!(additiveChecks || preservePriorOnShrink)) return null;
               const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
-              return overflowCount > 0
-                ? `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
-                  `(${overflowCount} carried row(s) would be evicted). Refusing the additive write before it changes ` +
-                  `the checkpoint. Retire stale rows with a plain replace first, or retry ${wantsAppend ? 'this append' : "rowsMode:'merge'"} without \`checks\` ` +
-                  '(or with `checks: []`) to preserve the carried set.'
-                : null;
+              if (overflowCount === 0) return null;
+              appendChecksOverflowDiagnostics = appendChecksOverflowRows(_priorNote, suppliedChecks);
+              return (
+                `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
+                `(${overflowCount} carried row(s) would be evicted). Refusing the additive write before it changes ` +
+                `the checkpoint. Retire stale rows with a plain replace first, or retry ${wantsAppend ? 'this append' : "rowsMode:'merge'"} without \`checks\` ` +
+                '(or with `checks: []`) to preserve the carried set.'
+              );
             }
           : null;
         let res;
@@ -1163,6 +1230,19 @@ export default defineTool({
                 description: 'Replace the prior note only when this checkpoint contains the complete intended body.',
               },
             },
+            ...(errorCode === 'append_checks_overflow' && appendChecksOverflowDiagnostics.length > 0
+              ? {
+                  // Keep `checksDropped` as the established human-readable string
+                  // list. `checksDroppedRows` is the structured recovery diagnostic:
+                  // it carries the exact stored row (including the parser's stable,
+                  // sanitized id) instead of forcing a caller to reconstruct one
+                  // from a possibly reworded claim.
+                  checksDropped: appendChecksOverflowDiagnostics.map((row) =>
+                    row.claim.length > 300 ? `${row.claim.slice(0, 300)}…` : row.claim,
+                  ),
+                  checksDroppedRows: appendChecksOverflowDiagnostics,
+                }
+              : {}),
           };
         }
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
