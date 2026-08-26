@@ -38,6 +38,7 @@ import {
   type GateRedOwnership,
 } from '../../release/gate-red-ownership';
 import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../release/fixer-liveness';
+import type postgres from 'postgres';
 import { decideStallNotification, describeLadderPosition } from '../../release/stall-escalation-ladder';
 import {
   summarizeStreakCause,
@@ -1385,7 +1386,7 @@ export function gateStallEscalationBody(opts: {
  * Fail-safe: any read error yields `null` and the bodies render exactly as they did before.
  */
 async function readStreakCauseDigest(
-  sql: { unsafe: (q: string, p: unknown[]) => Promise<unknown> },
+  sql: postgres.Sql,
   installSlug: string,
   workspaceId: string,
   streakStartMs: number | null,
