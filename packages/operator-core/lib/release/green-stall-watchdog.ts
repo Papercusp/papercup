@@ -59,6 +59,7 @@ import {
   classifyCheckpointSerializerAuthority,
   checkpointQuiescenceItemId,
 } from './checkpoint-serializer-authority';
+import { classifyGateAbort, type GateAbortKind } from './gate-abort-status';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
  *  running it (cron is hourly at :15, so this is ~3 missed fires). */
@@ -480,6 +481,220 @@ export function decideGreenCheckpointStallRecovery(opts: {
     };
   }
   return { action: 'dispatch', reason: 'retry', nextAttempt: attempts + 1 };
+}
+
+/**
+ * P-006 (WI-41755), ruled by D-006 — may a detected verdict-less death be met with an
+ * AUTOMATIC gate re-fire?
+ *
+ * ## The whole point: detection does not authorize actuation
+ *
+ * `evaluateGreenStall().verdictless` says "the gate is firing and recording nothing".
+ * The tempting next line is "so fire it again". D-006 forbids that, and the reason is
+ * asymmetric cost: a re-fire that helps saves one human read, and a re-fire that does
+ * not costs a ~55min full suite, holds the exclusive pc-heavy slot against every other
+ * install, and renders NO verdict while doing it — so the burn is invisible to every
+ * green/red signal. Repeat that on a timer and a single standing fault freezes
+ * promotion fleet-wide while looking, to every dashboard, like silence.
+ *
+ * So the burden of proof sits on re-firing. Every gate below is a reason to DECLINE.
+ *
+ * ## Why `transient` is necessary but NOT sufficient — the measured part
+ *
+ * D-006 gates the re-fire on D-004's taxonomy: re-fire only a `transient` abort (nothing
+ * latched, so a re-fire may genuinely finish), never a `standing-condition` (a named
+ * blocker a re-fire hits again). That is correct and load-bearing, but it is not enough
+ * on its own, and the live data says why.
+ *
+ * Measured 2026-08-26 across the active installs: five of them (calendar, hello-world-3,
+ * hello-world-3-pot, hotel-reservations, oddsmith) sat at `inconclusive.status = 'error'`,
+ * which `KIND_BY_STATUS` classifies — correctly — as `transient`. `'error'` means the run
+ * faulted for an unrecorded reason and latched nothing, so there is genuinely no condition
+ * to clear. But oddsmith had done it 530 consecutive times. Whatever that fault is, it is
+ * perfectly reproducible, and "nothing to clear" plainly did not make it self-clearing.
+ *
+ * That is the gap between the two words D-004 is careful to separate: the taxonomy asks
+ * *is there a condition to clear?* and re-firing needs the answer to *will waiting fix it?*
+ * For a one-off crash those coincide. For a reproducible one they do not, and `transient`
+ * answers the first question while the re-fire decision depends on the second.
+ *
+ * `reproduced` closes exactly that gap, empirically rather than by re-classifying: if the
+ * abort status now on record is the SAME status the previous re-fire attempt already saw,
+ * that attempt is a completed experiment and its result was "it happened again". Stop and
+ * alarm. This is what keeps the oddsmith shape from spending the full attempt budget to
+ * re-learn a fact the first attempt established.
+ *
+ * ## Ordering is part of the contract
+ *
+ * `ownerWallActive` is checked before anything can return `refire`, so "while the wall
+ * stands this function cannot re-fire" is a property of the FUNCTION, provable in
+ * isolation, not an emergent consequence of the classification arms below it. D-006's
+ * last clause ("never auto-refire past the owner wall while D-080 stands") is a hard
+ * prohibition, and a hard prohibition should not be reachable only by argument.
+ *
+ * Pure by design: every input is passed in and nothing is persisted here. While D-080
+ * stands the sweep consumes this ADVISORY only — it tells a human reading the alarm
+ * whether a re-fire is safe and why — so the judgement can be reviewed on live data
+ * before it is ever wired to actuation.
+ */
+export type VerdictlessRefireAction = 'refire' | 'alarm' | 'none';
+
+export type VerdictlessRefireReason =
+  | 'not-verdictless'
+  | 'owner-wall'
+  | 'refire-in-flight'
+  | 'unclassifiable'
+  | 'not-transient'
+  | 'reproduced'
+  | 'max-attempts'
+  | 'cooling-down'
+  | 'transient-retry';
+
+export interface VerdictlessRefireDecision {
+  /** `refire` = safe to fire; `alarm` = a human must look; `none` = nothing to say yet. */
+  action: VerdictlessRefireAction;
+  reason: VerdictlessRefireReason;
+  abortKind: GateAbortKind;
+  abortStatus: string | null;
+  /** the attempt number a `refire` would become; unchanged on every declining arm. */
+  nextAttempt: number;
+  /** one operator-facing sentence — the whole judgement, quotable into an alarm. */
+  detail: string;
+}
+
+/**
+ * Minimum spacing between re-fire attempts. A full suite is ~55min, so this is deliberately
+ * longer than one run: it means a second attempt can only happen after the first has had time
+ * to either finish or die, never stacked on top of a run still in flight. `refireInFlight`
+ * is the precise signal; this is the backstop for when we cannot see one.
+ */
+const DEFAULT_VERDICTLESS_REFIRE_COOLDOWN_MS = 90 * 60 * 1000;
+
+export function decideVerdictlessRefire(opts: {
+  /** `evaluateGreenStall().verdictless` — the detection this actuation hangs off. */
+  verdictless: boolean;
+  /** `gate_health.inconclusive.status`, or null when the abort recorded no typed status. */
+  abortStatus: string | null;
+  /** true while an owner wall (D-080) forbids firing the gate. Fail-CLOSED: default true. */
+  ownerWallActive?: boolean;
+  /** true when a re-fire/re-triage for this install is already running. */
+  refireInFlight?: boolean;
+  /** attempts already spent this stall episode. */
+  attempts?: number;
+  /** the abort status the PREVIOUS attempt was fired against, if any. */
+  lastAttemptStatus?: string | null;
+  lastAttemptAtMs?: number | null;
+  nowMs: number;
+  maxAttempts?: number;
+  cooldownMs?: number;
+}): VerdictlessRefireDecision {
+  const abortStatus = opts.abortStatus ?? null;
+  const abortKind: GateAbortKind = abortStatus == null ? 'unknown' : classifyGateAbort(abortStatus);
+  const attempts = finiteNonNegativeInt(opts.attempts, 0);
+  const maxAttempts = Math.max(
+    1,
+    finiteNonNegativeInt(opts.maxAttempts, DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_MAX_ATTEMPTS),
+  );
+  const base = { abortKind, abortStatus, nextAttempt: attempts } as const;
+
+  if (!opts.verdictless) {
+    return {
+      ...base,
+      action: 'none',
+      reason: 'not-verdictless',
+      detail: 'no verdict-less death detected; nothing to re-fire.',
+    };
+  }
+
+  // D-006's hard prohibition, checked FIRST so no arm below can reach `refire` past it.
+  // Fail-closed: an unspecified wall is treated as standing, because the cost of wrongly
+  // firing past an owner wall is far above the cost of wrongly declining to.
+  if (opts.ownerWallActive !== false) {
+    return {
+      ...base,
+      action: 'alarm',
+      reason: 'owner-wall',
+      detail:
+        'the gate died without a verdict, but an owner wall (D-080) forbids firing it — ' +
+        'alarming instead. Clear the wall to allow automatic recovery.',
+    };
+  }
+
+  if (opts.refireInFlight === true) {
+    return {
+      ...base,
+      action: 'none',
+      reason: 'refire-in-flight',
+      detail: 'a re-fire is already running for this install; never stack a second onto it.',
+    };
+  }
+
+  // D-006: "An UNCLASSIFIABLE abort is NOT transient. Default to alarm-and-stop."
+  if (abortStatus == null || abortKind === 'unknown') {
+    return {
+      ...base,
+      action: 'alarm',
+      reason: 'unclassifiable',
+      detail:
+        `the gate died without a verdict and the abort is unclassifiable (${abortStatus ?? 'no status recorded'}) — ` +
+        'declining to re-fire. An unknown cause is not evidence of a transient one.',
+    };
+  }
+
+  if (abortKind !== 'transient') {
+    return {
+      ...base,
+      action: 'alarm',
+      reason: 'not-transient',
+      detail:
+        `the gate died without a verdict on a ${abortKind} abort (${abortStatus}) — re-firing hits the ` +
+        'same wall, so this needs a human, not another suite.',
+    };
+  }
+
+  // The empirical falsifier for "transient". See the measured oddsmith case above: a status
+  // that latches nothing can still reproduce perfectly, and the previous attempt already
+  // ran that experiment for us.
+  if (attempts > 0 && opts.lastAttemptStatus != null && opts.lastAttemptStatus === abortStatus) {
+    return {
+      ...base,
+      action: 'alarm',
+      reason: 'reproduced',
+      detail:
+        `a re-fire was already attempted against this exact abort (${abortStatus}) and it happened again — ` +
+        'so it is reproducible, not self-clearing. Stopping rather than spending the rest of the budget.',
+    };
+  }
+
+  if (attempts >= maxAttempts) {
+    return {
+      ...base,
+      action: 'alarm',
+      reason: 'max-attempts',
+      detail: `re-fire budget spent (${attempts}/${maxAttempts}) without a verdict — escalating to a human.`,
+    };
+  }
+
+  const cooldownMs = Math.max(0, opts.cooldownMs ?? DEFAULT_VERDICTLESS_REFIRE_COOLDOWN_MS);
+  const lastAttemptAtMs = finiteTimestamp(opts.lastAttemptAtMs);
+  if (lastAttemptAtMs != null && opts.nowMs - lastAttemptAtMs < cooldownMs) {
+    return {
+      ...base,
+      action: 'none',
+      reason: 'cooling-down',
+      detail: 'the previous re-fire is still within its cooldown; waiting rather than stacking runs.',
+    };
+  }
+
+  return {
+    ...base,
+    action: 'refire',
+    reason: 'transient-retry',
+    nextAttempt: attempts + 1,
+    detail:
+      `the gate died without a verdict on a transient abort (${abortStatus}) that has not yet repeated — ` +
+      `re-firing (attempt ${attempts + 1}/${maxAttempts}).`,
+  };
 }
 
 /** The bits of one green-checkpoint routine row the verdict is computed from. */
@@ -1557,7 +1772,15 @@ export async function checkGreenStall(
         workspace_id: string;
         last_fired_ms: string | number | null;
         last_verdict_ms: string | number | null;
-        gh: { lastGreenAt?: number; watchdogAlerted?: boolean; failingTests?: string[] } | null;
+        gh: {
+          lastGreenAt?: number;
+          watchdogAlerted?: boolean;
+          failingTests?: string[];
+          // P-006 (WI-41755): the typed abort record release-actions.ts writes on an aborted
+          // tick. Already inside the `gate_health` jsonb this query selects, so reading it
+          // costs nothing extra — it is what lets the re-fire advisory classify the abort.
+          inconclusive?: { status?: string; candidate?: string | null; observedAtMs?: number } | null;
+        } | null;
       }[]
     >`
       SELECT r.install_slug,
@@ -1638,14 +1861,38 @@ export async function checkGreenStall(
         // alarms (we have already won the one-shot flip), so a healthy sweep pays
         // nothing. Fail-soft: no evidence ⇒ `attributeVerdictStale` says so plainly
         // rather than falling back to the old "⇒ a failing suite" guess.
-        const lastRun = verdict.verdictStale
-          ? await readLastGateRunEvidence(sql, row.install_slug)
-          : null;
-        // P-006 (WI-41755): pass the fire time so a fire that recorded NOTHING is named as
-        // such, instead of being explained with an earlier run's cause. Both values are
-        // already in scope here; before this the evidence's age was never compared to anything.
-        const attribution = verdict.verdictStale
+        //
+        // P-006 (WI-41755): this read is gated on `verdictStale || verdictless`, and the
+        // second half is not cosmetic — without it the alarm is evidence-BLIND in exactly
+        // the case the verdictless limb was built to catch.
+        //
+        // The two limbs fire on different clocks: `verdictless` at 3h, `verdictStale` only
+        // after 12h with no GREEN. So a gate that greened recently and has been dying ever
+        // since alarms via `verdictless` ALONE, with `verdictStale` still false for the next
+        // nine hours. Gated on `verdictStale` only, that alarm read no evidence, produced no
+        // attribution, and — worst of the three — emitted `verdictlessDeath: null`, i.e. the
+        // structured field that says "the run left no verdict" read as absent precisely when
+        // the death WAS verdict-less. A consumer branching on it would conclude the opposite
+        // of the truth, which is worse than the field not existing at all.
+        const needsEvidence = verdict.verdictStale || verdict.verdictless;
+        const lastRun = needsEvidence ? await readLastGateRunEvidence(sql, row.install_slug) : null;
+        // Pass the fire time so a fire that recorded NOTHING is named as such, instead of being
+        // explained with an earlier run's cause. Both values are already in scope here; before
+        // this the evidence's age was never compared to anything.
+        const attribution = needsEvidence
           ? attributeVerdictStale({ failingTests, last: lastRun, lastFiredMs, now })
+          : null;
+        // D-006: classify whether this verdict-less death may be met with an automatic re-fire.
+        // ADVISORY ONLY while D-080 stands — `ownerWallActive: true` makes the decision function
+        // structurally incapable of returning `refire`, so this can be validated against live
+        // installs before it is ever wired to actuation.
+        const refire = verdict.verdictless
+          ? decideVerdictlessRefire({
+              verdictless: true,
+              abortStatus: row.gh?.inconclusive?.status ?? null,
+              ownerWallActive: true,
+              nowMs: now,
+            })
           : null;
         const reasonText = attribution
           ? `${verdict.reason} — ${attribution.cause}`
@@ -1667,9 +1914,15 @@ export async function checkGreenStall(
               // verdict" without parsing prose. `lastRunCrashed` cannot express this case —
               // it reports the newest RECORDED run, which in a verdict-less death is an
               // earlier run entirely, so it can read `false` while the current fire is dead.
-              verdictlessDeath: verdict.verdictStale
+              verdictlessDeath: needsEvidence
                 ? judgeVerdictlessDeath({ last: lastRun, lastFiredMs, now }).reason
                 : null,
+              // D-006: what an automatic re-fire WOULD do, and why. Structured so a consumer
+              // can branch on the judgement without parsing prose; `refireAction: 'refire'` is
+              // unreachable while the owner wall stands.
+              refireAction: refire?.action ?? null,
+              refireReason: refire?.reason ?? null,
+              abortKind: refire?.abortKind ?? null,
             },
           });
         } catch (e) {
@@ -1688,7 +1941,12 @@ export async function checkGreenStall(
             (verdict.fireStale
               ? `fire-staleness ⇒ the routine engine/DBOS is wedged (a reaper should recover; manual help if it persists). `
               : '') +
-            (attribution?.remedy ?? `release:checkpoint-run forces a fresh gate run.`),
+            (attribution?.remedy ?? `release:checkpoint-run forces a fresh gate run.`) +
+            // D-006: say plainly whether a re-fire is the right move. A responder reading a
+            // verdict-less stall's default remedy ("release:checkpoint-run forces a fresh gate
+            // run") would otherwise re-fire into a standing abort — which is the exact mistake
+            // that burned the D-077 one-shot on 2026-08-25.
+            (refire ? `\n\nAuto-refire judgement: ${refire.detail}` : ''),
           category: 'severe-event',
           // WI-1444 condition lifecycle: recovery below broadcasts the matching
           // resolution, so late inbox readers see this alarm annotated resolved.
