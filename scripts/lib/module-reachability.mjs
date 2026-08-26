@@ -46,6 +46,31 @@
  * nobody checked is the failure this whole family of guards keeps rediscovering.
  */
 
+/* ── THE SELF-OBSERVATION DEFECT (measured 2026-08-26, during this file's own bring-up)
+ *
+ * `parseReleasePathMentions` treats a literal `lib/release/**` path in a file as
+ * evidence that the file EXECUTES that module. The guard's own acknowledged-unreachable
+ * allowlist is a list of exactly those paths — so the first wired run reported ALL 21
+ * known-dead modules as reachable, each with one "production importer":
+ * `scripts/check-lint-guard-reachability.mjs`. The detector had observed itself and
+ * concluded the patient was healthy.
+ *
+ * Note the DIRECTION, which is what makes it dangerous: it fails GREEN. An empty
+ * finding set and a passing watermark are indistinguishable from a clean tree, so the
+ * guard would have sat there measuring nothing, indefinitely, looking like diligence —
+ * which is the precise failure mode this whole file exists to detect. It was caught
+ * only because an earlier standalone probe had measured 21 and the numbers disagreed.
+ *
+ * The remedy is the repo's existing one for this class: `scripts/proc-guard.mjs` walks
+ * the CALLER's own ancestor chain and excludes it before matching, so it cannot
+ * self-match. `selfExclusionPaths()` is that idea for a file scan — and it is derived
+ * from `import.meta.url`, never a hardcoded string, so renaming this file cannot
+ * silently re-open the hole.
+ */
+
+import { relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 const TEST_RE = /\.test\.tsx?$/;
 const DECLARATION_RE = /\.d\.[cm]?ts$/;
 const SOURCE_RE = /\.(?:tsx?|[cm]?js|[cm]ts)$/;
@@ -56,6 +81,23 @@ const DETECTOR_DIR_RE = /(?:^|\/)lib\/release\//;
 /** A repo-relative path spelled inside a file (a spawn/exec target, not an import). */
 const RELEASE_PATH_MENTION_RE =
   /(?:apps|packages|libs)\/[\w./-]*lib\/release\/[\w./-]+\.(?:tsx?|[cm]ts)/g;
+
+/**
+ * The instrument's own source files, repo-relative — the reacher set that must be
+ * excluded so the census cannot resurrect a module merely by NAMING it in an allowlist
+ * or a report. See the SELF-OBSERVATION note above.
+ *
+ * Derived from `import.meta.url`, so a rename moves the exclusion with the file instead
+ * of silently re-opening the hole. The host script adds its own path the same way.
+ *
+ * @param {string} root absolute repo root
+ * @returns {Set<string>} repo-relative paths
+ */
+export function selfExclusionPaths(root) {
+  const here = fileURLToPath(import.meta.url);
+  const rel = relative(root, here).split(sep).join('/');
+  return new Set([rel]);
+}
 
 /** True for a test file — a test importer is NOT production usage (that is the whole point). */
 export function isTestFile(file) {
@@ -245,10 +287,17 @@ export function buildImportGraph({ files, readFile, workspaceDirByName = new Map
  *
  * @param {{population:string[], importers:Map<string,Set<string>>, pathMentions?:Map<string,Set<string>>}} args
  */
-export function findUnreachableModules({ population, importers, pathMentions = new Map() }) {
+export function findUnreachableModules({
+  population,
+  importers,
+  pathMentions = new Map(),
+  excludeReachers = new Set(),
+}) {
   const dead = new Set();
   const reachersOf = (m) =>
-    [...new Set([...(importers.get(m) ?? []), ...(pathMentions.get(m) ?? [])])].filter((f) => f !== m);
+    [...new Set([...(importers.get(m) ?? []), ...(pathMentions.get(m) ?? [])])].filter(
+      (f) => f !== m && !excludeReachers.has(f),
+    );
 
   let changed = true;
   let rounds = 0;

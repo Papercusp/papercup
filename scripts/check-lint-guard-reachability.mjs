@@ -121,7 +121,7 @@
  *   1 — an unreachable guard is not allow-listed, or an allowlist entry is STALE
  */
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { dirname, resolve, relative } from 'node:path';
+import { dirname, resolve, relative, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { listTrackedFiles } from './lib/tracked-files.mjs';
 import {
@@ -129,6 +129,7 @@ import {
   buildImportGraph,
   findUnreachableModules,
   selectDetectorModules,
+  selfExclusionPaths,
 } from './lib/module-reachability.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1224,11 +1225,24 @@ function runModuleReachability({ files, workspaceDirByName }) {
     return raw ? stripComments(raw) : '';
   };
 
+  // ⚠ THE INSTRUMENT MUST NOT COUNT AS A CALLER. ACKNOWLEDGED_UNREACHABLE_MODULES above
+  // is a list of `lib/release/**` paths, and the mention scan reads literal paths as
+  // execution evidence — so without this exclusion THIS FILE resurrects every module it
+  // tracks. Measured during bring-up: all 21 known-dead modules came back reachable with
+  // one "production importer" each, this script. It failed GREEN, which is why it nearly
+  // shipped. Same remedy as scripts/proc-guard.mjs excluding its own ancestor chain.
+  // Both paths are derived from import.meta.url so a rename cannot re-open the hole.
+  const excludeReachers = new Set([
+    ...selfExclusionPaths(ROOT),
+    relative(ROOT, fileURLToPath(import.meta.url)).split(sep).join('/'),
+  ]);
+
   const graph = buildImportGraph({ files, readFile, workspaceDirByName });
   const result = findUnreachableModules({
     population,
     importers: graph.importers,
     pathMentions: graph.pathMentions,
+    excludeReachers,
   });
   const health = assessGraphHealth({
     resolvedEdges: graph.resolvedEdges,
