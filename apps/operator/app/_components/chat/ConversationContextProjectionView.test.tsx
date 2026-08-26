@@ -59,6 +59,20 @@ const PROJECTION: ConversationContextProjection = {
       entries: [{ label: "Harness", value: "papercusp" }],
     },
     {
+      id: "ctx-fleet",
+      kind: "context",
+      section: "fleet",
+      title: "Fleet",
+      entries: [{
+        label: "Roster",
+        value: "2 members",
+        badges: [
+          { label: "●", state: "live", title: "su-a · live" },
+          { label: "◐", state: "parked", title: "su-b · parked" },
+        ],
+      }],
+    },
+    {
       id: "task-1",
       kind: "task",
       taskId: "t1",
@@ -70,6 +84,7 @@ const PROJECTION: ConversationContextProjection = {
       explanation: "Shared row",
       position: 0,
       updatedAt: "2026-08-26T00:00:01Z",
+      links: [],
     },
     {
       id: "approval-1",
@@ -149,6 +164,9 @@ describe('shared conversation/context GUI consumer', () => {
     const root = screen.getByTestId('conversation-context-projection');
     expect(root.dataset.capabilityTier).toBe('owned-loop');
     expect(screen.getByText('papercusp')).toBeTruthy();
+    expect(screen.getByText('2 members')).toBeTruthy();
+    expect(screen.getByTitle('su-a · live').dataset.state).toBe('live');
+    expect(screen.getByTitle('su-b · parked').dataset.state).toBe('parked');
     expect(screen.getByText('Shipping projection')).toBeTruthy();
     expect(screen.getByText('Shared row')).toBeTruthy();
     expect(screen.getByText('capability:edit')).toBeTruthy();

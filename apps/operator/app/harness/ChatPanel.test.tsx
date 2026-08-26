@@ -128,6 +128,7 @@ function taskProjection(
       explanation: null,
       position: 0,
       updatedAt: '2026-08-26T00:00:01Z',
+      links: [],
     }],
   };
 }
