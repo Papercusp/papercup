@@ -482,7 +482,7 @@ export default defineTool({
       .positive()
       .optional()
       .describe(
-        'Dead-man guard: auto-pause the loop this many seconds after it was armed (a bound on a forgotten / permanently-dead loop).',
+        'Dead-man guard: auto-pause the loop this many seconds after it was armed (a bound on a forgotten / permanently-dead loop). Must be a positive integer. OMIT this optional field when no duration ceiling is intended; `maxDurationSec: 0` is invalid and is not a disable sentinel.',
       ),
   }),
   async handler(args, ctx) {
@@ -609,37 +609,40 @@ export default defineTool({
     // `loop:arm { carry }` retune works. A FRESH arm missing either still fails,
     // now with an explicit invalid_args response naming the fields instead of an
     // opaque schema rejection.
-    let intervalSecArg: number | undefined = args.intervalSec;
-    let goalArg: string | undefined = args.goal;
-    if (intervalSecArg == null || goalArg == null) {
-      if (prior?.active === true) {
-        intervalSecArg = intervalSecArg ?? prior.intervalSec ?? undefined;
-        goalArg = goalArg ?? prior.goal ?? undefined;
-      }
-      const goalBlank = goalArg == null || String(goalArg).trim() === '';
-      if (intervalSecArg == null || goalBlank) {
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify({
-                ok: false,
-                error: 'invalid_args',
-                missing: [
-                  ...(intervalSecArg == null ? ['intervalSec'] : []),
-                  ...(goalBlank ? ['goal'] : []),
-                ],
-                message:
-                  'intervalSec and goal are required when arming a loop that has no active prior ' +
-                  '(a carry-only RETUNE inherits them from the live loop). Read loop:status for ' +
-                  'the current values, or pass both explicitly.',
-              }),
-            },
-          ],
-          isError: true,
-        };
-      }
+    const inheritedIntervalSec =
+      args.intervalSec ?? (prior?.active === true ? prior.intervalSec ?? undefined : undefined);
+    const inheritedGoal =
+      args.goal ?? (prior?.active === true ? prior.goal ?? undefined : undefined);
+    // A FRESH arm missing either still fails — now with an explicit invalid_args
+    // response naming the fields instead of an opaque schema rejection.
+    if (
+      inheritedIntervalSec == null ||
+      inheritedGoal == null ||
+      inheritedGoal.trim() === ''
+    ) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'invalid_args',
+              missing: [
+                ...(inheritedIntervalSec == null ? ['intervalSec'] : []),
+                ...(inheritedGoal == null || inheritedGoal.trim() === '' ? ['goal'] : []),
+              ],
+              message:
+                'intervalSec and goal are required when arming a loop that has no active prior ' +
+                '(a carry-only RETUNE inherits them from the live loop). Read loop:status for ' +
+                'the current values, or pass both explicitly.',
+            }),
+          },
+        ],
+        isError: true,
+      };
     }
+    const intervalSecArg: number = inheritedIntervalSec;
+    const rawGoal: string = inheritedGoal;
     const explicitWorkItem = args.workItem?.trim();
     const monitorAuthorityWorkItem =
       preparedMonitorConfig?.authority.kind === 'work-item' ? preparedMonitorConfig.authority.workItem : undefined;
@@ -654,7 +657,6 @@ export default defineTool({
     // identifier that straddles the 4000-character boundary into a valid-looking
     // truncated prefix (for example `EI-214022`), producing a misleading not_found
     // auto-claim result (EI-21405190650662222).
-    const rawGoal = goalArg;
     const goal = clampText(rawGoal, 4000);
     const carryForScope: 'warm' | 'cold' | undefined =
       args.carry ??
