@@ -392,6 +392,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     });
 
     if (input.pairs.length === 0) {
+      const convergenceReason = census.censusAfter === 0 ? 'global-zero' : 'scope-zero';
       await sql`
         UPDATE harness_shared.admission_runs
            SET finished_at = now(), promoted = 0, merged = 0, held = 0,
@@ -399,16 +400,31 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                model_id = NULL, tokens_in = 0, tokens_out = 0, latency_ms = 0,
                detail = detail || ${JSON.stringify({
                  status: 'complete',
-                 convergence: scope === 'full-corpus' ? 'global-zero' : 'scope-zero',
+                 convergence: convergenceReason,
                  resultCensusRunId: census.runId,
                  scopedPairsAfter: 0,
                })}::text::jsonb
          WHERE id = ${stageRunId}`;
+      stages.push({
+        runId: stageRunId,
+        sourceCensusRunId: census.runId,
+        resultCensusRunId: census.runId,
+        scope,
+        pairs: 0,
+        merged: 0,
+        held: 0,
+        modelCalls: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        censusBefore: census.censusAfter,
+        censusAfter: census.censusAfter,
+        scopedPairsAfter: 0,
+      });
       return {
         runId: rootRunId,
         scope,
         converged: true,
-        convergenceReason: scope === 'full-corpus' ? 'global-zero' : 'scope-zero',
+        convergenceReason,
         initialCensus,
         finalCensus: census.censusAfter,
         finalScopedPairs: 0,
@@ -487,6 +503,12 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                    resultCensusRunId: nextCensus.runId,
                    scopedPairsBefore: input.pairs.length,
                    scopedPairsAfter: nextInput.pairs.length,
+                   convergence:
+                     nextInput.pairs.length === 0
+                       ? nextCensus.censusAfter === 0
+                         ? 'global-zero'
+                         : 'scope-zero'
+                       : null,
                    modelCalls: judged.modelCalls,
                    verdicts,
                    ratchet: { before: census.censusAfter, after: nextCensus.censusAfter, ok: true },
@@ -498,12 +520,12 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
       if (!committed) throw new Error(`bulk stage ${stageRunId} committed without a result`);
       stages.push(committed.stage);
       if (committed.scopedPairsAfter === 0) {
+        const convergenceReason = committed.census.censusAfter === 0 ? 'global-zero' : 'scope-zero';
         return {
           runId: rootRunId,
           scope,
           converged: true,
-          convergenceReason:
-            scope === 'full-corpus' && committed.census.censusAfter === 0 ? 'global-zero' : 'scope-zero',
+          convergenceReason,
           initialCensus,
           finalCensus: committed.census.censusAfter,
           finalScopedPairs: 0,
