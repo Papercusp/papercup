@@ -91,6 +91,8 @@ const GUARD_TASK = `${HOST_WORKSPACE} :: ${GUARD_SCRIPT}`;
  * case from the filing: it routes to @papercusp/web, never to operator-core.
  */
 const OUTSIDE_TS_PATH = 'apps/operator/lib/release/deploy-cli.ts';
+/** A test-only TS path the vimock export guard deliberately refuses to inspect. */
+const OUTSIDE_TEST_PATH = 'apps/operator/lib/verify-tauri-headless-quoting.test.ts';
 /** A TS path INSIDE the host workspace, whose full `test` task already covers the guard. */
 const INSIDE_TS_PATH = 'packages/operator-core/lib/terminal-spawn.ts';
 /** A non-source path that cannot introduce a stream accumulator. */
@@ -254,6 +256,17 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
       `${VIMOCK_GUARD_TASK} (guard base: ${base}) ` +
         `(guard args: --files=${OUTSIDE_TS_PATH})`,
     );
+  });
+
+  it('does NOT attach the vimock strand guard for a test-only change it cannot inspect', () => {
+    const out = dryTasks(OUTSIDE_TEST_PATH);
+    expect(out).toContain('@papercusp/web :: test');
+    expect(
+      out,
+      'the guard deliberately skips test/spec files because their own exports are not mocked ' +
+        'production surfaces; scheduling it here guarantees EXIT_NOT_CHECKED and falsely makes ' +
+        'an otherwise-green test-only affected run non-green',
+    ).not.toContain(VIMOCK_GUARD_TASK);
   });
 
   it('attaches and forwards a SUBMODULE ROOT — the only superproject path for internal edits', () => {

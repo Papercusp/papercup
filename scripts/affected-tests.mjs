@@ -2246,9 +2246,14 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // superproject diff represents every submodule-internal edit as the bare gitlink path;
     // the guard expands that root against the forwarded base inside the owning repository.
     forwardChangedPaths: true,
-    // TS-family files, plus submodule roots — the only changed-path shape under which a
-    // runtime export added inside one of the 39 submodules reaches this registry.
-    appliesTo: (f) => /\.[cm]?tsx?$/.test(f) || gitmodulePaths().has(f),
+    // Production TS-family files, plus submodule roots — the only changed-path shape under
+    // which a runtime export added inside one of the 39 submodules reaches this registry.
+    // Test/spec files are deliberately excluded: the guard skips them because their own
+    // exports are not mocked production surfaces. Scheduling one would therefore guarantee
+    // EXIT_NOT_CHECKED and turn an otherwise-green test-only affected run non-green.
+    appliesTo: (f) =>
+      (/\.[cm]?tsx?$/.test(f) && !/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(f)) ||
+      gitmodulePaths().has(f),
   },
   {
     // WI-38401 / EI-20020054576584970 — the sibling of the entry above, and the same
