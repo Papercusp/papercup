@@ -1,6 +1,6 @@
 # August 2026 non-Blender plan audit
 
-Live reconciliation checked on 2026-08-25 at approximately 21:39 EDT.
+Live reconciliation checked on 2026-08-26 at approximately 00:53 EDT.
 
 ## Scope and interpretation
 
@@ -10,17 +10,19 @@ That proves these plans are outside the Blender/Scout cohort. It does **not** pr
 
 `Ready` is not terminal. It generally means implementation may be complete, but acceptance or lifecycle closeout remains unfinished.
 
+The final reconciliation joined the immutable 70-row source manifest to the live workspace-wide plan index by harness and slug: all 70 rows matched, with zero missing rows and zero duplicate keys.
+
 | Original audit bucket | Total | Shipped | Superseded | Unresolved |
 |---|---:|---:|---:|---:|
-| Acceptance residue | 13 | 1 | 0 | 12 |
-| Missing closeout evidence | 51 | 6 | 2 | 43 |
+| Acceptance residue | 13 | 2 | 0 | 11 |
+| Missing closeout evidence | 51 | 8 | 2 | 41 |
 | Stale audit | 5 | 4 | 1 | 0 |
 | Status residue | 1 | 1 | 0 | 0 |
-| **Total** | **70** | **12** | **3** | **55** |
+| **Total** | **70** | **15** | **3** | **52** |
 
-The 55 unresolved plans are currently 20 active, 32 ready, and 3 draft.
+The 52 unresolved plans are currently 20 active, 30 ready, and 2 draft.
 
-## Terminal plans — 15
+## Terminal plans — 18
 
 | Plan | Status | Description | Recommendation |
 |---|---|---|---|
@@ -36,15 +38,17 @@ The 55 unresolved plans are currently 20 active, 32 ready, and 3 draft.
 | SideStage architecture documentation | Shipped | Documents SideStage’s complete architecture and system boundaries. | Keep shipped. |
 | SideStage Copilot queue inspector | Shipped | Implements the chosen Queue-plus-inspector Copilot interface. | Keep shipped. |
 | SideStage migration-history completeness | Shipped | Consolidates SideStage plans and provides complete historical visibility. | Keep shipped. |
+| Acceptance rubrics on every plan | Shipped | Establishes standard and acceptance rubric kinds, per-plan linkage, a default-on completion gate, seeded class rubrics, and lifecycle retirement. | Keep shipped; completion audit #2, meta-vetting, independent six-of-six healthy grading, and author acceptance are current. |
+| Token-composition attribution | Shipped | Breaks injected context into explicit token-composition components and closes the previously degraded evidence caveat. | Keep shipped; the fixed caveat, fresh corpus evidence, independent grading, and author acceptance are healthy. |
+| TypeScript 7 upgrade | Shipped | Upgrades active Papercusp workspaces to TypeScript 7.0.2 with strengthened API and active-compiler gate evidence. | Keep shipped; the critic-repaired rubric, current compiler evidence, independent grading, and author acceptance are healthy. |
 | Oddsmith recovery and hardening | Superseded | Described recovery after the August 15 wipe. | Keep superseded; confirm the replacement plan retains any still-relevant hardening requirements. |
 | Event-system calibration audit | Superseded | Proposed a blind, held-out audit for calibrating event-system audit accuracy. | Keep superseded; retain its calibration method as reusable guidance. |
 | Automations main-tab replacement | Superseded | Proposed replacing fragmented automation catalogs with one full-width main tab. | Keep superseded; ensure the active Automations plan incorporates the accepted UX intent. |
 
-## Acceptance residue — 12
+## Acceptance residue — 11
 
 | Plan | Status | Description | Recommendation |
 |---|---|---|---|
-| Acceptance rubrics on every plan | Ready | Establishes standard and acceptance rubric kinds, plan linkage, completion gates, seeded class rubrics, and documentation. | Finish the remaining current verification, obtain a non-implementer grade, and ship if healthy. |
 | Cupboard sharing for plans, rubrics, and recipes | Ready | Adds reusable Cupboard listing types and plan-to-rubric dependency gating. | Complete final verification against a stable published tree, refresh the audit, independently grade, then ship. |
 | Drain control-plane resilience | Ready | Intended to make drain recovery lossless, verifiable, and grounded in canonical work. The audit snapshot suggested execution may not match the apparently closeable status. | Re-audit code truth first. If major implementation remains, mark active; do not acceptance-close from the `ready` label alone. |
 | Fundraise automation | Ready | Implements an agent-run fundraising pipeline with research, tiering, outreach drafts, approval gates, follow-ups, and reviews. It intentionally cannot send email directly. | Keep open until real targets/network data and live Gmail/Slack acceptance exist; then grade and ship. |
@@ -57,7 +61,7 @@ The 55 unresolved plans are currently 20 active, 32 ready, and 3 draft.
 | SideStage seller-Copilot mission | Ready | Makes Copilot perform the actual operational mission of a live-selling seller. | Validate the end-to-end seller workflow, independently grade it, then ship or reopen concrete gaps. |
 | SideStage standout features | Ready | Covers the engagement meter and the owner-selected standout feature slate. | Verify each selected feature against the current product, close omissions, then independently grade and ship. |
 
-## Missing closeout evidence — 43
+## Missing closeout evidence — 41
 
 | Plan | Status | Description | Recommendation |
 |---|---|---|---|
@@ -91,9 +95,7 @@ The 55 unresolved plans are currently 20 active, 32 ready, and 3 draft.
 | Chat popup timestamps and modes | Ready | Adds timestamps, visible sends, live mode state, and drain instructions to session chat. | Validate live updates and interaction behavior in Tauri, then independently grade and ship. |
 | Task Manager release readiness | Ready | Prepares Task Manager for a public release. | Run the complete release rubric, platform verification, and packaging checks before shipping. |
 | Cross-client thinking gauge | Active | Makes the Codex/OMP thinking gauge accurate and live-refreshing. | Finish writer/scale correctness and cross-client validation before closeout. |
-| Token-composition attribution | Draft | Breaks injected context into explicit token-composition components. The previously degraded caveat was just fixed with a regression test and fresh 225-file evidence. | Re-audit the fixed blobs, obtain a fresh non-author/non-implementer grade, then author-accept and ship if healthy. |
 | Trap-guard follow-ups | Active | Repairs ambiguous signals and enforcement gaps uncovered by the trap-guard fleet run. | Finish the identified guard classes and verify each with a recurrence test. |
-| TypeScript 7 upgrade | Ready | Upgrades active Papercusp workspaces to TypeScript 7.0.2 and verifies toolchain, declaration, scheduler-floor, and compilation behavior. | Apply the external critique: strengthen criterion 3, add a real criterion-4 compiler-gate instrument, persist critique lineage, rerun tests, independently grade, then ship. |
 | Vditor local assets and popup latency | Active | Removes Vditor’s cold-load dependency on 4.9 MB from `unpkg.com` and makes the plan popup open promptly. | Finish local asset packaging and measure cold-open performance in Tauri. |
 | Wake-deaf PTY-host guard | Active | Detects and durably recovers the class where a parked terminal host stops receiving wakes. | Finish the external detector and prove recovery across process/session vintage boundaries. |
 | Retire dead federation-probe hops | Active | Removes probe-hop states that were promised but never emitted. | Keep active until a rollback-safe captured-only release is deployed and migration 917 can be applied safely; do not arm the migration early. |
@@ -107,8 +109,7 @@ The 55 unresolved plans are currently 20 active, 32 ready, and 3 draft.
 
 ## Recommended sequence
 
-1. Preserve the 15 terminal plans.
-2. Close TypeScript 7 and token-composition attribution first; both have concrete, bounded acceptance work remaining.
-3. Process the remaining ready plans through a current code-truth audit and independent acceptance grade.
-4. Keep genuinely active plans active; do not paper-close incomplete implementation.
-5. Give each draft an explicit build-or-supersede disposition.
+1. Preserve the 18 terminal plans.
+2. Process the remaining 30 ready plans through a current code-truth audit and independent acceptance grade.
+3. Keep the 20 genuinely active plans active; do not paper-close incomplete implementation.
+4. Give each of the 2 drafts an explicit build-or-supersede disposition.
