@@ -48,6 +48,7 @@ const ENTRYPOINTS = [
   'omp',
   'papercusp-remote-initializer',
 ] as const;
+const PG_TOOLS = ['pg_dump', 'psql', 'pg_dumpall', 'pg_restore'] as const;
 
 function makeFixture(): string {
   const root = mkdtempSync(join(tmpdir(), 'pc-workspace-host-entrypoints-'));
@@ -55,7 +56,20 @@ function makeFixture(): string {
   mkdirSync(join(root, 'bin'), { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
   mkdirSync(join(root, 'db-sql'), { recursive: true });
+  const pgNative = join(
+    root,
+    'node_modules/@papercusp/embedded-postgres-server/node_modules/@embedded-postgres/linux-x64/native/bin',
+  );
+  mkdirSync(pgNative, { recursive: true });
   symlinkSync(process.execPath, join(root, 'bin/node'));
+  for (const tool of PG_TOOLS) {
+    writeFileSync(join(pgNative, tool), `#!/usr/bin/env bash\nprintf '${tool} 18.6\\n'\n`);
+    chmodSync(join(pgNative, tool), 0o755);
+    symlinkSync(
+      `/tmp/deleted-sidecar.tmp.238817/node_modules/@papercusp/embedded-postgres-server/node_modules/@embedded-postgres/linux-x64/native/bin/${tool}`,
+      join(root, 'bin', tool),
+    );
+  }
   writeFileSync(
     join(root, 'serve.mjs'),
     `import { writeFileSync } from 'node:fs';\n` +
@@ -109,6 +123,12 @@ describe('workspace-host sidecar entrypoint producer', () => {
     }
     expect(readlinkSync(join(root, 'bin/node'))).toBe(nodeTarget);
     expect(readFileSync(join(root, 'bin/papercusp-remote-initializer'), 'utf8')).toBe(initializer);
+    for (const tool of PG_TOOLS) {
+      const target = readlinkSync(join(root, 'bin', tool));
+      expect(target.startsWith('/'), tool).toBe(false);
+      expect(target).toContain(`/native/bin/${tool}`);
+      expect(run(join(root, 'bin', tool), ['--version']).status, tool).toBe(0);
+    }
   });
 
   it('is invoked for future vm-release builds before prune and finished-bundle verification', () => {
@@ -120,6 +140,8 @@ describe('workspace-host sidecar entrypoint producer', () => {
     expect(prune).toBeGreaterThan(emit);
     expect(verify).toBeGreaterThan(prune);
     expect(builder.slice(emit - 400, emit)).toContain('DISTRIBUTION_PROFILE');
+    expect(builder).toContain('ln -sfn "../$_pg_rel_src"');
+    expect(builder).toContain('re-verifying atomically published sidecar at its final path');
   });
 
   it('makes the finished-bundle verifier require and allowlist every generated wrapper', () => {
