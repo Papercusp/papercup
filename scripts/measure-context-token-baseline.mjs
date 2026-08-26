@@ -23,20 +23,17 @@
  *
  * Usage: node scripts/measure-context-token-baseline.mjs [days] [outJsonPath]
  */
-import { createReadStream } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
-import { writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { createInterface } from "node:readline";
+import { createReadStream } from 'node:fs';
+import { readdir, stat } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { createInterface } from 'node:readline';
 
 const DAYS = Number(process.argv[2] || 6);
-const OUT = process.argv[3] || "/tmp/context-token-baseline.json";
+const OUT = process.argv[3] || '/tmp/context-token-baseline.json';
 const CUTOFF = Date.now() - DAYS * 86400_000;
-const ROOTS = [
-  join(homedir(), ".claude", "projects"),
-  join(homedir(), ".papercusp", "session-claude"),
-];
+const ROOTS = [join(homedir(), '.claude', 'projects'), join(homedir(), '.papercusp', 'session-claude')];
 /** chars→tokens estimate. Labelled everywhere it is used; never presented as a count. */
 const CPT = 4;
 
@@ -50,40 +47,30 @@ async function* walk(dir) {
   for (const e of entries) {
     const p = join(dir, e.name);
     if (e.isDirectory()) yield* walk(p);
-    else if (e.isFile() && e.name.endsWith(".jsonl")) yield p;
+    else if (e.isFile() && e.name.endsWith('.jsonl')) yield p;
   }
 }
 
 /** Length of a tool_result's content, which may be a string or a block array. */
 function resultChars(content) {
-  if (typeof content === "string") return content.length;
-  if (!Array.isArray(content))
-    return content == null ? 0 : JSON.stringify(content).length;
+  if (typeof content === 'string') return content.length;
+  if (!Array.isArray(content)) return content == null ? 0 : JSON.stringify(content).length;
   let n = 0;
   for (const b of content) {
-    if (typeof b === "string") n += b.length;
-    else if (b && typeof b.text === "string") n += b.text.length;
+    if (typeof b === 'string') n += b.length;
+    else if (b && typeof b.text === 'string') n += b.text.length;
     else if (b) n += JSON.stringify(b).length;
   }
   return n;
 }
 
 /** P-011: the doored-result population, bucketed by the shape the D-012 footer branches on. */
-const doorFooters = {
-  total: 0,
-  json: 0,
-  "multi-line-text": 0,
-  "single-line-text": 0,
-};
+const doorFooters = { total: 0, json: 0, 'multi-line-text': 0, 'single-line-text': 0 };
 /** Concatenated text of a tool_result's block array (the string case is handled inline). */
 function resultText(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content
-    .map((b) =>
-      typeof b === "string" ? b : typeof b?.text === "string" ? b.text : "",
-    )
-    .join("\n");
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.map((b) => (typeof b === 'string' ? b : typeof b?.text === 'string' ? b.text : '')).join('\n');
 }
 
 const byKind = new Map(); // kind -> {chars, blocks}
@@ -105,16 +92,16 @@ const injected = { chars: 0, blocks: 0, hostResidual: 0 };
  * is printed as a first-class number rather than dropped.
  */
 const INJECT_MARKERS = [
-  ["related-context", "### Related context (pointers"],
-  ["related-context", "## Related context (pointers"],
-  ["mem0-recall", "## Relevant memory"],
-  ["mem0-recall", "## Possibly relevant"],
-  ["hook-additional-context", "hook additional context"],
-  ["system-reminder", "<system-reminder>"],
-  ["turn-provenance", "⟦turn-provenance⟧"],
-  ["ctrl-transition", "⟦CTRL:transition⟧"],
-  ["coord-delta", "[coord+"],
-  ["presence-roster", "[presence ⟲"],
+  ['related-context', '### Related context (pointers'],
+  ['related-context', '## Related context (pointers'],
+  ['mem0-recall', '## Relevant memory'],
+  ['mem0-recall', '## Possibly relevant'],
+  ['hook-additional-context', 'hook additional context'],
+  ['system-reminder', '<system-reminder>'],
+  ['turn-provenance', '⟦turn-provenance⟧'],
+  ['ctrl-transition', '⟦CTRL:transition⟧'],
+  ['coord-delta', '[coord+'],
+  ['presence-roster', '[presence ⟲'],
 ];
 let files = 0;
 let lines = 0;
@@ -174,23 +161,19 @@ for (const root of ROOTS) {
         const end = i + 1 < hits.length ? hits[i + 1].at : text.length;
         const span = Math.max(0, end - start);
         injectedTotal += span;
-        bump(byInjector, hits[i].injector, "chars", span);
-        bump(byInjector, hits[i].injector, "blocks", 1);
+        bump(byInjector, hits[i].injector, 'chars', span);
+        bump(byInjector, hits[i].injector, 'blocks', 1);
         bump(byInjector, hits[i].injector, `host:${host}`, span);
       }
       injected.chars += injectedTotal;
       injected.blocks += 1;
-      injected[`host:${host}`] =
-        (injected[`host:${host}`] || 0) + injectedTotal;
+      injected[`host:${host}`] = (injected[`host:${host}`] || 0) + injectedTotal;
       // Everything BEFORE the first marker in a block carrying injected content
       // is the genuine non-injected remainder (the human's prose, the tool's
       // real output). Tracked so the injected share always has a denominator.
       injected.hostResidual += hits[0].at;
     }
-    const rl = createInterface({
-      input: createReadStream(file, { encoding: "utf8" }),
-      crlfDelay: Infinity,
-    });
+    const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
     for await (const line of rl) {
       if (!line.trim()) continue;
       lines += 1;
@@ -212,45 +195,34 @@ for (const root of ROOTS) {
       // These ARE a sibling category here (their own records), so they add to
       // the kind totals rather than slicing them — they are real context bytes
       // that no previous run of this script counted at all.
-      if (rec.type === "attachment") {
+      if (rec.type === 'attachment') {
         const a = rec.attachment;
-        if (!a || typeof a !== "object") continue;
-        const body = Array.isArray(a.content)
-          ? a.content.join("")
-          : typeof a.content === "string"
-            ? a.content
-            : "";
+        if (!a || typeof a !== 'object') continue;
+        const body = Array.isArray(a.content) ? a.content.join('') : typeof a.content === 'string' ? a.content : '';
         const chars = body.length;
         if (!chars) continue;
-        const injector =
-          a.hookName || a.hookEvent || a.type || "(unnamed-attachment)";
-        bump(byKind, "injected_context", "chars", chars);
-        bump(byKind, "injected_context", "blocks", 1);
-        bump(byInjector, String(injector), "chars", chars);
-        bump(byInjector, String(injector), "blocks", 1);
-        bump(byInjector, String(injector), "host:attachment", chars);
+        const injector = a.hookName || a.hookEvent || a.type || '(unnamed-attachment)';
+        bump(byKind, 'injected_context', 'chars', chars);
+        bump(byKind, 'injected_context', 'blocks', 1);
+        bump(byInjector, String(injector), 'chars', chars);
+        bump(byInjector, String(injector), 'blocks', 1);
+        bump(byInjector, String(injector), 'host:attachment', chars);
         injected.chars += chars;
         injected.blocks += 1;
-        injected["host:attachment"] =
-          (injected["host:attachment"] || 0) + chars;
+        injected['host:attachment'] = (injected['host:attachment'] || 0) + chars;
         sessionChars += chars;
         continue;
       }
       const msg = rec?.message;
-      if (!msg || (rec.type !== "user" && rec.type !== "assistant")) continue;
+      if (!msg || (rec.type !== 'user' && rec.type !== 'assistant')) continue;
       const content = msg.content;
-      const blocks =
-        typeof content === "string"
-          ? [{ type: "text", text: content }]
-          : Array.isArray(content)
-            ? content
-            : [];
+      const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content : [];
       for (const b of blocks) {
-        if (!b || typeof b !== "object") continue;
+        if (!b || typeof b !== 'object') continue;
         let kind = b.type;
         let chars = 0;
-        if (kind === "text") {
-          chars = typeof b.text === "string" ? b.text.length : 0;
+        if (kind === 'text') {
+          chars = typeof b.text === 'string' ? b.text.length : 0;
           // INJECTED-CONTEXT attribution. Papercusp authors these blocks and
           // splices them into turns, so they are indistinguishable from the
           // human's own prose by BLOCK TYPE — they are `text` like anything
@@ -259,54 +231,45 @@ for (const root of ROOTS) {
           // ⚠ Deliberately measured as a SLICE OF `text`, never as a sibling
           // kind: double-counting it against the kind totals would inflate the
           // denominator every share is computed from.
-          if (typeof b.text === "string" && b.text.length)
-            attributeInjected(b.text, "text");
-        } else if (kind === "thinking")
-          chars = typeof b.thinking === "string" ? b.thinking.length : 0;
-        else if (kind === "tool_use") {
-          chars =
-            (b.name?.length || 0) +
-            (b.input ? JSON.stringify(b.input).length : 0);
+          if (typeof b.text === 'string' && b.text.length) attributeInjected(b.text, 'text');
+        } else if (kind === 'thinking') chars = typeof b.thinking === 'string' ? b.thinking.length : 0;
+        else if (kind === 'tool_use') {
+          chars = (b.name?.length || 0) + (b.input ? JSON.stringify(b.input).length : 0);
           if (b.id && b.name) idToName.set(b.id, b.name);
-          bump(byTool, b.name || "(unnamed)", "useChars", chars);
-          bump(byTool, b.name || "(unnamed)", "calls", 1);
-        } else if (kind === "tool_result") {
+          bump(byTool, b.name || '(unnamed)', 'useChars', chars);
+          bump(byTool, b.name || '(unnamed)', 'calls', 1);
+        } else if (kind === 'tool_result') {
           chars = resultChars(b.content);
-          const name = idToName.get(b.tool_use_id) || "(unmatched)";
-          bump(byTool, name, "resultChars", chars);
-          bump(byTool, name, "results", 1);
+          const name = idToName.get(b.tool_use_id) || '(unmatched)';
+          bump(byTool, name, 'resultChars', chars);
+          bump(byTool, name, 'results', 1);
           // P-011: how many results the door actually cut, and what SHAPE they
           // were — the population the D-012 footer change acts on. Classified
           // from the KEPT head (the transcript holds the doored text, not the
           // original), which is why this is a shape heuristic and is reported
           // as one: leading `{`/`[` after trim, plus the kept head's line count.
-          const text =
-            typeof b.content === "string" ? b.content : resultText(b.content);
+          const text = typeof b.content === 'string' ? b.content : resultText(b.content);
           // PostToolUse / PostToolBatch additionalContext rides INSIDE tool
           // results, so the injected slice has to be measured here too — a
           // text-blocks-only pass would miss the per-tool-batch injections
           // entirely, which is the highest-frequency injector we have.
-          if (text) attributeInjected(text, "tool_result");
-          const at = text.indexOf("[result-door:");
+          if (text) attributeInjected(text, 'tool_result');
+          const at = text.indexOf('[result-door:');
           if (at >= 0) {
             doorFooters.total += 1;
             const head = text.slice(0, at).trim();
-            const jsonish = head.startsWith("{") || head.startsWith("[");
-            const oneLine = !head.includes("\n");
-            const bucket = jsonish
-              ? "json"
-              : oneLine
-                ? "single-line-text"
-                : "multi-line-text";
+            const jsonish = head.startsWith('{') || head.startsWith('[');
+            const oneLine = !head.includes('\n');
+            const bucket = jsonish ? 'json' : oneLine ? 'single-line-text' : 'multi-line-text';
             doorFooters[bucket] = (doorFooters[bucket] || 0) + 1;
-            bump(byTool, name, "doored", 1);
+            bump(byTool, name, 'doored', 1);
           }
         } else {
           kind = `other:${String(kind).slice(0, 24)}`;
           chars = JSON.stringify(b).length;
         }
-        bump(byKind, kind, "chars", chars);
-        bump(byKind, kind, "blocks", 1);
+        bump(byKind, kind, 'chars', chars);
+        bump(byKind, kind, 'blocks', 1);
         sessionChars += chars;
       }
     }
@@ -337,8 +300,8 @@ const injectors = [...byInjector.entries()]
     chars: r.chars || 0,
     estTokens: Math.round((r.chars || 0) / CPT),
     pctOfAll: total ? +((100 * (r.chars || 0)) / total).toFixed(2) : 0,
-    inText: r["host:text"] || 0,
-    inToolResult: r["host:tool_result"] || 0,
+    inText: r['host:text'] || 0,
+    inToolResult: r['host:tool_result'] || 0,
   }))
   .sort((a, b) => b.chars - a.chars);
 // COVERAGE, stated on the aggregate rather than left to the reader: how much of
@@ -349,28 +312,21 @@ const injectedSummary = {
   estTokens: Math.round(injected.chars / CPT),
   pctOfAllContent: total ? +((100 * injected.chars) / total).toFixed(2) : 0,
   blocksCarryingInjection: injected.blocks,
-  attachmentChars: injected["host:attachment"] || 0,
-  inTextChars: injected["host:text"] || 0,
-  inToolResultChars: injected["host:tool_result"] || 0,
+  attachmentChars: injected['host:attachment'] || 0,
+  inTextChars: injected['host:text'] || 0,
+  inToolResultChars: injected['host:tool_result'] || 0,
   unattributedHostChars: injected.hostResidual,
-  markerCoveragePct:
-    injected.chars + injected.hostResidual
-      ? +(
-          (100 * injected.chars) /
-          (injected.chars + injected.hostResidual)
-        ).toFixed(2)
-      : 0,
+  markerCoveragePct: injected.chars + injected.hostResidual
+    ? +((100 * injected.chars) / (injected.chars + injected.hostResidual)).toFixed(2)
+    : 0,
   caveat:
-    "injected.* combines two accounting shapes: attachmentChars is already counted as the sibling " +
-    "byKind injected_context category, while inTextChars + inToolResultChars are slices of those existing kinds. " +
-    "Do not add the combined injected.chars roll-up to the kind totals again. Attachment attribution uses the transcript " +
-    "schema; in-block attribution uses authored marker strings. unattributedHostChars is the non-injected remainder of " +
-    "blocks carrying marker-detected injection, and a rising value means the marker table may have drifted.",
+    'injected.* combines two accounting shapes: attachmentChars is already counted as the sibling ' +
+    'byKind injected_context category, while inTextChars + inToolResultChars are slices of those existing kinds. ' +
+    'Do not add the combined injected.chars roll-up to the kind totals again. Attachment attribution uses the transcript ' +
+    'schema; in-block attribution uses authored marker strings. unattributedHostChars is the non-injected remainder of ' +
+    'blocks carrying marker-detected injection, and a rising value means the marker table may have drifted.',
 };
-const toolResultTotal = [...byTool.values()].reduce(
-  (a, r) => a + (r.resultChars || 0),
-  0,
-);
+const toolResultTotal = [...byTool.values()].reduce((a, r) => a + (r.resultChars || 0), 0);
 const toolsTop = [...byTool.entries()]
   .map(([tool, r]) => ({
     tool,
@@ -379,12 +335,8 @@ const toolsTop = [...byTool.entries()]
     useChars: r.useChars || 0,
     resultChars: r.resultChars || 0,
     estResultTokens: Math.round((r.resultChars || 0) / CPT),
-    pctOfToolResults: toolResultTotal
-      ? +((100 * (r.resultChars || 0)) / toolResultTotal).toFixed(2)
-      : 0,
-    avgResultChars: r.results
-      ? Math.round((r.resultChars || 0) / r.results)
-      : 0,
+    pctOfToolResults: toolResultTotal ? +((100 * (r.resultChars || 0)) / toolResultTotal).toFixed(2) : 0,
+    avgResultChars: r.results ? Math.round((r.resultChars || 0) / r.results) : 0,
   }))
   .sort((a, b) => b.resultChars - a.resultChars)
   .slice(0, 25);
@@ -394,57 +346,33 @@ const toolsTop = [...byTool.entries()]
 // results — write a lot, get back a short ack — can be absent from that list
 // entirely. tool_use is 25.4% of all context (D-014), so it gets its own ranking
 // over the FULL byTool map, never a re-slice of the result-ranked one.
-const toolUseTotal = [...byTool.values()].reduce(
-  (a, r) => a + (r.useChars || 0),
-  0,
-);
+const toolUseTotal = [...byTool.values()].reduce((a, r) => a + (r.useChars || 0), 0);
 const toolsTopByUse = [...byTool.entries()]
   .map(([tool, r]) => ({
     tool,
     calls: r.calls || 0,
     useChars: r.useChars || 0,
     estUseTokens: Math.round((r.useChars || 0) / CPT),
-    pctOfToolUse: toolUseTotal
-      ? +((100 * (r.useChars || 0)) / toolUseTotal).toFixed(2)
-      : 0,
+    pctOfToolUse: toolUseTotal ? +((100 * (r.useChars || 0)) / toolUseTotal).toFixed(2) : 0,
     avgUseChars: r.calls ? Math.round((r.useChars || 0) / r.calls) : 0,
   }))
   .sort((a, b) => b.useChars - a.useChars)
   .slice(0, 25);
-const sessionTokens = perSession
-  .map((s) => s.chars / CPT)
-  .sort((a, b) => a - b);
-const q = (p) =>
-  sessionTokens.length
-    ? Math.round(
-        sessionTokens[
-          Math.min(
-            sessionTokens.length - 1,
-            Math.floor(p * sessionTokens.length),
-          )
-        ],
-      )
-    : 0;
+const sessionTokens = perSession.map((s) => s.chars / CPT).sort((a, b) => a - b);
+const q = (p) => (sessionTokens.length ? Math.round(sessionTokens[Math.min(sessionTokens.length - 1, Math.floor(p * sessionTokens.length))]) : 0);
 
 const summary = {
   measuredAt: new Date().toISOString(),
   windowDays: DAYS,
-  method:
-    "raw claude transcript JSONL, per content block; chars/4 is an ESTIMATE, not a token count",
+  method: 'raw claude transcript JSONL, per content block; chars/4 is an ESTIMATE, not a token count',
   caveat:
-    "Counts each block ONCE, as it first entered the window. The BILLED cost is far higher: the whole window is re-sent every turn.",
+    'Counts each block ONCE, as it first entered the window. The BILLED cost is far higher: the whole window is re-sent every turn.',
   files,
   lines,
   badLines,
   totalChars: total,
   totalEstTokens: Math.round(total / CPT),
-  perSessionEstTokens: {
-    n: sessionTokens.length,
-    p50: q(0.5),
-    p90: q(0.9),
-    p99: q(0.99),
-    max: q(1),
-  },
+  perSessionEstTokens: { n: sessionTokens.length, p50: q(0.5), p90: q(0.9), p99: q(0.99), max: q(1) },
   byKind: kinds,
   injected: injectedSummary,
   byInjector: injectors,
