@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, realpath, unlink } from 'node:fs/promises';
+import { lstat, mkdir, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type postgres from 'postgres';
 import { papercuspPathForWorkspace } from '../papercusp-root';
@@ -26,6 +26,14 @@ const DEFAULT_LEASE_SECONDS = 600;
 const MAX_BATCH_SIZE = 1_000;
 const MAX_LEASE_SECONDS = 3_600;
 export const MAX_PERSONAL_VAULT_IMPORT_BYTES = 16 * 1024 * 1024 * 1024;
+export const MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES = 32 * 1024 * 1024 * 1024;
+export const MAX_PERSONAL_VAULT_WORKSPACE_RETAINED_BYTES = 256 * 1024 * 1024 * 1024;
+export const MAX_PERSONAL_VAULT_OWNER_STORED_JOBS = 8;
+export const MAX_PERSONAL_VAULT_WORKSPACE_STORED_JOBS = 64;
+const PERSONAL_VAULT_UPLOAD_LEASE_SECONDS = 24 * 60 * 60;
+const PERSONAL_VAULT_UPLOAD_PROGRESS_BYTES = 64 * 1024 * 1024;
+const PERSONAL_VAULT_ORPHAN_AGE_MS = 24 * 60 * 60 * 1_000;
+const IMPORT_ARCHIVE_NAME_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.(?:partial|archive)$/i;
 
 export type PersonalVaultImportStatus =
   | 'queued'
@@ -97,6 +105,37 @@ export interface StoredPersonalVaultImportArchive {
   storagePath: string;
   contentSha256: string;
   sizeBytes: number;
+}
+
+export interface PersonalVaultImportUploadReservation {
+  id: string;
+  workspaceId: string;
+  userId: string;
+  filename: string;
+  storagePath: string;
+  declaredSizeBytes: number | null;
+  reservedBytes: number;
+  receivedBytes: number;
+  expiresAt: string;
+}
+
+interface PersonalVaultImportUploadRow {
+  id: string;
+  workspace_id: string;
+  user_id: string;
+  filename: string;
+  storage_path: string;
+  declared_size_bytes: number | string | null;
+  reserved_bytes: number | string;
+  received_bytes: number | string;
+  expires_at: string | Date;
+}
+
+interface PersonalVaultImportAdmissionRow {
+  workspace_bytes: number | string;
+  workspace_jobs: number | string;
+  owner_bytes: number | string;
+  owner_jobs: number | string;
 }
 
 interface PersonalVaultImportJobRow {
@@ -221,6 +260,22 @@ function mapJob(row: PersonalVaultImportJobRow): PersonalVaultImportJob {
     completedAt: asIso(row.completed_at),
     createdAt: asIso(row.created_at)!,
     updatedAt: asIso(row.updated_at)!,
+  };
+}
+
+function mapUploadReservation(
+  row: PersonalVaultImportUploadRow,
+): PersonalVaultImportUploadReservation {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    userId: row.user_id,
+    filename: row.filename,
+    storagePath: row.storage_path,
+    declaredSizeBytes: row.declared_size_bytes == null ? null : Number(row.declared_size_bytes),
+    reservedBytes: Number(row.reserved_bytes),
+    receivedBytes: Number(row.received_bytes),
+    expiresAt: asIso(row.expires_at)!,
   };
 }
 
