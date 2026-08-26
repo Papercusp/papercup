@@ -2732,7 +2732,17 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         const file = 'apps/operator/lib/release/green-checkpoint.ts';
         const planned = collectAutoTypecheckRoutes({
           files: [file],
-          suggestions: new Map([[file, { workspaceDir: 'apps/operator', packageName: 'web', command: null }]]),
+          // Both routes exist in production. The generic workspace suggestion
+          // must not win merely because it was discovered first: it cannot
+          // preserve --files and would judge unrelated shared-tree edits.
+          suggestions: new Map([[
+            file,
+            {
+              workspaceDir: 'apps/operator',
+              packageName: 'web',
+              command: 'npm run --workspace apps/operator typecheck',
+            },
+          ]]),
           siblingGates: [{ npmScript: 'lint:tsc:operator', prefixes: ['apps/operator/'] }],
         });
         expect(planned.unknown).toEqual([]);
@@ -2743,6 +2753,24 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
             scoped: true,
           }),
         ]);
+
+        const banner = formatUncoveredFilesBanner({
+          label: 'operator-core',
+          uncovered: [file],
+          suggestions: new Map([[
+            file,
+            {
+              workspaceDir: 'apps/operator',
+              packageName: 'web',
+              command: 'npm run --workspace apps/operator typecheck',
+            },
+          ]]),
+          fatal: true,
+          autoRoute: true,
+          siblingGates: [{ npmScript: 'lint:tsc:operator', prefixes: ['apps/operator/'] }],
+        }).join('\n');
+        expect(banner).toContain(`npm run lint:tsc:operator -- --files=${file}`);
+        expect(banner).not.toContain('npm run --workspace apps/operator typecheck');
       });
 
       it('executes each validated route without a shell and returns the first child failure', () => {
