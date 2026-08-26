@@ -14621,17 +14621,34 @@ if (require.main === module) {
           // `null`, NOT `false` — same reasoning as buildCrashCheckpointResult. A watchdog kill
           // means this run never rendered a verdict, so claiming the code is RED is a fabricated
           // measurement; `green === null` is what routes it to `green-checkpoint:inconclusive`.
-          // `reason` stays 'not-green' so the red streak / held-gate alarm still count it.
           //
-          // ⚠ This path deliberately DIVERGES from buildCrashCheckpointResult, which moved to
-          // reason 'error' (the no-verdict class) in EI-21465187777146773. The divergence is not
-          // an oversight and not yet a decision: unlike a crash, this path can carry a REAL
-          // failing-file list (`carried` below, EI-20669541349219660) rescued from a suite that
-          // finished red before the kill — so its red is sometimes contentful. When `carried` is
-          // empty it is the same contentless red, and that half is filed as WI-41740 rather than
-          // changed here on the way past.
+          // WI-41740: `reason` is 'error' — EI-21462211894072863's NO-VERDICT class — and it is
+          // UNCONDITIONAL, deliberately NOT conditioned on whether `carried` below rescued a real
+          // failing-file list. This path previously held 'not-green' "so the red streak /
+          // held-gate alarm still count it"; that justification had already been falsified on the
+          // sibling crash path by EI-21465187777146773 — 'error' is counted in
+          // gate_health.consecutiveNoVerdict and escalates at the SAME stallReds threshold, so
+          // staying loud never required calling a never-rendered verdict a red. It is
+          // unconditional for three further reasons:
+          //   - the contentless-red HARM is already guarded HERE: shouldDispatchReleaseFixer
+          //     (release-actions.ts) requires failingTests.length > 0, so an empty `carried`
+          //     already cannot dispatch a release-fixer at a phantom file list;
+          //   - conditioning `reason` on `carried` would make the DURABLE CLASS depend on a RACE
+          //     (did the suite finish red before the kill landed?), banking two different statuses
+          //     for two identical watchdog kills. `reason` classifies the EVENT; `failingTests`
+          //     carries the rescued evidence structurally — that is the correct axis split;
+          //   - it ends an internal contradiction: `green: null` already dispatches
+          //     `green-checkpoint:inconclusive` while 'not-green' made classifyQualification bank
+          //     kind:'red'. With 'error' the qualification falls to kind:'code-inconclusive',
+          //     which is terminal exactly like red (isTerminalQualificationOutcome) and equally
+          //     never auto-retried (checkpoint-run.ts) — no guard is weakened; it merely stops
+          //     asserting a measurement that was never taken.
+          //
+          // DISCRIMINATOR (release-actions.ts): a watchdog kill is reason 'error' with `crashed`
+          // ABSENT plus this distinctive summary; a crash is reason 'error' with `crashed: true`.
+          // Do NOT set `crashed` here — an absent leg stays absent rather than written falsey.
           green: null,
-          reason: "not-green",
+          reason: "error",
           summary:
             selfWatchdog.trigger === "manual-run-deadline"
               ? `manual checkpoint exceeded its ${formatSelfWatchdogDuration(selfWatchdog.ms)} deadline with no normal exit — ` +
