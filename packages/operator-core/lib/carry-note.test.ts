@@ -766,6 +766,35 @@ describe('lintUncheckedExternalClaims — carried claims must carry their probe 
   });
 });
 
+// EI-21494640395547961 — a GENERIC verification rule reworded differently from its
+// backing check row must not flag: word-overlap coverage honors the semantically
+// matching row even when the distinctive noun-substring test would miss.
+describe('lintUncheckedExternalClaims — semantic coverage for reworded checks (EI-21494640395547961)', () => {
+  // The reporter's exact second-insight string (no hash/id/instant; noun-fallback fired).
+  const GENERIC_RULE =
+    'The next qualifying attempt must preserve generation identity through its terminal boundary.';
+  const MATCHING_ROW = renderCheckLine({
+    id: 'p009-r11-invalid',
+    claim:
+      'r11 proves admission alone is insufficient: qualified scoped paths must be protected ' +
+      'through terminal, and empty-pathspec fingerprints cannot establish generation identity',
+    recheck: 're-run the r11 probe and compare generation identity at both boundaries',
+  });
+
+  it('does NOT flag a generic rule whose matching check row is supplied', () => {
+    expect(lintUncheckedExternalClaims(GENERIC_RULE, MATCHING_ROW)).toEqual([]);
+  });
+
+  it('STILL flags the same rule when no probe text exists at all', () => {
+    expect(lintUncheckedExternalClaims(GENERIC_RULE, '')).toEqual([GENERIC_RULE]);
+  });
+
+  it('keeps flagging an unrelated assertion whose words no row shares', () => {
+    const prose = 'the watermark denominator MUST roll before the next anchor tick';
+    expect(lintUncheckedExternalClaims(prose, MATCHING_ROW)).toEqual([prose]);
+  });
+});
+
 describe('lintUncheckedImperativeActions — singleton mutators need a runnable precondition', () => {
   it('flags an imperative singleton invocation with no corresponding check', () => {
     const matches = lintUncheckedImperativeActions(
