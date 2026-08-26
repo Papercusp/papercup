@@ -345,6 +345,12 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
     updated_at: 'machine-local row timestamp',
     source_hive: 'receiver-stamped from the admitted log identity — never carried (a sender-claimed source is never trusted)',
     shareable: 'send-side capture gate (mig 461/462 trigger WHEN NEW.shareable=true) — implicitly true for every row that reaches the wire at all, so redundant to carry',
+    // EI-21467654382027859: the other 10 previously-missing columns now federate
+    // (kind/claim/enforcement/settled_by/recheck/depends_on as claim substance,
+    // superseded_at/retracted_by/retraction_reason/evicted_at as liveness+audit).
+    // This one is the sole documented-local of that set:
+    supersedes_id:
+      "the agent_facts.id of the version this row replaced — a LOCAL bigserial pk, so a peer's id space is unrelated and shipping it would point at whatever row happens to hold that number there. Exactly the accepted_post_id precedent in coord_conversations above. The chain stays walkable on each peer from identity + superseded_at, which do federate.",
   },
   gym_qd_archive: {
     // F1-2/F1-5 (mig 464/465): the federated subset is niche_key/candidate_id/scope/

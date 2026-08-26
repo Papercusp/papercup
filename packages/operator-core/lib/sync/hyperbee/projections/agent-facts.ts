@@ -87,9 +87,12 @@ export interface AgentFactWireRow {
   /** mig 689 / P-008 (a): NULL = this row is the CURRENT version of its
    *  identity; non-NULL = a superseded prior version. Carried so the receiver
    *  can TELL THE DIFFERENCE — see writeToPg, which refuses to apply a
-   *  superseded op to the live partition. Before this shipped, a supersede
-   *  UPDATE federated its stale content with the marker stripped and could
-   *  overwrite the peer's live row, presenting an outdated version as current. */
+   *  superseded op to the live partition.
+   *
+   *  In practice this is always NULL on the wire today: the send side only ever
+   *  captures live rows (writeToPg's guard documents exactly why). It is
+   *  carried so that fact is CHECKED on arrival rather than assumed from a
+   *  send-side invariant that nothing enforces. */
   superseded_at?: string | null;
   /** WI-6935: set ALONGSIDE retracted_at when the per-scope cap evicted the row.
    *  Its own column comment carries the discriminator — "NULL alongside a
@@ -252,21 +255,29 @@ async function writeToPg(
   if (row.harness_slug !== opts.harnessSlug) return;
   // ── EI-21467654382027859. A SUPERSEDED op is history, and this projection is
   // deliberately NOT append-versioned (see the ON CONFLICT note below): it holds
-  // one row per identity × source, the peer's CURRENT observation. So a prior
-  // version has no row to land in and is dropped here.
+  // one row per identity × source, the peer's CURRENT observation. A prior
+  // version has no row to land in, so it is dropped here.
   //
-  // This is the fix, not merely an optimization. `assertFact` supersedes by
-  // stamping superseded_at on the OLD row and inserting a NEW one — and that
-  // UPDATE fires the shareable capture trigger, so the old version federates
-  // too. Both ops share the identity (scope/ref/key), so before superseded_at
-  // rode the wire the old version arrived looking live and, being the later
-  // write, could win the fed_ts LWW against the new one and present STALE
-  // content as current.
+  // HONEST STATUS: no local writer can currently emit such an op, so this is a
+  // DEFENSIVE invariant, not a live bug fix. Verified 2026-08-26 — a pure
+  // supersede sets only superseded_at, which is absent from the UPDATE capture
+  // trigger's WHEN clause (body/retracted_at/expires_at/shareable), and every
+  // writer that DOES touch those (assertFact's retire leg, the cap eviction,
+  // retractFact) filters `AND superseded_at IS NULL`. So today only live rows
+  // reach the wire.
   //
-  // Skipping is also the only shape that stays idempotent: because
+  // It is enforced here anyway because that invariant is spread across a
+  // trigger predicate and four separate WHERE clauses with nothing binding
+  // them together: this projection's correctness should not rest on a
+  // send-side property no test asserts. If any of those five places changes,
+  // a prior version would arrive looking live and — being the later write —
+  // could win the fed_ts LWW and present STALE content as current. The
+  // accompanying test pins this behavior so the guard cannot be quietly lost.
+  //
+  // Skipping is also the only idempotent shape available: because
   // agent_facts_identity_current is PARTIAL (WHERE superseded_at IS NULL), a
   // proposed row carrying a non-NULL superseded_at generates no index entry, so
-  // ON CONFLICT could never match it — every replay of that op would INSERT
+  // ON CONFLICT could never match it — every replay of such an op would INSERT
   // another copy rather than update one.
   if (row.superseded_at != null) return;
   const sql = opts.sql ?? getOrgPg().sql;

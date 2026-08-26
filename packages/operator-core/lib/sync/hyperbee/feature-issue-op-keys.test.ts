@@ -606,6 +606,94 @@ describe('outboxRowToLocalWriteOp — agent_facts (F1-4/P-012 federation)', () =
     expect(op.hbKey).toBe('k1');
     expect(op.value).toBeUndefined();
   });
+
+  // ── EI-21467654382027859: ten columns existed on the row and on the wire but
+  // no sender ever produced them, so every peer read them as permanently NULL.
+  describe('claim-substance + liveness columns (EI-21467654382027859)', () => {
+    const fullRow: OutboxRow = {
+      ...factOutboxRow,
+      row: {
+        ...factOutboxRow.row,
+        kind: 'undecidable',
+        claim: { subject: 'cell:deploy.3070.sha', assertion: 'unchanged-by-my-edit' },
+        enforcement: { tier: 'detector', floor: 0.9, reviewBy: '2026-12-01' },
+        settled_by: 'a blob-containment check against the candidate',
+        recheck: { probe: 'read the writer', falsifier: 'the units disagree' },
+        depends_on: [{ cell: 'deploy.3070.sha', observedAt: '2026-08-01T00:00:00.000Z', digest: 'abc123' }],
+        retracted_at: '2026-08-02T00:00:00.000Z',
+        retracted_by: 'su-author',
+        retraction_reason: 'the condition cleared',
+        evicted_at: '2026-08-02T00:00:00.000Z',
+      },
+    };
+
+    it('carries all ten, and the result still validates on the peer', () => {
+      const op = outboxRowToLocalWriteOp(fullRow)!;
+      const v = op.type === 'put' ? (op.value as AgentFactWireRow) : (null as never);
+      expect(isAgentFactWireRow(v)).toBe(true);
+      expect(v.kind).toBe('undecidable');
+      expect(v.claim).toEqual({ subject: 'cell:deploy.3070.sha', assertion: 'unchanged-by-my-edit' });
+      expect(v.enforcement).toEqual({ tier: 'detector', floor: 0.9, reviewBy: '2026-12-01' });
+      // settled_by must travel WITH kind: an 'undecidable' that lands on a peer
+      // without its stated exit invites the re-derivation the modality prevents.
+      expect(v.settled_by).toBe('a blob-containment check against the candidate');
+      expect(v.recheck).toEqual({ probe: 'read the writer', falsifier: 'the units disagree' });
+      expect(v.depends_on).toEqual([
+        { cell: 'deploy.3070.sha', observedAt: '2026-08-01T00:00:00.000Z', digest: 'abc123' },
+      ]);
+      // retracted_at already federated; without these two a peer saw a fact
+      // retracted with no actor and no reason.
+      expect(v.retracted_by).toBe('su-author');
+      expect(v.retraction_reason).toBe('the condition cleared');
+      // evicted_at is the discriminator its own column comment names: NULL
+      // alongside a non-NULL retracted_at means a DELIBERATE facts:retract, so
+      // while it stayed local every cap eviction arrived misread as one.
+      expect(v.evicted_at).toBe('2026-08-02T00:00:00.000Z');
+    });
+
+    it('depends_on survives as an ARRAY (the object-shaped guard would null it)', () => {
+      const op = outboxRowToLocalWriteOp(fullRow)!;
+      const v = op.type === 'put' ? (op.value as AgentFactWireRow) : (null as never);
+      expect(Array.isArray(v.depends_on)).toBe(true);
+    });
+
+    it('emits every federated key even when the column is NULL — the drift guard reads KEYS, not values', () => {
+      // factOutboxRow omits all ten. The mapper builds a fixed-shape object, so
+      // the keys must still be present; federated-column-completeness measures
+      // Object.keys() of the mapper output, and a conditionally-omitted key
+      // would read there as an unfederated column.
+      const op = outboxRowToLocalWriteOp(factOutboxRow)!;
+      const v = op.type === 'put' ? (op.value as Record<string, unknown>) : (null as never);
+      for (const k of [
+        'kind',
+        'claim',
+        'enforcement',
+        'settled_by',
+        'recheck',
+        'depends_on',
+        'superseded_at',
+        'retracted_by',
+        'retraction_reason',
+        'evicted_at',
+      ]) {
+        expect(Object.keys(v), `mapper must always emit ${k}`).toContain(k);
+        expect(v[k], `${k} should be null when the column is absent`).toBeNull();
+      }
+      expect(isAgentFactWireRow(v as AgentFactWireRow)).toBe(true);
+    });
+
+    it('does NOT carry supersedes_id — a local bigserial pk (documented-local)', () => {
+      const op = outboxRowToLocalWriteOp({
+        ...factOutboxRow,
+        row: { ...factOutboxRow.row, supersedes_id: 4242 },
+      })!;
+      const v = op.type === 'put' ? (op.value as Record<string, unknown>) : (null as never);
+      // Peer id spaces are unrelated, so shipping it would point at whatever row
+      // happens to hold 4242 there. The chain stays derivable from identity +
+      // superseded_at, both of which do federate.
+      expect(Object.keys(v)).not.toContain('supersedes_id');
+    });
+  });
 });
 
 describe('outboxRowToLocalWriteOp — gym_qd_archive (F1-2/F1-5 elite federation)', () => {
