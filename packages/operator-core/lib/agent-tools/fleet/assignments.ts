@@ -828,6 +828,13 @@ export default defineTool({
     } catch {
       actorWorkspace = null;
     }
+    // `self` is a caller-relative filter token, not an ownerId that can be
+    // passed through to the view. Resolve it before the query so the targeted
+    // read actually returns the caller's rows (and never widens to a fleet-wide
+    // read when an anonymous caller cannot resolve the token).
+    const self = resolveSelfRef(ctx);
+    const queryAgent =
+      args.agent === 'self' ? self?.ownerId ?? '__unresolvable_self__' : args.agent;
     // F-M1 (workspace-data-isolation-leaks): when neither an explicit workspace nor
     // a resolved identity is present, default to the ACTIVE workspace rather than
     // null (= ALL workspaces), so a bare loopback caller no longer reads every
@@ -847,7 +854,7 @@ export default defineTool({
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
     const rows = await listFleetAssignments({
       workspaceId,
-      agent: args.agent,
+      agent: queryAgent,
       plan: args.plan,
       fleet: args.fleet,
       harness: args.harness,
@@ -1187,7 +1194,6 @@ export default defineTool({
     // ownerId, and the caller's own agent row (keyed by `agentId`) is stamped
     // `isSelf:true`, so a reader of "who's on what" can tell which agent is
     // itself. Best-effort — an unattributable caller just gets no marker.
-    const self = resolveSelfRef(ctx);
     const selfMarkedAgents = markSelfRows(boundedAgents, self, 'agentId');
     // P-010: the byte budget above is a SECOND reduction, independent of the
     // stale-idle filter — `summary.agents` stays the true count (that is
@@ -1236,10 +1242,13 @@ export default defineTool({
           /** True when narrowed to the caller itself — then `summary.agents` is at
            *  most 1 BY CONSTRUCTION and says nothing about the fleet. For fleet-wide
            *  liveness use coord:presence / fleet:status, never this block. */
-          // NB: resolveSelfRef returns { ownerId, ownerLabel }, NOT a bare id — an
-          // `args.agent === self` comparison here is string-vs-object and is ALWAYS
-          // false, which would ship this flag permanently dead while looking correct.
-          selfScoped: !!(self?.ownerId && args.agent && args.agent === self.ownerId),
+          // `self` has already been resolved to the caller's ownerId above, while
+          // this echo intentionally retains the caller's original filter token.
+          selfScoped: !!(
+            self?.ownerId &&
+            args.agent &&
+            (args.agent === self.ownerId || args.agent === 'self')
+          ),
           /** Whether ANY narrowing filter applied. false ⇒ the counts are workspace-wide. */
           filtered: !!(args.agent || args.plan || args.fleet || args.harness),
         },

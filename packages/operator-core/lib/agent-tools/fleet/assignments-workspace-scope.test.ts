@@ -71,13 +71,15 @@ vi.mock('../coordination/inbox-read-freshness', () => ({
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatuses: vi.fn(async () => new Map()) }));
 
 let capturedWorkspaceId: unknown;
+let capturedAgent: unknown;
 // PARTIAL mock (importOriginal) — see WI-6035. A closed factory silently reds
 // this file whenever fleet/assignments.ts gains an export it does not list; the
 // spread makes any un-stubbed export fall through to the real implementation.
 vi.mock('../../fleet/assignments', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../fleet/assignments')>()),
-  listFleetAssignments: vi.fn(async (opts: { workspaceId?: unknown }) => {
+  listFleetAssignments: vi.fn(async (opts: { workspaceId?: unknown; agent?: unknown }) => {
     capturedWorkspaceId = opts.workspaceId;
+    capturedAgent = opts.agent;
     // One live claim row for the caller itself — mirrors the incident: the
     // leader's OWN work-item claim (WI-5150-shaped), which the SAME orient
     // call's leaderBrief proved was really there.
@@ -151,6 +153,7 @@ const ctx = { workspaceId: '*' } as unknown as Parameters<typeof fleetAssignment
 beforeEach(() => {
   vi.clearAllMocks();
   capturedWorkspaceId = undefined;
+  capturedAgent = undefined;
 });
 
 describe('fleet:assignments — EI-13820 workspace-scope regression', () => {
@@ -254,5 +257,29 @@ describe('fleet:assignments — WI-6762: scoped counts carry their scope', () =>
     expect(res.data.scope.selfScoped).toBe(false);
     // Still filtered — the counts stay scope-relative and must not read as fleet-wide.
     expect(res.data.scope.filtered).toBe(true);
+  });
+});
+
+describe('fleet:assignments — caller-relative agent filter', () => {
+  it('resolves agent:"self" to the caller ownerId before querying the view', async () => {
+    vi.mocked(resolveSelfRef).mockReturnValueOnce({
+      ownerId: 'su-leader',
+      ownerLabel: 'l',
+    } as unknown as ReturnType<typeof resolveSelfRef>);
+
+    const res = (await fleetAssignmentsTool.handler({ agent: 'self' } as never, ctx)) as {
+      data: { scope: { agent: string; selfScoped: boolean; filtered: boolean } };
+    };
+
+    expect(capturedAgent).toBe('su-leader');
+    expect(res.data.scope).toMatchObject({ agent: 'self', selfScoped: true, filtered: true });
+  });
+
+  it('keeps an unresolved agent:"self" filter narrow instead of returning the whole roster', async () => {
+    vi.mocked(resolveSelfRef).mockReturnValueOnce(undefined);
+
+    await fleetAssignmentsTool.handler({ agent: 'self' } as never, ctx);
+
+    expect(capturedAgent).toBe('__unresolvable_self__');
   });
 });
