@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { withPlanLock } from '../with-plan-lock';
 import { hashPlanContent } from '../content-hash';
@@ -124,6 +124,7 @@ const COSMETIC_CHANGE_TAXONOMY = [
 
 describe('conversation activation audit gate', () => {
   it('grandfathers an already-ready plan with no audit, but not a stored draft', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, flipReady(DRAFT));
     await expect(
       evaluateConversationActivationGate(fx.admin, {
@@ -131,7 +132,13 @@ describe('conversation activation audit gate', () => {
         harnessSlug: HARNESS,
         planSlug: SLUG,
       }),
-    ).resolves.toEqual({ satisfied: true, grandfathered: true });
+    ).resolves.toMatchObject({
+      satisfied: true,
+      grandfathered: true,
+      message: expect.stringContaining('already ready with no activation audit'),
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('already ready with no activation audit'));
+    warn.mockRestore();
 
     await cleanupPlans(fx.admin, fx.workspaceId, HARNESS);
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);

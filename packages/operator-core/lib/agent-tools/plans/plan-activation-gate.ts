@@ -82,7 +82,11 @@ export async function evaluateConversationActivationGate(
     ? parsePlan(planRows[0].content, { filePath: `${scope.planSlug}.md` }).frontmatter.status
     : null;
   if (isActivationPlanStatus(storedStatus)) {
-    return { satisfied: true, grandfathered: true };
+    const message =
+      `Plan '${scope.planSlug}' is already ${storedStatus} with no activation audit, so it is grandfathered ` +
+      'instead of being retroactively blocked. Record plans:audit { phase:\'activation\' } on its next material plan edit.';
+    console.warn(`[plan-activation-gate] ${message}`);
+    return { satisfied: true, grandfathered: true, message };
   }
   return {
         satisfied: false,
