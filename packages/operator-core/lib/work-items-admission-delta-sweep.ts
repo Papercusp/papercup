@@ -157,12 +157,19 @@ function instant(value: Date | string): string {
 }
 
 function normalizeTitle(value: string): string {
-  return value.toLowerCase().normalize('NFKC').replace(/[^a-z0-9]+/g, ' ').trim();
+  return value
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 /** Stable enough for exact replay/convergence; the ordinary capture dedup net remains authoritative. */
 export function deltaSweepWatchdogKey(harnessSlug: string, title: string): string {
-  const digest = createHash('sha256').update(`${harnessSlug}\0${normalizeTitle(title)}`).digest('hex').slice(0, 24);
+  const digest = createHash('sha256')
+    .update(`${harnessSlug}\0${normalizeTitle(title)}`)
+    .digest('hex')
+    .slice(0, 24);
   return `${WORK_ITEM_ADMISSION_DELTA_SWEEP}:${harnessSlug}:${digest}`;
 }
 
@@ -390,10 +397,7 @@ export async function runWorkItemAdmissionDeltaSweep(opts: DeltaSweepRunOptions)
   if (replay) return replay;
   const recentWindowMinutes = positiveInteger(opts.recentWindowMinutes, DEFAULT_DELTA_WINDOW_MINUTES);
   const titleWindowHours = positiveInteger(opts.titleWindowHours, DEFAULT_DELTA_TITLE_WINDOW_HOURS);
-  const clusterExemplarsPerShard = positiveInteger(
-    opts.clusterExemplarsPerShard,
-    DEFAULT_DELTA_CLUSTER_EXEMPLARS,
-  );
+  const clusterExemplarsPerShard = positiveInteger(opts.clusterExemplarsPerShard, DEFAULT_DELTA_CLUSTER_EXEMPLARS);
   await beginRun(sql, {
     runId,
     workspaceId: opts.workspaceId,
