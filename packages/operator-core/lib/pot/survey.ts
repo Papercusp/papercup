@@ -630,14 +630,8 @@ export async function countPlaceableFrontier(
       FROM harness_shared.harness_features_consolidated wi
      WHERE workspace_id = ${workspaceId}
        AND ${frontierPlacementKindClause(sql, workspaceId)}
-       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
-       -- 'todo' was rewritten to the unified claimable token 'open' (issue-family already
-       -- used 'open'). This literal was never updated, so every genuinely-placeable
-       -- feature-family row has been silently invisible to the Mug's survey since that
-       -- migration ran (EI-13699 2026-07-17 pre-dates it and had a different proximate
-       -- cause; EI-18690462961089460 2026-07-26 is the post-migration recurrence this
-       -- fixes — pot:survey read frontier:0 while work_items:claimable read ~1062).
-       AND status = 'open'
+       -- WI-42165: mirror fetchFrontierRows' legacy todo -> canonical open storage fold.
+       AND (CASE WHEN status = 'todo' THEN 'open' ELSE status END) = 'open'
        AND (taken_by IS NULL OR taken_by = '')
        AND ${autoPickableWhereSql(sql, workspaceId)}
        AND ${admittedWhereSql(sql)}

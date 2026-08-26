@@ -2,11 +2,10 @@
  * Guard: no production path may mint a work-item at status 'todo'.
  *
  * WHY THIS EXISTS (EI-21460610464031791). `claimFloorsWhereSql` defaults to
- * `states = ['open']` and matches it with a RAW `status = ANY(...)` predicate. There is
- * no alias fold at READ time, so `FEATURE_STATE_ALIASES` (todo -> open) — which only
- * runs on the validated agent write path — does NOT rescue a row inserted by raw SQL.
- * A row born 'todo' is therefore born PERMANENTLY UNCLAIMABLE: it is minted, it counts
- * as work in every census, and no self-select door will ever hand it to anyone.
+ * `states = ['open']`. WI-42165 added a storage-boundary read fold (todo -> open) so
+ * a regressed raw writer cannot strand a row permanently, but writers must still emit
+ * the canonical token: the fold is recovery compatibility, not permission to revive the
+ * retired status throughout list, health, and reporting surfaces.
  *
  * This failed silently and expensively. Two raw INSERTs bypassing `createWorkItem` were
  * writing 'todo': the plan-run minter in `harness/routines/plan-run-action.ts` stranded
@@ -125,6 +124,13 @@ describe('work-item minters are born claimable', () => {
     });
   });
 
+  it('WI-42165: the shared feature claim floor rescues the retired todo alias as canonical open', () => {
+    const workItemsSource = readFileSync(join(LIB_ROOT, 'work-items.ts'), 'utf8');
+    expect(workItemsSource).toContain(
+      "(CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])",
+    );
+  });
+
   it('no production path mints a work-item at the unclaimable status', () => {
     const offenders = collectSourceFiles(LIB_ROOT)
       .filter((file) => {
@@ -136,10 +142,10 @@ describe('work-item minters are born claimable', () => {
 
     expect(
       offenders,
-      `These minters write status 'todo', which NO claim floor admits (claimFloorsWhereSql ` +
-        `defaults to ['open'] and does not alias-fold at read time). Rows they create are ` +
-        `born permanently unclaimable — minted, counted, never dispatched. Write 'open' ` +
-        `instead, or route through createWorkItem, which already does.`,
+      `These minters write retired status 'todo'. The shared claim floor has a WI-42165 ` +
+        `recovery fold, but every writer must still emit canonical 'open' so list, health, ` +
+        `and reporting surfaces do not diverge. Write 'open' instead, or route through ` +
+        `createWorkItem, which already does.`,
     ).toEqual([]);
   });
 });

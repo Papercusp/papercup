@@ -99,6 +99,6 @@ describe('shared conversation/context GUI consumer', () => {
 
   it('renders nothing for an unavailable capability tier', () => {
     const { container } = render(<ConversationContextProjectionView projection={null} />);
-    expect(container).toBeEmptyDOMElement();
+    expect(container.innerHTML).toBe('');
   });
 });
