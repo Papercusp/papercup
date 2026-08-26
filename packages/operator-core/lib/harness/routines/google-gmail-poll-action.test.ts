@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ExternalTriggerSourceRow } from '../../external-triggers/source-store';
 import type { GooglePubSubReceivedMessage } from '../../external-triggers/google-pubsub';
 import { getSystemAction } from './system-actions';
-import { runGoogleGmailPoll } from './google-gmail-poll-action';
+import { formatGoogleGmailPollLog, runGoogleGmailPoll } from './google-gmail-poll-action';
 
 function source(id: string, emailAddress: string): ExternalTriggerSourceRow {
   return {
@@ -169,6 +169,9 @@ describe('google-gmail-poll system action', () => {
       status: 'degraded',
       lastError: 'google_gmail_history_list_503',
     });
+    expect(formatGoogleGmailPollLog(result)).toContain(
+      'failures=[{"sourceId":"source-bad","status":"degraded","error":"google_gmail_history_list_503"}]',
+    );
   });
 
   it('clears a degraded source after the next successful idle poll', async () => {

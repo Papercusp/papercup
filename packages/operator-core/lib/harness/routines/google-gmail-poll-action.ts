@@ -76,6 +76,17 @@ function terminalAuthError(message: string): boolean {
   );
 }
 
+/** Keep per-source failure causes in the durable routine log, not only in the live result. */
+export function formatGoogleGmailPollLog(result: GoogleGmailPollResult): string {
+  const failures = result.failures.length > 0 ? ` failures=${JSON.stringify(result.failures)}` : '';
+  return (
+    `[google-gmail-poll] sources=${result.sources} succeeded=${result.succeeded} ` +
+    `failed=${result.failed} renewed=${result.renewed} pulled=${result.pulled} ` +
+    `acknowledged=${result.acknowledged} messages=${result.messages} ` +
+    `full_resyncs=${result.fullResyncs}${failures}`
+  );
+}
+
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
@@ -252,11 +263,6 @@ export async function runGoogleGmailPoll(
 registerSystemAction('google-gmail-poll', async (ctx) => {
   const result = await runGoogleGmailPoll(ctx);
   if (result.sources > 0 || result.pulled > 0) {
-    console.log(
-      `[google-gmail-poll] sources=${result.sources} succeeded=${result.succeeded} ` +
-        `failed=${result.failed} renewed=${result.renewed} pulled=${result.pulled} ` +
-        `acknowledged=${result.acknowledged} messages=${result.messages} ` +
-        `full_resyncs=${result.fullResyncs}`,
-    );
+    console.log(formatGoogleGmailPollLog(result));
   }
 });
