@@ -756,10 +756,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
     it("infers the scope from the owner's single existing carry-note when nothing else resolves", async () => {
       const { resolvePotHomeSlug } = await import('../../pot/wake');
-      // `null` is in resolvePotHomeSlug's REAL return type (string | null), so this needs
-    // no cast — and an uncast fixture still typechecks against the real signature if it
-    // ever changes, which `as never` would have silently swallowed.
-    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null);
+      vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null);
       runInferenceWorkForReal();
       listLoopCarryNoteHarnesses.mockResolvedValueOnce(['sb-devboard-hive']);
       const out = await call({ next: 'x' }, { workspaceId: 'ws-1' });
@@ -781,10 +778,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
     it('refuses and NAMES the candidates instead of guessing when the owner holds notes under several harnesses', async () => {
       const { resolvePotHomeSlug } = await import('../../pot/wake');
-      // `null` is in resolvePotHomeSlug's REAL return type (string | null), so this needs
-    // no cast — and an uncast fixture still typechecks against the real signature if it
-    // ever changes, which `as never` would have silently swallowed.
-    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null);
+      vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null);
       runInferenceWorkForReal();
       listLoopCarryNoteHarnesses.mockResolvedValueOnce(['hive-a', 'hive-b']);
       const out = await call({ next: 'x' }, { workspaceId: 'ws-1' });
