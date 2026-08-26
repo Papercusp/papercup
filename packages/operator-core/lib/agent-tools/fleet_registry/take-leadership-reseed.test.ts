@@ -14,7 +14,10 @@ const setCompactionLimit = vi.fn();
 const resolveModelSpecForOwner = vi.fn();
 
 // take-leadership-core statically imports these — stub so no DB module loads at import time.
-vi.mock('../../agent-fleets-store', () => ({ setFleetLeader: vi.fn() }));
+vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
+  setFleetLeader: vi.fn(),
+}));
 vi.mock('../coordination/presence', () => ({
   heartbeatPresence: vi.fn(),
   setPresenceFleet: vi.fn(),

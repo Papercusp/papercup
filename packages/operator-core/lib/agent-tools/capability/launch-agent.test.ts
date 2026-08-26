@@ -123,6 +123,7 @@ vi.mock('../../fleet-membership-store', () => ({
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
   getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
   getFleetScheme: async (_ws: string, slug: string) =>

@@ -9,7 +9,10 @@ const planItemsForRow = vi.hoisted(() => vi.fn());
 const analyzePlanDagParallelism = vi.hoisted(() => vi.fn());
 
 vi.mock('../agent-tools/coordination/presence-fleet', () => ({ resolvePresenceFleet }));
-vi.mock('../agent-fleets-store', () => ({ getFleet }));
+vi.mock('../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
+  getFleet,
+}));
 vi.mock('../scheduler/claim-spec-store', () => ({ resolveFleetClaimSpec }));
 vi.mock('./lane-health', () => ({ readClaimSpecLaneHealth }));
 vi.mock('../agent-tools/plans/source', () => ({ getPlanRow, planItemsForRow }));

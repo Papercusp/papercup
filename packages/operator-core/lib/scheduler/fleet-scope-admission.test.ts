@@ -66,6 +66,7 @@ vi.mock('../agent-tools/coordination/messages', () => ({
   sendMessage: admissionMocks.sendMessage,
 }));
 vi.mock('../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   getFleet: admissionMocks.getFleet,
 }));
 vi.mock('@papercusp/db-org', async (orig) => ({

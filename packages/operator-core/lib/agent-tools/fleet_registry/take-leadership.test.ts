@@ -33,6 +33,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   getFleet: (...a: unknown[]) => h.getFleet(...a),
   setFleetLeader: (...a: unknown[]) => h.setFleetLeader(...a),
   resolveFleetScheme: (...a: unknown[]) => h.resolveFleetScheme(...a),

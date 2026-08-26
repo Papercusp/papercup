@@ -29,6 +29,7 @@ vi.mock('./agent-tools/coordination/presence-fleet', () => ({
   fetchPresenceFleet: (owners: string[]) => fetchPresenceFleet(owners),
 }));
 vi.mock('./agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   getFleet: (ws: string, slug: string) => getFleet(ws, slug),
   listFleetsLedBy: (ws: string, owner: string) => listFleetsLedBy(ws, owner),
 }));

@@ -53,6 +53,7 @@ const getFleetSchemeMock = vi.fn(async (_ws: string, slug: string) =>
     : null,
 );
 vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
   getFleetScheme: (ws: string, slug: string) => getFleetSchemeMock(ws, slug),
 }));

@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   getFleet: (...args: unknown[]) => mocks.getFleet(...args),
   getFleetHeadcountTarget: (...args: unknown[]) => mocks.getFleetHeadcountTarget(...args),
   setFleetHeadcountTarget: (...args: unknown[]) => mocks.setFleetHeadcountTarget(...args),

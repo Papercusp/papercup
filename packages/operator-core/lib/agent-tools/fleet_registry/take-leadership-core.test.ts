@@ -19,6 +19,7 @@ const resolveFleetLeaderTransitionEventKeys = vi.fn();
 const clearOperatorCancelledAwaits = vi.fn();
 
 vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   setFleetLeader: (...a: unknown[]) => setFleetLeader(...a),
 }));
 vi.mock('../coordination/presence', () => ({
