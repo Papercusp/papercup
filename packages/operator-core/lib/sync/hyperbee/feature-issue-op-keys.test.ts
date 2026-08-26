@@ -679,7 +679,8 @@ describe('outboxRowToLocalWriteOp — agent_facts (F1-4/P-012 federation)', () =
         expect(Object.keys(v), `mapper must always emit ${k}`).toContain(k);
         expect(v[k], `${k} should be null when the column is absent`).toBeNull();
       }
-      expect(isAgentFactWireRow(v as AgentFactWireRow)).toBe(true);
+      // No cast: isAgentFactWireRow takes `unknown` and is the type guard itself.
+      expect(isAgentFactWireRow(v)).toBe(true);
     });
 
     it('does NOT carry supersedes_id — a local bigserial pk (documented-local)', () => {
