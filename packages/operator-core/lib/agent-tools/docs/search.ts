@@ -434,6 +434,7 @@ export default defineTool({
     };
 
     const { results, legs, applied } = await runHybridSearch([source], {
+      caller: 'docs:search',
       sql: lazyOrgSql,
       query: args.query,
       // The docs source resolves its own corpus from the adapter; neither of
