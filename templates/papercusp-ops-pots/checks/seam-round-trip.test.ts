@@ -124,7 +124,7 @@ describe.skipIf(!section)("seam-round-trip", () => {
     "the app's own enqueue→ingest integration leg is green (roundTripCommand)",
     { timeout: 330_000 },
     () => {
-      const [cmd, ...args] = section!.roundTripCommand;
+      const [cmd, ...args] = section!.roundTripCommand!;
       const run = spawnSync(cmd!, args, {
         cwd: section!.roundTripCwd ? inApp(section!.roundTripCwd) : appRoot!,
         encoding: "utf8",
