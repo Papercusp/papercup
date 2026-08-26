@@ -433,6 +433,52 @@ describe('P-007: a missing prewarmed dependency generation is a typed STANDING p
     expect(classifyGateStallStatus(r.reason, true)).toBe('reset');
   });
 
+  /**
+   * PERMANENT FALSIFIABILITY CONTROL (repo convention: for a module you import, keep the
+   * deliberately-wrong behaviour in the test file rather than mutating the shared tree).
+   *
+   * This control needs no reconstruction at all: before this fix the missing-prewarm detail fell
+   * THROUGH to `buildCrashCheckpointResult`, and that function is still exported — so `preFix`
+   * below is not an approximation of the old behaviour, it IS the old behaviour, produced by the
+   * same code path from the same input.
+   *
+   * Falsifiable in the right direction: if the classifier ever stopped recognising the signature,
+   * `real` would become identical to `preFix` and the divergence assertions would demand two
+   * different values of one object — failing here rather than silently passing.
+   */
+  it('CONTROL: the pre-fix path gives the OPPOSITE operational advice on the same input', () => {
+    const opts = {
+      candidate: 'b3e519a1bfce',
+      error: new Error(REAL_MISSING_PREWARM_DETAIL),
+      runId: '231966bc',
+    };
+    const real = buildTerminalFailureCheckpointResult(opts);
+    const preFix = buildCrashCheckpointResult(opts); // literally what this input produced before
+
+    // CALIBRATION — everything the fix did not touch must still agree, or the divergence below
+    // says nothing about THIS change. Both already refused to claim a verdict; that was never
+    // the defect.
+    expect(preFix.green).toBe(real.green);
+    expect(preFix.green).toBeNull();
+    expect(preFix.advanced).toBe(real.advanced);
+    expect(preFix.candidate).toBe(real.candidate);
+    expect(preFix.runId).toBe(real.runId);
+
+    // …and diverges at EXACTLY the defect. The old path produced an anonymous crash…
+    expect(preFix.reason).toBe('error');
+    expect(preFix.crashed).toBe(true);
+    expect(preFix.summary).toMatch(/crashed before producing a normal verdict/i);
+    // …which was advised as TRANSIENT, i.e. "just run it again" — on a fingerprint that was still
+    // unpublished, so the next run would die identically. This is the measured 2026-08-26 harm.
+    expect(classifyGateAbort(preFix.reason)).toBe('transient');
+    expect(gateAbortLever(preFix.reason)).toMatch(/nothing is blocking a re-fire/i);
+
+    // The fixed path names the condition and says it persists.
+    expect(real.reason).toBe('dependency-prewarm-missing');
+    expect(classifyGateAbort(real.reason)).toBe('standing-condition');
+    expect(gateAbortLever(real.reason)).toMatch(/re-firing aborts the same way/i);
+  });
+
   it.each([
     // 75 is the TORN-SNAPSHOT code, a different and self-clearing condition.
     [
