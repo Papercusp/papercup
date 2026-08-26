@@ -73,6 +73,7 @@ import {
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
 import {
+  committedCloseDowngradedForUnprovenContentIdentity,
   completionTreeContentIdentityMatches,
   completionTreeStamp,
   completionTreeStampForEvidence,
@@ -2260,10 +2261,11 @@ async function completeOne(
     completionEvidenceBeforeStamp && treeStamp
       ? { ...completionEvidenceBeforeStamp, treeStamp }
       : completionEvidenceBeforeStamp;
-  const committedContentIdentityMissing =
-    authorityByEvidence === 'committed' &&
-    Boolean(completionEvidenceForGate?.filesChanged?.length) &&
-    !completionTreeContentIdentityMatches(treeStamp?.contentIdentity);
+  const committedContentIdentityMissing = committedCloseDowngradedForUnprovenContentIdentity(
+    authorityByEvidence,
+    completionEvidenceForGate?.filesChanged,
+    treeStamp,
+  );
   const completionAuthority = committedContentIdentityMissing ? 'proposed' : authorityByEvidence;
   // EI-20268156880922192: the completion record is durable, but a cited
   // session-local scratch path or account-local artifact URL is not. Scan the
