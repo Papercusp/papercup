@@ -565,6 +565,63 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
     'gate: { ownership: { eventKey, workItem, claimState, takenBy, takenAt, expiresAt, duplicates[] } }, verdictUnknown[] }',
 };
 
+/** P-007 — the durable logical qualification, not the mortal agent currently repairing it. */
+export const GATE_QUALIFICATION_CELL: CellSpec = {
+  cell: 'gate.greenCheckpoint.qualification',
+  registeredOn: '2026-08-26',
+  owner: 'su-11131e17-b752-4e4d-a996-ca86edf2a708',
+  headline: 'gate.qualification.attemptId',
+  assessment: {
+    path: 'gate.qualification.safeNextAction.code',
+    codes: {
+      'launch-physical-run': {
+        meaning: 'The logical attempt is ready and no physical runner holds its lease.',
+        safeAction: 'Let the qualification routine launch the next physical runner under current release-control authority.',
+      },
+      'await-blocker-events': {
+        meaning: 'A typed pre-suite infrastructure blocker paused this logical attempt.',
+        safeAction: 'Await the listed blocker-clear events; the same attempt resumes when they clear.',
+      },
+      'await-current-run': {
+        meaning: 'One physical runner owns a live lease for this logical attempt.',
+        safeAction: 'Await that runner; do not start a competing checkpoint.',
+      },
+      'recover-expired-runner': {
+        meaning: 'The recorded physical-run lease expired without a terminal result.',
+        safeAction: 'Reconcile the expired runner and let the routine reserve a replacement for the same logical attempt.',
+      },
+      'repair-code': {
+        meaning: 'A real red verdict terminated this logical attempt.',
+        safeAction: 'Repair the named code failures; never auto-retry this terminal attempt.',
+      },
+      'inspect-terminal-evidence': {
+        meaning: 'A terminal code outcome was inconclusive rather than retryable infrastructure.',
+        safeAction: 'Inspect the recorded evidence before authoring any successor attempt.',
+      },
+      'read-release-control': {
+        meaning: 'No qualification is running, or it completed green, or its record is unreadable.',
+        safeAction: 'Read current serializer/manual-run and promotion authority before starting or shipping anything.',
+      },
+    },
+    evidence: ['gate.qualification.phase', 'gate.qualification.lease', 'gate.qualification.blockers'],
+  },
+  nullable: true,
+  unknownHoist: 'gate.qualification.unknown',
+  callerRelativity: { kind: 'global' },
+  provenance: {
+    obtainedBy: 'the green-checkpoint routine metadata (`qualificationTransaction`) via gitPipelineSnapshot',
+    liveExercised: true,
+    evidence:
+      'The live routine row was read during P-007 implementation on 2026-08-26; absence produced the typed no-attempt/read-release-control state rather than an inferred agent owner.',
+  },
+  resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.qualification' },
+  shape:
+    '{ gate: { qualification: { status, attemptId, candidate, phase, outcome, owner, lease, blockers, phaseDurationsMs, consumedPhysicalRuns, safeNextAction, unknown } } }',
+};
+
 /**
  * Cell 2b — WHO owns the gate incident, and whether that ownership is real.
  *
@@ -1288,6 +1345,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
+  GATE_QUALIFICATION_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,

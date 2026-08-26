@@ -53,6 +53,7 @@ import { reconcileGateVerdictFreshnessWithCheckpointRun } from './release/gate-v
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
 import { listRuntimeVintage, type RuntimeVintageRow } from './runtime-vintage';
+import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 
 const pexec = promisify(execFile);
 
@@ -1197,6 +1198,8 @@ export interface PipelinePosition {
       observedAtMs: number | null;
     } | null;
     repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
+    /** Routine-owned logical qualification state, projected from the same snapshot row. */
+    qualification: NonNullable<GitPipelineSnapshot['gate']['qualification']>;
   };
   /**
    * EI-7846: provenance for the CURRENT gate/deploy verdict — distinct from the
@@ -4683,6 +4686,7 @@ export async function gitPipelinePosition(
     // (the surface every role is pointed at) reporting a stale red as the pipeline's blocker.
     inconclusive: snap.gate.inconclusive,
     repairQueue: snap.gate.repairQueue ?? null,
+    qualification: snap.gate.qualification ?? projectCheckpointQualificationState(null),
     // P-004: WHO owns this red, so a reader can see the incident is already
     // claimed before filing another work-item about it. One indexed SELECT,
     // fail-soft to `no-object` — same cost/safety profile as checkpointRunInFlight.

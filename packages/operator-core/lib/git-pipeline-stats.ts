@@ -41,6 +41,10 @@ import {
 import { parseInFlightRetriage, type StoredInFlightRetriage } from './release/in-flight-retriage';
 import { parseInFlightCandidate, type StoredInFlightCandidate } from './release/in-flight-candidate';
 import { pipelineName } from './release/pipeline-name';
+import {
+  projectCheckpointQualificationState,
+  type CheckpointQualificationState,
+} from './release/checkpoint-qualification-transaction';
 import type { CheckpointProcessAuthorityReading, CheckpointSystemdProbe } from './release-checkpoint-launch';
 
 /** The operator's own integration harness (its git-sync/release routines). */
@@ -245,6 +249,8 @@ export interface GitPipelineSnapshot {
     /** EI-21433366079878122: normalized persisted queue state, including live-fixer and
      * exact-CAS retirement guidance. Null means the routine row carries no readable queue. */
     repairQueue?: FrozenRepairQueueDiagnostic | null;
+    /** P-007: one typed, routine-owned logical qualification view. */
+    qualification?: CheckpointQualificationState;
     /** WI-4533: the tests the gate ITSELF named in its last verdict (`gate_health.failingTests`)
      *  — the workspace(s) + file path(s) that actually redded it. The blob has carried these all
      *  along and NO read surfaced them, so every consumer asking "what is red?" fell back to
@@ -940,6 +946,7 @@ export async function gitPipelineSnapshot(
   const lastResolver = (meta.last_resolver ?? null) as Record<string, unknown> | null;
   // P-004: green-checkpoint gate health (red streak + last release-fixer).
   const gcMeta = (byName('green-checkpoint')?.metadata ?? {}) as Record<string, unknown>;
+  const qualification = projectCheckpointQualificationState(gcMeta.qualificationTransaction);
   const gateHealth = (gcMeta.gate_health ?? {}) as Record<string, unknown>;
   const lastFixer = (gcMeta.last_fixer ?? null) as Record<string, unknown> | null;
   const flakeHistory = (gcMeta.flake_history ?? {}) as Record<string, { flakes?: number }>;
@@ -1312,6 +1319,7 @@ export async function gitPipelineSnapshot(
       // than as a half-populated abort a consumer would render with empty fields.
       inconclusive: currentGateInconclusive(gateHealth.inconclusive, gcMeta.repair_queue),
       repairQueue,
+      qualification,
     },
     openConflict,
     windows: { day, week },

@@ -4,6 +4,7 @@ import {
   beginQualificationTransaction,
   classifyQualificationVerdict,
   parseCheckpointQualificationTransaction,
+  projectCheckpointQualificationState,
   qualificationIntentMatches,
   reserveQualificationRunner,
   settleQualificationTransaction,
@@ -63,11 +64,73 @@ describe('logical checkpoint qualification transaction', () => {
     const running = reserveQualificationRunner(waiting, {
       attemptId: 'attempt-1',
       runnerId: 'physical-1',
+      leaseDurationMs: 1_000,
       nowMs: 300,
     }).transaction;
     expect(running).toMatchObject({ phase: 'running', currentPhysicalRunner: { id: 'physical-1' } });
-    expect(reserveQualificationRunner(running, { attemptId: 'attempt-1', runnerId: 'physical-1' }).status).toBe('idempotent');
-    expect(reserveQualificationRunner(running, { attemptId: 'attempt-1', runnerId: 'physical-2' }).status).toBe('conflict');
+    expect(reserveQualificationRunner(running, {
+      attemptId: 'attempt-1', runnerId: 'physical-1', leaseDurationMs: 1_000, nowMs: 350,
+    }).status).toBe('idempotent');
+    expect(reserveQualificationRunner(running, {
+      attemptId: 'attempt-1', runnerId: 'physical-2', leaseDurationMs: 1_000, nowMs: 350,
+    }).status).toBe('conflict');
+  });
+
+  it('expires a mortal physical runner while preserving the logical attempt and run history', () => {
+    const running = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'physical-1', leaseDurationMs: 100, nowMs: 200,
+    }).transaction;
+    expect(projectCheckpointQualificationState(running, 250)).toMatchObject({
+      owner: { kind: 'routine', id: 'system:green-checkpoint' },
+      lease: { holder: 'physical-1', expired: false },
+      safeNextAction: { code: 'await-current-run' },
+    });
+    expect(projectCheckpointQualificationState(running, 301)).toMatchObject({
+      lease: { holder: 'physical-1', expired: true },
+      safeNextAction: { code: 'recover-expired-runner' },
+    });
+
+    const replacement = reserveQualificationRunner(running, {
+      attemptId: 'attempt-1', runnerId: 'physical-2', leaseDurationMs: 200, nowMs: 301,
+    });
+    expect(replacement).toMatchObject({
+      status: 'updated',
+      transaction: {
+        attemptId: 'attempt-1',
+        currentPhysicalRunner: { id: 'physical-2', leaseExpiresAtMs: 501 },
+        consumedPhysicalRuns: [{ id: 'physical-1', outcome: { kind: 'pre-suite-no-verdict', reason: 'deadline-exceeded' } }],
+      },
+    });
+  });
+
+  it('projects blocker events, elapsed phase durations, terminal action, and consumed runs', () => {
+    const running = reserveQualificationRunner(begin(), {
+      attemptId: 'attempt-1', runnerId: 'physical-1', leaseDurationMs: 1_000, nowMs: 200,
+    }).transaction;
+    const waiting = waitQualificationTransaction(running, {
+      attemptId: 'attempt-1',
+      reason: 'eligibility-wait',
+      blockers: [{ code: 'quiet-cut', clearEvents: ['checkpoint:eligible:attempt-1'] }],
+      nowMs: 350,
+    }).transaction;
+    expect(projectCheckpointQualificationState(waiting, 500)).toMatchObject({
+      phase: 'waiting',
+      phaseDurationsMs: { ready: 100, running: 150, waiting: 150 },
+      consumedPhysicalRuns: [{ id: 'physical-1', endedAtMs: 350 }],
+      safeNextAction: {
+        code: 'await-blocker-events',
+        waitEvents: ['checkpoint:eligible:attempt-1'],
+      },
+    });
+
+    const red = settleQualificationTransaction(waiting, {
+      attemptId: 'attempt-1', reason: 'not-green', green: false, nowMs: 600,
+    }).transaction;
+    expect(projectCheckpointQualificationState(red, 700)).toMatchObject({
+      phase: 'terminal',
+      phaseDurationsMs: { ready: 100, running: 150, waiting: 250, terminal: 100 },
+      safeNextAction: { code: 'repair-code' },
+    });
   });
 
   it('retries only the explicit pre-suite no-verdict allowlist and makes red/code outcomes terminal', () => {
@@ -103,6 +166,14 @@ describe('logical checkpoint qualification transaction', () => {
     expect(parseCheckpointQualificationTransaction({
       ...current,
       outcome: { kind: 'pre-suite-no-verdict', reason: 'invented-retry' },
+    })).toBeNull();
+    expect(parseCheckpointQualificationTransaction({
+      ...current,
+      phaseDurationsMs: { running: -1 },
+    })).toBeNull();
+    expect(parseCheckpointQualificationTransaction({
+      ...current,
+      consumedPhysicalRuns: [{ id: 'run-1', outcome: { kind: 'invented' } }],
     })).toBeNull();
   });
 

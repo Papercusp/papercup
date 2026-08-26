@@ -360,6 +360,24 @@ describe('release:checkpoint-run', () => {
     vi.doMock('../coordination/identity', () => ({
       resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-serializer', workspaceId: 'papercusp-workspace' })),
     }));
+    // Hermetic ownership baseline: a live workspace claim must not make this serializer-fence
+    // unit test branch on whichever incident the shared test host happens to be running.
+    vi.doMock('../../coord/gate-ownership', async (orig) => ({
+      ...(await orig<typeof import('../../coord/gate-ownership')>()),
+      readGateOwnership: vi.fn(async () => ({
+        eventKey: 'gate-red-streak:papercusp',
+        workItem: null,
+        claimState: 'no-object',
+        unknown: null,
+        takenBy: null,
+        takenAt: null,
+        lastProgressAt: null,
+        expiresAt: null,
+        holderSessionState: null,
+        duplicates: [],
+        thread: { recent: [], total: 0 },
+      })),
+    }));
     const launchSpy = vi.fn(async () => ({ launched: true, unit: 'x', argv: [], logPath: '/tmp/x.log' }));
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
       ...(await orig()),

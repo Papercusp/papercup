@@ -65,7 +65,42 @@ export interface QualificationPhysicalRunner {
   id: string;
   candidate: string | null;
   reservedAtMs: number;
+  leaseExpiresAtMs?: number;
   evidenceRefs: string[];
+}
+
+export interface QualificationPhysicalRun extends QualificationPhysicalRunner {
+  endedAtMs: number;
+  outcome: QualificationOutcome;
+}
+
+export type QualificationSafeNextAction =
+  | { code: 'launch-physical-run'; reason: string; waitEvents: string[] }
+  | { code: 'await-blocker-events'; reason: string; waitEvents: string[] }
+  | { code: 'await-current-run'; reason: string; waitEvents: string[] }
+  | { code: 'recover-expired-runner'; reason: string; waitEvents: string[] }
+  | { code: 'repair-code'; reason: string; waitEvents: string[] }
+  | { code: 'inspect-terminal-evidence'; reason: string; waitEvents: string[] }
+  | { code: 'read-release-control'; reason: string; waitEvents: string[] };
+
+export interface CheckpointQualificationState {
+  status: 'none' | 'unreadable' | 'present';
+  attemptId: string | null;
+  candidate: string | null;
+  phase: QualificationPhase | null;
+  outcome: QualificationOutcome | null;
+  owner: { kind: 'routine'; id: 'system:green-checkpoint' };
+  lease: {
+    holder: string;
+    acquiredAtMs: number;
+    expiresAtMs: number;
+    expired: boolean;
+  } | null;
+  blockers: QualificationBlocker[];
+  phaseDurationsMs: Partial<Record<QualificationPhase, number>>;
+  consumedPhysicalRuns: QualificationPhysicalRun[];
+  safeNextAction: QualificationSafeNextAction;
+  unknown: { code: 'resolver-failed'; detail: string } | null;
 }
 
 export interface CheckpointQualificationTransaction {
@@ -80,10 +115,13 @@ export interface CheckpointQualificationTransaction {
   };
   candidate: string | null;
   phase: QualificationPhase;
+  phaseEnteredAtMs?: number;
+  phaseDurationsMs?: Partial<Record<QualificationPhase, number>>;
   outcome: QualificationOutcome;
   blockers: QualificationBlocker[];
   waitGeneration: number;
   currentPhysicalRunner: QualificationPhysicalRunner | null;
+  consumedPhysicalRuns?: QualificationPhysicalRun[];
   evidenceRefs: string[];
   previousAttemptId: string | null;
 }
@@ -107,10 +145,147 @@ const uniqueStrings = (values: readonly string[], cap = 64): string[] =>
 export const isTerminalQualificationOutcome = (outcome: QualificationOutcome): boolean =>
   outcome.kind === 'green' || outcome.kind === 'red' || outcome.kind === 'code-inconclusive';
 
+function isQualificationOutcome(value: unknown): value is QualificationOutcome {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const outcome = value as { kind?: unknown; reason?: unknown };
+  if (outcome.kind === 'pending') return true;
+  if (outcome.kind === 'pre-suite-no-verdict') {
+    return (PRE_SUITE_NO_VERDICT_REASONS as readonly unknown[]).includes(outcome.reason);
+  }
+  return (
+    ['green', 'red', 'code-inconclusive'].includes(String(outcome.kind)) &&
+    typeof outcome.reason === 'string'
+  );
+}
+
+function isPhysicalRun(value: unknown): value is QualificationPhysicalRun {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const run = value as Partial<QualificationPhysicalRun>;
+  return (
+    typeof run.id === 'string' && !!run.id &&
+    (run.candidate === null || typeof run.candidate === 'string') &&
+    Number.isFinite(run.reservedAtMs) &&
+    Number.isFinite(run.leaseExpiresAtMs) &&
+    Number.isFinite(run.endedAtMs) &&
+    Array.isArray(run.evidenceRefs) && run.evidenceRefs.every((ref) => typeof ref === 'string') &&
+    isQualificationOutcome(run.outcome)
+  );
+}
+
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
   const a = uniqueStrings(left).sort();
   const b = uniqueStrings(right).sort();
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+function completedPhaseDurations(
+  current: CheckpointQualificationTransaction,
+  nextPhase: QualificationPhase,
+  nowMs: number,
+): Partial<Record<QualificationPhase, number>> {
+  if (current.phase === nextPhase) return current.phaseDurationsMs ?? {};
+  const phaseDurations = current.phaseDurationsMs ?? {};
+  const phaseEnteredAtMs = current.phaseEnteredAtMs ?? current.updatedAtMs;
+  return {
+    ...phaseDurations,
+    [current.phase]:
+      (phaseDurations[current.phase] ?? 0) + Math.max(0, nowMs - phaseEnteredAtMs),
+  };
+}
+
+function consumedRunner(
+  current: CheckpointQualificationTransaction,
+  outcome: QualificationOutcome,
+  nowMs: number,
+): QualificationPhysicalRun[] {
+  if (!current.currentPhysicalRunner) return current.consumedPhysicalRuns ?? [];
+  return [
+    ...(current.consumedPhysicalRuns ?? []),
+    { ...current.currentPhysicalRunner, endedAtMs: nowMs, outcome },
+  ].slice(-32);
+}
+
+export function qualificationPhaseDurations(
+  current: CheckpointQualificationTransaction,
+  nowMs = Date.now(),
+): Partial<Record<QualificationPhase, number>> {
+  return {
+    ...(current.phaseDurationsMs ?? {}),
+    [current.phase]:
+      ((current.phaseDurationsMs ?? {})[current.phase] ?? 0) +
+      Math.max(0, nowMs - (current.phaseEnteredAtMs ?? current.updatedAtMs)),
+  };
+}
+
+export function projectCheckpointQualificationState(
+  raw: unknown,
+  nowMs = Date.now(),
+): CheckpointQualificationState {
+  const owner = { kind: 'routine' as const, id: 'system:green-checkpoint' as const };
+  if (raw == null) {
+    return {
+      status: 'none', attemptId: null, candidate: null, phase: null, outcome: null, owner,
+      lease: null, blockers: [], phaseDurationsMs: {}, consumedPhysicalRuns: [], unknown: null,
+      safeNextAction: {
+        code: 'read-release-control',
+        reason: 'no logical qualification attempt exists; read current serializer/manual-run authority before starting one',
+        waitEvents: [],
+      },
+    };
+  }
+  const transaction = parseCheckpointQualificationTransaction(raw);
+  if (!transaction) {
+    return {
+      status: 'unreadable', attemptId: null, candidate: null, phase: null, outcome: null, owner,
+      lease: null, blockers: [], phaseDurationsMs: {}, consumedPhysicalRuns: [],
+      safeNextAction: {
+        code: 'read-release-control',
+        reason: 'qualification metadata is malformed; repair the durable record before launching',
+        waitEvents: [],
+      },
+      unknown: { code: 'resolver-failed', detail: 'qualification transaction metadata is malformed' },
+    };
+  }
+  const runner = transaction.currentPhysicalRunner;
+  const lease = runner
+    ? {
+        holder: runner.id,
+        acquiredAtMs: runner.reservedAtMs,
+        expiresAtMs: runner.leaseExpiresAtMs ?? runner.reservedAtMs,
+        expired: nowMs >= (runner.leaseExpiresAtMs ?? runner.reservedAtMs),
+      }
+    : null;
+  const waitEvents = uniqueStrings(transaction.blockers.flatMap((blocker) => blocker.clearEvents));
+  let safeNextAction: QualificationSafeNextAction;
+  if (transaction.outcome.kind === 'green') {
+    safeNextAction = { code: 'read-release-control', reason: 'qualification is green; read promotion/deploy authority before acting', waitEvents: [] };
+  } else if (transaction.outcome.kind === 'red') {
+    safeNextAction = { code: 'repair-code', reason: 'a real red is terminal for this logical attempt; repair code before starting a successor', waitEvents: [] };
+  } else if (transaction.outcome.kind === 'code-inconclusive') {
+    safeNextAction = { code: 'inspect-terminal-evidence', reason: 'the terminal code outcome is inconclusive; inspect evidence before a successor', waitEvents: [] };
+  } else if (runner && lease?.expired) {
+    safeNextAction = { code: 'recover-expired-runner', reason: 'the physical-run lease expired without a terminal result', waitEvents: [] };
+  } else if (runner) {
+    safeNextAction = { code: 'await-current-run', reason: 'one physical runner owns the live lease', waitEvents: [] };
+  } else if (transaction.phase === 'waiting') {
+    safeNextAction = { code: 'await-blocker-events', reason: 'pre-suite infrastructure blocked this attempt; resume it after the named events clear', waitEvents };
+  } else {
+    safeNextAction = { code: 'launch-physical-run', reason: 'the logical attempt is ready and has no live physical runner', waitEvents: [] };
+  }
+  return {
+    status: 'present',
+    attemptId: transaction.attemptId,
+    candidate: transaction.candidate,
+    phase: transaction.phase,
+    outcome: transaction.outcome,
+    owner,
+    lease,
+    blockers: transaction.blockers,
+    phaseDurationsMs: qualificationPhaseDurations(transaction, nowMs),
+    consumedPhysicalRuns: transaction.consumedPhysicalRuns ?? [],
+    safeNextAction,
+    unknown: null,
+  };
 }
 
 /**
@@ -148,20 +323,19 @@ export function parseCheckpointQualificationTransaction(
     row.candidatePolicy.kind !== 'quiet-cut' ||
     !Array.isArray(row.candidatePolicy.declaredPaths) ||
     !Array.isArray(row.blockers) ||
-    !Array.isArray(row.evidenceRefs)
+    !Array.isArray(row.evidenceRefs) ||
+    (row.phaseEnteredAtMs != null && !Number.isFinite(row.phaseEnteredAtMs)) ||
+    (row.phaseDurationsMs != null &&
+      (typeof row.phaseDurationsMs !== 'object' || Array.isArray(row.phaseDurationsMs) ||
+        Object.entries(row.phaseDurationsMs).some(
+          ([phase, duration]) =>
+            !['waiting', 'ready', 'running', 'terminal'].includes(phase) ||
+            typeof duration !== 'number' || !Number.isFinite(duration) || duration < 0,
+        ))) ||
+    (row.consumedPhysicalRuns != null &&
+      (!Array.isArray(row.consumedPhysicalRuns) || row.consumedPhysicalRuns.some((run) => !isPhysicalRun(run))))
   ) return null;
-  const outcome = row.outcome as Partial<QualificationOutcome>;
-  if (!['pending', 'pre-suite-no-verdict', 'green', 'red', 'code-inconclusive'].includes(String(outcome.kind))) {
-    return null;
-  }
-  if (
-    outcome.kind === 'pre-suite-no-verdict' &&
-    !(PRE_SUITE_NO_VERDICT_REASONS as readonly string[]).includes(String((outcome as { reason?: unknown }).reason))
-  ) return null;
-  if (
-    (outcome.kind === 'green' || outcome.kind === 'red' || outcome.kind === 'code-inconclusive') &&
-    typeof (outcome as { reason?: unknown }).reason !== 'string'
-  ) return null;
+  if (!isQualificationOutcome(row.outcome)) return null;
   if (
     row.blockers.some((blocker) =>
       !blocker ||
@@ -181,11 +355,41 @@ export function parseCheckpointQualificationTransaction(
       typeof row.currentPhysicalRunner.id !== 'string' ||
       !row.currentPhysicalRunner.id ||
       !Number.isFinite(row.currentPhysicalRunner.reservedAtMs) ||
+      (row.currentPhysicalRunner.leaseExpiresAtMs != null && !Number.isFinite(row.currentPhysicalRunner.leaseExpiresAtMs)) ||
       !Array.isArray(row.currentPhysicalRunner.evidenceRefs) ||
       row.currentPhysicalRunner.evidenceRefs.some((ref) => typeof ref !== 'string')
     )
   ) return null;
-  return row as CheckpointQualificationTransaction;
+  const phaseEnteredAtMs = Number.isFinite(row.phaseEnteredAtMs) ? row.phaseEnteredAtMs! : row.updatedAtMs!;
+  const phaseDurationsMs =
+    row.phaseDurationsMs && typeof row.phaseDurationsMs === 'object' && !Array.isArray(row.phaseDurationsMs)
+      ? Object.fromEntries(
+          Object.entries(row.phaseDurationsMs).filter(
+            ([phase, duration]) =>
+              ['waiting', 'ready', 'running', 'terminal'].includes(phase) &&
+              typeof duration === 'number' && Number.isFinite(duration) && duration >= 0,
+          ),
+        )
+      : {};
+  const consumedPhysicalRuns = Array.isArray(row.consumedPhysicalRuns)
+    ? row.consumedPhysicalRuns.slice(-32)
+    : [];
+  const currentPhysicalRunner = row.currentPhysicalRunner
+    ? {
+        ...row.currentPhysicalRunner,
+        leaseExpiresAtMs:
+          typeof row.currentPhysicalRunner.leaseExpiresAtMs === 'number'
+            ? row.currentPhysicalRunner.leaseExpiresAtMs
+            : row.currentPhysicalRunner.reservedAtMs,
+      }
+    : null;
+  return {
+    ...(row as CheckpointQualificationTransaction),
+    phaseEnteredAtMs,
+    phaseDurationsMs,
+    currentPhysicalRunner,
+    consumedPhysicalRuns,
+  };
 }
 
 export function beginQualificationTransaction(
@@ -214,10 +418,13 @@ export function beginQualificationTransaction(
     },
     candidate: input.candidate?.trim() || null,
     phase: 'ready',
+    phaseEnteredAtMs: nowMs,
+    phaseDurationsMs: {},
     outcome: { kind: 'pending' },
     blockers: [],
     waitGeneration: 0,
     currentPhysicalRunner: null,
+    consumedPhysicalRuns: [],
     evidenceRefs: uniqueStrings(input.evidenceRefs ?? []),
     previousAttemptId: current?.attemptId ?? null,
   };
@@ -254,16 +461,20 @@ export function waitQualificationTransaction(
     return { status: 'idempotent', transaction: current };
   }
   const nowMs = input.nowMs ?? Date.now();
+  const outcome = { kind: 'pre-suite-no-verdict' as const, reason: input.reason };
   return {
     status: 'updated',
     transaction: {
       ...current,
       updatedAtMs: nowMs,
       phase: 'waiting',
-      outcome: { kind: 'pre-suite-no-verdict', reason: input.reason },
+      phaseEnteredAtMs: current.phase === 'waiting' ? current.phaseEnteredAtMs : nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, 'waiting', nowMs),
+      outcome,
       blockers: (input.blockers ?? []).slice(0, 24).map((blocker) => ({ ...blocker, observedAtMs: nowMs })),
       waitGeneration: current.waitGeneration + 1,
       currentPhysicalRunner: null,
+      consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
     },
   };
@@ -276,17 +487,24 @@ export function reserveQualificationRunner(
     runnerId: string;
     candidate?: string | null;
     evidenceRefs?: readonly string[];
+    leaseDurationMs: number;
     nowMs?: number;
   },
 ): QualificationTransition {
   if (current.attemptId !== input.attemptId) return { status: 'conflict', transaction: current };
   if (isTerminalQualificationOutcome(current.outcome)) return { status: 'terminal', transaction: current };
-  if (current.currentPhysicalRunner && current.currentPhysicalRunner.id !== input.runnerId) {
+  const nowMs = input.nowMs ?? Date.now();
+  const liveRunner =
+    current.currentPhysicalRunner &&
+    nowMs < (current.currentPhysicalRunner.leaseExpiresAtMs ?? current.currentPhysicalRunner.reservedAtMs);
+  if (liveRunner && current.currentPhysicalRunner!.id !== input.runnerId) {
     return { status: 'conflict', transaction: current };
   }
-  if (current.currentPhysicalRunner?.id === input.runnerId) return { status: 'idempotent', transaction: current };
-  const nowMs = input.nowMs ?? Date.now();
+  if (liveRunner && current.currentPhysicalRunner?.id === input.runnerId) return { status: 'idempotent', transaction: current };
   const evidenceRefs = uniqueStrings(input.evidenceRefs ?? []);
+  const expiredRuns = current.currentPhysicalRunner
+    ? consumedRunner(current, { kind: 'pre-suite-no-verdict', reason: 'deadline-exceeded' }, nowMs)
+    : current.consumedPhysicalRuns ?? [];
   return {
     status: 'updated',
     transaction: {
@@ -294,14 +512,21 @@ export function reserveQualificationRunner(
       updatedAtMs: nowMs,
       candidate: input.candidate?.trim() || current.candidate,
       phase: 'running',
+      phaseEnteredAtMs:
+        current.phase === 'running' && !current.currentPhysicalRunner
+          ? current.phaseEnteredAtMs ?? current.updatedAtMs
+          : nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, 'running', nowMs),
       outcome: { kind: 'pending' },
       blockers: [],
       currentPhysicalRunner: {
         id: input.runnerId,
         candidate: input.candidate?.trim() || current.candidate,
         reservedAtMs: nowMs,
+        leaseExpiresAtMs: nowMs + Math.max(1, input.leaseDurationMs),
         evidenceRefs,
       },
+      consumedPhysicalRuns: expiredRuns,
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...evidenceRefs]),
     },
   };
@@ -344,9 +569,12 @@ export function settleQualificationTransaction(
       ...current,
       updatedAtMs: nowMs,
       phase: 'terminal',
+      phaseEnteredAtMs: nowMs,
+      phaseDurationsMs: completedPhaseDurations(current, 'terminal', nowMs),
       outcome,
       blockers: [],
       currentPhysicalRunner: null,
+      consumedPhysicalRuns: consumedRunner(current, outcome, nowMs),
       evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
     },
   };

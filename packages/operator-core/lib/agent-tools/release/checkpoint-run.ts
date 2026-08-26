@@ -30,6 +30,7 @@ import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@paperc
 import {
   assessPreLaunchExclusion,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
+  CHECKPOINT_MAX_RUNTIME_SEC,
   checkpointCandidateContainment,
   checkpointEligibilityPendingId,
   classifyReplaceRequest,
@@ -1274,11 +1275,12 @@ export default defineTool({
         ],
       };
     }
-    const physicalRunnerId = `manual:${logicalAttemptId}`;
+    const physicalRunnerId = `manual:${logicalAttemptId}:${Date.now()}`;
     const qualificationReservation = await reserveStoredQualificationRunner(qualificationTarget, {
       attemptId: logicalAttemptId,
       runnerId: physicalRunnerId,
       candidate: launchCandidate,
+      leaseDurationMs: CHECKPOINT_MAX_RUNTIME_SEC * 1_000,
       evidenceRefs: ['tool:release:checkpoint-run'],
     });
     if (!qualificationMutationContinues(qualificationReservation)) {

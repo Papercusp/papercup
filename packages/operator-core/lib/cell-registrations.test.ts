@@ -10,6 +10,7 @@ import {
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
+  GATE_QUALIFICATION_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
@@ -23,6 +24,7 @@ const OPERATOR_PIPELINE_CELLS = [
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
+  GATE_QUALIFICATION_CELL,
   GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
@@ -135,6 +137,7 @@ describe('P-007: the four verdict cells', () => {
       // because it derives WHO owns the red from lease + presence state rather
       // than from the tree. Registered here; excluded from NEW_CELLS on purpose.
       'gate.greenCheckpoint.ownership',
+      'gate.greenCheckpoint.qualification',
       'gate.greenCheckpoint.verdict',
       'git.mainBehindStaging',
       'git.pipelinePosition',
@@ -145,6 +148,21 @@ describe('P-007: the four verdict cells', () => {
       // population is 0. One cell could not state both truths.
       'testing.census.population',
       'testing.coverage.floor',
+    ]);
+  });
+
+  it('registers the routine-owned qualification cell with the durable typed projection', () => {
+    expect(validateCellSpec(GATE_QUALIFICATION_CELL)).toEqual([]);
+    expect(GATE_QUALIFICATION_CELL.headline).toBe('gate.qualification.attemptId');
+    expect(GATE_QUALIFICATION_CELL.assessment?.path).toBe('gate.qualification.safeNextAction.code');
+    expect(Object.keys(GATE_QUALIFICATION_CELL.assessment?.codes ?? {})).toEqual([
+      'launch-physical-run',
+      'await-blocker-events',
+      'await-current-run',
+      'recover-expired-runner',
+      'repair-code',
+      'inspect-terminal-evidence',
+      'read-release-control',
     ]);
   });
 

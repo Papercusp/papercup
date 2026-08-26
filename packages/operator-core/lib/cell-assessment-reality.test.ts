@@ -394,6 +394,15 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: assessGateOwnership({ claimState: null, holderSessionState: 'live', duplicates: [] }),
     },
   ],
+  'gate.greenCheckpoint.qualification': [
+    { label: 'ready logical attempt', expect: 'launch-physical-run' },
+    { label: 'typed infrastructure blocker', expect: 'await-blocker-events' },
+    { label: 'live physical-run lease', expect: 'await-current-run' },
+    { label: 'expired physical-run lease', expect: 'recover-expired-runner' },
+    { label: 'terminal real red', expect: 'repair-code' },
+    { label: 'terminal code-inconclusive', expect: 'inspect-terminal-evidence' },
+    { label: 'no attempt or completed green', expect: 'read-release-control' },
+  ],
   'deploy.3070.sha': [
     {
       label: 'a sha is deployed and the process started after it',
@@ -571,6 +580,15 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
     'held-by-ended-session',
     null,
   ],
+  'gate.greenCheckpoint.qualification': [
+    'launch-physical-run',
+    'await-blocker-events',
+    'await-current-run',
+    'recover-expired-runner',
+    'repair-code',
+    'inspect-terminal-evidence',
+    'read-release-control',
+  ],
   'deploy.3070.sha': ['executing', 'restart-required', 'process-unverified', null],
   'git.mainBehindStaging': ['caught-up', 'normal-buffer', 'gate-stalled', null],
   'host.memoryPressure': ['critical', 'warning', 'stable-low-free', 'stable', null, null],
@@ -579,7 +597,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'testing.coverage.floor': ['no-population', 'below-floor', 'measured-with-waivers', 'meets-floor'],
 };
 
-describe('P-004: the ten-of-ten partition — every built-in cell is assessed, with no residue', () => {
+describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
   /**
    * NON-VACUITY, and it is load-bearing rather than ceremony. P-009 found that every
    * scanning guard on this plane mutation-tested its predicate while asserting NOTHING
@@ -587,12 +605,12 @@ describe('P-004: the ten-of-ten partition — every built-in cell is assessed, w
    * suite green with zero cells examined. The plan item demands an EXPLICIT ten-of-ten
    * partition with zero residue, and this is it.
    */
-  it('registers exactly ten cells and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(10);
+  it('registers exactly eleven cells and routes every one to a resolver family', () => {
+    expect(BUILTIN_CELLS).toHaveLength(11);
     expect(PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length).toBe(
       BUILTIN_CELLS.length,
     );
-    expect(PIPELINE_CELLS).toHaveLength(6);
+    expect(PIPELINE_CELLS).toHaveLength(7);
     expect(GOAL_CELLS).toHaveLength(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(1);
     expect(COVERAGE_CELLS).toHaveLength(2);
@@ -857,6 +875,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       assessGateOwnership({ claimState: 'held', holderSessionState: 'live', duplicates: [] }) ?? '',
       assessGateOwnership({ claimState: 'held', holderSessionState: 'ended', duplicates: [] }) ?? '',
       'a dead holder must not read as live ownership',
+    ],
+    [
+      'gate.greenCheckpoint.qualification',
+      'gate.qualification.lease.expired',
+      'recover-expired-runner',
+      'await-current-run',
+      'an expired physical runner must not retain the singleton lease',
     ],
     [
       'deploy.3070.sha',
