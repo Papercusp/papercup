@@ -104,6 +104,10 @@ function makeDeps(health: () => Promise<{ healthy: boolean; attempts: number; el
       nextFireAtMs: null,
       pause: null,
     }),
+    readLiveReleaseCertification: async (targetSha) => ({
+      status: 'certified', targetSha, certified: true, reason: 'exact source certified',
+      bankPath: '/tmp/verdicts.jsonl', evidence: null, invalidLines: 0,
+    }),
     snapshot: async () => {
       calls.push('snapshot');
       return { snapshotId: 1, kopiaSnapshotId: 'e2e-snap' } as SnapshotInfo;

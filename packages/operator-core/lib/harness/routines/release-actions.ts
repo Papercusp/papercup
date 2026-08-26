@@ -71,6 +71,10 @@ import {
   CHECKPOINT_QUALIFICATION_ATTEMPT_ENV,
   recordStoredQualificationVerdict,
 } from '../../release/checkpoint-qualification-transaction';
+import {
+  readLiveReleaseCertification,
+  type LiveReleaseCertification,
+} from '../../release/live-release-certification';
 
 // Kept as exports from this historical module for callers/tests that already
 // use the release-actions config surface. The implementation is shared with
@@ -3535,6 +3539,63 @@ export async function dispatchReleaseFixer(
  *  purpose: systemd-run refuses a second unit with the same name while one is
  *  active, which is exactly the dedup we want across trigger ticks. */
 export const AUTO_DEPLOY_UNIT = RELEASE_DEPLOY_UNIT;
+/** P-010: one detached specialized-certification producer at a time. */
+export const LIVE_RELEASE_CERTIFICATION_UNIT = 'papercup-live-release-certification';
+export const LIVE_RELEASE_CERTIFICATION_LOG = `/tmp/${LIVE_RELEASE_CERTIFICATION_UNIT}.log`;
+
+export function liveReleaseCertificationRoot(root: string): string {
+  return path.join(path.dirname(root), `${path.basename(root)}-live-certification`);
+}
+
+/**
+ * Build the detached exact-pin certification payload from existing primitives:
+ * setup-release-checkout creates a clean immutable worktree, then the existing
+ * live-federation writer certifies that checkout and banks schema-v2 evidence.
+ */
+export function buildLiveReleaseCertificationShell(root: string, targetSha: string): string {
+  if (!/^[0-9a-f]{40,64}$/i.test(targetSha)) {
+    throw new Error(`live certification requires a full git sha, got ${JSON.stringify(targetSha)}`);
+  }
+  const certificationRoot = liveReleaseCertificationRoot(root);
+  const setup = path.join(root, 'apps/operator/bin/release/setup-release-checkout.sh');
+  const gate = path.join(certificationRoot, 'papercusp-desktop/bin/live-federation-gate.sh');
+  const desktopRoot = path.join(certificationRoot, 'papercusp-desktop');
+  return [
+    'set -euo pipefail',
+    `bash ${shellQuote(setup)} --ref ${shellQuote(targetSha)} --integration ${shellQuote(root)} --release ${shellQuote(certificationRoot)} --node-modules auto --node-modules-copy copy`,
+    `GATE_CERTIFICATION_TARGET_SHA=${shellQuote(targetSha)} GATE_FORCE=1 RIG_WAIT=1 REBUILD=1 DESKTOP_DIR=${shellQuote(desktopRoot)} bash ${shellQuote(gate)}`,
+  ].join('; ');
+}
+
+async function launchLiveReleaseCertification(
+  root: string,
+  targetSha: string,
+): Promise<{ launched: boolean; reason: string | null }> {
+  const payload = `${buildLiveReleaseCertificationShell(root, targetSha)} > ${shellQuote(LIVE_RELEASE_CERTIFICATION_LOG)} 2>&1`;
+  return new Promise((resolve) => {
+    const child = spawn('systemd-run', [
+      '--user',
+      ...SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS,
+      `--unit=${LIVE_RELEASE_CERTIFICATION_UNIT}`,
+      `--working-directory=${root}`,
+      `--setenv=PATH=${process.env.PATH ?? ''}`,
+      'bash',
+      '-c',
+      payload,
+    ]);
+    let stderr = '';
+    child.stderr?.on('data', (chunk) => (stderr += String(chunk)));
+    child.on('error', (error) =>
+      resolve({ launched: false, reason: error instanceof Error ? error.message : String(error) }),
+    );
+    child.on('close', (code) =>
+      resolve({
+        launched: code === 0,
+        reason: code === 0 ? null : `systemd-run exited ${String(code)}: ${stderr.trim().slice(0, 300)}`,
+      }),
+    );
+  });
+}
 
 /** The subset of the deploy plan (deploy.ts `DeployPlan`, emitted as JSON by
  *  `deploy-cli`) that the auto-serve gate reads. */
@@ -3703,6 +3764,65 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
   // checkout-at/ahead-of-main case that previously storm-redeployed :3070 — see
   // `shouldAutoServe`.
   if (!planObj || !shouldAutoServe(planObj)) return;
+
+  // P-010: code-green promotion and specialized live certification are
+  // independent. `main` may advance quickly, but ordinary deployment fails
+  // closed until the existing live-federation gate certifies this exact pin.
+  const certificationTarget = typeof planObj.targetSha === 'string' ? planObj.targetSha : null;
+  if (!certificationTarget) {
+    console.warn('[release-trigger] deploy plan has no exact target sha — live certification cannot be resolved');
+    return;
+  }
+  let certification: LiveReleaseCertification;
+  try {
+    certification = await readLiveReleaseCertification(certificationTarget);
+  } catch (error) {
+    certification = {
+      status: 'unreadable',
+      targetSha: certificationTarget,
+      certified: false,
+      reason: `live-certification read threw: ${error instanceof Error ? error.message : String(error)}`,
+      bankPath: null,
+      evidence: null,
+      invalidLines: 0,
+    };
+  }
+  if (!certification.certified) {
+    console.warn(
+      `[release-trigger] green ${certificationTarget.slice(0, 12)} is not live-certified (${certification.status}): ${certification.reason}`,
+    );
+    // A current exact-source RED is actionable evidence, not a retry request.
+    // Re-running it every 15-minute trigger tick would create a heavy test storm;
+    // a new target naturally becomes target-mismatch and starts a new attempt.
+    if (certification.status === 'failed') {
+      await appendPipelineEvent({
+        workspaceId: ctx.workspaceId,
+        installSlug: ctx.installSlug,
+        kind: 'deploy',
+        status: 'certification-failed',
+        detail: { targetSha: certificationTarget.slice(0, 12), reason: certification.reason },
+      }).catch(() => {});
+      return;
+    }
+    const launched = await launchLiveReleaseCertification(root, certificationTarget);
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'deploy',
+      status: launched.launched ? 'certification-launched' : 'certification-launch-refused',
+      detail: {
+        targetSha: certificationTarget.slice(0, 12),
+        priorStatus: certification.status,
+        unit: LIVE_RELEASE_CERTIFICATION_UNIT,
+        logPath: LIVE_RELEASE_CERTIFICATION_LOG,
+        ...(launched.reason ? { reason: launched.reason } : {}),
+      },
+    }).catch(() => {});
+    if (!launched.launched) {
+      console.warn(`[release-trigger] live-certification launch refused: ${launched.reason}`);
+    }
+    return;
+  }
 
   // P-013: don't storm-redeploy a target that just failed/rolled-back — wait for a new
   // green (different sha) or the back-off window. This is what stops the every-15-min

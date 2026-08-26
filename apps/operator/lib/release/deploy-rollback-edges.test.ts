@@ -60,6 +60,10 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
       nextFireAtMs: null,
       pause: null,
     }),
+    readLiveReleaseCertification: async (targetSha) => ({
+      status: 'certified', targetSha, certified: true, reason: 'exact source certified',
+      bankPath: '/tmp/verdicts.jsonl', evidence: null, invalidLines: 0,
+    }),
     snapshot: () => rec('snapshot', { snapshotId: 1, kopiaSnapshotId: 'kopia-abc' } as SnapshotInfo),
     runSetup: (sha) => rec(`runSetup:${sha.slice(0, 4)}`, undefined).then(() => undefined),
     bundleHost: () => rec('bundleHost', undefined).then(() => undefined),

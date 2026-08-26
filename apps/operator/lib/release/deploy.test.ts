@@ -56,6 +56,15 @@ function makeDeps(over: Partial<DeployDeps> & { fail?: string } = {}): { deps: D
         nextFireAtMs: null,
         pause: null,
       }),
+    readLiveReleaseCertification: async (targetSha) => ({
+      status: 'certified',
+      targetSha,
+      certified: true,
+      reason: 'exact source certified',
+      bankPath: '/tmp/verdicts.jsonl',
+      evidence: null,
+      invalidLines: 0,
+    }),
     snapshot: () => rec('snapshot', { snapshotId: 1, kopiaSnapshotId: 'kopia-abc' } as SnapshotInfo),
     runSetup: (sha) => rec(`runSetup:${sha.slice(0, 4)}`, undefined).then(() => undefined),
     bundleHost: () => rec('bundleHost', undefined).then(() => undefined),
@@ -225,17 +234,46 @@ describe('executeDeploy — happy path', () => {
     expect(calls).toEqual(['drain:acquire', 'drain:release']);
   });
 
+  it('P-010: re-reads exact-SHA live certification inside the drain and refuses before mutation', async () => {
+    const { deps, calls } = makeDeps({
+      readLiveReleaseCertification: async (targetSha) => ({
+        status: 'missing',
+        targetSha,
+        certified: false,
+        reason: 'no exact-source live verdict',
+        bankPath: '/tmp/verdicts.jsonl',
+        evidence: null,
+        invalidLines: 0,
+      }),
+    });
+    const res = await executeDeploy(cfg, plan, deps);
+
+    expect(res).toMatchObject({ ok: false, rolledBack: false });
+    expect(res.error).toMatch(/ordinary deploy refused before mutation.*exact-SHA live certification missing/i);
+    expect(res.steps).toEqual([
+      expect.objectContaining({ name: 'release-trigger-control', ok: true }),
+      expect.objectContaining({ name: 'live-certification', ok: false }),
+    ]);
+    expect(calls).toEqual(['drain:acquire', 'releaseTriggerControl', 'drain:release']);
+  });
+
   it('lets the explicit forced plan bypass the live release-trigger guard', async () => {
     let readAttempted = false;
+    let certificationReadAttempted = false;
     const { deps, calls } = makeDeps({
       readReleaseTriggerControl: async () => {
         readAttempted = true;
         throw new Error('force must not consult the ordinary-deploy guard');
       },
+      readLiveReleaseCertification: async () => {
+        certificationReadAttempted = true;
+        throw new Error('force must not consult the ordinary-certification guard');
+      },
     });
     const res = await executeDeploy(cfg, { ...plan, forced: true, green: false }, deps);
     expect(res.ok).toBe(true);
     expect(readAttempted).toBe(false);
+    expect(certificationReadAttempted).toBe(false);
     expect(calls).toContain('snapshot');
   });
 

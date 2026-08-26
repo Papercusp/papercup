@@ -19,6 +19,10 @@ function deps(over: Partial<DeployDeps> = {}): { deps: DeployDeps; calls: string
       nextFireAtMs: null,
       pause: null,
     }),
+    readLiveReleaseCertification: async (targetSha) => ({
+      status: 'certified', targetSha, certified: true, reason: 'exact source certified',
+      bankPath: '/tmp/verdicts.jsonl', evidence: null, invalidLines: 0,
+    }),
     snapshot: async () => null,
     runSetup: async (sha) => {
       calls.push(`setup:${sha.slice(0, 4)}`);

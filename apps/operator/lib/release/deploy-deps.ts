@@ -26,6 +26,7 @@ import type { AgentIdentity } from '@papercusp/operator-core/lib/agent-tools/coo
 import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
 import { operatorHomeHarnessSlug } from '@papercusp/operator-core/lib/harness/operator-home-harness';
 import { readReleaseTriggerControl as readReleaseTriggerControlRow } from '@papercusp/operator-core/lib/git-pipeline-stats';
+import { readLiveReleaseCertification } from '@papercusp/operator-core/lib/release/live-release-certification';
 // Side-effect: wires the operator host binding (getSql / workspacesRoot /
 // admin-URL) into @papercusp/backup. The standalone deploy doesn't go through
 // the operator boot path that normally triggers this, so without it the
@@ -350,6 +351,10 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       return readReleaseTriggerControlRow(
         process.env.RELEASE_ROUTINE_SLUG ?? operatorHomeHarnessSlug(),
       );
+    },
+
+    async readLiveReleaseCertification(targetSha: string) {
+      return readLiveReleaseCertification(targetSha);
     },
 
     async snapshot(reason: string): Promise<SnapshotInfo | null> {

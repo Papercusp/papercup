@@ -25,6 +25,7 @@ import {
   releaseTriggerControlBlockReason,
   type RoutineInfo,
 } from '@papercusp/operator-core/lib/git-pipeline-stats';
+import type { LiveReleaseCertification } from '@papercusp/operator-core/lib/release/live-release-certification';
 import {
   git,
   revParse,
@@ -146,6 +147,9 @@ export interface DeployDeps {
    * audited bypass.
    */
   readReleaseTriggerControl(): Promise<RoutineInfo | null>;
+  /** P-010: re-read specialized live/federation certification for the exact
+   * target after the drain and immediately before the first mutation. */
+  readLiveReleaseCertification(targetSha: string): Promise<LiveReleaseCertification>;
   /** Snapshot before swapping (D-008). null when snapshotting is disabled. */
   snapshot(reason: string): Promise<SnapshotInfo | null>;
   /** Swap the release checkout to `targetSha` (setup-release-checkout.sh). node_modules
@@ -386,13 +390,28 @@ export async function executeDeploy(
     // deploy-failed event, or broadcast a false deploy failure. Force is the one
     // explicit, audited bypass.
     if (plan.forced) {
-      deps.log('forced deploy: explicitly bypassing release-trigger control guard');
+      deps.log('forced deploy: explicitly bypassing release-trigger control and live-certification guards');
     } else {
       try {
         await step('release-trigger-control', async () => {
           const control = await deps.readReleaseTriggerControl();
           const refusal = releaseTriggerControlBlockReason(control);
           if (refusal) throw new Error(refusal);
+        });
+      } catch (e) {
+        const detail = e instanceof Error ? e.message : String(e);
+        const error = `ordinary deploy refused before mutation: ${detail}`;
+        deps.log(`✖ ${error}`);
+        return { ok: false, plan, steps, snapshot, migrations, rolledBack: false, error };
+      }
+      try {
+        await step('live-certification', async () => {
+          const certification = await deps.readLiveReleaseCertification(plan.targetSha);
+          if (!certification.certified) {
+            throw new Error(
+              `exact-SHA live certification ${certification.status}: ${certification.reason}`,
+            );
+          }
         });
       } catch (e) {
         const detail = e instanceof Error ? e.message : String(e);

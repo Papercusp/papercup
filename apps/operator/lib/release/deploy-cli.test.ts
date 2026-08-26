@@ -61,6 +61,10 @@ function makeStubDeps(over: Partial<DeployDeps> = {}): DeployDeps {
       nextFireAtMs: null,
       pause: null,
     }),
+    readLiveReleaseCertification: async (targetSha) => ({
+      status: 'certified', targetSha, certified: true, reason: 'exact source certified',
+      bankPath: '/tmp/verdicts.jsonl', evidence: null, invalidLines: 0,
+    }),
     snapshot: async () => null,
     runSetup: async () => {},
     bundleHost: async () => {},
