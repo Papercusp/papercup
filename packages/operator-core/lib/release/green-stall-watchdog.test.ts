@@ -251,7 +251,16 @@ describe('evaluateGreenStall', () => {
         { ...STALLED, checkpointRunActive: true, checkpointRunPhase: 'delivering' },
         NOW,
       );
-      expect(v).toEqual({ stalled: false, fireStale: false, verdictStale: false, suppressed: true, reason: null });
+      // Exact-shape on purpose: a suppressed pass must claim NOTHING, so every limb —
+      // including P-006's `verdictless` — has to read false here, not merely `stalled`.
+      expect(v).toEqual({
+        stalled: false,
+        fireStale: false,
+        verdictStale: false,
+        verdictless: false,
+        suppressed: true,
+        reason: null,
+      });
     });
 
     it.each([
