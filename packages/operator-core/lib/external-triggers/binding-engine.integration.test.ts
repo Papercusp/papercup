@@ -283,6 +283,101 @@ describe('external trigger durable dispatch', () => {
     expect(succeeded[0].outcome.dispatch.ok).toBe(true);
   });
 
+  it('parks a queue-preserved target_absent run beyond the ordinary cap, alerts once, then resolves on recovery', async () => {
+    const execution = { appHarnessSlug: 'email', agentName: 'email-agent' };
+    await sql`
+      UPDATE harness_shared.trigger_bindings
+         SET action = ${JSON.stringify({ type: 'launch-plan', execution })}::text::jsonb
+       WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+    const triggerRunId = await seedTriggerRun({ attempts: 4 });
+    const failedDispatch = {
+      ok: false,
+      target: {
+        requested: 'email-agent', ownerId: 'email-agent', present: false,
+        sessionState: null, wakeable: null,
+      },
+      assignment: {
+        ok: true, targetAgent: 'email-agent', requested: ['WI-EMAIL'], actionable: ['WI-EMAIL'],
+        assigned: ['WI-EMAIL'], retained: [], skipped: [], failed: [], executionWorkItemIds: ['WI-EMAIL'],
+      },
+      wake: { queued: 0, woken: 0, staged: 0, timedOutTargets: [] },
+      failure: {
+        code: 'target_absent' as const,
+        target: 'email-agent', recoverable: true as const, queuePreserved: true,
+        message: 'no live adopting session',
+      },
+    };
+    const runPlan = vi
+      .fn()
+      .mockResolvedValueOnce({
+        instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
+        runId: 9002, runSeq: 0, minted: 1, workItemIds: ['WI-EMAIL'],
+        actionableWorkItemIds: ['WI-EMAIL'], replayed: false, execution, dispatch: failedDispatch,
+      })
+      .mockResolvedValueOnce({
+        instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
+        runId: 9002, runSeq: 0, minted: 0, workItemIds: ['WI-EMAIL'],
+        actionableWorkItemIds: ['WI-EMAIL'], replayed: true, execution,
+        dispatch: { ...failedDispatch, ok: true, failure: undefined },
+      });
+    const openEscalation = vi.fn(async () => ({ msg_id: 'esc-trigger-retry-1' }) as any);
+    const resolveEscalation = vi.fn(async () => 'already_resolved' as const);
+
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation }))
+      .toMatchObject({ claimed: 1, succeeded: 0, failed: 1, deferred: 1 });
+    const parked = await sql<Array<{
+      status: string; attempts: number; next_attempt_at: Date; outcome: Record<string, any>;
+    }>>`
+      SELECT status, attempts, next_attempt_at, outcome
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(parked[0]).toMatchObject({ status: 'failed', attempts: 5 });
+    expect(new Date(parked[0].next_attempt_at).getTime()).toBeGreaterThan(Date.now());
+    expect(parked[0].outcome).toMatchObject({
+      dispatchFailure: { code: 'target_absent', recoverable: true, queuePreserved: true },
+      retry: { deferred: true, retryAfterSeconds: 900, attempts: 5 },
+      retryEscalationMsgId: 'esc-trigger-retry-1',
+    });
+    expect(openEscalation).toHaveBeenCalledTimes(1);
+
+    // Parked means paced: an immediate routine tick does not hot-loop or consume
+    // the queued successful replay.
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation }))
+      .toMatchObject({ claimed: 0 });
+    await sql`
+      UPDATE harness_shared.trigger_runs SET next_attempt_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, openEscalation, resolveEscalation }))
+      .toMatchObject({ claimed: 1, succeeded: 1, failed: 0, deferred: 0 });
+    const recovered = await sql<Array<{ status: string; attempts: number }>>`
+      SELECT status, attempts FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(recovered[0]).toEqual({ status: 'succeeded', attempts: 6 });
+    expect(resolveEscalation).toHaveBeenCalledWith(expect.objectContaining({
+      msg_id: 'esc-trigger-retry-1', choice: 'recovered',
+    }));
+  });
+
+  it('gives a pre-metadata capped target_absent row one rescue claim', async () => {
+    const triggerRunId = await seedTriggerRun({ status: 'failed', attempts: 5 });
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET error = 'external_trigger_agentic_dispatch_failed:target_absent',
+             outcome = '{}'::jsonb, next_attempt_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    const runPlan = vi.fn(async () => ({
+      instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
+      runId: 9003, runSeq: 0, minted: 0, workItemIds: [], actionableWorkItemIds: [], replayed: true,
+    }));
+
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork: vi.fn() }))
+      .toMatchObject({ claimed: 1, succeeded: 1, failed: 0 });
+    const recovered = await sql<Array<{ status: string; attempts: number }>>`
+      SELECT status, attempts FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(recovered[0]).toEqual({ status: 'succeeded', attempts: 6 });
+  });
+
   it('passes the complete Calendar-upcoming trigger input into the meeting-prep plan run', async () => {
     const args = {
       trigger: {

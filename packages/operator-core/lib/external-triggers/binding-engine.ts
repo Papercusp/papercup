@@ -18,6 +18,8 @@ import {
 import type { CanonicalExternalEvent, ExternalTriggerSink } from './ingestion';
 import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
 import { parseAgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
+import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -25,6 +27,16 @@ const DEFAULT_STORM_WINDOW_SECONDS = 60;
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_STALE_AFTER_SECONDS = 60;
+/** Slow parked cadence after the ordinary retry budget is exhausted. */
+const RECOVERABLE_RETRY_AFTER_SECONDS = 15 * 60;
+
+const EXTERNAL_TRIGGER_IDENTITY: AgentIdentity = {
+  ownerId: 'system:external-trigger-dispatch',
+  ownerLabel: 'system · external-trigger-dispatch',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
 
 /**
  * The action vocabulary (work-on-everything-goal-2026-08-23 P-020, D-006).
@@ -58,6 +70,7 @@ interface ClaimedTriggerRun {
   args: TriggerRunArgs;
   action: Record<string, unknown>;
   attempts: number;
+  outcome: Record<string, unknown>;
 }
 
 interface TriggerRunArgs {
@@ -98,6 +111,8 @@ export interface TriggerDispatchResult {
    * treats as settled, never retried. Plan runs never land here.
    */
   skipped: number;
+  /** Recoverable rows parked beyond the ordinary retry budget this pass. */
+  deferred: number;
   triggerRunIds: string[];
 }
 
@@ -111,8 +126,95 @@ export interface TriggerDispatchDeps {
     input: { workspaceId: string; goalId: string; launcherOwnerId: string },
   ) => Promise<StartGoalByIdResult>;
   announceRunWork?: (sql: postgres.Sql, workspaceId: string, runId: number) => Promise<void>;
+  openEscalation?: typeof openEscalation;
+  resolveEscalation?: typeof resolveEscalation;
   batchSize?: number;
   staleAfterSeconds?: number;
+}
+
+type AgenticDispatchResult = NonNullable<ScheduledPlanFireResult['dispatch']>;
+
+class ExternalTriggerAgenticDispatchError extends Error {
+  constructor(readonly dispatch: AgenticDispatchResult) {
+    super(`external_trigger_agentic_dispatch_failed:${dispatch.failure?.code ?? 'assignment_failed'}`);
+  }
+}
+
+interface PersistedDispatchFailure {
+  code: string;
+  target: string | null;
+  recoverable: boolean;
+  queuePreserved: boolean;
+  message: string | null;
+}
+
+function persistedDispatchFailure(cause: unknown): PersistedDispatchFailure | null {
+  if (!(cause instanceof ExternalTriggerAgenticDispatchError)) return null;
+  const failure = cause.dispatch.failure;
+  return {
+    code: failure?.code ?? 'assignment_failed',
+    target: failure?.target ?? cause.dispatch.target.ownerId ?? null,
+    recoverable: failure?.recoverable === true,
+    queuePreserved: failure?.queuePreserved === true,
+    message: failure?.message ?? cause.dispatch.warning ?? null,
+  };
+}
+
+function retryEscalationMsgId(outcome: Record<string, unknown>): string | null {
+  const value = outcome.retryEscalationMsgId;
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+async function openRecoverableRetryEscalation(
+  row: ClaimedTriggerRun,
+  failure: PersistedDispatchFailure,
+  open: typeof openEscalation,
+): Promise<string> {
+  const escalation = await open(
+    { ...EXTERNAL_TRIGGER_IDENTITY, workspaceId: row.workspaceId },
+    {
+      severity: 'advisory',
+      summary: `External trigger binding ${row.bindingId} is parked: target ${failure.target ?? 'unknown'} unavailable after ${row.attempts} attempts`,
+      body:
+        `Trigger run ${row.id} remains durably queued; the provider event was not discarded. ` +
+        `Its required wake failed with ${failure.code} after ${row.attempts} attempts and will retry every ` +
+        `${Math.round(RECOVERABLE_RETRY_AFTER_SECONDS / 60)} minutes while recoverable work remains preserved.\n\n` +
+        `Binding: ${row.bindingId}\nTarget: ${failure.target ?? 'unknown'}\n` +
+        `Action: restore/relaunch the stable target or correct/disarm the binding. The escalation auto-resolves ` +
+        `after the binding has no remaining recoverable failed rows.`,
+      ...(row.planHarnessSlug ? { harness_slug: row.planHarnessSlug } : {}),
+      meta: {
+        subjectSignature: `external-trigger-retry:${row.workspaceId}:${row.bindingId}`,
+        dedupKind: 'external-trigger-retry',
+      },
+    },
+  );
+  return escalation.msg_id;
+}
+
+async function resolveRetryEscalationIfRecovered(
+  sql: postgres.Sql,
+  row: ClaimedTriggerRun,
+  resolve: typeof resolveEscalation,
+): Promise<void> {
+  const msgId = retryEscalationMsgId(row.outcome);
+  if (!msgId) return;
+  const outstanding = await sql<Array<{ count: number }>>`
+    SELECT count(*)::int AS count
+      FROM harness_shared.trigger_runs
+     WHERE workspace_id = ${row.workspaceId}
+       AND binding_id = ${row.bindingId}
+       AND id <> ${row.id}
+       AND status = 'failed'
+       AND outcome #>> '{dispatchFailure,recoverable}' = 'true'
+       AND outcome #>> '{dispatchFailure,queuePreserved}' = 'true'`;
+  if ((outstanding[0]?.count ?? 0) > 0) return;
+  await resolve({
+    msg_id: msgId,
+    choice: 'recovered',
+    note: `External trigger binding ${row.bindingId} recovered on run ${row.id}.`,
+    resolver: EXTERNAL_TRIGGER_IDENTITY.ownerId,
+  });
 }
 
 function positiveInteger(value: unknown, field: string): number {
@@ -352,11 +454,32 @@ async function claimPendingTriggerRuns(
           ON binding.workspace_id = tr.workspace_id
          AND binding.id = tr.binding_id
          AND binding.detached_at IS NULL
-       WHERE tr.attempts < ${DEFAULT_MAX_ATTEMPTS}
+       WHERE tr.next_attempt_at <= now()
          AND (
-           tr.status IN ('pending', 'failed')
-           OR (tr.status = 'running'
-               AND tr.started_at < now() - (${staleAfterSeconds} * interval '1 second'))
+           (tr.attempts < ${DEFAULT_MAX_ATTEMPTS}
+            AND (
+              tr.status IN ('pending', 'failed')
+              OR (tr.status = 'running'
+                  AND tr.started_at < now() - (${staleAfterSeconds} * interval '1 second'))
+            ))
+           OR (
+             tr.status = 'failed'
+             AND (
+               (tr.outcome #>> '{dispatchFailure,recoverable}' = 'true'
+                AND tr.outcome #>> '{dispatchFailure,queuePreserved}' = 'true')
+               -- One rescue claim for rows written before structured failure
+               -- persistence existed. The new attempt decides from live truth:
+               -- queue-preserved failures stay eligible; others stop again.
+               OR (tr.attempts = ${DEFAULT_MAX_ATTEMPTS}
+                   AND tr.outcome -> 'dispatchFailure' IS NULL
+                   AND tr.error IN (
+                     'external_trigger_agentic_dispatch_failed:target_dead',
+                     'external_trigger_agentic_dispatch_failed:target_absent',
+                     'external_trigger_agentic_dispatch_failed:target_unwakeable',
+                     'external_trigger_agentic_dispatch_failed:wake_delivery_unknown'
+                   ))
+             )
+           )
          )
        ORDER BY tr.triggered_at, tr.id
        FOR UPDATE SKIP LOCKED
@@ -377,7 +500,8 @@ async function claimPendingTriggerRuns(
            b.goal_id AS "goalId",
            c.args,
            b.action,
-           c.attempts
+           c.attempts,
+           c.outcome
       FROM claimed c
       JOIN harness_shared.trigger_bindings b
         ON b.workspace_id = c.workspace_id
@@ -463,11 +587,14 @@ export async function dispatchPendingTriggerRuns(
   const runPlan = deps.runPlan ?? runScheduledPlanFire;
   const startGoal = deps.startGoal ?? startGoalById;
   const announce = deps.announceRunWork ?? announceRunWork;
+  const escalate = deps.openEscalation ?? openEscalation;
+  const resolveEscalationFn = deps.resolveEscalation ?? resolveEscalation;
   const result: TriggerDispatchResult = {
     claimed: rows.length,
     succeeded: 0,
     failed: 0,
     skipped: 0,
+    deferred: 0,
     triggerRunIds: rows.map((row) => row.id),
   };
 
@@ -501,6 +628,7 @@ export async function dispatchPendingTriggerRuns(
                    error = NULL, completed_at = now(), updated_at = now()
              WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
           result.succeeded += 1;
+          await resolveRetryEscalationIfRecovered(sql, row, resolveEscalationFn).catch(() => undefined);
         } else if (started.reason === 'holder-unknown' || started.reason === 'not-ready') {
           // Heal-able refusals: liveness evidence recovers, prerequisites
           // complete. Throw → 'failed' → the outbox retries under attempts.
@@ -537,10 +665,8 @@ export async function dispatchPendingTriggerRuns(
         throw new Error('external_trigger_plan_run_not_started');
       }
       if (execution && (!launched.dispatch || !launched.dispatch.ok)) {
-        const code = launched.dispatch
-          ? (launched.dispatch.failure?.code ?? 'assignment_failed')
-          : 'missing_dispatch_result';
-        throw new Error(`external_trigger_agentic_dispatch_failed:${code}`);
+        if (launched.dispatch) throw new ExternalTriggerAgenticDispatchError(launched.dispatch);
+        throw new Error('external_trigger_agentic_dispatch_failed:missing_dispatch_result');
       }
       const planRunId = await resolvePlanRunId(
         sql,
@@ -563,12 +689,47 @@ export async function dispatchPendingTriggerRuns(
                error = NULL, completed_at = now(), updated_at = now()
          WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
       result.succeeded += 1;
+      await resolveRetryEscalationIfRecovered(sql, row, resolveEscalationFn).catch(() => undefined);
     } catch (cause) {
       const error = cause instanceof Error ? cause.message : String(cause);
+      const dispatchFailure = persistedDispatchFailure(cause);
+      const deferred = Boolean(
+        dispatchFailure?.recoverable && dispatchFailure.queuePreserved && row.attempts >= DEFAULT_MAX_ATTEMPTS,
+      );
+      const retryAfterSeconds = deferred ? RECOVERABLE_RETRY_AFTER_SECONDS : 0;
+      const outcomePatch = dispatchFailure
+        ? {
+            dispatchFailure,
+            retry: {
+              deferred,
+              retryAfterSeconds,
+              attempts: row.attempts,
+            },
+          }
+        : {};
       await sql`
         UPDATE harness_shared.trigger_runs
-           SET status = 'failed', error = ${error}, completed_at = now(), updated_at = now()
+           SET status = 'failed', error = ${error},
+               outcome = outcome || ${JSON.stringify(outcomePatch)}::text::jsonb,
+               next_attempt_at = now() + make_interval(secs => ${retryAfterSeconds}),
+               completed_at = now(), updated_at = now()
          WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+      if (deferred && dispatchFailure) {
+        result.deferred += 1;
+        try {
+          const msgId = await openRecoverableRetryEscalation(row, dispatchFailure, escalate);
+          await sql`
+            UPDATE harness_shared.trigger_runs
+               SET outcome = outcome || ${JSON.stringify({ retryEscalationMsgId: msgId })}::text::jsonb,
+                   updated_at = now()
+             WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+        } catch (escalationError) {
+          console.error(
+            `[external-trigger-dispatch] recoverable retry escalation failed for ${row.id}: ` +
+              `${escalationError instanceof Error ? escalationError.message : String(escalationError)}`,
+          );
+        }
+      }
       result.failed += 1;
     }
   }
