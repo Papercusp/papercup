@@ -180,8 +180,13 @@ fn effective_call<'a>(tool: &'a ChatToolCall) -> (&'a str, Option<&'a Value>) {
 }
 
 fn tool_name_is(actual: &str, canonical: &str) -> bool {
+    // Model families record the same tool under different manglings:
+    //   - canonical / prefixed-canonical: `work_items:complete`
+    //   - Claude-family MCP ids: `mcp__papercusp-su__work_items_complete` (':' → '_')
+    //   - double-underscore family: `work_items__complete` (':' → '__')
     actual == canonical
         || actual.ends_with(canonical)
+        || actual.ends_with(&canonical.replace(':', "_"))
         || actual.ends_with(&canonical.replace(':', "__"))
 }
 
@@ -641,6 +646,37 @@ mod tests {
         );
         assert_eq!(card_for_tool(&wrapped).unwrap().title, "Task done · t-1");
         assert!(card_for_tool(&call("capability:read", json!({"file_path":"x"}), None)).is_none());
+    }
+
+    #[test]
+    fn alias_shims_match_every_first_wave_verb_per_model_family() {
+        let verbs = [
+            "work_items:complete",
+            "locks:acquire",
+            "coord:send",
+            "plans:set-status",
+            "tasks:ops",
+            "work_items:checkpoint",
+        ];
+        for verb in verbs {
+            let canonical = card_for_tool(&call(verb, json!({}), None))
+                .unwrap_or_else(|| panic!("canonical {verb} produced no card"));
+            let aliases = [
+                // Claude-family MCP id: mcp__<server>__<verb with ':' → '_'>
+                format!("mcp__papercusp-su__{}", verb.replace(':', "_")),
+                // double-underscore mangling: ':' → '__'
+                verb.replace(':', "__"),
+                // prefixed canonical (suffix arm)
+                format!("papercusp-su:{verb}"),
+            ];
+            for alias in aliases {
+                let card = card_for_tool(&call(&alias, json!({}), None))
+                    .unwrap_or_else(|| panic!("alias {alias} produced no card for {verb}"));
+                assert_eq!(card.title, canonical.title, "alias {alias} diverged from {verb}");
+            }
+        }
+        // A non-card tool stays cardless under the same manglings.
+        assert!(card_for_tool(&call("mcp__papercusp-su__capability_read", json!({}), None)).is_none());
     }
 
     #[test]
