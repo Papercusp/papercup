@@ -37,6 +37,7 @@ import {
   renderWallLine,
   setLoopCarryNoteWithPrior,
   getLoopCarryNoteWithMeta,
+  listLoopCarryNoteHarnesses,
   shortCarryHash,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_MAX_WALLS,
@@ -562,12 +563,43 @@ export default defineTool({
     const briefHarness = hasConcreteContextHarness(sessionBrief?.harnessSlug)
       ? resolvePotHomeSlug(sessionBrief!.harnessSlug, undefined)
       : null;
-    const harness =
+    let harness =
       activeRoutineHarness ??
       explicitHarness ??
       briefHarness ??
       contextHarness ??
       resolvePotHomeSlug(undefined, ctx.harnessSlug);
+    // EI-21510951589801937: every signal above is a property of the LIVE session, so a
+    // session that has just run loop:end (no active routine) while carrying only the '*'
+    // wildcard sentinel and no home hive resolves NOTHING — and an ordinary carry-note
+    // refresh fails, even though this owner's note sits in exactly one store that
+    // coord:orient recovery had just reported back to them. Fall back to where the
+    // owner's notes ALREADY live: the one scope signal that outlives the loop ending.
+    //
+    // Placed LAST deliberately. It can only turn a hard `no_harness` failure into a
+    // write; it can never redirect a scope some stronger signal already resolved, so it
+    // cannot reintroduce the wrong-store stranding the rules above exist to prevent.
+    let inferredScopeFrom: 'carry-note' | null = null;
+    let ambiguousCandidates: string[] = [];
+    if (!harness) {
+      const candidates =
+        (
+          await withBoundedTimeout(() => listLoopCarryNoteHarnesses(ownerId), {
+            fallback: [] as string[],
+            timeoutMs: CONTINUATION_READ_BUDGET_MS,
+            label: 'loop:checkpoint carry-note scope inference',
+          })
+        ).value ?? [];
+      // Exactly one, or nothing. Two candidate stores are a coin flip over which cold
+      // wake reads the note back, and a note written into the wrong one is strictly
+      // worse than a refusal the caller can fix with a single argument.
+      if (candidates.length === 1) {
+        harness = candidates[0];
+        inferredScopeFrom = 'carry-note';
+      } else if (candidates.length > 1) {
+        ambiguousCandidates = candidates;
+      }
+    }
     if (!harness) {
       return {
         content: [
@@ -576,8 +608,23 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'no_harness',
-              message:
-                'Pass `harness` — your session is not scoped to a harness and no home hive is set, so the loop carry-note has nowhere to live.',
+              // The ambiguous case must NOT reuse the plain refusal's message: the
+              // caller's remedy differs ("pick one of these" vs "you have no scope at
+              // all"), and a shared reason string would make a test of this branch pass
+              // with the branch deleted.
+              ...(ambiguousCandidates.length > 1
+                ? {
+                    candidates: ambiguousCandidates,
+                    message:
+                      `Pass \`harness\` — your session is not scoped to a harness, and you hold loop ` +
+                      `carry-notes under ${ambiguousCandidates.length} harnesses ` +
+                      `(${ambiguousCandidates.join(', ')}), so which one this note belongs to cannot be ` +
+                      `inferred. Pass the one you mean.`,
+                  }
+                : {
+                    message:
+                      'Pass `harness` — your session is not scoped to a harness and no home hive is set, so the loop carry-note has nowhere to live.',
+                  }),
             }),
           },
         ],
@@ -597,6 +644,10 @@ export default defineTool({
               ok: true,
               read: true,
               harness,
+              // Say so when the scope was INFERRED rather than resolved from the
+              // session: a silently inferred store is exactly what makes a
+              // wrong-scope note expensive to diagnose later.
+              ...(inferredScopeFrom ? { scopeInferredFrom: inferredScopeFrom } : {}),
               ownerId,
               note,
               contentHash: note === null ? null : shortCarryHash(note),
@@ -1279,6 +1330,10 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             harness,
+            // EI-21510951589801937: when the scope came from the owner's existing
+            // carry-note rather than from the session, say so — the write succeeded,
+            // but the caller should know which store it landed in.
+            ...(inferredScopeFrom ? { scopeInferredFrom: inferredScopeFrom } : {}),
             ownerId,
             cleared: stored === null,
             length: stored?.length ?? 0,

@@ -2278,6 +2278,61 @@ export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<L
   }
 }
 
+/** Every harness under which this owner ALREADY holds a non-empty loop carry-note,
+ *  newest-written first.
+ *
+ *  EI-21510951589801937: `loop:checkpoint` resolves its scope from the armed routine
+ *  → explicit arg → session brief → session context → home hive. After a `loop:end`
+ *  the routine is deliberately NOT a fallback (an ended loop's install_slug can
+ *  strand a note in the wrong store), so a superuser session carrying only the '*'
+ *  wildcard sentinel and no home hive has nothing left to resolve — and a plain
+ *  carry-note refresh fails `no_harness` even though that owner's note is sitting in
+ *  exactly one place. Where an owner's notes ALREADY live is the one piece of scope
+ *  evidence that survives the loop ending, so it is the right last-resort signal.
+ *
+ *  Returns EVERY candidate instead of picking one, because picking is only safe when
+ *  there is exactly one: measured on this box, 155 of 2,930 note-holding owners have
+ *  notes under up to 4 harnesses, and silently taking the newest would resume a cold
+ *  wake from another hive's note — the exact stranding the "inactive routine is not a
+ *  fallback" rule above exists to prevent. The caller decides; ambiguity is reported,
+ *  never guessed.
+ *
+ *  Reads across ALL workspaces, matching {@link getLoopCarryNote}: a note written by
+ *  a host on the other side of a redeploy is still this owner's note. */
+export async function listLoopCarryNoteHarnesses(ownerId: string): Promise<string[]> {
+  const owner = ownerId.trim();
+  if (!owner) return [];
+  const prefix = 'loop:';
+  const suffix = `:${owner}`;
+  // An ownerId is an opaque identifier, so escape LIKE's metacharacters (default
+  // escape char is backslash) — a '%' or '_' in one must never widen the match to a
+  // DIFFERENT owner's scopes. The JS filter below is the authority regardless.
+  const pattern = `${prefix}%${suffix.replace(/([\\%_])/g, '\\$1')}`;
+  try {
+    const rows = await boundedPgReadTxn<{ scope: string | null }[]>((tx) => tx`
+      SELECT scope FROM harness_shared.carry_notes
+       WHERE scope LIKE ${pattern}
+         AND note IS NOT NULL AND btrim(note) <> ''
+       GROUP BY scope
+       ORDER BY max(updated_ts) DESC`);
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const row of rows) {
+      const scope = row.scope ?? '';
+      if (!scope.startsWith(prefix) || !scope.endsWith(suffix)) continue;
+      const harness = scope.slice(prefix.length, scope.length - suffix.length);
+      // loopScope() joins on ':', so a slug containing one cannot round-trip — such a
+      // scope is malformed or foreign, not a hive a note can be re-addressed to.
+      if (!harness || harness.includes(':') || seen.has(harness)) continue;
+      seen.add(harness);
+      out.push(harness);
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 /** Read an su AUTO loop's carry-JOURNAL (newest first) — its recent trajectory.
  *  Resolves the newest row across all workspaces; the pinned coord workspace is
  *  only a tie-breaker, matching {@link getLoopCarryNote}. */
