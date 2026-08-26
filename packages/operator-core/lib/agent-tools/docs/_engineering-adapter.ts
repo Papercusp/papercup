@@ -30,6 +30,7 @@ interface CanonicalDoc {
   body: string;
   raw: string;
   rendered?: string;
+  renderedPromise?: Promise<string>;
 }
 
 const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
@@ -137,9 +138,15 @@ export function overlayCanonicalDocs(
       const entry = canonical.get(page.slug);
       if (!entry) return base.getContent(page);
       if (entry.rendered === undefined) {
-        entry.rendered = /\.mdx$/i.test(entry.docId)
-          ? await renderMdxToMarkdown(entry.body, `${DOCS_CONTENT_ROOT}/${entry.docId}`)
-          : entry.body;
+        entry.renderedPromise ??= /\.mdx$/i.test(entry.docId)
+          ? renderMdxToMarkdown(entry.body, `${DOCS_CONTENT_ROOT}/${entry.docId}`)
+          : Promise.resolve(entry.body);
+        try {
+          entry.rendered = await entry.renderedPromise;
+        } catch (error) {
+          entry.renderedPromise = undefined;
+          throw error;
+        }
       }
       return entry.rendered;
     },

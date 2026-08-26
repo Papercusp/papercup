@@ -60,6 +60,8 @@ interface StarlightPage extends DocPage {
    * `invalidate()` when a writer updates the on-disk corpus in this process.
    */
   renderedBody?: string;
+  /** Shared by concurrent cold readers so one corpus search performs one render per page. */
+  renderedBodyPromise?: Promise<string>;
 }
 
 export interface StarlightContentSource extends DocSource {
@@ -217,14 +219,23 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): S
       const sp = cache.get(page.slug);
       if (!sp) throw new Error(`starlightContentAdapter: page ${page.slug} not found`);
       if (sp.renderedBody !== undefined) return sp.renderedBody;
-      const raw = await readSafe(sp.absolutePath);
-      if (raw === null) {
-        throw new Error(`starlightContentAdapter: could not read ${sp.absolutePath}`);
+      if (sp.renderedBodyPromise) return sp.renderedBodyPromise;
+      sp.renderedBodyPromise = (async () => {
+        const raw = await readSafe(sp.absolutePath);
+        if (raw === null) {
+          throw new Error(`starlightContentAdapter: could not read ${sp.absolutePath}`);
+        }
+        const { body } = parseFrontmatter(raw);
+        const rendered = /\.mdx$/i.test(sp.absolutePath) ? await renderMdxToMarkdown(body, sp.absolutePath) : body;
+        sp.renderedBody = rendered;
+        return rendered;
+      })();
+      try {
+        return await sp.renderedBodyPromise;
+      } catch (error) {
+        sp.renderedBodyPromise = undefined;
+        throw error;
       }
-      const { body } = parseFrontmatter(raw);
-      const rendered = /\.mdx$/i.test(sp.absolutePath) ? await renderMdxToMarkdown(body, sp.absolutePath) : body;
-      sp.renderedBody = rendered;
-      return rendered;
     },
     async getSectionMeta(sectionSlug: string): Promise<SectionMeta> {
       // Try `<section>/index.mdx` frontmatter (Starlight section-intro convention).
