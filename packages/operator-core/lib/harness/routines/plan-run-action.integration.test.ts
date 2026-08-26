@@ -4,7 +4,7 @@
  * (instance plan + plan_runs ledger row + run-scoped frontier work_items), replay-safe,
  * with distinct runs across fires.
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/harness/routines/plan-run-action.integration.test.ts
  *
  * Plan: scheduled-recurring-plans-2026-06-16 (P-007 sub-step 7c).
