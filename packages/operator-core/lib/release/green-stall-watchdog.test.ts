@@ -86,6 +86,8 @@ import {
   checkReleaseTriggerFireStale,
   attributeVerdictStale,
   readLastGateRunEvidence,
+  judgeVerdictlessDeath,
+  DEFAULT_VERDICTLESS_GRACE_MS,
 } from './green-stall-watchdog';
 
 const H = 60 * 60 * 1000;
@@ -385,6 +387,158 @@ describe('attributeVerdictStale — the alarm may not assert a cause it did not 
     });
     expect(a.cause).toContain('green=true');
     expect(a.remedy).toContain('did not COUNT');
+  });
+});
+
+describe('verdict-less death — a fire that recorded NOTHING (P-006 / WI-41755)', () => {
+  const T = Date.parse('2026-08-25T23:00:00.000Z');
+
+  /** The 2026-08-17 oddsmith crash row, reused: a REAL recorded crash, but an OLD one. */
+  const OLD_CRASH = {
+    crashed: true,
+    green: null,
+    firstLine: 'green-checkpoint crashed before producing a normal verdict: Error: push exited 128',
+    candidate: 'ad976f129ccb',
+    observedAt: new Date(T - 6 * H).toISOString(),
+  };
+
+  /**
+   * FALSIFIABILITY CONTROL, kept permanently (repo discipline: a guard that has never failed
+   * is a guard you have not tested). This reproduces the PRE-FIX behaviour — attribute from
+   * the newest row and never look at when the fire happened. Every assertion in THE INCIDENT
+   * below must reject this, or those assertions are not measuring anything.
+   */
+  const staleBlindAttribution = (last: typeof OLD_CRASH) => ({
+    summary: 'no green verdicts; deploys frozen.',
+    cause: `The gate's last run (candidate ${last.candidate}) CRASHED before rendering a verdict.`,
+    remedy: "Read that run's AFFECTED_TESTS_FAILING_FILES line.",
+  });
+
+  it('THE INCIDENT: a fire whose newest evidence PREDATES it is named a verdict-less death', () => {
+    const a = attributeVerdictStale({
+      failingTests: [],
+      last: OLD_CRASH,
+      lastFiredMs: T,
+      now: T + 4 * H, // past the 3h grace
+    });
+    expect(a.cause).toContain('VERDICT-LESS DEATH');
+    expect(a.cause).toContain('recorded NOTHING');
+    expect(a.summary).toContain('NOT a failing suite');
+    // The whole point: it must NOT retell the older run's crash as this run's cause.
+    expect(a.cause).not.toContain('CRASHED before rendering');
+
+    // The control fails exactly the assertion that matters, proving it discriminates.
+    const blind = staleBlindAttribution(OLD_CRASH);
+    expect(blind.cause).toContain('CRASHED before rendering');
+    expect(blind.cause).not.toContain('VERDICT-LESS DEATH');
+  });
+
+  it('the remedy forbids chasing the stale run’s failing files', () => {
+    const a = attributeVerdictStale({
+      failingTests: [],
+      last: OLD_CRASH,
+      lastFiredMs: T,
+      now: T + 4 * H,
+    });
+    expect(a.remedy).toContain('DIFFERENT, EARLIER run');
+    expect(a.remedy).toContain('writeSelfWatchdogArmMarker');
+    // The control points the responder at precisely the wrong artifact.
+    expect(staleBlindAttribution(OLD_CRASH).remedy).toContain('AFFECTED_TESTS_FAILING_FILES');
+  });
+
+  it('STAYS SILENT inside the grace window — a slow run is not a dead one', () => {
+    const a = attributeVerdictStale({
+      failingTests: [],
+      last: OLD_CRASH,
+      lastFiredMs: T,
+      now: T + 1 * H, // a full suite is ~55min; still legitimately in flight
+    });
+    expect(a.cause).not.toContain('VERDICT-LESS DEATH');
+    expect(a.cause).toContain('CRASHED before rendering');
+  });
+
+  it('evidence NEWER than the fire is that fire’s own verdict, not a death', () => {
+    const a = attributeVerdictStale({
+      failingTests: [],
+      last: { ...OLD_CRASH, observedAt: new Date(T + 30 * 60_000).toISOString() },
+      lastFiredMs: T,
+      now: T + 4 * H,
+    });
+    expect(a.cause).not.toContain('VERDICT-LESS DEATH');
+  });
+
+  it('no run on record at all, past the grace, IS a verdict-less death', () => {
+    const a = attributeVerdictStale({ failingTests: [], last: null, lastFiredMs: T, now: T + 4 * H });
+    expect(a.cause).toContain('VERDICT-LESS DEATH');
+    expect(a.cause).toContain('no green-checkpoint run is on record');
+  });
+
+  it('named failing tests still WIN — they are independently sourced and actionable', () => {
+    const a = attributeVerdictStale({
+      failingTests: ['x.test.ts'],
+      last: OLD_CRASH,
+      lastFiredMs: T,
+      now: T + 4 * H,
+    });
+    expect(a.summary).toContain('a failing suite');
+    expect(a.cause).not.toContain('VERDICT-LESS DEATH');
+  });
+
+  it('OMITTING lastFiredMs preserves the pre-P-006 behaviour exactly', () => {
+    const a = attributeVerdictStale({ failingTests: [], last: OLD_CRASH });
+    expect(a.cause).toContain('CRASHED before rendering');
+    expect(a.cause).not.toContain('VERDICT-LESS DEATH');
+  });
+
+  describe('judgeVerdictlessDeath declines to claim what it cannot prove', () => {
+    it('never fired ⇒ nothing was owed', () => {
+      expect(
+        judgeVerdictlessDeath({ last: null, lastFiredMs: null, now: T }).verdictless,
+      ).toBe(false);
+    });
+
+    it('undated evidence cannot be compared ⇒ stays silent', () => {
+      expect(
+        judgeVerdictlessDeath({
+          last: { ...OLD_CRASH, observedAt: null },
+          lastFiredMs: T,
+          now: T + 4 * H,
+        }).verdictless,
+      ).toBe(false);
+    });
+
+    it('an unparseable timestamp is UNKNOWN, never a death', () => {
+      expect(
+        judgeVerdictlessDeath({
+          last: { ...OLD_CRASH, observedAt: 'not-a-date' },
+          lastFiredMs: T,
+          now: T + 4 * H,
+        }).verdictless,
+      ).toBe(false);
+    });
+
+    it('reports HOW FAR the evidence predates the fire, for the alarm body', () => {
+      const v = judgeVerdictlessDeath({ last: OLD_CRASH, lastFiredMs: T, now: T + 4 * H });
+      expect(v.reason).toBe('evidence-predates-fire');
+      expect(v.evidencePredatesFireByMs).toBe(6 * H);
+    });
+
+    it('the grace boundary is exclusive — exactly at the deadline is still in flight', () => {
+      expect(
+        judgeVerdictlessDeath({
+          last: null,
+          lastFiredMs: T,
+          now: T + DEFAULT_VERDICTLESS_GRACE_MS,
+        }).verdictless,
+      ).toBe(false);
+      expect(
+        judgeVerdictlessDeath({
+          last: null,
+          lastFiredMs: T,
+          now: T + DEFAULT_VERDICTLESS_GRACE_MS + 1,
+        }).verdictless,
+      ).toBe(true);
+    });
   });
 });
 
