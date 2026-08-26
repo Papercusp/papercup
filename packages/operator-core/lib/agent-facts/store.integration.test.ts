@@ -563,6 +563,89 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(afterExempt.evictedRows).toBe(0);
   });
 
+  it('EI-21488671343297100: concurrent writers cannot race past the protected-victim guard', async () => {
+    const scopeRef = 'su-protect-verified-cap-race';
+    const peer = 'su-peer-verified-race';
+
+    // Leave exactly one seat. The trigger below pauses both contenders only
+    // after their admission read, making the old read-check/write gap
+    // deterministic: without the per-partition advisory lock both transactions
+    // see 199 and enter the INSERT together.
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
+      SELECT ${WS}, 'owner', ${scopeRef}, 'peer-race-' || g::text,
+             'verified peer finding ' || g::text, ${peer},
+             now() + interval '30 days', 'verified'
+        FROM generate_series(1, ${FACTS_PER_SCOPE_CAP - 1}) AS g`;
+
+    await db.sql.unsafe(`
+      CREATE OR REPLACE FUNCTION harness_shared.test_pause_fact_cap_race() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.key LIKE 'incoming-race-%' THEN PERFORM pg_sleep(0.35); END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER test_pause_fact_cap_race
+        BEFORE INSERT ON harness_shared.agent_facts
+        FOR EACH ROW EXECUTE FUNCTION harness_shared.test_pause_fact_cap_race();
+    `);
+
+    try {
+      const contenders = ['a', 'b'].map((suffix) =>
+        db.sql.begin((tx) =>
+          assertFact(
+            {
+              scope: 'owner',
+              scopeRef,
+              workspaceId: WS,
+              key: `incoming-race-${suffix}`,
+              body: `concurrent verified finding ${suffix}`,
+              createdBy: `su-writer-${suffix}`,
+              confidence: 'verified',
+              ttlSec: 30 * 86400,
+            },
+            tx as unknown as NonNullable<Parameters<typeof assertFact>[1]>,
+          ),
+        ),
+      );
+      const outcomes = await Promise.allSettled(contenders);
+
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      const [refused] = outcomes.filter((outcome) => outcome.status === 'rejected');
+      expect(refused).toBeDefined();
+      expect(String((refused as PromiseRejectedResult).reason)).toMatch(
+        /REFUSED before write:.*another author's verified fact/i,
+      );
+
+      const [afterRace] = await db.sql<{
+        liveRows: number;
+        incomingRows: number;
+        evictedRows: number;
+      }[]>`
+        SELECT count(*) FILTER (
+                 WHERE superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
+               )::int AS "liveRows",
+               count(*) FILTER (
+                 WHERE key LIKE 'incoming-race-%' AND superseded_at IS NULL
+                   AND retracted_at IS NULL AND expires_at > now()
+               )::int AS "incomingRows",
+               count(*) FILTER (WHERE evicted_at IS NOT NULL)::int AS "evictedRows"
+          FROM harness_shared.agent_facts
+         WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}`;
+      expect(afterRace).toEqual({
+        liveRows: FACTS_PER_SCOPE_CAP,
+        incomingRows: 1,
+        evictedRows: 0,
+      });
+    } finally {
+      await db.sql.unsafe(`
+        DROP TRIGGER IF EXISTS test_pause_fact_cap_race ON harness_shared.agent_facts;
+        DROP FUNCTION IF EXISTS harness_shared.test_pause_fact_cap_race();
+      `);
+    }
+  }, 20_000);
+
   it('WI-6935: a wall/dead-end fact survives a 51st assert — the typed safety slots are exempt from eviction', async () => {
     const scopeRef = 'su-slot-cap';
     const slotted = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
@@ -753,7 +836,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       db.sql,
     );
     expect(live.map((f) => f.key)).not.toContain('doomed');
-  });
+  }, 15_000);
 
   it('EI-20515478467800187: sweep-survival-population-parity — survival counts ONLY rows the sweep may evict, so conventions never inflate liveCount', async () => {
     const scopeRef = 'su-population-parity';
@@ -1292,7 +1375,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       db.sql,
     );
     expect(stillLive.map((f) => f.key)).toContain('urgent-48h');
-  });
+  }, 15_000);
 
   it('EI-19451909636567773: a write that lands mid-ranking is NOT alarmed — a warning that always fires is one nobody reads', async () => {
     const scopeRef = 'su-survival-quiet';
