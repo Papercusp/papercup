@@ -75,6 +75,7 @@ import {
   readLiveReleaseCertification,
   type LiveReleaseCertification,
 } from '../../release/live-release-certification';
+import { createTextCollector } from '../../child-output';
 
 // Kept as exports from this historical module for callers/tests that already
 // use the release-actions config surface. The implementation is shared with
@@ -3583,15 +3584,14 @@ async function launchLiveReleaseCertification(
       '-c',
       payload,
     ]);
-    let stderr = '';
-    child.stderr?.on('data', (chunk) => (stderr += String(chunk)));
+    const stderr = createTextCollector(child.stderr);
     child.on('error', (error) =>
       resolve({ launched: false, reason: error instanceof Error ? error.message : String(error) }),
     );
     child.on('close', (code) =>
       resolve({
         launched: code === 0,
-        reason: code === 0 ? null : `systemd-run exited ${String(code)}: ${stderr.trim().slice(0, 300)}`,
+        reason: code === 0 ? null : `systemd-run exited ${String(code)}: ${stderr.text().trim().slice(0, 300)}`,
       }),
     );
   });
