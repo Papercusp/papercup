@@ -478,7 +478,7 @@ export interface VettingConsultCritique {
   relevance?: {
     matched: boolean;
     matchedRefs: string[];
-    via: Array<'question' | 'critique-post' | 'archive-answer'>;
+    via: Array<'question' | 'archive-answer'>;
   };
 }
 
@@ -489,7 +489,7 @@ function vettingConsultRelevance(
   const normalizedRefs = [...new Set(refs.map((ref) => ref.trim()).filter((ref) => ref.length > 0))];
   if (normalizedRefs.length === 0) return undefined;
   const matchedRefs = new Set<string>();
-  const via = new Set<'question' | 'critique-post' | 'archive-answer'>();
+  const via = new Set<'question' | 'archive-answer'>();
   for (const source of sources) {
     if (typeof source.text !== 'string') continue;
     const haystack = source.text.toLocaleLowerCase();

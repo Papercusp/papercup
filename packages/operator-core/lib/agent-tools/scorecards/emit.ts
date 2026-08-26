@@ -4,7 +4,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getOrgPg } from '@papercusp/db-org';
-import { getRubric, getRubricPlanRevision } from '../../rubrics';
+import { getRubric, getRubricPlanRevision, META_ACCEPTANCE_RUBRIC_ID } from '../../rubrics';
 import { getIssue } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -174,7 +174,7 @@ export const scorecardEmitArgs = z
       .max(120)
       .optional()
       .describe(
-        "Vetting linkage for a META-RUBRIC scorecard only (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric. Requires subject:{ kind:'rubric', ref:'<the vetted rubric id>' }. Do not pass this on the later plan-subject acceptance card; that card cites the separately emitted meta-rubric scorecard instead. The rubric must exist AND the consult must carry at least one third-party critique reply (EI-20821478338037350) — an opened-but-unanswered consult is refused, not silently accepted. Stamped as observation.vetting with the critique count and critics.",
+        "Vetting linkage for a META-RUBRIC scorecard only (consult-min-max-and-rubric-vetting-2026-08-17 P-004): conversation_id of the get_feedback consult that critiqued the vetted rubric. Requires subject:{ kind:'rubric', ref:'<the vetted rubric id>' }. Do not pass this on the later plan-subject acceptance card; that card cites the separately emitted meta-rubric scorecard instead. The rubric must exist, the consult's durable opening question must name the vetted rubric id or its subject plan, AND the consult must carry at least one third-party critique reply (EI-20821478338037350) — an unrelated or opened-but-unanswered consult is refused, not silently accepted. Stamped as observation.vetting with the critique count and critics.",
       ),
     vettingWorkItem: z
       .string()
@@ -327,6 +327,44 @@ export async function emitScorecard(
       const callerIsImplementer =
         implementer != null &&
         (await sameAcceptanceAuthor(implementer, input.createdBy, { workspaceId: identityWorkspace }));
+      // EI-21461866696604065: an acceptance rubric's sole vetting critic cannot
+      // also be its independent grader. That collapses the intended three-party
+      // chain (author -> critic -> grader) into two parties and makes the result
+      // self-sealing: the grader is least able to notice the omissions in their
+      // own critique. Read the same canonical meta-scorecards the acceptance gate
+      // trusts, restricted to the current rubric revision. Several critics do not
+      // trigger this narrow refusal; another critic still independently challenged
+      // the rubric in that case.
+      if (!callerIsImplementer) {
+        const currentRevision = await getRubricPlanRevision(rubric.rubricId);
+        const vettingCards = await listScorecards({
+          rubricRef: META_ACCEPTANCE_RUBRIC_ID,
+          subjectRef: rubric.rubricId,
+          limit: 50,
+        });
+        const currentVetting = vettingCards.find(
+          (card) =>
+            card.rubricResolved &&
+            card.missingKeys.length === 0 &&
+            !card.synthesized &&
+            (card.vetting?.consultId != null || card.vetting?.workItemId != null) &&
+            (currentRevision == null || card.vetting?.rubricRevision === currentRevision),
+        );
+        const critics = currentVetting?.vetting?.critics ?? [];
+        if (
+          critics.length === 1 &&
+          (await sameAcceptanceAuthor(critics[0]!, input.createdBy, { workspaceId: identityWorkspace }))
+        ) {
+          return {
+            ok: false as const,
+            code: 'grader_is_sole_vetting_critic' as const,
+            error:
+              `grader '${input.createdBy}' is the sole recorded vetting critic for acceptance rubric ` +
+              `'${rubric.rubricId}' — use a different independent grader so rubric fitness and work ` +
+              `compliance are not attested by the same party`,
+          };
+        }
+      }
       if (!callerIsImplementer && acceptance) {
         return {
           ok: false as const,
@@ -421,6 +459,7 @@ export async function emitScorecard(
     // link here would be a booby trap (same posture as the acceptance-kind link
     // guards in proposeRubric).
     let vetting: ScorecardVetting | undefined;
+    let vettedSubjectPlan: string | null = null;
     // WI-41477: two alternate recording channels, one predicate. The consult channel
     // is the router-assigned get_feedback flow; the work-item channel is where a
     // LAUNCHED independent reviewer's critique actually lands (D-049 — consult
@@ -469,6 +508,7 @@ export async function emitScorecard(
           error: `vetting subject '${subjectRef}' does not resolve to a rubric — the vetting stamp would be a dangling link`,
         };
       }
+      vettedSubjectPlan = vettedRubric.subjectPlan ?? null;
       if (args.vettingWorkItem) {
         // Mirror of the consult predicate below, clause for clause: the consult path
         // excludes the emitter and the consult REQUESTER; here the analogous
@@ -514,6 +554,7 @@ export async function emitScorecard(
         activeWorkspaceId(),
         args.vettingConsult,
         input.createdBy,
+        [subjectRef, vettedSubjectPlan].filter((ref): ref is string => typeof ref === 'string' && ref.length > 0),
       );
       if (!critique.exists) {
         return {
@@ -557,6 +598,17 @@ export async function emitScorecard(
           error:
             'vettingUnanswered requires vettingUnansweredReason — an unexplained no-critique waiver is exactly the ' +
             'silent pass this gate exists to prevent',
+        };
+      }
+      if (!waived && critique.critiquePosts > 0 && critique.relevance?.matched !== true) {
+        return {
+          ok: false as const,
+          error:
+            `vetting_consult_unrelated: consult '${args.vettingConsult}' carries third-party posts, but its durable ` +
+            `opening question does not mention vetted rubric '${subjectRef}'` +
+            (vettedSubjectPlan ? ` or subject plan '${vettedSubjectPlan}'` : '') +
+            `. Open a rubric-specific consult and cite that conversation_id; an arbitrary answered consult cannot ` +
+            `evidence this rubric's vetting.`,
         };
       }
       const rubricRevision = await getRubricPlanRevision(subjectRef);
