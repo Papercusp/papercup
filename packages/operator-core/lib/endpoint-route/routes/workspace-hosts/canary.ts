@@ -1,0 +1,213 @@
+/** POST /workspace-hosts/:hostId/canary — resumable production P-046 canary controller. */
+import { defineTool } from '@papercusp/agent-mcp';
+import { WorkspaceHostDestroyEvidenceError } from '@papercusp/deployment-driver';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import {
+  UnsupportedWorkspaceHostInitializationTargetError,
+  WorkspaceHostDesiredSpecUnavailableError,
+  WorkspaceHostInitializationControllerProfileError,
+  resolveWorkspaceHostInitializationControllerProfile,
+  resolveWorkspaceHostInitializationOperationsForHost,
+} from '../../../workspace-host/initialization-operations-resolver';
+import {
+  runWorkspaceHostCanary,
+  type WorkspaceHostCanaryRunInput,
+  type WorkspaceHostCanaryRunResult,
+} from '../../../workspace-host/canary-runner';
+
+const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
+
+interface CanaryBody extends Record<string, unknown> {
+  runId?: unknown;
+  requestedAt?: unknown;
+  source?: unknown;
+  credentials?: unknown;
+  destroyFinalization?: unknown;
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+function hasCredentialGeneration(value: unknown): boolean {
+  return isRecord(value) && isRecord(value.credentialRefs) && isRecord(value.delivery);
+}
+
+function hasCredentials(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasCredentialGeneration(value.initial) &&
+    hasCredentialGeneration(value.rotated) &&
+    hasCredentialGeneration(value.restored)
+  );
+}
+
+function hasDestroyFinalization(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    typeof value.operationId === 'string' &&
+    Array.isArray(value.credentialTeardown) &&
+    isRecord(value.teardown) &&
+    isRecord(value.destroyEvidence)
+  );
+}
+
+export interface WorkspaceHostCanaryRouteDependencies {
+  activeWorkspaceId: typeof activeWorkspaceId;
+  resolveControllerProfile: typeof resolveWorkspaceHostInitializationControllerProfile;
+  resolveOperationsForHost: typeof resolveWorkspaceHostInitializationOperationsForHost;
+  runCanary: typeof runWorkspaceHostCanary;
+}
+
+const DEFAULT_DEPENDENCIES: WorkspaceHostCanaryRouteDependencies = {
+  activeWorkspaceId,
+  resolveControllerProfile: resolveWorkspaceHostInitializationControllerProfile,
+  resolveOperationsForHost: resolveWorkspaceHostInitializationOperationsForHost,
+  runCanary: runWorkspaceHostCanary,
+};
+
+function requestError(error: string, status: number, extra: Record<string, unknown> = {}): Response {
+  return Response.json({ ok: false, error, ...extra }, { status });
+}
+
+function summarize(result: WorkspaceHostCanaryRunResult) {
+  return [
+    {
+      phase: 'initialize' as const,
+      operationId: result.initialization.operationId,
+      steps: result.initialization.plan.steps.map((step) => ({ id: step.id, kind: step.kind })),
+      receiptStepIds: result.initialization.receipts.map((receipt) => receipt.stepId),
+    },
+    ...result.lifecycle.map(({ phase, result: lifecycle }) => ({
+      phase,
+      operationId: lifecycle.operationId,
+      action: lifecycle.plan.action,
+      steps: lifecycle.plan.steps.map((step) => ({
+        id: step.id,
+        kind: step.kind,
+        channel: step.channel,
+      })),
+      receiptStepIds: lifecycle.receipts.map((receipt) => receipt.stepId),
+    })),
+  ];
+}
+
+export function createWorkspaceHostCanaryRoute(
+  dependencies: WorkspaceHostCanaryRouteDependencies = DEFAULT_DEPENDENCIES,
+) {
+  return defineTool({
+    method: 'POST',
+    path: '/workspace-hosts/:hostId/canary',
+    auth: 'loopback',
+    async handler(req, ctx) {
+      const hostId = String(ctx.params.hostId ?? '').trim();
+      if (!SAFE_ID.test(hostId)) return requestError('invalid workspace host id', 400);
+
+      let body: CanaryBody;
+      try {
+        body = (await req.json()) as CanaryBody;
+      } catch {
+        return requestError('invalid json', 400);
+      }
+      if (!isRecord(body)) return requestError('body must be an object', 400);
+      if (typeof body.runId !== 'string' || !SAFE_ID.test(body.runId)) {
+        return requestError('invalid runId', 400);
+      }
+      if (typeof body.requestedAt !== 'string' || !Number.isFinite(Date.parse(body.requestedAt))) {
+        return requestError('requestedAt must be an ISO timestamp', 400);
+      }
+      if (!isRecord(body.source)) return requestError('source must be an object', 400);
+      if (!hasCredentials(body.credentials)) {
+        return requestError(
+          'credentials must contain initial, rotated, and restored credentialRefs/delivery objects',
+          400,
+        );
+      }
+      if (body.destroyFinalization !== undefined && !hasDestroyFinalization(body.destroyFinalization)) {
+        return requestError(
+          'destroyFinalization requires operationId, credentialTeardown, teardown, and destroyEvidence',
+          400,
+        );
+      }
+
+      const workspaceId = dependencies.activeWorkspaceId();
+      let controller;
+      try {
+        controller = dependencies.resolveControllerProfile();
+      } catch (error) {
+        if (error instanceof WorkspaceHostInitializationControllerProfileError) {
+          return requestError('workspace-host canary is not configured', 503, {
+            problems: error.problems,
+          });
+        }
+        throw error;
+      }
+
+      let operations;
+      try {
+        ({ operations } = await dependencies.resolveOperationsForHost({
+          workspaceId,
+          hostId,
+          controller,
+        }));
+      } catch (error) {
+        if (error instanceof WorkspaceHostDesiredSpecUnavailableError) {
+          return requestError(
+            error.reason === 'host-not-found'
+              ? 'workspace host not found'
+              : 'workspace host has no recorded provisioning intent',
+            error.reason === 'host-not-found' ? 404 : 409,
+            { reason: error.reason },
+          );
+        }
+        if (error instanceof UnsupportedWorkspaceHostInitializationTargetError) {
+          return requestError('workspace-host canary target is not implemented', 501, {
+            target: error.target,
+          });
+        }
+        throw error;
+      }
+
+      let phaseStarted = false;
+      try {
+        const result = await dependencies.runCanary({
+          runId: body.runId,
+          workspaceId,
+          hostId,
+          requestedAt: body.requestedAt,
+          source: body.source as never,
+          credentials: body.credentials as never,
+          operations,
+          ...(body.destroyFinalization ? { destroyFinalization: body.destroyFinalization as never } : {}),
+          onPhaseStart: () => {
+            phaseStarted = true;
+          },
+        } satisfies WorkspaceHostCanaryRunInput);
+
+        return Response.json({
+          ok: true,
+          status: result.adaptedDestroyEvidence ? 'destroy-verified' : 'ready-for-destroy',
+          runId: result.runId,
+          workspaceId: result.workspaceId,
+          hostId: result.hostId,
+          requestedAt: result.requestedAt,
+          operationIds: result.operationIds,
+          phases: summarize(result),
+          evidence: result.assembly.evidence,
+          validation: result.assembly.validation,
+          backupManifest: result.backupManifest,
+          ...(result.adaptedDestroyEvidence ? { adaptedDestroyEvidence: result.adaptedDestroyEvidence } : {}),
+        });
+      } catch (error) {
+        if (error instanceof WorkspaceHostDestroyEvidenceError) {
+          return requestError('destroy evidence rejected', 422, { problems: error.problems });
+        }
+        if (!phaseStarted) {
+          return requestError('workspace-host canary request rejected', 422);
+        }
+        return requestError('workspace-host canary failed; see the host timeline for details', 500, { hostId });
+      }
+    },
+  });
+}
+
+export default createWorkspaceHostCanaryRoute();
