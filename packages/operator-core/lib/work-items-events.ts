@@ -339,7 +339,7 @@ export function emitWorkItemBlockedEvent(wi: WorkItem, deps: Pick<SettledEventsD
 export function emitWorkItemStatusEvent(
   wi: WorkItem,
   prevState: string,
-  deps: Pick<SettledEventsDeps, 'emit'> = {},
+  deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
 ): void {
   const emit = deps.emit ?? emitAwaitedEvent;
   void Promise.resolve()
@@ -368,7 +368,9 @@ export function emitWorkItemStatusEvent(
   // ENTERING-EDGE guard: a move BETWEEN claimable states (todo→open) must not
   // re-announce an already-advertised row; the claimable emitter's own guard
   // still drops assigned rows and non-claimable landing states.
-  if (!CLAIMABLE_STATES.has(prevState)) emitWorkItemClaimableEvent(wi, 'requeued', deps);
+  if (deps.announceClaimable !== false && !CLAIMABLE_STATES.has(prevState)) {
+    emitWorkItemClaimableEvent(wi, 'requeued', deps);
+  }
 }
 
 export function isSettledWorkItem(wi: Pick<WorkItem, 'family' | 'state'>): boolean {

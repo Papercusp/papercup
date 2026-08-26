@@ -214,6 +214,29 @@ describe('assignAndWakeActionableWorkItems', () => {
     expect(result.failure).toBeUndefined();
   });
 
+  it('suppresses a duplicate successor wake when a concurrent path already retained the item', async () => {
+    const wake = vi.fn();
+    const d = deps({
+      wake,
+      observe: vi.fn(async (id) => ({
+        item: workItem(id, 'open', 'agent-email-stable'),
+        available: false,
+        claimedBy: 'agent-email-stable',
+      })),
+    });
+
+    const result = await assignAndWakeActionableWorkItems(
+      { workItemIds: ['WI-SUCCESSOR'], targetAgent: 'agent-email-stable', wakeRetained: false },
+      d,
+    );
+
+    expect(result.assignment.retained).toEqual(['WI-SUCCESSOR']);
+    expect(result.wake).toBeNull();
+    expect(wake).not.toHaveBeenCalled();
+    expect(result.ok).toBe(true);
+    expect(result.warning).toMatch(/duplicate wake suppressed/i);
+  });
+
   it('keeps a landed assignment recoverable and fails loudly when the stable target is dead', async () => {
     const d = deps({
       resolveTarget: vi.fn(async ({ targetAgent }) => target(targetAgent, { sessionState: 'ended', wakeable: false })),
