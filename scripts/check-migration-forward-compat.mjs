@@ -385,6 +385,9 @@ export function migrationSha256(text) {
  * Resolve whether `sha` is a commit in this repo that is an ANCESTOR of HEAD.
  * Returns true / false / null, where **null means "could not determine"** and the
  * caller must fail closed on it. Never throws.
+ *
+ * @param {{ exec?: (file: string, args: string[], options?: Record<string, unknown>) => unknown, cwd?: string }} [options]
+ * @returns {(sha: string) => boolean | null}
  */
 export function makeAncestorResolver({ exec = execFileSync, cwd = join(__dirname, '..') } = {}) {
   return (sha) => {
@@ -411,6 +414,16 @@ export function makeAncestorResolver({ exec = execFileSync, cwd = join(__dirname
  *
  * Returns { present, honored, refusals }. `present:false` means no sidecar exists
  * (not a refusal); `honored:false` with refusals means one exists and was REJECTED.
+ *
+ * @param {{
+ *   artifactFile?: string,
+ *   effectiveFile?: string,
+ *   sidecarText?: string | null,
+ *   migrationSha?: string | null,
+ *   isAncestorOfHead?: (sha: string) => boolean | null,
+ *   now?: Date,
+ * }} [input]
+ * @returns {{ present: boolean, honored: boolean, refusals: string[] }}
  */
 export function evaluateForwardCompatSidecar({
   artifactFile,
@@ -506,7 +519,19 @@ export function evaluateForwardCompatSidecar({
   return { present: true, honored: refusals.length === 0, refusals };
 }
 
-/** Read + evaluate the sidecar for one migration artifact on disk. */
+/**
+ * Read + evaluate the sidecar for one migration artifact on disk.
+ *
+ * @param {string} directory
+ * @param {string} artifactFile
+ * @param {{
+ *   migrationText?: string,
+ *   isAncestorOfHead?: (sha: string) => boolean | null,
+ *   now?: Date,
+ *   readFile?: (path: string, encoding: string) => string,
+ * }} [options]
+ * @returns {{ present: boolean, honored: boolean, refusals: string[], sidecarFile: string }}
+ */
 export function readForwardCompatSidecar(
   directory,
   artifactFile,

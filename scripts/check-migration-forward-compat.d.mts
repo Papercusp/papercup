@@ -34,35 +34,66 @@ export function migrationSha256(text: any): string;
  * Resolve whether `sha` is a commit in this repo that is an ANCESTOR of HEAD.
  * Returns true / false / null, where **null means "could not determine"** and the
  * caller must fail closed on it. Never throws.
+ *
+ * @param {{ exec?: (file: string, args: string[], options?: Record<string, unknown>) => unknown, cwd?: string }} [options]
+ * @returns {(sha: string) => boolean | null}
  */
 export function makeAncestorResolver({ exec, cwd }?: {
-    exec?: typeof execFileSync | undefined;
-    cwd?: string | undefined;
-}): (sha: any) => boolean | null;
+    exec?: (file: string, args: string[], options?: Record<string, unknown>) => unknown;
+    cwd?: string;
+}): (sha: string) => boolean | null;
 /**
  * Decide whether a sidecar acknowledges its migration. PURE — every input is
  * passed in, so the whole refusal matrix is testable without touching the tree.
  *
  * Returns { present, honored, refusals }. `present:false` means no sidecar exists
  * (not a refusal); `honored:false` with refusals means one exists and was REJECTED.
+ *
+ * @param {{
+ *   artifactFile?: string,
+ *   effectiveFile?: string,
+ *   sidecarText?: string | null,
+ *   migrationSha?: string | null,
+ *   isAncestorOfHead?: (sha: string) => boolean | null,
+ *   now?: Date,
+ * }} [input]
+ * @returns {{ present: boolean, honored: boolean, refusals: string[] }}
  */
 export function evaluateForwardCompatSidecar({ artifactFile, effectiveFile, sidecarText, migrationSha, isAncestorOfHead, now, }?: {
-    effectiveFile?: any;
-    isAncestorOfHead?: (() => null) | undefined;
-    now?: Date | undefined;
+    artifactFile?: string;
+    effectiveFile?: string;
+    sidecarText?: string | null;
+    migrationSha?: string | null;
+    isAncestorOfHead?: (sha: string) => boolean | null;
+    now?: Date;
 }): {
     present: boolean;
     honored: boolean;
-    refusals: any[];
+    refusals: string[];
 };
-/** Read + evaluate the sidecar for one migration artifact on disk. */
-export function readForwardCompatSidecar(directory: any, artifactFile: any, { migrationText, isAncestorOfHead, now, readFile }?: {
-    readFile?: typeof readFileSync | undefined;
+/**
+ * Read + evaluate the sidecar for one migration artifact on disk.
+ *
+ * @param {string} directory
+ * @param {string} artifactFile
+ * @param {{
+ *   migrationText?: string,
+ *   isAncestorOfHead?: (sha: string) => boolean | null,
+ *   now?: Date,
+ *   readFile?: (path: string, encoding: string) => string,
+ * }} [options]
+ * @returns {{ present: boolean, honored: boolean, refusals: string[], sidecarFile: string }}
+ */
+export function readForwardCompatSidecar(directory: string, artifactFile: string, { migrationText, isAncestorOfHead, now, readFile }?: {
+    migrationText?: string;
+    isAncestorOfHead?: (sha: string) => boolean | null;
+    now?: Date;
+    readFile?: (path: string, encoding: string) => string;
 }): {
-    sidecarFile: string;
     present: boolean;
     honored: boolean;
-    refusals: any[];
+    refusals: string[];
+    sidecarFile: string;
 };
 /**
  * Extract column identifiers introduced by an ALTER TABLE ADD COLUMN statement.
@@ -253,5 +284,3 @@ export const SIDECAR_KIND: "migration-forward-compat-ack";
 export const SIDECAR_VERSION: 1;
 /** Exact permitted key set. An unknown key refuses the sidecar (no free-form fields). */
 export const SIDECAR_KEYS: readonly string[];
-import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';

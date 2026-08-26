@@ -193,6 +193,10 @@ export const FROZEN_TXCTL_EXEMPTIONS = new Map([
     "923-typed-goal-plan-properties.sql",
     "Applied 2026-08-23T22:02:43Z (committed in the libs/papercusp submodule at 21:56:02Z, e9f98454). Carries BEGIN; / COMMIT;. The immutability guard refuses the edit this lint prescribes, so the red is otherwise permanent and gate-blocking. Filed as WI-41119.",
   ],
+  [
+    "972-completion-authority-content-identity-floor.sql",
+    "Applied 2026-08-26T11:49:09Z (committed in the libs/papercusp submodule at 11:48:48Z, e3f8f4c7). Carries a top-level BEGIN; at line 47 and COMMIT; at line 128. The immutability guard refuses the edit this lint prescribes, so the red is otherwise permanent and gate-blocking — the third occurrence of the WI-41119 deadlock class (see also EI-21539300249506308, where the same intersection blocked lint:migration-forward-compat). On this check's own hazard model the residual risk is closed: the hazard is that an early COMMIT ends the runner-provided transaction and leaves LATER statements running unprotected, and here COMMIT; is the FINAL line of a 128-line file, so no statement follows it. The file applied cleanly and its ledger row exists.",
+  ],
 ]);
 
 /**
