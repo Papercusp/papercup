@@ -67,6 +67,7 @@ type ProjectorModule = {
     contextTokens: number;
     charsPerToken: number;
   }) => number;
+  projectionBudget: () => number;
   projectClient: (
     parts: ProjectionRow[],
     opts: {
@@ -250,13 +251,12 @@ function readBody(args: Map<string, string | true>): string {
  * composition keeps exactly one definition: the projector's.
  */
 function budgetFor(proj: ProjectorModule): number {
-  // The SAME defaults project-doc-parts' main() uses, via the same imported function — a
+  // The SAME budget project-doc-parts' main() enforces, via the same imported function — a
   // hardcoded number here would silently stop predicting the real projection the day the
-  // budget moves.
-  return proj.memoryWarningThreshold({
-    contextTokens: 400_000,
-    charsPerToken: proj.CHARS_PER_TOKEN_KNOWN_MODEL,
-  });
+  // budget moves. It moved on 2026-08-26 (80,000 -> 160,000, owner-directed), which is
+  // exactly the drift this indirection exists to survive: the dry-run's "projection impact"
+  // block is only trustworthy while it is computed from the projector's own budget.
+  return proj.projectionBudget();
 }
 
 async function main(): Promise<void> {

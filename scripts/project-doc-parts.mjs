@@ -244,6 +244,41 @@ export function memoryWarningThreshold({
 }
 
 /**
+ * The budget this projector ACTUALLY enforces — deliberately ABOVE the reader's warning
+ * threshold computed by `memoryWarningThreshold()`.
+ *
+ * [owner 2026-08-26] Raised from 80,000 to 160,000 by owner directive, verbatim:
+ * "lets just raise the cap" / "raise it to 160k".
+ *
+ * State the trade plainly rather than burying it:
+ *   - BOUGHT: every rule reaches the agent. At 80,000 the projector was dropping real
+ *     repo rules to fit. That is a silent correctness failure — an agent cannot follow a
+ *     rule it was never shown, and the dropped rules were invisible to everyone except
+ *     whoever happened to read the cut footer.
+ *   - PAID: Claude Code emits its oversized-memory warning for CLAUDE.md/AGENTS.md, and
+ *     the file costs roughly twice the per-session context it did before.
+ *
+ * This is safe ONLY because the reader's threshold gates a WARNING, not a truncation:
+ * `$dn()` in the 2.1.226 bundle feeds a size warning, and the reader still receives the
+ * whole file. If that ever becomes a hard truncation, REVERT THIS CONSTANT — a truncated
+ * file drops rules from the tail with no report at all, which is strictly worse than the
+ * ranked, reported cut it replaced. That is the falsifier to watch, and it is the reason
+ * `memoryWarningThreshold()` stays transcribed above and is still reported beside this
+ * number: the headroom against the real reader threshold must stay VISIBLE rather than
+ * decay into folklore.
+ *
+ * The cap remains ENFORCED (D-008) — raising it does not make it a hope. The output still
+ * physically cannot exceed it, still degrades by dropping the lowest-priority parts, and
+ * still reports what it cut.
+ */
+export const PROJECTION_BUDGET_CHARS = 160_000;
+
+/** The enforced budget. One definition, shared by the projector and set-doc-part. */
+export function projectionBudget() {
+  return PROJECTION_BUDGET_CHARS;
+}
+
+/**
  * The configurations a projected file could be read under. Reported on every run so
  * the headroom is VISIBLE rather than implied by one number — D-008's failure mode is
  * a file that is comfortably under the threshold of the session that generated it and
@@ -855,7 +890,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const charsPerToken = Number(
     argv.find((a) => a.startsWith('--chars-per-token='))?.split('=')[1] ?? CHARS_PER_TOKEN_KNOWN_MODEL,
   );
-  const budget = memoryWarningThreshold({ contextTokens, charsPerToken });
+  const budgetOverride = Number(argv.find((a) => a.startsWith('--budget-chars='))?.split('=')[1] ?? NaN);
+  const budget = Number.isFinite(budgetOverride) && budgetOverride > 0
+    ? budgetOverride
+    : projectionBudget();
+  // The reader's own threshold, kept separate from the budget we enforce so the gap
+  // between them is reported rather than assumed. See PROJECTION_BUDGET_CHARS.
+  const readerWarnThreshold = memoryWarningThreshold({ contextTokens, charsPerToken });
   let docClaimPins;
   try {
     docClaimPins = readDocClaimPins();
@@ -968,6 +1009,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       console.log(`\n  ${spec.file}  (client=${spec.client})`);
       console.log(`    composed     ${fmt(out.text.length)} chars — ${out.kept.length} part(s) kept, ${out.dropped.length} cut by budget`);
       console.log(`    headroom     ${fmt(budget - out.text.length)} chars under the ${fmt(budget)}-char budget`);
+      if (out.text.length > readerWarnThreshold) {
+        console.log(
+          `    reader       OVER the ${fmt(readerWarnThreshold)}-char warn threshold by ${fmt(out.text.length - readerWarnThreshold)}` +
+          ` — ${spec.reader} will flag this file as oversized (advisory: it still reads the whole file)`,
+        );
+      }
       if (isSymlink) console.log(`    on disk      SYMLINK -> ${readlinkSync(path)} (retired by --write)`);
       else if (onDisk === null) console.log('    on disk      absent');
       else console.log(`    on disk      ${fmt(onDisk.length)} chars — ${onDisk === out.text ? 'IDENTICAL ✓' : 'DIFFERS'}`);
