@@ -100,4 +100,9 @@ describe('coord:presence targeted-owner schema', () => {
     expect(presenceTool.args.safeParse({ owners: [] }).success).toBe(false);
     expect(presenceTool.args.safeParse({ owners: Array.from({ length: 51 }, (_, i) => `su-${i}`) }).success).toBe(false);
   });
+
+  it('does not advertise confirmLiveness as an input field', () => {
+    expect(presenceTool.args.safeParse({ owner: 'su-a', confirmLiveness: true }).success).toBe(false);
+    expect(JSON.stringify(presenceTool.guidance)).not.toContain('confirmLiveness:true');
+  });
 });
