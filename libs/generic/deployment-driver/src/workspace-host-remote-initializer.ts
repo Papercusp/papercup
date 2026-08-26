@@ -28,6 +28,7 @@ import {
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
   type WorkspaceHostCredentialChannel,
+  type WorkspaceHostCredentialLifecycleStep,
   type WorkspaceHostCredentialLifecycleStepKind,
   type WorkspaceHostInitializationCanaryEvidence,
   type WorkspaceHostInitializationStep,
@@ -107,6 +108,31 @@ export interface WorkspaceHostRemoteInitializerStep {
 export interface WorkspaceHostRemoteInitializerRequest {
   protocolVersion: typeof WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION;
   step: WorkspaceHostRemoteInitializerStep;
+}
+
+/**
+ * Encode a planned credential-lifecycle step for the wire.
+ *
+ * This lives HERE, beside the parser that will read it back, rather than in the controller that
+ * calls it. The flattening described on `WorkspaceHostRemoteInitializerStep` is a property of the
+ * protocol, not of any one caller, and a controller that open-coded it would be a second
+ * definition of the wire format sitting where nobody would think to look when the format changed.
+ * Encoder and parser being adjacent is what lets a round-trip test cover both at once.
+ */
+export function encodeWorkspaceHostCredentialLifecycleStep(
+  step: WorkspaceHostCredentialLifecycleStep,
+): WorkspaceHostRemoteInitializerStep {
+  return {
+    id: step.id,
+    kind: step.kind,
+    dependsOn: step.dependsOn,
+    idempotencyKey: step.idempotencyKey,
+    input: {
+      channel: step.channel,
+      credentialRef: step.credentialRef,
+      delivery: step.delivery,
+    },
+  };
 }
 
 export interface WorkspaceHostRemoteInitializerResponse {

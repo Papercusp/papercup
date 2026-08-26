@@ -372,6 +372,7 @@ export {
   WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
   WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV,
+  encodeWorkspaceHostCredentialLifecycleStep,
   WorkspaceHostRemoteInitializerProtocolError,
   UnsupportedWorkspaceHostInitializationStepKindError,
   WorkspaceHostInitializationCanaryEvidenceError,
