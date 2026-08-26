@@ -1209,6 +1209,9 @@ export function normalizeCheckEntries(
   const out: CheckEntry[] = [];
   for (const e of entries) {
     const claim = (e.claim ?? '').trim();
+    // WI-42008: structured `checks` writes bypass parseCheckLine, so enforce the
+    // same telemetry refusal at this admission boundary as well.
+    if (FLIGHT_RECORD_TELEMETRY_CLAIM_RE.test(claim)) continue;
     const key = carryRowKey(e);
     if (!claim || seen.has(key)) continue;
     seen.add(key);
