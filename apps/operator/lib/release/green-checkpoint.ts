@@ -6270,6 +6270,33 @@ export interface CheckpointOpts {
  *  reintroduce a local definition. */
 export { quietCutSecFromEnv };
 
+/**
+ * WI-42207: has a PINNED frozen candidate aged past the point where it can still produce a
+ * publishable verdict?
+ *
+ * Split out as a pure predicate because it is the only risky part of the release decision — the
+ * surrounding plumbing (write null, clean the worktree, fall through to the fresh tip) is
+ * mechanical, while getting THIS wrong in either direction is expensive: release too eagerly and
+ * an in-progress repair loses its pin, hold too long and the gate livelocks (`main` frozen 6 days,
+ * 44 consecutive reds, 2026-08-26).
+ *
+ * Returns FALSE for an absent or non-finite commit time on purpose. `commitUnixTime` is
+ * `Number(await git(...))`, which yields NaN rather than throwing when git prints anything
+ * non-numeric — and `NaN > x` is false, so an unguarded compare would hold the pin forever while
+ * looking like a deliberate decision. Holding on unreadable input is the safe direction (the pin
+ * survives, a later run re-asks), so the guard makes that explicit rather than incidental.
+ */
+export function frozenPinIsFossilized(input: {
+  committedAtSec: number | null | undefined;
+  nowMs: number;
+  fossilAgeMs?: number;
+}): boolean {
+  const { committedAtSec, nowMs } = input;
+  if (committedAtSec == null || !Number.isFinite(committedAtSec)) return false;
+  const ageMs = Math.max(0, nowMs - committedAtSec * 1_000);
+  return ageMs > (input.fossilAgeMs ?? CANDIDATE_FOSSIL_AGE_MS);
+}
+
 export function partialGreenGateEnabledFromEnv(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
@@ -7532,6 +7559,73 @@ async function runGreenCheckpointInner(
         reason: "repair-in-progress",
         summary,
       };
+    }
+  }
+  // WI-42207: RELEASE a frozen candidate that has aged past the fossil threshold.
+  //
+  // The queue created below deliberately pins ONE candidate, so that "a crash, red verdict, or
+  // newer staging tip therefore resumes this exact candidate". That is correct while the pin can
+  // still produce a USABLE verdict. It stops being correct the moment the pinned sha is older
+  // than CANDIDATE_FOSSIL_AGE_MS, because gate-verdict-freshness rule 5 then WITHHOLDS every red
+  // it produces — "No failing-test signature was published; the next run must re-judge a fresh
+  // tip" — while this queue guarantees the next run resumes the SAME sha. Each rule is sound in
+  // isolation; together they are a livelock, and the fossil message asks for the one thing the
+  // queue forbids.
+  //
+  // Measured 2026-08-26: `main` frozen 6 days at a2d69cef, 44 consecutive reds,
+  // gate_health.failingTests: [] throughout (no signature was ever published), five abandoned
+  // `green-candidate-*` worktrees on disk, and the runs that got far enough to judge ending
+  // `candidate-fossil` with a candidate already 143m old AT SUITE START — i.e. doomed before a
+  // single test ran.
+  //
+  // Releasing here loses nothing real: the pinned sha is IMMUTABLE, so no fix landed on staging
+  // can change its outcome. Re-judging it cannot succeed where the previous attempt failed; only
+  // a fresh tip can. GREENS are untouched — the fossil rule is gated on `!green`, so a green
+  // candidate never reaches it and still advances `main` however old it is. Clearing the queue
+  // simply lets `candidate` stay `transportedCandidate` (the freshly-resolved tip), which is the
+  // same path a run with no queue at all takes.
+  //
+  // Fail-soft: an unreadable/NaN commit time leaves the queue exactly as it was, because
+  // releasing a pin on a guess is worse than holding one that is merely suspect.
+  if (repairQueue && !diagnosticOnly) {
+    let pinnedCommittedAtSec: number | null = null;
+    try {
+      pinnedCommittedAtSec = await commitUnixTime(
+        cfg.integrationRoot,
+        repairQueue.candidate,
+      );
+    } catch {
+      /* unreadable commit time — hold the pin rather than release on a guess */
+    }
+    const pinAgeNowMs = Date.now();
+    if (
+      frozenPinIsFossilized({
+        committedAtSec: pinnedCommittedAtSec,
+        nowMs: pinAgeNowMs,
+      })
+    ) {
+      // Safe: the predicate only returns true for a FINITE commit time, so this cannot be NaN.
+      const pinnedAgeMs = Math.max(
+        0,
+        pinAgeNowMs - (pinnedCommittedAtSec as number) * 1_000,
+      );
+      const fossilQueue = repairQueue;
+      await deps.writeFrozenRepairQueue?.(null);
+      await deps
+        .cleanupFrozenRepairWorktree?.(fossilQueue)
+        .catch((e) =>
+          deps.log(
+            `warn: fossil-released repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
+          ),
+        );
+      repairQueue = null;
+      deps.log(
+        `frozen-candidate-fossil: released the stable-candidate pin on ` +
+          `${fossilQueue.candidate.slice(0, 8)} — it is ${Math.round(pinnedAgeMs / 60_000)}m old, past the ` +
+          `${Math.round(CANDIDATE_FOSSIL_AGE_MS / 60_000)}m fossil threshold, so every red it can still ` +
+          `produce would be withheld unpublished. Judging the current tip ${candidate.slice(0, 8)} ` +
+          `instead (WI-42207).`,
+      );
     }
   }
   if (repairQueue) {
