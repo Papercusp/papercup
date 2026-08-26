@@ -25,6 +25,11 @@
  *                                     (default: control-plane reserve minus one, currently 7;
  *                                     non-positive disables). Keeps one reserved socket for
  *                                     the mcp-proxy-watchdog during a reconnect herd.
+ *   PAPERCUSP_MCP_PROXY_MAX_QUEUE_WAIT_MS     bounded dwell (ms, default 30000) for a handshake
+ *                                             WAITING in the admission FIFO — expiry sheds 429
+ *                                             `mcp_proxy_handshake_queue_dwell`; 0 = unbounded.
+ *   PAPERCUSP_MCP_PROXY_QUEUE_WAIT_LOG_MS     per-waiter queue-telemetry cadence
+ *                                             (default 5000; 0 disables) — EI-21504897841052086.
  */
 import { readOperatorJsonTarget, startMcpProxy } from '../lib/mcp-proxy/proxy';
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
