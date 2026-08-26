@@ -19,6 +19,7 @@ import {
   classifyLoopPressure,
   cooperativeYield,
   currentLoopLag,
+  isLoopLagWindowMature,
   isLoopElevated,
   isLoopSaturated,
   loopPressure,
@@ -87,6 +88,9 @@ describe('event-loop-lag-monitor', () => {
     expect(typeof s.p50Ms).toBe('number');
     expect(typeof s.p95Ms).toBe('number');
     expect(typeof s.maxMs).toBe('number');
+    expect(typeof s.sampleCount).toBe('number');
+    expect(typeof s.windowMs).toBe('number');
+    expect(s.windowMature).toBe(false); // immediate read of a fresh 10s window
     expect(() => handle?.stop()).not.toThrow();
   });
 
@@ -113,6 +117,13 @@ describe('event-loop-lag-monitor', () => {
 });
 
 describe('loop-pressure signal (P5-1)', () => {
+  it('marks p95 mature after 20 observations, or after a whole sparse window elapsed', () => {
+    expect(isLoopLagWindowMature({ sampleCount: 19, windowMs: 9_999, intervalMs: 10_000 })).toBe(false);
+    expect(isLoopLagWindowMature({ sampleCount: 20, windowMs: 400, intervalMs: 10_000 })).toBe(true);
+    expect(isLoopLagWindowMature({ sampleCount: 1, windowMs: 10_000, intervalMs: 10_000 })).toBe(true);
+    expect(isLoopLagWindowMature({ sampleCount: Number.NaN, windowMs: 10_000, intervalMs: 10_000 })).toBe(false);
+  });
+
   it('classifyLoopPressure bands by p95 (default thresholds 120/600ms)', () => {
     expect(classifyLoopPressure(0)).toBe('ok');
     expect(classifyLoopPressure(50)).toBe('ok');

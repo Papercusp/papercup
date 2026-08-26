@@ -77,8 +77,24 @@ export interface PerfSignalsV1 {
     gateway_8788_reachable?: boolean | null;
     operator_3070_reachable?: boolean | null;
     // MCP-merged (null until an agent run fills them) — supported in either spot.
-    eventLoopLag?: { lag_p95_ms?: number | null } | null;
-    _mcp_supplemented?: { eventLoopLag?: { lag_p95_ms?: number | null } | null } | null;
+    eventLoopLag?: {
+      lag_p95_ms?: number | null;
+      lag_p99_ms?: number | null;
+      lag_max_ms?: number | null;
+      sample_count?: number | null;
+      window_ms?: number | null;
+      window_mature?: boolean | null;
+    } | null;
+    _mcp_supplemented?: {
+      eventLoopLag?: {
+        lag_p95_ms?: number | null;
+        lag_p99_ms?: number | null;
+        lag_max_ms?: number | null;
+        sample_count?: number | null;
+        window_ms?: number | null;
+        window_mature?: boolean | null;
+      } | null;
+    } | null;
     /** Kernel Pressure Stall Information — %time tasks starved for the resource.
      *  Ratio-free, so it is the ONE host-saturation signal that does not lie on a
      *  128-core box (the 2026-07-10 fs-watch meltdown ran cpu some avg10=96). */
@@ -330,6 +346,12 @@ export interface PerfVerdict {
   worstWorkerRssKb: number | null;
   closeWait: number | null;
   eventLoopLagP95Ms: number | null;
+  /** Raw maximum and window metadata remain visible even when p95 is immature. */
+  eventLoopLagMaxMs: number | null;
+  eventLoopLagSampleCount: number | null;
+  eventLoopLagWindowMs: number | null;
+  /** Null for legacy captures that predate explicit maturity metadata. */
+  eventLoopLagWindowMature: boolean | null;
   operatorReachable: boolean | null;
   /** Host-total inotify watches (per-uid) / the fattest single holder. */
   inotifyTotalWatches: number | null;
@@ -396,9 +418,21 @@ export interface PerfVerdict {
   };
 }
 
-function lagP95(s: PerfSignalsV1['signals']): number | null {
-  const v = s.eventLoopLag?.lag_p95_ms ?? s._mcp_supplemented?.eventLoopLag?.lag_p95_ms;
-  return typeof v === 'number' ? v : null;
+function lagReading(s: PerfSignalsV1['signals']): {
+  p95Ms: number | null;
+  maxMs: number | null;
+  sampleCount: number | null;
+  windowMs: number | null;
+  windowMature: boolean | null;
+} {
+  const raw = s.eventLoopLag ?? s._mcp_supplemented?.eventLoopLag ?? null;
+  return {
+    p95Ms: typeof raw?.lag_p95_ms === 'number' ? raw.lag_p95_ms : null,
+    maxMs: typeof raw?.lag_max_ms === 'number' ? raw.lag_max_ms : null,
+    sampleCount: typeof raw?.sample_count === 'number' ? raw.sample_count : null,
+    windowMs: typeof raw?.window_ms === 'number' ? raw.window_ms : null,
+    windowMature: typeof raw?.window_mature === 'boolean' ? raw.window_mature : null,
+  };
 }
 
 /** Project only safe, bounded cgroup owner fields into the current-state verdict. */
@@ -789,7 +823,9 @@ export function evaluatePerfSignals(
   const base: PerfVerdict = {
     status: 'unknown', degraded: false, reasons: [], hostState: null,
     worstWorkerCpuPct: null, worstWorkerRssKb: null, closeWait: null,
-    eventLoopLagP95Ms: null, operatorReachable: null,
+    eventLoopLagP95Ms: null, eventLoopLagMaxMs: null,
+    eventLoopLagSampleCount: null, eventLoopLagWindowMs: null,
+    eventLoopLagWindowMature: null, operatorReachable: null,
     inotifyTotalWatches: null, inotifyMaxPerProc: null, psiCpuSome60: null,
     cgroupCpuAttribution: null,
     psiMemorySome60: null, psiMemoryFull60: null, memoryPressure,
@@ -806,7 +842,8 @@ export function evaluatePerfSignals(
   const worstCpu = workers.length ? Math.max(...workers.map((w) => w.cpuPct || 0)) : null;
   const worstRss = workers.length ? Math.max(...workers.map((w) => w.rssKb || 0)) : null;
   const closeWait = typeof s.closeWait_3070 === 'number' ? s.closeWait_3070 : null;
-  const lag = lagP95(s);
+  const loopLag = lagReading(s);
+  const lag = loopLag.p95Ms;
   const reachable = typeof s.operator_3070_reachable === 'boolean' ? s.operator_3070_reachable : null;
   const inotifyTotal = typeof s.inotify?.totalWatches === 'number' ? s.inotify.totalWatches : null;
   const inotifyMax = s.inotify?.maxPerProcess ?? null;
@@ -826,7 +863,9 @@ export function evaluatePerfSignals(
     ...base,
     hostState: signals.hostState ?? null,
     worstWorkerCpuPct: worstCpu, worstWorkerRssKb: worstRss, closeWait,
-    eventLoopLagP95Ms: lag, operatorReachable: reachable,
+    eventLoopLagP95Ms: lag, eventLoopLagMaxMs: loopLag.maxMs,
+    eventLoopLagSampleCount: loopLag.sampleCount, eventLoopLagWindowMs: loopLag.windowMs,
+    eventLoopLagWindowMature: loopLag.windowMature, operatorReachable: reachable,
     inotifyTotalWatches: inotifyTotal, inotifyMaxPerProc: inotifyMax, psiCpuSome60: psiCpu,
     cgroupCpuAttribution,
     psiMemorySome60: psiMemSome, psiMemoryFull60: psiMemFull,
@@ -869,6 +908,11 @@ export function evaluatePerfSignals(
     (attribution === 'operator-defect' ? operatorDefect : ambientHost).push(reason);
   };
   const suppressed: string[] = [];
+  if (lag !== null && lag >= budgets.eventLoopLagP95CritMs && loopLag.windowMature === false) {
+    suppressed.push(
+      `event-loop lag p95 ${lag}ms not promoted to critical: immature partial window (${loopLag.sampleCount ?? '?'} samples over ${loopLag.windowMs ?? '?'}ms; max ${loopLag.maxMs ?? '?'}ms retained)`,
+    );
+  }
   if (reachable === false) {
     if (deployInProgress) {
       // EI-12302: a sanctioned deploy restart holds 'dev-server' exclusive for the
@@ -884,7 +928,13 @@ export function evaluatePerfSignals(
   if (signals.hostState === 'wedge-active') raise('hostState=wedge-active (live wedge captured)', 'operator-defect');
   // A FULL second of event-loop lag at p95 is our main thread saturated, not the box
   // being shared — ambient CPU contention shows up as PSI, which is classed below.
-  if (lag !== null && lag >= budgets.eventLoopLagP95CritMs) raise(`event-loop lag p95 ${lag}ms ≥ ${budgets.eventLoopLagP95CritMs}ms`, 'operator-defect');
+  // Legacy captures have no maturity field and retain the pre-existing verdict.
+  // New captures explicitly set false while the reset window is too small for a
+  // single maximum not to define p95; preserve the stall as WARN evidence, but
+  // do not page or block a deploy as a sustained operator defect.
+  if (lag !== null && lag >= budgets.eventLoopLagP95CritMs && loopLag.windowMature !== false) {
+    raise(`event-loop lag p95 ${lag}ms ≥ ${budgets.eventLoopLagP95CritMs}ms`, 'operator-defect');
+  }
   if (closeWait !== null && closeWait >= budgets.closeWaitCrit) raise(`:3070 CLOSE_WAIT ${closeWait} ≥ ${budgets.closeWaitCrit} (event-loop peg)`, 'operator-defect');
   if (inotifyTotal !== null && inotifyLimit !== null && inotifyTotal >= inotifyLimit * budgets.inotifyLimitCritFrac) {
     // AMBIENT, deliberately — and this one is a judgement call worth stating, because
@@ -925,7 +975,13 @@ export function evaluatePerfSignals(
 
   // ── WARN: hot-but-not-fatal ────────────────────────────────────────────────────
   const warn: string[] = [];
-  if (lag !== null && lag >= budgets.eventLoopLagP95WarnMs) warn.push(`event-loop lag p95 ${lag}ms ≥ ${budgets.eventLoopLagP95WarnMs}ms`);
+  if (lag !== null && lag >= budgets.eventLoopLagP95WarnMs) {
+    warn.push(
+      loopLag.windowMature === false
+        ? `event-loop lag partial window p95 ${lag}ms / max ${loopLag.maxMs ?? '?'}ms (${loopLag.sampleCount ?? '?'} samples over ${loopLag.windowMs ?? '?'}ms) — insufficient for critical p95 classification`
+        : `event-loop lag p95 ${lag}ms ≥ ${budgets.eventLoopLagP95WarnMs}ms`,
+    );
+  }
   if (closeWait !== null && closeWait >= budgets.closeWaitWarn) warn.push(`:3070 CLOSE_WAIT ${closeWait} ≥ ${budgets.closeWaitWarn}`);
   if (worstCpu !== null && worstCpu >= budgets.workerCpuPctWarn) warn.push(`a worker at ${Math.round(worstCpu)}% CPU ≥ ${budgets.workerCpuPctWarn}% (hot thread)`);
   if (worstRss !== null && worstRss >= budgets.workerRssKbWarn) warn.push(`a worker RSS ${(worstRss / 1048576).toFixed(1)}GB ≥ ${(budgets.workerRssKbWarn / 1048576).toFixed(1)}GB`);

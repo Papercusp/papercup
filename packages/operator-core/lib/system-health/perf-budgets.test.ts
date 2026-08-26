@@ -193,6 +193,49 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(v.eventLoopLagP95Ms).toBe(1746);
   });
 
+  it('keeps an immature one-sample p95/max spike as warn evidence instead of a critical operator defect', () => {
+    const v = evaluatePerfSignals(
+      sig({
+        eventLoopLag: {
+          lag_p95_ms: 1569.7,
+          lag_p99_ms: 1569.7,
+          lag_max_ms: 1569.7,
+          sample_count: 1,
+          window_ms: 120,
+          window_mature: false,
+        },
+      }),
+      NOW,
+    );
+    expect(v.status).toBe('warn');
+    expect(v.eventLoopLagP95Ms).toBe(1569.7);
+    expect(v.eventLoopLagMaxMs).toBe(1569.7);
+    expect(v.eventLoopLagSampleCount).toBe(1);
+    expect(v.eventLoopLagWindowMs).toBe(120);
+    expect(v.eventLoopLagWindowMature).toBe(false);
+    expect(v.critAttribution.operatorDefect).toEqual([]);
+    expect(v.reasons.join(' ')).toMatch(/partial window.*max 1569\.7ms.*insufficient for critical/i);
+    expect(v.suppressedReasons.join(' ')).toMatch(/not promoted to critical.*1 samples.*max 1569\.7ms/i);
+  });
+
+  it('still crits on the same p95 when the histogram window is mature', () => {
+    const v = evaluatePerfSignals(
+      sig({
+        eventLoopLag: {
+          lag_p95_ms: 1569.7,
+          lag_max_ms: 1569.7,
+          sample_count: 20,
+          window_ms: 450,
+          window_mature: true,
+        },
+      }),
+      NOW,
+    );
+    expect(v.status).toBe('crit');
+    expect(v.critAttribution.operatorDefect.join(' ')).toMatch(/event-loop lag p95/);
+    expect(v.suppressedReasons).toEqual([]);
+  });
+
   it('reads the MCP-merged eventLoopLag from _mcp_supplemented too', () => {
     expect(evaluatePerfSignals(sig({ _mcp_supplemented: { eventLoopLag: { lag_p95_ms: 1200 } } }), NOW).status).toBe('crit');
   });

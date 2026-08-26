@@ -159,11 +159,32 @@ export interface LagMonitorOpts {
   maxSamplingProfiles?: number;
 }
 
+/**
+ * One live read of the current (possibly partial) histogram window.
+ *
+ * `monitorEventLoopDelay()` resets every monitor tick, while HTTP/perf readers
+ * sample at unrelated times. The window metadata lets those readers distinguish
+ * a statistically meaningful p95 from the first isolated maximum recorded
+ * immediately after a reset without discarding that maximum.
+ */
+export interface LoopLagSample {
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+  maxMs: number;
+  /** Native histogram observations accumulated since the last reset. */
+  sampleCount: number;
+  /** Elapsed wall time since the last reset. */
+  windowMs: number;
+  /** True when p95 has enough observations, or the entire window elapsed. */
+  windowMature: boolean;
+}
+
 export interface LagMonitorHandle {
   /** Stop sampling (clears the timer + disables the histogram). */
   stop(): void;
   /** Read the current window's stats without resetting (for an endpoint/test). */
-  sample(): { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number };
+  sample(): LoopLagSample;
 }
 
 export type LoopPressure = 'ok' | 'elevated' | 'critical';
@@ -173,7 +194,7 @@ export type LoopPressure = 'ok' | 'elevated' | 'critical';
 // load-shedding + spawn admission) can read loop pressure WITHOUT its own probe.
 // Null until the host boots the monitor (e.g. a request-only worker that never
 // started one) — callers treat null as 'ok' (no signal ⇒ don't shed).
-let _liveRead: (() => { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number }) | null = null;
+let _liveRead: (() => LoopLagSample) | null = null;
 
 // Idempotency guard: at most one monitor per process. The host boots it from BOTH
 // the request plane (startRequestServers) and the background machinery (runBootstrap),
@@ -273,8 +294,30 @@ export function shouldTriggerHeapSamplingDump(
   return now - state.lastSamplingDumpAt >= opts.minHeapSamplingDumpGapMs;
 }
 
+/**
+ * Minimum observations required for a p95 to stop being defined by one
+ * isolated maximum. At 20 samples one observation is 5% of the population;
+ * below that, p95 can collapse to max and must not be promoted to a critical
+ * sustained-pressure verdict.
+ */
+export const LOOP_LAG_P95_MIN_SAMPLES = 20;
+
+/** Pure maturity rule, exported so the boundary is pinned without real timers. */
+export function isLoopLagWindowMature(args: {
+  sampleCount: number;
+  windowMs: number;
+  intervalMs: number;
+}): boolean {
+  const { sampleCount, windowMs, intervalMs } = args;
+  if (!Number.isFinite(sampleCount) || !Number.isFinite(windowMs) || !Number.isFinite(intervalMs)) return false;
+  if (sampleCount >= LOOP_LAG_P95_MIN_SAMPLES) return true;
+  // A fully elapsed window remains authoritative even when a severe block
+  // prevented the native monitor from collecting 20 observations.
+  return intervalMs > 0 && windowMs >= intervalMs;
+}
+
 /** The live loop-delay sample (current partial window), or null if no monitor. */
-export function currentLoopLag(): { p50Ms: number; p95Ms: number; p99Ms: number; maxMs: number } | null {
+export function currentLoopLag(): LoopLagSample | null {
   return _liveRead ? _liveRead() : null;
 }
 
@@ -364,12 +407,20 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
   h.enable();
 
   const ns2ms = (ns: number) => Math.round((ns / 1e6) * 10) / 10;
-  const read = () => ({
-    p50Ms: ns2ms(h.percentile(50)),
-    p95Ms: ns2ms(h.percentile(95)),
-    p99Ms: ns2ms(h.percentile(99)),
-    maxMs: ns2ms(h.max),
-  });
+  let windowStartedAt = Date.now();
+  const read = (): LoopLagSample => {
+    const sampleCount = h.count;
+    const windowMs = Math.max(0, Date.now() - windowStartedAt);
+    return {
+      p50Ms: ns2ms(h.percentile(50)),
+      p95Ms: ns2ms(h.percentile(95)),
+      p99Ms: ns2ms(h.percentile(99)),
+      maxMs: ns2ms(h.max),
+      sampleCount,
+      windowMs,
+      windowMature: isLoopLagWindowMature({ sampleCount, windowMs, intervalMs }),
+    };
+  };
   // P5-1: publish the live read so loopPressure()/isLoopSaturated() work fleet-wide.
   _liveRead = read;
 
@@ -602,6 +653,7 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     // Reset so each window is independent (a one-off spike doesn't pin the
     // gauge high forever).
     h.reset();
+    windowStartedAt = Date.now();
   }, {
     category: 'watchdog',
     // WI-40842: this monitor is a deliberately-exercised real interval under Vitest —

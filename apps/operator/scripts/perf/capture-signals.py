@@ -195,6 +195,9 @@ def event_loop_lag(port=OPERATOR_PORT, host="127.0.0.1", timeout=3.0):
         "lag_p95_ms": lag.get("p95Ms"),
         "lag_p99_ms": lag.get("p99Ms"),
         "lag_max_ms": lag.get("maxMs"),
+        "sample_count": lag.get("sampleCount"),
+        "window_ms": lag.get("windowMs"),
+        "window_mature": lag.get("windowMature"),
         "pressure": lag.get("pressure"),
         "source": f"http://{host}:{port}/api/health/deep",
     }

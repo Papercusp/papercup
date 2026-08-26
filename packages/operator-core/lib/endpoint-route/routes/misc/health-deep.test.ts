@@ -87,6 +87,9 @@ describe('readLoopLag', () => {
     expect(r.p95Ms).toBeNull();
     expect(r.p99Ms).toBeNull();
     expect(r.maxMs).toBeNull();
+    expect(r.sampleCount).toBeNull();
+    expect(r.windowMs).toBeNull();
+    expect(r.windowMature).toBeNull();
   });
 
   it('a running monitor is reflected live (finite figures, pressure derived from the SAME gauge the admission layer reads)', () => {
@@ -96,6 +99,9 @@ describe('readLoopLag', () => {
     expect(typeof r.p95Ms).toBe('number');
     expect(typeof r.p99Ms).toBe('number');
     expect(typeof r.maxMs).toBe('number');
+    expect(typeof r.sampleCount).toBe('number');
+    expect(typeof r.windowMs).toBe('number');
+    expect(r.windowMature).toBe(false); // immediate read: partial post-reset window
   });
 });
 

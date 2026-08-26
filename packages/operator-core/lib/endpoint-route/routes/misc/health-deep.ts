@@ -88,6 +88,12 @@ export interface LoopLagReading {
   p95Ms: number | null;
   p99Ms: number | null;
   maxMs: number | null;
+  /** Native observations in the current reset window. */
+  sampleCount: number | null;
+  /** Elapsed time since the histogram's last reset. */
+  windowMs: number | null;
+  /** False when an early isolated maximum can still define p95. */
+  windowMature: boolean | null;
 }
 
 /**
@@ -120,6 +126,9 @@ export function readLoopLag(): LoopLagReading {
     p95Ms: lag?.p95Ms ?? null,
     p99Ms: lag?.p99Ms ?? null,
     maxMs: lag?.maxMs ?? null,
+    sampleCount: lag?.sampleCount ?? null,
+    windowMs: lag?.windowMs ?? null,
+    windowMature: lag?.windowMature ?? null,
   };
 }
 
