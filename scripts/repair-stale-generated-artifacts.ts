@@ -62,6 +62,10 @@ import {
   type RepairOutcome,
 } from "../packages/operator-core/lib/release/gate-auto-repair.ts";
 import { deriveGeneratedArtifactHygiene } from "../packages/operator-core/lib/release/gate-hygiene-split.ts";
+import {
+  deriveHygieneFilings,
+  type HygieneFilingInput,
+} from "../packages/operator-core/lib/release/gate-hygiene-filing.ts";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -139,6 +143,35 @@ function dirtyPaths(): Set<string> {
   return set;
 }
 
+/**
+ * Emit the work-items this pass says are owed. It PRINTS them; it does not file them.
+ *
+ * Filing is deliberately left to the caller. `green-checkpoint.ts` runs live from the
+ * staging tree for every co-hosted install, so a script that created work-items on its
+ * own could file another pot's blocker into this harness. The drafts carry a stable
+ * `conditionKey`, so whoever files them gets refresh-not-duplicate semantics for free
+ * (work_items:create { conditionKey }).
+ */
+function emitFilings(input: HygieneFilingInput): void {
+  const plan = deriveHygieneFilings(input);
+  for (const s of plan.skipped) {
+    console.log(`REPAIR_FILE_SKIP entry=${s.entry} why=${JSON.stringify(s.why)}`);
+  }
+  for (const d of plan.drafts) {
+    console.log(
+      `REPAIR_FILE entry=${d.entry} conditionKey=${JSON.stringify(d.conditionKey)} ` +
+        `direction=${d.direction} title=${JSON.stringify(d.title)}`,
+    );
+    console.log(`REPAIR_FILE_BODY entry=${d.entry} body=${JSON.stringify(d.body)}`);
+  }
+  if (plan.drafts.length > 0) {
+    console.log(
+      `REPAIR_FILE_SUMMARY owed=${plan.drafts.length} — file these with ` +
+        `work_items:create { conditionKey } so a re-run refreshes rather than duplicates.`,
+    );
+  }
+}
+
 function main(): number {
   const args = parseArgs(process.argv.slice(2));
 
@@ -196,6 +229,7 @@ function main(): number {
   }
 
   if (!decision.repair) {
+    emitFilings({ unrepairable: decision.unrepairable });
     console.log(`REPAIR_SUMMARY repairable=0 reason=${JSON.stringify(decision.reason)}`);
     return 1;
   }
@@ -242,6 +276,7 @@ function main(): number {
   for (const r of assessment.results) {
     console.log(`REPAIR_RESULT entry=${r.entry} verdict=${r.verdict}`);
   }
+  emitFilings({ unrepairable: decision.unrepairable, assessed: assessment.results });
   console.log(
     `REPAIR_SUMMARY allRepaired=${assessment.allRepaired} ` +
       `stillBlocking=${assessment.stillBlocking.join(",") || "(none)"} ` +
