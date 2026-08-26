@@ -191,19 +191,18 @@ describe('fetchFrontierRows (P-012 cross-member survey)', () => {
     expect(rows.map((r) => r.feature_id)).toEqual(['WI-old', 'WI-new']); // oldest-first, only open+unassigned
   });
 
-  it('EI-18690462961089460/EI-13699 (work-item-status-full-unify regression): a row genuinely sitting at the LEGACY \'todo\' token is NOT surfaced — only \'open\' is the current claimable status', async () => {
-    // Migration 638 (2026-07-19) rewrote feature-family status todo -> open; no writer
-    // produces 'todo' anymore. A row somehow still AT 'todo' (a pre-migration leftover,
-    // or a future regression reverting fetchFrontierRows back to the retired literal)
-    // must NOT be treated as placeable — pinning the CURRENT token, not the legacy one,
-    // is exactly what silently broke the frontier for a week between 07-19 and 07-26.
+  it('WI-42165: read-folds a legacy feature-family todo row onto the canonical open claim state', async () => {
+    // Migration 638 (2026-07-19) rewrote feature-family status todo -> open, but raw writers
+    // later regressed and stranded rows at the legacy token. The shared claim floor owns the
+    // storage compatibility: callers continue requesting canonical `open`, while a legacy row
+    // remains placeable instead of becoming permanently invisible.
     await seed(MEMBER_A, 'WI-LEGACY-TODO', { status: 'todo', createdTs: 1 });
     await seed(MEMBER_A, 'WI-CURRENT-OPEN', { status: 'open', createdTs: 2 });
     const rows = await fetchFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
-    expect(rows.map((r) => r.feature_id)).toEqual(['WI-CURRENT-OPEN']);
+    expect(rows.map((r) => r.feature_id)).toEqual(['WI-LEGACY-TODO', 'WI-CURRENT-OPEN']);
 
     const placeable = await countPlaceableFrontier(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
-    expect(placeable).toBe(1);
+    expect(placeable).toBe(2);
   });
 
   it('respects the limit cap', async () => {
