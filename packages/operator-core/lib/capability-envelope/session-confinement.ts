@@ -179,8 +179,23 @@ export const DIRECTED_IMPLEMENTER_DENY_TOOLS: readonly string[] = [
   'capability_envelope:*',
   'capability:grant*',
   'capability:revoke*',
-  'capability:set-tier',
-  'capability:set_protected',
+  // Tier is risk CLASSIFICATION, and papercuspTierFor consults the runtime override
+  // BEFORE the baked table — so a self-re-tier is a self-lift by another door. Globbed
+  // rather than exact (`capability_tier:set`): deny-widening is the safe direction for a
+  // no-escalation floor, and it covers any future `capability_tier:` sibling for free.
+  //
+  // ⚠ EI-21475119505876554: this entry read `capability:set-tier` until 2026-08-26 — a
+  // name that resolves to NO tool. It denied nothing while reading exactly like coverage.
+  // Removed alongside it: `capability:set_protected`, dead for a stronger reason — there
+  // is no protected-floor mutation tool in ANY spelling (`capability_envelope:set_role`
+  // is the only envelope tool, and its own notWhen states the universal protected floor
+  // is not mutable through it). Nothing was narrowed by dropping it.
+  //
+  // Both survived because a dead deny entry is SILENT by construction: denying too much
+  // fails loudly the first time real work is blocked; denying too little fails never.
+  // Hence the catalog PIN in session-confinement.test.ts — this list is no longer
+  // trusted to be right, it is checked.
+  'capability_tier:*',
   'meta:define-*',
   'tools:scaffold',
 ];
