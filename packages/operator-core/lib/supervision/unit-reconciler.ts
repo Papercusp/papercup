@@ -392,6 +392,13 @@ export type ReconcileAction =
       /** WI-35537: only set on `unit-not-found` — true when `LoadState=not-found` positively
        *  confirmed the unit is absent, false/undefined when we simply could not tell. */
       confirmedAbsent?: boolean;
+      /** EI-21531785497245954: only set on `unit-not-found` — true when the show-probe positively
+       *  resolved the unit as PRESENT (`LoadState=loaded`). Absence from `list-units` then means
+       *  "not resident in runtime" (normal for an idle timer-triggered/oneshot unit), NOT missing
+       *  and NOT unreadable. Without this, `confirmedAbsent:false` conflates a failed show-probe
+       *  with a successful one that said `loaded`, and the notifier claims the state "could not be
+       *  read" about a unit it just read. */
+      confirmedLoaded?: boolean;
       notify: boolean;
     }
   | { kind: 'waiting-backoff'; unit: string }
@@ -570,6 +577,13 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
         // Only `LoadState=not-found` positively CONFIRMS absence. Anything else (including a failed
         // or skipped show-probe) means we could not tell, and the notification must not claim we did.
         confirmedAbsent: show?.loadState === 'not-found',
+        // EI-21531785497245954: ...and `LoadState=loaded` positively confirms PRESENCE. This is the
+        // third state the old boolean could not express: the unit resolved fine, it is simply not
+        // resident in `list-units` because it is idle. Measured on papercup-live-federation-gate,
+        // which `list-units 'papercup*' --all` omits while `show` reports LoadState=loaded,
+        // UnitFileState=enabled-runtime, Result=success — reported for weeks as "not loaded and its
+        // state could not be read", which is false on both clauses.
+        confirmedLoaded: show?.loadState === 'loaded',
         notify: justWentDown,
       },
       nextState: state,
@@ -1239,7 +1253,14 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
                 action.reason === 'unit-not-found'
                   ? action.confirmedAbsent
                     ? `⚠ supervision: \`${entry.unit}\` not found by systemctl --user (LoadState=not-found — removed/never installed) — report-only`
-                    : `⚠ supervision: \`${entry.unit}\` is not loaded by systemctl --user and its state could not be read — report-only (NOT confirmed missing; check \`systemctl --user status ${entry.unit}\`)`
+                    : action.confirmedLoaded
+                      ? // EI-21531785497245954: the show-probe RESOLVED this unit as loaded, so neither
+                        // "not loaded" nor "state could not be read" is true. Absence from `list-units`
+                        // only means systemd has not kept it resident, which is the normal idle state of
+                        // a timer-triggered or oneshot unit. Reporting that as an unreadable/absent unit
+                        // is a false alarm that costs every reader a verification round.
+                        `ⓘ supervision: \`${entry.unit}\` is loaded but not resident in \`systemctl --user list-units\` (LoadState=loaded, currently inactive) — normal for an idle timer-triggered/oneshot unit, NOT a fault (report-only)`
+                      : `⚠ supervision: \`${entry.unit}\` is not loaded by systemctl --user and its state could not be read — report-only (NOT confirmed missing; check \`systemctl --user status ${entry.unit}\`)`
                   : // EI-21232345359778222: pair the down claim with the up claim. For a unit
                     // whose exit status encodes only the RUN, "is down" over-states in the same
                     // direction "recovered" did — and a reader who cannot pair the two messages
