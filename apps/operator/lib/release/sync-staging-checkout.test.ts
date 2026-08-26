@@ -350,6 +350,22 @@ describe('sync-staging-checkout.sh staging_live_client_count() — live-session 
   });
 });
 
+describe('sync-staging-checkout.sh coordinated restart result', () => {
+  const accepted = (result: unknown) => runFn(
+    ['restart_result_is_accepted'],
+    'restart_result_is_accepted',
+    { input: typeof result === 'string' ? result : JSON.stringify(result) },
+  ).status === 0;
+
+  it('accepts only a real restart or a verified coalesce', () => {
+    expect(accepted({ ok: true, restarted: true })).toBe(true);
+    expect(accepted({ ok: true, restarted: false, coalesced: true, verified: true })).toBe(true);
+    expect(accepted({ ok: false, reason: 'restart_withheld' })).toBe(false);
+    expect(accepted({ ok: true, restarted: false, coalesced: false })).toBe(false);
+    expect(accepted('not-json')).toBe(false);
+  });
+});
+
 /**
  * Structural guards. The gates above are only worth anything if the shipped
  * script actually consults them on the path to the restart — an edit that
@@ -385,7 +401,7 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
     // Advancing the checkout while keeping the old process would serve a NEW
     // SPA against an OLD server. The defer must therefore precede the build.
     const deferIdx = script.indexOf('deferring sync —');
-    const buildIdx = script.indexOf('setup-release-checkout.sh --ref');
+    const buildIdx = script.indexOf('bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
     expect(deferIdx).toBeGreaterThan(-1);
     expect(script.indexOf('staging_live_client_count "$STAGING_PORT"')).toBeGreaterThan(-1);
     if (buildIdx > -1) expect(deferIdx).toBeLessThan(buildIdx);
@@ -399,5 +415,19 @@ describe('sync-staging-checkout.sh — the shipped script actually wires the gat
   it('keeps the EI-13221 recent-restart grace and the health probe intact', () => {
     expect(script).toMatch(/RECENT_RESTART_GRACE_SEC/);
     expect(script).toMatch(/did not return 200 within/);
+  });
+
+  it('routes a required restart through audited dev:restart, never raw systemctl', () => {
+    expect(script).toContain('"$PTOOL_BIN" dev:restart --json -');
+    expect(script).toContain('"confirm":true,"authorize":true');
+    expect(script).not.toContain('systemctl --user restart "$UNIT"');
+  });
+
+  it('fails before advancing when the coordinated restart mechanism is unavailable', () => {
+    const ptoolGateIdx = script.indexOf('coordinated dev:restart seam cannot run');
+    const buildIdx = script.indexOf('bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh"');
+    expect(ptoolGateIdx).toBeGreaterThan(-1);
+    expect(buildIdx).toBeGreaterThan(-1);
+    expect(ptoolGateIdx).toBeLessThan(buildIdx);
   });
 });

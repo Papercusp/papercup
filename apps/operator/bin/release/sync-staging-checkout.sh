@@ -151,6 +151,24 @@ staging_live_client_count() {
   echo "$n"
 }
 
+# Read a dev:restart JSON result from stdin. Exit 0 only when the coordinated
+# restart actually fired or was verified-coalesced with a recent peer restart.
+restart_result_is_accepted() {
+  node -e '
+    let body = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => { body += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const result = JSON.parse(body);
+        process.exit(result?.ok === true && (result?.restarted === true || result?.coalesced === true) ? 0 : 1);
+      } catch {
+        process.exit(1);
+      }
+    });
+  '
+}
+
 # Seconds since the commit the staging checkout is CURRENTLY serving. Bounds
 # the deferral: we only ever defer while the served code is still reasonably
 # fresh. An unresolvable sha reports a huge age ⇒ forces the restart.
@@ -219,6 +237,21 @@ if [ "$restart_required" = 1 ]; then
   fi
 fi
 
+# EI-21461712128132271: the timer used to bypass the platform's coordinated
+# restart seam with a raw `systemctl restart`. On 2026-08-25 it crossed the
+# staleness ceiling with nine live :3170 clients, then cut a Personal Vault
+# acceptance probe into a 27-second connection-refused window. The ceiling is
+# still required (otherwise persistent SSE clients can pin staging forever),
+# but the restart itself must drain resource users, coalesce with peer
+# restarts, and write the ordinary restart audit. Fail BEFORE advancing the
+# checkout when that mechanism is unavailable; serving a new SPA from disk
+# against an old in-memory server is worse than staying wholly stale.
+PTOOL_BIN="${PAPERCUSP_PTOOL_BIN:-$(command -v ptool || true)}"
+if [ "$restart_required" = 1 ] && [ -z "$PTOOL_BIN" ]; then
+  log "FATAL: refusing staging sync — ptool is unavailable, so the coordinated dev:restart seam cannot run"
+  exit 1
+fi
+
 log "advancing staging checkout ${current:0:8} → ${target:0:8} (${changed_count} changed path(s), restart_required=${restart_required})"
 PAPERCUSP_INTEGRATION_ROOT="$INTEGRATION_ROOT" PAPERCUSP_RELEASE_ROOT="$STAGING_ROOT" \
   bash "$INTEGRATION_ROOT/apps/operator/bin/release/setup-release-checkout.sh" \
@@ -253,21 +286,26 @@ if [ -n "$seconds_since_start" ] && [ "$seconds_since_start" -lt "$RECENT_RESTAR
   exit 0
 fi
 
-log "restarting $UNIT"
-# EI-18689554054680054: don't let `set -e` propagate a transient `systemctl
-# restart` failure straight into a script-exit (which marks THIS unit,
-# papercup-staging-sync.service, as `failed` even though $UNIT itself comes
-# up healthy moments later). `systemctl --user restart` blocks on the FIRST
-# start attempt and reports failure if that attempt doesn't reach "active"
-# in time — e.g. a port still held by the outgoing process it's replacing
-# (observed: "port 3076 in use, trying 3077") crashes the fresh process
-# immediately, systemd's own Restart=on-failure then relaunches it
-# independently, and THAT attempt succeeds seconds later — outside this
-# script's synchronous wait. The health probe below is the real verdict for
-# $UNIT; only fail the sync run on ITS outcome, not on this transient race.
-if ! systemctl --user restart "$UNIT"; then
-  log "⚠ systemctl restart reported failure (likely a transient crash+auto-restart race, e.g. a port still held by the outgoing process) — falling through to the health probe as the real verdict instead of failing on this alone"
+log "requesting coordinated restart of $UNIT via dev:restart"
+restart_result="$({
+  cd "$INTEGRATION_ROOT"
+  "$PTOOL_BIN" dev:restart --json - <<JSON
+{"target":"staging","confirm":true,"authorize":true,"reason":"staging-sync advanced ${current:0:8} to ${target:0:8}"}
+JSON
+} 2>&1)" || {
+  log "FATAL: coordinated dev:restart call failed: ${restart_result:0:500}"
+  exit 1
+}
+
+# ptool exits successfully for a business-level refusal, so inspect the result
+# rather than treating process status as the verdict. A verified coalesce is a
+# success: another recent restart already cycled the same service and the
+# cooldown prevents a redundant outage.
+if ! printf '%s' "$restart_result" | restart_result_is_accepted; then
+  log "FATAL: coordinated dev:restart was refused or returned an invalid result: ${restart_result:0:500}"
+  exit 1
 fi
+log "coordinated dev:restart accepted: ${restart_result:0:500}"
 
 for i in $(seq 1 30); do
   code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 4 "$HEALTH_URL" 2>/dev/null || echo 000)"
