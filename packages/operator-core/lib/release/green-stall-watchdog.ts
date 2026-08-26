@@ -708,20 +708,133 @@ export async function readLastGateRunEvidence(
 }
 
 /**
+ * P-006 (WI-41755). How long after a fire a verdict must exist before its ABSENCE is
+ * itself the alarm.
+ *
+ * Tied deliberately to `SELF_WATCHDOG_MS` in apps/operator/lib/release/green-checkpoint.ts
+ * (3h), which is the gate's OWN maximum lifetime for a single run: past it the run kills
+ * itself. So a fire older than this window has, by the gate's own rule, either produced a
+ * verdict or died — which makes "fired, and still nothing on record" a statement about a
+ * DEAD run rather than a slow one. Picking any smaller number would alarm on runs that are
+ * legitimately still working.
+ *
+ * `operator-core` must not import from `apps/operator` (wrong layering direction), so this
+ * is a second copy of that constant — and a second copy of a truth the code owns is exactly
+ * what drifts. It is therefore PINNED by `doc-claims/verdictless-death-grace.test.ts`, which
+ * reads the real `SELF_WATCHDOG_MS` out of green-checkpoint.ts and fails the build if the two
+ * diverge. Do not hand-maintain this number; change it there and let the pin force it here.
+ */
+export const DEFAULT_VERDICTLESS_GRACE_MS = 3 * 60 * 60 * 1000;
+
+export interface VerdictlessDeathVerdict {
+  /** the fire produced NO record at all, and the grace window has passed. */
+  verdictless: boolean;
+  /**
+   * Which observation supports it — never a guess:
+   *   'no-evidence-at-all'     — the ledger holds no run for this install.
+   *   'evidence-predates-fire' — the newest run on record is OLDER than the last fire,
+   *                              so the fire itself left nothing.
+   */
+  reason: 'no-evidence-at-all' | 'evidence-predates-fire' | null;
+  /** ms by which the newest evidence PREDATES the last fire (null when not applicable). */
+  evidencePredatesFireByMs: number | null;
+}
+
+/**
+ * Pure: did the last fire die WITHOUT recording any verdict?
+ *
+ * This is the gap that let two verdict-less deaths pass unattributed on 2026-08-25 (a gate
+ * run that exited 74 having executed zero tests, and a verification run SIGTERM'd mid-flight).
+ * `readLastGateRunEvidence` takes the newest green_checkpoint event with NO time bound, and
+ * `attributeVerdictStale` then narrates that row as though it described the current run. When
+ * the current run left no row, the newest row is an EARLIER run — so the alarm confidently
+ * explains the stall with a cause that belongs to a different run, and points the responder
+ * at that run's failing files. `observedAt` was already being read; it was only ever used to
+ * format a display string, never compared to anything.
+ *
+ * Conservative in every ambiguous direction — it declines to claim a verdict-less death when
+ * it cannot prove one, because a false "the run vanished" sends a responder hunting a corpse
+ * that does not exist:
+ *   - never fired            ⇒ no, nothing was expected.
+ *   - inside the grace window ⇒ no, the run may legitimately still be working. (UNKNOWN, and
+ *                              deliberately silent, rather than alarming on a slow suite.)
+ *   - evidence with no usable timestamp ⇒ no; let the existing branches narrate it.
+ *   - evidence NEWER than the fire      ⇒ no; that fire did produce this record.
+ */
+export function judgeVerdictlessDeath(opts: {
+  last: LastGateRunEvidence | null;
+  lastFiredMs: number | null;
+  now: number;
+  graceMs?: number;
+}): VerdictlessDeathVerdict {
+  const { last, lastFiredMs, now } = opts;
+  const graceMs = opts.graceMs ?? DEFAULT_VERDICTLESS_GRACE_MS;
+  const none: VerdictlessDeathVerdict = {
+    verdictless: false,
+    reason: null,
+    evidencePredatesFireByMs: null,
+  };
+
+  // Never fired ⇒ no verdict was ever owed.
+  if (lastFiredMs == null || !Number.isFinite(lastFiredMs)) return none;
+  // Still inside the window where a live run could legitimately not have finished.
+  if (now - lastFiredMs <= graceMs) return none;
+
+  if (last == null) {
+    return { verdictless: true, reason: 'no-evidence-at-all', evidencePredatesFireByMs: null };
+  }
+
+  // A row we cannot date cannot be compared. Stay silent rather than guess.
+  if (!last.observedAt) return none;
+  const observedMs = new Date(last.observedAt).getTime();
+  if (Number.isNaN(observedMs)) return none;
+
+  if (observedMs < lastFiredMs) {
+    return {
+      verdictless: true,
+      reason: 'evidence-predates-fire',
+      evidencePredatesFireByMs: lastFiredMs - observedMs,
+    };
+  }
+  return none;
+}
+
+const durationMs = (ms: number): string => {
+  if (ms >= 3_600_000) return `~${Math.round(ms / 3_600_000)}h`;
+  if (ms >= 60_000) return `~${Math.round(ms / 60_000)}m`;
+  return `~${Math.round(ms / 1000)}s`;
+};
+
+/**
  * Pure: given what the ledger actually recorded, say which cause of "no green verdict"
  * was OBSERVED — and give the remedy that matches THAT cause. Exported for unit testing,
  * matching the `evaluateGreenStall` / `mainBehindRecoverySummary` convention in this file.
  *
  * The ordering is by strength of evidence, not by likelihood:
  *   1. named failing tests  — the only branch entitled to say "a failing suite".
- *   2. a crash              — the gate never reached a verdict; zero tests are implicated.
- *   3. a red with no test   — a real red the gate could not attribute; say so rather than
+ *   2. a VERDICT-LESS DEATH — the fire left no record at all, so branches 3-5 would be
+ *                             narrating an EARLIER run's cause as if it were this one.
+ *                             Must precede them for exactly that reason (P-006/WI-41755).
+ *   3. a crash              — the gate never reached a verdict; zero tests are implicated.
+ *   4. a red with no test   — a real red the gate could not attribute; say so rather than
  *                             implying a test list exists to go fix.
- *   4. anything else / no run on record — state the gap instead of filling it with a guess.
+ *   5. anything else / no run on record — state the gap instead of filling it with a guess.
+ *
+ * Branch 1 stays above branch 2 because `failingTests` is independently sourced
+ * (`gate_health.failingTests`, threaded by `trackGateStall`) and names concrete tests to go
+ * fix — actionable regardless of which run recorded them.
  */
 export function attributeVerdictStale(opts: {
   failingTests: string[];
   last: LastGateRunEvidence | null;
+  /**
+   * Epoch ms of the routine's last fire. Supplying it enables the verdict-less-death branch;
+   * OMITTING it skips that branch entirely (preserving the pre-P-006 behaviour), because
+   * without a fire time there is nothing to compare the evidence's age against.
+   */
+  lastFiredMs?: number | null;
+  now?: number;
+  graceMs?: number;
 }): { summary: string; cause: string; remedy: string } {
   const { failingTests, last } = opts;
   const when = last?.observedAt ? ` at ${last.observedAt}` : '';
@@ -732,6 +845,42 @@ export function attributeVerdictStale(opts: {
       summary: 'no green verdicts; deploys frozen (a failing suite).',
       cause: `The last verdict named ${failingTests.length} failing test(s), so this IS a failing suite.`,
       remedy: 'Fix the named test(s), then release:checkpoint-run for a fresh verdict.',
+    };
+  }
+
+  const verdictless =
+    opts.lastFiredMs !== undefined
+      ? judgeVerdictlessDeath({
+          last,
+          lastFiredMs: opts.lastFiredMs,
+          now: opts.now ?? Date.now(),
+          graceMs: opts.graceMs,
+        })
+      : null;
+
+  if (verdictless?.verdictless) {
+    const firedAt =
+      opts.lastFiredMs != null ? new Date(opts.lastFiredMs).toISOString() : '(unknown)';
+    const gap =
+      verdictless.evidencePredatesFireByMs != null
+        ? ` — ${durationMs(verdictless.evidencePredatesFireByMs)} BEFORE it`
+        : '';
+    const evidence =
+      verdictless.reason === 'no-evidence-at-all'
+        ? 'no green-checkpoint run is on record for this install at all'
+        : `the newest run on record is from ${last?.observedAt ?? '(undated)'}${gap}${cand}`;
+    return {
+      summary:
+        'deploys frozen — the gate FIRED but left NO verdict on record. This is NOT a failing suite and NOT a red.',
+      cause:
+        `⚠ VERDICT-LESS DEATH — the gate fired at ${firedAt}, but ${evidence}. ` +
+        `So the run that fired recorded NOTHING: it died before it could write a verdict (a kill, an OOM, a host restart, ` +
+        `a crash upstream of the reporting step). ZERO tests are implicated, and no verdict about the code exists. ` +
+        `A crash that DOES manage to render a verdict is reported separately and names its own fault; this branch is the case where nothing was written at all.`,
+      remedy:
+        '⛔ Do NOT fix tests, and do NOT read the newest run on record for failing files — it describes a DIFFERENT, EARLIER run, and treating it as this one sends you to fix code that no run tonight ever executed. ' +
+        'Find why the process died without recording: read the run-lock phase marker and the self-watchdog ARM marker written beside it (`writeSelfWatchdogArmMarker`, WI-7069) to tell "never armed" from "armed but never fired", then the host/unit logs for the fire window. ' +
+        'Re-firing before you know that costs a full suite and, if the cause is environmental, dies at the same step.',
     };
   }
 
@@ -1418,8 +1567,11 @@ export async function checkGreenStall(
         const lastRun = verdict.verdictStale
           ? await readLastGateRunEvidence(sql, row.install_slug)
           : null;
+        // P-006 (WI-41755): pass the fire time so a fire that recorded NOTHING is named as
+        // such, instead of being explained with an earlier run's cause. Both values are
+        // already in scope here; before this the evidence's age was never compared to anything.
         const attribution = verdict.verdictStale
-          ? attributeVerdictStale({ failingTests, last: lastRun })
+          ? attributeVerdictStale({ failingTests, last: lastRun, lastFiredMs, now })
           : null;
         const reasonText = attribution
           ? `${verdict.reason} — ${attribution.cause}`
@@ -1437,6 +1589,13 @@ export async function checkGreenStall(
               fireStale: verdict.fireStale,
               verdictStale: verdict.verdictStale,
               lastRunCrashed: lastRun?.crashed ?? null,
+              // P-006 (WI-41755): structured, so a consumer can branch on "the run left no
+              // verdict" without parsing prose. `lastRunCrashed` cannot express this case —
+              // it reports the newest RECORDED run, which in a verdict-less death is an
+              // earlier run entirely, so it can read `false` while the current fire is dead.
+              verdictlessDeath: verdict.verdictStale
+                ? judgeVerdictlessDeath({ last: lastRun, lastFiredMs, now }).reason
+                : null,
             },
           });
         } catch (e) {
