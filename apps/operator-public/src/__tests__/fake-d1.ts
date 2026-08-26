@@ -471,6 +471,24 @@ export class FakeKV {
   async delete(key: string): Promise<void> { this.data.delete(key); }
 }
 
+interface FakeMultipartRecord {
+  key: string;
+  options: R2MultipartOptions;
+  parts: Map<number, { bytes: Uint8Array; etag: string }>;
+}
+
+async function fakeR2Bytes(
+  value: ReadableStream | ArrayBuffer | ArrayBufferView | string | Blob,
+): Promise<Uint8Array> {
+  if (typeof value === 'string') return new TextEncoder().encode(value);
+  if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+  }
+  if (value instanceof Blob) return new Uint8Array(await value.arrayBuffer());
+  return new Uint8Array(await new Response(value).arrayBuffer());
+}
+
 /**
  * In-memory R2 fake for the snapshot tarball blob store (migration 005). Covers
  * the subset the blobs/listings routes use: head/put/get/delete. `get` returns a
@@ -482,6 +500,9 @@ export class FakeR2 {
   httpMetadata = new Map<string, R2HTTPMetadata>();
   customMetadata = new Map<string, Record<string, string>>();
   etags = new Map<string, string>();
+  multipartUploads = new Map<string, FakeMultipartRecord>();
+  nextMultipartUploadId: string | null = null;
+  private nextMultipartUpload = 1;
 
   private object(key: string, withBody: boolean) {
     const v = this.data.get(key);
@@ -556,6 +577,93 @@ export class FakeR2 {
 
   async get(key: string): Promise<ReturnType<FakeR2['object']>> {
     return this.object(key, true);
+  }
+
+  private multipartHandle(key: string, uploadId: string): R2MultipartUpload {
+    return {
+      key,
+      uploadId,
+      uploadPart: async (partNumber, value) => {
+        const record = this.multipartUploads.get(uploadId);
+        if (!record || record.key !== key) {
+          throw new Error('uploadPart: The specified multipart upload does not exist. (10024)');
+        }
+        const bytes = await fakeR2Bytes(value);
+        let hash = 2166136261;
+        for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619) >>> 0;
+        const etag = `fake-part-${partNumber}-${bytes.byteLength}-${hash.toString(16)}`;
+        record.parts.set(partNumber, { bytes: new Uint8Array(bytes), etag });
+        return { partNumber, etag };
+      },
+      abort: async () => {
+        const record = this.multipartUploads.get(uploadId);
+        if (!record || record.key !== key) {
+          throw new Error('abort: The specified multipart upload does not exist. (10024)');
+        }
+        this.multipartUploads.delete(uploadId);
+      },
+      complete: async (uploadedParts) => {
+        const record = this.multipartUploads.get(uploadId);
+        if (!record || record.key !== key) {
+          throw new Error('complete: The specified multipart upload does not exist. (10024)');
+        }
+        const selected: Array<{ bytes: Uint8Array; etag: string }> = [];
+        for (const part of uploadedParts) {
+          const stored = record.parts.get(part.partNumber);
+          if (!stored || stored.etag !== part.etag) {
+            throw new Error('complete: One or more specified parts could not be found. (10025)');
+          }
+          selected.push(stored);
+        }
+        if (selected.length > 1) {
+          const regularSize = selected[0].bytes.byteLength;
+          if (regularSize < 5 * 1024 * 1024) {
+            throw new Error('complete: A multipart part is below the minimum size. (10011)');
+          }
+          if (selected.slice(0, -1).some((part) => part.bytes.byteLength !== regularSize)) {
+            throw new Error('complete: All non-trailing parts must have the same size. (10048)');
+          }
+          if (selected.at(-1)!.bytes.byteLength > regularSize) {
+            throw new Error('complete: The final part exceeds the regular part size. (10048)');
+          }
+        }
+        const totalBytes = selected.reduce((sum, part) => sum + part.bytes.byteLength, 0);
+        const combined = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const part of selected) {
+          combined.set(part.bytes, offset);
+          offset += part.bytes.byteLength;
+        }
+        this.data.set(key, combined);
+        const httpMetadata = record.options.httpMetadata instanceof Headers
+          ? { contentType: record.options.httpMetadata.get('content-type') ?? undefined }
+          : record.options.httpMetadata;
+        if (httpMetadata) this.httpMetadata.set(key, httpMetadata);
+        else this.httpMetadata.delete(key);
+        if (record.options.customMetadata) {
+          this.customMetadata.set(key, { ...record.options.customMetadata });
+        } else {
+          this.customMetadata.delete(key);
+        }
+        this.etags.set(key, `fake-multipart-${uploadedParts.length}-${totalBytes}`);
+        this.multipartUploads.delete(uploadId);
+        return this.object(key, false)! as unknown as R2Object;
+      },
+    };
+  }
+
+  async createMultipartUpload(
+    key: string,
+    options: R2MultipartOptions = {},
+  ): Promise<R2MultipartUpload> {
+    const uploadId = this.nextMultipartUploadId ?? `fake-mpu-${this.nextMultipartUpload++}`;
+    this.nextMultipartUploadId = null;
+    this.multipartUploads.set(uploadId, { key, options, parts: new Map() });
+    return this.multipartHandle(key, uploadId);
+  }
+
+  resumeMultipartUpload(key: string, uploadId: string): R2MultipartUpload {
+    return this.multipartHandle(key, uploadId);
   }
 
   async delete(key: string): Promise<void> {
