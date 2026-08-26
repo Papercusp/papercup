@@ -1661,7 +1661,11 @@ function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<vo
 
   const generation = workItemEmbedderWarmupGeneration;
   workItemEmbedderWarmupRetryToken = `work-items-embedder-warmup:${generation}:${++workItemEmbedderWarmupAttempt}`;
-  workItemEmbedderWarmupFailure = null;
+  // NOTE: the PREVIOUS attempt's workItemEmbedderWarmupFailure deliberately
+  // SURVIVES here (cleared only by a successful resolve+embed below) —
+  // re-nulling it per attempt made every search after a settled failure
+  // re-report an endless "warming up" cold start whose retry-after-1s advice
+  // could never succeed (EI-21490058173504687).
   const started = (async () => {
     try {
       const resolved = await resolveWorkItemQueryEmbedder(resolver);
@@ -1679,7 +1683,10 @@ function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<vo
       // embed can still pay model/session initialization. Pay that cost here,
       // outside the request's query-embed budget.
       await resolved.embed(WORK_ITEM_EMBEDDER_WARMUP_TEXT);
-      if (generation === workItemEmbedderWarmupGeneration) warmWorkItemEmbedder = resolved;
+      if (generation === workItemEmbedderWarmupGeneration) {
+        warmWorkItemEmbedder = resolved;
+        workItemEmbedderWarmupFailure = null;
+      }
     } catch (err) {
       if (generation === workItemEmbedderWarmupGeneration) {
         workItemEmbedderWarmupFailure = `query embedder warmup failed: ${(err as Error)?.message ?? String(err)}`;
@@ -2031,7 +2038,12 @@ export async function searchWorkItems(
       // Every concurrent cold caller shares the same promise and returns its
       // lexical result without awaiting it.
       void warmWorkItemQueryEmbedder(opts.embedderResolver);
-      if (workItemEmbedderWarmupRetryToken) {
+      // A previously SETTLED warm-up failure is reported as-is: a persistent
+      // substrate outage (sidecar saturated / unavailable) must not be
+      // re-masked as an endless "cold start" whose retry-after-1s advice has
+      // already proven useless (EI-21490058173504687).
+      const hadWarmupFailure = workItemEmbedderWarmupFailure !== null;
+      if (!hadWarmupFailure && workItemEmbedderWarmupRetryToken) {
         retry = {
           token: workItemEmbedderWarmupRetryToken,
           afterMs: WORK_ITEM_EMBEDDER_RETRY_AFTER_MS,
@@ -2040,7 +2052,8 @@ export async function searchWorkItems(
       }
       embedder = async (): Promise<number[]> => {
         throw new Error(
-          workItemEmbedderWarmupFailure ?? 'query embedder warming up (cold start; retry for semantic results)',
+          workItemEmbedderWarmupFailure ??
+            'query embedder warming up (cold start; retry for semantic results)',
         );
       };
     }
