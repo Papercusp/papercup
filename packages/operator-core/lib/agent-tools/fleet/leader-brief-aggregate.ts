@@ -67,9 +67,11 @@ export function buildClaimableNowAggregate(input: {
         note:
           `claimable_now (${laneHealth.effective.claimable ?? 'unknown'}) uses the ` +
           `${laneHealth.effective.basis} verdict for rows admitted by ${laneHealth.spec.ref} ` +
-          `within harness '${laneHealth.spec.harness}'. work_items:claimable{harness} asks a ` +
-          'DIFFERENT question (the default spec, harness-wide); compare only against the same ' +
-          'spec+harness.',
+          `within harness '${laneHealth.spec.harness}'. This is a caller-neutral FLEET population ` +
+          '(assigneeScoped:null): it intentionally omits the reading leader, so caller-specific ' +
+          'release-cooldown and reserved-plan-lane floors do not apply. work_items:claimable is ' +
+          'caller-scoped and may therefore return a different count even when passed this exact ' +
+          'spec+harness; without a spec it also asks the different default-spec, harness-wide question.',
       }
     : {
         kind: 'fleet-claim-spec',

@@ -46,6 +46,10 @@ describe('buildClaimableNowAggregate (WI-41164 / P-002)', () => {
       },
     });
     expect(aggregate).not.toHaveProperty('unknown');
+    expect(aggregate.population.note).toContain('caller-neutral FLEET population');
+    expect(aggregate.population.note).toContain('assigneeScoped:null');
+    expect(aggregate.population.note).toContain('release-cooldown and reserved-plan-lane floors');
+    expect(aggregate.population.note).toContain('different count even when passed this exact spec+harness');
   });
 
   it('keeps the resolved population and an in-band reason when one family is unmeasured', () => {
