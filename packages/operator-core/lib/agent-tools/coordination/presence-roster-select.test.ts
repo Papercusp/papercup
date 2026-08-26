@@ -68,6 +68,16 @@ describe('selectRosterRows — targeted owner read (the include_stale replacemen
   it('an owner that matches nothing returns an empty list', () => {
     expect(selectRosterRows(roster(), 'nobody-here')).toEqual([]);
   });
+
+  it('returns a bounded owner set atomically, including ended rows', () => {
+    const out = selectRosterRows(roster(), ['su-live', 'su-dead-2', 'missing']);
+    expect(out.map((r) => r.ownerId)).toEqual(['su-dead-2', 'su-live']);
+  });
+
+  it('deduplicates rows matched by overlapping owner selectors', () => {
+    const out = selectRosterRows(roster(), ['su-dead', 'su-dead-1']);
+    expect(out.map((r) => r.ownerId)).toEqual(['su-dead-1', 'su-dead-2']);
+  });
 });
 
 describe('matchesOwner — id/label fuzz (mirrors coord:dispatch findPresenceRow)', () => {

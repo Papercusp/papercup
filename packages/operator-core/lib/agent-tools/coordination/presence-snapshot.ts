@@ -227,9 +227,13 @@ export function matchesOwner(r: RosterRow, needle: string): boolean {
  *     federated/unknown peer), NEVER an `ended` row (the payload-ballooning dead
  *     pile). Sorted by ownerId so the emitted list is byte-stable (D-006).
  */
-export function selectRosterRows(rows: RosterRow[], owner?: string): RosterRow[] {
-  const picked = owner
-    ? rows.filter((r) => matchesOwner(r, owner))
+export function selectRosterRows(
+  rows: RosterRow[],
+  owner?: string | readonly string[],
+): RosterRow[] {
+  const owners = typeof owner === 'string' ? [owner] : owner;
+  const picked = owners?.length
+    ? rows.filter((r) => owners.some((candidate) => matchesOwner(r, candidate)))
     : rows.filter((r) => r.sessionState !== 'ended');
   return picked.sort((a, b) => String(a.ownerId).localeCompare(String(b.ownerId)));
 }
@@ -392,12 +396,18 @@ export function filterRosterRowsByState(
  */
 export async function assemblePresenceSnapshot(
   resolved: ResolvedPresenceScope,
-  opts: { owner?: string; nowMs?: number; detail?: { coordinationDomain: string } } = {},
+  opts: {
+    owner?: string;
+    owners?: readonly string[];
+    nowMs?: number;
+    detail?: { coordinationDomain: string };
+  } = {},
 ): Promise<PresenceSnapshot> {
   const { wsId, potId, scope, scopeNote } = resolved;
   // EI-9454: a `{ owner }` read is a TARGETED point-lookup — it must not pay the
   // whole-roster assembly (see the early filter + sweep skip below).
-  const targeted = typeof opts.owner === 'string' && opts.owner.length > 0;
+  const ownerSelectors = opts.owners?.length ? opts.owners : opts.owner ? [opts.owner] : [];
+  const targeted = ownerSelectors.length > 0;
   const [records, federated, recordedLive, , nurseryAliasRows] = await Promise.all([
     listPresence({ workspaceId: wsId, potSlug: potId }),
     listFederatedPresence({ workspaceId: wsId, potSlug: potId }),
@@ -437,7 +447,7 @@ export async function assemblePresenceSnapshot(
     potId == null
       ? listRunningNurseryAliasRows({
           workspaceId: wsId,
-          ...(targeted ? { ownerIds: [opts.owner as string] } : {}),
+          ...(targeted ? { ownerIds: ownerSelectors } : {}),
         }).catch(() => [] as NurseryAliasRow[])
       : Promise.resolve([] as NurseryAliasRow[]),
   ]);
@@ -473,7 +483,9 @@ export async function assemblePresenceSnapshot(
   // byte-identical to the late-filter result; summary counts on a targeted read
   // now describe the matched subset (the rows actually returned), not the whole
   // roster.
-  const scoped = targeted ? all.filter((r) => matchesOwner(r, opts.owner as string)) : all;
+  const scoped = targeted
+    ? all.filter((r) => ownerSelectors.some((owner) => matchesOwner(r, owner)))
+    : all;
   const active = scoped.filter((r) => !r.stale);
   const stale = scoped.filter((r) => r.stale);
   const now = opts.nowMs ?? Date.now();
@@ -645,7 +657,7 @@ export async function assemblePresenceSnapshot(
   //     ballooned the payload; its count still surfaces in summary.byState.ended).
   // Ordered by ownerId so the emitted list stays byte-stable (D-006).
   const fullEnriched = [...activeEnriched, ...staleEnriched];
-  const selected = selectRosterRows(fullEnriched, opts.owner);
+  const selected = selectRosterRows(fullEnriched, ownerSelectors);
   // P-006: the delta-eligible ETag (identity+state) for the `since:` short-circuit,
   // computed from the SELECTED rows so it matches EXACTLY what this read returns.
   const etag = computeRosterEtag(selected, scope, potId);
