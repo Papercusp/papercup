@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
+import type { CheckpointResult } from './green-checkpoint';
 import {
   buildCrashCheckpointResult,
   buildSelfWatchdogCheckpointResult,
+  buildTerminalFailureCheckpointResult,
+  buildTerminationCheckpointResult,
 } from './green-checkpoint';
 // The CONSUMER halves of the seams this builder sits on, imported for real rather than restated
 // as literals — exactly as green-checkpoint-crash-result.test.ts does, and for the same reason:
