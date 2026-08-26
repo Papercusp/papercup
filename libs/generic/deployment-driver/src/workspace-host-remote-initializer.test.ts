@@ -21,6 +21,7 @@ import {
   WorkspaceHostRemoteInitializerProtocolError,
   assertWorkspaceHostRemoteInitializerArgv,
   buildWorkspaceHostInitializationCanaryEvidence,
+  encodeWorkspaceHostCredentialLifecycleStep,
   executeWorkspaceHostRemoteInitializerStep,
   handleWorkspaceHostRemoteInitializerPayload,
   parseWorkspaceHostRemoteInitializerRequest,
@@ -34,10 +35,14 @@ import {
 } from './workspace-host-remote-initializer-cli';
 import {
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
+  WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
+  planWorkspaceHostCredentialLifecycle,
   type WorkspaceHostCredentialChannel,
+  type WorkspaceHostCredentialDeliverySet,
 } from './workspace-host-initialization';
+import type { WorkspaceHostCredentialRefs } from './workspace-host-types';
 import {
   WORKSPACE_HOST_AGENT_AUTHENTICATION_CONTRACT_VERSION,
   WORKSPACE_HOST_CANARY_AGENTS,
@@ -200,6 +205,73 @@ function gitBindInput(generation = 1) {
   };
 }
 
+const CLOUD_FIELDS = {
+  provider: 'gcp',
+  scopeId: 'active-alcove-504205-q3',
+  workloadId: 'pc-byoc-canary-01',
+};
+const AGENT_FIELDS = { hostId: 'byoc-canary-01', agentSet: 'claude-codex-omp' };
+
+/**
+ * A COMPLETE three-channel credential set, built from real parseable references.
+ *
+ * The initialization tests next door can use opaque strings like `git-resolver:v1` because the
+ * planner never parses a reference. The lifecycle round-trip does — it runs the resolver, which
+ * parses the reference to pick a materializer — so these have to be genuine.
+ */
+function lifecycleRefs(): WorkspaceHostCredentialRefs {
+  return {
+    cloudCredentialRef: {
+      kind: 'cloud',
+      ref: buildWorkspaceHostCredentialReference('cloud-workload-identity', CLOUD_FIELDS),
+    },
+    gitCredentialRef: {
+      kind: 'git',
+      ref: buildWorkspaceHostCredentialReference('git-short-lived-delegation', GIT_FIELDS),
+    },
+    agentCredentialRef: {
+      kind: 'agent',
+      ref: buildWorkspaceHostCredentialReference('agent-forwarded-reference', AGENT_FIELDS),
+    },
+  };
+}
+
+function lifecycleDelivery(generation = 1): WorkspaceHostCredentialDeliverySet {
+  return {
+    cloud: {
+      kind: 'provider-identity',
+      generation,
+      audience: 'pc-byoc-canary-01-vm',
+      revocationRef: buildWorkspaceHostCredentialRevocationReference(
+        'cloud-workload-identity',
+        CLOUD_FIELDS,
+        generation,
+      ),
+    },
+    git: {
+      kind: 'short-lived-delegation',
+      generation,
+      audience: 'pc-byoc-canary-01-vm',
+      revocationRef: buildWorkspaceHostCredentialRevocationReference(
+        'git-short-lived-delegation',
+        GIT_FIELDS,
+        generation,
+      ),
+      expiresAt: EXPIRES_AT,
+    },
+    agent: {
+      kind: 'forwarded-agent',
+      generation,
+      audience: 'pc-byoc-canary-01-vm',
+      revocationRef: buildWorkspaceHostCredentialRevocationReference(
+        'agent-forwarded-reference',
+        AGENT_FIELDS,
+        generation,
+      ),
+    },
+  };
+}
+
 /** Valid `input` for each of the six step kinds — the table every dispatch test walks. */
 const STEP_INPUTS: Record<string, Record<string, unknown>> = {
   'create-workspace': { workspaceId: 'ws-1', hostId: 'byoc-canary-01' },
@@ -257,15 +329,26 @@ function makeDeps(
     readonly host?: RecordingHost;
     readonly clock?: () => Date;
   } = {},
-): WorkspaceHostRemoteInitializerDeps & { readonly host: RecordingHost } {
+): WorkspaceHostRemoteInitializerDeps & {
+  readonly host: RecordingHost;
+  readonly materializers: Readonly<Record<string, RecordingMaterializer>>;
+} {
   const host = options.host ?? new RecordingHost();
-  const resolver = new WorkspaceHostCredentialResolver([
-    new RecordingMaterializer('cloud-workload-identity'),
-    new RecordingMaterializer('git-short-lived-delegation'),
-    new RecordingMaterializer('agent-forwarded-reference'),
-    new RecordingMaterializer('agent-encrypted-reference'),
-  ]);
-  return { host, credentials: resolver, now: options.clock ?? (() => new Date(NOW)) };
+  // Kept addressable (rather than inlined into the resolver) so a lifecycle test can assert the
+  // ORDER of operations a plan produced — which is the whole point of a rotate plan.
+  const materializers = {
+    'cloud-workload-identity': new RecordingMaterializer('cloud-workload-identity'),
+    'git-short-lived-delegation': new RecordingMaterializer('git-short-lived-delegation'),
+    'agent-forwarded-reference': new RecordingMaterializer('agent-forwarded-reference'),
+    'agent-encrypted-reference': new RecordingMaterializer('agent-encrypted-reference'),
+  } as const;
+  const resolver = new WorkspaceHostCredentialResolver(Object.values(materializers));
+  return {
+    host,
+    materializers,
+    credentials: resolver,
+    now: options.clock ?? (() => new Date(NOW)),
+  };
 }
 
 /* ------------------------------------------------------------------------------------------ */
@@ -674,6 +757,103 @@ describe('executeWorkspaceHostRemoteInitializerStep', () => {
           makeDeps(),
         ),
       ).rejects.toThrow(/'ssh' is not a credential channel/);
+    });
+  });
+
+  describe('credential-lifecycle steps (D-114)', () => {
+    // WHY THIS BLOCK EXISTS. The lifecycle planner and executor were both complete and the host
+    // resolver already had executeLifecycleStep, but the wire carried only the six
+    // initialization kinds — so a planned rotation could not reach a host, and
+    // validateWorkspaceHostInitializationCanary (which demands bound + rotated +
+    // previousBindingRevoked + reconnected on every channel) was unsatisfiable BY CONSTRUCTION.
+    // These tests pin the carriage that closes that.
+
+    it('treats the step kind AS the credential operation, with no mapping table', () => {
+      // The dispatch in executeWorkspaceHostRemoteInitializerStep passes `step.kind` straight
+      // through as the operation. That is only sound while the two lists are identical, and a
+      // comment asserting it would rot silently — so the identity is measured here instead.
+      expect([...WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS].sort()).toEqual(
+        ['bind', 'revoke', 'verify-bound', 'verify-revoked'].sort(),
+      );
+    });
+
+    it('accepts every lifecycle kind on the wire and reaches the matching resolver operation', async () => {
+      for (const kind of WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS) {
+        const deps = makeDeps();
+        const response = await executeWorkspaceHostRemoteInitializerStep(
+          parseWorkspaceHostRemoteInitializerRequest(request(kind)),
+          deps,
+        );
+        expect(response.status).toBe('succeeded');
+        // The receipt names WHICH operation ran. Without this a rotation's four receipts would
+        // be indistinguishable from four binds, and the canary's `rotated` /
+        // `previousBindingRevoked` flags could not be evidenced from receipts at all.
+        expect((response.publicEvidence as { operation: string }).operation).toBe(kind);
+      }
+    });
+
+    it('carries a planner-produced revocation end to end, in dependency order', async () => {
+      // A full plan, encoded by the driver's own encoder, parsed by the driver's own parser, and
+      // executed against the resolver — the round trip the controller will perform.
+      const plan = planWorkspaceHostCredentialLifecycle({
+        contractVersion: WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
+        operationId: 'revoke-wire-1',
+        workspaceId: 'ws-1',
+        hostId: 'byoc-canary-01',
+        requestedAt: NOW,
+        action: 'revoke',
+        currentCredentialRefs: lifecycleRefs(),
+        currentDelivery: lifecycleDelivery(1),
+        channels: ['git'],
+      });
+      expect(plan.steps.map((s) => s.id)).toEqual(['revoke-git', 'verify-revoked-git']);
+
+      const deps = makeDeps();
+      for (const planned of plan.steps) {
+        const response = await executeWorkspaceHostRemoteInitializerStep(
+          parseWorkspaceHostRemoteInitializerRequest({
+            protocolVersion: PROTOCOL,
+            step: encodeWorkspaceHostCredentialLifecycleStep(planned),
+          }),
+          deps,
+        );
+        expect(response.stepId).toBe(planned.id);
+      }
+
+      // The resolver saw revoke THEN verify-revoked, on the git channel, at generation 1 — which
+      // is exactly the ordering the planner encoded and the wire had to preserve.
+      expect(deps.materializers['git-short-lived-delegation'].calls).toEqual([
+        'revoke:git:g1',
+        'verify-revoked:git:g1',
+      ]);
+      // And no OTHER channel was touched: a revoke scoped to ['git'] must not disturb the cloud
+      // or agent bindings the host is still running on.
+      expect(deps.materializers['cloud-workload-identity'].calls).toEqual([]);
+      expect(deps.materializers['agent-forwarded-reference'].calls).toEqual([]);
+    });
+
+    it('rejects a lifecycle step naming something that is not a credential channel', async () => {
+      await expect(
+        executeWorkspaceHostRemoteInitializerStep(
+          parseWorkspaceHostRemoteInitializerRequest(
+            request('revoke', { ...gitBindInput(), channel: 'database' }),
+          ),
+          makeDeps(),
+        ),
+      ).rejects.toThrow(/'database' is not a credential channel/);
+    });
+
+    it('never republishes the revocation reference or the raw credential reference', async () => {
+      // Same allowlist as bind-credential — asserted separately because a lifecycle receipt is
+      // produced on the revoke path too, where a leaked revocationRef would be equally fatal.
+      const deps = makeDeps();
+      const response = await executeWorkspaceHostRemoteInitializerStep(
+        parseWorkspaceHostRemoteInitializerRequest(request('revoke')),
+        deps,
+      );
+      const serialized = JSON.stringify(response.publicEvidence);
+      expect(serialized).not.toContain(gitBindInput().delivery.revocationRef);
+      expect(serialized).not.toContain('papercusp-byoc-canary');
     });
   });
 
