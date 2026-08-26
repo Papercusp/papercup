@@ -403,6 +403,8 @@ export interface AdmissionCensusRunOptions extends AdmissionShardConfig {
   runId?: string;
   sql?: OrgSql;
   now?: () => number;
+  /** Caller already owns a transaction (bulk-stage ratchet); avoid opening a nested one. */
+  withinTransaction?: boolean;
 }
 
 export interface AdmissionCensusRunResult extends AdmissionShardPlan {
@@ -714,7 +716,7 @@ async function persistShardMap(
     })),
   ]);
 
-  await sql.begin(async (tx) => {
+  const persist = async (tx: OrgSql): Promise<void> => {
     await tx`DELETE FROM harness_shared.dedup_shard_map WHERE run_id = ${runId}`;
     for (let offset = 0; offset < rows.length; offset += 1_000) {
       const batch = rows.slice(offset, offset + 1_000);
@@ -735,7 +737,12 @@ async function persistShardMap(
         `persisted member coverage mismatch: rows=${members}, unique=${unique}, corpus=${plan.corpusSize}`,
       );
     }
-  });
+  };
+  if (opts.withinTransaction) {
+    await persist(sql);
+  } else {
+    await sql.begin(async (tx) => persist(tx as unknown as OrgSql));
+  }
 }
 
 export async function runWorkItemAdmissionCensus(opts: AdmissionCensusRunOptions): Promise<AdmissionCensusRunResult> {
