@@ -185,7 +185,7 @@ test('reserved tier-1 FLOOR holds a slot open under a tier-3 flood', async () =>
   await Promise.all([beeA, beeB, queen]);
 });
 
-test('Codex /v1/responses has its own tier-1 reserve so Scout is not starved by held bees', async () => {
+test('Codex /v1/responses keeps two tier-3 slots plus a reserved Scout slot', async () => {
   const released: Array<() => void> = [];
   let holdBees = true;
   let scoutServed = false;
@@ -206,20 +206,24 @@ test('Codex /v1/responses has its own tier-1 reserve so Scout is not starved by 
     },
     {
       codexPool,
-      codexConcurrency: 2,
-      priorityTiers: tiersDep({ caps: {}, tier1Reserve: 1 }),
+      codexConcurrency: 3,
+      // Give Claude a deliberately different reserve so inheriting its layer would leave only one
+      // Codex tier-3 slot. The Codex-specific layer must preserve two bee slots plus Scout's reserve.
+      priorityTiers: tiersDep({ caps: {}, tier1Reserve: 2 }),
+      codexPriorityTiers: tiersDep({ caps: {}, tier1Reserve: 1 }),
     },
   );
 
   const beeA = askCodex('cup', 'bee-a');
   const beeB = askCodex('cup', 'bee-b');
-  for (let i = 0; i < 50 && released.length < 1; i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 50 && released.length < 2; i++) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(released.length, 2, 'both non-tier-1 Codex slots admit before the reserved Scout slot');
   await new Promise((r) => setTimeout(r, 50));
 
   const s = await getStats();
   assert.equal(s.codexAdmission.tier1Reserve, 1, 'Codex queue reports the reserved Scout slot');
   const t3 = s.codexAdmission.byTier.find((t: any) => t.tier === 3);
-  assert.equal(t3.inFlight, 1, 'only one bee can run in the two-slot Codex gate');
+  assert.equal(t3.inFlight, 2, 'two bees use the three-slot Codex gate while one slot remains reserved');
 
   const scout = askCodex('scout', 'scout');
   for (let i = 0; i < 50 && !scoutServed; i++) await new Promise((r) => setTimeout(r, 10));

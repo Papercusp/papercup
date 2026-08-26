@@ -57,6 +57,40 @@ test('startGatewayService composes account → resolver → proxy; /healthz + a 
   assert.equal(up.lastAuth(), 'Bearer bound-token', 'gateway injected the bound account token');
 });
 
+test('startGatewayService sizes Claude and Codex priority tiers from their own concurrency caps', async () => {
+  const flagEnv = 'PAPERCUSP_FLAG_PAPERCUSP_GATEWAY_PRIORITY_TIERS';
+  const previousFlag = process.env[flagEnv];
+  process.env[flagEnv] = '1';
+  try {
+    const up = await startUpstream();
+    const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
+    const codexDb = [{ accountId: 'codex-main', credentialRef: 'token:/codex', source: 'pool' as const }];
+    const logs: string[] = [];
+    svc = await startGatewayService({
+      port: 0,
+      upstreamBase: up.base,
+      log: (_level, message) => logs.push(message),
+      resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
+      makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+      observePool: () => () => {},
+      poolReloadIntervalMs: 0,
+    });
+
+    const stats = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
+      concurrencyCap: number;
+      codexAdmission: { maxConcurrent: number; tier1Reserve?: number };
+    };
+    assert.equal(stats.concurrencyCap, 24, 'Claude keeps the larger gateway concurrency cap');
+    assert.equal(stats.codexAdmission.maxConcurrent, 3, 'Codex keeps its independent three-slot admission cap');
+    assert.equal(stats.codexAdmission.tier1Reserve, 1, 'Codex reserve is ceil(3 * 0.15), not Claude\'s reserve');
+    assert.ok(logs.some((message) => message.includes('Claude priority-tier admission ON — reserve=4')), 'launch resolves Claude tiers for 24 slots');
+    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=1')), 'launch resolves Codex tiers for 3 slots');
+  } finally {
+    if (previousFlag === undefined) delete process.env[flagEnv];
+    else process.env[flagEnv] = previousFlag;
+  }
+});
+
 test('reloadPool HOT-SWAPS the account pool from the DB source-of-truth, no restart (B-HOT-1)', async () => {
   const up = await startUpstream();
   // The "DB" the gateway re-resolves on reload: starts [a, b], later flips to [a, c, d].
