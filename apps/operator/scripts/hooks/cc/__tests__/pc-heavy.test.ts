@@ -1953,6 +1953,41 @@ PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
     expect(r.stderr).not.toContain('REFUSED typecheck');
   });
 
+  it('recognizes tsc-baseline-gate\'s stable lint:tsc sentinel inside sh -c argv', () => {
+    const marker = typecheckFixture();
+    const runner = join(dir, 'systemd-run-sentinel-stub');
+    writeFileSync(runner, `#!/usr/bin/env bash
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --user|--scope|--collect) shift ;;
+    *) break ;;
+  esac
+done
+if [ "\${1:-}" = "env" ]; then
+  shift
+  while [ "\${1:-}" = "-u" ]; do shift 2; done
+fi
+PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE=12288 \\
+PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE=0 \\
+"$@"
+`);
+    chmodSync(runner, 0o755);
+    const r = runSync(
+      ['sh', '-c', `node ${JSON.stringify(marker)}`, 'lint:tsc', '--files=__pc_heavy_scoped__'],
+      {
+        PC_HEAVY_CGROUP_MEMORY_MAX_MIB_OVERRIDE: '6144',
+        PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '768',
+        PAPERCUSP_TSC_HEAP_MB: '8192',
+        PC_HEAVY_SYSTEMD_RUN_BIN: runner,
+      },
+    );
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('typecheck-ran');
+    expect(r.stderr).toContain('detached user scope');
+    expect(r.stderr).not.toContain('REFUSED typecheck');
+  });
+
   it('refuses without recursion when detached scope re-exec is already active', () => {
     const marker = typecheckFixture();
     const slots = join(dir, 'never-created-by-refused-typecheck');

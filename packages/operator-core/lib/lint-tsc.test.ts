@@ -3077,12 +3077,13 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
     });
   });
 
-  describe('pcHeavyCompileArgv — scoped focused-lane admission without per-file coalescing drift', () => {
-    it('keeps an unscoped compile on the ordinary pc-heavy argv', () => {
+  describe('pcHeavyCompileArgv — stable typecheck admission without per-file coalescing drift', () => {
+    it('marks an unscoped compile with the stable lint:tsc sentinel', () => {
       expect(pcHeavyCompileArgv('npx tsc -p tsconfig.json', false)).toEqual([
         'sh',
         '-c',
         'npx tsc -p tsconfig.json 2>&1',
+        'lint:tsc',
       ]);
     });
 

@@ -714,7 +714,11 @@ _is_full_typecheck_command() {
   for _arg in "$@"; do
     _base="${_arg##*/}"
     case "$_base" in
-      lint-tsc*.mjs|tsc|tsc.cmd) return 0 ;;
+      # tsc-baseline-gate passes `lint:tsc` as sh -c's stable $0 sentinel.
+      # Recognize the sentinel as well as executable-shaped argv; otherwise a
+      # scoped `npm run lint:tsc -- --files=…` bypasses this finite-cgroup guard
+      # even though it reached pc-heavy exactly as intended.
+      lint-tsc*.mjs|lint:tsc|lint:tsc:*|tsc|tsc.cmd) return 0 ;;
     esac
   done
   return 1
