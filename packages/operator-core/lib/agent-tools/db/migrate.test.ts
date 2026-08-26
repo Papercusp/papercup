@@ -352,6 +352,23 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
   });
 
+  it('refuses a migration that would fail the gate lint before acquiring the schema lock', async () => {
+    h.readFileSync.mockReturnValue('BEGIN;\nCREATE TABLE foo (id int);\nCOMMIT;');
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+
+    expect(out).toMatchObject({
+      ok: false,
+      applied: false,
+      reason: 'migration_gate_lint_failed',
+    });
+    expect(out.note).toContain('top-level transaction control');
+    expect(h.guardResource).not.toHaveBeenCalled();
+    expect(h.spawnSync).not.toHaveBeenCalled();
+  });
+
   it('EI-6962: wraps the file in the SAME BEGIN/COMMIT as a schema_migrations INSERT, fed to psql via stdin (not -f)', async () => {
     const out = parse(
       await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),

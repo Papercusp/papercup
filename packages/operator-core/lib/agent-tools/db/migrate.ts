@@ -21,6 +21,7 @@ import { guardResource } from '../locks/resource-lock-guard';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from '../../migration-deploy-guard';
+import { assertMigrationPassesPreApplyLints } from '../../migration-preapply-lint';
 import { resolveCanonicalStagingRoot, resolveCanonicalStagingSqlDir } from '../../migration-drift';
 import { migrationReservationGuardSql } from '../../migration-reservation';
 // Local bindings for this module's own use — the `export { … } from` below
@@ -498,9 +499,25 @@ export default defineTool({
       });
     }
 
-    // The boot runner performs the same check through its beforeApply hook.
+    // The boot runner performs the same checks through its beforeApply hook.
     // Keep db:migrate fail-closed too: it is the sanctioned manual applier and
-    // must not provide a route around the release-before-schema ordering rule.
+    // must not provide a route around either the migration gate lints or the
+    // release-before-schema ordering rule.
+    try {
+      assertMigrationPassesPreApplyLints({
+        filename: path.basename(resolvedFile),
+        sqlText,
+        sqlDir: path.dirname(path.resolve(resolvedFile)),
+      });
+    } catch (error) {
+      return json({
+        ok: false,
+        applied: false,
+        reason: 'migration_gate_lint_failed',
+        file: args.file,
+        note: error instanceof Error ? error.message : String(error),
+      });
+    }
     try {
       const sqlDir = path.dirname(path.resolve(resolvedFile));
       const guard = verifyPendingCodeDeployMigration({

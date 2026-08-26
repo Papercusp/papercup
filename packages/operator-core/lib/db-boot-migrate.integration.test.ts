@@ -259,6 +259,33 @@ describe('boot-apply runner mechanics (§A1)', () => {
 });
 
 describe('applyPendingMigrationsAtBoot wired entry (§A1)', () => {
+  it('refuses a gate-lint violation before SQL reaches Postgres or the migration ledger', async () => {
+    const filename = '998-gate-lint-violation.sql';
+    const candidateSqlDir = makeSqlDir({
+      [filename]: 'BEGIN;\nCREATE TABLE harness_shared.must_not_apply (id int);\nCOMMIT;',
+    });
+    await seedMigrationReservations([filename]);
+
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let result: Awaited<ReturnType<typeof applyPendingMigrationsNow>>;
+    try {
+      result = await applyPendingMigrationsNow({ sqlDir: candidateSqlDir });
+    } finally {
+      errSpy.mockRestore();
+    }
+
+    expect(result).toMatchObject({
+      applied: 0,
+      failed: [{ file: filename, error: expect.stringContaining('top-level transaction control') }],
+    });
+    const ledger = await rootSql<{ filename: string }[]>`
+      SELECT filename FROM harness_shared.schema_migrations WHERE filename = ${filename}`;
+    expect(ledger).toEqual([]);
+    const relation = await rootSql<{ name: string | null }[]>`
+      SELECT to_regclass('harness_shared.must_not_apply')::text AS name`;
+    expect(relation[0]?.name).toBeNull();
+  });
+
   it('applyPendingMigrationsNow honors an explicit candidate sqlDir over ambient resolution', async () => {
     h.bootSqlDir = makeSqlDir({});
     const candidateSqlDir = makeSqlDir({

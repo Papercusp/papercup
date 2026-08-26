@@ -1,6 +1,15 @@
 # WI-3786: P-105 Sandbox Wiring Strategy
 
-**Rationale:** The P-105 sandbox module exists (58 unit tests pass) but is dormant — nothing in the live system calls it. This document captures the wiring strategy before implementation.
+> **SUPERSEDED — do not implement this strategy.** Owner-ratified decision
+> `p2p-public-release-remaining-lanes-2026-07-16#D-001` (2026-07-17) ships
+> foreign-work spawn with trust-layer-only security and explicitly says
+> **NO P-105 sandbox and NO app-level containment for v1**. That later decision
+> supersedes the 2026-07-09 contingency this document was written from.
+> Re-arming any remaining P-105 wiring requires a fresh owner-ratified decision.
+
+**Historical rationale:** The P-105 sandbox module existed with 58 unit tests,
+while most privileged mechanisms were dormant. This document captured the
+pre-D-001 wiring proposal; it is retained only as historical design context.
 
 ## Wiring Points
 
