@@ -25,6 +25,14 @@ OPERATOR_URL="${PAPERCUSP_OPERATOR_URL:-http://localhost:3070}"
 # Managed sessions may receive either the operator origin or its full MCP
 # endpoint. Normalize to the origin because the hook appends /api/mcp below.
 OPERATOR_URL="${OPERATOR_URL%%/api/mcp*}"
+# A staging-backed Codex session can legitimately coordinate through :3170.
+# Releasing its edit lock through only that same process is circular: a server
+# edit may restart :3170 before PostToolUse runs. The stable green operator uses
+# the same lock store and physical coordination_domain, so it is the safe
+# authority fallback for RELEASE only. Override/disable by setting this equal to
+# PAPERCUSP_OPERATOR_URL.
+FALLBACK_OPERATOR_URL="${PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL:-http://localhost:3070}"
+FALLBACK_OPERATOR_URL="${FALLBACK_OPERATOR_URL%%/api/mcp*}"
 TOKEN_PATH="${HOME}/.papercusp/superuser-token"
 AGENT_ID_PATH="${HOME}/.papercusp/su-agent-id"
 CACHE_DIR="${PAPERCUSP_LOCKS_CACHE_DIR:-${HOME}/.papercusp/locks-cache}"
@@ -43,7 +51,7 @@ import json, os, re, sys, time, urllib.request, urllib.parse
 from pathlib import Path
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-operator_url, token_path, agent_id, cache_dir, hook_dir = sys.argv[1:6]
+operator_url, token_path, agent_id, cache_dir, hook_dir, fallback_operator_url = sys.argv[1:7]
 sys.path.insert(0, hook_dir)
 from mcp_response import parse_mcp_response, read_hook_payload, read_token_file  # noqa: E402
 raw = read_hook_payload()
@@ -155,13 +163,13 @@ def mark_release_error(phase, detail):
     write_marker(owner_marker_name('error'), value)
 
 
-def tool_request(name, arguments):
+def tool_request(name, arguments, base_url):
     body = json.dumps({
         'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
         'params': {'name': name, 'arguments': arguments},
     }).encode()
     return urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
+        base_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
         + urllib.parse.quote(owner, safe=''),
         data=body,
         headers={
@@ -175,23 +183,30 @@ def tool_request(name, arguments):
 
 def call_tool(name, arguments):
     last_exc = None
+    origins = [operator_url]
+    if fallback_operator_url and fallback_operator_url != operator_url:
+        origins.append(fallback_operator_url)
     for attempt in range(len(RETRY_BACKOFFS) + 1):
-        try:
-            raw_response = urllib.request.urlopen(
-                tool_request(name, arguments), timeout=10,
-            ).read().decode('utf-8', errors='replace')
-            inner, rpc_error, phase = parse_mcp_response(raw_response)
-            if rpc_error is not None:
-                return None, 'rpc: ' + str(rpc_error)[:200]
-            if phase != 'ok' or not isinstance(inner, dict):
-                return None, 'response: ' + str(phase)
-            return inner, None
-        except Exception as exc:
-            last_exc = exc
-            if _is_conn_refused(exc) and attempt < len(RETRY_BACKOFFS):
-                time.sleep(RETRY_BACKOFFS[attempt])
-                continue
-            break
+        for base_url in origins:
+            try:
+                raw_response = urllib.request.urlopen(
+                    tool_request(name, arguments, base_url), timeout=10,
+                ).read().decode('utf-8', errors='replace')
+                inner, rpc_error, phase = parse_mcp_response(raw_response)
+                if rpc_error is not None:
+                    return None, 'rpc: ' + str(rpc_error)[:200]
+                if phase != 'ok' or not isinstance(inner, dict):
+                    return None, 'response: ' + str(phase)
+                return inner, None
+            except Exception as exc:
+                last_exc = exc
+                if _is_conn_refused(exc):
+                    continue
+                return None, str(exc)[:200]
+        if _is_conn_refused(last_exc) and attempt < len(RETRY_BACKOFFS):
+            time.sleep(RETRY_BACKOFFS[attempt])
+            continue
+        break
     return None, str(last_exc)[:200]
 
 
