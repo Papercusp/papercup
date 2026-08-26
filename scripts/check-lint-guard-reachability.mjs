@@ -1216,14 +1216,11 @@ function discoverWorkspaceDirs(pkg, files) {
  */
 function runModuleReachability({ files, workspaceDirByName }) {
   const population = selectDetectorModules(files);
-  const readFile = (f) => {
-    // Deliberately NOT memoized: caching 31k file bodies costs hundreds of MB for a
-    // single pass that never revisits a file.
-    const raw = readIfExists(resolve(ROOT, f));
-    // Comment-stripped, so a commented-out import cannot read as usage. That direction
-    // matters: it would be a false NEGATIVE — a dead module reported alive.
-    return raw ? stripComments(raw) : '';
-  };
+  // Returns RAW text: buildImportGraph applies the comment-strip itself, AFTER its
+  // prefilter, so the expensive parse runs on the few hundred files that could possibly
+  // reach a lib/release module rather than on all ~31k. Deliberately NOT memoized —
+  // caching 31k file bodies costs hundreds of MB for a pass that never revisits a file.
+  const readFile = (f) => readIfExists(resolve(ROOT, f));
 
   // ⚠ THE INSTRUMENT MUST NOT COUNT AS A CALLER. ACKNOWLEDGED_UNREACHABLE_MODULES above
   // is a list of `lib/release/**` paths, and the mention scan reads literal paths as
@@ -1237,7 +1234,9 @@ function runModuleReachability({ files, workspaceDirByName }) {
     relative(ROOT, fileURLToPath(import.meta.url)).split(sep).join('/'),
   ]);
 
-  const graph = buildImportGraph({ files, readFile, workspaceDirByName });
+  // Comment-stripped inside the graph, so a commented-out import cannot read as usage.
+  // That direction matters: it is a false NEGATIVE — a dead module reported alive.
+  const graph = buildImportGraph({ files, readFile, stripComments, workspaceDirByName });
   const result = findUnreachableModules({
     population,
     importers: graph.importers,
