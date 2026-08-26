@@ -21,9 +21,9 @@ use crate::models::{
     CrewRow, CrewSummary, CrewsResponse, DocsResponse, FeaturesPayload, FlagsResponse,
     FleetAssignmentsPayload, HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow,
     LayoutSummary, LayoutsResponse, LexiconPackPayload, Notif, OperatorConfig, PlanItemStates,
-    PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse, TestingDomain,
-    TestingResponse, ToastsResponse, TuiPanesPayload, TurnsPage, ViewState, ViewStateResponse,
-    WorkItem, WorkItemsPayload,
+    PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
+    SessionTranscriptTurn, TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload,
+    TurnsPage, ViewState, ViewStateResponse, WorkItem, WorkItemsPayload,
 };
 use crate::shared_cache;
 use crate::sse::{parse_sse_frames, SseFrame};
@@ -250,7 +250,23 @@ fn merge_session_switcher_rows(
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_string();
-        let already_present = rows.iter().any(|row| {
+        let transcript_ref = hit
+            .get("readMore")
+            .and_then(|value| value.get("args"))
+            .and_then(|value| value.get("ref"))
+            .or_else(|| hit.get("ref"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let transcript_excerpt = hit
+            .get("excerpt")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let transcript_at = provenance
+            .get("ts")
+            .or_else(|| hit.get("ts"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
+        let already_present = rows.iter().position(|row| {
             row.native_session
                 .as_ref()
                 .and_then(|native| {
@@ -261,7 +277,17 @@ fn merge_session_switcher_rows(
                 })
                 || (!owner.is_empty() && row.owner_id == owner)
         });
-        if already_present {
+        if let Some(index) = already_present {
+            let row = &mut rows[index];
+            if transcript_ref.is_some() {
+                row.transcript_ref = transcript_ref;
+            }
+            if transcript_excerpt.is_some() {
+                row.transcript_excerpt = transcript_excerpt;
+            }
+            if transcript_at.is_some() {
+                row.transcript_at = transcript_at;
+            }
             continue;
         }
         let missing = Some("indexed transcript has no resumable launch record".to_string());
@@ -303,10 +329,47 @@ fn merge_session_switcher_rows(
             agent: Some(source.to_string()),
             session_state: Some("recorded".to_string()),
             native_session,
+            transcript_ref,
+            transcript_excerpt,
+            transcript_at,
             ..RosterEntry::default()
         });
     }
     rows
+}
+
+/// Normalize the structured `sessions:read` response into the browser's shared
+/// transcript model. Invalid synthetic notice rows are ignored instead of
+/// leaking transport shaping into the renderer.
+fn session_transcript_turns(inner: &serde_json::Value) -> Vec<SessionTranscriptTurn> {
+    inner
+        .get("turns")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|turn| {
+            let text = turn
+                .get("text")
+                .and_then(serde_json::Value::as_str)?
+                .trim()
+                .to_string();
+            if text.is_empty() {
+                return None;
+            }
+            Some(SessionTranscriptTurn {
+                speaker: turn
+                    .get("speaker")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string(),
+                ts: turn
+                    .get("ts")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string),
+                text,
+            })
+        })
+        .collect()
 }
 
 impl OperatorClient {
@@ -954,6 +1017,19 @@ impl OperatorClient {
         let env = self.run_tool("sessions:search", args).await?;
         let inner = run_tool_inner_json(&env)?;
         Ok(merge_session_switcher_rows(rows, &inner))
+    }
+
+    /// Read a canonical transcript reference returned by `sessions:search` and
+    /// normalize every backend onto one preview shape.
+    pub async fn session_transcript(&self, reference: &str) -> Result<Vec<SessionTranscriptTurn>> {
+        let env = self
+            .run_tool(
+                "sessions:read",
+                serde_json::json!({ "ref": reference, "context": 12, "order": "asc" }),
+            )
+            .await?;
+        let inner = run_tool_inner_json(&env)?;
+        Ok(session_transcript_turns(&inner))
     }
 
     pub async fn plans_typed(&self) -> Result<Vec<PlanSummary>> {
@@ -2545,23 +2621,41 @@ mod tests {
             },
         ];
         let hits = serde_json::json!({ "results": [
-            { "provenance": {
-                "source_kind": "codex", "session_id": "rollout-live", "owner": ""
+            { "ref": "session_turn:codex:rollout-live:7", "excerpt": "live preview", "provenance": {
+                "source_kind": "codex", "session_id": "rollout-live", "owner": "", "ts": "2026-08-26T10:00:00Z"
             }},
-            { "provenance": {
-                "source_kind": "claude", "session_id": "ended-transcript", "owner": "su-ended"
+            { "readMore": { "args": { "ref": "session_turn:claude:ended-transcript:9" }},
+              "excerpt": "ended preview", "provenance": {
+                "source_kind": "claude", "session_id": "ended-transcript", "owner": "su-ended", "ts": "2026-08-26T09:00:00Z"
             }},
-            { "provenance": {
-                "source_kind": "codex", "session_id": "recorded-only", "owner": "su-recorded"
+            { "ref": "session_turn:codex:recorded-only:3", "excerpt": "recorded preview", "provenance": {
+                "source_kind": "codex", "session_id": "recorded-only", "owner": "su-recorded", "ts": "2026-08-25T08:00:00Z"
             }}
         ]});
 
         let rows = merge_session_switcher_rows(roster, &hits);
         assert_eq!(rows.len(), 3, "both duplicate forms must be suppressed");
         assert_eq!(rows[0].session_state.as_deref(), Some("live"));
+        assert_eq!(
+            rows[0].transcript_ref.as_deref(),
+            Some("session_turn:codex:rollout-live:7")
+        );
+        assert_eq!(rows[0].transcript_excerpt.as_deref(), Some("live preview"));
         assert_eq!(rows[1].session_state.as_deref(), Some("ended"));
+        assert_eq!(
+            rows[1].transcript_ref.as_deref(),
+            Some("session_turn:claude:ended-transcript:9")
+        );
         assert_eq!(rows[2].owner_id, "su-recorded");
         assert_eq!(rows[2].session_state.as_deref(), Some("recorded"));
+        assert_eq!(
+            rows[2].transcript_excerpt.as_deref(),
+            Some("recorded preview")
+        );
+        assert_eq!(
+            rows[2].transcript_at.as_deref(),
+            Some("2026-08-25T08:00:00Z")
+        );
         assert!(matches!(
             rows[2].native_session,
             Some(models::NativeSessionHandle::Codex {
@@ -2570,6 +2664,24 @@ mod tests {
                 ..
             }) if id == "recorded-only"
         ));
+    }
+
+    #[test]
+    fn session_transcript_normalizes_structured_turns() {
+        let inner = serde_json::json!({ "turns": [
+            { "speaker": "user", "ts": "2026-08-26T10:00:00Z", "text": "  open it  " },
+            { "speaker": "assistant", "text": "done" },
+            { "speaker": "tool", "text": "   " },
+            { "text": "legacy" }
+        ]});
+
+        let turns = session_transcript_turns(&inner);
+        assert_eq!(turns.len(), 3);
+        assert_eq!(turns[0].speaker, "user");
+        assert_eq!(turns[0].text, "open it");
+        assert_eq!(turns[0].ts.as_deref(), Some("2026-08-26T10:00:00Z"));
+        assert_eq!(turns[2].speaker, "unknown");
+        assert_eq!(turns[2].text, "legacy");
     }
 
     #[test]
