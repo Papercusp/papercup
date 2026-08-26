@@ -8,7 +8,10 @@ fn assert_help_is_side_effect_free(args: &[&str]) {
         .expect("run pui help command");
 
     assert!(output.status.success(), "pui {args:?} failed: {output:?}");
-    assert!(!output.stdout.is_empty(), "pui {args:?} printed no help text");
+    assert!(
+        !output.stdout.is_empty(),
+        "pui {args:?} printed no help text"
+    );
     assert!(
         output.stderr.is_empty(),
         "pui {args:?} wrote to stderr: {}",
