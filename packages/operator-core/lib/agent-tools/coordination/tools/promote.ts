@@ -59,6 +59,7 @@ import { FanoutCapError, type ResolveFanoutCtx } from '@papercusp/fanout-resolve
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
 import { extractAssertions, type PlanAssertion } from '../../plans/val-assertions';
+import { evaluatePromotionAssertionGate } from '../../plans/promotion-assertion-gate';
 import { matchRoutingGateHint } from '../../../routing-gate-hints';
 import { loopbackFetch, readJsonBody } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
@@ -1002,6 +1003,53 @@ export default defineTool({
       };
     }
 
+    // P-002 — fail-closed gate on inline VAL-* assertions.
+    //
+    // Evaluated HERE, beside the other fail-fast validation, and deliberately
+    // NOT next to the assertion extraction further down: the apply path spawns
+    // child harnesses, seed plans and feature imports well BEFORE it reaches
+    // that extraction, so a refusal placed there would fire after real writes
+    // had already landed.
+    //
+    // Scoped to PARENT-bound items — the same set whose assertions promotion
+    // actually stores. A spawned child's features carry assertions synthesized
+    // into the child SEED plan instead (D-002), so requiring parent-plan VALs
+    // for them would be a false refusal.
+    const gateItemIds = new Set<string>();
+    for (const f of parentFeatures) {
+      for (const id of f.from_items ?? []) gateItemIds.add(id);
+    }
+    const assertionGate = evaluatePromotionAssertionGate({
+      rawPlan: planFile.parsed.raw,
+      planStatus: String(
+        (planFile.parsed.frontmatter as { status?: string } | null)?.status ?? 'unknown',
+      ),
+      itemIds: gateItemIds,
+    });
+    if (args.apply && assertionGate.violations.length > 0) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'plan_assertions_fail_closed',
+              detail:
+                `promote refused: ${assertionGate.violations.length} validation-assertion ` +
+                `violation(s) on plan ${args.slug}. A malformed VAL block is silently ` +
+                `dropped from feature.claims, so promoting it would record the item as ` +
+                `having nothing to prove. Fix the blocks below (or run with apply:false ` +
+                `to review), then re-promote.`,
+              lane: assertionGate.lane,
+              violations: assertionGate.violations,
+              items_missing_assertions: assertionGate.itemsMissingAssertions,
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+
     // Preview path: emit plan event + return per-feature covers + assertion preview.
     if (!args.apply) {
       const previewItemIds = new Set<string>();
@@ -1081,6 +1129,18 @@ export default defineTool({
                 feature_count: promoteFeatures.length,
                 assertion_count: previewAssertions.length,
                 assertions: previewAssertions.map((a) => ({ val_id: a.valId, item_id: a.itemId, verify: a.verifyText })),
+                // P-002: what the fail-closed gate would do on apply. `violations`
+                // non-empty means an apply:true promote REFUSES. Surfaced in the
+                // preview so the fix happens before the write, not after a refusal.
+                assertion_gate: {
+                  lane: assertionGate.lane,
+                  enforcing: assertionGate.enforcing,
+                  plan_has_adopted_assertions: assertionGate.planHasAdoptedAssertions,
+                  would_refuse: assertionGate.violations.length > 0,
+                  violations: assertionGate.violations,
+                  warnings: assertionGate.warnings,
+                  items_missing_assertions: assertionGate.itemsMissingAssertions,
+                },
                 ...(spawnChildrenPreview.length > 0 && { spawn_children: spawnChildrenPreview }),
                 ...(spawnEdgeWarnings.length > 0 && { spawn_edge_warnings: spawnEdgeWarnings }),
               },
