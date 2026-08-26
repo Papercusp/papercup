@@ -374,6 +374,21 @@ export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope:
     onRebase?: null | undefined;
 }): Promise<any>;
 /**
+ * One short token per failed connect attempt, for the attempt-history suffix.
+ * Proxy-generated refusals classify BEFORE generic HTTP so a retried 429/502
+ * reads as the proxy condition it is, not a bare status. Pure — exported for
+ * focused diagnostics tests.
+ */
+export function classifyConnectFailure(error: any): string;
+/**
+ * EI-21504867146958629 recurrence guard companion: mutate the escaping error
+ * IN PLACE so its original message stays the greppable prefix while the full
+ * attempt tally rides along, e.g.
+ * `…timed out after 24717ms [54 connect attempts over 96s: 51x proxy-shed-429, 3x transport]`.
+ * Pure — exported for focused diagnostics tests.
+ */
+export function appendConnectAttemptHistory(error: any, attemptKinds: any, elapsedMs: any): any;
+/**
  * Retry the bounded, pre-dispatch failures that can occur while discovering
  * the tool catalog. Proxy-generated handshake refusals never reached the
  * upstream; an MCP transport timeout/close may have reached it, but tools/list

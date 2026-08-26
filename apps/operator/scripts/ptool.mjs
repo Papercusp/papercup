@@ -1374,6 +1374,13 @@ export async function connectWithLocalRetry(
   const local = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
   const startedAt = Date.now();
   let lastError;
+  // EI-21504867146958629: intermediate failures used to be discarded (only
+  // lastError survived), so a budget burned down by dozens of fast proxy-shed
+  // 429s surfaced as ONE naked "local operator connection attempt timed out
+  // after Xms" — indistinguishable from a dead operator even while
+  // /api/health answered in ~2ms. Classify every attempt and append the tally
+  // to whichever error finally escapes.
+  const attemptKinds = [];
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let timeout;
     try {
@@ -1398,6 +1405,7 @@ export async function connectWithLocalRetry(
       });
     } catch (error) {
       lastError = error;
+      attemptKinds.push(classifyConnectFailure(error));
       const remainingTotalMs = totalTimeoutMs > 0
         ? totalTimeoutMs - (Date.now() - startedAt)
         : null;
@@ -1407,7 +1415,7 @@ export async function connectWithLocalRetry(
         attempt === maxAttempts ||
         (remainingTotalMs !== null && remainingTotalMs <= 0)
       ) {
-        throw error;
+        break;
       }
       if (rediscover) {
         try {
@@ -1427,12 +1435,66 @@ export async function connectWithLocalRetry(
           /* discovery must never break the bounded retry loop */
         }
       }
-      await sleep(Math.min(retryDelayMs, remainingTotalMs ?? retryDelayMs));
+      // The proxy's typed handshake shed carries a Retry-After hint
+      // (`retryAfterSec` in its JSON body — listToolsWithLocalRetry already
+      // honors it). Pacing connect retries to the same hint stops this client
+      // from re-contending for a bulkhead slot faster than the proxy asks.
+      await sleep(Math.min(retryAfterMsFromError(error) ?? retryDelayMs, remainingTotalMs ?? retryDelayMs));
     } finally {
       if (timeout) clearTimeout(timeout);
     }
   }
-  throw lastError;
+  throw appendConnectAttemptHistory(lastError, attemptKinds, Date.now() - startedAt);
+}
+
+/** First HTTP status (400–599) found walking the error's cause chain. */
+function connectHttpStatusOf(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function')) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    const status = Number(current.code);
+    if (Number.isInteger(status) && status >= 400 && status <= 599) return status;
+    current = current.cause;
+  }
+  return null;
+}
+
+/**
+ * One short token per failed connect attempt, for the attempt-history suffix.
+ * Proxy-generated refusals classify BEFORE generic HTTP so a retried 429/502
+ * reads as the proxy condition it is, not a bare status. Pure — exported for
+ * focused diagnostics tests.
+ */
+export function classifyConnectFailure(error) {
+  if (/^local operator connection attempt timed out/.test(errorDetail(error))) return 'attempt-timeout';
+  if (isRetryableLocalHttpConnectFailure(error)) {
+    const status = connectHttpStatusOf(error);
+    if (status === 429) return 'proxy-shed-429';
+    if (status === 502) return 'proxy-upstream-502';
+  }
+  if (isExplicitHttpConnectFailure(error)) return `http-${connectHttpStatusOf(error) ?? 'unknown'}`;
+  if (isTransportFailure(error)) return 'transport';
+  return 'other';
+}
+
+/**
+ * EI-21504867146958629 recurrence guard companion: mutate the escaping error
+ * IN PLACE so its original message stays the greppable prefix while the full
+ * attempt tally rides along, e.g.
+ * `…timed out after 24717ms [54 connect attempts over 96s: 51x proxy-shed-429, 3x transport]`.
+ * Pure — exported for focused diagnostics tests.
+ */
+export function appendConnectAttemptHistory(error, attemptKinds, elapsedMs) {
+  if (!error) return error;
+  const counts = new Map();
+  for (const kind of attemptKinds) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  const tally = [...counts.entries()].map(([kind, n]) => `${n}x ${kind}`).join(', ');
+  error.message =
+    `${error.message} [${attemptKinds.length} connect attempt(s) over ${Math.round(elapsedMs / 1000)}s` +
+    `${tally ? `: ${tally}` : ''}]`;
+  return error;
 }
 
 function isLocalOperatorUrl(operatorUrl) {
