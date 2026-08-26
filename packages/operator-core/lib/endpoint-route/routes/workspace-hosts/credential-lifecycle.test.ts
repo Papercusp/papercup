@@ -103,9 +103,7 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true, action, receipts: [{ operation: 'bind' }] });
     expect(runLifecycle).toHaveBeenCalledWith(expect.objectContaining({ action }));
-    expect(execute).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'bind-cloud', kind: 'bind', input: expect.objectContaining({ channel: 'cloud' }),
-    }));
+    expect(execute).toHaveBeenCalledWith(step);
   });
 
   it('carries a planner lifecycle step through the route and GCP transport exactly once', async () => {
