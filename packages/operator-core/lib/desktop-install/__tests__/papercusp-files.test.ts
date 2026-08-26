@@ -1140,7 +1140,8 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
       expect(text).toContain('do not arm a fallback loop');
       expect(text).toContain('one no-delta wake is terminal: `loop:end`');
       expect(text).toContain("system routines or a registered fleet leader's\nreal supervision duties");
-      expect(text).toContain('A red release/CI gate must have one concrete fixer');
+      expect(text).toContain('A red release/CI gate has exactly ONE fixer');
+      expect(text).toContain("state:read { cell: 'gate.greenCheckpoint.ownership' }");
       expect(text).not.toContain("a days-red gate is everyone's problem");
     }
   });
