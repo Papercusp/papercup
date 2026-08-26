@@ -24,6 +24,46 @@ export function isEnforcedMigrationFile(file: any): boolean;
 export function isMigrationArtifactFile(file: string): boolean;
 /** True when `file` is an enforced migration that has not been armed yet. */
 export function isDraftMigrationFile(file: any): boolean;
+/** The sidecar filename for a migration, keyed on its EFFECTIVE `.sql` name. */
+export function sidecarNameFor(effectiveFile: any): string;
+/** The effective `.sql` name for a migration artifact (strips any parked suffix). */
+export function effectiveMigrationName(file: any): any;
+/** sha256 of a migration's bytes — the same value schema_migrations records. */
+export function migrationSha256(text: any): string;
+/**
+ * Resolve whether `sha` is a commit in this repo that is an ANCESTOR of HEAD.
+ * Returns true / false / null, where **null means "could not determine"** and the
+ * caller must fail closed on it. Never throws.
+ */
+export function makeAncestorResolver({ exec, cwd }?: {
+    exec?: typeof execFileSync | undefined;
+    cwd?: string | undefined;
+}): (sha: any) => boolean | null;
+/**
+ * Decide whether a sidecar acknowledges its migration. PURE — every input is
+ * passed in, so the whole refusal matrix is testable without touching the tree.
+ *
+ * Returns { present, honored, refusals }. `present:false` means no sidecar exists
+ * (not a refusal); `honored:false` with refusals means one exists and was REJECTED.
+ */
+export function evaluateForwardCompatSidecar({ artifactFile, effectiveFile, sidecarText, migrationSha, isAncestorOfHead, now, }?: {
+    effectiveFile?: any;
+    isAncestorOfHead?: (() => null) | undefined;
+    now?: Date | undefined;
+}): {
+    present: boolean;
+    honored: boolean;
+    refusals: any[];
+};
+/** Read + evaluate the sidecar for one migration artifact on disk. */
+export function readForwardCompatSidecar(directory: any, artifactFile: any, { migrationText, isAncestorOfHead, now, readFile }?: {
+    readFile?: typeof readFileSync | undefined;
+}): {
+    sidecarFile: string;
+    present: boolean;
+    honored: boolean;
+    refusals: any[];
+};
 /**
  * Extract column identifiers introduced by an ALTER TABLE ADD COLUMN statement.
  * Comments are masked first, while SQL string bodies remain visible so a real
@@ -145,3 +185,73 @@ export const ENFORCE_FROM: 693;
  * `forward-compat-authoring-nudge.test.ts` pins that.
  */
 export const ACK_MARKER: RegExp;
+/**
+ * ---------------------------------------------------------------------------
+ * Typed, candidate-bound acknowledgement sidecar for an APPLIED migration.
+ * Ruling: stable-candidate-related-gate-2026-08-23#D-092. Root cause:
+ * EI-21539300249506308.
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS. Before this, a migration that crossed into immutability
+ * carrying destructive DDL had NO satisfiable route through this lint:
+ *
+ *   - add `-- FORWARD-COMPAT:` inline  -> migration-immutability-guard (WI-38352)
+ *     refuses any write to a file already recorded in schema_migrations;
+ *   - rename to `.sql.PENDING-CODE-DEPLOY` -> the scan below maps parked names
+ *     back to their effective `.sql` name, so parking changes nothing (measured:
+ *     the rename was executed, the guard stayed rc=1, and it was reverted);
+ *   - raise ENFORCE_FROM past it -> that constant is a one-time historical
+ *     watermark, not a rolling cutoff; moving it silently un-enforces every
+ *     migration in between.
+ *
+ * Two guards, each individually correct, were jointly unsatisfiable, and this
+ * lint is gate-blocking: the intersection was a permanent red that froze every
+ * agent's deploys. ENFORCE_FROM already handles migrations that were immutable
+ * BEFORE the guard landed; nothing handled one that becomes immutable AFTER it,
+ * which is every future occurrence.
+ *
+ * THE SHAPE OF THE FIX. The acknowledgement moves OUT of the immutable file into
+ * a sidecar that sits beside it. That is the whole trick: the sidecar is mutable,
+ * so every refusal it can produce is ACTIONABLE — which is what makes it safe to
+ * fail closed here, where failing closed on the migration itself produced the
+ * un-actionable deadlock above.
+ *
+ * It is deliberately far stricter than the inline `-- FORWARD-COMPAT:` marker it
+ * sits beside (that marker accepts any non-whitespace, `TODO` included). Every
+ * field is typed and machine-checkable, and ANY defect refuses the whole sidecar
+ * rather than honouring a partially-valid one.
+ *
+ *   {
+ *     "kind": "migration-forward-compat-ack",
+ *     "version": 1,
+ *     "migration": "975-remove-owned-trigger-legacy-arbiter.sql",
+ *     "appliedSha256": "<sha256 of that file's exact bytes>",
+ *     "requiresDeployedCommit": "<40-hex commit containing the compatible writer>",
+ *     "requiresDeployedNote": "what that commit changed, in one line",
+ *     "rationale": "why the deployed release tolerates this DDL",
+ *     "workItem": "EI-21539300249506308",
+ *     "reviewBy": "YYYY-MM-DD",
+ *     "postDeploy": "remove-sidecar" | "renew-review"
+ *   }
+ *
+ * The two bindings that carry the weight:
+ *   - appliedSha256 pins the acknowledgement to EXACT BYTES. schema_migrations
+ *     stores sha256 of the applied file, and immutability means the file on disk
+ *     still IS those bytes — so recomputing the hash here verifies the ledger
+ *     binding offline, with no database dependency in a lint that runs inside the
+ *     gate. Edit the migration and the sidecar stops applying to it.
+ *   - requiresDeployedCommit pins it to a CANDIDATE. The sidecar is honoured only
+ *     in a tree that actually contains the compatible writer, so it cannot travel
+ *     backwards to a checkout where the DDL really would break the live release.
+ *
+ * On "unapplied/editable": a sidecar is refused outright for a `.DRAFT` or
+ * `.PENDING-CODE-DEPLOY` artifact. Those are editable by construction, so their
+ * author must use the inline marker. Armed-and-immutable is the only case this
+ * exists for, and the immutability guard is what enforces the other half.
+ */
+export const SIDECAR_SUFFIX: ".forward-compat.json";
+export const SIDECAR_KIND: "migration-forward-compat-ack";
+export const SIDECAR_VERSION: 1;
+/** Exact permitted key set. An unknown key refuses the sidecar (no free-form fields). */
+export const SIDECAR_KEYS: readonly string[];
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';

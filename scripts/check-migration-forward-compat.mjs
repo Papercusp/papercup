@@ -271,6 +271,274 @@ export function isDraftMigrationFile(file) {
 }
 
 /**
+ * ---------------------------------------------------------------------------
+ * Typed, candidate-bound acknowledgement sidecar for an APPLIED migration.
+ * Ruling: stable-candidate-related-gate-2026-08-23#D-092. Root cause:
+ * EI-21539300249506308.
+ * ---------------------------------------------------------------------------
+ * WHY THIS EXISTS. Before this, a migration that crossed into immutability
+ * carrying destructive DDL had NO satisfiable route through this lint:
+ *
+ *   - add `-- FORWARD-COMPAT:` inline  -> migration-immutability-guard (WI-38352)
+ *     refuses any write to a file already recorded in schema_migrations;
+ *   - rename to `.sql.PENDING-CODE-DEPLOY` -> the scan below maps parked names
+ *     back to their effective `.sql` name, so parking changes nothing (measured:
+ *     the rename was executed, the guard stayed rc=1, and it was reverted);
+ *   - raise ENFORCE_FROM past it -> that constant is a one-time historical
+ *     watermark, not a rolling cutoff; moving it silently un-enforces every
+ *     migration in between.
+ *
+ * Two guards, each individually correct, were jointly unsatisfiable, and this
+ * lint is gate-blocking: the intersection was a permanent red that froze every
+ * agent's deploys. ENFORCE_FROM already handles migrations that were immutable
+ * BEFORE the guard landed; nothing handled one that becomes immutable AFTER it,
+ * which is every future occurrence.
+ *
+ * THE SHAPE OF THE FIX. The acknowledgement moves OUT of the immutable file into
+ * a sidecar that sits beside it. That is the whole trick: the sidecar is mutable,
+ * so every refusal it can produce is ACTIONABLE — which is what makes it safe to
+ * fail closed here, where failing closed on the migration itself produced the
+ * un-actionable deadlock above.
+ *
+ * It is deliberately far stricter than the inline `-- FORWARD-COMPAT:` marker it
+ * sits beside (that marker accepts any non-whitespace, `TODO` included). Every
+ * field is typed and machine-checkable, and ANY defect refuses the whole sidecar
+ * rather than honouring a partially-valid one.
+ *
+ *   {
+ *     "kind": "migration-forward-compat-ack",
+ *     "version": 1,
+ *     "migration": "975-remove-owned-trigger-legacy-arbiter.sql",
+ *     "appliedSha256": "<sha256 of that file's exact bytes>",
+ *     "requiresDeployedCommit": "<40-hex commit containing the compatible writer>",
+ *     "requiresDeployedNote": "what that commit changed, in one line",
+ *     "rationale": "why the deployed release tolerates this DDL",
+ *     "workItem": "EI-21539300249506308",
+ *     "reviewBy": "YYYY-MM-DD",
+ *     "postDeploy": "remove-sidecar" | "renew-review"
+ *   }
+ *
+ * The two bindings that carry the weight:
+ *   - appliedSha256 pins the acknowledgement to EXACT BYTES. schema_migrations
+ *     stores sha256 of the applied file, and immutability means the file on disk
+ *     still IS those bytes — so recomputing the hash here verifies the ledger
+ *     binding offline, with no database dependency in a lint that runs inside the
+ *     gate. Edit the migration and the sidecar stops applying to it.
+ *   - requiresDeployedCommit pins it to a CANDIDATE. The sidecar is honoured only
+ *     in a tree that actually contains the compatible writer, so it cannot travel
+ *     backwards to a checkout where the DDL really would break the live release.
+ *
+ * On "unapplied/editable": a sidecar is refused outright for a `.DRAFT` or
+ * `.PENDING-CODE-DEPLOY` artifact. Those are editable by construction, so their
+ * author must use the inline marker. Armed-and-immutable is the only case this
+ * exists for, and the immutability guard is what enforces the other half.
+ */
+export const SIDECAR_SUFFIX = '.forward-compat.json';
+export const SIDECAR_KIND = 'migration-forward-compat-ack';
+export const SIDECAR_VERSION = 1;
+
+/** Exact permitted key set. An unknown key refuses the sidecar (no free-form fields). */
+export const SIDECAR_KEYS = Object.freeze([
+  'kind',
+  'version',
+  'migration',
+  'appliedSha256',
+  'requiresDeployedCommit',
+  'requiresDeployedNote',
+  'rationale',
+  'workItem',
+  'reviewBy',
+  'postDeploy',
+]);
+
+const SIDECAR_POST_DEPLOY = new Set(['remove-sidecar', 'renew-review']);
+const SIDECAR_HEX40 = /^[0-9a-f]{40}$/;
+const SIDECAR_HEX64 = /^[0-9a-f]{64}$/;
+const SIDECAR_WORK_ITEM = /^(?:WI|EI|F)-\d+$/;
+const SIDECAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * Prose that carries no information. This is the specific weakness of ACK_MARKER
+ * (`-- FORWARD-COMPAT: TODO` satisfies it) that D-092 requires the typed route to
+ * close, so a placeholder rationale must refuse rather than pass.
+ */
+const SIDECAR_PLACEHOLDER = /^(?:todo|tbd|fixme|xxx|wip|n\/?a|none|null|placeholder|unknown|\W*)$/i;
+
+/** The sidecar filename for a migration, keyed on its EFFECTIVE `.sql` name. */
+export function sidecarNameFor(effectiveFile) {
+  return `${effectiveFile}${SIDECAR_SUFFIX}`;
+}
+
+/** The effective `.sql` name for a migration artifact (strips any parked suffix). */
+export function effectiveMigrationName(file) {
+  return PARKED_SUFFIXES.reduce(
+    (name, suffix) => (name.endsWith(suffix) ? name.slice(0, -suffix.length) : name),
+    file,
+  );
+}
+
+/** sha256 of a migration's bytes — the same value schema_migrations records. */
+export function migrationSha256(text) {
+  return createHash('sha256').update(text, 'utf8').digest('hex');
+}
+
+/**
+ * Resolve whether `sha` is a commit in this repo that is an ANCESTOR of HEAD.
+ * Returns true / false / null, where **null means "could not determine"** and the
+ * caller must fail closed on it. Never throws.
+ */
+export function makeAncestorResolver({ exec = execFileSync, cwd = join(__dirname, '..') } = {}) {
+  return (sha) => {
+    const run = (args) => exec('git', args, { cwd, stdio: 'ignore' });
+    try {
+      run(['cat-file', '-e', `${sha}^{commit}`]);
+    } catch {
+      return null; // unknown commit -> undetermined, not "not an ancestor"
+    }
+    try {
+      run(['merge-base', '--is-ancestor', sha, 'HEAD']);
+      return true;
+    } catch (error) {
+      // git exits 1 for "resolved, but not an ancestor". Anything else is a
+      // broken instrument, which must NOT read as a clean negative.
+      return error && error.status === 1 ? false : null;
+    }
+  };
+}
+
+/**
+ * Decide whether a sidecar acknowledges its migration. PURE — every input is
+ * passed in, so the whole refusal matrix is testable without touching the tree.
+ *
+ * Returns { present, honored, refusals }. `present:false` means no sidecar exists
+ * (not a refusal); `honored:false` with refusals means one exists and was REJECTED.
+ */
+export function evaluateForwardCompatSidecar({
+  artifactFile,
+  effectiveFile = effectiveMigrationName(artifactFile ?? ''),
+  sidecarText,
+  migrationSha,
+  isAncestorOfHead = () => null,
+  now = new Date(),
+} = {}) {
+  if (sidecarText == null) return { present: false, honored: false, refusals: [] };
+
+  const refusals = [];
+  const refuse = (reason) => refusals.push(reason);
+  const nonEmptyString = (value, min) =>
+    typeof value === 'string' && value.trim().length >= min && !SIDECAR_PLACEHOLDER.test(value.trim());
+
+  let doc;
+  try {
+    doc = JSON.parse(sidecarText);
+  } catch (error) {
+    return { present: true, honored: false, refusals: [`sidecar is not valid JSON (${error.message})`] };
+  }
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) {
+    return { present: true, honored: false, refusals: ['sidecar must be a JSON object'] };
+  }
+
+  const unknown = Object.keys(doc).filter((key) => !SIDECAR_KEYS.includes(key));
+  if (unknown.length > 0) refuse(`unknown key(s): ${unknown.join(', ')} (no free-form fields)`);
+  const missing = SIDECAR_KEYS.filter((key) => !(key in doc));
+  if (missing.length > 0) refuse(`missing required key(s): ${missing.join(', ')}`);
+
+  if (doc.kind !== SIDECAR_KIND) refuse(`kind must be exactly "${SIDECAR_KIND}"`);
+  if (doc.version !== SIDECAR_VERSION) refuse(`version must be ${SIDECAR_VERSION}`);
+
+  // Effective-name mapping: the sidecar names the ARMED `.sql`, never a parked name.
+  if (doc.migration !== effectiveFile) {
+    refuse(`migration "${doc.migration}" does not match this migration (${effectiveFile})`);
+  }
+
+  // Unapplied / editable: a parked or draft artifact can still be edited, so its
+  // author must use the inline marker instead of a sidecar.
+  if (artifactFile !== effectiveFile) {
+    refuse(`sidecar is not allowed for the editable artifact ${artifactFile} — add an inline -- FORWARD-COMPAT: line instead`);
+  }
+
+  // Ledger binding: exact applied bytes.
+  if (typeof doc.appliedSha256 !== 'string' || !SIDECAR_HEX64.test(doc.appliedSha256)) {
+    refuse('appliedSha256 must be 64 lowercase hex characters');
+  } else if (typeof migrationSha !== 'string' || !SIDECAR_HEX64.test(migrationSha)) {
+    refuse('could not hash the migration file to verify appliedSha256');
+  } else if (doc.appliedSha256 !== migrationSha) {
+    refuse(`appliedSha256 does not match this migration's bytes (file is ${migrationSha})`);
+  }
+
+  // Candidate binding: the compatible writer must be present in THIS tree.
+  if (typeof doc.requiresDeployedCommit !== 'string' || !SIDECAR_HEX40.test(doc.requiresDeployedCommit)) {
+    refuse('requiresDeployedCommit must be a 40-character lowercase commit sha');
+  } else {
+    const ancestry = isAncestorOfHead(doc.requiresDeployedCommit);
+    if (ancestry === true) {
+      // satisfied
+    } else if (ancestry === false) {
+      refuse(`requiresDeployedCommit ${doc.requiresDeployedCommit} is not an ancestor of HEAD — this tree does not contain the compatible writer`);
+    } else {
+      refuse(`requiresDeployedCommit ${doc.requiresDeployedCommit} could not be resolved in this repository`);
+    }
+  }
+
+  if (!nonEmptyString(doc.requiresDeployedNote, 12)) {
+    refuse('requiresDeployedNote must say what that commit changed (>= 12 chars, no placeholder)');
+  }
+  if (!nonEmptyString(doc.rationale, 24)) {
+    refuse('rationale must explain why the deployed release tolerates this DDL (>= 24 chars, no placeholder)');
+  }
+  if (typeof doc.workItem !== 'string' || !SIDECAR_WORK_ITEM.test(doc.workItem)) {
+    refuse('workItem must be a work-item ref such as EI-123, WI-123 or F-123');
+  }
+
+  // Stale sidecar. Refusing here is safe precisely because the sidecar is mutable:
+  // the fix is to renew or delete it, which is always available.
+  if (typeof doc.reviewBy !== 'string' || !SIDECAR_DATE.test(doc.reviewBy)) {
+    refuse('reviewBy must be a YYYY-MM-DD date');
+  } else {
+    const deadline = Date.parse(`${doc.reviewBy}T23:59:59.999Z`);
+    if (!Number.isFinite(deadline)) refuse(`reviewBy "${doc.reviewBy}" is not a real date`);
+    else if (deadline < now.getTime()) refuse(`sidecar is stale — reviewBy ${doc.reviewBy} has passed; renew or remove it`);
+  }
+
+  if (typeof doc.postDeploy !== 'string' || !SIDECAR_POST_DEPLOY.has(doc.postDeploy)) {
+    refuse(`postDeploy must be one of: ${[...SIDECAR_POST_DEPLOY].join(', ')}`);
+  }
+
+  return { present: true, honored: refusals.length === 0, refusals };
+}
+
+/** Read + evaluate the sidecar for one migration artifact on disk. */
+export function readForwardCompatSidecar(
+  directory,
+  artifactFile,
+  { migrationText, isAncestorOfHead, now, readFile = readFileSync } = {},
+) {
+  const effectiveFile = effectiveMigrationName(artifactFile);
+  const sidecarFile = sidecarNameFor(effectiveFile);
+  let sidecarText = null;
+  try {
+    sidecarText = readFile(join(directory, sidecarFile), 'utf8');
+  } catch (error) {
+    if (!isMissingFileError(error)) {
+      return {
+        present: true,
+        honored: false,
+        sidecarFile,
+        refusals: [`sidecar could not be read (${error.message})`],
+      };
+    }
+  }
+  const verdict = evaluateForwardCompatSidecar({
+    artifactFile,
+    effectiveFile,
+    sidecarText,
+    migrationSha: typeof migrationText === 'string' ? migrationSha256(migrationText) : null,
+    isAncestorOfHead,
+    now,
+  });
+  return { ...verdict, sidecarFile };
+}
+
+/**
  * Extract column identifiers introduced by an ALTER TABLE ADD COLUMN statement.
  * Comments are masked first, while SQL string bodies remain visible so a real
  * EXECUTE statement inside a DO block is still checked. This intentionally covers
@@ -585,6 +853,142 @@ function selfTest() {
     failures.push('draft dependency detector treated a source comment as a reference');
   }
 
+  // ---------------------------------------------------------------------------
+  // Typed sidecar (D-092). The dangerous direction is HONOURING something it
+  // should refuse, because that waves a forward-incompatible migration straight
+  // through a gate-blocking lint. Every refusal case is asserted here so a broken
+  // evaluator cannot report green — and the CALIBRATION case below is what stops
+  // an evaluator that refuses everything from passing all the negative cases.
+  // ---------------------------------------------------------------------------
+  const sidecarSql = 'DROP INDEX CONCURRENTLY IF EXISTS harness_shared.some_uidx;\n';
+  const sidecarNow = new Date('2026-01-01T00:00:00.000Z');
+  const validSidecar = {
+    kind: SIDECAR_KIND,
+    version: SIDECAR_VERSION,
+    migration: '900-selftest-fixture.sql',
+    appliedSha256: migrationSha256(sidecarSql),
+    requiresDeployedCommit: 'a'.repeat(40),
+    requiresDeployedNote: 'writer switched to the four-column tuple',
+    rationale: 'the deployed release no longer names the dropped index in any ON CONFLICT arbiter',
+    workItem: 'EI-21539300249506308',
+    reviewBy: '2026-06-01',
+    postDeploy: 'remove-sidecar',
+  };
+  const evaluateSidecar = (overrides = {}, options = {}) =>
+    evaluateForwardCompatSidecar({
+      artifactFile: options.artifactFile ?? '900-selftest-fixture.sql',
+      sidecarText:
+        options.sidecarText !== undefined ? options.sidecarText : JSON.stringify({ ...validSidecar, ...overrides }),
+      migrationSha: migrationSha256(sidecarSql),
+      isAncestorOfHead: options.isAncestorOfHead ?? (() => true),
+      now: sidecarNow,
+    });
+
+  // CALIBRATION: a fully valid sidecar MUST be honoured, or every negative case
+  // below passes for the wrong reason.
+  const calibration = evaluateSidecar();
+  if (!calibration.honored) {
+    failures.push(
+      `sidecar evaluator REFUSED a fully valid sidecar (calibration failed): ${calibration.refusals.join('; ')}`,
+    );
+  }
+
+  const mustRefuse = [
+    ['mismatched appliedSha256 (not the applied bytes)', () => evaluateSidecar({ appliedSha256: 'b'.repeat(64) })],
+    ['malformed appliedSha256', () => evaluateSidecar({ appliedSha256: 'not-a-hash' })],
+    [
+      'requiresDeployedCommit that is NOT an ancestor of HEAD',
+      () => evaluateSidecar({}, { isAncestorOfHead: () => false }),
+    ],
+    [
+      'requiresDeployedCommit whose ancestry could not be determined',
+      () => evaluateSidecar({}, { isAncestorOfHead: () => null }),
+    ],
+    ['malformed requiresDeployedCommit', () => evaluateSidecar({ requiresDeployedCommit: 'HEAD~1' })],
+    ['placeholder rationale', () => evaluateSidecar({ rationale: 'TODO' })],
+    ['empty rationale', () => evaluateSidecar({ rationale: '   ' })],
+    ['placeholder requiresDeployedNote', () => evaluateSidecar({ requiresDeployedNote: 'tbd' })],
+    ['malformed workItem', () => evaluateSidecar({ workItem: 'ticket-7' })],
+    ['stale reviewBy', () => evaluateSidecar({ reviewBy: '2025-12-31' })],
+    ['non-date reviewBy', () => evaluateSidecar({ reviewBy: 'soon' })],
+    ['unknown postDeploy value', () => evaluateSidecar({ postDeploy: 'ignore-it' })],
+    ['unknown key (free-form field)', () => evaluateSidecar({ note: 'extra' })],
+    ['wrong kind', () => evaluateSidecar({ kind: 'something-else' })],
+    ['wrong version', () => evaluateSidecar({ version: 2 })],
+    [
+      'migration name that does not match the file',
+      () => evaluateSidecar({ migration: '901-other-migration.sql' }),
+    ],
+    ['malformed JSON', () => evaluateSidecar({}, { sidecarText: '{ not json' })],
+    ['a JSON array instead of an object', () => evaluateSidecar({}, { sidecarText: '[]' })],
+    [
+      'a PARKED (still-editable) artifact',
+      () =>
+        evaluateSidecar({}, { artifactFile: '900-selftest-fixture.sql.PENDING-CODE-DEPLOY' }),
+    ],
+    [
+      'a DRAFT (still-editable) artifact',
+      () => evaluateSidecar({}, { artifactFile: '900-selftest-fixture.sql.DRAFT' }),
+    ],
+  ];
+  for (const [label, run] of mustRefuse) {
+    const verdict = run();
+    if (verdict.honored) failures.push(`sidecar evaluator HONOURED ${label} — it must refuse`);
+    else if (verdict.refusals.length === 0) failures.push(`sidecar evaluator refused ${label} with NO stated reason`);
+  }
+
+  // A missing sidecar is an ABSENCE, never a refusal — the migration simply has
+  // no acknowledgement and falls through to the normal offender path.
+  const absent = evaluateSidecar({}, { sidecarText: null });
+  if (absent.present || absent.honored || absent.refusals.length > 0) {
+    failures.push('a MISSING sidecar was reported as present/honoured/refused instead of absent');
+  }
+
+  // Effective-name mapping: a sidecar is keyed on the ARMED `.sql` name, so
+  // parking or unparking a migration never strands or silently orphans it.
+  for (const artifact of [
+    '975-fixture.sql',
+    '975-fixture.sql.DRAFT',
+    '975-fixture.sql.PENDING-CODE-DEPLOY',
+  ]) {
+    const mapped = sidecarNameFor(effectiveMigrationName(artifact));
+    if (mapped !== `975-fixture.sql${SIDECAR_SUFFIX}`) {
+      failures.push(`sidecar name for ${artifact} mapped to ${mapped}, not the effective .sql name`);
+    }
+  }
+
+  // The ancestry resolver must report a broken instrument as UNDETERMINED (null),
+  // never as a clean "not an ancestor" — a false negative there would refuse a
+  // valid sidecar, and a false positive would honour an invalid one.
+  // `mergeBaseStatus: null` means the merge-base call SUCCEEDS (an ancestor).
+  const ancestryProbe = ({ commitResolves = true, mergeBaseStatus = null } = {}) =>
+    makeAncestorResolver({
+      exec: (_bin, args) => {
+        if (args[0] === 'cat-file') {
+          if (commitResolves) return '';
+          const error = new Error('not a valid object name');
+          error.status = 128;
+          throw error;
+        }
+        if (mergeBaseStatus === null) return '';
+        const error = new Error('merge-base');
+        error.status = mergeBaseStatus;
+        throw error;
+      },
+    })('c'.repeat(40));
+  if (ancestryProbe() !== true) {
+    failures.push('ancestry resolver did not report a real ancestor as true (calibration failed)');
+  }
+  if (ancestryProbe({ commitResolves: false }) !== null) {
+    failures.push('ancestry resolver did not report an unresolvable commit as undetermined');
+  }
+  if (ancestryProbe({ mergeBaseStatus: 1 }) !== false) {
+    failures.push('ancestry resolver did not report git exit 1 as "not an ancestor"');
+  }
+  if (ancestryProbe({ mergeBaseStatus: 129 }) !== null) {
+    failures.push('ancestry resolver reported a BROKEN git invocation as a clean negative');
+  }
+
   return failures;
 }
 
@@ -619,23 +1023,28 @@ function main() {
   }
 
   const inScope = all
-    .map((file) => ({
-      file,
-      effective: PARKED_SUFFIXES.reduce(
-        (name, suffix) => name.endsWith(suffix) ? name.slice(0, -suffix.length) : name,
-        file,
-      ),
-    }))
+    .map((file) => ({ file, effective: effectiveMigrationName(file) }))
     .filter(({ effective }) => isEnforcedMigrationFile(effective))
     .map(({ file, effective }) => ({ file, num: Number.parseInt(effective.slice(0, effective.indexOf('-')), 10) }))
     .sort((a, b) => a.num - b.num);
 
+  const isAncestorOfHead = makeAncestorResolver();
   const offenders = [];
+  const acknowledged = [];
   for (const { file, text } of readScannedFiles(SQL_DIR, inScope.map(({ file }) => file))) {
     const hits = violationsFor(text);
     if (hits.length === 0) continue;
     if (ACK_MARKER.test(text)) continue;
-    offenders.push({ file, hits });
+
+    // The migration itself is immutable once applied, so the acknowledgement may
+    // live in a typed sidecar beside it (D-092). Any defect refuses the WHOLE
+    // sidecar — a partially-valid one never waves a migration through.
+    const sidecar = readForwardCompatSidecar(SQL_DIR, file, { migrationText: text, isAncestorOfHead });
+    if (sidecar.honored) {
+      acknowledged.push({ file, sidecarFile: sidecar.sidecarFile });
+      continue;
+    }
+    offenders.push({ file, hits, sidecar: sidecar.present ? sidecar : null });
   }
 
   const draftOffenders = [];
@@ -654,17 +1063,29 @@ function main() {
       console.error('The database migrates NOW; :3070 keeps running the older release checkout until the');
       console.error('next commit -> green-checkpoint -> deploy cycle finishes. Destructive DDL therefore');
       console.error('breaks code that is still live.\n');
-      for (const { file, hits } of offenders) {
+      for (const { file, hits, sidecar } of offenders) {
         console.error(`  ${file}`);
         for (const h of hits) console.error(`      [${h.id}] ${h.why}`);
+        if (sidecar) {
+          console.error(`      sidecar ${sidecar.sidecarFile} was REJECTED:`);
+          for (const reason of sidecar.refusals) console.error(`        - ${reason}`);
+        }
       }
       console.error('\nFix by splitting into expand/contract:');
       console.error('  1. EXPAND  - add the new index/column; ship and DEPLOY the code that uses it.');
       console.error('  2. CONTRACT - a LATER migration drops the old one, once no deployed release uses it.');
       console.error('\nOr, if the deployed release genuinely does not touch it, record why in the migration:');
       console.error('  -- FORWARD-COMPAT: <why the currently-deployed release does not use this>');
+      console.error('\nAlready APPLIED, so that line can no longer be added? The migration is immutable');
+      console.error('(migration-immutability-guard / WI-38352). Write a typed sidecar beside it instead:');
+      console.error(`  ${sidecarNameFor('<NNN-name>.sql')}`);
+      console.error('It must bind the applied bytes (appliedSha256) and the commit that carries the');
+      console.error('compatible writer (requiresDeployedCommit, must be an ancestor of HEAD), plus');
+      console.error('requiresDeployedNote, rationale, workItem, reviewBy and postDeploy. Any defect');
+      console.error('refuses the whole sidecar. See stable-candidate-related-gate-2026-08-23#D-092.');
       console.error('\nBackground: EI-18797473716313783 (migration 689 dropped an ON CONFLICT arbiter and');
-      console.error('broke facts:assert fleet-wide for ~3 hours).');
+      console.error('broke facts:assert fleet-wide for ~3 hours); EI-21539300249506308 (the deadlock this');
+      console.error('sidecar route resolves).');
     }
     if (draftOffenders.length > 0) {
       console.error('\nDraft migration(s) already referenced by source before they were armed:\n');
@@ -680,8 +1101,11 @@ function main() {
     process.exit(1);
   }
 
+  for (const { file, sidecarFile } of acknowledged) {
+    console.log(`check-migration-forward-compat: ${file} acknowledged by sidecar ${sidecarFile}`);
+  }
   console.log(
-    `check-migration-forward-compat: OK (${inScope.length} migration(s) at or after ${ENFORCE_FROM} checked, ${all.length} total on disk)`,
+    `check-migration-forward-compat: OK (${inScope.length} migration(s) at or after ${ENFORCE_FROM} checked, ${all.length} total on disk, ${acknowledged.length} acknowledged by sidecar)`,
   );
 }
 
