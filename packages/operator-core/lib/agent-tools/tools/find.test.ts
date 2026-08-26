@@ -82,6 +82,9 @@ describe('tools:find tool registration', () => {
     expect(def.capability).toBe('agent_tools:read');
     expect(def.requirePrincipal).toBe(false);
     expect((def as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+    expect((def as { guidance?: { notWhen?: string } }).guidance?.notWhen).toContain(
+      'do not pass a per-call `harness` (session scope is applied automatically)',
+    );
     // args schema accepts a query, rejects an empty one.
     expect(def.args.safeParse({ query: 'feature flag' }).success).toBe(true);
     expect(def.args.safeParse({ query: '' }).success).toBe(false);

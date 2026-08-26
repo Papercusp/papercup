@@ -593,7 +593,7 @@ export default defineTool({
       'You need a tool that is not in your loaded/core set and do not know its exact name — search by what you want to DO ' +
       '("set a feature flag", "spawn a worker bee").',
     notWhen:
-      'The tool is already in your core set or you know its exact name — just call it. For a full permission-annotated dump use agent_tools:list.',
+      'The tool is already in your core set or you know its exact name — just call it. `tools:find` is catalog-global and accepts only `{ query, limit? }`; do not pass a per-call `harness` (session scope is applied automatically). For a full permission-annotated dump use agent_tools:list.',
     chaining:
       'tools:find("<intent>") → call the top hit through tools:invoke in the SAME turn. `activated:true` ' +
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
