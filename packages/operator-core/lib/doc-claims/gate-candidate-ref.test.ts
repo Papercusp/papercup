@@ -94,11 +94,45 @@ describe('CLAUDE.md gate-candidate-ref claim', () => {
       expect(source).toMatch(/integrationBranch/);
     });
 
+    // WI-41765 / D-008 — THE TWO ASSERTIONS BELOW USED TO SHARE ONE it(), AND MUST NOT AGAIN.
+    //
+    // They are different KINDS of claim and deserve different consequences on failure:
+    //
+    //   SUBSTANTIVE  — "the gate cuts from the LOCAL branch and never fetches" is a statement
+    //                  about the RUNNING SYSTEM. If it breaks, the gate may be judging a sha
+    //                  nobody asked for. That must hold `main` red.
+    //
+    //   COVERAGE     — "the detector can still see both sites" is a statement about the
+    //                  INSTRUMENT, not the system. If it breaks, we have learned that the
+    //                  detector went partially blind — real and worth fixing, but it freezes
+    //                  the whole fleet's promotion over a measurement artifact.
+    //
+    // On 2026-08-25 ONLY the coverage assertion failed: green-checkpoint.ts grew past 14,500
+    // lines, its resolution calls became multi-line, the line-based detector saw 1 site instead
+    // of 2 — while `violations` stayed empty and `ok` stayed true. The claim itself never
+    // stopped holding. That red helped freeze the gate (WI-41762).
+    //
+    // Bundled together, they were indistinguishable to every consumer: the failing entry named
+    // one it() block, so a reader could not tell "the gate is fetching" from "the regex drifted",
+    // and any file- or test-level exemption aimed at the drift would have ALSO switched off the
+    // pin guarding against a remote-ref cut. Separated, each can be read — and classified — for
+    // what it actually asserts.
     it('cuts the candidate from the LOCAL integration branch, and never fetches', () => {
       const verdict = judgeGateCandidateRef(source);
       expect(verdict.violations).toEqual([]);
       expect(verdict.ok).toBe(true);
+    });
+
+    it('detector coverage: still sees both candidate-resolution sites (instrument health, not a system claim)', () => {
       // At least the primary cut site + the CLI path.
+      //
+      // ⚠ WIDEN THE DETECTOR, NEVER LOWER THIS FLOOR. Dropping `2` to `1` would make the 2026-08-25
+      // drift pass silently while the "never fetches" pin above scanned a file whose second
+      // resolution site it could no longer see — converting a loud instrument failure into a
+      // quiet false-clean, which is strictly worse than the red it removes. The correct fix when
+      // this fails is to teach the detector the new shape: that is what refResolutionWindow()
+      // in gate-candidate-ref.ts already does for multi-line calls.
+      const verdict = judgeGateCandidateRef(source);
       expect(verdict.candidateSites.length).toBeGreaterThanOrEqual(2);
     });
 
