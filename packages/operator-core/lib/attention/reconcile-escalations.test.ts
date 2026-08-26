@@ -495,11 +495,19 @@ describe('selectEscalationSlaReroutes (EI-7024)', () => {
     expect(selected[0]).toMatchObject({ targetOwnerId: 'su-a-plan', reason: 'same-plan' });
   });
 
-  it('rejects young, operational, non-agent, acknowledged, and contextless rows', () => {
+  it('rejects young, operational, non-agent, loopback-test, acknowledged, and contextless rows', () => {
     const rows = [
       rerouteRow({ msg_id: 'young', ts: iso(5 * 60 * 1000) }),
       rerouteRow({ msg_id: 'system', from: 'system:watchdog' }),
       rerouteRow({ msg_id: 'human', from: 'human' }),
+      rerouteRow({
+        msg_id: 'loopback-fixture',
+        from: 'su-loopback',
+        summary: 'Test?',
+        body: '',
+        options: ['Yes', 'No'],
+      }),
+      rerouteRow({ msg_id: 'loopback-namespaced', from: 'su-loopback:transport-test' }),
       rerouteRow({ msg_id: 'acked' }),
       rerouteRow({ msg_id: 'contextless', plan_slug: undefined, harness_slug: undefined }),
     ];

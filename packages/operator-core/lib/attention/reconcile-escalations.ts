@@ -433,6 +433,10 @@ export const ESCALATION_REROUTE_SLA_MS = (() => {
 export const ESCALATION_REROUTE_BATCH_LIMIT = 200;
 
 const AGENT_ESCALATION_AUTHOR_RE = new RegExp(AGENT_SESSION_SENDER_PATTERN, 'i');
+/** Harness/self-test sender namespace. These rows exercise the escalation
+ * transport itself; they are not operators asking another live operator to
+ * take action, so aging must never promote them into the SLA reroute lane. */
+const LOOPBACK_ESCALATION_AUTHOR_RE = /^su-loopback(?:$|[-:_])/i;
 export const ESCALATION_REROUTE_OWNER = 'system:escalation-sla-reroute';
 const ESCALATION_REROUTE_MSG_PREFIX = 'escalation-sla-reroute:';
 const ESCALATION_REROUTE_MARKER_FIELD = 'escalationRerouteOf';
@@ -484,6 +488,7 @@ function isRerouteEligible(
 ): boolean {
   const from = concrete(e.from);
   if (!from || !AGENT_ESCALATION_AUTHOR_RE.test(from)) return false;
+  if (LOOPBACK_ESCALATION_AUTHOR_RE.test(from)) return false;
   if (isOperationalEscalation(from, (e.options?.length ?? 0) > 0)) return false;
   if (responseMarkers.has(e.msg_id)) return false;
   const openedMs = Date.parse(e.ts);
