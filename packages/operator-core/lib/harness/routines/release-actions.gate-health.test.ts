@@ -35,6 +35,12 @@ vi.mock('node:child_process', async (importOriginal) => {
 type UnsafeCall = { query: string; params: unknown[] };
 const calls: UnsafeCall[] = [];
 let seededGh: Record<string, unknown> | null = null;
+/**
+ * WI-42118: the `green_checkpoint` pipeline_events page the CROSS-STREAK cause digest reads.
+ * Default EMPTY, which the reader turns into a `null` digest — so every pre-existing test in
+ * this file renders exactly the bodies it did before the digest shipped.
+ */
+let seededEvents: Array<{ status: string; detail: unknown; created_at: string }> = [];
 
 /**
  * The shapes this fake returns, as ONE named union.
@@ -47,6 +53,7 @@ let seededGh: Record<string, unknown> | null = null;
 type FakeSqlResult =
   | Array<{ gh: Record<string, unknown> | null }>
   | Array<{ streak: number; alerted: boolean }>
+  | Array<{ status: string; detail: unknown; created_at: string }>
   | { count: number };
 
 const fakeSql = {
@@ -61,6 +68,11 @@ const fakeSql = {
     // recovery test (seed stallAlerted:true, expect a clean clear) doesn't spuriously
     // hit trackGateStall's "MATCHED 0 ROWS despite stallAlerted" warn path (that
     // warn is for a genuinely-diverged DB, which no test here is simulating).
+    // WI-42118: the cross-streak cause digest's read. Empty by default, so a test that does
+    // not seed events gets a `null` digest and unchanged bodies.
+    if (/FROM\s+harness_shared\.pipeline_events/i.test(query)) {
+      return Promise.resolve(seededEvents);
+    }
     if (/UPDATE\s+harness_shared\.harness_escalations/i.test(query)) {
       return Promise.resolve({ count: seededGh?.stallAlerted ? 1 : 0 });
     }
@@ -151,6 +163,7 @@ function lastGateHealthWrite(): Record<string, unknown> | null {
 beforeEach(() => {
   calls.length = 0;
   seededGh = null;
+  seededEvents = [];
   notifyAttention.mockClear();
   notifyAttentionOnce.mockClear();
   broadcastSevereEvent.mockClear();
@@ -1511,5 +1524,104 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
     expect(broadcastSevereEvent).toHaveBeenCalledTimes(1);
     expect(broadcastSevereEvent.mock.calls[0]![0]!.oneShot).toBe(true);
     expect(escalationWrites()).toHaveLength(1);
+  });
+
+  // ── WI-42118 (D-022(d)): the CROSS-STREAK cause digest ────────────────────────────────
+  // Everything else in both bodies is a snapshot of the alerting tick, so neither could say
+  // whether the failing set is one unfixed break or churn. These pin that it now reaches BOTH.
+
+  /** A `green_checkpoint` pipeline_events row, as the digest reader sees it. */
+  const evt = (agoMs: number, status: string, failingTests: string[]) => ({
+    status,
+    detail: JSON.stringify(failingTests.length ? { failingTests } : {}),
+    created_at: new Date(Date.now() - agoMs).toISOString(),
+  });
+  const HOUR = 3_600_000;
+  const escalationBody = () => String(escalationWrites()[0]!.params[2]);
+
+  it('⭐ carries a STABLE cause digest into the HUMAN body — the half that named no tests at all', async () => {
+    seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() - 40 * HOUR };
+    seededEvents = [
+      evt(2 * HOUR, 'not-green', ['lint:tsc']),
+      evt(20 * HOUR, 'not-green', ['lint:tsc']),
+      evt(36 * HOUR, 'not-green', ['lint:tsc']),
+    ];
+
+    await trackGateStall(ctx, 'not-green');
+
+    const body = notifyArg().body;
+    expect(body).toContain('CAUSE: STABLE');
+    expect(body).toContain('lint:tsc');
+    expect(body).toContain('one unfixed break');
+    // Structured too, so a consumer can route on the class without parsing prose.
+    expect(notifyArg().data).toMatchObject({ causeStability: 'stable', causePersistent: ['lint:tsc'] });
+    // ...and the durable row carries the same verdict.
+    expect(escalationBody()).toContain('CAUSE: STABLE');
+    expect(JSON.parse(escalationBody()).cause).toMatchObject({ stability: 'stable', persistent: ['lint:tsc'] });
+  });
+
+  /**
+   * ⭐ THE REGRESSION GUARD. Most rows in a real streak are non-verdict statuses naming zero
+   * tests. If the digest ever stops filtering them through `classifyGateStallStatus`, this
+   * dead-stable streak reports CHURNING — telling a responder to suspect infrastructure when
+   * one named test has been broken the whole time.
+   */
+  it('⭐ non-verdict ticks do not turn a stable streak into churn in the alarm body', async () => {
+    seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() - 40 * HOUR };
+    seededEvents = [
+      evt(2 * HOUR, 'not-green', ['lint:tsc']),
+      evt(6 * HOUR, 'skipped-locked', []),
+      evt(10 * HOUR, 'repair-in-progress', []),
+      evt(14 * HOUR, 'cancelled', []),
+      evt(20 * HOUR, 'not-green', ['lint:tsc']),
+    ];
+
+    await trackGateStall(ctx, 'not-green');
+
+    expect(notifyArg().body).toContain('CAUSE: STABLE');
+    expect(notifyArg().body).not.toContain('CHURNING');
+    expect(notifyArg().data).toMatchObject({ causeStability: 'stable' });
+  });
+
+  it('⭐ says CHURNING — and says not to chase the names — when nothing is common to all reds', async () => {
+    seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() - 40 * HOUR };
+    seededEvents = [
+      evt(2 * HOUR, 'not-green', ['a.test.ts']),
+      evt(10 * HOUR, 'not-green', ['b.test.ts']),
+      evt(20 * HOUR, 'not-green', ['c.test.ts']),
+    ];
+
+    await trackGateStall(ctx, 'not-green');
+
+    expect(notifyArg().body).toContain('CAUSE: CHURNING');
+    expect(notifyArg().body).toContain('do NOT chase');
+    expect(notifyArg().data).toMatchObject({ causeStability: 'churning', causePersistent: [] });
+  });
+
+  it('⭐ says the alarm is about the GATE when every red named nothing — the livelock shape', async () => {
+    seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() - 40 * HOUR };
+    seededEvents = [
+      evt(2 * HOUR, 'not-green', []),
+      evt(10 * HOUR, 'not-green', []),
+      evt(20 * HOUR, 'not-green', []),
+    ];
+
+    await trackGateStall(ctx, 'not-green');
+
+    expect(notifyArg().body).toContain('about the GATE, not the code');
+    expect(notifyArg().data).toMatchObject({ causeStability: 'silent' });
+  });
+
+  /** Fail-safe + back-compat: no event history ⇒ the bodies render exactly as they did before. */
+  it('renders the pre-digest bodies unchanged when no streak history is readable', async () => {
+    seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() - 40 * HOUR };
+    seededEvents = [];
+
+    await trackGateStall(ctx, 'not-green');
+
+    expect(notifyAttentionOnce).toHaveBeenCalledTimes(1);
+    expect(notifyArg().body).not.toContain('CAUSE:');
+    expect(notifyArg().data.causeStability).toBeNull();
+    expect(JSON.parse(escalationBody()).cause).toBeNull();
   });
 });
