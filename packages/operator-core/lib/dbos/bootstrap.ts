@@ -522,6 +522,16 @@ export async function startDbos(): Promise<void> {
     // FLAGS.RETRIEVAL_DEGRADATION_WATCHDOG (default ON), checked per tick.
     const { startRetrievalDegradationWatchdog } = await import('../system-health/retrieval-degradation-watchdog');
     startRetrievalDegradationWatchdog();
+    // EI-21491088289861649: alarm when a search caller's query-embed p99
+    // breaches THAT caller's own budget. The sibling above sees only leg
+    // OUTCOMES, so a slow-but-succeeding embed (measured: 1.92s cold vs ~1ms
+    // warm against a healthy sidecar — under search's 4000ms budget while
+    // blowing mid-turn's 1200ms) never trips it. Armed HERE for the same
+    // reason: the sampler is in-process and this is the process the
+    // agent-facing search paths run in. Runtime gate:
+    // FLAGS.EMBED_LATENCY_WATCHDOG (default ON), checked per tick.
+    const { startEmbedLatencyWatchdog } = await import('../system-health/embed-latency-watchdog');
+    startEmbedLatencyWatchdog();
     // EI-20581099901890760 half 2: alarm on a live-HELD goal missing the standing
     // drain fleet the GOAL contract requires. Sibling of the liveness watchdog
     // above, deliberately separate (its author's ruling): that one fires when
