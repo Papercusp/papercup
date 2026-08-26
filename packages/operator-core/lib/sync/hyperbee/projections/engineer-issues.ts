@@ -337,7 +337,7 @@ async function writeToPg(
   }
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   // P-010 unification: apply the issue op to the work_items BASE table (engineer_issues is

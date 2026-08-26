@@ -295,7 +295,7 @@ async function writeToPg(
   // content digest — inherit the normalized value).
   const takenBy = normalizeTakenBy(row.taken_by);
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
   // D-001: the op's HLC ordering key — the SAME causal key the merge fold orders
   // by. Stored as `fed_hlc` and compared by the LWW guard below via fed_order_key()

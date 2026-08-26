@@ -74,7 +74,7 @@ async function writeToPg(
   // origin='remote' so the capture_substrate_outbox trigger skips it — otherwise
   // peer B would re-federate every event it received from peer A. Local emits
   // (emitUsageEvent) rely on the column DEFAULT 'local' and ARE captured.
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   await sql`
     INSERT INTO harness_shared.contributor_usage_events
       (harness_slug, event_id, github_user_id, device_pubkey, kind, ref_id, payload, ts, schema_version, origin)

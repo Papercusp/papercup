@@ -130,7 +130,7 @@ async function writeToPg(
 
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
   // D-001: the op's HLC ordering key — the SAME causal key the merge fold uses.
   const fedHlc = provenance?.fedHlc ?? null;

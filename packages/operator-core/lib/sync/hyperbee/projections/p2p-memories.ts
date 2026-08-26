@@ -120,7 +120,7 @@ async function writeToPg(
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   // The projection applies LOCAL echoes too (origin 'local' = our own op folding
   // back) — those rows already exist via memory:remember; the source-partitioned
   // upsert below is a no-op refresh for them (source_hive NULL partition).
