@@ -54,6 +54,15 @@ export interface LaunchProfileForm {
   effort: string;
   account: string;
   carry: string;
+  /**
+   * `''` (unpinned) | `'true'` (headless) | `'false'` (headed).
+   *
+   * A STRING here even though the document stores a boolean: the form is
+   * uniformly string-valued so one loop can render and diff every field, and
+   * blank has to stay a distinct third state (D-002). Converted at the boundary
+   * by profileToForm / formToProfile.
+   */
+  headless: string;
   contextSize: string;
 }
 
@@ -76,11 +85,20 @@ export const EMPTY_PROFILE_FORM: LaunchProfileForm = {
   effort: '',
   account: '',
   carry: '',
+  headless: '',
   contextSize: '',
 };
 
 /** The profile keys, in the order the form renders them. */
-export const PROFILE_FIELDS = ['agent', 'model', 'effort', 'account', 'carry', 'contextSize'] as const;
+export const PROFILE_FIELDS = [
+  'agent',
+  'model',
+  'effort',
+  'account',
+  'carry',
+  'headless',
+  'contextSize',
+] as const;
 export type ProfileField = (typeof PROFILE_FIELDS)[number];
 
 /** Which profile fields are closed sets (rendered as a select) vs free text. */
@@ -88,6 +106,7 @@ export const PROFILE_CHOICE_FIELDS: ReadonlySet<ProfileField> = new Set<ProfileF
   'agent',
   'carry',
   'contextSize',
+  'headless',
 ]);
 
 export const PROFILE_FIELD_LABEL: Record<ProfileField, string> = {
@@ -96,6 +115,7 @@ export const PROFILE_FIELD_LABEL: Record<ProfileField, string> = {
   effort: 'Effort',
   account: 'Account',
   carry: 'Carry',
+  headless: 'Window',
   contextSize: 'Context',
 };
 
@@ -144,6 +164,10 @@ function profileToForm(p: GoalDetailLaunchProfile | null | undefined): LaunchPro
     effort: p?.effort ?? '',
     account: p?.account ?? '',
     carry: p?.carry ?? '',
+    // `== null` and NOT `?? ''`: `false` is a PINNED value the owner chose, and
+    // `p.headless ?? ''` would be correct here only by luck of `false` not being
+    // nullish. Spelled explicitly so the three states stay visibly three.
+    headless: p?.headless == null ? '' : String(p.headless),
     contextSize: p?.contextSize ?? '',
   };
 }
@@ -174,12 +198,17 @@ export function settingsToForm(s: GoalDetailLaunchSettings | null | undefined): 
 }
 
 function formToProfile(f: LaunchProfileForm): GoalDetailLaunchProfile | null {
-  const out: Record<string, string> = {};
+  const out: Record<string, string | boolean> = {};
   for (const k of PROFILE_FIELDS) {
     const v = f[k].trim();
     // Blank emits NO KEY — see the file docblock. `{ model: '' }` would read
     // back as a pinned value while pinning nothing.
-    if (v) out[k] = v;
+    if (!v) continue;
+    // `headless` is the one key stored as a boolean (it matches the fleet
+    // layer's spelling). Emitting the STRING 'false' here would be the worst
+    // outcome available: `.strict()` would reject the save outright, or — if it
+    // ever slipped through — a truthy 'false' would flip the meaning.
+    out[k] = k === 'headless' ? v === 'true' : v;
   }
   return Object.keys(out).length ? (out as GoalDetailLaunchProfile) : null;
 }

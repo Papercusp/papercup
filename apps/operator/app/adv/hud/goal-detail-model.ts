@@ -179,6 +179,16 @@ export interface GoalDetailLaunchProfile {
   account?: string;
   carry?: string;
   contextSize?: string;
+  /**
+   * The one NON-string profile key: it is a boolean in the stored document, to
+   * match the fleet layer's spelling. The editor renders it from a closed set of
+   * strings and converts at the form boundary (goal-launch-settings-model.ts),
+   * so this type deliberately keeps the document's shape rather than the form's.
+   *
+   * Absent = unpinned, which resolves to headless (D-002) — never read absence
+   * as `false`.
+   */
+  headless?: boolean;
 }
 
 /**
@@ -207,6 +217,7 @@ export interface GoalDetailLaunchOptions {
   agent?: readonly string[];
   carry?: readonly string[];
   contextSize?: readonly string[];
+  headless?: readonly string[];
 }
 
 /**

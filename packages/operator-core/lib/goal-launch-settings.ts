@@ -109,11 +109,28 @@ export const LAUNCH_PROFILE_AGENTS = ['claude', 'codex', 'omp'] as const;
 export const LAUNCH_PROFILE_CARRY = ['warm', 'cold'] as const;
 export const LAUNCH_PROFILE_CONTEXT_SIZES = ['full', 'trimmed'] as const;
 
+/**
+ * Headed vs headless, as the EDITOR's three states (P-001, D-002).
+ *
+ * The stored key is a real `boolean` — that is the spelling the fleet layer
+ * already uses (`PER_ROLE_KNOBS` in fleet_registry/pair-launch-options.ts), and
+ * a goal profile that said `'true'` where a fleet role says `true` would be two
+ * spellings of one concept, which is the drift the closed-set constants exist to
+ * prevent. These strings are the editor's rendering of that boolean, converted at
+ * the form boundary — never what lands in the document.
+ *
+ * ABSENT is the third state and it is not in this list: an unpinned `headless`
+ * resolves to `true` (today's hardcoded behaviour), so blank must stay
+ * distinguishable from an explicit `false` exactly as it is for the ceilings.
+ */
+export const LAUNCH_PROFILE_HEADLESS = ['true', 'false'] as const;
+
 /** The option lists an editor must render, in one payload-shaped object. */
 export const LAUNCH_PROFILE_OPTIONS = {
   agent: LAUNCH_PROFILE_AGENTS,
   carry: LAUNCH_PROFILE_CARRY,
   contextSize: LAUNCH_PROFILE_CONTEXT_SIZES,
+  headless: LAUNCH_PROFILE_HEADLESS,
 } as const;
 
 /**
@@ -303,6 +320,17 @@ export const launchProfileSchema = z
     account: z.string().min(1).max(120).optional(),
     carry: z.enum(LAUNCH_PROFILE_CARRY).optional(),
     contextSize: z.enum(LAUNCH_PROFILE_CONTEXT_SIZES).optional(),
+    /**
+     * D-002: ABSENT means UNPINNED, not `false`.
+     *
+     * Every existing goal document omits this key, and the one activation door
+     * (harness/routines/goal-holder-launch-action.ts) hardcoded `headless: true`
+     * before this landed. So unpinned MUST resolve to `true` or adding the key
+     * would silently re-point every stored goal at a visible terminal — a
+     * behaviour change wearing a schema addition's clothes. Only an explicit
+     * `false` asks for a headed launch.
+     */
+    headless: z.boolean().optional(),
   })
   .strict();
 
