@@ -393,6 +393,38 @@ describe('verifyTurnRefs — cross-session (owner carry-respawn chain, EI-192973
   });
 });
 
+describe('verifyTurnRefs — managed Codex carry chain (EI-21394895717783013)', () => {
+  const SESSION = '01a036e4-878d-7a70-8351-cd21b5fe742b';
+  const OWNER = 'su-codex-owner';
+  let home: string;
+
+  afterEach(async () => {
+    if (home) await rm(home, { recursive: true, force: true });
+  });
+
+  it('finds a Codex user turn through the same managed-home mapping as sessions:read', async () => {
+    home = await mkdtemp(join(tmpdir(), 'papercusp-turn-ref-codex-'));
+    const rolloutDir = join(home, '.papercusp', 'su-codex-homes', 'session-11801', 'sessions', '2026', '08', '25');
+    await mkdir(rolloutDir, { recursive: true });
+    const rolloutPath = join(rolloutDir, `rollout-2026-08-25T03-24-24-${SESSION}.jsonl`);
+    await writeFile(rolloutPath, `${userLine('current Codex wake turn', '2026-08-25T03:24:24.026Z')}\n`);
+
+    const refs = parseTurnRefs(formatTurnRef(SESSION.slice(0, 8), '2026-08-25T03:24:24.026Z'));
+    const [verdict] = await verifyTurnRefs(OWNER, refs, {
+      home,
+      loadActiveSessions: async () => [{
+        id: 11801,
+        agent: 'codex',
+        session_id: SESSION,
+        omp_thread_id: null,
+      }],
+    });
+
+    expect(verdict).toMatchObject({ found: true, checked: true, verdict: 'owner-typed' });
+    expect(verdict.snippet).toContain('current Codex wake turn');
+  });
+});
+
 // EI-21394655128717996: an explicit cross-session scope uses the durable
 // session_turns index when the predecessor is outside the successor's
 // owner-isolated transcript directory.
