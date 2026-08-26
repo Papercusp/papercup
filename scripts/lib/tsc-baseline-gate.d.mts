@@ -279,6 +279,18 @@ export function decidePerFile({ currentByFile, baselineByFile, brokenFiles, upda
     attributionDeclared?: boolean;
 }): PerFileGateResult;
 /**
+ * Describe a clean diagnostic site without inventing its causal provenance.
+ *
+ * A clean file is genuinely committed, but its NEW diagnostic may still be caused by another
+ * uncommitted file in its import/type graph. `tsc` reports the error site, not the edit that made
+ * the site invalid, so asserting "standing red" while any other path is dirty can send a caller
+ * straight into a live peer's lane. Preserve the strong warning only when the working tree gives
+ * us no uncommitted alternative cause.
+ */
+export function formatStandingRedRow(r: any, { dirtyPathCount }?: {
+    dirtyPathCount?: number | undefined;
+}): string;
+/**
  * The headline for an ATTRIBUTED failure, worded per how the changed-set was derived.
  *
  * This is a pure function purely so the wording is TESTABLE, because the wording is where
