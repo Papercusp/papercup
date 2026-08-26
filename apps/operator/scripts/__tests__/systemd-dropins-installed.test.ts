@@ -3,7 +3,20 @@ import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(join(__dirname, '..', '..', '..', '..'));
-const GUARD = join(REPO_ROOT, 'scripts', 'check-systemd-dropins-installed.mjs');
+
+/**
+ * ⚠ KEEP THIS PATH AS ONE CONTIGUOUS STRING LITERAL. Do not "tidy" it into
+ * join(REPO_ROOT, 'scripts', 'check-...mjs').
+ *
+ * scripts/check-lint-guard-reachability.mjs credits a guard as reachable by testing
+ * `text.includes(implementationPath)` against this file's source. Split across join()
+ * arguments the contiguous substring never appears, the guard scores UNREACHABLE, and the
+ * gate reds with a false finding that sends someone to wire a guard already wired. That is
+ * the exact false-positive direction that checker's own comments warn about — and it cost
+ * a round trip here before the cause was found.
+ */
+const GUARD_REL = 'scripts/check-systemd-dropins-installed.mjs';
+const GUARD = join(REPO_ROOT, GUARD_REL);
 
 /**
  * Wires scripts/check-systemd-dropins-installed.mjs onto a blocking path.
