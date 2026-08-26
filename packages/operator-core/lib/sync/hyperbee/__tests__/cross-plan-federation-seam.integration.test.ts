@@ -470,13 +470,14 @@ describe("the brief's marquee SUBSCRIBE→INJECT seam — a coord message round-
   });
 
   it("a BROADCAST (to:['*']) message reaches EVERY recipient's inbox on B after one federation", async () => {
-    await sendOnA('fed-bcast', ['*'], 'all hands');
+    const sent = await sendOnA('fed-bcast', ['*'], 'all hands');
+    expect(sent.audience).toEqual(['*']);
     expect(await drainAtoB()).toBe(1);
 
     pointInboxAtPeerB();
     for (const who of ['su-B', 'su-C']) {
       const inbox = await readInbox(who);
-      expect(inbox.find((e) => e.msg_id === 'fed-bcast')).toBeTruthy();
+      expect(inbox.find((e) => e.msg_id === 'fed-bcast')).toMatchObject({ audience: ['*'] });
     }
   });
 
