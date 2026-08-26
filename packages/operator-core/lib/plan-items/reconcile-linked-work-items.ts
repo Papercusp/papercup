@@ -58,6 +58,7 @@ import {
   type ExternalBlockerRecord,
 } from '../external-blockers';
 import { RECONCILER_SYSTEM_ACTOR } from '../completion-audit';
+import type { AgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 
 /** The two TERMINAL plan-item statuses this reconciler heals (mirrors
  *  `isTerminalStatus` in agent-tools/plans/set-status.ts) and the settled
@@ -623,9 +624,7 @@ export function requiresOwnerCapability(blocker: ExternalBlockerRecord): boolean
  * restoring `wip` with nobody on it recreates the orphaned-claim state the stale-
  * claim reaper then has to clean up again.
  */
-export function restoreStateAfterUngate(
-  wi: Pick<WorkItem, 'state' | 'family' | 'payload' | 'assignee'>,
-): string {
+export function restoreStateAfterUngate(wi: Pick<WorkItem, 'state' | 'family' | 'payload' | 'assignee'>): string {
   const fallback = wi.family === 'feature' ? 'todo' : 'open';
   const parkedFrom = readPlanLaneParkedFrom(wi.payload);
   if (!parkedFrom) return fallback;
@@ -708,6 +707,53 @@ export function decideLaneGate(
 
 type LaneGateAction = 'gated' | 'ungated' | 'skipped-in-flight' | 'skipped-terminal' | 'noop';
 
+/** Direct-execution contract stamped by canonical plan-run promotion, if this
+ * unassigned row belongs to one. Kept on the shared payload reader so settle
+ * and lane-sync cannot disagree about what counts as agentic execution. */
+async function agenticExecutionForUngate(wi: WorkItem): Promise<AgenticPlanExecutionTarget | null> {
+  if (wi.assignee) return null;
+  const { planRunExecutionTarget } = await import('../work-items-events');
+  return planRunExecutionTarget(wi.payload);
+}
+
+/**
+ * Complete the dispatch-first half of an agentic lane restore. The lifecycle
+ * writer has already restored the item with its broad claimable co-fire
+ * suppressed; this shared composite now atomically claims the stable name and
+ * issues the durable required wake. `wakeRetained:false` makes a concurrent
+ * settle-path winner idempotent without spending a duplicate wake.
+ */
+async function dispatchUngatedAgenticWorkItem(
+  wi: WorkItem,
+  execution: AgenticPlanExecutionTarget | null,
+  laneItem: { planSlug: string; itemId: string },
+): Promise<void> {
+  if (!execution) return;
+  try {
+    const { assignAndWakeActionableWorkItems } =
+      await import('../agent-tools/coordination/actionable-work-item-dispatch');
+    const dispatched = await assignAndWakeActionableWorkItems({
+      workItemIds: [wi.id],
+      targetAgent: execution.agentName,
+      harness: execution.appHarnessSlug,
+      summary: `${wi.id} became actionable when ${laneItem.planSlug}#${laneItem.itemId} cleared`,
+      source: 'system:plan-run-lane-dispatch',
+      wakeRetained: false,
+    });
+    if (!dispatched.ok) {
+      console.warn(
+        `[plan-lane-sync] stable successor dispatch for ${wi.id} failed: ` +
+          `${dispatched.failure?.message ?? dispatched.warning ?? 'assignment failed'}`,
+      );
+    }
+  } catch (error) {
+    console.warn(
+      `[plan-lane-sync] stable successor dispatch for ${wi.id} threw: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 /** Apply the pure decision to ONE work-item via the work-item lifecycle surface,
  *  reusing the exact park/restore mechanics of work_items:set_blocker. Never
  *  throws — a per-item lifecycle hiccup is caught and reported as a plain 'noop'. */
@@ -778,7 +824,13 @@ async function applyLaneGateToWorkItem(
         { harness, unset: ['needsOwnerAction', 'needsHuman'] },
       );
       const restored = stillActive.length > 0 ? 'blocked' : wi.family === 'feature' ? 'todo' : 'open';
-      await setWorkItemStateWithAliasInfo(wi.id, restored, { harness, by: PLAN_LANE_SYNC_ACTOR });
+      const execution = stillActive.length === 0 ? await agenticExecutionForUngate(wi) : null;
+      await setWorkItemStateWithAliasInfo(wi.id, restored, {
+        harness,
+        by: PLAN_LANE_SYNC_ACTOR,
+        announceClaimable: execution ? false : undefined,
+      });
+      if (stillActive.length === 0) await dispatchUngatedAgenticWorkItem(wi, execution, laneItem);
       return stillActive.length > 0 ? 'gated' : 'ungated';
     }
     // Un-gate: clear OUR lane blocker; restore to claimable ONLY when no OTHER
@@ -805,7 +857,12 @@ async function applyLaneGateToWorkItem(
       // `states:['open']` — so the item read as unblocked on the plan while staying
       // structurally invisible to `scheduler:get_next`, stranding the lane.
       const restored = restoreStateAfterUngate(wi);
-      await setWorkItemStateWithAliasInfo(wi.id, restored, { harness, by: PLAN_LANE_SYNC_ACTOR });
+      const execution = await agenticExecutionForUngate(wi);
+      await setWorkItemStateWithAliasInfo(wi.id, restored, {
+        harness,
+        by: PLAN_LANE_SYNC_ACTOR,
+        announceClaimable: execution ? false : undefined,
+      });
       if (wi.family !== 'feature') {
         await setWorkItemClaimHold(wi.id, false, {
           harness,
@@ -819,6 +876,7 @@ async function applyLaneGateToWorkItem(
       // Drop the stash — it describes a park that no longer exists, and leaving it
       // would let a LATER un-park restore a state from the wrong era.
       await mergeWorkItemPayload(wi.id, { [PLAN_LANE_PARKED_FROM_KEY]: null }, { harness });
+      await dispatchUngatedAgenticWorkItem(wi, execution, laneItem);
     }
     return 'ungated';
   } catch {
@@ -899,10 +957,7 @@ export async function syncLinkedWorkItemsToPlanLane(
  * caught too, not just an explicit `blocked` flip. Returns null when the plan
  * row / item can't be resolved (fail-closed → the caller skips the lane sync).
  */
-function classifyPlanLane(
-  row: Awaited<ReturnType<typeof getPlanRow>>,
-  itemId: string,
-): PlanLaneSyncStatus | null {
+function classifyPlanLane(row: Awaited<ReturnType<typeof getPlanRow>>, itemId: string): PlanLaneSyncStatus | null {
   if (!row) return null;
   const { items } = resolveEffectiveStatusForItems(planItemsForRow(row));
   const it = items.find((i) => i.id === itemId);
@@ -985,11 +1040,7 @@ export const PLAN_AUTHORED_BLOCKERS_KEY = '_planAuthoredBlockers';
  *  plan item (a marker written by a different plan/item must not license deletions
  *  here). Null = no usable marker → conservative seed. Defensive: payload is federated
  *  JSON. */
-export function readPlanAuthoredBlockers(
-  payload: unknown,
-  planSlug: string,
-  itemId: string,
-): string[] | null {
+export function readPlanAuthoredBlockers(payload: unknown, planSlug: string, itemId: string): string[] | null {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
   const v = (payload as Record<string, unknown>)[PLAN_AUTHORED_BLOCKERS_KEY];
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;

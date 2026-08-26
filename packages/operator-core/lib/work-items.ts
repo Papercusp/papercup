@@ -84,10 +84,7 @@ import {
 import type { StoredAssumptionDeclaration } from './coord-lifecycle/records';
 import type { TopicTagMirrorOutcome, TopicTagMirrorResult } from './work-item-topic-tags';
 import { auditPredicateSql, completionAuthorityPredicateSql, type CompletionAudit } from './completion-audit';
-import type {
-  CompletionAttestation,
-  PersistedCompletionEvidence,
-} from './coord-lifecycle/records';
+import type { CompletionAttestation, PersistedCompletionEvidence } from './coord-lifecycle/records';
 import {
   isSufficientEvidence,
   isWorkItemCompletionAuthority,
@@ -1116,10 +1113,7 @@ function issueShapeFilterArgs(filter: ListWorkItemsFilter) {
   };
 }
 
-async function listWorkItemsWithLimit(
-  filter: ListWorkItemsFilter,
-  rowLimit: number | null,
-): Promise<WorkItem[]> {
+async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: number | null): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
   const q = filter.q?.trim();
   // assignedBy is an issue-family-only concept, so it excludes all feature rows.
@@ -1215,9 +1209,10 @@ async function listWorkItemsWithLimit(
       audit: filter.audit,
       completionAuthority: filter.completionAuthority,
     };
-    const issues = rowLimit === null
-      ? await listAllIssuesForFileExport(issueFilter)
-      : await listIssues({ ...issueFilter, limit: rowLimit });
+    const issues =
+      rowLimit === null
+        ? await listAllIssuesForFileExport(issueFilter)
+        : await listIssues({ ...issueFilter, limit: rowLimit });
     out.push(...issues.map(issueToWorkItem));
   }
 
@@ -1235,9 +1230,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
  * Callers must keep the rows off the model transport and return bounded
  * metadata only.
  */
-export async function listAllWorkItemsForFileExport(
-  filter: ListWorkItemsFilter = {},
-): Promise<WorkItem[]> {
+export async function listAllWorkItemsForFileExport(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
   return listWorkItemsWithLimit(filter, null);
 }
 
@@ -1658,9 +1651,7 @@ let workItemEmbedderWarmupGeneration = 0;
 let workItemEmbedderWarmupAttempt = 0;
 let workItemEmbedderWarmupRetryToken: string | null = null;
 
-async function resolveWorkItemQueryEmbedder(
-  resolver?: QueryEmbedderResolver,
-): Promise<ResolvedWorkItemQueryEmbedder> {
+async function resolveWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<ResolvedWorkItemQueryEmbedder> {
   const resolve = resolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
   return await resolve();
 }
@@ -1669,8 +1660,7 @@ function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<vo
   if (workItemEmbedderWarmupInFlight) return workItemEmbedderWarmupInFlight;
 
   const generation = workItemEmbedderWarmupGeneration;
-  workItemEmbedderWarmupRetryToken =
-    `work-items-embedder-warmup:${generation}:${++workItemEmbedderWarmupAttempt}`;
+  workItemEmbedderWarmupRetryToken = `work-items-embedder-warmup:${generation}:${++workItemEmbedderWarmupAttempt}`;
   workItemEmbedderWarmupFailure = null;
   const started = (async () => {
     try {
@@ -2050,8 +2040,7 @@ export async function searchWorkItems(
       }
       embedder = async (): Promise<number[]> => {
         throw new Error(
-          workItemEmbedderWarmupFailure ??
-            'query embedder warming up (cold start; retry for semantic results)',
+          workItemEmbedderWarmupFailure ?? 'query embedder warming up (cold start; retry for semantic results)',
         );
       };
     }
@@ -2271,8 +2260,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   // freshly-created row is origin='local' ⇒ always admissible, so no auditor guard.
   // A pending row cannot be born already claimed: that would bypass the promoter
   // inside the INSERT even though every later claim door correctly refuses it.
-  const requestedAssignee =
-    typeof input.assignee === 'string' && input.assignee.trim() ? input.assignee.trim() : null;
+  const requestedAssignee = typeof input.assignee === 'string' && input.assignee.trim() ? input.assignee.trim() : null;
   const assignTo = input.admission === 'pending' ? null : requestedAssignee;
 
   if (familyOf(input.kind) === 'issue') {
@@ -2359,7 +2347,8 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   const sourcePlanSlug =
     typeof input.sourcePlanSlug === 'string' && input.sourcePlanSlug.trim() ? input.sourcePlanSlug.trim() : null;
   const sourcePlanItemIds = Array.isArray(input.sourcePlanItemIds)
-    ? input.sourcePlanItemIds.filter((itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0)
+    ? input.sourcePlanItemIds
+        .filter((itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0)
         .map((itemId) => itemId.trim())
     : null;
   // The fixed base columns/values (params $1..$12). $6 jsonb, $11 text, and $12
@@ -3045,6 +3034,14 @@ export async function setWorkItemState(
   opts: {
     harness?: string;
     by?: string;
+    /**
+     * Internal dispatch-first handoff: suppress only the broad
+     * `work-item:claimable` co-fire when this state transition enters the pool.
+     * The item-scoped status event still fires. Default true/omitted preserves
+     * every ordinary lifecycle caller; the plan-run lane reconciler passes
+     * false while it restores then deterministically assigns the stable agent.
+     */
+    announceClaimable?: boolean;
     allowNonCanonical?: boolean;
     completionRef?: string;
     completionEvidence?: PersistedCompletionEvidence;
@@ -3549,10 +3546,12 @@ export async function setWorkItemState(
              -- for the skipCompletionGate system paths and any writer not yet migrated.
              authority = CASE WHEN ${Boolean(opts.skipCompletionGate)}
                                 THEN COALESCE(authority, ${opts.completionAuthority ?? null})
-                              WHEN ${Boolean(opts.force) &&
-                              !opts.skipCompletionGate &&
-                              !opts.completionAuthority &&
-                              !(opts.completionEvidence && Object.keys(opts.completionEvidence).length > 0)}
+                              WHEN ${
+                                Boolean(opts.force) &&
+                                !opts.skipCompletionGate &&
+                                !opts.completionAuthority &&
+                                !(opts.completionEvidence && Object.keys(opts.completionEvidence).length > 0)
+                              }
                                 THEN authority
                               ELSE ${opts.completionAuthority ?? null} END,
              payload = CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
@@ -3696,8 +3695,7 @@ export async function setWorkItemState(
       (result as { terminalOwner?: string | null }).terminalOwner = null;
       (result as { terminalCompletionRef?: string | null }).terminalCompletionRef = null;
       (result as { completionAuthority?: WorkItemCompletionAuthority | null }).completionAuthority = reopenedAuthority;
-      (result as { terminalCompletionEvidence?: PersistedCompletionEvidence | null }).terminalCompletionEvidence =
-        null;
+      (result as { terminalCompletionEvidence?: PersistedCompletionEvidence | null }).terminalCompletionEvidence = null;
     } catch {
       /* best-effort — see above */
     }
@@ -3729,7 +3727,11 @@ export async function setWorkItemState(
         .catch(() => {});
     }
     void trackDetached(import('./work-items-events'))
-      .then((m) => m.emitWorkItemStatusEvent(transitioned, prevState))
+      .then((m) =>
+        m.emitWorkItemStatusEvent(transitioned, prevState, {
+          announceClaimable: opts.announceClaimable,
+        }),
+      )
       .catch(() => {});
   }
   // await-event-primitive P-012/P-013: a SETTLED item fires
@@ -4015,12 +4017,11 @@ export async function setWorkItemStateWithAliasInfo(
   // Surface a note when the state was aliased OR an auto-gate flag was applied (the gate can
   // now fire WITHOUT aliasing, since blocked/needs-human store verbatim post-flip).
   const effectiveAliased = aliased || stateToApply !== requestedState;
-  const note =
-    effectiveAliased
-        ? onAliasInfo
-          ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
-          : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`
-        : (autoGateNote ?? undefined);
+  const note = effectiveAliased
+    ? onAliasInfo
+      ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
+      : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`
+    : (autoGateNote ?? undefined);
   return {
     workItem,
     aliased: effectiveAliased,
@@ -4318,12 +4319,14 @@ export async function mergeWorkItemPayload(
       // in the same bounded transaction. A separate hand-authored plan edge is
       // preserved because its ref is absent from this exact outgoing snapshot.
       await boundedOrgTxn(async (tx) => {
-        const prior = await tx<{
-          payload_plan_slug: string | null;
-          payload_item_id: string | null;
-          source_plan_slug: string | null;
-          source_plan_item_ids: string[] | null;
-        }[]>`
+        const prior = await tx<
+          {
+            payload_plan_slug: string | null;
+            payload_item_id: string | null;
+            source_plan_slug: string | null;
+            source_plan_item_ids: string[] | null;
+          }[]
+        >`
           SELECT payload->'plan_item'->>'plan_slug' AS payload_plan_slug,
                  payload->'plan_item'->>'item_id' AS payload_item_id,
                  source_plan_slug,
@@ -4476,9 +4479,7 @@ export async function claimWorkItem(
     const explicitTransferHolder =
       priorHolder &&
       priorHolder !== assignee &&
-      ([opts.fromHolder?.trim(), opts.expectedAssignee?.trim()].includes(priorHolder)
-        ? priorHolder
-        : null);
+      ([opts.fromHolder?.trim(), opts.expectedAssignee?.trim()].includes(priorHolder) ? priorHolder : null);
     // EI-21190135248554341: an atomic prior-holder transfer bypasses the stale-claim
     // sweep, so release only that holder's declared paths here. The helper is dynamic
     // and fail-open: a side lock-store outage must not turn a successful CAS transfer
@@ -6624,31 +6625,31 @@ export async function explainIssueClaimFloors(
               ? 'admission-pending'
               : !r.ok_observation
                 ? 'observation-lane'
-              : !r.ok_needs_owner_action
-                ? 'needs-owner-action'
-                : !r.ok_agent_review
-                  ? 'agent-review'
-                  : !r.ok_external_blocker
-                    ? 'external-blocker'
-                    : !r.ok_claim_hold
-                      ? 'claim-hold'
-                      : !r.ok_plan_lane
-                        ? 'plan-lane-reserved'
-                        : !r.ok_federation
-                          ? 'federation-detector'
-                          : !r.ok_loop_noise
-                            ? 'loop-noise'
-                            : !r.ok_completed
-                              ? 'already-completed'
-                              : !r.ok_watchdog_recovery
-                                ? 'watchdog-recovery-window'
-                                : !r.ok_rig
-                                  ? 'cross-machine-rig'
-                                  : !r.ok_no_blocker
-                                    ? 'blocked-dep'
-                                    : !r.ok_cooldown
-                                      ? 'cooldown'
-                                      : null;
+                : !r.ok_needs_owner_action
+                  ? 'needs-owner-action'
+                  : !r.ok_agent_review
+                    ? 'agent-review'
+                    : !r.ok_external_blocker
+                      ? 'external-blocker'
+                      : !r.ok_claim_hold
+                        ? 'claim-hold'
+                        : !r.ok_plan_lane
+                          ? 'plan-lane-reserved'
+                          : !r.ok_federation
+                            ? 'federation-detector'
+                            : !r.ok_loop_noise
+                              ? 'loop-noise'
+                              : !r.ok_completed
+                                ? 'already-completed'
+                                : !r.ok_watchdog_recovery
+                                  ? 'watchdog-recovery-window'
+                                  : !r.ok_rig
+                                    ? 'cross-machine-rig'
+                                    : !r.ok_no_blocker
+                                      ? 'blocked-dep'
+                                      : !r.ok_cooldown
+                                        ? 'cooldown'
+                                        : null;
     return {
       id,
       admissible: refusedBy === null,
@@ -7837,7 +7838,8 @@ export async function linkWorkItem(
     const dependentRef = await import('./work-items-events').then((m) => m.workItemIdFromRef(dst));
     if (dependentRef) {
       const dependent = await getWorkItem(dependentRef.id, dependentRef.harness);
-      if (dependent?.assignee) dependent.interestWatch = await armWorkItemHolderInterests(dependent, dependent.assignee);
+      if (dependent?.assignee)
+        dependent.interestWatch = await armWorkItemHolderInterests(dependent, dependent.assignee);
     }
   }
   return { ok: true };

@@ -462,6 +462,13 @@ export async function assignAndWakeActionableWorkItems(
     harness?: string;
     summary?: string;
     source?: string;
+    /**
+     * Default true: a replay re-wakes work already retained by this stable
+     * agent. The lane-unblock race passes false because a concurrent settle
+     * path may already have assigned+woken the successor; only a newly-won
+     * assignment should spend a second wake there.
+     */
+    wakeRetained?: boolean;
   },
   deps: ActionableWorkItemDispatchDeps = defaultDeps,
 ): Promise<ActionableWorkItemDispatchResult> {
@@ -476,7 +483,8 @@ export async function assignAndWakeActionableWorkItems(
     },
     deps,
   );
-  if (assignment.executionWorkItemIds.length === 0) {
+  const wakeWorkItemIds = args.wakeRetained === false ? assignment.assigned : assignment.executionWorkItemIds;
+  if (wakeWorkItemIds.length === 0) {
     return {
       ok: assignment.ok,
       target,
@@ -485,14 +493,16 @@ export async function assignAndWakeActionableWorkItems(
       warning:
         assignment.failed.length > 0
           ? 'no work-item assignment landed; target was not woken'
-          : 'no currently actionable work-items; blocked/parked descendants remain unassigned and target was not woken',
+          : args.wakeRetained === false && assignment.retained.length > 0
+            ? 'successor was already retained by the stable target; duplicate wake suppressed'
+            : 'no currently actionable work-items; blocked/parked descendants remain unassigned and target was not woken',
     };
   }
   const wake = await deps.wake([target.ownerId], {
-    summary: args.summary ?? `Assigned ${assignment.executionWorkItemIds.length} actionable plan-run work-item(s)`,
+    summary: args.summary ?? `Assigned ${wakeWorkItemIds.length} actionable plan-run work-item(s)`,
     payload: {
       kind: 'actionable-work-item-dispatch',
-      workItemIds: assignment.executionWorkItemIds,
+      workItemIds: wakeWorkItemIds,
     },
     source: args.source ?? 'system:plan-run-direct-dispatch',
     ...(args.workspaceId ? { workspaceId: args.workspaceId } : {}),
