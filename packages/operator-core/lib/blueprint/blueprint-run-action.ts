@@ -306,7 +306,18 @@ async function createWorkItem(ctx: SystemActionCtx, bp: Blueprint): Promise<void
        harness_slug, feature_id, title, summary, status, attempts,
        item_kind, payload, needs_human_review, workspace_id, ts, created_ts, updated_ts
      ) VALUES (
-       $1, $2, $3, $4, 'todo', 0,
+       -- work-item-status-full-unify P-004/P-005: 'open' is the UNIFIED claimable token.
+       -- This wrote 'todo' until EI-21460610464031791, a status NO claim floor admits:
+       -- claimFloorsWhereSql defaults to states=['open'] and matches with a raw
+       -- status = ANY(...) predicate. There is no alias fold at READ time, so
+       -- FEATURE_STATE_ALIASES (todo -> open) does NOT rescue a row written here.
+       -- A row born 'todo' is therefore born permanently unclaimable: minted, counted
+       -- as work, and never dispatched to anyone. The sibling plan-run minter had the
+       -- identical defect and stranded 15 rows between 2026-08-12 and 2026-08-25 before
+       -- it was rewritten onto canonical promotion (commit 4b0d4cc344). This raw INSERT
+       -- bypasses createWorkItem, so it does not inherit that path's 'open' default and
+       -- must spell the token itself.
+       $1, $2, $3, $4, 'open', 0,
        $5, $6::text::jsonb, FALSE, $7, $8, $9, $10
      )
      ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
