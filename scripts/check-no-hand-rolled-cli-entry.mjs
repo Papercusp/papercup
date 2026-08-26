@@ -120,6 +120,41 @@ const ALLOW_COUNTS = new Map([
   ['scripts/scan-retirement-surface.mjs|file-template', 1],
   ['scripts/split-claude-md-rule-evidence.mjs|file-template', 1],
   ['scripts/trace-vite-externalized.mjs|path-to-file-url', 1],
+
+  // EI-21543544916409140 widened the fileURLToPath detector to see comparisons whose
+  // operands are wrapped in resolve()/path.resolve(). These occurrences all predate that
+  // measurement; seed them once as shrink-only debt. The host-bundle guard remains stricter:
+  // any one of these entering the live esbuild graph fails the build before the atomic swap.
+  ['apps/operator/scripts/hooks/cc/posttooluse-css-design-primitives-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-mdx-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-migration-fixture-drift-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-mock-cast-escape-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-required-field-strand-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-tool-prompt-weight-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-ts-parse-nudge.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/posttooluse-write-byte-integrity-guard.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/cc/pretooluse-tool-prompt-weight-guard.mjs|file-url-to-path', 1],
+  ['apps/operator/scripts/hooks/inject/index.mjs|file-url-to-path', 1],
+  ['packages/operator-core/lib/harness/routines/seed-telemetry-retention-routine.ts|file-url-to-path', 1],
+  ['scripts/check-fixed-but-open.mjs|file-url-to-path', 1],
+  ['scripts/check-format.mjs|file-url-to-path', 1],
+  ['scripts/check-github-identity-terms.mjs|file-url-to-path', 1],
+  ['scripts/check-migration-fixture-drift.mjs|file-url-to-path', 1],
+  ['scripts/check-no-retired-imports.mjs|file-url-to-path', 1],
+  ['scripts/check-optional-seam-strands.mjs|file-url-to-path', 1],
+  ['scripts/check-required-field-strands.mjs|file-url-to-path', 1],
+  ['scripts/check-retired-resurrection.mjs|file-url-to-path', 1],
+  ['scripts/check-sql-guidance-justified.mjs|file-url-to-path', 1],
+  ['scripts/check-undrained-stdout-exit.mjs|file-url-to-path', 1],
+  ['scripts/check-vimock-export-strands.mjs|file-url-to-path', 1],
+  ['scripts/check-vitest-config-enrollment.mjs|file-url-to-path', 1],
+  ['scripts/content-lint-runner.mjs|file-url-to-path', 1],
+  ['scripts/gen-declarations.ts|file-url-to-path', 1],
+  ['scripts/next-migration.mjs|file-url-to-path', 1],
+  ['scripts/test-files.mjs|file-url-to-path', 1],
+  ['scripts/workspace-test.mjs|file-url-to-path', 1],
 ]);
 
 /**
