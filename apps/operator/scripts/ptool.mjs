@@ -133,6 +133,7 @@ export function parseArgs(argv = []) {
     '--url': 'url',
     '--token-file': 'tokenFile',
   };
+  const stdinValueFlags = new Set(['--json', '--args', '--script']);
   let sawList = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -145,8 +146,18 @@ export function parseArgs(argv = []) {
       const key = valueFlags[a.slice(0, eq)];
       if (key) { out[key] = a.slice(eq + 1); continue; }
     }
-    // `--flag value` (consume the next token)
+    // `--json -` / `--script -` are documented stdin forms. Convenience
+    // flags may be interleaved between the source flag and the sentinel, so
+    // do not consume the first option as JSON/script text when a later `-`
+    // is present.
     if (valueFlags[a] && i + 1 < argv.length) {
+      const next = argv[i + 1];
+      const nextLooksLikeFlag = next !== '-'
+        && (next.startsWith('--') || next === '-h' || next === '-l');
+      if (stdinValueFlags.has(a) && nextLooksLikeFlag && argv.slice(i + 1).includes('-')) {
+        out[valueFlags[a]] = '-';
+        continue;
+      }
       out[valueFlags[a]] = argv[++i];
       continue;
     }

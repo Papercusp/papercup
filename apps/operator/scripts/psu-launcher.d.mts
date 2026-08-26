@@ -1998,8 +1998,11 @@ export function reportSessionEnded(advSessionId: any, exitCode: any, { fetchImpl
  * on spawning — the fail-closed property is unchanged; `reason` exists so the
  * refusal can say WHICH of the four happened.
  *
- * @typedef {{ claimed: true }
- *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport', detail?: string }
+ * @typedef {{ claimed: true, status: 'acquired', resumeClaimKey: string,
+ *             replayed?: boolean, leaseExpiresAt?: string }
+ *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport',
+ *       detail?: string, status?: 'reserved' | 'live' | 'missing',
+ *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
  * } ResumeClaimOutcome
  *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
@@ -2021,6 +2024,54 @@ export function reportSessionResumed(advSessionId: number | string | null, { fet
     onNotice?: (message: string) => void;
     resumeClaimKey?: string;
 }): Promise<ResumeClaimOutcome>;
+export function reportSessionResumeFinalized(advSessionId: any, resumeClaimKey: any, opts?: {}): Promise<{
+    [x: string]: string | boolean;
+    reason: string;
+    status?: undefined;
+    resumeClaimKey?: undefined;
+    detail?: undefined;
+} | {
+    [x: string]: string | number | boolean | null;
+    reason: string;
+    status: number | null;
+    resumeClaimKey: string;
+    detail?: undefined;
+} | {
+    reason?: string | undefined;
+    resumeClaimKey: string;
+    status?: undefined;
+    detail?: undefined;
+} | {
+    [x: string]: string | boolean;
+    reason: string;
+    detail: string;
+    resumeClaimKey: string;
+    status?: undefined;
+}>;
+export function reportSessionResumeReleased(advSessionId: any, resumeClaimKey: any, opts?: {}): Promise<{
+    [x: string]: string | boolean;
+    reason: string;
+    status?: undefined;
+    resumeClaimKey?: undefined;
+    detail?: undefined;
+} | {
+    [x: string]: string | number | boolean | null;
+    reason: string;
+    status: number | null;
+    resumeClaimKey: string;
+    detail?: undefined;
+} | {
+    reason?: string | undefined;
+    resumeClaimKey: string;
+    status?: undefined;
+    detail?: undefined;
+} | {
+    [x: string]: string | boolean;
+    reason: string;
+    detail: string;
+    resumeClaimKey: string;
+    status?: undefined;
+}>;
 /**
  * Render a refused {@link ResumeClaimOutcome} as the clause the operator reads
  * (EI-21414979137146784). Each reason gets its OWN sentence: the old single
@@ -2191,7 +2242,7 @@ export function killSpawnProcessTree(child: any, signal?: string, kill?: (pid: n
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
-export function spawnInherit({ wrapperBin, args, cwd, env, spawnImpl, processApi, signalSource, processKill, processExit, reportSessionEndedImpl, }: {
+export function spawnInherit({ wrapperBin, args, cwd, env, spawnImpl, processApi, signalSource, processKill, processExit, reportSessionEndedImpl, onSpawn, onSpawnFailure, }: {
     wrapperBin: any;
     args?: never[] | undefined;
     cwd: any;
@@ -2202,8 +2253,10 @@ export function spawnInherit({ wrapperBin, args, cwd, env, spawnImpl, processApi
     processKill?: any;
     processExit?: any;
     reportSessionEndedImpl?: typeof reportSessionEnded | undefined;
+    onSpawn?: (() => void) | undefined;
+    onSpawnFailure?: null | undefined;
 }): void;
-export function runWrapper({ wrapperBin, args, cwd, envelopeEnv, kickoff, kickoffFile, sessionPort, preserveCwd, reportSessionEndedImpl, }: {
+export function runWrapper({ wrapperBin, args, cwd, envelopeEnv, kickoff, kickoffFile, sessionPort, preserveCwd, reportSessionEndedImpl, onSpawn, onSpawnFailure, }: {
     wrapperBin: any;
     args?: never[] | undefined;
     cwd: any;
@@ -2213,6 +2266,8 @@ export function runWrapper({ wrapperBin, args, cwd, envelopeEnv, kickoff, kickof
     sessionPort?: null | undefined;
     preserveCwd?: boolean | undefined;
     reportSessionEndedImpl?: typeof reportSessionEnded | undefined;
+    onSpawn?: (() => void) | undefined;
+    onSpawnFailure?: null | undefined;
 }): void;
 /**
  * Classify the activity evidence in a discovery record. This is deliberately a
@@ -3087,10 +3142,18 @@ export namespace AGENT_LABELS {
  */
 export type ResumeClaimOutcome = {
     claimed: true;
+    status: "acquired";
+    resumeClaimKey: string;
+    replayed?: boolean;
+    leaseExpiresAt?: string;
 } | {
     claimed: false;
     reason: "no-session" | "http" | "contended" | "transport";
     detail?: string;
+    status?: "reserved" | "live" | "missing";
+    retryAfterMs?: number;
+    leaseExpiresAt?: string;
+    resumeClaimKey?: string;
 };
 import { spawn } from "node:child_process";
 declare function safeReaddir(dir: any): import("fs").Dirent<string>[];
