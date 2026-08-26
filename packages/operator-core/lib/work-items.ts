@@ -4782,8 +4782,21 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   // single unified token ['open'] — `open` is the claimable status for BOTH families now
   // (feature `todo`→`open` applied by migration 638; the create-path + reaper write 'open';
   // migration 642 rewrote every stored spec's `states` todo→open). The transitional
-  // ['todo','open'] union is retired: no writer produces 'todo' and no row sits at it. An
-  // explicit opts.states still narrows further.
+  // ['todo','open'] union is retired. An explicit opts.states still narrows further.
+  //
+  // ⚠ This comment used to add "no writer produces 'todo' and no row sits at it". BOTH
+  // halves were false, and the pairing is load-bearing: because this floor matches with a
+  // raw `status = ANY(...)` and does NOT alias-fold at read time, any writer still emitting
+  // 'todo' mints a PERMANENTLY UNCLAIMABLE row. Two raw INSERTs bypassing createWorkItem
+  // were doing exactly that (EI-21460610464031791) — the plan-run minter stranded 15
+  // trigger/heartbeat rows between 2026-08-12 and 2026-08-25 before it was rewritten onto
+  // canonical promotion (4b0d4cc344), and blueprint-run-action's work-item mode was armed
+  // with the same defect. MEASURED 2026-08-26: 28 feature-family rows still sit at 'todo'
+  // (the settled 2026-06/07 legacy set FEATURE_NON_REQUEUE_STATES deliberately protects).
+  // So do NOT narrow this floor further, and do NOT drop the 'todo' entry from
+  // FEATURE_NON_REQUEUE_STATES, on the strength of this comment — verify against the table:
+  //   SELECT status, count(*) FROM harness_shared.work_items
+  //    WHERE item_kind IN ('feature','chunk') GROUP BY status;
   const states = opts.states ?? ['open'];
   const cooldown = releaseCooldownSec();
   return sql`
