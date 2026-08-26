@@ -6,6 +6,7 @@ import {
   NAME_NOT_FOUND,
   jsonSafeRows,
 } from './index';
+import { readWorkItemAdmissionSnapshot } from '../work-items-admission-promoter';
 
 describe('jsonSafeRows (BigInt → Number for the JSON.stringify rest-query serializer)', () => {
   it('coerces a BigInt id so the row is JSON-serializable (the user_actions 500 class)', () => {
@@ -28,6 +29,87 @@ describe('jsonSafeRows (BigInt → Number for the JSON.stringify rest-query seri
 
   it('passes through non-object rows', () => {
     expect(jsonSafeRows(['a', 3, null])).toEqual(['a', 3, null]);
+  });
+});
+
+describe('workItemAdmission.runs (work-queue-admission-and-bulk-dedup P-005)', () => {
+  it('is registered and accepts the canonical no-argument request', async () => {
+    expect(knownQueryNamesV2()).toContain('workItemAdmission.runs');
+    const entry = (await import('./index')).getRegistryEntryV2('workItemAdmission.runs');
+    expect(entry?.argsSchema?.parse(undefined)).toBeUndefined();
+  });
+
+  it('returns filtered runs plus unfiltered queue latency and chronological census evidence', async () => {
+    const responses: unknown[][] = [
+      [
+        {
+          id: 'run-new',
+          harness_slug: 'papercusp',
+          run_kind: 'promoter-tick',
+          state: 'complete',
+          started_at: '2026-08-26T15:00:00.000Z',
+          finished_at: '2026-08-26T15:00:01.000Z',
+          batch_size: 4,
+          promoted: 2,
+          merged: 1,
+          held: 1,
+          auto_promoted_unreviewed: 0,
+          census_before: 7,
+          census_after: 8,
+          model_id: 'model-a',
+          tokens_in: 100n,
+          tokens_out: 20n,
+          latency_ms: 1_000,
+          detail: { status: 'complete' },
+        },
+      ],
+      [{ pending: '9', unreviewed: '3', latency_sample_size: '5', p50_ms: '1200', p95_ms: '9400' }],
+      [
+        {
+          id: 'run-new',
+          harness_slug: 'papercusp',
+          run_kind: 'promoter-tick',
+          started_at: '2026-08-26T15:00:00.000Z',
+          census_before: 7,
+          census_after: 8,
+        },
+        {
+          id: 'run-old',
+          harness_slug: 'papercusp',
+          run_kind: 'census',
+          started_at: '2026-08-26T14:00:00.000Z',
+          census_before: 10,
+          census_after: 7,
+        },
+      ],
+    ];
+    const fakeSql = vi.fn(async (..._args: unknown[]) => responses.shift() ?? []);
+    const snapshot = await readWorkItemAdmissionSnapshot({
+      workspaceId: 'ws-active',
+      harnessSlug: 'papercusp',
+      kind: 'promoter-tick',
+      state: 'complete',
+      limit: 999,
+      sql: fakeSql as never,
+    });
+
+    expect(fakeSql).toHaveBeenCalledTimes(3);
+    expect(fakeSql.mock.calls[0]?.slice(1)).toEqual(
+      expect.arrayContaining(['ws-active', 'papercusp', 'promoter-tick', 'complete', 200]),
+    );
+    expect(snapshot.runs[0]).toMatchObject({
+      id: 'run-new',
+      tokensIn: 100,
+      tokensOut: 20,
+      censusDelta: 1,
+    });
+    expect(snapshot.summary).toMatchObject({
+      pending: 9,
+      unreviewed: 3,
+      promotedToFirstClaim: { sampleSize: 5, p50Ms: 1200, p95Ms: 9400 },
+      latestCensusRise: { runId: 'run-new', delta: 1 },
+    });
+    expect(snapshot.censusTrend.map((point) => point.runId)).toEqual(['run-old', 'run-new']);
   });
 });
 

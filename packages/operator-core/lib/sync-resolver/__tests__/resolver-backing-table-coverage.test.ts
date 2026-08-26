@@ -480,6 +480,13 @@ describe('sync resolvers — every declared backing table actually invalidates i
     expect(tableInvalidates('harness_shared.operator_account_pool', 'accounts.pool')).toBe(true);
   });
 
+  it('workItemAdmission.runs declares both its ledger and queue-rollup producers', () => {
+    expect(declaredTables('workItemAdmission.runs')).toEqual([
+      'harness_shared.admission_runs',
+      'harness_shared.work_items',
+    ]);
+  });
+
   it('every declared (query, table) pair is invalidated, or documented in PUSH_EXEMPT', () => {
     const unwired: string[] = [];
     for (const name of allNames) {

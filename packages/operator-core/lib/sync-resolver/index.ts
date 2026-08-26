@@ -2815,6 +2815,48 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'workItems.byHarness': workItemsListQueryPair.rowsEntry as QueryEntry<unknown>,
   'workItems.summary': workItemsListQueryPair.summaryEntry as QueryEntry<unknown>,
 
+  // workItemAdmission.runs — P-005's owner-inspectable admission ledger.
+  // One payload carries the bounded/filterable run rows plus the UNFILTERED
+  // queue and census rollups, so selecting a run kind cannot hide a census-rise
+  // alarm. No args is the canonical workspace-wide view; optional filters make
+  // the route useful for a single harness without proliferating query names.
+  //
+  // Both tables are real producers: admission_runs moves the history/trend,
+  // while work_items moves pending/unreviewed counts and the immutable
+  // admitted_at → first_claimed_at latency distribution. The table bridge maps
+  // both, and the two routine writers also push once after a successful tick.
+  'workItemAdmission.runs': {
+    argsSchema: z
+      .object({
+        harnessSlug: z.string().min(1).max(200).optional(),
+        kind: z.enum(['census', 'promoter-tick', 'bulk-stage', 'delta-sweep', 'daily-digest']).optional(),
+        state: z.enum(['running', 'complete', 'failed']).optional(),
+        // Clamp in the reader rather than rejecting a newer client's larger
+        // window — the same client/server skew rule as workItems.byHarness.
+        limit: z.number().int().positive().optional(),
+      })
+      .optional(),
+    backingTables: ['harness_shared.admission_runs', 'harness_shared.work_items'],
+    resolve: async (args) => {
+      const [{ activeWorkspaceId }, { readWorkItemAdmissionSnapshot }] = await Promise.all([
+        import('../workspace-registry'),
+        import('../work-items-admission-promoter'),
+      ]);
+      const a = (args ?? {}) as {
+        harnessSlug?: string;
+        kind?: 'census' | 'promoter-tick' | 'bulk-stage' | 'delta-sweep' | 'daily-digest';
+        state?: 'running' | 'complete' | 'failed';
+        limit?: number;
+      };
+      return [
+        await readWorkItemAdmissionSnapshot({
+          workspaceId: activeWorkspaceId(),
+          ...a,
+        }),
+      ];
+    },
+  } as QueryEntry<unknown>,
+
   // workItems.detail — the single-item ON-DEMAND detail read (P-006). The Detail
   // pane fetches ONE enriched row (with the full `summary` + payload/completion
   // blobs the list strips) when a WI is selected, instead of the whole harness
@@ -7374,6 +7416,40 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
          WHERE id = ${id}
          LIMIT 1`;
       return rows;
+    },
+  },
+  // P-029 / cockpit D-004: the ONE typed conversation/context projection.
+  // pui calls this through its existing generic rest-query client and the GUI
+  // uses useSyncQuery; both therefore receive byte-identical frame semantics.
+  'conversations.contextProjection': {
+    backingTables: [
+      'harness_shared.agent_chats_consolidated',
+      'harness_shared.agent_loop_sessions',
+      'harness_shared.agent_loop_approvals',
+      'harness_shared.session_tasks',
+    ],
+    argsSchema: z.object({
+      sourceKind: z.string().min(1),
+      sessionId: z.string().min(1),
+      harness: z.string().min(1).optional(),
+    }),
+    resolve: async (args) => {
+      const { sourceKind, sessionId, harness } = args as {
+        sourceKind: string;
+        sessionId: string;
+        harness?: string;
+      };
+      const [{ readConversationContextProjection }, { activeWorkspaceId }] = await Promise.all([
+        import('../conversation-context-projection'),
+        import('../workspace-registry'),
+      ]);
+      const projection = await readConversationContextProjection({
+        workspaceId: activeWorkspaceId(),
+        sourceKind,
+        sessionId,
+        ...(harness ? { harness } : {}),
+      });
+      return projection ? [projection] : [];
     },
   },
   // conversations.messageList / conversations.messageDetail (work-item mail

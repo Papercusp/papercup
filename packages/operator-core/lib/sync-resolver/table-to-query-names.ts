@@ -106,12 +106,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Sessions tab is keyed by plan_slug, not a row PK — full-bust here so a new
   // session recorded for a plan (or one ending) live-refreshes the tab. Low
   // write rate + a small per-plan payload keep the broad bust cheap.
-  'harness_shared.adv_sessions': [
-    'advSessions.list',
-    'advSessions.summary',
-    'advRoster.list',
-    'planSessions.list',
-  ],
+  'harness_shared.adv_sessions': ['advSessions.list', 'advSessions.summary', 'advRoster.list', 'planSessions.list'],
   /* agent_modes — the standing MODE per agent per axis (auto / ideate / drain /
      grade). session-chat-popup-timestamps-and-modes-2026-08-09 P-003; trigger
      attached in migration 763.
@@ -316,7 +311,14 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     { name: 'agentChats.detail', scope: idScope },
     'conversations.agentChatList',
     { name: 'conversations.agentChatDetail', scope: idScope },
+    'conversations.contextProjection',
   ],
+  // P-029 projection children use sessionId rather than the source tables'
+  // heterogeneous PK names, so writes intentionally full-bust the small set of
+  // mounted context projections by query name.
+  'harness_shared.agent_loop_sessions': ['conversations.contextProjection'],
+  'harness_shared.agent_loop_approvals': ['conversations.contextProjection'],
+  'harness_shared.session_tasks': ['conversations.contextProjection'],
   'harness_shared.coord_conversations': [
     'conversations.questionsList',
     { name: 'conversations.questionDetail', scope: idScope },
@@ -391,10 +393,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // ── Per-workspace tables ──────────────────────────────────────────
   'harness_shared.toast_log': ['toastLog.recent'],
   'harness_shared.operator_budget': ['operatorBudget.byWorkspace'],
-  'harness_shared.operator_conversations': [
-    'operatorConversations.current',
-    'operatorConversations.byWorkItem',
-  ],
+  'harness_shared.operator_conversations': ['operatorConversations.current', 'operatorConversations.byWorkItem'],
   // Both the live tail and the paged bootstrap read this table. In-place
   // choice-card answers mutate an existing row's tools JSON, so invalidating
   // only the live-tail query leaves a reload hydrated from a stale page.
@@ -431,6 +430,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.plugin_enables': ['pluginEnables.byWorkspace'],
   'harness_shared.project_spec_revisions': ['projectSpecRevisions.byProject'],
 
+  // work-queue-admission-and-bulk-dedup P-005 — the owner-facing run ledger.
+  // admission_runs has a row trigger, so census/promoter/bulk writers in ANY
+  // process converge an open panel even when they bypass the routine action's
+  // producer-side push.
+  'harness_shared.admission_runs': ['workItemAdmission.runs'],
+
   // ── Cross-harness *Consolidated tables ────────────────────────────
   // work_items is the UNIFIED base table (mig-374 renamed harness_features_consolidated
   // -> work_items and backfilled engineer_issues into it). It carries emit_change_notify,
@@ -459,6 +464,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
      would never be bridged at all and the meters would look simply broken. */
 
   'harness_shared.work_items': [
+    // P-005: pending/unreviewed queue counts and promoted→first-claim
+    // percentiles are rollups over this base table. A claim or admission write
+    // must refresh them alongside the admission_runs ledger.
+    'workItemAdmission.runs',
     // P-017 slice D: the prior-attempt brief summarizes the whole plan LANE, so a
     // SIBLING item's completion/checkpoint changes it exactly as much as a write to the
     // item the panel is open on. Full-bust for that reason — an id-scoped rule would miss
@@ -607,19 +616,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'plans.specCoverage',
     'plans.acceptanceGate',
   ],
-  'harness_shared.work_item_spec_revision_edges': [
-    'workItems.behaviorContract',
-    'workItems.specAdequacy',
-  ],
+  'harness_shared.work_item_spec_revision_edges': ['workItems.behaviorContract', 'workItems.specAdequacy'],
   // The OTHER half of the freshness verdict: recording evidence at the current revision is
   // what CLEARS a stale-proof refusal, so an open census panel must not miss it either.
   // The adequacy gate reads these bindings directly to grade every criterion it rates, so
   // recording evidence is precisely what flips its blocker to a pass.
-  'harness_shared.spec_evidence_bindings': [
-    'plans.specCoverage',
-    'plans.acceptanceGate',
-    'workItems.specAdequacy',
-  ],
+  'harness_shared.spec_evidence_bindings': ['plans.specCoverage', 'plans.acceptanceGate', 'workItems.specAdequacy'],
   // Compat view over work_items (post-374) — see the work_items producer above.
   'harness_shared.harness_features_consolidated': [
     'featuresConsolidated.bySlug',

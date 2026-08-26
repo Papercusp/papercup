@@ -11,9 +11,10 @@ import { useFlag } from '@/lib/flag-hooks';
  * Tabs primitive so the chrome matches the rest of the design system.
  */
 const BASE_TABS = [
-  { href: '/admin/run', label: 'Run' },
-  { href: '/admin/features', label: 'Features' },
-  { href: '/admin/dbos', label: 'DBOS' },
+  { href: "/admin/run", label: "Run" },
+  { href: "/admin/features", label: "Features" },
+  { href: "/admin/admission", label: "Admission" },
+  { href: "/admin/dbos", label: "DBOS" },
 ] as const;
 
 export default function AdminShell({
@@ -26,7 +27,13 @@ export default function AdminShell({
   const triggersEnabled = useFlag(FLAGS.TRIGGERS_ADMIN);
   const pathname = usePathname() || '/admin/run';
   const tabs = triggersEnabled
-    ? [BASE_TABS[0], BASE_TABS[1], { href: '/admin/triggers', label: 'Triggers' }, BASE_TABS[2]]
+    ? [
+        BASE_TABS[0],
+        BASE_TABS[1],
+        BASE_TABS[2],
+        { href: "/admin/triggers", label: "Triggers" },
+        BASE_TABS[3],
+      ]
     : [...BASE_TABS];
   const activeTab = tabs.find((t) => pathname === t.href || pathname.startsWith(`${t.href}/`)) ?? tabs[0];
 

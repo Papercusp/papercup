@@ -119,6 +119,13 @@ describe('queryNamesForTriggerEvent', () => {
     );
   });
 
+  it('maps both admission ledger and work-item rollup writes to the P-005 run surface', () => {
+    expect(queryNamesForTriggerEvent('harness_shared.admission_runs.changed')).toEqual(['workItemAdmission.runs']);
+    expect(queryNamesForTriggerEvent('harness_shared.work_items.changed')).toEqual(
+      expect.arrayContaining(['workItemAdmission.runs']),
+    );
+  });
+
   it('handles *Consolidated tables', () => {
     expect(queryNamesForTriggerEvent('harness_shared.harness_features_consolidated.changed')).toEqual(
       // P-007: the on-demand single-feature detail read must be busted alongside
