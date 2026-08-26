@@ -1561,12 +1561,17 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
   });
 
   /**
-   * ⭐ THE REGRESSION GUARD. Most rows in a real streak are non-verdict statuses naming zero
-   * tests. If the digest ever stops filtering them through `classifyGateStallStatus`, this
-   * dead-stable streak reports CHURNING — telling a responder to suspect infrastructure when
-   * one named test has been broken the whole time.
+   * ⭐ Most rows in a real streak are non-verdict statuses naming zero tests, and the alarm
+   * must read the streak THROUGH them rather than being derailed by them.
+   *
+   * ⚠ Precisely what this pins, because the obvious stronger claim is false: interleaved
+   * zero-test rows cannot flip STABLE to CHURNING even if the filter broke — a tick naming
+   * no tests never enters the naming set (proved by the CONTROL tests in
+   * `streak-cause-digest.test.ts`). What the filter protects here is the COUNT the human is
+   * shown: `redTicks` must be 2, not 5. A body quoting 5 red verdicts for a streak that
+   * produced 2 is the same class of over-count the ladder's `carryStreak` exists to avoid.
    */
-  it('⭐ non-verdict ticks do not turn a stable streak into churn in the alarm body', async () => {
+  it('⭐ reads a stable streak through interleaved non-verdict ticks, and counts only the verdicts', async () => {
     seededGh = { consecutiveReds: stallReds - 1, stallAlerted: false, lastGreenAt: Date.now() - 40 * HOUR };
     seededEvents = [
       evt(2 * HOUR, 'not-green', ['lint:tsc']),
@@ -1581,6 +1586,9 @@ describe('WI-42116: the gate-stall alarm is a bounded LADDER, not a one-shot', (
     expect(notifyArg().body).toContain('CAUSE: STABLE');
     expect(notifyArg().body).not.toContain('CHURNING');
     expect(notifyArg().data).toMatchObject({ causeStability: 'stable' });
+    // The load-bearing assertion: 2 verdicts, not the 5 rows the window contains.
+    expect(JSON.parse(escalationBody()).cause).toMatchObject({ redTicks: 2, namingTicks: 2 });
+    expect(notifyArg().body).toContain('ALL 2 red verdicts');
   });
 
   it('⭐ says CHURNING — and says not to chase the names — when nothing is common to all reds', async () => {

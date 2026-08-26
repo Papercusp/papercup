@@ -52,6 +52,64 @@ describe('summarizeStreakCause', () => {
     expect(withNoise.silentRedTicks).toBe(0);
   });
 
+  /**
+   * ⚠ WHAT THE `verdictBearing` FILTER ACTUALLY BUYS — measured, not assumed.
+   *
+   * The first draft of this control asserted that counting non-verdict ticks as verdicts
+   * would flip STABLE to CHURNING. It does not, and the control failing is what proved it:
+   * a tick naming no tests never enters the naming set, so it cannot touch the
+   * persistent/intermittent split at all. Empty sets are ignored by construction.
+   *
+   * The filter earns its place on the OTHER two outputs, both of which go straight into an
+   * alarm a human reads:
+   *   1. the tick COUNTS quoted in the sentence, and
+   *   2. the 'silent' verdict — "N red verdicts named ZERO failing tests, so the alarm is
+   *      about the GATE" is a specific, actionable claim. Asserting it about a window that
+   *      produced no verdicts at all (every row skipped-locked / cancelled) is simply false,
+   *      and it is exactly the sentence a responder would act on.
+   */
+  it('CONTROL: the verdict filter is what stops a no-verdict window claiming reds named nothing', () => {
+    const window = [
+      { atMs: 0, failingTests: [] },
+      { atMs: HOUR, failingTests: [] },
+      { atMs: 2 * HOUR, failingTests: [] },
+    ];
+    const correct = summarizeStreakCause(window.map((t) => ({ ...t, verdictBearing: false })));
+    const corrupted = summarizeStreakCause(window.map((t) => ({ ...t, verdictBearing: true })));
+
+    expect(correct.stability).toBe('unknown');
+    expect(correct.redTicks).toBe(0);
+    expect(correct.line).not.toContain('ZERO failing tests');
+    // The mutant makes a claim about reds that never happened — falsifiability, demonstrated.
+    expect(corrupted.stability).toBe('silent');
+    expect(corrupted.redTicks).toBe(3);
+    expect(corrupted.line).toContain('ZERO failing tests');
+  });
+
+  /**
+   * The over-inclusion that CAN move stability is a tick that is not a verdict but still
+   * NAMES tests — the `'record-only'` (proven-stale-candidate) class, whose named files
+   * passed at tip. Counting it shrinks the persistent core, understating stability. This
+   * pins the direction of that error, which is what the reader's docblock claims.
+   */
+  it('CONTROL: a non-verdict tick that NAMES tests degrades stable to mixed if counted', () => {
+    const window = [
+      { atMs: 0, failingTests: ['lint:tsc'] },
+      { atMs: HOUR, failingTests: ['stale-only.test.ts'] }, // record-only: passed at tip
+      { atMs: 2 * HOUR, failingTests: ['lint:tsc'] },
+    ];
+    const correct = summarizeStreakCause(
+      window.map((t, i) => ({ ...t, verdictBearing: i !== 1 })),
+    );
+    const corrupted = summarizeStreakCause(window.map((t) => ({ ...t, verdictBearing: true })));
+
+    expect(correct.stability).toBe('stable');
+    expect(correct.persistent).toEqual(['lint:tsc']);
+    // Understates stability — never manufactures a false 'stable'. Safe direction.
+    expect(corrupted.stability).toBe('churning');
+    expect(corrupted.persistent).toEqual([]);
+  });
+
   it('reports CHURNING when no test is common to all naming verdicts', () => {
     const d = summarizeStreakCause([
       red(0, ['a.test.ts', 'b.test.ts']),
