@@ -222,7 +222,7 @@ export function describeLensAttribution(
     sentinel: true,
     lenses: [...SU_IDEATION_LENSES],
     note:
-      "Filed — this is a report, not a rejection. You declared no `ideation.lens`, so this filing was " +
+      'Filed — this is a report, not a rejection. You declared no `ideation.lens`, so this filing was ' +
       "recorded under the 'su-ideate' sentinel and earns NO per-lens learning: sentinel rows are excluded " +
       'from every per-lens statistic, so this idea will not inform the win-rates that steer which stance ' +
       'future passes sample, and it cannot be kept alive by the diversity floor. To attribute it, re-file ' +
@@ -270,9 +270,7 @@ export interface ToolFailureCaptureTextInput {
  * omitted prose is derived deterministically and bounded by the same storage
  * limits as authored prose.
  */
-export function deriveToolFailureCaptureText(
-  input: ToolFailureCaptureTextInput,
-): { title: string; body?: string } {
+export function deriveToolFailureCaptureText(input: ToolFailureCaptureTextInput): { title: string; body?: string } {
   if (input.title) return { title: input.title, body: input.body };
   const failure = input.toolFailure;
   if (!failure) throw new Error('improvements:capture requires title unless toolFailure is supplied');
@@ -300,7 +298,7 @@ export function deriveToolFailureCaptureText(
     [
       'Suspected tool-call failure reported through the canonical improvements:capture toolFailure shorthand.',
       '',
-      ...fields.flatMap(([label, value]) => value === undefined ? [] : [`${label}: ${String(value)}`]),
+      ...fields.flatMap(([label, value]) => (value === undefined ? [] : [`${label}: ${String(value)}`])),
     ].join('\n'),
     LIMITS.CONTENT,
   );
@@ -313,10 +311,7 @@ const suspectedToolFailureSchema = z
     errorCode: z.string().max(160).optional(),
     // Tool transports commonly expose HTTP-like status codes as numbers. Keep
     // the persisted classifier input textual while accepting that wire shape.
-    status: z.preprocess(
-      (value) => (typeof value === 'number' ? String(value) : value),
-      z.string().max(80).optional(),
-    ),
+    status: z.preprocess((value) => (typeof value === 'number' ? String(value) : value), z.string().max(80).optional()),
     message: z.string().min(1).max(4000),
     schemaRevision: z.string().max(160).optional(),
     fieldPath: z.string().max(300).optional(),
@@ -349,7 +344,8 @@ export default defineTool({
     },
     returns:
       'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, hint, alreadyDecided? }. The check-only `hint` states whether this was title-only or bound to the exact supplied body; changing the body can change semantic matches, so rerun with the final body before treating [] as clean.\n\n' +
-      'COALESCE (reason:"coalesced" — an observation matching an open conditionKey): also `coalescedOnto { id, repeatCount, bodyPersisted, bodyDiscarded?, priorAuthor, crossAuthor }`. Read `bodyPersisted` BEFORE asserting the row says what you wrote: on false your title/body was DISCARDED and the row still shows the previous reading. `crossAuthor:true` means you wrote onto a PEER\'s row (expected for a shared conditionKey; occurrences are all retained).\n\n' +
+      'UNKEYED OBSERVATION CREATE (`lane:"observation"`, no `conditionKey`): returns only `{ ok:true }`. Fresh storage and a server-side fold intentionally have the same response; the filing is complete and needs no caller-side duplicate investigation. Keyed machine-emitter observations retain their detailed coalesce response.\n\n' +
+      'KEYED COALESCE (reason:"coalesced" — an observation matching an open conditionKey): also `coalescedOnto { id, repeatCount, bodyPersisted, bodyDiscarded?, priorAuthor, crossAuthor }`. Read `bodyPersisted` BEFORE asserting the row says what you wrote: on false your title/body was DISCARDED and the row still shows the previous reading. `crossAuthor:true` means you wrote onto a PEER\'s row (expected for a shared conditionKey; occurrences are all retained).\n\n' +
       'An su kind=feature filing also returns `priorArt[]` — a REPORT-ONLY novelty pre-check (including already-tried-and-failed priors) that NEVER blocks the filing. Absent field = not checked; [] = checked and nothing similar found.\n\n' +
       'possibleDuplicates[] carries THREE kinds of hit, and they do NOT mean the same thing:\n' +
       '  • no flag        — token-overlap (Jaccard) above threshold. May DECLINE your capture.\n' +
@@ -397,9 +393,11 @@ export default defineTool({
         // detectable at all — 99.3% of stored observation titles are singletons because
         // this field used to ask only for "a summary". The rule text is shared (never
         // re-worded per surface) so the guard test can assert every surface still names it.
-        title: hardText(LIMITS.SHORT_TITLE).optional().describe(
-          `one-line summary. ${OBSERVATION_TITLE_RULE} Do NOT include a [kind] prefix — pass kind separately.`,
-        ),
+        title: hardText(LIMITS.SHORT_TITLE)
+          .optional()
+          .describe(
+            `one-line summary. ${OBSERVATION_TITLE_RULE} Do NOT include a [kind] prefix — pass kind separately.`,
+          ),
         kind: z
           .enum(['bug', 'change', 'feature'])
           .optional()
@@ -700,7 +698,8 @@ export default defineTool({
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['title'],
-            message: 'title is required unless toolFailure is supplied (the server derives bounded title/body text for that shorthand)',
+            message:
+              'title is required unless toolFailure is supplied (the server derives bounded title/body text for that shorthand)',
           });
         }
       }),
@@ -749,10 +748,7 @@ export default defineTool({
     // supplied ratings at all. Fail at the shorthand boundary and name the
     // missing prerequisite directly. The legacy top-level rubricRef alias is a
     // valid prerequisite because it is normalized into the same observation.
-    if (
-      args.observation?.notExercised?.length &&
-      !(args.observation.rubricRef ?? args.rubricRef)?.trim()
-    ) {
+    if (args.observation?.notExercised?.length && !(args.observation.rubricRef ?? args.rubricRef)?.trim()) {
       throw new ObservationEvidenceError(
         'observation.notExercised is scorecard shorthand and requires observation.rubricRef (or the top-level rubricRef compatibility alias)',
       );
@@ -827,18 +823,13 @@ export default defineTool({
     // later. Resolve the failing verb to its defining file and say so at FILE time.
     // Null unless the file actually differs between the serving build and the tree,
     // so the common case adds nothing. Never throws; never blocks the filing.
-    const stalenessHint = args.toolFailure
-      ? await toolFailureStalenessHint(args.toolFailure.toolName)
-      : null;
+    const stalenessHint = args.toolFailure ? await toolFailureStalenessHint(args.toolFailure.toolName) : null;
     // Reserve room for the hint rather than clamping the join: the body arrives
     // already clamped to LIMITS.CONTENT, so a naive append could overflow it, and
     // clamping afterwards would silently truncate the hint off the END — losing
     // exactly the line this exists to add, on the longest (most detailed) reports.
     const bodyWithStaleness = stalenessHint
-      ? [
-          clampText(captureText.body, Math.max(0, LIMITS.CONTENT - stalenessHint.length - 2)),
-          stalenessHint,
-        ]
+      ? [clampText(captureText.body, Math.max(0, LIMITS.CONTENT - stalenessHint.length - 2)), stalenessHint]
           .filter(Boolean)
           .join('\n\n')
       : captureText.body;
@@ -866,6 +857,20 @@ export default defineTool({
       !args.checkDuplicatesOnly &&
       effectiveLane !== 'observation' &&
       (effectiveKind === 'change' || effectiveKind === 'feature');
+    const captureWatchdogKey = normalizedToolFailure
+      ? normalizedToolFailure.watchdogKey
+      : effectiveLane === 'observation'
+        ? (args.conditionKey ?? defaultScorecardConditionKey(observation))
+        : undefined;
+    // work-queue-admission-and-bulk-dedup P-008: a successful unkeyed
+    // observation filing is DONE from the caller's perspective. Whether the
+    // server minted a row, HARD-folded onto a survivor, or SOFT-linked a fresh
+    // row is durable admission machinery, not follow-up work for the filing
+    // agent. Keep check-only and conditionKey callers detailed: the former
+    // explicitly asked to inspect candidates, while the latter includes machine
+    // emitters whose coalesce metadata remains operationally load-bearing.
+    const silenceUnkeyedObservationDisposition =
+      effectiveLane === 'observation' && !args.checkDuplicatesOnly && !captureWatchdogKey;
     const reviewHarness =
       ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
     const toolFailureProbation = normalizedToolFailure
@@ -884,66 +889,60 @@ export default defineTool({
         }
       : undefined;
     try {
-      const persist = () => captureImprovement({
-        title: captureText.title,
-        kind: effectiveKind,
-        body: bodyWithStaleness,
-        severity: args.severity as IssueSeverity | undefined,
-        subTopic: args.subTopic,
-        scope: captureScope,
-        foundDuring,
-        paths: args.paths,
-        force: args.force,
-        checkDuplicatesOnly: args.checkDuplicatesOnly,
-        requireCompleteDedupCoverage,
-        origin: args.origin,
-        lane: effectiveLane,
-        watchdogKey:
-          normalizedToolFailure
-            ? normalizedToolFailure.watchdogKey
-            : effectiveLane === 'observation'
-            ? (args.conditionKey ?? defaultScorecardConditionKey(observation))
-            : undefined,
-        payloadExtra:
-          observation || hasIdeation || toolFailureProbation
+      const persist = () =>
+        captureImprovement({
+          title: captureText.title,
+          kind: effectiveKind,
+          body: bodyWithStaleness,
+          severity: args.severity as IssueSeverity | undefined,
+          subTopic: args.subTopic,
+          scope: captureScope,
+          foundDuring,
+          paths: args.paths,
+          force: args.force,
+          checkDuplicatesOnly: args.checkDuplicatesOnly,
+          requireCompleteDedupCoverage,
+          origin: args.origin,
+          lane: effectiveLane,
+          watchdogKey: captureWatchdogKey,
+          payloadExtra:
+            observation || hasIdeation || toolFailureProbation
+              ? {
+                  ...(observation ? { observation } : {}),
+                  ...(hasIdeation ? { ideation } : {}),
+                  ...(toolFailureProbation ? { toolFailureProbation } : {}),
+                }
+              : undefined,
+          createdBy: id.ownerId,
+          // Fresh agent change/feature captures are born outside the claimable pool. The
+          // core parks them blocked before this wrapper performs the post-create review
+          // enrollment, closing the durable-create → review race.
+          reviewRequired,
+          reviewHarness,
+          // WI-5950: resolve the 'self' literal here (same seam work_items:create uses) so the
+          // core always receives a concrete ownerId and never has to know about caller identity.
+          ...(resolvedAssignee
             ? {
-                ...(observation ? { observation } : {}),
-                ...(hasIdeation ? { ideation } : {}),
-                ...(toolFailureProbation ? { toolFailureProbation } : {}),
+                assignee: resolvedAssignee,
+                setCheckpoint: async (workItemId: string, checkpoint: string) => {
+                  const scopedHarness = captureScope?.startsWith('harness:')
+                    ? captureScope.slice('harness:'.length)
+                    : ctxHarness;
+                  await setWorkItemCheckpoint(
+                    {
+                      harness: scopedHarness ?? null,
+                      workItemId,
+                      workspaceId: resolveConcreteWorkspaceId(ctxWorkspace),
+                    },
+                    checkpoint,
+                  );
+                },
               }
-            : undefined,
-        createdBy: id.ownerId,
-        // Fresh agent change/feature captures are born outside the claimable pool. The
-        // core parks them blocked before this wrapper performs the post-create review
-        // enrollment, closing the durable-create → review race.
-        reviewRequired,
-        reviewHarness,
-        // WI-5950: resolve the 'self' literal here (same seam work_items:create uses) so the
-        // core always receives a concrete ownerId and never has to know about caller identity.
-        ...(resolvedAssignee
-          ? {
-              assignee: resolvedAssignee,
-              setCheckpoint: async (workItemId: string, checkpoint: string) => {
-                const scopedHarness = captureScope?.startsWith('harness:')
-                  ? captureScope.slice('harness:'.length)
-                  : ctxHarness;
-                await setWorkItemCheckpoint(
-                  {
-                    harness: scopedHarness ?? null,
-                    workItemId,
-                    workspaceId: resolveConcreteWorkspaceId(ctxWorkspace),
-                  },
-                  checkpoint,
-                );
-              },
-            }
-          : {}),
-        filedByRole,
-        source,
-      });
-      const drainHarness = captureScope?.startsWith('harness:')
-        ? captureScope.slice('harness:'.length)
-        : ctxHarness;
+            : {}),
+          filedByRole,
+          source,
+        });
+      const drainHarness = captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : ctxHarness;
       if (drainMode && !args.checkDuplicatesOnly && !drainHarness) {
         return {
           content: [
@@ -963,17 +962,18 @@ export default defineTool({
       // A checkDuplicatesOnly call cannot persist, so it remains available even
       // while the admission circuit is open. Every real DRAIN bug write is
       // serialized through the exact flow gate before capture-core may mutate.
-      const gated = drainMode && !args.checkDuplicatesOnly
-        ? await withDrainBugAdmission(
-            {
-              workspaceId: id.workspaceId ?? ctxWorkspace ?? 'default',
-              harness: drainHarness!,
-              ownerId: id.ownerId,
-              drainStartedAt: drainMode.setAt,
-            },
-            () => persist(),
-          )
-        : null;
+      const gated =
+        drainMode && !args.checkDuplicatesOnly
+          ? await withDrainBugAdmission(
+              {
+                workspaceId: id.workspaceId ?? ctxWorkspace ?? 'default',
+                harness: drainHarness!,
+                ownerId: id.ownerId,
+                drainStartedAt: drainMode.setAt,
+              },
+              () => persist(),
+            )
+          : null;
       if (gated && !gated.allowed) {
         return {
           content: [
@@ -1050,10 +1050,10 @@ export default defineTool({
       };
       const canEnrollReview = Boolean(
         reviewResult.reviewRequired &&
-          reviewResult.reviewState === 'blocked' &&
-          !reviewResult.agentReviewFailure &&
-          captured.created &&
-          captured.issue?.id,
+        reviewResult.reviewState === 'blocked' &&
+        !reviewResult.agentReviewFailure &&
+        captured.created &&
+        captured.issue?.id,
       );
       if (canEnrollReview && captured.issue?.id) {
         let enrollmentSucceeded = false;
@@ -1073,11 +1073,10 @@ export default defineTool({
             by: id.ownerId,
             reason: `agent-review-${phase}-failed`,
           }).catch(() => undefined);
-          await recordCaptureReviewFailure(
-            captured.issue!.id,
-            failure,
-            { submittedBy: id.ownerId, harness: reviewHarness },
-          ).catch(() => undefined);
+          await recordCaptureReviewFailure(captured.issue!.id, failure, {
+            submittedBy: id.ownerId,
+            harness: reviewHarness,
+          }).catch(() => undefined);
           agentReviewFailure = failure;
         };
 
@@ -1178,23 +1177,24 @@ export default defineTool({
           : []),
         ...(scopeResolution.warning ? [scopeResolution.warning] : []),
       ];
+      const publicResult = silenceUnkeyedObservationDisposition ? { ok: true as const } : result;
       return {
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify({
-              ...result,
-              ...(priorArt ? { priorArt } : {}),
-              ...(experimentGap ? { experimentGap } : {}),
-              ...(lensAttribution ? { lensAttribution } : {}),
-              ...(groundingGap ? { groundingGap } : {}),
-              ...(agentReview ? { agentReview } : {}),
-              ...(agentReviewFailure ? { agentReviewFailure } : {}),
-              ...(notified ? { notified: notified.notified } : {}),
-              ...(linked ? { linked } : {}),
+              ...publicResult,
+              ...(!silenceUnkeyedObservationDisposition && priorArt ? { priorArt } : {}),
+              ...(!silenceUnkeyedObservationDisposition && experimentGap ? { experimentGap } : {}),
+              ...(!silenceUnkeyedObservationDisposition && lensAttribution ? { lensAttribution } : {}),
+              ...(!silenceUnkeyedObservationDisposition && groundingGap ? { groundingGap } : {}),
+              ...(!silenceUnkeyedObservationDisposition && agentReview ? { agentReview } : {}),
+              ...(!silenceUnkeyedObservationDisposition && agentReviewFailure ? { agentReviewFailure } : {}),
+              ...(!silenceUnkeyedObservationDisposition && notified ? { notified: notified.notified } : {}),
+              ...(!silenceUnkeyedObservationDisposition && linked ? { linked } : {}),
               // The filer sees the skew warning too, not just the later triager —
               // they are the one still holding the repro and can settle it now.
-              ...(stalenessHint ? { possiblyStaleSchema: stalenessHint } : {}),
+              ...(!silenceUnkeyedObservationDisposition && stalenessHint ? { possiblyStaleSchema: stalenessHint } : {}),
               ...(warnings.length > 0 ? { warnings } : {}),
             }),
           },

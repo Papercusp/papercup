@@ -97,10 +97,13 @@ describe('improvements:capture → agent-review enrollment (abolish-human-review
       reviewState: 'blocked',
     } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
 
-    const result = await callTool({ title: 'Replace human review', kind: 'change', harness: 'papercusp' }, {
-      harnessSlug: 'papercusp',
-      workspaceId: 'ws-1',
-    });
+    const result = await callTool(
+      { title: 'Replace human review', kind: 'change', harness: 'papercusp' },
+      {
+        harnessSlug: 'papercusp',
+        workspaceId: 'ws-1',
+      },
+    );
     const body = JSON.parse(result.content[0].text) as Record<string, unknown>;
 
     expect(mockEnterAgentReview).toHaveBeenCalledWith({
@@ -329,19 +332,21 @@ describe('improvements:capture tool envelope', () => {
         runtimeVersion: 'codex-1.2.3',
       },
     });
-    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'change',
-      lane: 'observation',
-      watchdogKey: expect.stringMatching(/^repeated-tool-error:coord:send:caller:/),
-      payloadExtra: {
-        toolFailureProbation: expect.objectContaining({
-          state: 'probation',
-          intendedKind: 'change',
-          reporters: ['su-reporter'],
-          correlationFingerprint: expect.stringContaining('coord:send|invalid_args|42|body|codex-1.2.3'),
-        }),
-      },
-    }));
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'change',
+        lane: 'observation',
+        watchdogKey: expect.stringMatching(/^repeated-tool-error:coord:send:caller:/),
+        payloadExtra: {
+          toolFailureProbation: expect.objectContaining({
+            state: 'probation',
+            intendedKind: 'change',
+            reporters: ['su-reporter'],
+            correlationFingerprint: expect.stringContaining('coord:send|invalid_args|42|body|codex-1.2.3'),
+          }),
+        },
+      }),
+    );
   });
 
   it('derives bounded title/body text for the canonical toolFailure-only shorthand', async () => {
@@ -357,12 +362,14 @@ describe('improvements:capture tool envelope', () => {
       },
     });
 
-    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({
-      title: 'coord:send tool-call failure (invalid_args)',
-      body: expect.stringContaining('Message: body must be an array'),
-      kind: 'change',
-      lane: 'observation',
-    }));
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: 'coord:send tool-call failure (invalid_args)',
+        body: expect.stringContaining('Message: body must be an array'),
+        kind: 'change',
+        lane: 'observation',
+      }),
+    );
     const body = mockCapture.mock.calls[0]?.[0].body ?? '';
     expect(body.length).toBeLessThanOrEqual(16_000);
   });
@@ -377,13 +384,15 @@ describe('improvements:capture tool envelope', () => {
         reproduced: true,
       },
     });
-    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({
-      kind: 'bug',
-      lane: undefined,
-      payloadExtra: {
-        toolFailureProbation: expect.objectContaining({ state: 'promoted', directEvidence: true }),
-      },
-    }));
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'bug',
+        lane: undefined,
+        payloadExtra: {
+          toolFailureProbation: expect.objectContaining({ state: 'promoted', directEvidence: true }),
+        },
+      }),
+    );
   });
 
   it('passes every arg + the resolved ownerId through to the core unchanged', async () => {
@@ -422,9 +431,9 @@ describe('improvements:capture tool envelope', () => {
   });
 
   it('derives fail-closed dedup admission from live DRAIN mode for bugs only', async () => {
-    mockGetModes.mockResolvedValueOnce([
-      { mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' },
-    ] as Awaited<ReturnType<typeof getModes>>);
+    mockGetModes.mockResolvedValueOnce([{ mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' }] as Awaited<
+      ReturnType<typeof getModes>
+    >);
     await callTool({ title: 'direct drain blocker', kind: 'bug' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
     expect(mockCapture).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'bug', requireCompleteDedupCoverage: true }),
@@ -432,9 +441,9 @@ describe('improvements:capture tool envelope', () => {
     expect(drainAdmission.gate).toHaveBeenCalledOnce();
 
     mockCapture.mockClear();
-    mockGetModes.mockResolvedValueOnce([
-      { mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' },
-    ] as Awaited<ReturnType<typeof getModes>>);
+    mockGetModes.mockResolvedValueOnce([{ mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' }] as Awaited<
+      ReturnType<typeof getModes>
+    >);
     await callTool({ title: 'drain bookkeeping change', kind: 'change' });
     expect(mockCapture).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'change', requireCompleteDedupCoverage: false }),
@@ -442,9 +451,9 @@ describe('improvements:capture tool envelope', () => {
   });
 
   it('returns the exact flow and does not call capture-core when the DRAIN circuit is open', async () => {
-    mockGetModes.mockResolvedValueOnce([
-      { mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' },
-    ] as Awaited<ReturnType<typeof getModes>>);
+    mockGetModes.mockResolvedValueOnce([{ mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' }] as Awaited<
+      ReturnType<typeof getModes>
+    >);
     drainAdmission.blocked = true;
     const res = await callTool(
       { title: 'would grow the drain queue', kind: 'bug' },
@@ -460,9 +469,9 @@ describe('improvements:capture tool envelope', () => {
   });
 
   it('keeps checkDuplicatesOnly available without persistence while the DRAIN circuit is open', async () => {
-    mockGetModes.mockResolvedValueOnce([
-      { mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' },
-    ] as Awaited<ReturnType<typeof getModes>>);
+    mockGetModes.mockResolvedValueOnce([{ mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' }] as Awaited<
+      ReturnType<typeof getModes>
+    >);
     drainAdmission.blocked = true;
     await callTool(
       { title: 'probe duplicate coverage', kind: 'bug', checkDuplicatesOnly: true },
@@ -472,7 +481,7 @@ describe('improvements:capture tool envelope', () => {
     expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ checkDuplicatesOnly: true }));
   });
 
-  it("normalizes the common top-level harness spelling to the canonical capture scope", async () => {
+  it('normalizes the common top-level harness spelling to the canonical capture scope', async () => {
     await callTool({ title: 'scoped capture', kind: 'bug', harness: 'papercusp' });
     expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ scope: 'harness:papercusp' }));
   });
@@ -501,13 +510,85 @@ describe('improvements:capture tool envelope', () => {
     expect(warnings[0]).toContain('harness:papercusp');
   });
 
-  it('returns the core result verbatim in the tool envelope', async () => {
+  it('returns the core result verbatim for a non-observation filing', async () => {
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-42', created: true, duplicateOf: null } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
     >);
     const res = await callTool({ title: 'x', kind: 'bug' });
     const body = JSON.parse(res.content[0].text);
     expect(body).toEqual({ ok: true, id: 'EI-42', created: true, duplicateOf: null });
+  });
+
+  it('returns a byte-identical plain success for fresh and folded unkeyed observations (P-008)', async () => {
+    mockCapture.mockResolvedValueOnce({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-fresh' },
+      possibleDuplicates: [],
+      dedupCoverage: { lexical: 'available', semantic: 'available', degraded: false },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+    const fresh = await callTool({ title: 'one recurring observation', lane: 'observation' });
+
+    mockCapture.mockResolvedValueOnce({
+      ok: true,
+      created: false,
+      reason: 'coalesced',
+      issue: { id: 'EI-survivor' },
+      coalescedOnto: {
+        id: 'EI-survivor',
+        repeatCount: 2,
+        identity: 'derived',
+        textDisposition: 'append-only',
+        foldRule: 'co-signal',
+      },
+      possibleDuplicates: [{ id: 'EI-survivor', semantic: 'hard' }],
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+    const folded = await callTool({ title: 'one recurring observation', lane: 'observation' });
+
+    expect(fresh.content[0].text).toBe('{"ok":true}');
+    expect(folded.content[0].text).toBe(fresh.content[0].text);
+  });
+
+  it('keeps keyed machine-emitter coalesce details visible', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: false,
+      reason: 'coalesced',
+      issue: { id: 'EI-standing' },
+      coalescedOnto: { id: 'EI-standing', repeatCount: 9, identity: 'keyed' },
+      possibleDuplicates: [],
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    const res = await callTool({
+      title: 'queue depth remains above threshold',
+      lane: 'observation',
+      conditionKey: 'system:queue-depth',
+    });
+
+    expect(JSON.parse(res.content[0].text)).toMatchObject({
+      reason: 'coalesced',
+      coalescedOnto: { id: 'EI-standing', repeatCount: 9 },
+    });
+  });
+
+  it('keeps explicit duplicate checks detailed even on the observation lane', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: false,
+      reason: 'check-only',
+      possibleDuplicates: [{ id: 'EI-existing', semantic: 'hard' }],
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    const res = await callTool({
+      title: 'inspect this observation before filing',
+      lane: 'observation',
+      checkDuplicatesOnly: true,
+    });
+
+    expect(JSON.parse(res.content[0].text)).toMatchObject({
+      reason: 'check-only',
+      possibleDuplicates: [{ id: 'EI-existing', semantic: 'hard' }],
+    });
   });
 });
 
@@ -572,9 +653,7 @@ describe('improvements:capture — conditionKey threads to watchdogKey (EI-15448
         ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'n/a' } },
       },
     });
-    expect(mockCapture).toHaveBeenCalledWith(
-      expect.objectContaining({ watchdogKey: 'overwatch:my-own-key' }),
-    );
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ watchdogKey: 'overwatch:my-own-key' }));
   });
 
   it('DIFFERENT hives get DIFFERENT keys — a per-pot health signal must never overwrite its siblings', async () => {
