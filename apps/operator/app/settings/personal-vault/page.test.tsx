@@ -9,6 +9,29 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const sync = vi.hoisted(() => ({
+  jobs: [] as Array<Record<string, unknown>>,
+  invalidate: vi.fn(),
+  useSyncQuery: vi.fn(),
+}));
+
+vi.mock("@papercusp/sync", () => ({
+  useSyncQuery: (options: Record<string, unknown>) => {
+    sync.useSyncQuery(options);
+    return {
+      data: sync.jobs,
+      loading: false,
+      fetching: false,
+      error: null,
+      failureCount: 0,
+      failureReason: null,
+      transport: "polling",
+      invalidate: sync.invalidate,
+    };
+  },
+}));
+
 import PersonalVaultSettingsPage, {
   facebookPersonalVaultConnectHref,
   googleWorkspaceConnectHref,
@@ -172,7 +195,38 @@ const status = {
 
 const fetchMock = vi.fn();
 
+function importJob(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "00000000-0000-4000-8000-000000000901",
+    sourceId: null,
+    providerAccountId: "owner@example.com",
+    filename: "takeout.mbox",
+    contentType: "application/mbox",
+    sizeBytes: 1024,
+    status: "running",
+    bytesProcessed: 512,
+    entriesProcessed: 5,
+    documentsSeen: 4,
+    documentsImported: 3,
+    warnings: [],
+    cancelRequested: false,
+    attemptCount: 1,
+    maxAttempts: 5,
+    nextAttemptAt: "2026-08-26T20:00:00.000Z",
+    retainedUntil: "2026-09-02T20:00:00.000Z",
+    lastError: null,
+    startedAt: "2026-08-26T20:00:00.000Z",
+    completedAt: null,
+    createdAt: "2026-08-26T19:59:00.000Z",
+    updatedAt: "2026-08-26T20:01:00.000Z",
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
+  sync.jobs = [];
+  sync.invalidate.mockReset();
+  sync.useSyncQuery.mockReset();
   fetchMock.mockReset();
   fetchMock.mockImplementation(
     async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -225,6 +279,33 @@ beforeEach(() => {
       ) {
         return Response.json({ ok: true, disconnectedSources: 1 });
       }
+      if (
+        url.startsWith("/api/user/personal-vault/import?") &&
+        init?.method === "POST"
+      ) {
+        return Response.json(
+          { ok: true, duplicate: false, job: importJob() },
+          { status: 202 },
+        );
+      }
+      if (
+        url.startsWith("/api/user/personal-vault/imports?") &&
+        init?.method === "DELETE"
+      ) {
+        return Response.json({
+          ok: true,
+          job: importJob({ status: "cancelled", cancelRequested: true }),
+        });
+      }
+      if (
+        url === "/api/user/personal-vault/imports/retry" &&
+        init?.method === "POST"
+      ) {
+        return Response.json({
+          ok: true,
+          job: importJob({ status: "queued", attemptCount: 0 }),
+        });
+      }
       throw new Error(`unexpected fetch ${init?.method ?? "GET"} ${url}`);
     },
   );
@@ -234,6 +315,93 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("PersonalVaultSettingsPage", () => {
+  it("subscribes to owner import jobs and renders account-scoped progress actions", async () => {
+    sync.jobs = [
+      importJob(),
+      importJob({
+        id: "00000000-0000-4000-8000-000000000902",
+        providerAccountId: "facebook-user-1",
+        filename: "facebook.zip",
+        status: "failed",
+        bytesProcessed: 1024,
+        lastError: "malformed archive member",
+      }),
+    ];
+    render(<PersonalVaultSettingsPage />);
+
+    const activity = (
+      await screen.findByRole("heading", { name: "Archive activity" })
+    ).parentElement;
+    expect(activity).toBeTruthy();
+    expect(sync.useSyncQuery).toHaveBeenCalledWith({
+      queryName: "personalVault.importJobs",
+      args: { userId: "user-1", limit: 50 },
+      enabled: true,
+    });
+    expect(within(activity!).getByText("owner@example.com")).toBeTruthy();
+    expect(within(activity!).getByText("facebook-user-1")).toBeTruthy();
+    expect(
+      within(activity!).getByText(/50% · 512 B of 1.0 KB · 3 imported/i),
+    ).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel import takeout.mbox" }),
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/user/personal-vault/imports?id=00000000-0000-4000-8000-000000000901",
+        { method: "DELETE" },
+      ),
+    );
+    await waitFor(() => expect(sync.invalidate).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry import facebook.zip" }),
+    );
+    await waitFor(() =>
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/user/personal-vault/imports/retry",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            id: "00000000-0000-4000-8000-000000000902",
+          }),
+        }),
+      ),
+    );
+    await waitFor(() => expect(sync.invalidate).toHaveBeenCalledTimes(2));
+  });
+
+  it("streams an archive body to the 202 job endpoint with the selected account", async () => {
+    const { container } = render(<PersonalVaultSettingsPage />);
+    await screen.findByRole("heading", { name: "Import archives" });
+    fireEvent.change(screen.getByLabelText("Archive account"), {
+      target: { value: "owner@example.com" },
+    });
+    const file = new File(["mail"], "takeout.mbox", {
+      type: "application/mbox",
+    });
+    const input = container.querySelector('input[type="file"]');
+    expect(input).toBeTruthy();
+    fireEvent.change(input!, { target: { files: [file] } });
+
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) ===
+            "/api/user/personal-vault/import?providerAccountId=owner%40example.com" &&
+          (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(call).toBeTruthy();
+      expect((call?.[1] as RequestInit).body).toBe(file);
+      expect((call?.[1] as RequestInit).headers).toEqual({
+        "content-type": "application/mbox",
+        "x-papercusp-filename": "takeout.mbox",
+      });
+    });
+    await waitFor(() => expect(sync.invalidate).toHaveBeenCalledTimes(1));
+  });
+
   it("renders the local-only posture and imported source status", async () => {
     render(<PersonalVaultSettingsPage />);
     expect(

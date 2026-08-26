@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSyncQuery } from "@papercusp/sync";
 import { toast } from "sonner";
 import { Button } from "../../harness/Button";
 import { Checkbox } from "../../harness/Checkbox";
@@ -19,6 +20,38 @@ interface PurgeTarget {
   source: string | null;
   sourceId: string | null;
   providerAccountId: string | null;
+}
+
+type PersonalVaultImportStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled";
+
+interface PersonalVaultImportJob {
+  id: string;
+  sourceId: string | null;
+  providerAccountId: string | null;
+  filename: string;
+  contentType: string | null;
+  sizeBytes: number;
+  status: PersonalVaultImportStatus;
+  bytesProcessed: number;
+  entriesProcessed: number;
+  documentsSeen: number;
+  documentsImported: number;
+  warnings: string[];
+  cancelRequested: boolean;
+  attemptCount: number;
+  maxAttempts: number;
+  nextAttemptAt: string;
+  retainedUntil: string;
+  lastError: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 interface PersonalGrant {
@@ -188,6 +221,30 @@ function formatDate(value: string | null): string {
   return Number.isFinite(date.getTime()) ? date.toLocaleString() : value;
 }
 
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  const unit = Math.min(
+    units.length - 1,
+    Math.floor(Math.log(value) / Math.log(1024)),
+  );
+  const amount = value / 1024 ** unit;
+  return `${amount >= 100 || unit === 0 ? Math.round(amount) : amount.toFixed(1)} ${units[unit]}`;
+}
+
+function importProgress(job: PersonalVaultImportJob): number {
+  if (job.status === "completed") return 100;
+  if (job.sizeBytes <= 0) return 0;
+  return Math.max(
+    0,
+    Math.min(100, Math.floor((job.bytesProcessed / job.sizeBytes) * 100)),
+  );
+}
+
+function importStatusLabel(status: PersonalVaultImportStatus): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
 function purgeTargetLabel(target: PurgeTarget): string {
   if (!target.source) return "entire Personal Vault";
   const source = `personal:${target.source}`;
@@ -219,11 +276,19 @@ export default function PersonalVaultSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [importProviderAccountId, setImportProviderAccountId] = useState("");
   const [purgeTarget, setPurgeTarget] = useState<PurgeTarget | null>(null);
   const [planSlug, setPlanSlug] = useState("");
   const [harnessSlug, setHarnessSlug] = useState("papercusp");
   const [grantPreview, setGrantPreview] = useState<GrantPreview | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+
+  const importJobsQuery = useSyncQuery<PersonalVaultImportJob>({
+    queryName: "personalVault.importJobs",
+    args: { userId: status?.user.id ?? "", limit: 50 },
+    enabled: Boolean(status?.user.id),
+  });
+  const importJobs = importJobsQuery.data ?? [];
 
   const load = useCallback(async () => {
     try {
@@ -246,6 +311,28 @@ export default function PersonalVaultSettingsPage() {
     () => status?.grants.filter(activeGrant) ?? [],
     [status],
   );
+
+  const archiveAccounts = useMemo(() => {
+    const accounts = new Map<string, string>();
+    for (const account of status?.integrations?.google.accounts ?? []) {
+      accounts.set(
+        account.providerAccountId,
+        `Google · ${account.displayName}`,
+      );
+    }
+    for (const account of status?.integrations?.facebook?.accounts ?? []) {
+      const label = `Facebook · ${account.displayName}`;
+      const existing = accounts.get(account.providerAccountId);
+      accounts.set(
+        account.providerAccountId,
+        existing ? `${existing} / ${label}` : label,
+      );
+    }
+    return [...accounts].map(([providerAccountId, label]) => ({
+      providerAccountId,
+      label,
+    }));
+  }, [status]);
 
   const setEnabled = useCallback(
     async (enabled: boolean) => {
@@ -382,32 +469,38 @@ export default function PersonalVaultSettingsPage() {
       if (!pending.length) return;
       setBusy("import");
       try {
-        let total = 0;
-        const allWarnings: string[] = [];
+        let queued = 0;
+        let duplicates = 0;
         for (const file of pending) {
-          const form = new FormData();
-          form.set("file", file);
           const result = await responseJson<{
             ok: true;
-            documents: number;
-            sources: string[];
-            warnings: string[];
+            duplicate: boolean;
+            job: PersonalVaultImportJob;
           }>(
-            await fetch("/api/user/personal-vault/import", {
+            await fetch(
+              "/api/user/personal-vault/import" +
+                (importProviderAccountId
+                  ? `?${new URLSearchParams({
+                      providerAccountId: importProviderAccountId,
+                    }).toString()}`
+                  : ""),
+              {
               method: "POST",
-              body: form,
-            }),
+              headers: {
+                "content-type": file.type || "application/octet-stream",
+                "x-papercusp-filename": encodeURIComponent(file.name),
+              },
+              body: file,
+              },
+            ),
           );
-          total += result.documents;
-          allWarnings.push(
-            ...result.warnings.map((warning) => `${file.name}: ${warning}`),
-          );
+          queued += 1;
+          if (result.duplicate) duplicates += 1;
         }
         toast.success(
-          `Imported ${total.toLocaleString()} personal record${total === 1 ? "" : "s"} locally.`,
+          `Queued ${queued.toLocaleString()} archive${queued === 1 ? "" : "s"} for private background import${importProviderAccountId ? ` under ${importProviderAccountId}` : ""}${duplicates ? ` · ${duplicates} duplicate${duplicates === 1 ? "" : "s"} resumed` : ""}.`,
         );
-        if (allWarnings.length)
-          toast.warning(allWarnings.slice(0, 3).join(" · "));
+        importJobsQuery.invalidate?.();
         await load();
       } catch (err) {
         toast.error(`Import failed: ${(err as Error).message}`);
@@ -416,7 +509,52 @@ export default function PersonalVaultSettingsPage() {
         if (fileInput.current) fileInput.current.value = "";
       }
     },
-    [load, status?.enabled],
+    [importJobsQuery.invalidate, importProviderAccountId, load, status?.enabled],
+  );
+
+  const cancelImport = useCallback(
+    async (job: PersonalVaultImportJob) => {
+      if (busy) return;
+      setBusy(`cancel-import:${job.id}`);
+      try {
+        await responseJson<{ ok: true; job: PersonalVaultImportJob }>(
+          await fetch(
+            `/api/user/personal-vault/imports?${new URLSearchParams({ id: job.id }).toString()}`,
+            { method: "DELETE" },
+          ),
+        );
+        toast.success(`Cancellation requested for ${job.filename}.`);
+        importJobsQuery.invalidate?.();
+      } catch (err) {
+        toast.error(`Couldn’t cancel ${job.filename}: ${(err as Error).message}`);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, importJobsQuery.invalidate],
+  );
+
+  const retryImport = useCallback(
+    async (job: PersonalVaultImportJob) => {
+      if (busy) return;
+      setBusy(`retry-import:${job.id}`);
+      try {
+        await responseJson<{ ok: true; job: PersonalVaultImportJob }>(
+          await fetch("/api/user/personal-vault/imports/retry", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ id: job.id }),
+          }),
+        );
+        toast.success(`Retry queued for ${job.filename}.`);
+        importJobsQuery.invalidate?.();
+      } catch (err) {
+        toast.error(`Couldn’t retry ${job.filename}: ${(err as Error).message}`);
+      } finally {
+        setBusy(null);
+      }
+    },
+    [busy, importJobsQuery.invalidate],
   );
 
   const purge = useCallback(async () => {
@@ -571,6 +709,103 @@ export default function PersonalVaultSettingsPage() {
         >
           {source.provider_account_id ? "Purge account" : "Purge source"}
         </Button>
+      ),
+    },
+  ];
+
+  const importJobColumns: TableColumn<PersonalVaultImportJob>[] = [
+    {
+      key: "archive",
+      header: "Archive",
+      render: (job) => (
+        <>
+          <strong>{job.filename}</strong>
+          <span className="pc-settings-note" style={{ display: "block" }}>
+            {formatBytes(job.sizeBytes)} · added {formatDate(job.createdAt)}
+          </span>
+        </>
+      ),
+    },
+    {
+      key: "account",
+      header: "Account",
+      render: (job) =>
+        job.providerAccountId ?? "Offline archive · unattributed",
+      cellTitle: (job) => job.sourceId ?? undefined,
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (job) => (
+        <span aria-label={`${job.filename} import status: ${job.status}`}>
+          {importStatusLabel(job.status)}
+          {job.cancelRequested && job.status === "running"
+            ? " · cancelling"
+            : ""}
+        </span>
+      ),
+    },
+    {
+      key: "progress",
+      header: "Progress",
+      render: (job) => {
+        const percent = importProgress(job);
+        return (
+          <>
+            <progress
+              aria-label={`${job.filename} import progress`}
+              max={100}
+              value={percent}
+              style={{ width: 150, maxWidth: "100%" }}
+            />
+            <span className="pc-settings-note" style={{ display: "block" }}>
+              {percent}% · {formatBytes(job.bytesProcessed)} of{" "}
+              {formatBytes(job.sizeBytes)} ·{" "}
+              {job.documentsImported.toLocaleString()} imported
+            </span>
+            {job.lastError ? (
+              <span style={{ display: "block", color: "var(--danger)" }}>
+                {job.lastError}
+              </span>
+            ) : job.warnings.length ? (
+              <span className="pc-settings-note" style={{ display: "block" }}>
+                {job.warnings.length.toLocaleString()} warning
+                {job.warnings.length === 1 ? "" : "s"}
+              </span>
+            ) : null}
+          </>
+        );
+      },
+    },
+    {
+      key: "actions",
+      header: "",
+      cellStyle: { textAlign: "right" },
+      render: (job) => (
+        <div className="pc-settings-actions">
+          {job.status === "queued" || job.status === "running" ? (
+            <Button
+              variant="destructive"
+              aria-label={`Cancel import ${job.filename}`}
+              disabled={busy !== null || job.cancelRequested}
+              onClick={() => void cancelImport(job)}
+            >
+              {busy === `cancel-import:${job.id}` || job.cancelRequested
+                ? "Cancelling…"
+                : "Cancel"}
+            </Button>
+          ) : null}
+          {job.status === "failed" ? (
+            <Button
+              variant="primary"
+              aria-label={`Retry import ${job.filename}`}
+              disabled={busy !== null}
+              onClick={() => void retryImport(job)}
+            >
+              {busy === `retry-import:${job.id}` ? "Queuing…" : "Retry"}
+            </Button>
+          ) : null}
+        </div>
       ),
     },
   ];
@@ -1156,6 +1391,33 @@ export default function PersonalVaultSettingsPage() {
           (.vcf), Facebook/Instagram message exports, and X archive ZIP/JSON/JS.
           Files are parsed on this machine.
         </p>
+        <label style={{ display: "block", maxWidth: 520, marginTop: 16 }}>
+          <span style={{ display: "block", marginBottom: 4 }}>
+            Archive account
+          </span>
+          <select
+            aria-label="Archive account"
+            value={importProviderAccountId}
+            onChange={(event) =>
+              setImportProviderAccountId(event.target.value)
+            }
+            disabled={busy === "import"}
+          >
+            <option value="">Offline archive · leave unattributed</option>
+            {archiveAccounts.map((account) => (
+              <option
+                key={account.providerAccountId}
+                value={account.providerAccountId}
+              >
+                {account.label}
+              </option>
+            ))}
+          </select>
+          <span className="pc-settings-note" style={{ display: "block" }}>
+            Choose the provider account this export belongs to so imported
+            records stay isolated in search, dedupe, status, and purge.
+          </span>
+        </label>
         <div
           className="pc-settings-note"
           aria-labelledby="vault-archive-help-heading"
@@ -1304,6 +1566,26 @@ export default function PersonalVaultSettingsPage() {
             event.target.files && void importFiles(event.target.files)
           }
         />
+        <div aria-live="polite" style={{ marginTop: 20 }}>
+          <h3>Archive activity</h3>
+          {importJobsQuery.error ? (
+            <p role="alert">
+              Import activity unavailable: {importJobsQuery.error.message}
+            </p>
+          ) : importJobsQuery.loading ? (
+            <p role="status">Loading import activity…</p>
+          ) : importJobs.length ? (
+            <div style={{ overflowX: "auto" }}>
+              <Table
+                columns={importJobColumns}
+                rows={importJobs}
+                getRowKey={(job) => job.id}
+              />
+            </div>
+          ) : (
+            <p className="pc-settings-note">No archive imports queued yet.</p>
+          )}
+        </div>
       </section>
 
       <section
