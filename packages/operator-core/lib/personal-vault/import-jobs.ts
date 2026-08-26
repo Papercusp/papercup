@@ -6,7 +6,6 @@ import { papercuspPathForWorkspace } from '../papercusp-root';
 import {
   streamPersonalArchiveFile,
   type PersonalArchiveCheckpoint,
-  type StreamedPersonalArchiveRecord,
 } from './archive-import';
 import {
   normalizePersonalProviderAccountId,
@@ -662,6 +661,3 @@ export async function runPersonalVaultImportBatch(
     };
   }
 }
-
-// Keep this import referenced as part of the public dependency-injection contract.
-void (undefined as StreamedPersonalArchiveRecord | undefined);
