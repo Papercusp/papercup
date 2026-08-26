@@ -127,6 +127,7 @@ export type {
 export {
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
+  WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
   WORKSPACE_HOST_IMPORT_UNITS,
   ReplaySafeWorkspaceHostInitializationExecutor,
@@ -355,6 +356,8 @@ export {
 export type {
   WorkspaceHostRemoteInitializerRequest,
   WorkspaceHostRemoteInitializerResponse,
+  WorkspaceHostRemoteInitializerStep,
+  WorkspaceHostRemoteInitializerStepKind,
   WorkspaceHostRemoteStepEvidence,
   WorkspaceHostCreateWorkspaceInput,
   WorkspaceHostCloneRepositoryInput,
@@ -367,6 +370,7 @@ export type {
 } from "./workspace-host-remote-initializer";
 export {
   WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV,
   WorkspaceHostRemoteInitializerProtocolError,
   UnsupportedWorkspaceHostInitializationStepKindError,

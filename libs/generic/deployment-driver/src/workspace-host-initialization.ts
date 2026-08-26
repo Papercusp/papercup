@@ -773,11 +773,27 @@ export type WorkspaceHostCredentialLifecycleRequest =
       nextDelivery: WorkspaceHostCredentialDeliverySet;
     });
 
+/**
+ * The four lifecycle step kinds, as a RUNTIME array.
+ *
+ * This used to be a hand-written type union, which meant no caller could validate an inbound
+ * `kind` string against it — a wire parser had to restate the four literals to check membership,
+ * and a restated list is the copy that silently stops matching. The initialization step kinds
+ * next door were already declared this way; this mirrors them so the remote-initializer protocol
+ * can validate lifecycle steps from the same source that defines them.
+ *
+ * The values deliberately equal `WorkspaceHostCredentialOperation` in workspace-host-credential-
+ * namespace.ts: a lifecycle step IS a request to run one credential operation, which is why
+ * `WorkspaceHostCredentialResolver.executeLifecycleStep` can dispatch on `step.kind` directly.
+ */
+export const WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS = [
+  "bind",
+  "verify-bound",
+  "revoke",
+  "verify-revoked",
+] as const;
 export type WorkspaceHostCredentialLifecycleStepKind =
-  | "bind"
-  | "verify-bound"
-  | "revoke"
-  | "verify-revoked";
+  (typeof WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS)[number];
 
 export interface WorkspaceHostCredentialLifecycleStep {
   id: string;

@@ -24,9 +24,11 @@
  */
 import {
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
+  WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
   WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
   type WorkspaceHostCredentialChannel,
+  type WorkspaceHostCredentialLifecycleStepKind,
   type WorkspaceHostInitializationCanaryEvidence,
   type WorkspaceHostInitializationStep,
   type WorkspaceHostInitializationStepKind,
@@ -38,6 +40,7 @@ import {
 import {
   WorkspaceHostCredentialResolver,
   type WorkspaceHostCredentialEvidence,
+  type WorkspaceHostCredentialOperation,
 } from './workspace-host-credential-namespace';
 import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harness';
 
@@ -47,7 +50,34 @@ import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harnes
  * shows up against a real host.
  */
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION =
-  'papercusp-gcp-iap-initialization-v1';
+  'papercusp-gcp-iap-initialization-v2';
+
+/**
+ * Every step kind this initializer can execute: the six INITIALIZATION kinds plus the four
+ * CREDENTIAL-LIFECYCLE kinds (P-046 / WI-40474, plan decision D-114).
+ *
+ * WHY THE LIFECYCLE KINDS HAD TO JOIN THE WIRE. `planWorkspaceHostCredentialLifecycle` and
+ * `executeWorkspaceHostCredentialLifecycle` were both complete, and the host-side resolver
+ * already exposed `executeLifecycleStep` — but the protocol carried only the initialization
+ * kinds, so a planned rotation could not reach a host at all. That mattered beyond tidiness:
+ * `validateWorkspaceHostInitializationCanary` refuses unless every credential channel shows
+ * bound + rotated + previousBindingRevoked + reconnected, and the evidence builder refuses to
+ * widen a false observation into `true`. So the canary was unreachable BY CONSTRUCTION until
+ * lifecycle steps could be sent. This is the carriage that closes it.
+ *
+ * WHY THE VERSION BUMPED RATHER THAN ACCEPTING BOTH. A v1 host receiving a lifecycle kind would
+ * throw `UnsupportedWorkspaceHostInitializationStepKindError` — a per-step failure that reads
+ * like a broken step rather than an out-of-date host. The version check is first and total for
+ * exactly this reason (see `parseWorkspaceHostRemoteInitializerRequest`): skew should announce
+ * itself as skew. A host packaged before this change is expected to be replaced, not negotiated
+ * with.
+ */
+export const WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS = [
+  ...WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
+  ...WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
+] as const;
+export type WorkspaceHostRemoteInitializerStepKind =
+  (typeof WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS)[number];
 
 /** Fixed argv the controller passes; the CLI refuses anything else. */
 export const WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV = [
@@ -56,9 +86,27 @@ export const WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV = [
   '--json-stdin',
 ] as const;
 
+/**
+ * The wire step. Deliberately ONE envelope shape for both step families.
+ *
+ * A `WorkspaceHostCredentialLifecycleStep` carries `channel`/`credentialRef`/`delivery` at the
+ * top level rather than inside `input`. Rather than teach the wire two envelope shapes — which
+ * would fork the parser, the secret-isolation assert, and every test that exercises them — the
+ * controller-side adapter flattens those fields INTO `input`. So `input` remains present and
+ * object-typed for every kind, one parse path serves both families, and
+ * `assertWorkspaceHostSecretIsolation` keeps covering the whole step exactly as before.
+ */
+export interface WorkspaceHostRemoteInitializerStep {
+  id: string;
+  kind: WorkspaceHostRemoteInitializerStepKind;
+  dependsOn: readonly string[];
+  idempotencyKey: string;
+  input: Readonly<Record<string, unknown>>;
+}
+
 export interface WorkspaceHostRemoteInitializerRequest {
   protocolVersion: typeof WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION;
-  step: WorkspaceHostInitializationStep;
+  step: WorkspaceHostRemoteInitializerStep;
 }
 
 export interface WorkspaceHostRemoteInitializerResponse {
@@ -82,7 +130,7 @@ export class UnsupportedWorkspaceHostInitializationStepKindError extends Error {
   constructor(kind: string) {
     super(
       `Remote initializer has no handler for step kind '${kind}'. Supported: ` +
-        `${WORKSPACE_HOST_INITIALIZATION_STEP_KINDS.join(', ')}.`,
+        `${WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS.join(', ')}.`,
     );
     this.name = 'UnsupportedWorkspaceHostInitializationStepKindError';
     this.kind = kind;
@@ -191,7 +239,7 @@ export function parseWorkspaceHostRemoteInitializerRequest(
   const id = requireString(step.id, 'request.step.id');
   const kind = requireString(step.kind, 'request.step.kind');
   if (
-    !(WORKSPACE_HOST_INITIALIZATION_STEP_KINDS as readonly string[]).includes(kind)
+    !(WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS as readonly string[]).includes(kind)
   ) {
     throw new UnsupportedWorkspaceHostInitializationStepKindError(kind);
   }
@@ -206,7 +254,7 @@ export function parseWorkspaceHostRemoteInitializerRequest(
     protocolVersion: WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION,
     step: {
       id,
-      kind: kind as WorkspaceHostInitializationStepKind,
+      kind: kind as WorkspaceHostRemoteInitializerStepKind,
       dependsOn: step.dependsOn as readonly string[],
       idempotencyKey: step.idempotencyKey as string,
       input: step.input as Readonly<Record<string, unknown>>,
@@ -219,6 +267,54 @@ function readInclude(value: unknown, label: string): readonly string[] {
     throw new WorkspaceHostRemoteInitializerProtocolError(`${label} must be an array of strings`);
   }
   return value as readonly string[];
+}
+
+/**
+ * Execute ONE credential operation named by a step, and project its evidence for the wire.
+ *
+ * Shared by the initialization `bind-credential` step and by all four credential-lifecycle
+ * steps, because they are the same act: resolve the channel's materializer and run one operation
+ * against it. Sharing matters more than the few saved lines — the projection below is the
+ * allowlist that decides what leaves the host, so a second copy of it is a second place for a
+ * field to be added without anyone re-asking whether it is safe to emit.
+ */
+async function runCredentialOperation(
+  operation: WorkspaceHostCredentialOperation,
+  input: Readonly<Record<string, unknown>>,
+  deps: WorkspaceHostRemoteInitializerDeps,
+  now: () => Date,
+): Promise<WorkspaceHostRemoteStepEvidence> {
+  const channel = requireString(input.channel, 'step.input.channel');
+  if (!WORKSPACE_HOST_CREDENTIAL_CHANNELS.includes(channel as WorkspaceHostCredentialChannel)) {
+    throw new WorkspaceHostRemoteInitializerProtocolError(
+      `step.input.channel '${channel}' is not a credential channel`,
+    );
+  }
+  const credentialRef = requireObject(input.credentialRef, 'step.input.credentialRef');
+  const delivery = requireObject(input.delivery, 'step.input.delivery');
+  // `requestedAt` is not carried on the step, so the binding's expiry is judged against the
+  // delivery's own window rather than against a clock the controller never saw. Using the
+  // host clock here would let a host accept a delegation the controller had already refused.
+  const requestedAt = new Date(now().getTime() - 1).toISOString();
+  const evidence: WorkspaceHostCredentialEvidence = await deps.credentials.run(operation, {
+    channel: channel as WorkspaceHostCredentialChannel,
+    credentialRef: {
+      kind: requireString(credentialRef.kind, 'step.input.credentialRef.kind'),
+      ref: requireString(credentialRef.ref, 'step.input.credentialRef.ref'),
+    },
+    delivery: delivery as never,
+    requestedAt,
+  });
+  return {
+    channel: evidence.channel,
+    family: evidence.family,
+    operation: evidence.operation,
+    deliveryKind: evidence.deliveryKind,
+    generation: evidence.generation,
+    audience: evidence.audience,
+    referenceDigest: evidence.referenceDigest,
+    detail: evidence.detail,
+  };
 }
 
 /**
@@ -317,36 +413,24 @@ export async function executeWorkspaceHostRemoteInitializerStep(
       break;
     }
     case 'bind-credential': {
-      const channel = requireString(input.channel, 'step.input.channel');
-      if (!WORKSPACE_HOST_CREDENTIAL_CHANNELS.includes(channel as WorkspaceHostCredentialChannel)) {
-        throw new WorkspaceHostRemoteInitializerProtocolError(
-          `step.input.channel '${channel}' is not a credential channel`,
-        );
-      }
-      const credentialRef = requireObject(input.credentialRef, 'step.input.credentialRef');
-      const delivery = requireObject(input.delivery, 'step.input.delivery');
-      // `requestedAt` is not carried on the step, so the binding's expiry is judged against the
-      // delivery's own window rather than against a clock the controller never saw. Using the
-      // host clock here would let a host accept a delegation the controller had already refused.
-      const requestedAt = new Date(now().getTime() - 1).toISOString();
-      const evidence: WorkspaceHostCredentialEvidence = await deps.credentials.run('bind', {
-        channel: channel as WorkspaceHostCredentialChannel,
-        credentialRef: {
-          kind: requireString(credentialRef.kind, 'step.input.credentialRef.kind'),
-          ref: requireString(credentialRef.ref, 'step.input.credentialRef.ref'),
-        },
-        delivery: delivery as never,
-        requestedAt,
-      });
-      publicEvidence = {
-        channel: evidence.channel,
-        family: evidence.family,
-        deliveryKind: evidence.deliveryKind,
-        generation: evidence.generation,
-        audience: evidence.audience,
-        referenceDigest: evidence.referenceDigest,
-        detail: evidence.detail,
-      };
+      publicEvidence = await runCredentialOperation('bind', input, deps, now);
+      break;
+    }
+    // The four CREDENTIAL-LIFECYCLE kinds (D-114). A lifecycle step is exactly a request to run
+    // one credential operation against one channel, and `WorkspaceHostCredentialOperation` has
+    // the same four members as `WorkspaceHostCredentialLifecycleStepKind` — so the kind IS the
+    // operation and needs no mapping table. That identity is asserted by a test rather than
+    // assumed here, because a table nobody checks is how the two lists drift apart.
+    //
+    // Note `bind-credential` above and `bind` here differ only in provenance: the first is the
+    // initial binding planned by `planWorkspaceHostInitialization`, the second is a binding
+    // planned by `planWorkspaceHostCredentialLifecycle` (a rotation's new generation, or a
+    // restore's rebind). They execute identically and deliberately share one implementation.
+    case 'bind':
+    case 'verify-bound':
+    case 'revoke':
+    case 'verify-revoked': {
+      publicEvidence = await runCredentialOperation(step.kind, input, deps, now);
       break;
     }
     case 'verify-initialization': {
