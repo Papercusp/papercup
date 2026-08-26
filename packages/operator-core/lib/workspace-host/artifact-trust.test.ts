@@ -194,6 +194,51 @@ describe('evaluateArtifactTrust', () => {
     expect(report.failures).toContainEqual(expect.objectContaining({ code: 'vulnerability-threshold' }));
   });
 
+  it('retains scanner-reported unknown severities below a configured high threshold', async () => {
+    const unknownFinding = { id: 'GO-2026-5841', severity: 'unknown' } as const;
+    const report = await evaluate(
+      adapters([], {
+        scanVulnerabilities: async () => ({
+          ...vulnerabilityEvidence(),
+          findings: [unknownFinding],
+        }),
+      }),
+    );
+
+    expect(report.trusted).toBe(true);
+    expect(report.failures).toEqual([]);
+    expect(report.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: 'vulnerability-scan',
+        findings: [unknownFinding],
+      }),
+    );
+  });
+
+  it('still rejects severities outside the declared scanner vocabulary', async () => {
+    const report = await evaluate(
+      adapters([], {
+        scanVulnerabilities: async () => ({
+          ...vulnerabilityEvidence(),
+          findings: [
+            {
+              id: 'CVE-2026-9999',
+              severity: 'informational',
+            } as unknown as VulnerabilityEvidence['findings'][number],
+          ],
+        }),
+      }),
+    );
+
+    expect(report.trusted).toBe(false);
+    expect(report.failures).toContainEqual(
+      expect.objectContaining({
+        stage: 'vulnerability-scan',
+        code: 'malformed-evidence',
+      }),
+    );
+  });
+
   it('rejects secret findings over the configured maximum', async () => {
     const report = await evaluate(
       adapters([], {
