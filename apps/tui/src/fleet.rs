@@ -12,11 +12,12 @@
 //!   - **worker-todo mirroring** — the `kind:"todos"` activity rows, mapped to
 //!     per-agent todo lists.
 //!
-//! Two modes (D-006): **curated** (default, calm — roster | dossier + plan
+//! Three modes: **curated** (default, calm — roster | dossier + plan
 //! progress, whole-fleet by default, agent-filtered on selection, with a
 //! `c`-toggled comms sub-view — pui-dock-consolidation-2026-06-07) and the
-//! **faithful mirror** (the raw activity firehose). Both consume the same
-//! stream; `Tab` toggles the mode.
+//! **faithful mirror** (the raw activity firehose), plus the semantic fleet
+//! transition **tape** (P-026). All consume the same activity stream; `Tab`
+//! cycles the mode.
 //!
 //! All state + render lives here; `app.rs`/`ui.rs` only hold a `fleet` field, a
 //! `Tab::Fleet` arm, and a one-line `draw` delegation, so this barely collides
@@ -40,14 +41,16 @@ use std::collections::HashMap;
 /// perf / memory).
 const ACTIVITY_CAP: usize = 400;
 
-/// Which Fleet view mode is showing (D-006). Curated is the calm default; the
-/// mirror is the drill-in firehose.
+/// Which Fleet view mode is showing. Curated is the calm default, Mirror is the
+/// drill-in firehose, and Tape is the lossless semantic transition ledger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FleetMode {
     /// Per-agent latest + plan progress; the calm default.
     Curated,
     /// The raw fleet-wide activity feed (every tool call).
     Mirror,
+    /// The six durable fleet transition families, newest-first and ungrouped.
+    Tape,
 }
 
 impl FleetMode {
@@ -55,13 +58,46 @@ impl FleetMode {
         match self {
             FleetMode::Curated => "curated",
             FleetMode::Mirror => "mirror",
+            FleetMode::Tape => "tape",
         }
     }
     /// Parse a persisted label back to a mode (unknown → Curated, the default).
     pub fn from_label(s: &str) -> FleetMode {
         match s {
             "mirror" => FleetMode::Mirror,
+            "tape" => FleetMode::Tape,
             _ => FleetMode::Curated,
+        }
+    }
+}
+
+/// Filter for the fleet transition Tape (P-026). The classes are shared with
+/// the semantic transcript cards so both renderers interpret a row identically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TapeFilter {
+    All,
+    Exceptions,
+    Claims,
+    Gates,
+}
+
+impl TapeFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            TapeFilter::All => "all",
+            TapeFilter::Exceptions => "exceptions",
+            TapeFilter::Claims => "claims",
+            TapeFilter::Gates => "gates",
+        }
+    }
+
+    fn matches(self, class: crate::semantic_tool_cards::FleetEventClass) -> bool {
+        use crate::semantic_tool_cards::FleetEventClass;
+        match self {
+            TapeFilter::All => true,
+            TapeFilter::Exceptions => class == FleetEventClass::Exception,
+            TapeFilter::Claims => class == FleetEventClass::Claim,
+            TapeFilter::Gates => class == FleetEventClass::Gate,
         }
     }
 }
@@ -118,6 +154,7 @@ impl FleetPanel {
 /// snapshots, the view mode, and the agent-selection cursor.
 pub struct FleetState {
     pub mode: FleetMode,
+    pub tape_filter: TapeFilter,
     /// Live + backfilled activity rows, newest-first, capped at `ACTIVITY_CAP`.
     pub activity: Vec<ActivityRow>,
     /// Fleet-wide work items (features + issues + chunks).
@@ -168,6 +205,7 @@ impl Default for FleetState {
     fn default() -> Self {
         Self {
             mode: FleetMode::Curated,
+            tape_filter: TapeFilter::All,
             activity: Vec::new(),
             work_items: Vec::new(),
             agent_todos: HashMap::new(),
@@ -188,14 +226,15 @@ impl Default for FleetState {
 }
 
 impl FleetState {
-    /// Toggle curated ↔ mirror (D-006).
+    /// Cycle curated → mirror → tape → curated.
     pub fn toggle_mode(&mut self) {
         self.mode = match self.mode {
             FleetMode::Curated => FleetMode::Mirror,
-            FleetMode::Mirror => FleetMode::Curated,
+            FleetMode::Mirror => FleetMode::Tape,
+            FleetMode::Tape => FleetMode::Curated,
         };
-        // Mirror has no panes — drop any entered-pane state so curated reopens
-        // at the browsing level (owner ask 2026-06-15 #2).
+        // Mirror and Tape have no panes — drop any entered-pane state so
+        // Curated reopens at the browsing level (owner ask 2026-06-15 #2).
         self.entered = false;
     }
 
@@ -394,6 +433,7 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
         match app.fleet.mode {
             FleetMode::Curated => draw_curated(f, app, &agg, rows[1]),
             FleetMode::Mirror => draw_mirror(f, app, rows[1]),
+            FleetMode::Tape => draw_tape(f, app, rows[1]),
         }
     }
 
@@ -576,10 +616,9 @@ fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rec
             agg.wi_total,
             agg.wi_remaining,
         )),
-        // Key hints: Tab flips curated↔mirror (D-006 moved off `m`); `c` swaps
-        // the comms sub-view in/out (dock consolidation #3/#4).
+        // Key hints: Tab cycles all three shared-stream renderers.
         Span::styled(
-            format!("[{}]  Tab: curated⇄mirror", mode.label()),
+            format!("[{}]  Tab: curated→mirror→tape", mode.label()),
             Theme::info(),
         ),
     ]);
@@ -1535,6 +1574,80 @@ fn draw_mirror(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(List::new(body).style(Theme::panel()), body_area);
 }
 
+/// Tape mode (P-026): the exact fleet-event families projected onto the
+/// existing activity SSE ledger. The source ring is already newest-first; this
+/// renderer deliberately preserves every row and its order so causal pairs
+/// such as member-dead + claim-released cannot collapse into roster state.
+fn draw_tape(f: &mut Frame, app: &App, area: Rect) {
+    let events: Vec<(&ActivityRow, crate::semantic_tool_cards::FleetEventSemantic)> = app
+        .visible_fleet_activity()
+        .into_iter()
+        .filter_map(|row| {
+            crate::semantic_tool_cards::fleet_event_semantic(row).and_then(|event| {
+                app.fleet
+                    .tape_filter
+                    .matches(event.class)
+                    .then_some((row, event))
+            })
+        })
+        .collect();
+
+    let items: Vec<ListItem> = events
+        .iter()
+        .map(|(row, event)| {
+            let (badge, style) = match event.class {
+                crate::semantic_tool_cards::FleetEventClass::Exception => {
+                    ("! exception", Theme::warn())
+                }
+                crate::semantic_tool_cards::FleetEventClass::Claim => {
+                    ("↪ claim", Theme::info())
+                }
+                crate::semantic_tool_cards::FleetEventClass::Gate => {
+                    ("◆ gate", Theme::success())
+                }
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{:<8} ", hms(&row.created_at)), Theme::dim()),
+                Span::styled(format!("{:<12} ", badge), style),
+                Span::styled(
+                    format!("{:<18} ", trunc(&event.transition, 18)),
+                    Theme::dim(),
+                ),
+                Span::raw(format!("{:<22} ", trunc(&event.subject, 22))),
+                Span::raw(trunc(&event.detail, 48)),
+            ]))
+        })
+        .collect();
+    let body = if items.is_empty() {
+        vec![ListItem::new(Line::from(Span::styled(
+            format!(
+                "(no {} fleet transitions in the current activity window)",
+                app.fleet.tape_filter.label()
+            ),
+            Theme::dim(),
+        )))]
+    } else {
+        items
+    };
+    let body_area = crate::ui::block_with_header(
+        f,
+        area,
+        Theme::block(
+            Line::from(format!(
+                " Transition tape ({}) · filter: {} · ! exceptions · a all · c claims · g gates ",
+                events.len(),
+                app.fleet.tape_filter.label()
+            )),
+            !events.is_empty(),
+        ),
+        &format!(
+            "{:<9}{:<13}{:<19}{:<23}{}",
+            "time", "class", "transition", "subject", "detail"
+        ),
+    );
+    f.render_widget(List::new(body).style(Theme::panel()), body_area);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1696,7 +1809,10 @@ mod tests {
         s.toggle_mode();
         assert_eq!(s.mode, FleetMode::Mirror);
         s.toggle_mode();
+        assert_eq!(s.mode, FleetMode::Tape);
+        s.toggle_mode();
         assert_eq!(s.mode, FleetMode::Curated);
+        assert_eq!(FleetMode::from_label("tape"), FleetMode::Tape);
     }
 
     #[test]

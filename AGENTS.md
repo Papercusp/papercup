@@ -192,6 +192,16 @@ stale-docs-to-mistrust list:
 Some code is **retired but deliberately kept** — not deleted, not deployed, not
 tested, not to be extended. 
 
+## Borrowable libraries — generic-first
+
+Domain-free libs live as standalone submodules under `libs/generic/*`; the
+catalog is `BORROWABLE.md` (generated — `npm run gen:borrowable`). **A genuinely
+domain-free algorithm STARTS as `libs/generic/<name>` behind a `configure*()`
+seam** — never inside `operator-core/lib` to be extracted later. `npm run
+lint:generic-first` (advisory) flags violations; incidental keyword hits go in
+the `ALLOW` set in `scripts/check-generic-first.mjs`. Long form + the seam
+pattern: [repo-conventions § borrowable](/internal/docs/system/repo-conventions).
+
 ## This app is in testing — there are no users yet
 
 There is no production. **Don't defer fixes for "let's see how it fares in
@@ -449,7 +459,7 @@ expensive mistake, and no amount of care in the steps below can recover from it.
 state:read { cell: 'gate.greenCheckpoint.candidate', as: '<your repo-relative path>' }
 ```
 
-It returns the judged sha plus **`source.authoritative` — read that FIRST**: a `run-probe` reading is an *inference* (on a CRON run it is just the checkout's live HEAD), so never fire a manual re-run off one. Everything below is the FALLBACK for when the cell answers `unknown` or you need a field it does not carry. Field-by-field: [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
+It returns the judged sha plus **`source.authoritative` — read that FIRST**: a `run-probe` reading is an *inference* (on a CRON run, just the checkout's live HEAD), so never fire a manual re-run off one. Everything below is the FALLBACK for when it answers `unknown`. Field-by-field: [reading pipeline state](/internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction).
 
 
 ## Ratified designs: implementation owes current passing visual evidence
@@ -498,6 +508,24 @@ restart does **NOT** pick up your edits:
 (`:3055` Vite *does* hot-reload.) Probe where the write actually lands; if it's
 stale, restart the *right* host and re-probe. Detail:
 [repo-conventions § two-port model](/internal/docs/system/repo-conventions).
+
+## Before you design or test — read the docs first
+
+Two `/internal/docs` sections are **required reading before the corresponding
+work**, not optional references. Check them *first*, then act:
+
+- **Before ANY design work** — new or changed UI, an API/schema shape, an
+  architecture, or a new durable surface (component, tool, table, service) —
+  read the **design docs** at [`/internal/docs/design`](/internal/docs/design)
+  and check the `design-phase:*` tools (the DTCG token set + component registry)
+  for what already exists. Don't hand-roll a design without checking the system
+  first.
+- **Before ANY testing work** — writing, adding, or changing tests, or verifying
+  behavior — read the **testing docs** at
+  [`/internal/docs/testing`](/internal/docs/testing) (+
+  [`/internal/docs/testing/agent-e2e`](/internal/docs/testing/agent-e2e) for UI).
+  They say which of the four canonical frameworks to use and how (see also
+  "Where new tests go" below).
 
 ## Read this before changing code — performance anti-patterns
 
@@ -713,15 +741,10 @@ process burning a full core:
 [is this process actually doing work?](/internal/docs/agent-insights/is-this-process-actually-doing-work).
 
 
-⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
-service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
-work runs in a child, so measuring it alone reports "idle" about a process
-burning a full core. 
+⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a `MainPID` is often a wrapper sitting at `utime=0` while a child burns a full core.
 
-⚠ Corollary worth knowing before you design one: **a liveness/progress beat emitted BY
-the process being judged cannot report main-thread saturation** — a saturated Node main
-thread stops every `setInterval`/`setTimeout` while looking perfectly asynchronous, so
-the beat goes missing exactly when you need it. Observe from OUTSIDE (`/proc`).
+
+⚠ Corollary: **a liveness beat emitted BY the process being judged cannot report main-thread saturation** — a saturated Node main thread stops every `setInterval` while looking perfectly asynchronous. Observe from OUTSIDE (`/proc`).
 
 
 Treat `top -n1` as usable here; the two-sample `/proc` recipe is still the one to reach for, because it needs no column-index guess (`%CPU` is field **9** in `-H` output, not 8 — field 8 is the state column, and misreading it yields a whole column of `S` that looks like data).
@@ -949,22 +972,3 @@ scenarios** `packages/operator-core/lib/llm-testing/scenarios/<role>/`. **Never*
 fires for a new subsystem, widen a domain in
 `packages/operator-core/lib/testing-domains-registry.ts` then `npm run
 gen:contract` (root). See `/internal/docs/testing` §1.0a.
-
-## Trimmed to fit this client’s budget
-
-> ⚠ **3 part(s) (1,449 chars) did not fit this client's
-> 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
-> deprecated — they are canonical rows in Postgres, and this list is how you find them:
->
-> ```sql
-> SELECT part_key, target_section, body FROM harness_shared.harness_doc_parts
->  WHERE doc_id = 'claude-md' AND tombstone = false AND part_key = ANY(...);
-> ```
->
-> A rule appearing here means the budget, not a decision, removed it. If one of these
-> matters more than something still above, change its `project_rank` — do not re-add it
-> by hand, which the next projection would undo.
-
-- `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
-- `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
-- `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
