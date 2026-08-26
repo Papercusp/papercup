@@ -199,6 +199,7 @@ function deploy(over: Partial<DeployStatus> = {}): DeployStatus {
       blocked: false,
       blockReason: null,
     },
+    liveCertification: null,
     canTriggerGreen: false,
     nothingToDeploy: true,
     state: 'up-to-date',
