@@ -271,3 +271,90 @@ describe('federated CDC tables — capture trigger physically attached (DDL-atta
     ).toEqual([]);
   });
 });
+
+/**
+ * THE ORPHANED-CAPTURE-FUNCTION GUARD (EI-21474657831529811)
+ * ---------------------------------------------------------
+ * Every guard above — and both siblings it names — walks TABLE → TRIGGER: start
+ * from a declared table list, assert the DB attached something to it. That
+ * direction is structurally blind to the converse defect: a capture FUNCTION that
+ * no trigger calls. No table names it, so no table-driven check can ever reach it,
+ * and it is invisible to `checkSubstrateCaptureCoverage` (in-code registry) too.
+ *
+ * That is not hypothetical. `capture_engineer_issues_outbox` (mig-197) was attached
+ * to two triggers on `harness_shared.engineer_issues` when that was a BASE TABLE.
+ * Post-374 the work-item families were inverted — `work_items` became the base
+ * table and `engineer_issues` a VIEW over it — so the triggers could not survive
+ * and issue rows federate via `capture_work_items_outbox` instead. The migration
+ * dropped the triggers and left the FUNCTION behind: unreachable, hand-building an
+ * outbox jsonb that mig-965's nine new issue-family columns never reached.
+ *
+ * The cost of an orphan is not wasted bytes, it is a FALSE DIAGNOSIS. It is named
+ * exactly what an auditor of "why don't issue columns federate?" greps for, and it
+ * reads as a complete and convincing answer — with a tempting fix that would change
+ * nothing, because nothing calls it. Two agents were misled in this exact spot
+ * before anyone ran the one query that distinguishes existing from running.
+ *
+ * So: a capture function's EXISTENCE is not evidence it runs. This asserts
+ * reachability at the function grain, the one direction the other guards cannot see.
+ */
+describe('capture-outbox FUNCTIONS are all reachable (orphan-function guard)', () => {
+  /**
+   * Capture-outbox functions that NO non-internal trigger references. A function
+   * here is dead code that reads like a live federation path.
+   *
+   * Documented exemptions go here with a reason — deliberately EMPTY, so the guard
+   * has maximum teeth. An orphan is either wired up or dropped; "left lying around"
+   * is the state this exists to forbid.
+   */
+  const ORPHAN_EXEMPT: Record<string, string> = {};
+
+  /** All capture_*_outbox functions in harness_shared, with their trigger count. */
+  async function captureFunctionAttachment(): Promise<Array<{ proname: string; triggers: number }>> {
+    return await sql<Array<{ proname: string; triggers: number }>>`
+      SELECT p.proname,
+             (SELECT count(*)::int FROM pg_trigger t
+               WHERE t.tgfoid = p.oid AND NOT t.tgisinternal) AS triggers
+        FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+       WHERE n.nspname = 'harness_shared'
+         AND p.proname LIKE 'capture\\_%\\_outbox'
+       ORDER BY p.proname
+    `;
+  }
+
+  it('sanity: the function population is NON-EMPTY and a known-attached fn reads as attached', async () => {
+    const fns = await captureFunctionAttachment();
+    // Without this, a query that matched ZERO functions (wrong schema, broken LIKE
+    // escape, migrations not applied) yields a trivially-empty orphan set and the
+    // core check below passes VACUOUSLY — an absence claim with no positive control,
+    // which is the exact failure mode the guard is about. Assert we measured something.
+    expect(fns.length, 'capture-function introspection returned NOTHING — query/migration broken').toBeGreaterThan(0);
+    const substrate = fns.find((f) => f.proname === 'capture_substrate_outbox');
+    expect(substrate, 'capture_substrate_outbox absent — migrations did not apply').toBeDefined();
+    expect(substrate!.triggers, 'the workhorse capture fn reads as unattached — introspection is wrong').toBeGreaterThan(
+      0,
+    );
+  });
+
+  it('every capture_*_outbox function is attached to at least one trigger', async () => {
+    const fns = await captureFunctionAttachment();
+    const orphaned = fns
+      .filter((f) => f.triggers === 0)
+      .map((f) => f.proname)
+      .filter((name) => !(name in ORPHAN_EXEMPT))
+      .sort();
+
+    expect(
+      orphaned,
+      `Capture function(s) exist in harness_shared but NO trigger calls them — dead code ` +
+        `shaped exactly like a live federation path. Every table-driven guard stays GREEN ` +
+        `(no table names an orphan, so none can see it). This usually means a migration ` +
+        `retargeted or dropped the triggers — e.g. the table became a VIEW over another ` +
+        `base table — and left the function behind. Fix it by DROPPING the function in a ` +
+        `migration, or by attaching it if the capture is genuinely still wanted. Do not ` +
+        `silence this by adding to ORPHAN_EXEMPT unless the function must provably stay ` +
+        `unattached, with the reason written down. Orphaned: ${orphaned.join(', ')}`,
+    ).toEqual([]);
+  });
+});
