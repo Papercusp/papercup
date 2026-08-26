@@ -31,11 +31,7 @@ import { evaluatePlanStartReadiness } from '../../agent-tools/plans/plan-input-v
 import { routineStorageSlug } from '../../pot-membership';
 import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
-import {
-  deriveIndexFromContent,
-  type PlanIndexDecision,
-  type PlanIndexItem,
-} from '../../agent-tools/plans/source';
+import { deriveIndexFromContent, type PlanIndexDecision, type PlanIndexItem } from '../../agent-tools/plans/source';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
 import { hashPlanContent } from '@papercusp/plan-parser';
 import {
@@ -353,9 +349,7 @@ async function runScheduledPlanFireTx(
   const instanceItems =
     Array.isArray(template.items) && template.items.length > 0 ? template.items : contentIndex.items;
   const instanceDecisions =
-    Array.isArray(template.decisions) && template.decisions.length > 0
-      ? template.decisions
-      : contentIndex.decisions;
+    Array.isArray(template.decisions) && template.decisions.length > 0 ? template.decisions : contentIndex.decisions;
   const itemsJson = JSON.stringify(instanceItems);
   const decisionsJson = JSON.stringify(instanceDecisions);
   await sql`
