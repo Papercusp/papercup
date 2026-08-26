@@ -62,7 +62,7 @@ export default defineTool({
     //     raw SQL. Raw SQL is the trap it replaces: harness_shared.work_items carries BOTH a
     //     legacy `kind` column and the real discriminator `item_kind`, so a hand-written
     //     kind='bug' filter matches ZERO rows and reads exactly like a drained queue.
-    //   · An unrecognized `spec` returns { ok:false, error, candidates } — never a silent
+    //   · An unrecognized or ambiguous `spec` returns { ok:false, error, candidates } — never a silent
     //     whole-backlog fallback, which would look like a suddenly-huge lane.
     "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP so they do not sum; `affinityCoverage` warns when fewer than 50% of claimable rows carry non-empty `payload.paths`; `sampleExcluded` (1-10) adds `excludedSample` — ids per floor for stale-hold triage.",
   guidance: {
@@ -101,7 +101,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        "a fleet's claim-spec scoping the lane (its view.filter + states + rank ordering) — either the FLEET SLUG or the spec's own `specId` (both resolve; an unrecognized value errors with candidates, it never silently widens to the whole backlog). Omit ⇒ the whole issue-family lane for the harness (DEFAULT_CLAIM_SPEC).",
+        "a fleet's claim-spec scoping the lane (its view.filter + states + rank ordering) — the FLEET SLUG, the spec's own `specId`, or a strict `revN` shorthand when that revision uniquely identifies one live fleet spec (ambiguous/unrecognized values error with candidates; they never silently widen to the whole backlog). Omit ⇒ the whole issue-family lane for the harness (DEFAULT_CLAIM_SPEC).",
       ),
     states: z
       .array(z.string().min(1).max(40))
@@ -157,9 +157,10 @@ export default defineTool({
     const ws = resolveClaimSpecWorkspace((ctx as { workspaceId?: string | null }).workspaceId);
 
     // Optionally resolve a fleet claim-spec to scope the lane (filter + states + rank).
-    // EI-18672834165659298: `args.spec` may be either the fleet SLUG or the spec's own
-    // specId — resolveFleetClaimSpec tries both namespaces and returns null when NEITHER
-    // matches. A miss is a hard error (candidates included), never a silent fall-through to
+    // EI-18672834165659298 / EI-21532823374563677: `args.spec` may be the fleet SLUG,
+    // the spec's own specId, or a strict revN shorthand that identifies exactly one live
+    // fleet spec. resolveFleetClaimSpec returns null when none match OR revN is ambiguous.
+    // A miss is a hard error (candidates included), never a silent fall-through to
     // the whole-backlog DEFAULT_CLAIM_SPEC — that silent widening (safe→unsafe) is exactly
     // the bug this fixes.
     let specFilter: FilterNode | undefined;
@@ -170,7 +171,7 @@ export default defineTool({
       revision: number | null;
       source: 'cup' | 'fleet' | 'default';
       fleetSlug?: string;
-      matchedBy?: 'fleet-slug' | 'spec-id';
+      matchedBy?: 'fleet-slug' | 'spec-id' | 'revision-shorthand';
     } = {
       specId: 'default-fixed-ordering',
       revision: 0,
@@ -202,8 +203,8 @@ export default defineTool({
               text: JSON.stringify({
                 ok: false,
                 error:
-                  `no fleet or claim-spec named '${args.spec}' found (checked both the fleet-slug and specId ` +
-                  `namespaces) — refusing to fall back to the unfiltered whole-backlog lane. Pass a valid fleet ` +
+                  `no unique fleet or claim-spec named '${args.spec}' found (checked fleet-slug, specId, and ` +
+                  `unique revN namespaces) — refusing to fall back to the unfiltered whole-backlog lane. Pass a valid fleet ` +
                   `slug or specId from \`candidates\`, or omit \`spec\` to intentionally read the whole lane.`,
                 candidates,
               }),

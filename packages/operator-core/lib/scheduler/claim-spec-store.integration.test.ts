@@ -253,6 +253,36 @@ describe('resolveFleetClaimSpec (EI-18672834165659298 — resolve BOTH the fleet
     expect(resolved!.record.spec.specId).toBe('p2p-release-lane');
   });
 
+  it('resolves a strict revN shorthand when exactly one live fleet spec has that revision', async () => {
+    await setClaimSpec(
+      {
+        cupId: fleetSpecBeeKey('revision-alias-unique'),
+        spec: { ...DEFAULT_CLAIM_SPEC, specId: 'revision-alias-unique-lane', revision: 870_001 },
+        updatedBy: 'leader-revision',
+      },
+      db.sql,
+    );
+    const resolved = await resolveFleetClaimSpec({ spec: 'rev870001' }, db.sql);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.matchedBy).toBe('revision-shorthand');
+    expect(resolved!.fleetSlug).toBe('revision-alias-unique');
+    expect(resolved!.record.revision).toBe(870_001);
+  });
+
+  it('fails a revN shorthand closed when more than one live fleet spec shares that revision', async () => {
+    for (const fleet of ['revision-alias-ambiguous-a', 'revision-alias-ambiguous-b']) {
+      await setClaimSpec(
+        {
+          cupId: fleetSpecBeeKey(fleet),
+          spec: { ...DEFAULT_CLAIM_SPEC, specId: `${fleet}-lane`, revision: 870_002 },
+          updatedBy: 'leader-revision',
+        },
+        db.sql,
+      );
+    }
+    await expect(resolveFleetClaimSpec({ spec: 'rev870002' }, db.sql)).resolves.toBeNull();
+  });
+
   it('an UNRECOGNIZED spec (neither namespace matches) returns null — never DEFAULT_CLAIM_SPEC', async () => {
     const resolved = await resolveFleetClaimSpec({ spec: 'totally-bogus-spec-xyz' }, db.sql);
     expect(resolved).toBeNull();

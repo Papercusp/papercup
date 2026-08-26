@@ -920,8 +920,8 @@ export async function getClaimSpecRecord(
 }
 
 /**
- * A fleet claim-spec resolved from a caller-supplied `spec` string that may be EITHER
- * namespace it can legitimately be addressed by.
+ * A fleet claim-spec resolved from a caller-supplied `spec` string through one of its
+ * legitimate namespaces.
  */
 export interface ResolvedFleetClaimSpec {
   record: ClaimSpecRecord;
@@ -929,16 +929,18 @@ export interface ResolvedFleetClaimSpec {
    *  `fleet:` prefix) — always populated, regardless of which namespace matched. */
   fleetSlug: string;
   /** Which namespace the caller's `spec` value matched. */
-  matchedBy: 'fleet-slug' | 'spec-id';
+  matchedBy: 'fleet-slug' | 'spec-id' | 'revision-shorthand';
 }
 
 /**
- * EI-18672834165659298: resolve a caller-supplied `spec` string against BOTH namespaces a
+ * EI-18672834165659298: resolve a caller-supplied `spec` string against the namespaces a
  * fleet claim-spec is legitimately addressed by — the FLEET SLUG (the sentinel `bee_id` key,
  * `fleet:<slug>`, per {@link fleetSpecBeeKey}) and the spec's own `specId` (the value stamped
  * into every claim-spec payload, printed by scheduler:get_claim_spec, and quoted in
  * get_next's own refusal text — "does not match p2p-release-lane@12" — making the specId the
- * MORE discoverable value and therefore the one callers are likeliest to pass here).
+ * MORE discoverable value and therefore the one callers are likeliest to pass here). A strict
+ * `revN` shorthand is also accepted when exactly ONE live fleet spec in the workspace carries
+ * revision N. Revision numbers are not globally unique, so an ambiguous shorthand fails closed.
  *
  * Trying the fleet-slug namespace FIRST preserves today's common-case query shape (one
  * indexed point lookup); the specId fallback only fires when that misses, so it costs
@@ -1011,6 +1013,28 @@ export async function resolveFleetClaimSpec(
     const fleetSlug = row.bee_id.slice('fleet:'.length);
     const resolved = toRecord(row, fleetSlug);
     if (resolved) return { ...resolved, matchedBy: 'spec-id' };
+  }
+
+  // 3) strict revision shorthand (`rev47`) — a convenience printed by plan/fleet
+  // reconciliation surfaces. A revision is only an identity when it is UNIQUE in this
+  // workspace. Query at most two rows so ambiguity is detected without materializing the
+  // fleet catalog; two matches deliberately return null and let the caller surface candidates.
+  const revisionMatch = /^rev(\d+)$/i.exec(args.spec);
+  const revision = revisionMatch ? Number(revisionMatch[1]) : Number.NaN;
+  if (Number.isSafeInteger(revision) && revision >= 0) {
+    const byRevisionRows = (await sql`
+      SELECT bee_id, spec, revision, updated_by, updated_at, harness_slug
+        FROM harness_shared.cup_claim_specs
+       WHERE workspace_id = ${ws}
+         AND bee_id LIKE 'fleet:%'
+         AND revision = ${revision}
+       ORDER BY updated_at DESC LIMIT 2`) as Row[];
+    if (byRevisionRows.length === 1) {
+      const row = byRevisionRows[0]!;
+      const fleetSlug = row.bee_id.slice('fleet:'.length);
+      const resolved = toRecord(row, fleetSlug);
+      if (resolved) return { ...resolved, matchedBy: 'revision-shorthand' };
+    }
   }
 
   return null;

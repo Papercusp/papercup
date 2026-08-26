@@ -230,12 +230,43 @@ describe('work_items:claimable handler', () => {
     });
   });
 
+  it('a unique revN shorthand scopes the lane and reports revision-shorthand provenance', async () => {
+    recM.mockResolvedValue({
+      fleetSlug: 'revision-fleet',
+      matchedBy: 'revision-shorthand',
+      record: {
+        source: 'fleet',
+        spec: {
+          specId: 'revision-lane',
+          revision: 47,
+          view: { filter: { field: 'plan', op: '=', value: 'z' } },
+          states: ['open'],
+        },
+        revision: 47,
+        updatedBy: null,
+        updatedAt: null,
+        harnessSlug: null,
+        fleetSlug: 'revision-fleet',
+      },
+    } as never);
+    const out = await run({ harness: 'papercup', spec: 'rev47' });
+    expect(recM).toHaveBeenCalledWith({ spec: 'rev47', workspaceId: 'ws-1' });
+    expect(readM.mock.calls[0]![0]).toEqual({ field: 'plan', op: '=', value: 'z' });
+    expect(out.spec).toEqual({
+      specId: 'revision-lane',
+      revision: 47,
+      source: 'fleet',
+      fleetSlug: 'revision-fleet',
+      matchedBy: 'revision-shorthand',
+    });
+  });
+
   it('an unrecognized `spec` (neither namespace matches) ERRORS with candidates — never falls back to the whole backlog', async () => {
     recM.mockResolvedValue(null as never);
     candM.mockResolvedValue([{ fleetSlug: 'p2p-release', specId: 'p2p-release-lane', revision: 12 }] as never);
     const out = await run({ harness: 'papercup', spec: 'bogus-spec' });
     expect(out.ok).toBe(false);
-    expect(out.error).toMatch(/no fleet or claim-spec named 'bogus-spec'/);
+    expect(out.error).toMatch(/no unique fleet or claim-spec named 'bogus-spec'/);
     expect(out.candidates).toEqual([{ fleetSlug: 'p2p-release', specId: 'p2p-release-lane', revision: 12 }]);
     // never widened to the unfiltered lane — the snapshot read was never even issued.
     expect(readM).not.toHaveBeenCalled();

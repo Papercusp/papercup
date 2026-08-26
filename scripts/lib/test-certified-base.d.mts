@@ -29,9 +29,12 @@ export function isScopedInvocation(argv: readonly string[]): boolean;
  *     and we take it. This is what makes the watermark able only ever to SHRINK a
  *     run relative to today, never to grow it.
  *
- * @param {object} deps
- * @param {(argv: string[]) => string | null} deps.git Read-only git runner returning
+ * @param {object} [deps]
+ * @param {(argv: string[]) => string | null} [deps.git] Read-only git runner returning
  *   trimmed stdout, or `null` for ANY failure. Every `null` sends us to the default.
+ *   OPTIONAL on purpose: a caller that supplies none gets the `no-git-runner` fallback
+ *   rather than a throw, so a mis-wire degrades to today's base instead of killing a
+ *   green run. Declaring it required would make the type lie about that.
  * @param {Record<string, string | undefined>} [deps.env] Environment to read the
  *   kill-switch from.
  * @returns {{ base: string, source: 'default' | 'watermark', sha: string | null, reason: string }}
@@ -40,7 +43,7 @@ export function isScopedInvocation(argv: readonly string[]): boolean;
  *   every negative case is indistinguishable from total breakage.
  */
 export function resolveTestCertifiedBase({ git, env }?: {
-    git: (argv: string[]) => string | null;
+    git?: ((argv: string[]) => string | null) | undefined;
     env?: Record<string, string | undefined> | undefined;
 }): {
     base: string;
