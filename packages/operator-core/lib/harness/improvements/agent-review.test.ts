@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WorkItem } from '../../work-items';
+import { REBIND_BLOCKING_SESSION_STATES } from '../../agent-tools/coordination/rebind-identity';
 import { LEGACY_AGENT_REVIEW_SUBMITTER } from './agent-review-policy';
 import {
   enterAgentReview,
@@ -9,6 +10,7 @@ import {
   resubmitAgentReview,
   type AgentReviewDeps,
   type AgentReviewLedgerGrade,
+  type SubmitterLivenessVerdict,
 } from './agent-review';
 
 function issue(overrides: Partial<WorkItem> = {}): WorkItem {
@@ -57,10 +59,15 @@ function harness(initial: WorkItem = issue()) {
     issue: WorkItem;
     ledger: AgentReviewLedgerGrade | null;
     posts: Array<{ body: string; author: string }>;
+    /** The submitter's liveness as the oracle would report it. `null` = NOT MEASURED. */
+    submitterLiveness: SubmitterLivenessVerdict | null;
   } = {
     issue: cloneIssue(initial),
     ledger: null,
     posts: [],
+    // Default to a live submitter: the conservative reading, and the one that preserves
+    // pre-WI-41689 behaviour for every test that does not opt into the orphan path.
+    submitterLiveness: { sessionState: 'live' },
   };
 
   const recordRoutedIdea = vi.fn(async () => undefined);
@@ -80,6 +87,7 @@ function harness(initial: WorkItem = issue()) {
     return { body } as never;
   });
   const deliverRevision = vi.fn(async () => ({ woken: 1 }));
+  const resolveSubmitterLiveness = vi.fn(async () => state.submitterLiveness);
 
   const deps = {
     getWorkItem: vi.fn(async () => cloneIssue(state.issue)),
@@ -108,6 +116,7 @@ function harness(initial: WorkItem = issue()) {
     resolveLedgerIdeaId,
     readLedgerGrade: vi.fn(async () => state.ledger),
     deliverRevision,
+    resolveSubmitterLiveness,
   } as unknown as AgentReviewDeps;
 
   return {
@@ -119,6 +128,7 @@ function harness(initial: WorkItem = issue()) {
     claimWorkItem,
     commentWorkItem,
     deliverRevision,
+    resolveSubmitterLiveness,
   };
 }
 
@@ -410,5 +420,142 @@ describe('agent-review grading lifecycle', () => {
       changed: false,
     });
     expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * WI-41689. A 'revision-requested' row can only leave that state through
+ * `resubmitAgentReview`, and only its original submitter could call it — so once that
+ * session was reaped (the COMMON case: review routinely outlives the filing session) the
+ * row was excluded from the claim floor with nobody alive able to free it.
+ */
+describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-41689)', () => {
+  function orphanRow(overrides: Partial<WorkItem> = {}): WorkItem {
+    return issue({
+      assignee: null,
+      payload: {
+        agentReview: { status: 'revision-requested', submittedBy: 'su-gone', ledgerIdeaId: 'WI-7', round: 1 },
+      },
+      ...overrides,
+    });
+  }
+
+  it('refuses while the original submitter can still act', async () => {
+    const h = harness(orphanRow());
+    h.state.submitterLiveness = { sessionState: 'live' };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'not-submitter',
+    });
+    // The row is untouched — a refusal must not half-apply.
+    expect(h.state.issue.payload).toEqual({
+      agentReview: { status: 'revision-requested', submittedBy: 'su-gone', ledgerIdeaId: 'WI-7', round: 1 },
+    });
+  });
+
+  /**
+   * THE TRAP THIS SUITE EXISTS FOR. 'recorded' is NOT a dead session — it is synthesized
+   * from a recorded-but-not-yet-RUNNING launch, i.e. a session about to start. Reading
+   * "not live" as "gone" would let one agent seize a submitter identity out from under a
+   * session that is still booting: rare, timing-dependent, and near-impossible to
+   * attribute after the fact. The polarity is owned by REBIND_BLOCKING_SESSION_STATES.
+   */
+  it('refuses a submitter whose session is merely RECORDED (a launch, not a death)', async () => {
+    const h = harness(orphanRow());
+    h.state.submitterLiveness = { sessionState: 'recorded' };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'not-submitter',
+    });
+  });
+
+  it.each(REBIND_BLOCKING_SESSION_STATES)('refuses while the submitter is %s', async (sessionState) => {
+    const h = harness(orphanRow());
+    h.state.submitterLiveness = { sessionState };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'not-submitter',
+    });
+  });
+
+  /**
+   * FAIL CLOSED. `null` is the oracle's in-band unknown — "not measured", never "absent".
+   * Collapsing it into gone would silently widen the rule to "resubmit whenever we cannot
+   * see the submitter", which is a different policy wearing this one's clothes.
+   */
+  it('refuses — with a distinct, diagnosable reason — when liveness could not be measured', async () => {
+    const h = harness(orphanRow());
+    h.state.submitterLiveness = null;
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'not-submitter:liveness-unknown',
+    });
+  });
+
+  it('lets a new agent adopt and resubmit an unheld row once the submitter has ended', async () => {
+    const h = harness(orphanRow());
+    h.state.submitterLiveness = { sessionState: 'ended' };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toEqual({
+      resubmitted: true,
+      state: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+    });
+    // submittedBy is rebound to the adopter, so the NEXT round's revision reaches someone alive.
+    expect(h.state.issue.payload).toEqual({
+      agentReview: { status: 'pending', submittedBy: 'su-newcomer', ledgerIdeaId: 'WI-7', round: 2 },
+    });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: false });
+  });
+
+  /**
+   * REGRESSION: `expectedAssignee` is a CAS against the CURRENT holder. Passing the caller
+   * while the gone submitter still holds the claim matches zero rows, and the function
+   * throws "held by another agent" about a row whose only holder is a dead session —
+   * re-stranding precisely the case this branch rescues.
+   */
+  it('releases against the GONE submitter when it died still holding the claim', async () => {
+    const h = harness(orphanRow({ assignee: 'su-gone' }));
+    h.state.submitterLiveness = { sessionState: 'ended' };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: true,
+    });
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-gone',
+    });
+    expect(h.state.issue.assignee).toBeNull();
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: true });
+  });
+
+  it('refuses to adopt a row a third agent is holding, rather than trading the bug for a claim-steal', async () => {
+    const h = harness(orphanRow({ assignee: 'su-other' }));
+    h.state.submitterLiveness = { sessionState: 'ended' };
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'orphan-revision-held-by-other',
+    });
+    expect(h.releaseWorkItem).not.toHaveBeenCalled();
+    expect(h.state.issue.assignee).toBe('su-other');
+  });
+
+  it('does not spend an oracle read on a row that is not revision-requested anyway', async () => {
+    const h = harness(issue({
+      assignee: null,
+      payload: {
+        agentReview: { status: 'pending', submittedBy: 'su-gone', ledgerIdeaId: 'WI-7', round: 1 },
+      },
+    }));
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'not-submitter',
+    });
+    expect(h.resolveSubmitterLiveness).not.toHaveBeenCalled();
   });
 });

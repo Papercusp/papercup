@@ -196,6 +196,31 @@ async function deliverRevision(input: {
   }
 }
 
+/**
+ * Default submitter-liveness resolution. The oracle is reached by DYNAMIC import on
+ * purpose: it statically pulls presence.ts, adv-sessions and psu-pty-discovery, and this
+ * module is imported by hermetic unit tests. Same keep-it-off-the-static-graph discipline
+ * `rebindIdentity.defaultResolveLiveness` uses for the same dependency.
+ *
+ * `hydratePerId` fills heartbeat/stale/host/pid/source from the subject's own presence
+ * row, which is what enables the oracle's pid probe — without it a reaped session can
+ * resolve to a weaker verdict than the evidence supports.
+ */
+async function resolveSubmitterLiveness(
+  ownerId: string,
+  hints: { claimsHeld: boolean },
+): Promise<SubmitterLivenessVerdict | null> {
+  const { resolveSessionStates } = await import('../../agent-tools/coordination/liveness-oracle');
+  const verdicts = await resolveSessionStates([{ ownerId, claimsHeld: hints.claimsHeld }], {
+    hydratePerId: true,
+  });
+  const v = verdicts.get(ownerId);
+  // `sessionState: null` is the oracle's in-band unknown. Fold it into "no reading" here
+  // so the single `null` the caller sees always means NOT MEASURED, and it cannot be
+  // mistaken for a measured absence.
+  return v && v.sessionState != null ? { sessionState: v.sessionState } : null;
+}
+
 const defaultDeps: AgentReviewDeps = {
   getWorkItem,
   getWorkItemDetail,
@@ -207,6 +232,7 @@ const defaultDeps: AgentReviewDeps = {
   resolveLedgerIdeaId,
   readLedgerGrade,
   deliverRevision,
+  resolveSubmitterLiveness,
 };
 
 export interface EnterAgentReviewInput {
@@ -278,8 +304,47 @@ export async function resubmitAgentReview(
   if (isLegacyRebind && workItem.assignee !== input.submittedBy) {
     return { resubmitted: false, state: current, reason: 'legacy-revision-not-claimant' };
   }
+  // ORPHAN REBIND (WI-41689). A 'revision-requested' row can only leave that state through
+  // this function, and until now only its ORIGINAL submitter could call it. That submitter
+  // is routinely gone by review time — a session that filed a report hours earlier is
+  // reaped — which left the row excluded from the claim floor by
+  // `agentReviewPendingSelectorSql` with nobody alive able to release it. Permanently
+  // unclaimable, and invisible as a blocker.
+  //
+  // So: when the original submitter is PROVABLY gone, another agent may adopt the row.
+  // "Provably" is doing real work in that sentence — see the two guards below.
+  let isOrphanRebind = false;
   if (!isLegacyRebind && current.submittedBy !== input.submittedBy) {
-    return { resubmitted: false, state: current, reason: 'not-submitter' };
+    // A row that is not resubmittable anyway refuses on identity exactly as before,
+    // rather than spending an oracle read to reach the same answer by a new name.
+    if (current.status !== 'revision-requested') {
+      return { resubmitted: false, state: current, reason: 'not-submitter' };
+    }
+    const verdict = await deps.resolveSubmitterLiveness(current.submittedBy, {
+      claimsHeld: workItem.assignee === current.submittedBy,
+    });
+    // FAIL CLOSED on an unmeasured verdict. `null` means the oracle had no signal, not
+    // that the submitter is absent, and collapsing the two would quietly turn this into
+    // "resubmit whenever we cannot see the submitter" — a different, much weaker rule
+    // wearing this one's clothes. A DISTINCT reason keeps that diagnosable instead of
+    // indistinguishable from a live-submitter refusal.
+    if (!verdict) {
+      return { resubmitted: false, state: current, reason: 'not-submitter:liveness-unknown' };
+    }
+    if ((REBIND_BLOCKING_SESSION_STATES as readonly SessionState[]).includes(verdict.sessionState)) {
+      return { resubmitted: false, state: current, reason: 'not-submitter' };
+    }
+    // The submitter is gone, but the ROW may still be someone else's: adopting it out from
+    // under a third agent would trade this bug for a claim-steal. Unheld, held by the gone
+    // submitter, or held by the caller are all adoptable; anything else is not ours to take.
+    if (
+      workItem.assignee != null &&
+      workItem.assignee !== current.submittedBy &&
+      workItem.assignee !== input.submittedBy
+    ) {
+      return { resubmitted: false, state: current, reason: 'orphan-revision-held-by-other' };
+    }
+    isOrphanRebind = true;
   }
   if (current.status !== 'revision-requested') {
     return { resubmitted: false, state: current, reason: `not-revision-requested:${current.status}` };
@@ -287,7 +352,7 @@ export async function resubmitAgentReview(
   const next: AgentReviewState = {
     ...current,
     status: 'pending',
-    submittedBy: isLegacyRebind ? input.submittedBy : current.submittedBy,
+    submittedBy: isLegacyRebind || isOrphanRebind ? input.submittedBy : current.submittedBy,
     round: current.round + 1,
   };
   const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
@@ -296,9 +361,15 @@ export async function resubmitAgentReview(
   });
   if (!merged) throw new Error(`resubmitAgentReview: work item '${workItem.id}' disappeared`);
   if (workItem.assignee) {
+    // `expectedAssignee` is a CAS (work-items.ts: `taken_by IS NULL OR taken_by =
+    // expectedAssignee`), so it must name the CURRENT holder, not the caller. On an orphan
+    // rebind the holder is the gone submitter — passing the caller here would match zero
+    // rows and throw "held by another agent" about a row whose only holder is a dead
+    // session, re-stranding exactly the case this branch exists to rescue. The guard above
+    // has already established the holder is adoptable.
     const released = await deps.releaseWorkItem(workItem.id, {
       ...(workItem.harness ? { harness: workItem.harness } : {}),
-      expectedAssignee: input.submittedBy,
+      expectedAssignee: isOrphanRebind ? workItem.assignee : input.submittedBy,
     });
     if (!released) throw new Error(`resubmitAgentReview: '${workItem.id}' is held by another agent`);
   }
