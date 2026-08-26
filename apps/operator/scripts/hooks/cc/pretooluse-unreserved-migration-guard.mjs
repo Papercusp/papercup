@@ -98,6 +98,13 @@ import { isFileWritingTool } from './pretooluse-generated-file-edit-guard.mjs';
 /** The one path segment that makes a file a superproject migration. */
 export const SQL_DIR_SEGMENT = 'libs/papercusp/libs/db/sql/';
 
+/**
+ * Suffix of the typed forward-compat acknowledgement sidecar. Kept in sync with
+ * SIDECAR_SUFFIX in scripts/check-migration-forward-compat.mjs, which is the guard
+ * that consumes these files.
+ */
+export const FORWARD_COMPAT_SIDECAR_SUFFIX = '.sql.forward-compat.json';
+
 /** Written to stderr when the guard allows because it could not decide. */
 export const INERT_MARKER = 'unreserved-migration-guard: INERT';
 
@@ -188,6 +195,18 @@ export function migrationTargetFrom(filePath) {
   if (!repoRoot) return null;
   const base = norm.slice(at + SQL_DIR_SEGMENT.length);
   if (!base || base.includes('/')) return null; // archive/** and deeper: out of scope
+  // A typed forward-compat SIDECAR is not a migration artifact. It sits beside an
+  // applied migration, the runner never applies it (only *.sql), and it is
+  // deliberately MUTABLE — it is the acknowledgement route for a migration whose
+  // own bytes can never be edited again.
+  //
+  // This exclusion is load-bearing, not cosmetic. The suffix group below accepts
+  // ANY `.sql.<something>`, so without it this guard matches the sidecar, maps it
+  // back to the applied `<NNN>-*.sql`, and refuses the write — which closed the
+  // last remaining route through lint:migration-forward-compat and left a
+  // gate-blocking lint with no satisfiable fix at all (EI-21539300249506308;
+  // ruling stable-candidate-related-gate-2026-08-23#D-092).
+  if (base.endsWith(FORWARD_COMPAT_SIDECAR_SUFFIX)) return null;
   // <NNN>-<slug>.sql, optionally suffixed (.DRAFT, .PENDING-CODE-DEPLOY, …).
   const m = /^(\d+)-[^/]*?\.sql(\.[A-Za-z0-9._-]+)?$/.exec(base);
   if (!m) return null;
@@ -355,6 +374,12 @@ function selfTest() {
     { name: 'a non-migration file in the repo', path: `${R}/scripts/lint-migrations.mjs`, expect: null },
     { name: 'the sql dir but no numeric prefix', path: P('README.md'), expect: null },
     { name: 'numeric prefix but not .sql', path: P('820-add-foo.md'), expect: null },
+    // D-092: the typed sidecar is NOT a migration artifact. Guarding it would
+    // refuse the only remaining acknowledgement route for an applied migration.
+    { name: 'forward-compat sidecar beside an applied migration', path: P('975-drop-idx.sql.forward-compat.json'), expect: null },
+    // …but a look-alike suffix must still be guarded, or the exclusion above
+    // becomes a way to smuggle edits past this guard.
+    { name: 'look-alike suffix is still a migration artifact', path: P('975-drop-idx.sql.forward-compat.json.bak'), expect: { num: 975, draft: true, sqlName: '975-drop-idx.sql' } },
     { name: 'a same-named dir OUTSIDE the superproject (submodule checkout)', path: '/repo/libs/db/sql/820-x.sql', expect: null },
     { name: 'segment present but nothing before it (no derivable root)', path: `/${SQL_DIR_SEGMENT}820-x.sql`, expect: null },
     { name: 'empty path', path: '', expect: null },
