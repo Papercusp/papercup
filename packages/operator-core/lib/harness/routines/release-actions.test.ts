@@ -48,6 +48,12 @@ vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   recordStoredQualificationVerdict: (...a: unknown[]) => recordStoredQualificationVerdict(...a),
 }));
 
+const readLiveReleaseCertification = vi.hoisted(() => vi.fn());
+vi.mock('../../release/live-release-certification', async (orig) => ({
+  ...(await orig<typeof import('../../release/live-release-certification')>()),
+  readLiveReleaseCertification: (...args: unknown[]) => readLiveReleaseCertification(...args),
+}));
+
 // EI-21363817573800034: drive the scheduled gate's ADMISSION check. Only the reader is
 // replaced — releaseCheckpointConfig() and the rest of the module stay REAL, so this cannot
 // mask a regression in the thresholds the same module owns.
@@ -872,14 +878,14 @@ const ctx: SystemActionCtx = {
   payloadTemplate: null,
 };
 
-function planJson(noop: boolean): string {
+function planJson(noop: boolean, targetSha = 'deadbeef'): string {
   // shape: { mode, config, plan } — release-trigger reads the plan through
   // shouldAutoServe (forward-only). noop:false here models a REAL forward
   // fast-forward (release behind green main with new commits); noop:true models
   // the checkout already at green main.
   const plan: AutoServePlan = noop
-    ? { targetSha: 'deadbeef', currentReleaseSha: 'deadbeef', isFastForward: true, commits: [], noop: true }
-    : { targetSha: 'deadbeef', currentReleaseSha: 'cafef00d', isFastForward: true, commits: ['c1', 'c2'], noop: false };
+    ? { targetSha, currentReleaseSha: targetSha, isFastForward: true, commits: [], noop: true }
+    : { targetSha, currentReleaseSha: 'cafef00d', isFastForward: true, commits: ['c1', 'c2'], noop: false };
   // The CLI prints the pretty block AND the P-008 marker line; release-trigger parses the
   // marker. Emit both so the fake mirrors the real deploy-cli output.
   return (
@@ -958,6 +964,16 @@ beforeEach(() => {
   // a dozen unrelated "expected spawn to be called" failures rather than as a mock-hygiene bug.
   qualificationAdmission.mockReset();
   qualificationAdmission.mockResolvedValue({ status: 'clear' });
+  readLiveReleaseCertification.mockReset();
+  readLiveReleaseCertification.mockImplementation(async (targetSha: string) => ({
+    status: 'certified',
+    targetSha,
+    certified: true,
+    reason: 'exact source certified',
+    bankPath: '/tmp/verdicts.jsonl',
+    evidence: null,
+    invalidLines: 0,
+  }));
 });
 
 describe('register-system-actions — registry population', () => {
@@ -1078,6 +1094,62 @@ describe('release-trigger — noop gating + detached auto-deploy', () => {
     // process), never by this routine.
     expect(appendPipelineEvent).not.toHaveBeenCalled();
     log.mockRestore();
+  });
+
+  it('P-010: launches exact-pin live certification instead of deploying an uncertified green', async () => {
+    readLiveReleaseCertification.mockImplementation(async (targetSha: string) => ({
+      status: 'missing',
+      targetSha,
+      certified: false,
+      reason: 'no exact-source verdict',
+      bankPath: '/tmp/verdicts.jsonl',
+      evidence: null,
+      invalidLines: 0,
+    }));
+    spawnMock
+      .mockImplementationOnce(() => fakeSpawn(planJson(false, 'a'.repeat(40)), 0))
+      .mockImplementationOnce(() => fakeSpawn('', 0));
+    const action = getSystemAction('release-trigger')!;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(spawnMock).toHaveBeenCalledTimes(2);
+    const [cmd, args] = spawnMock.mock.calls[1] as [string, string[]];
+    expect(cmd).toBe('systemd-run');
+    expect(args).toContain('--unit=papercup-live-release-certification');
+    const shell = args.at(-1)!;
+    expect(shell).toContain('setup-release-checkout.sh');
+    expect(shell).toContain('GATE_CERTIFICATION_TARGET_SHA');
+    expect(shell).toContain('live-federation-gate.sh');
+    expect(shell).not.toContain('deploy-cli.ts --execute');
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'deploy', status: 'certification-launched' }),
+    );
+    warn.mockRestore();
+  });
+
+  it('P-010: does not auto-rerun a current exact-source live RED', async () => {
+    readLiveReleaseCertification.mockImplementation(async (targetSha: string) => ({
+      status: 'failed',
+      targetSha,
+      certified: false,
+      reason: 'exact-source live verdict is RED',
+      bankPath: '/tmp/verdicts.jsonl',
+      evidence: null,
+      invalidLines: 0,
+    }));
+    spawnMock.mockImplementationOnce(() => fakeSpawn(planJson(false), 0));
+    const action = getSystemAction('release-trigger')!;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'deploy', status: 'certification-failed' }),
+    );
+    warn.mockRestore();
   });
 
   it('warns (does not throw) when the detached unit cannot launch — e.g. a deploy already running', async () => {
