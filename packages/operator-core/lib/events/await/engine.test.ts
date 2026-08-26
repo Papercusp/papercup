@@ -510,14 +510,29 @@ describe('emitAwaitedEvent — EI-12457: sibling-await cancellation on fire', ()
     expect(h.store.cancelAwaitsByIds).toHaveBeenCalledWith([77]);
   });
 
-  // EI-19463163337467894 — THE regression guard. An unbound await means "wake me on the
-  // NEXT verdict, any candidate"; this candidate resolving does not make it unfireable,
-  // because green-checkpoint auto-refires onto tip and can resolve the opposite way
-  // minutes later. Cancelling it silently removes the agent's only push-wake.
-  it('LEAVES ARMED an unbound (payload_filter NULL) sibling await — a standing subscription is not a dead registration', async () => {
-    h.store.fireAwaitsForKey.mockResolvedValueOnce([awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake' })]);
+  it('cancels an unbound sibling from the SAME registration group (subscriber + note)', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([
+      awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake', note: 'checkpoint:await [papercusp]' }),
+    ]);
     h.store.listActiveAwaitsForKey.mockResolvedValue([
-      awaitRow({ id: 44252, subscriberId: 'su-a', payloadFilter: null }),
+      awaitRow({ id: 44252, subscriberId: 'su-a', payloadFilter: null, note: 'checkpoint:await [papercusp]' }),
+    ]);
+    await emitAwaitedEvent({
+      key: 'green-checkpoint:red:papercusp',
+      payload: { sha: 'deadbeef', pipeline: 'papercusp' },
+      cancelSiblingKeysFor: ['release:green', 'release:green:papercusp'],
+    });
+    expect(h.store.cancelAwaitsByIds).toHaveBeenCalledWith([44252]);
+  });
+
+  // EI-19463163337467894 remains protected: an independently armed unbound wait means
+  // "wake me on the next verdict, any candidate" and must not be consumed by this group.
+  it('leaves an unrelated unbound sibling armed when its registration note differs', async () => {
+    h.store.fireAwaitsForKey.mockResolvedValueOnce([
+      awaitRow({ id: 1, subscriberId: 'su-a', policy: 'wake', note: 'checkpoint:await [papercusp]' }),
+    ]);
+    h.store.listActiveAwaitsForKey.mockResolvedValue([
+      awaitRow({ id: 44253, subscriberId: 'su-a', payloadFilter: null, note: 'separate gate monitor' }),
     ]);
     await emitAwaitedEvent({
       key: 'green-checkpoint:red:papercusp',

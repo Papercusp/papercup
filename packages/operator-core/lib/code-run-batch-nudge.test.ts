@@ -7,6 +7,7 @@
  * triggering condition, so neutering a guard flips a test RED.
  */
 import { describe, it, expect, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   maybeBatchNudge,
   maybeOrientDedupNudge,
@@ -218,6 +219,29 @@ describe('maybeBatchNudge — turn-aware fan-out trigger (P-012)', () => {
       i++;
     }
     expect(last).toBeNull();
+  });
+
+  it('stays silent for one dispatch even when parallel call durations are highly uneven', () => {
+    let last: ReturnType<typeof maybeBatchNudge> = null;
+    const durations = [10, 950, 1_200, 75];
+    for (let i = 0; i < fanTools.length; i++) {
+      last = maybeBatchNudge({
+        sessionKey: 'uneven-parallel-fan',
+        toolName: fanTools[i]!,
+        canCodeRun: true,
+        now: 1_000,
+        durationMs: durations[i],
+      });
+    }
+    expect(last).toBeNull();
+  });
+
+  it('the production handler stamps the nudge with dispatch time, not completion time', () => {
+    const source = readFileSync(
+      new URL('./endpoint-route/routes/transport/_mcp-handler.ts', import.meta.url),
+      'utf8',
+    );
+    expect(source).toMatch(/maybeBatchNudge\(\{[\s\S]*?now:\s*callStartedAt,[\s\S]*?durationMs:/);
   });
 
   it('DOES fire when the same distinct-tool spread lands across ≥ FANOUT_DISTINCT_THRESHOLD SEPARATE turns', () => {

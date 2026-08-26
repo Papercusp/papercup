@@ -182,15 +182,14 @@ export interface EmitAwaitedEventOpts {
    *  this one (e.g. emitting `release:green:<pipeline>` names
    *  `green-checkpoint:red:<pipeline>` here). For every subscriber this emit actually
    *  WAKES, their still-pending awaits on these sibling keys that are BOUND TO THIS
-   *  CANDIDATE (an explicit payload_filter matching this emit's payload) are atomically
-   *  cancelled — that candidate can never legitimately fire the opposite outcome, so the
-   *  dead registration is retired now instead of living until its own timeout.
+   *  REGISTRATION GROUP (the same note as the fired row), or are BOUND TO THIS CANDIDATE
+   *  (an explicit payload_filter matching this emit's payload), are atomically cancelled —
+   *  that terminal outcome has resolved the group/candidate, so the dead registration is
+   *  retired now instead of living until its own timeout.
    *
-   *  An UNBOUND await (no payload_filter) is deliberately LEFT ARMED: it means "wake me
-   *  on the next verdict, any candidate", and this candidate resolving says nothing about
-   *  the next one — the gate auto-refires onto tip and can resolve the opposite way
-   *  minutes later (EI-19463163337467894). Same rule, same matcher, as
-   *  cancelSupersededCandidateAwaits. Best-effort/fail-soft: never breaks the emit.
+   *  An unrelated UNBOUND await (different note) is deliberately LEFT ARMED: it means
+   *  "wake me on the next verdict, any candidate", and this candidate resolving says
+   *  nothing about that separate registration. Best-effort/fail-soft: never breaks the emit.
    *  Omitted ⇒ no sibling cancellation. */
   cancelSiblingKeysFor?: string[];
 }
@@ -338,24 +337,19 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   // on the sibling key (a peer awaiting a DIFFERENT candidate must not be touched).
   if (opts.cancelSiblingKeysFor && opts.cancelSiblingKeysFor.length > 0 && wakes.length > 0) {
     try {
-      // EI-19463163337467894: cancel only awaits BOUND TO THE CANDIDATE that just
-      // resolved. The justification above ("the resolved candidate can never fire the
-      // opposite outcome") is per-CANDIDATE, but this cancellation used to be executed
-      // per-KEY: every woken subscriber's pending sibling await was retired regardless of
-      // which candidate it was waiting for — including an UNBOUND one (payload_filter
-      // NULL) that means "wake me on the next verdict, ANY candidate". A red on candidate
-      // X provably does not make that unfireable: green-checkpoint auto-refires onto tip
-      // in-process and can resolve GREEN minutes later, and the agent's only green
-      // push-wake is already gone. Measured on this workspace: 81 of 83 green awaits
-      // cancelled-unfired in 7 days carried no payload_filter, i.e. 98% were retired on a
-      // premise that did not hold for them.
-      //
-      // This is the SAME rule cancelSupersededCandidateAwaits (WI-4957, below) already
-      // applies, evaluated with the SAME matcher fireAwaitsForKey uses — so "would this
-      // row have fired for this candidate" is answered identically at fire- and
-      // cancel-time. An unbound await is a standing subscription, not a dead
-      // registration; it is left armed.
-      const wokenIdSet = new Set(wakes.map((a) => a.subscriberId));
+      // EI-21508340942800237: checkpoint:await arms three mutually-exclusive rows
+      // with one shared note. Once any row wins, the two unbound sibling rows in THAT
+      // registration group are dead too; leaving them pending produced false timeout
+      // wakes hours after a terminal verdict. Match the fired row's subscriber+note so
+      // a distinct unbound registration remains armed. Candidate-bound rows retain the
+      // existing payload-filter match, which is the authoritative group identity for
+      // targeted waits.
+      const wokenBySubscriber = new Map<string, AwaitRow[]>();
+      for (const wake of wakes) {
+        const rows = wokenBySubscriber.get(wake.subscriberId) ?? [];
+        rows.push(wake);
+        wokenBySubscriber.set(wake.subscriberId, rows);
+      }
       const deadIds: number[] = [];
       for (const key of opts.cancelSiblingKeysFor) {
         const rows = await listActiveAwaitsForKey(key).catch((e) => {
@@ -363,9 +357,13 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
           return [] as AwaitRow[];
         });
         for (const row of rows) {
-          if (!wokenIdSet.has(row.subscriberId)) continue; // never touch a peer's wait
-          if (row.payloadFilter == null) continue; // standing subscription — still fireable
-          if (payloadMatchesFilter(row.payloadFilter, opts.payload)) deadIds.push(row.id);
+          const subscriberWakes = wokenBySubscriber.get(row.subscriberId);
+          if (!subscriberWakes) continue; // never touch a peer's wait
+          if (row.payloadFilter != null) {
+            if (payloadMatchesFilter(row.payloadFilter, opts.payload)) deadIds.push(row.id);
+            continue;
+          }
+          if (subscriberWakes.some((wake) => wake.note === row.note)) deadIds.push(row.id);
         }
       }
       if (deadIds.length > 0) await cancelAwaitsByIds(deadIds);
