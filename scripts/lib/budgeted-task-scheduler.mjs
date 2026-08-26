@@ -91,6 +91,34 @@ export function readTaskCgroupPidsMax(options = {}) {
   }
 }
 
+/**
+ * Read the cgroup pids controller's cumulative refused-fork counter for THIS task.
+ * A null result means the controller/file is unavailable; zero is a real measurement.
+ */
+export function readTaskCgroupPidsEventMax(options = {}) {
+  try {
+    const raw = readTaskCgroupLimit("pids.events", options);
+    if (raw == null) return null;
+    const line = raw
+      .split(/\r?\n/)
+      .map((entry) => entry.trim().split(/\s+/))
+      .find(([key]) => key === "max");
+    if (!line || line.length !== 2) return null;
+    const count = BigInt(line[1]);
+    if (count < 0n || count > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(count);
+  } catch {
+    return null;
+  }
+}
+
+/** Return the refused-fork delta that invalidates a red run; green runs stay authoritative. */
+export function pidsEventRefusalDelta({ start, end, hasFailures }) {
+  if (!hasFailures || start == null || end == null) return 0;
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return 0;
+  return Math.max(0, end - start);
+}
+
 const ROOT_NEAR_TREE_WIDE = [
   /^package(?:-lock)?\.json$/,
   /^tsconfig(?:\.[^.]+)*\.json$/,
@@ -474,7 +502,8 @@ export function resolveTaskBudget({
     configuredPidsReserve,
     pidsBudgetAdapted,
     taskBoundBy:
-      pidsBudgetAdapted || effectiveMaxConcurrentTasks < configuredMaxConcurrentTasks
+      pidsBudgetAdapted ||
+      effectiveMaxConcurrentTasks < configuredMaxConcurrentTasks
         ? "pids"
         : "ceiling",
     reserveWorkers: configuredReserveWorkers,

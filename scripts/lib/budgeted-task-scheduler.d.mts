@@ -21,9 +21,9 @@ export interface ResolvedTaskBudget {
   taskCgroupPidsMax: number | null;
   pidsPerConcurrentTask: number;
   pidsReserve: number;
-  taskBoundBy: 'pids' | 'ceiling';
+  taskBoundBy: "pids" | "ceiling";
   reserveWorkers: number;
-  mode: 'parallel' | 'serial';
+  mode: "parallel" | "serial";
   primaryWorkers: number;
   reserveLaneWorkers: number;
   /**
@@ -32,7 +32,7 @@ export interface ResolvedTaskBudget {
    * `??` fallback for stats objects assembled elsewhere — so it is optional here to keep
    * both callers representable.
    */
-  boundBy?: 'memory' | 'ceiling';
+  boundBy?: "memory" | "ceiling";
   /**
    * The measured available memory, present only when the caller measured it — its
    * ABSENCE is meaningful (the marker omits the field rather than printing a guess), so
@@ -44,7 +44,7 @@ export interface ResolvedTaskBudget {
 }
 
 export interface TaskAllocation {
-  lane: 'primary' | 'reserved' | 'serial';
+  lane: "primary" | "reserved" | "serial";
   workers: number;
   memoryMb: number;
 }
@@ -86,7 +86,9 @@ export interface TaskSchedulerStats extends TaskSchedulerObserved {
   lastMemAvailableMb: number | null;
 }
 
-export function formatTaskBudgetObservedMarker(stats: TaskSchedulerObserved): string;
+export function formatTaskBudgetObservedMarker(
+  stats: TaskSchedulerObserved,
+): string;
 
 export interface ScheduledTaskResult<Task, Value> {
   task: Task;
@@ -101,8 +103,12 @@ export interface BudgetedTaskRun<Task, Value> {
 }
 
 export interface AffectedBlastRadius {
-  kind: 'scoped' | 'near-tree-wide';
-  reason: 'path-closure' | 'root-manifest-or-config' | 'all-requested' | 'derivation-degraded';
+  kind: "scoped" | "near-tree-wide";
+  reason:
+    | "path-closure"
+    | "root-manifest-or-config"
+    | "all-requested"
+    | "derivation-degraded";
   triggerPaths: string[];
 }
 
@@ -183,6 +189,18 @@ export function readTaskCgroupPidsMax(input?: {
   cgroupRoot?: string;
 }): number | null;
 
+export function readTaskCgroupPidsEventMax(input?: {
+  readFile?: (path: string, encoding: string) => string | Buffer;
+  procCgroupPath?: string;
+  cgroupRoot?: string;
+}): number | null;
+
+export function pidsEventRefusalDelta(input: {
+  start: number | null;
+  end: number | null;
+  hasFailures: boolean;
+}): number;
+
 export function classifyAffectedBlastRadius(input?: {
   changedPaths?: string[];
   runAll?: boolean;
@@ -229,8 +247,14 @@ export function runBudgetedTasks<Task, Value>(
      * instrument must not read as "no memory" (EI-20801764054303492).
      */
     readMemAvailableMb?: () => number | null | undefined;
-    runTask: (task: Task, allocation: TaskAllocation, index: number) => Value | Promise<Value>;
-    onTaskSettled?: (entry: ScheduledTaskResult<Task, Awaited<Value>>) => void | Promise<void>;
+    runTask: (
+      task: Task,
+      allocation: TaskAllocation,
+      index: number,
+    ) => Value | Promise<Value>;
+    onTaskSettled?: (
+      entry: ScheduledTaskResult<Task, Awaited<Value>>,
+    ) => void | Promise<void>;
   },
 ): Promise<BudgetedTaskRun<Task, Value>>;
 
@@ -239,12 +263,20 @@ export function runBudgetedTaskShards<Task, Value>(
   options: TaskBudgetInput & {
     estimateMs?: (task: Task, index: number) => number | null | undefined;
     readMemAvailableMb?: () => number | null | undefined;
-    runTask: (task: Task, allocation: TaskAllocation, index: number) => Value | Promise<Value>;
-    onTaskSettled?: (entry: ScheduledTaskResult<Task, Awaited<Value>>) => void | Promise<void>;
+    runTask: (
+      task: Task,
+      allocation: TaskAllocation,
+      index: number,
+    ) => Value | Promise<Value>;
+    onTaskSettled?: (
+      entry: ScheduledTaskResult<Task, Awaited<Value>>,
+    ) => void | Promise<void>;
   },
 ): Promise<
   BudgetedTaskRun<Task, Value> & {
-    shardStats: Array<TaskSchedulerStats & { index: number; taskCount: number }>;
+    shardStats: Array<
+      TaskSchedulerStats & { index: number; taskCount: number }
+    >;
     shardPlan: AffectedTaskShardPlan<Task>;
   }
 >;
@@ -253,14 +285,20 @@ export function emptyDurationHistory(): DurationHistory;
 
 export function readDurationHistory(path: string): DurationHistory;
 
-export function durationEstimate(history: DurationHistory, key: string): number | null;
+export function durationEstimate(
+  history: DurationHistory,
+  key: string,
+): number | null;
 
 /**
  * Like {@link durationEstimate}, but for sizing a TIMEOUT rather than for ordering: it returns
  * the max of the EWMA and the decayed peak, so a bimodal task's slow mode keeps its headroom
  * through a run of fast completions.
  */
-export function timeoutDurationEstimate(history: DurationHistory, key: string): number | null;
+export function timeoutDurationEstimate(
+  history: DurationHistory,
+  key: string,
+): number | null;
 
 export function mergeDurationHistory(
   history: DurationHistory,
@@ -268,6 +306,13 @@ export function mergeDurationHistory(
   now?: string,
 ): DurationHistory;
 
-export function writeDurationHistoryAtomic(path: string, history: DurationHistory, nonce?: string): void;
+export function writeDurationHistoryAtomic(
+  path: string,
+  history: DurationHistory,
+  nonce?: string,
+): void;
 
-export function formatTaskBudgetMarker(stats: ResolvedTaskBudget, prefix?: string): string;
+export function formatTaskBudgetMarker(
+  stats: ResolvedTaskBudget,
+  prefix?: string,
+): string;
