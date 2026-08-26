@@ -82,6 +82,18 @@ export interface FleetLivenessComposition {
    * silence the caveat on precisely the reads that are least certain.
    */
   overstatesActivity: boolean;
+  /**
+   * The caveat AS TEXT, present only when `overstatesActivity`.
+   *
+   * This is not decoration. `renderPopulationCensus` has no callers — the census
+   * reaches agents as a JSON OBJECT on `summary.population`, so a caveat that
+   * lives only in an unrendered sentence ships to nobody, and a bare
+   * `overstatesActivity: true` still asks the reader to already know what it
+   * means. The sentence has to travel in the payload beside the number it is
+   * about, which is the whole content of "make the distinction impossible to
+   * miss in the ANSWER".
+   */
+  note?: string;
 }
 
 /**
@@ -105,12 +117,21 @@ export function composeLiveness<T>(
     else byState[state] = (byState[state] ?? 0) + 1;
   }
   const live = byState.live ?? 0;
+  const overstatesActivity = rows.length > 0 && live * 2 <= rows.length;
   return {
     byState,
     unknown,
     live,
     liveShare: rows.length > 0 ? live / rows.length : 0,
-    overstatesActivity: rows.length > 0 && live * 2 <= rows.length,
+    overstatesActivity,
+    ...(overstatesActivity
+      ? {
+          note:
+            `only ${live} of ${rows.length} are live (sessionState) — this count is a POPULATION ` +
+            `size, not an activity measure. Parked/ended sessions are indistinguishable from ` +
+            `working ones in a total, so do not read it as load or as concurrent work.`,
+        }
+      : {}),
   };
 }
 
