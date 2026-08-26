@@ -2025,6 +2025,26 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  */
 export function reportSessionResumed(advSessionId: number | string | null, opts?: ResumeClaimOptions): Promise<ResumeClaimOutcome>;
 /**
+ * @typedef {object} ResumeAcquireRecoveryOptions
+ * @property {string} [resumeClaimKey]
+ * @property {(advSessionId:number|string|null, opts:{resumeClaimKey:string})=>Promise<ResumeClaimOutcome>} [reportImpl]
+ * @property {(ms:number)=>Promise<void>} [sleep]
+ * @property {()=>number} [now]
+ * @property {(message:string)=>any} [onNotice]
+ * @property {number} [waitBudgetMs]
+ */
+/**
+ * Ride through another launcher's short reservation with the SAME local attempt
+ * key. If that launcher finalizes, the retry returns `live`; if it died, expiry
+ * admits this key. HTTP/transport/missing/live verdicts return immediately —
+ * only a truthful held lease authorizes waiting.
+ *
+ * @param {number|string|null} advSessionId
+ * @param {ResumeAcquireRecoveryOptions} [opts]
+ * @returns {Promise<ResumeClaimOutcome>}
+ */
+export function acquireSessionResumeWithRecovery(advSessionId: number | string | null, opts?: ResumeAcquireRecoveryOptions): Promise<ResumeClaimOutcome>;
+/**
  * @typedef {{ finalized:boolean, reason?:string, status?:number|null,
  *             detail?:string, resumeClaimKey?:string }} ResumeFinalizeOutcome
  * @param {number|string|null} advSessionId
@@ -2050,13 +2070,23 @@ export function reportSessionResumeReleased(advSessionId: number | string | null
  * lost race. Every branch still refuses — this names the cause, it does not
  * soften the guard.
  *
- * @param {{ claimed: false, reason: 'no-session'|'http'|'contended'|'transport', detail?: string }} outcome
+ * @param {{ claimed: false, reason: 'no-session'|'http'|'contended'|'transport',
+ *           detail?: string, status?: 'reserved'|'live'|'missing',
+ *           retryAfterMs?: number, leaseExpiresAt?: string,
+ *           resumeClaimKey?: string }} outcome
+ * @param {{ agent?: 'claude'|'omp'|'codex'|null }} [context]
  * @returns {string}
  */
 export function describeResumeClaimRefusal(outcome: {
     claimed: false;
     reason: "no-session" | "http" | "contended" | "transport";
     detail?: string;
+    status?: "reserved" | "live" | "missing";
+    retryAfterMs?: number;
+    leaseExpiresAt?: string;
+    resumeClaimKey?: string;
+}, { agent }?: {
+    agent?: "claude" | "omp" | "codex" | null;
 }): string;
 /**
  * Best-effort "my managed host RESPAWNED the child under a fresh native id"
@@ -3173,6 +3203,16 @@ export type ResumeClaimOptions = {
     now?: (() => number) | undefined;
     onNotice?: ((message: string) => any) | undefined;
     resumeClaimKey?: string | undefined;
+};
+export type ResumeAcquireRecoveryOptions = {
+    resumeClaimKey?: string | undefined;
+    reportImpl?: ((advSessionId: number | string | null, opts: {
+        resumeClaimKey: string;
+    }) => Promise<ResumeClaimOutcome>) | undefined;
+    sleep?: ((ms: number) => Promise<void>) | undefined;
+    now?: (() => number) | undefined;
+    onNotice?: ((message: string) => any) | undefined;
+    waitBudgetMs?: number | undefined;
 };
 /**
  * Report a keyed post-acquire transition. The body is constructed once and

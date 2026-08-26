@@ -7399,6 +7399,82 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
 }
 
 /**
+ * @typedef {object} ResumeAcquireRecoveryOptions
+ * @property {string} [resumeClaimKey]
+ * @property {(advSessionId:number|string|null, opts:{resumeClaimKey:string})=>Promise<ResumeClaimOutcome>} [reportImpl]
+ * @property {(ms:number)=>Promise<void>} [sleep]
+ * @property {()=>number} [now]
+ * @property {(message:string)=>any} [onNotice]
+ * @property {number} [waitBudgetMs]
+ */
+
+/**
+ * Ride through another launcher's short reservation with the SAME local attempt
+ * key. If that launcher finalizes, the retry returns `live`; if it died, expiry
+ * admits this key. HTTP/transport/missing/live verdicts return immediately —
+ * only a truthful held lease authorizes waiting.
+ *
+ * @param {number|string|null} advSessionId
+ * @param {ResumeAcquireRecoveryOptions} [opts]
+ * @returns {Promise<ResumeClaimOutcome>}
+ */
+export async function acquireSessionResumeWithRecovery(
+  advSessionId,
+  opts = {},
+) {
+  const {
+    resumeClaimKey = randomUUID(),
+    reportImpl = reportSessionResumed,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now = () => Date.now(),
+    onNotice = (message) => console.error(message),
+    waitBudgetMs = 75_000,
+  } = opts;
+  const claimKey = String(resumeClaimKey || "").trim();
+  const startedAt = now();
+
+  while (true) {
+    const outcome = await reportImpl(advSessionId, {
+      resumeClaimKey: claimKey,
+    });
+    if (outcome.claimed || outcome.status !== "reserved") return outcome;
+
+    const observedAt = now();
+    const fromRetryAfter = Number(outcome.retryAfterMs);
+    const fromExpiry = outcome.leaseExpiresAt
+      ? Date.parse(outcome.leaseExpiresAt) - observedAt
+      : Number.NaN;
+    const leaseWaitMs = Number.isFinite(fromRetryAfter) && fromRetryAfter > 0
+      ? fromRetryAfter
+      : fromExpiry;
+    const remainingBudgetMs = Math.max(0, waitBudgetMs - (observedAt - startedAt));
+    if (!Number.isFinite(leaseWaitMs) || leaseWaitMs < 0) {
+      return {
+        ...outcome,
+        detail: "the held reservation omitted a usable retry delay and expiry",
+      };
+    }
+    // A small boundary grace prevents an exact-expiry retry from arriving a few
+    // milliseconds before the datastore's clock crosses the lease boundary.
+    const waitMs = Math.max(1, Math.ceil(leaseWaitMs) + 50);
+    if (waitMs > remainingBudgetMs) {
+      return {
+        ...outcome,
+        detail:
+          `the reservation remains held until ${outcome.leaseExpiresAt ?? "its reported expiry"}; ` +
+          `that exceeds the ${waitBudgetMs}ms automatic wait budget`,
+      };
+    }
+    onNotice(
+      `psu: session #${advSessionId} has a resume reservation held until ` +
+        `${outcome.leaseExpiresAt ?? "the reported lease expiry"}; waiting ${waitMs}ms ` +
+        `and retrying with the same attempt key.`,
+    );
+    await sleep(waitMs);
+  }
+}
+
+/**
  * Report a keyed post-acquire transition. The body is constructed once and
  * replayed unchanged by fetchWithResilience, so a response lost after commit
  * never creates a new claimant or substitutes a new key.
@@ -7543,20 +7619,50 @@ export function reportSessionResumeReleased(advSessionId, resumeClaimKey, opts =
  * lost race. Every branch still refuses — this names the cause, it does not
  * soften the guard.
  *
- * @param {{ claimed: false, reason: 'no-session'|'http'|'contended'|'transport', detail?: string }} outcome
+ * @param {{ claimed: false, reason: 'no-session'|'http'|'contended'|'transport',
+ *           detail?: string, status?: 'reserved'|'live'|'missing',
+ *           retryAfterMs?: number, leaseExpiresAt?: string,
+ *           resumeClaimKey?: string }} outcome
+ * @param {{ agent?: 'claude'|'omp'|'codex'|null }} [context]
  * @returns {string}
  */
-export function describeResumeClaimRefusal(outcome) {
+export function describeResumeClaimRefusal(outcome, { agent = null } = {}) {
   const detail = outcome?.detail ? ` (${outcome.detail})` : "";
+  if (outcome?.status === "reserved") {
+    const expiry = outcome.leaseExpiresAt
+      ? ` until ${outcome.leaseExpiresAt}`
+      : "";
+    return (
+      `another resume attempt holds a reservation${expiry}; ` +
+      `no agent-process liveness was inferred${detail}`
+    );
+  }
+  if (outcome?.status === "live") {
+    const backendContext =
+      agent === "codex"
+        ? " Codex's native writer-lock guard ran before this database check; if it reported no holder, verify the adv-session row or use --fork."
+        : agent === "claude"
+          ? " No live managed-PTY host was found before this database check; verify the recorded Claude host/process or use --fork."
+          : agent === "omp"
+            ? " No live managed-PTY host was found before this database check; verify the recorded OMP host/process or use --fork."
+            : "";
+    return (
+      `the tracked session row is already marked live; that database state alone ` +
+      `does not prove an agent process exists.${backendContext}${detail}`
+    );
+  }
+  if (outcome?.status === "missing") {
+    return `the operator found no tracked adv-session row for this id${detail}`;
+  }
   switch (outcome?.reason) {
     case "contended":
-      return "its ended-session resume claim was not acquired — another process holds the row";
+      return `the resume acquisition was refused without a typed reservation state; no agent-process liveness was inferred${detail}`;
     case "http":
-      return `the operator refused the ended-session resume claim${detail}`;
+      return `the operator did not return an evaluated resume-acquisition verdict${detail}`;
     case "transport":
-      return `the ended-session resume claim could not reach the operator${detail}`;
+      return `the resume-acquisition request could not be evaluated because the operator transport failed${detail}`;
     case "no-session":
-      return "it has no tracked adv-session row to claim";
+      return "it has no tracked adv-session row to acquire";
     default:
       return `the ended-session resume claim failed for an unrecognized reason${detail}`;
   }
@@ -9070,10 +9176,10 @@ async function launchResume(
         process.exit(2);
       }
     }
-    const claim = await reportSessionResumed(session.id);
+    const claim = await acquireSessionResumeWithRecovery(session.id);
     if (!claim.claimed) {
       console.error(
-        `psu: refusing to resume session #${session.id} — ${describeResumeClaimRefusal(claim)}; no agent process was spawned.`,
+        `psu: refusing to resume session #${session.id} — ${describeResumeClaimRefusal(claim, { agent: session.agent })}; no agent process was spawned.`,
       );
       // Headless revival runs this launcher beneath a detached, non-interactive
       // shell whose lifetime is the launcher's lifetime. Setting exitCode and
