@@ -398,6 +398,32 @@ pub struct RosterEntry {
     /// group header; None when no fleet / unresolved (the pui draws it neutral).
     #[serde(default)]
     pub fleet_color: Option<String>,
+    /// Canonical `sessions:read` reference supplied by `sessions:search`.
+    /// Browser and switcher rows share this field so transcript rendering never
+    /// reconstructs a backend-specific session address locally.
+    #[serde(default)]
+    pub transcript_ref: Option<String>,
+    /// Search-result excerpt used as the immediate preview while the canonical
+    /// transcript tail is loading.
+    #[serde(default)]
+    pub transcript_excerpt: Option<String>,
+    /// Indexed transcript timestamp. ISO/PG timestamps sort lexically and also
+    /// drive the browser's coarse time-window facets.
+    #[serde(default)]
+    pub transcript_at: Option<String>,
+}
+
+/// One normalized `sessions:read` turn. The session browser deliberately keeps
+/// the canonical speaker/time/text shape instead of parsing rendered transcript
+/// strings, so every backend gets the same preview renderer.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+pub struct SessionTranscriptTurn {
+    #[serde(default)]
+    pub speaker: String,
+    #[serde(default)]
+    pub ts: Option<String>,
+    #[serde(default)]
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
