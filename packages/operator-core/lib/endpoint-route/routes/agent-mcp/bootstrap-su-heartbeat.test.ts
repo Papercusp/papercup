@@ -49,6 +49,7 @@ beforeAll(async () => {
 // correct to keep.
 const touchHeartbeatMock = vi.hoisted(() => vi.fn(async () => {}));
 const endedRecordedOwnerIdsMock = vi.hoisted(() => vi.fn(async () => new Set<string>()));
+const adoptTerminalSessionMock = vi.hoisted(() => vi.fn(async () => ({ adopted: true })));
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -66,6 +67,9 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
 
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: touchHeartbeatMock,
+}));
+vi.mock('../../../task-manager/adopt-terminal-session', () => ({
+  adoptTerminalSession: adoptTerminalSessionMock,
 }));
 
 beforeEach(() => {
@@ -85,6 +89,16 @@ async function postHeartbeat(body: unknown): Promise<Response> {
 }
 
 describe('POST bootstrap-su/heartbeat — pid/host forwarding (WI-3898 P1)', () => {
+  it('adopts only a PID backed by a real TTY, never a managed headless heartbeat', async () => {
+    await postHeartbeat({ ownerId: 'su-headless', pid: 4242, host: 'box-a' });
+    expect(adoptTerminalSessionMock).not.toHaveBeenCalled();
+
+    await postHeartbeat({ ownerId: 'su-terminal', pid: 4343, host: 'box-a', tty: '/dev/pts/7' });
+    expect(adoptTerminalSessionMock).toHaveBeenCalledWith({
+      ownerId: 'su-terminal', pid: 4343, host: 'box-a', tty: '/dev/pts/7',
+    });
+  });
+
   it('forwards a valid pid + host to touchHeartbeat as { pid, host }', async () => {
     touchHeartbeatMock.mockClear();
     const res = await postHeartbeat({ ownerId: 'su-abc', pid: 4242, host: 'box-a' });

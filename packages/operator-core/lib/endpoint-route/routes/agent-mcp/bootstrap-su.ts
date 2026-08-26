@@ -3025,7 +3025,14 @@ async function adoptTerminalSessionSoft(input: {
   host?: string;
   tty?: string;
 }): Promise<void> {
-  if (input.pid == null) return;
+  // Headless sessions report the launcher PID too, but deliberately have no
+  // terminal device. They are already enrolled by spawnHeadless inside an
+  // owned scope; adopting their heartbeat again would mint a second,
+  // unconfined autoReapExempt "terminal" row for the same process tree.
+  // A real terminal launch owns a TTY (the discriminator this route already
+  // validates), so require both pieces before crossing the terminal-adoption
+  // seam. Presence liveness still receives pid/host for every launch below.
+  if (input.pid == null || !input.tty) return;
   try {
     const { adoptTerminalSession } = await import('../../../task-manager/adopt-terminal-session');
     await adoptTerminalSession(input);
