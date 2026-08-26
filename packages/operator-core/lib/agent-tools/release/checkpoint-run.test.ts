@@ -21,6 +21,7 @@ vi.mock('../../release/checkpoint-serializer-authority', () => ({
 vi.mock('../../release-checkpoint-config', async (importActual) => ({
   ...(await importActual<typeof import('../../release-checkpoint-config')>()),
   readManualRunAdmission: vi.fn(async () => ({ status: 'clear' })),
+  readQualificationAdmission: vi.fn(async () => ({ status: 'clear' })),
 }));
 
 const qualificationMocks = vi.hoisted(() => ({
@@ -28,6 +29,7 @@ const qualificationMocks = vi.hoisted(() => ({
   begin: vi.fn(),
   wait: vi.fn(),
   reserve: vi.fn(),
+  eligibility: vi.fn(),
 }));
 vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   ...(await orig<typeof import('../../release/checkpoint-qualification-transaction')>()),
@@ -35,6 +37,7 @@ vi.mock('../../release/checkpoint-qualification-transaction', async (orig) => ({
   beginStoredQualification: (...a: unknown[]) => qualificationMocks.begin(...a),
   waitStoredQualification: (...a: unknown[]) => qualificationMocks.wait(...a),
   reserveStoredQualificationRunner: (...a: unknown[]) => qualificationMocks.reserve(...a),
+  recordStoredQualificationEligibility: (...a: unknown[]) => qualificationMocks.eligibility(...a),
 }));
 
 function qualificationTransaction(input: Record<string, unknown>, phase = 'ready') {
@@ -108,6 +111,7 @@ beforeEach(() => {
   qualificationMocks.begin.mockReset();
   qualificationMocks.wait.mockReset();
   qualificationMocks.reserve.mockReset();
+  qualificationMocks.eligibility.mockReset();
   qualificationMocks.read.mockResolvedValue({ status: 'none' });
   qualificationMocks.begin.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
     status: 'updated',
@@ -120,6 +124,10 @@ beforeEach(() => {
   qualificationMocks.reserve.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
     status: 'updated',
     transaction: qualificationTransaction(input, 'running'),
+  }));
+  qualificationMocks.eligibility.mockImplementation(async (_target: unknown, input: Record<string, unknown>) => ({
+    status: 'updated',
+    transaction: qualificationTransaction(input),
   }));
   // afterEach removes per-case authority overrides; reinstall the ordinary
   // no-serializer baseline before every import so later tests never open live PG.
