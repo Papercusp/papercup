@@ -34,9 +34,9 @@ import { buildDispatchHandle, type DispatchCandidate } from '../dispatch-handle'
 export default defineTool({
   name: 'coord:presence',
   description:
-    "List the live coordination roster and who can take work. Read summary.wakeable and each row's sessionState/wakeable; ended rows appear only for targeted owner lookups. Default scope is your Hive. In a hive-scoped SU session, scope:'workspace' and scope:'all' are rejected with hive_forbidden; browse your Hive by default, or use { owner } / bounded { owners } targeting for workspace peers. An unscoped/admin session is required for workspace-wide browsing. Use scope/pot for explicit scope, owner for one row, owners for a dependency set, or coord:roster { view:'live', project:'ids' } for a broad bounded census. Do not pass legacy harness, ownerId, ownerIds, plan, includeStale, or include_stale keys. For plan-scoped claims use coord:roster { view:'claims', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.",
+    "List the live coordination roster and who can take work. Read summary.wakeable plus row sessionState/wakeable; ended rows require targeting. Default scope is your Hive; use scope/pot for explicit scope. `owner` is singular; ownerId is its compatibility alias, while owners targets a bounded set. In a hive-scoped SU session, scope:'workspace'/all returns hive_forbidden; use targeted owner for a workspace peer. An unscoped/admin session is required for workspace-wide browsing. Broad census: coord:roster { view:'live', project:'ids' }. Plan-scoped claims: coord:roster { view:'claims', plan } or fleet:assignments { plan }. Legacy harness, ownerIds, plan, includeStale, and include_stale keys are invalid. Use since:<etag> for cheap unchanged reads.",
   guidance: {
-    when: "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, send a required coord:send wake and inspect its result; ended rows need relaunch. Use owner:<id> for one agent, owners:[...] for a bounded dependency set, and coord:roster { view:'live', project:'ids' } for a broad census.",
+    when: "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, send a required coord:send wake and inspect its result; ended rows need relaunch. Use owner:<id> (or the ownerId compatibility alias for older callers) for one agent, owners:[...] for a bounded dependency set, and coord:roster { view:'live', project:'ids' } for a broad census.",
     notWhen:
       'Not for file ownership (locks:queue), historical ended-agent dumps, or every-turn polling when coord deltas suffice. Presence reports liveness, not file activity; use locks:queue plus git status/file mtimes to see who edits files.',
     chaining: 'Read once and follow coord deltas; if repolling, pass since:<etag> for a tiny unchanged stub.',
@@ -47,7 +47,7 @@ export default defineTool({
     // coordination-layer bug). `summary.active` is a COUNT, not the roster — do not confuse
     // the two `active` keys at different nesting levels.
     returns:
-      "{ summary: { active: number (COUNT, not the roster), byState: { live, parked, draining, suspect, ended, recorded }, wakeable, ... }, active: AgentRow[] (the roster itself — ownerId, label, sessionState, wakeable, intent, fleetSlug, claims, ...), activeTruncated?: { shown, censusCount, truncatedByLimit:true, limit, reason?: response_budget, more } (present when a payload tier or the result budget caps active[]; absence means the roster is complete for that tier), self?: { ownerId, ownerLabel } (you, only when resolvable), etag, as_of, scope }. Never infer that an owner is absent from a capped `active[]`; use `coord:presence { owner }` for a targeted liveness lookup. On a `since:` hit: { unchanged: true, etag, as_of, scope, note }. Unless include_coupling:false — an APPENDED expanded[] ({ ownerId, expandedBecause, source: derived|declared|both, reason?, declaredBy?, inRoster, ownerLabel, sessionState, intent, intentStale, lastActiveSecAgo }) + expandedTotal — `active` is unchanged by it. `intent` there is the peer's DECLARED INTENT, not a goal; goal + assumptions arrive with P-016/P-008. expanded[] is reader-relative and NOT etag-tracked, so a `since:` stub can lag a coupling change.",
+      "{ summary: { active: number (COUNT), byState, wakeable, ... }, active: AgentRow[] (the roster), activeTruncated?, self?, etag, as_of, scope }. A capped active[] cannot prove absence; target that owner instead. A since hit returns { unchanged:true, etag, as_of, scope, note }. Unless include_coupling:false, expanded[] appends reader-relative coupled peers without changing active; it is not etag-tracked. expanded.intent is declared intent, not a goal.",
     // Result-aware (D-003): the who-was-ever-here history pointer surfaces with the
     // REAL ended count ONLY when the roster has dead sessions — the "N ended → history"
     // discovery pointer WI-1348 asks for. The adjacent-lens pointers are always
@@ -100,6 +100,12 @@ export default defineTool({
       .describe(
         'TARGETED lookup: return ONLY the row(s) matching this agent id/label (exact, else a substring either-way) — and INCLUDE it even if `ended`. The replacement for the removed `include_stale` full dump: use it to inspect/wake ONE specific dead agent, never to expand the whole stale roster.',
       ),
+    ownerId: z
+      .string()
+      .optional()
+      .describe(
+        'Compatibility alias for `owner` for callers using the roster row field name; normalized to the canonical `owner` selector before lookup. Pass `owner` OR `ownerId`, not both, and do not combine either with `owners`.',
+      ),
     owners: z
       .array(z.string().min(1))
       .min(1)
@@ -133,11 +139,18 @@ export default defineTool({
         "CHEAP UNCHANGED-READ (poll-storm guard): pass the `etag` from your PRIOR coord:presence read. If the roster's identity+state (intent / plan / claimed lane / await / fleet membership — NOT liveness) is unchanged, you get back a ~100B `{ unchanged:true, etag, as_of }` instead of the full 20KB roster. Read once, then re-read with `since:<etag>` and only pay the full payload when it actually changed. Liveness (live↔parked, lastActiveSecAgo) is deliberately NOT tracked by the etag — re-read WITHOUT `since:` right before you actually dispatch.",
       ),
   }).superRefine((args, issue) => {
-    if (args.owner && args.owners?.length) {
+    if (args.owner && args.ownerId) {
+      issue.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['ownerId'],
+        message: 'Pass owner (the canonical selector) OR ownerId (the compatibility alias), not both.',
+      });
+    }
+    if ((args.owner || args.ownerId) && args.owners?.length) {
       issue.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['owners'],
-        message: 'Pass owner for one target OR owners for a bounded target set, not both.',
+        message: 'Pass owner (or ownerId as its compatibility alias) for one target OR owners for a bounded target set, not both.',
       });
     }
   }),
@@ -154,6 +167,9 @@ export default defineTool({
     // assemble the byte-stable snapshot (P-009). Both steps are the SAME functions
     // the coord:inbox re-bootstrap uses, so the roster never diverges.
     const c = (ctx ?? {}) as { workspaceId?: string | null; harnessSlug?: string | null; isSuperuser?: boolean };
+    // Keep the public compatibility alias at the boundary: all downstream snapshot
+    // and scope code consumes the canonical `owner` selector only.
+    const owner = args.owner ?? args.ownerId;
     // F-M2 (workspace-data-isolation-leaks): scope=all (EVERY workspace's roster) is an
     // admin/Mug view — gate it behind superuser. A non-SU caller asking for 'all' is
     // downgraded to 'workspace' (its own), so a bee can't snoop other workspaces' agents.
@@ -165,7 +181,7 @@ export default defineTool({
       // EI-18653888556683414: a targeted owner lookup defaults to workspace-wide
       // (not hive-narrowed) so a live peer outside the caller's own Hive is
       // still found instead of reading as "no such agent".
-      targetedOwner: !!args.owner || !!args.owners?.length,
+      targetedOwner: !!owner || !!args.owners?.length,
     });
     // The lock store is keyed by coordinationDomain (the repo root, not
     // workspaceId) — resolved defensively so an anonymous caller never breaks the
@@ -195,7 +211,7 @@ export default defineTool({
     // whether coupling is on or off).
     const detail = args.include_detail && coordinationDomain ? { coordinationDomain } : undefined;
     const snapshot = await assemblePresenceSnapshot(resolved, {
-      ...(args.owner ? { owner: args.owner } : {}),
+      ...(owner ? { owner } : {}),
       ...(args.owners?.length ? { owners: args.owners } : {}),
       ...(detail ? { detail } : {}),
     });
