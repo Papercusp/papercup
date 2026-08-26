@@ -9956,6 +9956,29 @@ export async function ensureCheckpointDependencyGeneration(
   return { candidate, identity, token, inputFingerprint };
 }
 
+/**
+ * D-082 production preflight shared by the CLI and its joined recurrence.
+ * Ordering is structural: exact candidate resolution + dependency publication
+ * finish before the checkpoint serializer is acquired and returned.
+ */
+export async function beginCheckpointPreflight(
+  cfg: ReleaseConfig,
+  candidateRef: string,
+  exec: CheckpointExec = runCmd,
+): Promise<{
+  candidate: string;
+  prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
+  lock: CheckpointRunLock;
+}> {
+  const candidate = await revParse(cfg.integrationRoot, candidateRef);
+  const prewarmedDependencyGeneration =
+    await ensureCheckpointDependencyGeneration(cfg, candidate, exec);
+  const lock = acquireCheckpointRunLock(
+    checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+  );
+  return { candidate, prewarmedDependencyGeneration, lock };
+}
+
 /** A signaled child is not a successful zero-exit command, even though Node reports
  * `code === null` and the compatibility result maps that null to `code: 0`. */
 function commandCompletedSuccessfully(
@@ -14514,15 +14537,15 @@ if (require.main === module) {
 
   const beginCheckpoint = async (): Promise<void> => {
     let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
+    let lock: CheckpointRunLock;
     try {
-      resolvedCandidateForRun = await revParse(
-        cfg.integrationRoot,
+      const preflight = await beginCheckpointPreflight(
+        cfg,
         candidateArg ?? cfg.integrationBranch,
       );
-      prewarmedDependencyGeneration = await ensureCheckpointDependencyGeneration(
-        cfg,
-        resolvedCandidateForRun,
-      );
+      resolvedCandidateForRun = preflight.candidate;
+      prewarmedDependencyGeneration = preflight.prewarmedDependencyGeneration;
+      lock = preflight.lock;
     } catch (e) {
       console.error(
         `${orchestratorStdoutTag()} FAILED before checkpoint lock:`,
@@ -14531,10 +14554,6 @@ if (require.main === module) {
       await emitCrashResult(e);
       process.exit(1);
     }
-
-    const lock = acquireCheckpointRunLock(
-      checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
-    );
     if (!lock.acquired) {
     Promise.all([
       Promise.resolve(prewarmedDependencyGeneration.candidate),
