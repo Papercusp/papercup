@@ -16,11 +16,13 @@
  * `PgPresenceStore` (coord_presence) — over a real testcontainer Postgres. So the
  * isolation is proven where it actually has to hold, not just in the double.
  *
- * Wiring mirrors the two sibling conformance tests: it creates the coord tables
- * idempotently (`ensureCoordEventLogTable` + the presence DDL from
- * presence-conformance.test.ts), connects with `prepare: false` (the jsonb
- * round-trip posture the prod handle uses), and soft-skips only when no Docker /
- * PG is reachable. Every case uses a UNIQUE workspace_id + unique ownerIds so the
+ * Wiring creates the coord tables idempotently (`ensureCoordEventLogTable` +
+ * `ensureCoordPresenceTable`), connects with `prepare: false` (the jsonb
+ * round-trip posture the prod handle uses), and fails closed if the bounded
+ * `getTestPg()` readiness/re-resolution path cannot supply a writable database.
+ * This file is release-qualification evidence: turning a final substrate failure
+ * into ten skips would make a green exit indistinguishable from verified
+ * isolation. Every case uses a UNIQUE workspace_id + unique ownerIds so the
  * shared table never leaks rows between cases.
  */
 import { afterAll, afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -40,13 +42,11 @@ import { readAckedMsgIds, readInbox, sendMessage } from '../messages';
 import { deliverInject, type InjectEvent } from '../fanout-delivery';
 import type { AgentIdentity } from '../identity';
 
-// Connect + create the coord tables at MODULE TOP-LEVEL (not in beforeAll) so
-// `pgOk` is settled before the `describe.skip` guards are evaluated at collection
-// time — exactly how the two sibling conformance tests gate their suites. A
-// beforeAll would run AFTER collection, so the guards would always see pgOk:false
-// and skip everything.
+// Connect + create the coord tables at MODULE TOP-LEVEL (not in beforeAll) so a
+// final readiness/bootstrap failure aborts collection and makes the test command
+// nonzero. `getTestPg()` already owns the bounded retry + candidate re-resolution;
+// this layer must not reinterpret exhaustion as a release-green skip.
 let sql: Sql | null = null;
-let pgOk = false;
 
 try {
   const url = await getTestPg();
@@ -60,22 +60,20 @@ try {
     max: 4,
   });
   await sql`SELECT 1`;
-  pgOk = true;
-} catch (e) {
-  console.error('[cross-agent-isolation] PG not reachable, skipping:', (e as Error)?.message);
-}
-
-// A reachable PG with a broken schema bootstrap is a TEST FAILURE, not an
-// infrastructure skip. Keeping bootstrap outside the connectivity catch makes
-// the detector fail closed: malformed DDL (including multi-command prepared
-// statements) can no longer turn all isolation assertions into a false green.
-if (pgOk && sql) {
   // coord_event_log via the package's own canonical DDL (idempotent).
   await ensureCoordEventLogTable(sql);
   // coord_presence via the package's own canonical DDL (idempotent + self-healing
   // ALTERs), so the store's schema (incl. the presence-v2 columns agent_role /
   // hive_slug / last_active_at) never drifts from hand-rolled per-test DDL.
   await ensureCoordPresenceTable(sql);
+} catch (e) {
+  if (sql) await sql.end({ timeout: 5 }).catch(() => {});
+  sql = null;
+  throw new Error(
+    `[cross-agent-isolation] real-Postgres qualification failed after bounded readiness; ` +
+      `refusing to convert isolation coverage into a green skip: ${e instanceof Error ? e.message : String(e)}`,
+    { cause: e },
+  );
 }
 
 afterAll(async () => {
@@ -91,10 +89,8 @@ function fakeIdentity(ownerId: string, workspaceId: string): AgentIdentity {
   return { ownerId, ownerLabel: ownerId, source: 'omp-hook-session', workspaceId, userId: null };
 }
 
-const describeMaybe = (cond: boolean) => (cond ? describe : describe.skip);
-
 // ── coord:send / inbox isolation, driven through the real PgCoordLog seam ─────
-describeMaybe(pgOk)('coord:send / inbox isolation (real PgCoordLog)', () => {
+describe('coord:send / inbox isolation (real PgCoordLog)', () => {
   // Each case binds the operator's coordLog seam to a fresh, workspace-scoped
   // PgCoordLog over the real testcontainer handle — so sendMessage/readInbox
   // (messages.ts) exercise the PRODUCTION SQL, not the in-memory double.
@@ -232,7 +228,7 @@ describeMaybe(pgOk)('coord:send / inbox isolation (real PgCoordLog)', () => {
 });
 
 // ── presence isolation, staleness, revoked (real PgPresenceStore) ─────────────
-describeMaybe(pgOk)('presence isolation + staleness/revoked (real PgPresenceStore)', () => {
+describe('presence isolation + staleness/revoked (real PgPresenceStore)', () => {
   let store: PgPresenceStore;
   let owners: string[] = [];
 
@@ -315,7 +311,7 @@ describeMaybe(pgOk)('presence isolation + staleness/revoked (real PgPresenceStor
 });
 
 // ── subscribe→inject fan-out isolation (real PgCoordLog as the inject sink) ────
-describeMaybe(pgOk)('subscribe→inject fan-out isolation (real PG sink)', () => {
+describe('subscribe→inject fan-out isolation (real PG sink)', () => {
   let WS: string;
   let sink: PgCoordLog;
 
