@@ -171,6 +171,63 @@ describe('google-gmail-poll system action', () => {
     });
   });
 
+  it('clears a degraded source after the next successful idle poll', async () => {
+    let current = source('source-idle', 'idle@example.com');
+    let accessTokenAttempts = 0;
+    const updateSource = vi.fn(async (_sql, _workspaceId, _sourceId, input) => {
+      current = { ...current, status: input.status };
+      return current;
+    });
+    const ensureWatch = vi.fn(async () => ({
+      renewed: false,
+      emailAddress: String(current.cursor.emailAddress),
+      historyId: String(current.cursor.historyId),
+      expiration: String(current.cursor.watchExpiration),
+      source: current,
+    }));
+    const deps = {
+      sql: {} as never,
+      listSources: vi.fn(async () => [current]),
+      resolveAccessToken: vi.fn(async () => {
+        accessTokenAttempts += 1;
+        if (accessTokenAttempts === 1) throw new Error('google_workspace_token_503');
+        return 'token';
+      }),
+      provision: vi.fn(async () => ({
+        projectId: 'project',
+        subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const,
+        subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      ensureWatch,
+      ensureFlagshipBinding: vi.fn(),
+      pull: vi.fn(async () => []),
+      acknowledge: vi.fn(async () => 0),
+      syncSource: vi.fn(),
+      updateSource,
+    };
+
+    const failed = await runGoogleGmailPoll(CTX, deps);
+    const recovered = await runGoogleGmailPoll(CTX, deps);
+
+    expect(failed).toMatchObject({ sources: 1, succeeded: 0, failed: 1, pulled: 0 });
+    expect(recovered).toMatchObject({ sources: 1, succeeded: 1, failed: 0, pulled: 0 });
+    expect(ensureWatch).toHaveBeenCalledTimes(1);
+    expect(updateSource).toHaveBeenCalledTimes(2);
+    expect(updateSource).toHaveBeenNthCalledWith(1, expect.anything(), 'papercusp-workspace', 'source-idle', {
+      status: 'degraded',
+      lastError: 'google_workspace_token_503',
+    });
+    expect(updateSource).toHaveBeenNthCalledWith(2, expect.anything(), 'papercusp-workspace', 'source-idle', {
+      status: 'connected',
+      lastError: null,
+      connected: true,
+    });
+  });
+
   it('contains shared Pub/Sub provisioning failures and degrades every mailbox', async () => {
     const sources = [source('source-a', 'a@example.com'), source('source-b', 'b@example.com')];
     const updateSource = vi.fn(async () => sources[0]);

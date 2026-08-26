@@ -157,7 +157,15 @@ export async function runGoogleGmailPoll(
       );
       const accessToken = await resolveAccessToken(source, ctx.installSlug);
       const watched = await ensureWatch(sql, source, accessToken, pubsub.topicName, { renewBeforeMs });
-      sourceById.set(source.id, watched.source);
+      const readySource =
+        watched.source.status === 'connected'
+          ? watched.source
+          : await updateSource(sql, ctx.workspaceId, source.id, {
+              status: 'connected',
+              lastError: null,
+              connected: true,
+            });
+      sourceById.set(source.id, readySource);
       accessTokens.set(source.id, accessToken);
       if (watched.renewed) result.renewed += 1;
     } catch (cause) {
