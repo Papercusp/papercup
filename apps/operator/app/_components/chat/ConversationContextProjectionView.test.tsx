@@ -177,7 +177,7 @@ describe('shared conversation/context GUI consumer', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('emits add, edit, check, and drop actions only through the supplied callback', async () => {
+  it('emits add, edit, promote, check, and drop actions only through the supplied callback', async () => {
     const onTaskAction = vi.fn(async () => {});
     render(
       <ConversationContextProjectionView
@@ -204,9 +204,11 @@ describe('shared conversation/context GUI consumer', () => {
       content: 'Ship shared projection',
     })));
 
+    fireEvent.click(screen.getByRole('button', { name: 'Promote task: Ship projection' }));
     fireEvent.click(screen.getByRole('button', { name: 'Check task: Ship projection' }));
     fireEvent.click(screen.getByRole('button', { name: 'Drop task: Ship projection' }));
     await waitFor(() => {
+      expect(onTaskAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'promote', taskId: 't1' }));
       expect(onTaskAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'check', taskId: 't1' }));
       expect(onTaskAction).toHaveBeenCalledWith(expect.objectContaining({ action: 'drop', taskId: 't1' }));
     });
