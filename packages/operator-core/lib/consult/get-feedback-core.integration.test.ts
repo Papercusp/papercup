@@ -294,13 +294,25 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect(row.state).toBe('no_qualified_responder');
   });
 
-  it('embed_unavailable: cannot-measure ≠ measured-nothing, and the snapshot says so', async () => {
+  it('embed_unavailable: cannot-measure ≠ measured-nothing, and the VERDICT says so', async () => {
     const { deps } = makeDeps(routeOf([], { degraded: 'embed-unavailable' }));
     const r = asOk(await getFeedbackCore(baseReq, deps));
+    // The distinction used to live only in `reason`/`degraded`/`hint`, while
+    // `verdict` — the field a caller actually branches on — still reported the
+    // measured absence. That made a cold-start latency breach read as "no one
+    // knows more than you do" (EI-21485716602970457).
+    expect(r.verdict).toBe('relevance_unmeasured');
+    expect(r.verdict).not.toBe('no_qualified_responder');
     expect(r.reason).toBe('embed_unavailable');
     expect(r.degraded).toBe('embed-unavailable');
     const row = await stateRow(r.conversation_id);
     expect((row.routing as { degraded?: string }).degraded).toBe('embed-unavailable');
+    // The PERSISTED lifecycle state deliberately does NOT change: the row is a
+    // genuine no-responder conversation, and `consult_state_state_check` admits
+    // no new value. verdict (routing outcome) and state (conversation lifecycle)
+    // are separate fields — `routed` already pairs with `awaiting_responder`.
+    expect(r.state).toBe('no_qualified_responder');
+    expect(row.state).toBe('no_qualified_responder');
   });
 
   it('embed_unavailable lexical candidates route one bounded manual-review pick', async () => {
