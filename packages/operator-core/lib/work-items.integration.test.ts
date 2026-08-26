@@ -2237,6 +2237,43 @@ describe('unified work_items surface (real PG)', () => {
     expect(warm.legs.semantic.blocked).toBeNull();
   });
 
+  // EI-21490058173504687: once a warm-up attempt has SETTLED with a failure,
+  // later cold-path searches must report THAT failure instead of re-masking
+  // it as an endless "warming up" cold start, and must not re-advertise the
+  // retry-after-1s advice that already failed. The failure clears only when a
+  // warm-up attempt actually SUCCEEDS.
+  it('a settled warm-up FAILURE is reported truthfully on the next search, not re-masked as warming up', async () => {
+    await wi.createWorkItem({
+      kind: 'bug',
+      title: 'quilzar failed warmup',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const boom = async (): Promise<null> => {
+      throw new Error('sidecar_required_unavailable: embed substrate saturated');
+    };
+
+    // First call: no failure has settled yet, so the retry advice IS offered.
+    const first = await wi.searchWorkItems('quilzar failed warmup', {
+      semantic: true,
+      embedderResolver: boom,
+    });
+    expect(first.legs.degraded).toBe(true);
+    expect(first.retry).toBeDefined();
+
+    // Second call: the previous attempt's failure must survive — reported as
+    // the real reason, with NO fresh retry advice.
+    const second = await wi.searchWorkItems('quilzar failed warmup', {
+      semantic: true,
+      embedderResolver: boom,
+    });
+    expect(second.legs.semantic.blocked).toMatch(
+      /query embedder warmup failed.*sidecar_required_unavailable/s,
+    );
+    expect(second.legs.degraded).toBe(true);
+    expect(second.retry).toBeUndefined();
+  });
+
   it('a query matching NOTHING reports a ran-but-empty lexical leg, not a failure', async () => {
     const res = await wi.searchWorkItems('vorpalthwomp-nonexistent-token');
     expect(res.items).toEqual([]);
