@@ -783,7 +783,7 @@ export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise
         evidence: null,
         invalidLines: 0,
       }))
-    : null;
+    : undefined;
   return computeDeployStatus(snap, inFlight, certification);
 }
 

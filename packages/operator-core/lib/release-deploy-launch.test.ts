@@ -1194,6 +1194,28 @@ describe('EI-18724155280048738: an in-flight deploy must be distinguishable from
 });
 
 describe('readDeployStatus wiring', () => {
+  it('reads P-010 certification for the exact green pin and threads it into status', async () => {
+    const greenPin = {
+      sha: '0123456789abcdef0123456789abcdef01234567',
+      shortSha: '01234567',
+      committedAtMs: 0,
+      subject: 'green',
+    };
+    const loadLiveCertification = vi.fn(async (targetSha: string) => ({
+      ...liveCertification('certified'),
+      targetSha,
+    }));
+    const s = await readDeployStatus({
+      loadSnapshot: async () => mkSnap({}, { greenPin, deployedBehindGreenPin: 2 }),
+      loadInFlight: async () => computeDeployInFlight({ props: null, logPath: '/l', logMtimeMs: null }),
+      loadLiveCertification,
+    });
+
+    expect(loadLiveCertification).toHaveBeenCalledWith(greenPin.sha);
+    expect(s.liveCertification).toMatchObject({ status: 'certified', targetSha: greenPin.sha });
+    expect(s.state).toBe('green-deployable');
+  });
+
   it('keeps the live diagnostic git reads off the spawner sidecar', async () => {
     gitPipelineSnapshotM.mockReset();
     gitPipelineSnapshotM.mockResolvedValue(mkSnap({}, { deployedBehindGreenPin: 2 }));
