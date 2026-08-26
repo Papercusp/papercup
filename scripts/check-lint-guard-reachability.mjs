@@ -124,6 +124,12 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { listTrackedFiles } from './lib/tracked-files.mjs';
+import {
+  assessGraphHealth,
+  buildImportGraph,
+  findUnreachableModules,
+  selectDetectorModules,
+} from './lib/module-reachability.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -394,6 +400,80 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
  * registration-only guard because the same function early-returns `not-enforced` whenever
  * `!row.blocking`. One axis called registration sufficient; the other had never heard of it.
  */
+/* ── THE MODULE AXIS (WI-41775, plan decisions D-013 → D-014 → D-015) ────────
+ *
+ * Everything above this line polices DECLARED `lint:*` SCRIPTS. It is blind to a
+ * detector that was never given an npm script — a module under `lib/release/` that
+ * exports a detector, ships a passing unit test, is cited by a SHIPPED plan's
+ * code-truth audit, and is called by nothing. `plans:audit` cannot catch it either:
+ * a `code` citation verifies that code EXISTS at a path, never that anything CALLS it.
+ *
+ * knip cannot catch it either, and this is the part worth remembering. knip asks "is
+ * this file imported by anything?" — and a module's OWN `*.test.ts` answers yes,
+ * because test files are entry points. Measured 2026-08-26: with `lib/**` removed from
+ * the operator entry glob, knip surfaced 31 unused files and NEITHER of the two known
+ * dead gate detectors among them. The two tools answer different questions, and only
+ * this one asks "does a production path CALL it?".
+ *
+ * The probe lives in ./lib/module-reachability.mjs — see its header for why it needs no
+ * entry-root set (a fixpoint over the population instead) and how it fails open.
+ */
+
+/**
+ * Detector modules whose unreachability is ACKNOWLEDGED. Seeded 2026-08-26 from the
+ * first measuring run — 21 of 81 `lib/release/**` modules, pinned at their MEASURED
+ * size so the set can only shrink.
+ *
+ * ⚠ SHRINK-ONLY, same doctrine as ACKNOWLEDGED_UNREACHABLE above and for the same
+ * reason: the correct way to clear an entry is to WIRE the module or DELETE it, never
+ * to append here. Wiring all 21 at once would land a wall of new gate legs on the
+ * fleet — which is the precise move this file exists to warn against.
+ *
+ * ⚠ Every entry is a debt with an owner, not a blessing. `testedButUnwired` entries are
+ * the dangerous ones: they LOOK covered (green unit test, plan-audited citation) while
+ * enforcing nothing, so they read as diligence in a review.
+ */
+export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
+  // ── The three that started this (WI-41775 discovery sweep) ──────────────────
+  ['apps/operator/lib/release/prompt-divergence.ts', 'gate detector, 1 test, 0 callers; D-013 pt2 says do NOT wire — decide wire-or-retire'],
+  ['apps/operator/lib/release/gitignored-asset-coverage.ts', 'gate detector, 2 tests, 0 callers; D-013 pt2 says do NOT wire — decide wire-or-retire'],
+  ['packages/operator-core/lib/release/external-prerequisite-ports.ts', 'gate detector, 2 tests, 0 callers; D-013 pt2 says do NOT wire — decide wire-or-retire'],
+
+  // ── The external-prerequisite family: a complete ports-and-adapters detector
+  // stack, every layer tested, the whole stack called by nothing. The fixpoint
+  // reports these as dead TOGETHER because they import only each other — the exact
+  // shape a per-file "is it imported?" check (knip) reports as fully used.
+  ['packages/operator-core/lib/release/external-prerequisites.ts', 'family root, 5 tests, only dead siblings import it — wire-or-retire the whole family as one call'],
+  ['packages/operator-core/lib/release/external-prerequisite-probe-runner.ts', 'family member, 2 tests, only dead siblings import it'],
+  ['packages/operator-core/lib/release/external-prerequisite-apple-adapter.ts', 'family member, 1 test, only dead siblings import it'],
+  ['packages/operator-core/lib/release/external-prerequisite-stripe-adapter.ts', 'family member, 1 test, only dead siblings import it'],
+
+  // ── The release-publication family: same transitive shape. Retiring the root
+  // clears most of the rest, so these are one decision, not eleven.
+  ['apps/operator/lib/release/record-release-cli.ts', '2 tests; reached only from dead publication siblings — wire-or-retire with the family'],
+  ['apps/operator/lib/release/finalize-release-publication.ts', '1 test; reached only from dead publication siblings'],
+  ['apps/operator/lib/release/release-completeness.ts', 'no test, no caller — strongest retire candidate in the family'],
+  ['apps/operator/lib/release/patch-artifact-provenance.ts', 'no test, no caller — strongest retire candidate in the family'],
+  ['apps/operator/lib/release/preflight-build-set.ts', '1 test; reached only from dead publication siblings'],
+  ['apps/operator/lib/release/changelog-generate.ts', '1 test, 0 callers — wire-or-retire'],
+  ['apps/operator/lib/release/gate-release-site.ts', '1 test, 0 callers — wire-or-retire'],
+  ['apps/operator/lib/release/seed-release-routines.ts', '1 test, 0 callers — wire-or-retire'],
+  ['apps/operator/lib/release/verify-seed-payload-cli.ts', '1 test, 0 callers — wire-or-retire'],
+  ['apps/operator/lib/release/retrofit-hive-to-gate.ts', '1 test, 0 callers — one-shot migration tool; likely retire'],
+  ['apps/operator/lib/release/runtime-workspace-build-coverage.ts', '2 tests, 0 callers — wire-or-retire'],
+  ['apps/operator/lib/release/rollback.ts', '3 tests, 0 callers. ⚠ NAME IS LOAD-BEARING: verify the live rollback path before retiring'],
+  ['apps/operator/lib/release/preview-data-plane.ts', 'no test, no caller — wire-or-retire'],
+
+  // ── Not a detector at all. Named `_tmp-`, tracked anyway. Pure deletion. ─────
+  ['apps/operator/lib/release/_tmp-fire-git-sync.ts', 'a committed scratch file — delete it; needs no wire-or-retire deliberation'],
+]);
+
+/**
+ * ⚠ SHRINK-ONLY. Pinned to the seeded population size so a NEWLY orphaned detector
+ * module fails the build on the commit that orphans it, exactly as the script axis does.
+ */
+export const UNREACHABLE_MODULES_HIGH_WATERMARK = 21;
+
 export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained', 'repo-wide']);
 
 /**
@@ -1121,6 +1201,75 @@ function discoverWorkspaceDirs(pkg, files) {
   return [...dirs];
 }
 
+/**
+ * The MODULE axis: which `lib/release/**` detector modules no production path calls.
+ *
+ * Reads every tracked source file once (~5s on this tree) and discards each body
+ * immediately — the graph retains edges, never file contents.
+ *
+ * ⚠ FAILS OPEN, for the same reason the coverage axis does. `assessGraphHealth` is the
+ * instrument's own positive control: a probe that classifies the ENTIRE population dead
+ * has failed to see the tree, and reporting that as 81 violations would red-pin the
+ * fleet gate on an instrument fault instead of a defect. When it says the axis is not
+ * measurable, this returns an EMPTY finding set and says so out loud.
+ */
+function runModuleReachability({ files, workspaceDirByName }) {
+  const population = selectDetectorModules(files);
+  const readFile = (f) => {
+    // Deliberately NOT memoized: caching 31k file bodies costs hundreds of MB for a
+    // single pass that never revisits a file.
+    const raw = readIfExists(resolve(ROOT, f));
+    // Comment-stripped, so a commented-out import cannot read as usage. That direction
+    // matters: it would be a false NEGATIVE — a dead module reported alive.
+    return raw ? stripComments(raw) : '';
+  };
+
+  const graph = buildImportGraph({ files, readFile, workspaceDirByName });
+  const result = findUnreachableModules({
+    population,
+    importers: graph.importers,
+    pathMentions: graph.pathMentions,
+  });
+  const health = assessGraphHealth({
+    resolvedEdges: graph.resolvedEdges,
+    population,
+    dead: result.dead,
+    unresolvedRelative: graph.unresolvedRelative,
+  });
+
+  if (!health.measurable) {
+    return {
+      measurable: false,
+      reason: health.reason,
+      population: population.length,
+      resolvedEdges: graph.resolvedEdges,
+      unresolvedRelativeCount: health.unresolvedRelativeCount,
+      rounds: result.rounds,
+      dead: [],
+      unacknowledged: [],
+      staleAcknowledged: [],
+    };
+  }
+
+  const dead = result.rows.filter((r) => r.dead);
+  return {
+    measurable: true,
+    reason: null,
+    population: population.length,
+    resolvedEdges: graph.resolvedEdges,
+    unresolvedRelativeCount: health.unresolvedRelativeCount,
+    rounds: result.rounds,
+    dead,
+    unacknowledged: dead.filter((r) => !ACKNOWLEDGED_UNREACHABLE_MODULES.has(r.module)),
+    // An entry is STALE either because the module got wired or because it was deleted.
+    // Both mean the same thing for the ratchet: a paid-down entry has to LEAVE the set,
+    // or the set stops measuring anything.
+    staleAcknowledged: [...ACKNOWLEDGED_UNREACHABLE_MODULES.keys()].filter(
+      (m) => !result.dead.includes(m),
+    ),
+  };
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
@@ -1172,14 +1321,20 @@ function main() {
   // package.json is unreadable/unparseable is simply OMITTED, which findInertRepoWideRegistrations
   // treats as declared (fail open) rather than as a violation it cannot substantiate.
   const scriptsByWorkspaceName = new Map();
+  // package name -> workspace dir, for resolving `@papercusp/x/lib/...` specifiers on the
+  // MODULE axis. Built from the same read, so the two cannot disagree about a workspace.
+  const workspaceDirByName = new Map();
   for (const dir of workspaceDirs) {
     try {
       const wsPkg = JSON.parse(readIfExists(resolve(ROOT, dir, 'package.json')) || '{}');
       if (wsPkg.name) scriptsByWorkspaceName.set(wsPkg.name, new Set(Object.keys(wsPkg.scripts ?? {})));
+      if (wsPkg.name) workspaceDirByName.set(wsPkg.name, dir);
     } catch {
       // omitted => fail open for this workspace
     }
   }
+
+  const moduleAxis = runModuleReachability({ files, workspaceDirByName });
   const repoWidePairs = coverageMeasurable ? parseRepoWideRegistrationPairs(affectedTestsSource) : [];
   const inertRegistrations = findInertRepoWideRegistrations({ pairs: repoWidePairs, scriptsByWorkspaceName });
   const inertScripts = new Set(inertRegistrations.map((p) => p.script));
