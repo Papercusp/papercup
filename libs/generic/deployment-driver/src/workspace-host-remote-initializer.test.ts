@@ -221,6 +221,12 @@ const STEP_INPUTS: Record<string, Record<string, unknown>> = {
   },
   'bind-credential': gitBindInput(),
   'verify-initialization': { sourceKind: 'repository', requiredChannels: ['cloud', 'git', 'agent'] },
+  // The four credential-lifecycle kinds (D-114). They take the SAME flattened input as
+  // bind-credential, which is the property that lets one wire envelope serve both families.
+  bind: gitBindInput(),
+  'verify-bound': gitBindInput(),
+  revoke: gitBindInput(),
+  'verify-revoked': gitBindInput(),
 };
 
 /** The host seam (or resolver) each kind must reach. */
@@ -277,18 +283,21 @@ describe('parseWorkspaceHostRemoteInitializerRequest', () => {
   });
 
   it('rejects a protocol version it does not speak, naming both versions', () => {
+    // v1 is the PREDECESSOR, and using it here is the point: a host or controller packaged
+    // before credential-lifecycle carriage landed (D-114) must be rejected as a version skew,
+    // loudly and by name, rather than getting as far as an unrecognised step kind.
     expect(() =>
       parseWorkspaceHostRemoteInitializerRequest({
-        protocolVersion: 'papercusp-gcp-iap-initialization-v2',
+        protocolVersion: 'papercusp-gcp-iap-initialization-v1',
         step: step('create-workspace'),
       }),
     ).toThrow(WorkspaceHostRemoteInitializerProtocolError);
     expect(() =>
       parseWorkspaceHostRemoteInitializerRequest({
-        protocolVersion: 'papercusp-gcp-iap-initialization-v2',
+        protocolVersion: 'papercusp-gcp-iap-initialization-v1',
         step: step('create-workspace'),
       }),
-    ).toThrow(/unsupported protocol version 'papercusp-gcp-iap-initialization-v2'.*v1/s);
+    ).toThrow(/unsupported protocol version 'papercusp-gcp-iap-initialization-v1'.*v2/s);
   });
 
   it('checks the protocol version BEFORE any other field', () => {
@@ -614,6 +623,7 @@ describe('executeWorkspaceHostRemoteInitializerStep', () => {
         'detail',
         'family',
         'generation',
+        'operation',
         'referenceDigest',
       ]);
       expect(response.publicEvidence).toMatchObject({
