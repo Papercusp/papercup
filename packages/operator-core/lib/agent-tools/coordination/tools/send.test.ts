@@ -1996,6 +1996,20 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
     expect(opts.extra?.basedOn).toEqual(trace);
   });
 
+  it('surfaces a basis that changed after its read to both the envelope and sender', async () => {
+    const changed = [{
+      ref: 'work-item:WI-9001',
+      via: 'work_items:get',
+      readAt: '2026-07-27T12:00:00.000Z',
+      versionAtSend: `done@${Date.parse('2026-07-27T12:01:00.000Z')}`,
+    }];
+    basedOnM.mockResolvedValue(changed as never);
+    const result = await body({ to: ['bee-1'], summary: 'hi', expects: 'none' });
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.staleBasis).toEqual([expect.objectContaining({ ref: 'work-item:WI-9001', stateAtSend: 'done' })]);
+    expect(result).toMatchObject({ results: [expect.objectContaining({ staleBasis: [expect.objectContaining({ ref: 'work-item:WI-9001' })] })] });
+  });
+
   it('is stamped DERIVED, so adoption measurement can never count it as authored (D-072)', async () => {
     basedOnM.mockResolvedValue(trace as never);
     await body({ to: ['bee-1'], summary: 'hi', expects: 'none' });

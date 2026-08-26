@@ -27,6 +27,7 @@
 import type { CoordKind } from '@papercusp/coordination/core';
 import { LIFECYCLE_CATEGORIES, type LifecycleCategory } from './coord-lifecycle/records';
 import { renderAuthoredFieldsSuffix } from './agent-tools/coordination/message-fields';
+import { renderStaleBasisSuffix, STALE_BASIS_FIELD } from './agent-tools/coordination/stale-basis';
 import {
   isCueInScopeFor,
   readCueAuthority,
@@ -459,9 +460,12 @@ export function renderInjection(entries: CoordLineSource[], opts: RenderInjectio
     // only check on the message layer. Pure read; '' when the sender authored
     // none, so an ordinary message is unchanged.
     const authoredSuffix = renderAuthoredFieldsSuffix(e as unknown as Record<string, unknown>);
+    const staleBasisSuffix = renderStaleBasisSuffix(
+      (e as unknown as Record<string, unknown>)[STALE_BASIS_FIELD],
+    );
     const text = tag ? `[${tag}] ${body}` : body;
     lines.push(
-      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}`,
+      `${glyph} ${handle} ${claimFlag}${selfReportedFlag}${text}${relaySuffix}${evidenceSuffix}${replySuffix}${gateSuffix}${bodyRefsSuffix}${authoredSuffix}${staleBasisSuffix}`,
     );
   }
   return lines.join('\n');

@@ -55,6 +55,7 @@ import {
   COUPLING_DIVERGENCE_FIELD,
 } from '../coupling-divergence-stamp';
 import { resolveStaleQuoteStamps, STALE_QUOTE_FIELD } from '../stale-quote-stamp';
+import { staleBasis, STALE_BASIS_FIELD } from '../stale-basis';
 // TYPE ONLY — erased at compile time, so it creates no runtime edge. A VALUE
 // import of this module would be a load-time hazard here: `coord/couplings`
 // (which `derived-signal-census` imports for DERIVED_COUPLING_RELATIONS) statically
@@ -979,6 +980,8 @@ async function sendOne(
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
   if (fieldStamp.basedOn) extra.basedOn = fieldStamp.basedOn;
+  const staleBasisStamps = staleBasis(basedOn);
+  if (staleBasisStamps.length) extra[STALE_BASIS_FIELD] = staleBasisStamps;
   // Completion claims are additive evidence, never a refusal. If the message
   // names a plan/work-item/rubric as completed but the sender's recent read
   // trace contains no corresponding artifact, preserve that contradiction on
@@ -1792,6 +1795,7 @@ async function sendOne(
           },
         }
       : {}),
+    ...(staleBasisStamps.length ? { staleBasis: staleBasisStamps } : {}),
   };
 }
 
