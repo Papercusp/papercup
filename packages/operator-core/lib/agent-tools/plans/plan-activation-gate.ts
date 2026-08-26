@@ -36,6 +36,8 @@ export interface ConversationActivationGateVerdict {
   code?: 'conversation_audit_required';
   message?: string;
   auditSeq?: number;
+  /** Existing ready/active plan with no audit: activated before this gate could enforce. */
+  grandfathered?: boolean;
 }
 
 export function conversationAuditRequiredMessage(planSlug: string): string {
@@ -60,9 +62,25 @@ export async function evaluateConversationActivationGate(
      ORDER BY audit_seq DESC
      LIMIT 1`;
   const row = rows[0];
-  return row
-    ? { satisfied: true, auditSeq: Number(row.audit_seq) }
-    : {
+  if (row) return { satisfied: true, auditSeq: Number(row.audit_seq) };
+
+  // EI-21514925652793324: recorder + enforcer can deploy together after plans
+  // were already activated on an older operator. A plan already sitting in
+  // ready/active when this check runs cannot retroactively create the audit that
+  // preceded its transition. Grandfather that EXISTING state only. A fresh
+  // draft→ready/active write is evaluated while the stored row is still draft,
+  // so it continues to refuse until plans:audit records the activation audit.
+  const planRows = await tx<Array<{ status: string | null }>>`
+    SELECT status
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${scope.workspaceId}
+       AND harness_slug = ${scope.harnessSlug}
+       AND plan_slug = ${scope.planSlug}
+     LIMIT 1`;
+  if (isActivationPlanStatus(planRows[0]?.status)) {
+    return { satisfied: true, grandfathered: true };
+  }
+  return {
         satisfied: false,
         code: 'conversation_audit_required',
         message: conversationAuditRequiredMessage(scope.planSlug),

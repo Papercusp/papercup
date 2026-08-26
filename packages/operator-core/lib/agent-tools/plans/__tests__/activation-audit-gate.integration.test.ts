@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { withPlanLock } from '../with-plan-lock';
 import { hashPlanContent } from '../content-hash';
+import { evaluateConversationActivationGate } from '../plan-activation-gate';
 import {
   cleanupPlans,
   registerHarnessProject,
@@ -122,6 +123,27 @@ const COSMETIC_CHANGE_TAXONOMY = [
 ] as const;
 
 describe('conversation activation audit gate', () => {
+  it('grandfathers an already-ready plan with no audit, but not a stored draft', async () => {
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, flipReady(DRAFT));
+    await expect(
+      evaluateConversationActivationGate(fx.admin, {
+        workspaceId: fx.workspaceId,
+        harnessSlug: HARNESS,
+        planSlug: SLUG,
+      }),
+    ).resolves.toEqual({ satisfied: true, grandfathered: true });
+
+    await cleanupPlans(fx.admin, fx.workspaceId, HARNESS);
+    await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
+    await expect(
+      evaluateConversationActivationGate(fx.admin, {
+        workspaceId: fx.workspaceId,
+        harnessSlug: HARNESS,
+        planSlug: SLUG,
+      }),
+    ).resolves.toMatchObject({ satisfied: false, code: 'conversation_audit_required' });
+  });
+
   it('blocks a raw draft→ready content transition and leaves the row unchanged', async () => {
     await seedPlan(fx.admin, fx.workspaceId, HARNESS, SLUG, DRAFT);
 
