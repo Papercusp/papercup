@@ -319,6 +319,14 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     expect(typeof rows[0].epoch).toBe('number');
     expect(rows[0].head).toBeTruthy();
     expect(rows[0].legs).toBeTruthy();
+    expect(rows[0]).toMatchObject({
+      schema_version: 2,
+      source_mode: 'unmeasured',
+      source_head: 'unknown',
+      source_dirty_files: -1,
+    });
+    expect(typeof rows[0].terminal_dirty_files).toBe('number');
+    expect(typeof rows[0].certification_expires_epoch).toBe('number');
   }, 60_000);
 
   it('banks the FRESH (green-TTL) window too — not only the interesting verdicts', () => {
@@ -432,6 +440,16 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
       'WORK=/tmp/fake-work',
       'GATE_VERDICT_LOG="$STATE_DIR/verdicts.jsonl"',
       `GATE_VERDICT_KEEP=${KEEP}`,
+      'GATE_VERDICT_SCHEMA_VERSION=2',
+      'GATE_SUCCESS_TTL_H=22',
+      'GATE_SOURCE_MODE=rebuilt',
+      'GATE_SOURCE_HEAD=0123456789ab',
+      'GATE_SOURCE_DESKTOP_HEAD=abcdef012345',
+      'GATE_SOURCE_DIRTY_FILES=0',
+      'GATE_TERMINAL_HEAD=0123456789ab',
+      'GATE_TERMINAL_DESKTOP_HEAD=abcdef012345',
+      'GATE_TERMINAL_DIRTY_FILES=0',
+      'GATE_CERTIFICATION_TARGET_SHA=0123456789abcdef0123456789abcdef01234567',
       helpers!,
       // A double quote, a backslash and a literal TAB — the tab is the one that bites, because
       // it is the only control character that survives a naive "strip the control chars" range,
@@ -451,5 +469,17 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     // Bounded: an append-only file on a box that runs the gate for months cannot grow forever.
     expect(raw).toHaveLength(KEEP);
     for (const line of raw) expect(() => JSON.parse(line)).not.toThrow();
+    const last = JSON.parse(raw.at(-1)!) as Record<string, unknown>;
+    expect(last).toMatchObject({
+      schema_version: 2,
+      verdict: 'GREEN',
+      source_mode: 'rebuilt',
+      source_head: '0123456789ab',
+      source_desktop_head: 'abcdef012345',
+      source_dirty_files: 0,
+      terminal_dirty_files: 0,
+      certification_target_sha: '0123456789abcdef0123456789abcdef01234567',
+    });
+    expect(last.certification_expires_epoch).toEqual(expect.any(Number));
   }, 60_000);
 });
