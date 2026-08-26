@@ -12,6 +12,11 @@ vi.mock('../coordination/identity', () => ({
   })),
 }));
 
+vi.mock('./runtime', async () => {
+  const actual = await vi.importActual<typeof import('./runtime')>('./runtime');
+  return { ...actual, createSessionTaskLedgerBridge: vi.fn(async () => ({ seedWorkItem: null })) };
+});
+
 import { applySessionTaskOp, SessionTaskValidationError } from '../../session-tasks';
 const applyM = vi.mocked(applySessionTaskOp);
 const tool = (await import('./ops')).default;
@@ -61,12 +66,46 @@ describe('tasks:ops handler', () => {
       op: 'block',
       changedTaskId: 'task-a',
       tasks: [],
+      links: [],
     });
     expect(emit).toHaveBeenCalledWith('tasks_changed', {
       sessionId: 'su-session-1',
       op: 'block',
       changedTaskId: 'task-a',
     });
+  });
+
+  it('maps typed link and promotion fields and returns the flattened edge set', async () => {
+    applyM.mockResolvedValue({
+      op: 'link',
+      changedTaskId: 'task-a',
+      tasks: [],
+      links: [{ workItemId: 'WI-9', workItemHarness: 'papercusp', relation: 'for' }],
+    });
+    const out = body(await call({
+      op: 'link',
+      task_id: 'task-a',
+      work_item_id: 'WI-9',
+      work_item_harness: 'papercusp',
+      relation: 'for',
+      work_item_kind: 'change',
+      work_item_title: 'Promoted title',
+      work_item_summary: 'Promoted summary',
+    }).promise);
+
+    expect(applyM).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      taskId: 'task-a',
+      workItemId: 'WI-9',
+      workItemHarness: 'papercusp',
+      relation: 'for',
+      workItemKind: 'change',
+      workItemTitle: 'Promoted title',
+      workItemSummary: 'Promoted summary',
+      bridge: expect.any(Object),
+    }));
+    expect(out.links).toEqual([
+      { workItemId: 'WI-9', workItemHarness: 'papercusp', relation: 'for' },
+    ]);
   });
 
   it('uses the owned-loop chat run id, but not a generic per-call run id', async () => {

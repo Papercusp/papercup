@@ -206,6 +206,45 @@ describe('reduceSessionTasks', () => {
     expect(out.tasks[1]).toEqual(current[1]);
   });
 
+  it('supports one checkpoint-sync for edge plus unbounded informational edges', () => {
+    const first = reduce([task()], {
+      op: 'link',
+      taskId: 'task-a',
+      workItemId: 'WI-1',
+      workItemHarness: 'papercusp',
+      relation: 'for',
+    });
+    const related = reduce(first.tasks, {
+      op: 'link',
+      taskId: 'task-a',
+      workItemId: 'WI-2',
+      workItemHarness: 'papercusp',
+      relation: 'relates',
+    });
+    expect(related.tasks[0]!.links).toEqual([
+      { workItemId: 'WI-1', workItemHarness: 'papercusp', relation: 'for' },
+      { workItemId: 'WI-2', workItemHarness: 'papercusp', relation: 'relates' },
+    ]);
+    expect(related.links).toEqual(related.tasks[0]!.links);
+
+    expectCode(() => reduce(related.tasks, {
+      op: 'link',
+      taskId: 'task-a',
+      workItemId: 'WI-3',
+      relation: 'for',
+    }), 'for_link_exists');
+
+    const unlinked = reduce(related.tasks, {
+      op: 'unlink',
+      taskId: 'task-a',
+      workItemId: 'WI-2',
+      workItemHarness: 'papercusp',
+    });
+    expect(unlinked.tasks[0]!.links).toEqual([
+      { workItemId: 'WI-1', workItemHarness: 'papercusp', relation: 'for' },
+    ]);
+  });
+
   it('returns precise validation codes for invalid transitions and fields', () => {
     expectCode(
       () => reduce([task({ status: 'completed' })], { op: 'start', taskId: 'task-a' }),

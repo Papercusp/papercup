@@ -12,6 +12,8 @@ import { listPendingLoopApprovals, type LoopApprovalRequestRow } from './agent-l
 import { loadLoopSession, type LoopSessionRow } from './agent-loop/session-store';
 import type { LoopEvent } from './agent-loop/loop';
 import type { ModelMessage } from './agent-loop/model-port';
+import { lockDomainForProjectDir } from './agent-tools/locks/coordination-domain';
+import { loadHarnessRegistry, resolveHarnessContentPath } from './harness-registry';
 import { applySessionTaskOp, type SessionTask } from './session-tasks';
 import {
   reconcileSessionTaskBlockers,
@@ -441,7 +443,7 @@ export async function readConversationContextProjection(args: {
     : typeof row.transcript === 'string'
       ? (JSON.parse(row.transcript) as TranscriptTurn[])
       : [];
-  const [loopSession, approvals, taskResult] = await Promise.all([
+  const [loopSession, approvals, taskResult, registry] = await Promise.all([
     loadLoopSession({ chatId: row.id, workspaceId: args.workspaceId }, { sql }),
     listPendingLoopApprovals({ chatId: row.id, workspaceId: args.workspaceId }, { sql }),
     applySessionTaskOp(sql, {
@@ -450,11 +452,14 @@ export async function readConversationContextProjection(args: {
       op: 'view',
       idFactory: () => 'unused-on-view',
     }),
+    loadHarnessRegistry(args.workspaceId),
   ]);
+  const harnessPath = resolveHarnessContentPath(registry, row.harness_slug);
   const reconciledTasks = await reconcileSessionTaskBlockers(sql, {
     workspaceId: args.workspaceId,
     harness: row.harness_slug,
     planSlug: row.linked_plan_slug,
+    coordinationDomain: harnessPath ? lockDomainForProjectDir(harnessPath) : null,
     sessionId: row.id,
     tasks: taskResult.tasks,
     idFactory: () => 'unused-on-reconcile',

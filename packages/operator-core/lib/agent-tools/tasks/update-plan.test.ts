@@ -9,6 +9,11 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-session-1', workspaceId: 'ws-identity' })),
 }));
 
+vi.mock('./runtime', async () => {
+  const actual = await vi.importActual<typeof import('./runtime')>('./runtime');
+  return { ...actual, createSessionTaskLedgerBridge: vi.fn(async () => ({ seedWorkItem: null })) };
+});
+
 import { applySessionTaskSnapshot } from '../../session-task-aliases';
 import type { SessionTask } from '../../session-tasks';
 const applyM = vi.mocked(applySessionTaskSnapshot);
