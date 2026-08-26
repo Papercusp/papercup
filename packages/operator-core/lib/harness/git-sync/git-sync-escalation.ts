@@ -100,9 +100,28 @@ export interface EscalationInput {
   maxCommitTotalBytes: number;
   /** `scope:path` keys reported oversized on the PREVIOUS tick (from metadata). */
   prevOversizedKeys: string[];
+  /** EI-21230011589307899: the PREVIOUS tick's own-head-publish refusal, read from
+   *  routine metadata (`own_head_publish.refused` / `.blockedAtCommit`).
+   *
+   *  WHY PREVIOUS: the own-head-publish leg runs AFTER this decision inside a tick
+   *  (git-sync-action.ts — record/escalate at the `git-sync:record` step, publish at
+   *  `git-sync:own-head-publish`), so THIS tick's refusal is not knowable here. A
+   *  one-tick lag is the right trade: it surfaces a frozen device in ~2 ticks instead
+   *  of the 51 minutes it took a human to notice on 2026-08-26, when a secret-shaped
+   *  test fixture froze all egress and NOTHING raised an alarm — the same silent
+   *  metadata-only failure mode EI-18 fixed for the push and oversized legs but not
+   *  for this one.
+   *
+   *  OPTIONAL on purpose — an omitted value simply never raises `publish-refused`, so
+   *  no existing caller or fixture has to change. */
+  publishRefusal?: { refused: string; blockedAtCommit: string | null } | null;
+  /** The refusal's `blockedAtCommit` one tick further back, so a PERSISTING freeze
+   *  refreshes the escalation row without re-broadcasting every tick (mirrors
+   *  `prevOversizedKeys`). */
+  prevPublishBlockedAtCommit?: string | null;
 }
 
-export type EscalationReason = 'push-failure' | 'oversized-blobs';
+export type EscalationReason = 'push-failure' | 'oversized-blobs' | 'publish-refused';
 
 export interface EscalationDecision {
   /** Write/refresh the `git-sync-error` escalation row this tick. */
@@ -124,6 +143,12 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
   const reasons: EscalationReason[] = [];
   if (i.consecutiveErrorTicks >= PUSH_FAILURE_ESCALATION_TICKS) reasons.push('push-failure');
   if (i.oversized.length > 0) reasons.push('oversized-blobs');
+  // EI-21230011589307899: a refused own-head publish freezes this device's egress
+  // outright and CANNOT self-clear (the offending blob is already in history), so it
+  // escalates on sight — no consecutive-tick threshold like `push-failure`, which
+  // exists to absorb transient network flakes this condition never has.
+  const publishRefused = i.publishRefusal?.refused ? i.publishRefusal : null;
+  if (publishRefused) reasons.push('publish-refused');
   const escalate = reasons.length > 0;
 
   const parts: string[] = [];
@@ -161,6 +186,21 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
     parts.push(
       `⚠ git-sync on ${i.installSlug} EXCLUDED file(s) from the auto-commit — ${guards.join('; ')}; ` +
         `gitignore or remove them: ${list}`,
+    );
+  }
+
+  // Broadcast only when the freeze POINT moves (or first appears) — a persisting
+  // refusal still refreshes the escalation row above, but must not re-broadcast every
+  // tick for however long it takes someone to clear it.
+  if (publishRefused && (publishRefused.blockedAtCommit ?? null) !== (i.prevPublishBlockedAtCommit ?? null)) {
+    const at = publishRefused.blockedAtCommit ? publishRefused.blockedAtCommit.slice(0, 12) : 'an unrecorded commit';
+    parts.push(
+      `⚠ git-sync on ${i.installSlug}: own-head publish REFUSED (${publishRefused.refused}) at ${at} — ` +
+        `this device's egress is FROZEN and every later commit queues behind it. Note a bridged install never ` +
+        `pushes to origin itself, so a stale origin ref is the SYMPTOM, not the cause; read ` +
+        `metadata->'own_head_publish' (healthy = refused:null AND publishedSha==sha). Fixing the offending file ` +
+        `forward does NOT clear this — the blob is already in history. Clear a confirmed false positive with ` +
+        `pot_git:secrets_exemptions { action:'add', path:'<exact repo-relative path>', reason:'<why>' }.`,
     );
   }
 
