@@ -293,6 +293,58 @@ describe("gate-auto-repair", () => {
     });
   });
 
+  describe("a DELIBERATE REFUSAL is not a broken generator (WI-41770)", () => {
+    const base: RepairOutcome = {
+      entry: "gen:authored-docs:check",
+      repairExitCode: 1,
+      verifyExitCode: 1,
+      producedDiff: false,
+    };
+
+    it("refused:true ⇒ repair-refused, not repair-failed", () => {
+      const a = assessRepairOutcomes([{ ...base, refused: true }]);
+      expect(a.results[0].verdict).toBe("repair-refused");
+    });
+
+    it("the refused reason FORBIDS forcing the overwrite — that is the data-loss path", () => {
+      // The live case: gen:authored-docs refuses because 24 doc files hold hand-edits
+      // that exist nowhere else. "Fixing" it by making it overwrite would destroy them.
+      const a = assessRepairOutcomes([{ ...base, refused: true }]);
+      expect(a.results[0].reason).toMatch(/do not .*forcing an overwrite/i);
+      expect(a.results[0].reason).toMatch(/working correctly/i);
+    });
+
+    it("a refusal STILL BLOCKS — it is not a pass", () => {
+      const a = assessRepairOutcomes([{ ...base, refused: true }]);
+      expect(a.allRepaired).toBe(false);
+      expect(a.stillBlocking).toEqual([base.entry]);
+      expect(a.retryRecommended).toBe(false);
+    });
+
+    it("UNKNOWN (refused omitted) falls to repair-failed but WARNS about the ambiguity", () => {
+      // The safety property that makes the signature list non-load-bearing: even when
+      // nobody classifies the refusal, the reader is told not to force the write.
+      const a = assessRepairOutcomes([base]);
+      expect(a.results[0].verdict).toBe("repair-failed");
+      expect(a.results[0].reason).toMatch(/deliberate refusal/i);
+      expect(a.results[0].reason).toMatch(/data loss/i);
+    });
+
+    it("refused:false is treated as a genuine failure", () => {
+      const a = assessRepairOutcomes([{ ...base, refused: false }]);
+      expect(a.results[0].verdict).toBe("repair-failed");
+    });
+
+    it("`refused` is consulted ONLY on a non-zero exit — a clean repair still wins", () => {
+      // Otherwise a stray refused:true would poison a repair that actually succeeded.
+      const a = assessRepairOutcomes([
+        { ...base, repairExitCode: 0, verifyExitCode: 0, refused: true },
+      ]);
+      expect(a.results[0].verdict).toBe("repaired");
+      expect(a.allRepaired).toBe(true);
+    });
+  });
+
   describe("inertness: this module cannot act", () => {
     it("decideAutoRepair returns commands as STRINGS and runs nothing", () => {
       const d = decideAutoRepair({ failures: derivedCheckers, ctx });

@@ -90,9 +90,25 @@ function parseArgs(argv: string[]): Args {
   return out;
 }
 
+/**
+ * Output patterns that mean "this generator DECLINED to write", as opposed to "this
+ * generator broke". Deliberately a short, explicit list rather than a clever heuristic:
+ * a loose pattern would relabel real crashes as refusals, which is its own way of hiding
+ * a broken generator.
+ *
+ * Not matching here is SAFE. An undetected refusal falls through to `repair-failed`,
+ * whose reason text explicitly warns the reader that a non-zero exit may be a deliberate
+ * refusal and that forcing the write is how that becomes data loss. So this list makes a
+ * good message better; it is not load-bearing for safety.
+ */
+const REFUSAL_SIGNATURES: RegExp[] = [
+  // scripts/project-authored-docs.mts, when a doc file holds bytes it did not write.
+  /REFUSING to overwrite/i,
+];
+
 /** Run a root npm script. Inherits nothing: output is captured so a 17-checker sweep
- *  does not bury the summary that matters. */
-function runScript(script: string): { exitCode: number } {
+ *  does not bury the summary that matters, and so a refusal can be told from a crash. */
+function runScript(script: string): { exitCode: number; output: string } {
   const r = spawnSync("npm", ["run", script], {
     cwd: REPO_ROOT,
     encoding: "utf8",
@@ -100,8 +116,13 @@ function runScript(script: string): { exitCode: number } {
     // A generator that asks a question would hang the sweep forever.
     stdio: ["ignore", "pipe", "pipe"],
   });
-  if (r.error) return { exitCode: 127 };
-  return { exitCode: typeof r.status === "number" ? r.status : 1 };
+  const output = `${r.stdout ?? ""}\n${r.stderr ?? ""}`;
+  if (r.error) return { exitCode: 127, output };
+  return { exitCode: typeof r.status === "number" ? r.status : 1, output };
+}
+
+function looksRefused(output: string): boolean {
+  return REFUSAL_SIGNATURES.some((re) => re.test(output));
 }
 
 /** The set of dirty paths, as git sees them right now. */
@@ -204,13 +225,16 @@ function main(): number {
     const producedDiff = [...after].some((p) => !before.has(p));
 
     const verify =
-      repair.exitCode === 0 ? runScript(step.verifyCommand.replace(/^npm run /, "")) : { exitCode: 1 };
+      repair.exitCode === 0
+        ? runScript(step.verifyCommand.replace(/^npm run /, ""))
+        : { exitCode: 1, output: "" };
 
     outcomes.push({
       entry: step.entry,
       repairExitCode: repair.exitCode,
       verifyExitCode: verify.exitCode,
       producedDiff,
+      refused: repair.exitCode !== 0 && looksRefused(repair.output),
     });
   }
 

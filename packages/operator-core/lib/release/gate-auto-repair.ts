@@ -297,13 +297,28 @@ export function assessRepairOutcomes(
   outcomes: readonly RepairOutcome[],
 ): RepairAssessment {
   const results: AssessedRepair[] = (outcomes ?? []).map((o) => {
+    if (o.repairExitCode !== 0 && o.refused === true) {
+      return {
+        entry: o.entry,
+        verdict: "repair-refused" as const,
+        reason:
+          `The generator exited ${o.repairExitCode} because it DECLINED to write, not ` +
+          `because it broke. It is working correctly and is protecting something that ` +
+          `regenerating would destroy. Do NOT "fix" this by forcing an overwrite — ` +
+          `resolve the underlying data conflict instead.`,
+      };
+    }
+
     if (o.repairExitCode !== 0) {
       return {
         entry: o.entry,
         verdict: "repair-failed" as const,
         reason:
           `The generator exited ${o.repairExitCode}. Nothing was repaired, so the ` +
-          `original failure stands.`,
+          `original failure stands. ⚠ Read its output before treating this as a broken ` +
+          `generator: a non-zero exit can also be a DELIBERATE REFUSAL to overwrite ` +
+          `something (see the 'refused' field). Forcing such a generator to write is how ` +
+          `a protective refusal turns into data loss.`,
       };
     }
 
