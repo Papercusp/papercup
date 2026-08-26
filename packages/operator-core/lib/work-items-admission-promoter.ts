@@ -1026,8 +1026,7 @@ export async function persistAdmissionPlan(
                    'admissionMerge',
                    jsonb_build_object(
                      'canonicalId', ${disposition.canonicalId}::text,
-                     'runId', ${input.runId}::text,
-                     'actor', ${actor}::text
+                     'runId', ${input.runId}::text
                    )
                  ),
                updated_ts = ${input.nowMs}
