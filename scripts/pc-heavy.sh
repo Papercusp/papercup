@@ -220,6 +220,30 @@
 
 # NOTE: deliberately no `set -e` — a non-blocking flock miss returns non-zero by
 # design and must not abort the script.
+# EI-21508700734325898: bash reads scripts INCREMENTALLY, and this wrapper
+# re-invokes itself via `bash "$0"` (the preempt-restart and retry paths below)
+# MINUTES into a run. If the tree file changes underneath — a peer edit caught
+# by a sweep, any non-atomic rewrite — a late (re-)invocation or a not-yet-parsed
+# chunk reads torn bytes and dies with a phantom `syntax error near unexpected
+# token` at an arbitrary innocent line (observed: line 2529 inside
+# _pc_heavy_run_with_retries), surfacing as status=undetermined exit=143.
+# Fix: ONCE at first entry, snapshot this file to a private temp path and exec
+# it; `_PC_HEAVY_SELF_COPIED` makes every later invocation of the COPY skip the
+# block, so internal `bash "$0"` re-invocations reuse the SAME byte-stable
+# snapshot for the whole lifetime of the logical run. Escape hatch:
+# PC_HEAVY_NO_SELF_COPY=1. Temp copies are left for /tmp's reaper (the script
+# manages its own traps later; an EXIT rm here would be clobbered).
+if [ -z "${_PC_HEAVY_SELF_COPIED:-}" ] && [ "${PC_HEAVY_NO_SELF_COPY:-}" != "1" ] && [ -f "$0" ]; then
+  _pc_heavy_self_copy="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-self.XXXXXX.sh" 2>/dev/null)" && {
+    if cp "$0" "$_pc_heavy_self_copy" 2>/dev/null; then
+      export _PC_HEAVY_SELF_COPIED=1
+      exec bash "$_pc_heavy_self_copy" "$@"
+    fi
+  }
+  # Fail-open: no temp file / copy failed -> run in place, as before this guard.
+  echo "[pc-heavy] self-copy unavailable; running in place (mid-run rewrite hazard unmitigated)" >&2
+fi
+
 set -uo pipefail
 
 # Bash parses a function body in full before executing it. Keep the wrapper's
