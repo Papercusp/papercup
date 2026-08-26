@@ -71,11 +71,13 @@ describe("frozenPinIsFossilized (WI-42207)", () => {
     ).toBe(true);
   });
 
-  it("HOLDS on a NaN commit time — the trap this predicate exists to close", () => {
-    // `commitUnixTime` is `Number(await git(...))`: it returns NaN rather than throwing when git
-    // prints anything non-numeric. An unguarded `age > threshold` compare is false for NaN, so
-    // the pin would be held forever and look like a deliberate decision rather than a read
-    // failure. The guard makes "hold on unreadable input" explicit and testable.
+  it("HOLDS on a NaN commit time (documented, but NOT the discriminating case)", () => {
+    // HONESTY NOTE, measured rather than assumed: this assertion does NOT distinguish the guard.
+    // `commitUnixTime` is `Number(await git(...))` and returns NaN rather than throwing, but
+    // `Math.max(0, NaN)` is NaN and `NaN > threshold` is already false — so removing
+    // `!Number.isFinite(...)` leaves this case behaving identically. It is kept because the NaN
+    // path is real and a future refactor could make it matter; it is labelled so nobody reads it
+    // as proof the guard works. The `null` case below is what actually proves that.
     expect(
       frozenPinIsFossilized({ committedAtSec: NaN, nowMs: NOW_MS }),
     ).toBe(false);
@@ -90,7 +92,12 @@ describe("frozenPinIsFossilized (WI-42207)", () => {
     ).toBe(false);
   });
 
-  it("holds when the commit time is absent entirely", () => {
+  it("holds when the commit time is absent entirely — THE falsifying case", () => {
+    // This is the assertion that makes the guard falsifiable, verified by mutation: drop the
+    // `committedAtSec == null` check and `null * 1_000` coerces to 0, so the age reads as ~56
+    // YEARS and the predicate returns true — releasing the pin of a candidate whose commit time
+    // simply could not be read. Of the seven inputs covered here, this is the only one whose
+    // result changes when the guard is removed, so if you are trimming this file, keep this one.
     expect(
       frozenPinIsFossilized({ committedAtSec: null, nowMs: NOW_MS }),
     ).toBe(false);
