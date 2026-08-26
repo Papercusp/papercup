@@ -14,9 +14,12 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import {
+  acquireAdvSessionResume,
   claimAdvSessionResume,
+  finalizeAdvSessionResume,
   listRecordedLiveSessions,
   reactivateAdvSessionByOwner,
+  releaseAdvSessionResume,
 } from '../../adv-sessions';
 
 let fx: BaselineCoordFixture;
@@ -191,6 +194,101 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
 
   it('returns false for an unknown id', async () => {
     expect(await claimAdvSessionResume(99999999)).toBe(false);
+  });
+});
+
+/**
+ * P-001/P-005 — a resume reservation is not liveness. The shared reservation
+ * protocol is backend-neutral: Claude, OMP, and Codex all acquire the same
+ * adv-session lease before their backend-specific argv is constructed.
+ */
+describe('explicit resume reservation lifecycle (lossless handoff)', () => {
+  async function seedEnded(agent: 'claude' | 'omp' | 'codex'): Promise<number> {
+    const rows = await admin`
+      INSERT INTO harness_shared.adv_sessions
+        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code, ended_by)
+      VALUES (${WS}, ${agent}, ${agent === 'omp' ? 'omp' : 'console'},
+              ${`s-reservation-${agent}-${Math.random().toString(36).slice(2, 8)}`},
+              now() - interval '10 minutes', now(), 130, 'self')
+      RETURNING id`;
+    return Number(rows[0].id);
+  }
+
+  it.each(['claude', 'omp', 'codex'] as const)(
+    '%s stays ended while reserved and becomes live only after finalize',
+    async (agent) => {
+      const id = await seedEnded(agent);
+      const key = `resume-${agent}-${id}`;
+
+      const acquired = await acquireAdvSessionResume(id, key, 60);
+      expect(acquired).toMatchObject({ status: 'acquired', acquired: true });
+
+      const [reserved] = await admin`
+        SELECT ended_at, exit_code, resume_claim_key, resume_claimed_at
+          FROM harness_shared.adv_sessions
+         WHERE id = ${id}`;
+      expect(reserved.ended_at).not.toBeNull();
+      expect(reserved.exit_code).toBe(130);
+      expect(reserved.resume_claim_key).toBe(key);
+      expect(reserved.resume_claimed_at).not.toBeNull();
+
+      expect(await finalizeAdvSessionResume(id, key)).toBe(true);
+      const [live] = await admin`
+        SELECT ended_at, exit_code, ended_by, ended_signal,
+               resume_claim_key, resume_claimed_at
+          FROM harness_shared.adv_sessions
+         WHERE id = ${id}`;
+      expect(live).toMatchObject({
+        ended_at: null,
+        exit_code: null,
+        ended_by: null,
+        ended_signal: null,
+        resume_claim_key: null,
+        resume_claimed_at: null,
+      });
+    },
+  );
+
+  it('replays one attempt, reports a typed competing reservation, and releases immediately', async () => {
+    const id = await seedEnded('claude');
+    const key = `resume-owner-${id}`;
+    const competitor = `${key}-competitor`;
+
+    expect(await acquireAdvSessionResume(id, key, 60)).toMatchObject({
+      status: 'acquired',
+      acquired: true,
+    });
+    expect(await acquireAdvSessionResume(id, key, 60)).toMatchObject({
+      status: 'acquired',
+      acquired: true,
+      replayed: true,
+    });
+    expect(await acquireAdvSessionResume(id, competitor, 60)).toMatchObject({
+      status: 'reserved',
+      acquired: false,
+    });
+
+    expect(await releaseAdvSessionResume(id, key)).toBe(true);
+    expect(await acquireAdvSessionResume(id, competitor, 60)).toMatchObject({
+      status: 'acquired',
+      acquired: true,
+    });
+  });
+
+  it('lets a new claimant replace an expired reservation without a five-minute wait', async () => {
+    const id = await seedEnded('codex');
+    const first = `resume-expired-${id}`;
+    const next = `${first}-next`;
+    expect(await acquireAdvSessionResume(id, first, 60)).toMatchObject({ acquired: true });
+    await admin`
+      UPDATE harness_shared.adv_sessions
+         SET resume_claimed_at = now() - interval '61 seconds'
+       WHERE id = ${id}`;
+
+    expect(await acquireAdvSessionResume(id, next, 60)).toMatchObject({
+      status: 'acquired',
+      acquired: true,
+    });
   });
 });
 

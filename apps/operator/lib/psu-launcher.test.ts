@@ -8238,7 +8238,7 @@ describe("resumeSessionLineageLabel", () => {
   });
 });
 
-describe("reportSessionEnded (stamp adv ended_at on child exit — best-effort, never rejects)", () => {
+describe("reportSessionEnded (acknowledged idempotent eligibility transition)", () => {
   it("POSTs the row id + exit code to bootstrap-su/session-ended with the bearer", async () => {
     const calls = [];
     const fetchImpl = async (url, opts) => {
@@ -8249,6 +8249,7 @@ describe("reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
       fetchImpl,
       operatorUrl: "http://op:1",
       token: "tok-1",
+      endAttemptKey: "end-attempt-17",
     });
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe(
@@ -8259,7 +8260,40 @@ describe("reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
       advSessionId: 17,
       exitCode: 0,
       killedBySignal: null,
+      endAttemptKey: "end-attempt-17",
     });
+  });
+
+  it("retries a proxy-shed end transition with the SAME idempotency key", async () => {
+    const calls: Array<{ endAttemptKey: string }> = [];
+    let now = 0;
+    const fetchImpl: typeof fetch = async (_url, opts) => {
+      calls.push(JSON.parse(String(opts?.body)));
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({ error: "mcp_proxy_overloaded" }), {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "2" },
+        });
+      }
+      return Response.json({ ok: true, ended: true });
+    };
+
+    await expect(
+      reportSessionEnded(17, 0, {
+        fetchImpl,
+        operatorUrl: "http://op:1",
+        token: "t",
+        endAttemptKey: "end-attempt-replay-17",
+        sleep: async (ms) => {
+          now += ms;
+        },
+        now: () => now,
+      }),
+    ).resolves.toMatchObject({ reported: true });
+    expect(calls).toEqual([
+      expect.objectContaining({ endAttemptKey: "end-attempt-replay-17" }),
+      expect.objectContaining({ endAttemptKey: "end-attempt-replay-17" }),
+    ]);
   });
 
   it("maps a null/undefined exit code to null (signal exits)", async () => {
