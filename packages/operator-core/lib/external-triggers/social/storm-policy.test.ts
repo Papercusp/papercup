@@ -218,9 +218,9 @@ describe('P-023 storm policy — the source-kind default that admin.ts installs'
     expect(stored).not.toBeNull();
 
     const parsed = parseStormPolicy(stored as Record<string, unknown>);
-    // The whole point of the wiring: NOT null, which is what the landed default
-    // yields and which means unbounded.
-    expect(parsed.maxRuns).not.toBeNull();
+    // A real, platform-derived cap. (Until 2026-08-26 the contrast being drawn
+    // here was against an UNBOUNDED engine default; see the re-justified
+    // CONTROL below for what the contrast is now.)
     expect(parsed.maxRuns).toBeGreaterThan(0);
   });
 
@@ -230,11 +230,39 @@ describe('P-023 storm policy — the source-kind default that admin.ts installs'
     }
   });
 
-  it('CONTROL: the landed default really is unbounded, which is why the wiring exists', () => {
-    // The premise of the whole item, asserted rather than assumed. If the
-    // binding engine ever gains a bounded default of its own, this fails and
-    // the social override should be re-justified rather than left in place.
-    expect(parseStormPolicy({}).maxRuns).toBeNull();
+  it('CONTROL: the engine default is now BOUNDED, so the wiring is justified by coalesce, not by cap', () => {
+    // This test used to assert `parseStormPolicy({}).maxRuns === null` — the
+    // engine default really was unbounded, and that was P-023's stated reason
+    // for existing. It also said: "If the binding engine ever gains a bounded
+    // default of its own, this fails and the social override should be
+    // re-justified rather than left in place."
+    //
+    // That happened on 2026-08-26 (EI-21500982767775449): a Gmail poller closed
+    // a 2h35m resync gap and an uncapped mail binding minted 228 autonomous
+    // plan runs in 68s, so DEFAULT_STORM_MAX_RUNS became the engine-wide floor.
+    // This is the tripwire firing exactly as designed, so here is the
+    // re-justification it asked for.
+    //
+    // P-023 SURVIVES, on a narrower and truer basis. The engine default and the
+    // social default now agree that a binding must be capped; they disagree
+    // about what happens to the OVERFLOW, and that is the whole point:
+    //   - the engine SKIPS it (a terminal `skipped` trigger_run), which is right
+    //     for mail — a throttled backlog message is still sitting in the mailbox;
+    //   - social COALESCES it (planCoalesceWithCap), because a skipped comment on
+    //     a viral thread is never seen again.
+    // The second reason is derivation: a social cap is computed from the
+    // platform's own documented rate budget, not from one generic number.
+    //
+    // So: assert the floor is bounded, and assert social still differs from it.
+    const engineDefault = parseStormPolicy({});
+    expect(engineDefault.maxRuns).toBeGreaterThan(0);
+
+    const social = defaultSocialStormPolicyForSourceKind('bluesky');
+    expect(social).not.toBeNull();
+    expect(social?.mode).toBe('coalesce-with-cap');
+    expect(parseStormPolicy(social as Record<string, unknown>).windowSeconds).not.toBe(
+      engineDefault.windowSeconds,
+    );
   });
 });
 
