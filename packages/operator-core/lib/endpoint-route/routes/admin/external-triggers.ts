@@ -32,8 +32,16 @@ const mutationSchema = z.discriminatedUnion('op', [
       planSlug: z.string().min(1).max(240),
       eventPattern: z.string().min(1).max(500),
       eventFilter: z.record(z.string(), z.unknown()).default({}),
-      maxRuns: z.number().int().positive().max(1_000_000).nullable().default(null),
-      windowSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).default(60),
+      // NO zod defaults here, deliberately. `.default(null)` + `.default(60)`
+      // manufactured a `{ windowSeconds: 60 }` policy for a caller who stated
+      // none — a rate window with no cap (EI-21500982767775449) — and, because
+      // createExternalTriggerBinding only reaches for a source's own default
+      // when `stormPolicy` is absent, that manufactured object also silently
+      // disabled the P-023 per-platform social default for every binding
+      // created through this route. Silence must stay distinguishable from a
+      // stated policy.
+      maxRuns: z.number().int().positive().max(1_000_000).nullable().optional(),
+      windowSeconds: z.number().int().positive().max(31 * 24 * 60 * 60).optional(),
     })
     .strict(),
   z
@@ -144,10 +152,18 @@ const mutate = defineTool({
           planSlug: parsed.data.planSlug,
           eventPattern: parsed.data.eventPattern,
           eventFilter: parsed.data.eventFilter,
-          stormPolicy: {
-            ...(parsed.data.maxRuns === null ? {} : { maxRuns: parsed.data.maxRuns }),
-            windowSeconds: parsed.data.windowSeconds,
-          },
+          // Undefined when the caller stated nothing, so the source's own
+          // default (social per-platform, else the bounded generic one) still
+          // applies. A stated policy still wins.
+          stormPolicy:
+            parsed.data.maxRuns == null && parsed.data.windowSeconds === undefined
+              ? undefined
+              : {
+                  ...(parsed.data.maxRuns == null ? {} : { maxRuns: parsed.data.maxRuns }),
+                  ...(parsed.data.windowSeconds === undefined
+                    ? {}
+                    : { windowSeconds: parsed.data.windowSeconds }),
+                },
           createdBy: `owner:${user.id}`,
         });
         void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
