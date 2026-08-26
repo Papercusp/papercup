@@ -386,6 +386,24 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     expect(breakdownOnly.admitted.total).toBe(2);
   });
 
+  it('pushes a filter into the materialized candidate population without changing the filtered verdict', async () => {
+    await seedIssue('WI-RC-FILTER-IN', { _ei: { severity: 'critical' } });
+    await seedIssue('WI-RC-FILTER-OUT', { _ei: { severity: 'minor' } }, { takenBy: 'su-outside' });
+
+    const filter: FilterNode = { field: 'severity', op: '=', value: 'critical' };
+    const direct = await aggregateIssueClaimExclusions(filter, { harness: H });
+    const directRows = await listIssueClaimableRows(filter, { harness: H }, 20);
+    const viaSnapshot = await readIssueClaimability(filter, { harness: H }, { limit: 20 });
+
+    // The filtered-out row is taken on purpose: the optimized snapshot must retain the
+    // exact direct count/list semantics for the selected row while excluding it before the
+    // floor-decorated candidate set is materialized.
+    expect(viaSnapshot.breakdown).toEqual(direct);
+    expect(viaSnapshot.rows).toEqual(directRows);
+    expect(viaSnapshot.breakdown).toMatchObject({ matchedByFilter: 1, claimable: 1 });
+    expect(viaSnapshot.rows).toMatchObject([{ id: 'WI-RC-FILTER-IN', severity: 'critical' }]);
+  });
+
   it('omits the retired legacy-needs-human bucket from the materialized snapshot', async () => {
     await seedIssue('WI-RC-20', { needsHuman: true });
     await seedIssue('WI-RC-21', null);

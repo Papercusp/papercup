@@ -27,6 +27,16 @@ import { readIssueClaimability } from './get-next';
  *  awaited, so they never appear here — which is exactly the count we want). */
 type Log = string[];
 
+/** Render the SQL text carried by the fake postgres.js fragments, including nested fragments. */
+function renderSqlFragment(fragment: unknown): string {
+  if (fragment === undefined || fragment === null) return '';
+  if (!fragment || typeof fragment !== 'object') return '?';
+  const value = fragment as { strings?: unknown[]; args?: unknown[] };
+  if (!Array.isArray(value.strings)) return '?';
+  const args = value.args ?? [];
+  return value.strings.map((part, index) => `${String(part)}${renderSqlFragment(args[index])}`).join('');
+}
+
 /**
  * A postgres-js-shaped fake: callable as a tagged template, with `.unsafe`/`.json`. Both a
  * query and an `unsafe(...)` return a thenable FRAGMENT — awaiting it records the statement
@@ -36,12 +46,14 @@ type Log = string[];
  */
 function makeHandle(log: Log, opts: { failAtQuery?: number } = {}) {
   let queries = 0;
-  const handle = ((strings: TemplateStringsArray) => {
-    const text = strings.join('?').replace(/\s+/g, ' ').trim();
+  const handle = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+    const fragment = { strings: Array.from(strings), args: values };
+    const text = renderSqlFragment(fragment).replace(/\s+/g, ' ').trim();
     return {
+      ...fragment,
       then(resolve: (rows: unknown[]) => void, reject: (err: unknown) => void) {
         queries += 1;
-        log.push(`QUERY:${text.slice(0, 48)}`);
+        log.push(`QUERY:${text}`);
         if (opts.failAtQuery === queries) {
           reject(new Error('snapshot read failed'));
           return;
@@ -109,6 +121,21 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     expect(out.rows).toEqual([]);
     expect(out.sample).toBeDefined();
     expect(out.admitted).toBeDefined();
+  });
+
+  it('pushes a single-spec filter into snapshot materialization and marks prefiltered rows matched', async () => {
+    const pg = makePool();
+    await readIssueClaimability(
+      { field: 'kind', op: '=', value: 'bug' },
+      { ...OPTS, client: pg.client },
+      { limit: 20 },
+    );
+
+    const materialization = pg.queries[0] ?? '';
+    const where = materialization.slice(materialization.lastIndexOf('WHERE'));
+    expect(materialization).toMatch(/\(TRUE\)\s+AS spec_match/);
+    expect(where).toContain('COALESCE(item_kind, kind)');
+    expect(where).toContain('= ?');
   });
 
   it('WI-6673: the admitted COMPOSITION is read in the same snapshot as the count it describes — never a separate checkout', async () => {

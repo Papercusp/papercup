@@ -926,6 +926,12 @@ export const ALL_ISSUE_CLAIM_FLOORS_PASS =
  * work-item-claimability-clarity removes. Projects `wi.*` so any consumer (a rank ORDER BY,
  * a row projection) can reference any base column; the aggregate wrapper ignores the extra
  * columns (a pure `count(*)` is unaffected).
+ *
+ * `filterPushdown` is an opt-in optimization for `readIssueClaimability`'s snapshot
+ * materialization. When present, the compiled filter is applied in this subquery's base
+ * `WHERE`, and `spec_match` is the literal `TRUE` because every materialized row already
+ * passed that filter. Other callers deliberately omit it so they can retain a broader
+ * candidate population (notably `readClaimSpecDelta`, which must cover both sides).
  */
 export function issueClaimCandidateSubquery(
   sql: OrgSql,
@@ -940,6 +946,9 @@ export function issueClaimCandidateSubquery(
     rigAvailable?: boolean;
     claimantFleetSlug?: string;
     claimSpecReferencesFleet?: boolean;
+    /** Apply this compiled filter while materializing candidates instead of projecting it
+     *  as `spec_match`; only the single-spec claimability snapshot uses this pushdown. */
+    filterPushdown?: SqlFragment;
   },
 ): SqlFragment {
   const {
@@ -953,11 +962,12 @@ export function issueClaimCandidateSubquery(
     rigAvailable,
     claimantFleetSlug,
     claimSpecReferencesFleet,
+    filterPushdown,
   } = args;
   return sql`
     SELECT
       wi.*,
-      (${compiled})                                                     AS spec_match,
+      (${filterPushdown ? sql`TRUE` : compiled})                       AS spec_match,
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
       (${needsOwnerActionExclusionSql(sql)})                             AS ok_needs_owner_action,
@@ -1001,6 +1011,7 @@ export function issueClaimCandidateSubquery(
       AND wi.workspace_id = ${issueWs}
       AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
       AND wi.status = ANY(${states as string[]}::text[])
+      ${filterPushdown ? sql`AND (${filterPushdown})` : sql``}
   `;
 }
 
@@ -1682,10 +1693,12 @@ export async function readIssueClaimability(
     await tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`);
     const client = tx as unknown as OrgSql;
 
-    // EI-18802055183255275: materialize the candidate set — the full spec `view.filter`
-    // AND all 13 claim floors, evaluated over the WHOLE issue-family population for this
-    // harness — exactly ONCE, into a session-scoped temp table every sibling read below
-    // scans instead of recomputing from scratch. Previously each of the (up to) 4 reads
+    // EI-18802055183255275: materialize the candidate set — the spec `view.filter` is
+    // pushed into the candidate subquery's base WHERE, alongside all 13 claim floors, so
+    // the expensive floor expressions are evaluated only for rows this caller can match.
+    // The filtered set is materialized exactly ONCE into a session-scoped temp table every
+    // sibling read below scans instead of recomputing from scratch. Previously each of the
+    // (up to) 4 reads
     // below independently re-ran the full filter+floor computation as its OWN statement;
     // measured 2026-08-02 against the real `p2p-release` spec (63-predicate `any` filter,
     // ~14k-row candidate population): ONE such pass costs ~6.2s, so the unmerged 2-4
@@ -1704,8 +1717,10 @@ export async function readIssueClaimability(
     const issueWs = resolveIssuesScopeWorkspace();
     const operatorScopeSlug = `operator:${issueWs}`;
     const assignee = opts.assignee ?? '';
+    const compiled = compileFilter(client, filter);
     const sub = issueClaimCandidateSubquery(client, {
-      compiled: compileFilter(client, filter),
+      compiled,
+      filterPushdown: compiled,
       assignee,
       cooldown: releaseCooldownSec(),
       harness: opts.harness,
@@ -1873,6 +1888,9 @@ export async function readClaimSpecDelta(
       // Keep the subquery's spec_match tied to the stored side. candidateMatch below only
       // bounds which rows enter the snapshot; conflating the two would make currentClaimable
       // include proposed-only rows.
+      // Deliberately omit `filterPushdown`: the candidate population must remain broad enough
+      // to cover the UNION of both sides, and the outer WHERE applies that union after the
+      // floor-decorated rows have been materialized.
       compiled: currentMatch,
       assignee,
       cooldown: releaseCooldownSec(),
