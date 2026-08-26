@@ -28,7 +28,7 @@ import { getPresence } from '../coordination/presence';
 
 const MAX_CATALOG_LIMIT = 200;
 const CATALOG_SCOPE_NOTE =
-  'Scope is derived from the request context: installed families use the call\'s harness context when present, and announced gates are filtered by the reader\'s identity-derived fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; use `q`/`pattern` or `family` to narrow catalog rows.';
+  'Scope comes from request context; installed families use the call\'s harness, and announced gates use the reader\'s fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.';
 
 function catalogRowMatches(row: CatalogRow, query: string): boolean {
   return [
@@ -49,9 +49,9 @@ export default defineTool({
     `List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and \`live_awaiters\` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text \`q\` (alias \`pattern\`) over family/key/description/emitter and a bounded \`limit\` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status. ${CATALOG_SCOPE_NOTE}`,
   capability: 'events:read',
   guidance: {
-    when: 'Before you POLL for something (a deploy landing, the gate going green, a peer\'s work-item settling, a service recovering) — look here for an awaitable key so you can events:await + END YOUR TURN instead of re-polling. Also when you\'re unsure whether an event even exists for X, OR you (an emitter/leader) want to see WHO is actually listening on a key before you trust an events:emit alone (live_awaiters).',
-    notWhen: `You already know the exact key — just events:await it. To see server REACTION wiring ("what fires what") use events:graph; to see YOUR OWN pending awaits + recent wakes use events:status. ${CATALOG_SCOPE_NOTE}`,
-    chaining: 'events:catalog → pick a family → events:await { event: <its key> } (or its sugar verb, e.g. deploy:await) → end your turn.',
+    when: 'Before polling for a deploy, gate, peer work-item, or service recovery; to check whether an event exists or who is listening.',
+    notWhen: `You already know the exact key → events:await. For server reactions use events:graph; for your awaits/wakes use events:status. ${CATALOG_SCOPE_NOTE}`,
+    chaining: 'events:catalog → events:await { event: <key> } (or sugar) → end your turn.',
     seeAlso: [
       'events:await (arm a wait on a key you found here)',
       'events:emit (its `waiters`/`woken` counts are the emit-TIME twin of this READ-time live_awaiters)',
