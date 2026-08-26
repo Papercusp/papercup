@@ -9,6 +9,7 @@ import {
 import type { SessionTask } from '../../session-tasks';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 import {
+  createSessionTaskLedgerBridge,
   emitSessionTaskChanges,
   resolveSessionTaskRuntime,
   sessionTaskOpSchema,
@@ -57,10 +58,18 @@ export default defineTool({
     const runtime = resolveSessionTaskRuntime(ctx);
     if (!runtime) return workspaceRequiredResponse('tasks:todo_write');
     try {
+      const bridge = await createSessionTaskLedgerBridge({
+        workspaceId: runtime.workspaceId,
+        sessionId: runtime.sessionId,
+        actorId: runtime.actorId,
+        defaultHarness: runtime.defaultHarness,
+        sql: runtime.tx,
+      });
       const result = await applySessionTaskSnapshot(runtime.tx, {
         workspaceId: runtime.workspaceId,
         sessionId: runtime.sessionId,
         tasks: args.todos,
+        bridge,
         idFactory: runtime.idFactory,
       });
       emitSessionTaskChanges(ctx, runtime.sessionId, result.mutations);
