@@ -59,7 +59,13 @@ import { outboxRowToLocalWriteOp, type OutboxRow } from '../feature-issue-op-key
 import type { OpEnvelope } from '../op-envelope-types';
 // The real coord:inbox read seam — drives the subscribe→inject half end-to-end.
 import { PgCoordLog } from '@papercusp/coordination/event-log';
-import { readInbox, sendMessage } from '../../../agent-tools/coordination/messages';
+import {
+  appendAck,
+  readAckedMsgIds,
+  readInbox,
+  readThread,
+  sendMessage,
+} from '../../../agent-tools/coordination/messages';
 import { configureCoordLog, resetCoordLog } from '../../../agent-tools/coordination/log';
 import type { AgentIdentity } from '../../../agent-tools/coordination/identity';
 
@@ -98,6 +104,13 @@ const PEER_B_LOG = 'b'.repeat(64); // peer B's own-log hex key
 const SENDER_A: AgentIdentity = {
   ownerId: 'su-A',
   ownerLabel: 'su-A',
+  source: 'omp-hook-session',
+  workspaceId: WS,
+  userId: null,
+};
+const SENDER_B: AgentIdentity = {
+  ownerId: 'su-B',
+  ownerLabel: 'su-B',
   source: 'omp-hook-session',
   workspaceId: WS,
   userId: null,
@@ -202,21 +215,40 @@ interface OutboxDbRow {
 
 let dbA: FreshPgDb; // the remote sender (raw client; its triggers capture to its outbox)
 let dbB: FreshPgDb; // the local applier (getOrgPg → its sql; buildHarnessProjectionApply writes here)
+let applyA: (op: OpEnvelope) => Promise<boolean>;
 let applyB: (op: OpEnvelope) => Promise<boolean>;
 
-/** Reshape every outbox row on A into a remote OpEnvelope and apply it on B via
- *  the REAL scoped registry, then clear A's outbox. `sourceLogKeyHex` defaults to
- *  PEER_A_LOG so the apply path derives origin='remote' (A's log != B's own log). */
-async function drainAtoB(sourceLogKeyHex = PEER_A_LOG): Promise<number> {
-  const rows = await dbA.sql<OutboxDbRow[]>`
+/** Reshape one peer's outbox into remote OpEnvelopes and apply them through the
+ *  destination's REAL scoped registry. `replays` deliberately supports the
+ *  duplicate-delivery recurrence: replaying one immutable op must still leave
+ *  one coord_event_log row at the receiver. */
+async function drainPeerToPeer(
+  source: FreshPgDb,
+  destination: FreshPgDb,
+  apply: (op: OpEnvelope) => Promise<boolean>,
+  sourceLogKeyHex: string,
+  replays = 1,
+): Promise<number> {
+  h.sql = destination.sql;
+  const rows = await source.sql<OutboxDbRow[]>`
     SELECT table_name, op, key, row, ts FROM harness_shared.substrate_outbox ORDER BY id`;
   let applied = 0;
   for (const r of rows) {
     const local = outboxRowToLocalWriteOp({ table_name: r.table_name, op: r.op as 'put' | 'del', key: r.key, ts: r.ts, row: r.row });
-    if (await applyB({ ...local, sourceLogKeyHex })) applied += 1;
+    for (let replay = 0; replay < replays; replay += 1) {
+      if (await apply({ ...local, sourceLogKeyHex })) applied += 1;
+    }
   }
-  await dbA.sql`DELETE FROM harness_shared.substrate_outbox`;
+  await source.sql`DELETE FROM harness_shared.substrate_outbox`;
   return applied;
+}
+
+async function drainAtoB(sourceLogKeyHex = PEER_A_LOG, replays = 1): Promise<number> {
+  return drainPeerToPeer(dbA, dbB, applyB, sourceLogKeyHex, replays);
+}
+
+async function drainBtoA(sourceLogKeyHex = PEER_B_LOG, replays = 1): Promise<number> {
+  return drainPeerToPeer(dbB, dbA, applyA, sourceLogKeyHex, replays);
 }
 
 beforeAll(async () => {
@@ -225,6 +257,7 @@ beforeAll(async () => {
   await setupPeerSchema(dbA.sql);
   await setupPeerSchema(dbB.sql);
   h.sql = dbB.sql; // the registry's projections write to peer B
+  applyA = buildHarnessProjectionApply({ workspaceId: WS, harnessSlug: HARNESS, ownLogKeyHex: PEER_A_LOG });
   applyB = buildHarnessProjectionApply({ workspaceId: WS, harnessSlug: HARNESS, ownLogKeyHex: PEER_B_LOG });
 }, 90_000);
 
@@ -395,6 +428,8 @@ describe("the brief's marquee SUBSCRIBE→INJECT seam — a coord message round-
   // resetCoordLog() in afterEach restores the default getOrgPg-backed log.
   const pointInboxAtPeerB = () =>
     configureCoordLog(new PgCoordLog({ getSql: () => dbB.sql, ensureSchema: async () => {}, workspaceId: WS }));
+  const pointInboxAtPeerA = () =>
+    configureCoordLog(new PgCoordLog({ getSql: () => dbA.sql, ensureSchema: async () => {}, workspaceId: WS }));
   afterEach(() => resetCoordLog());
 
   /** Drive the REAL production send seam against peer A. `sendMessage` builds
@@ -403,10 +438,11 @@ describe("the brief's marquee SUBSCRIBE→INJECT seam — a coord message round-
    *  substrate_outbox, so it federates. `to[]` is the addressing the inbox
    *  filters on. This deliberately does not hand-build the row that the seam is
    *  meant to prove. */
-  async function sendOnA(msgId: string, to: string[], summary: string): Promise<void> {
+  async function sendOnA(msgId: string, to: string[], summary: string) {
     configureCoordLog(new PgCoordLog({ getSql: () => dbA.sql, ensureSchema: async () => {}, workspaceId: WS }));
     const sent = await sendMessage(SENDER_A, { msgId, to, summary, harnessSlug: HARNESS });
     expect(sent).toMatchObject({ msg_id: msgId, from: 'su-A', to, summary, harness_slug: HARNESS });
+    return sent;
   }
 
   it("an ADDRESSED message on A lands in B's coord_event_log AND surfaces via the real readInbox — a non-addressed peer's inbox does NOT", async () => {
@@ -441,6 +477,75 @@ describe("the brief's marquee SUBSCRIBE→INJECT seam — a coord message round-
     for (const who of ['su-B', 'su-C']) {
       const inbox = await readInbox(who);
       expect(inbox.find((e) => e.msg_id === 'fed-bcast')).toBeTruthy();
+    }
+  });
+
+  it('a related structured report returns B→A, duplicate delivery stays singular, thread order survives, and the ack returns A→B', async () => {
+    // This composes the seams the predecessor incident crossed. The narrower
+    // suites prove report normalization, reply wake, projection upsert, thread
+    // folding, and ack lookup separately; this test proves their shared wire
+    // envelope survives BOTH federation directions through production
+    // sendMessage/PgCoordLog/outbox/apply/read seams.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-08-26T20:00:00.000Z'));
+      const original = await sendOnA('fed-thread-1-original', ['su-B'], 'return the coordination audit');
+      expect(await drainAtoB()).toBe(1);
+
+      vi.setSystemTime(new Date('2026-08-26T20:00:00.100Z'));
+      pointInboxAtPeerB();
+      const report = {
+        title: 'Coordination audit',
+        plans: [
+          {
+            slug: 'p2p-coordination-public-release-2026-08-26',
+            status: 'done',
+            items: [{ id: 'P-002', text: 'transport audit', status: 'done' }],
+          },
+        ],
+      };
+      const reply = await sendMessage(SENDER_B, {
+        msgId: 'fed-thread-2-report',
+        to: ['su-A'],
+        summary: 'coordination audit complete',
+        related_msg_id: original.msg_id,
+        harnessSlug: HARNESS,
+        extra: { report },
+      });
+
+      // Replay the immutable remote op: msg_id is the federation key, so the
+      // receiver must retain exactly one report row rather than append a dup.
+      await drainBtoA(PEER_B_LOG, 2);
+      const [{ n: reportRows }] = await dbA.sql<{ n: number }[]>`
+        SELECT count(*)::int AS n FROM harness_shared.coord_event_log WHERE msg_id = ${reply.msg_id}`;
+      expect(reportRows).toBe(1);
+
+      pointInboxAtPeerA();
+      const delivered = (await readInbox('su-A')).find((e) => e.msg_id === reply.msg_id);
+      expect(delivered).toMatchObject({
+        from: 'su-B',
+        to: ['su-A'],
+        related_msg_id: original.msg_id,
+        report,
+        harness_slug: HARNESS,
+      });
+
+      vi.setSystemTime(new Date('2026-08-26T20:00:00.200Z'));
+      const ack = await appendAck(SENDER_A, reply.msg_id, SENDER_B.ownerId, HARNESS);
+      expect(ack).toMatchObject({ kind: 'ack', related_msg_id: reply.msg_id, harness_slug: HARNESS });
+      expect(await drainAtoB()).toBe(1);
+
+      pointInboxAtPeerB();
+      const thread = await readThread(original.msg_id);
+      expect(thread.map((entry) => entry.msg_id)).toEqual([original.msg_id, reply.msg_id, ack.msg_id]);
+      expect(await readAckedMsgIds(SENDER_A.ownerId)).toEqual(new Set([reply.msg_id]));
+      expect((await readInbox('su-B')).find((e) => e.msg_id === ack.msg_id)).toMatchObject({
+        from: 'su-A',
+        kind: 'ack',
+        related_msg_id: reply.msg_id,
+      });
+    } finally {
+      vi.useRealTimers();
     }
   });
 
