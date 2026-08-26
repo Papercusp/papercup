@@ -561,7 +561,7 @@ function ExternalComposer({
         {source?.social && <SocialSourceNote social={source.social} />}
         <label className="pc-plan-dialog__field"><span>Event pattern</span><input value={pattern} onChange={(event) => setPattern(event.target.value)} required /></label>
         <label className="pc-plan-dialog__field"><span>Event filter</span><textarea rows={4} value={filter} onChange={(event) => setFilter(event.target.value)} /></label>
-        <label className="pc-plan-dialog__field"><span>Storm max runs <em className="pc-plan-dialog__opt">(blank = unbounded)</em></span><input type="number" min="1" value={maxRuns} onChange={(event) => setMaxRuns(event.target.value)} /></label>
+        <label className="pc-plan-dialog__field"><span>Storm max runs <em className="pc-plan-dialog__opt">(blank = this source&rsquo;s safe default; never unbounded)</em></span><input type="number" min="1" value={maxRuns} onChange={(event) => setMaxRuns(event.target.value)} /></label>
         <label className="pc-plan-dialog__field"><span>Storm window seconds</span><input type="number" min="1" value={windowSeconds} onChange={(event) => setWindowSeconds(event.target.value)} required /></label>
         <ComposerFooter error={error} submitting={submitting} submitLabel="Attach off" onCancel={onClose} />
       </form>
@@ -573,11 +573,19 @@ function ExternalComposer({
  * Storm-policy defaults for a newly attached binding (P-027).
  *
  * A social source gets the cap its PLATFORM budget actually funds, rather than
- * the generic blank-means-unbounded default. That default is the wrong one here
- * in a way that is invisible until it bites: an unbounded coalesce cap on a
- * metered platform spends the whole quota day on one storm, and the integration
- * then stops entirely until the quota rolls over. Non-social sources are
- * untouched and keep the landed behaviour.
+ * the generic default. That generic one is the wrong cap here in a way that is
+ * invisible until it bites: a too-loose coalesce cap on a metered platform
+ * spends the whole quota day on one storm, and the integration then stops
+ * entirely until the quota rolls over.
+ *
+ * Blank no longer means UNBOUNDED. Until 2026-08-26 it did, and leaving that
+ * field blank is how a live Gmail binding came to hold a rate window with no
+ * cap and mint 228 autonomous plan runs in 68s when a poller closed a resync
+ * gap (EI-21500982767775449). Blank now means "let the source decide": the
+ * server sends no storm policy at all, so a social source gets its per-platform
+ * coalesce-with-cap default and everything else gets the engine's bounded
+ * floor (DEFAULT_STORM_MAX_RUNS). Keep the field blank rather than typing a
+ * number you do not have a reason for.
  */
 export function stormDefaultsFor(
   source: ExternalTriggerSourceAdminRow | undefined,
