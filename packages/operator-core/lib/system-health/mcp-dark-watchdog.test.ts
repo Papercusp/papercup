@@ -9,6 +9,7 @@ import {
   evaluateMcpDark,
   evaluateInteractiveMcpDark,
   planInteractiveHeal,
+  interactiveHealJitterMs,
   markHealSent,
   healedWakeText,
   checkInteractiveMcpDark,
@@ -105,6 +106,7 @@ function interactiveDark(over: Partial<InteractiveDarkSnapshot> = {}): Interacti
     hostStartedMs: INOW - 6 * 60 * M,
     hostLastActivityMs: INOW - 1 * M,
     presenceHeartbeatMs: INOW - 45 * M,
+    toolSurface: null,
     loopActive: true,
     loopIntervalSec: 600,
     ...over,
@@ -142,13 +144,9 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
     // in use (pty 1m ago) + beat 45m stale > 30m ⇒ dark
     expect(evaluateInteractiveMcpDark(base, INOW).dark).toBe(true);
     // idle session (pty 20m ago) ⇒ never dark, however stale the beat
-    expect(
-      evaluateInteractiveMcpDark({ ...base, hostLastActivityMs: INOW - 20 * M }, INOW).dark,
-    ).toBe(false);
+    expect(evaluateInteractiveMcpDark({ ...base, hostLastActivityMs: INOW - 20 * M }, INOW).dark).toBe(false);
     // in use but beat only 20m stale ⇒ not dark
-    expect(
-      evaluateInteractiveMcpDark({ ...base, presenceHeartbeatMs: INOW - 20 * M }, INOW).dark,
-    ).toBe(false);
+    expect(evaluateInteractiveMcpDark({ ...base, presenceHeartbeatMs: INOW - 20 * M }, INOW).dark).toBe(false);
   });
 
   it('presence NEVER seen ⇒ NOT dark — no evidence it is a papercusp agent (false-positive fix 2026-07-20)', () => {
@@ -169,6 +167,21 @@ describe('evaluateInteractiveMcpDark (P-005 — NOT pinned to operator restart)'
     // Same guard for the armed-loop branch (defensive — an armed loop implies a
     // prior loop:arm MCP call, so a real one always has a beat).
     expect(evaluateInteractiveMcpDark(interactiveDark({ presenceHeartbeatMs: null }), INOW).dark).toBe(false);
+  });
+
+  it('dark-from-birth: null presence IS dark when the call-origin split proves an empty Papercusp tool surface', () => {
+    const v = evaluateInteractiveMcpDark(
+      interactiveDark({
+        loopActive: false,
+        loopIntervalSec: null,
+        presenceHeartbeatMs: null,
+        toolSurface: { hookCalls: 20, windowMinutes: 3 },
+      }),
+      INOW,
+    );
+    expect(v.dark).toBe(true);
+    expect(v.reason).toContain('dark from birth');
+    expect(v.reason).toContain('20 hook-origin calls');
   });
 });
 
@@ -242,6 +255,33 @@ describe('planInteractiveHeal (the cross-pass heal ladder — tri-state verdicts
     // 2h later: both attempts aged out of the 1h window ⇒ heal again
     expect(planInteractiveHeal(state, dark, INOW + 120 * M)).toEqual([{ ownerId: 'su-x', action: 'heal' }]);
   });
+
+  it("shared rolling budget caps a correlated burst without consuming deferred owners' attempts", () => {
+    const state = new Map();
+    const budget = { attemptsMs: [] as number[], maxAttempts: 2, windowMs: 10 * M };
+    const burst = ['su-a', 'su-b', 'su-c'].map((ownerId) => ({ ownerId, dark: true }));
+    expect(planInteractiveHeal(state, burst, INOW, 2, budget)).toEqual([
+      { ownerId: 'su-a', action: 'heal' },
+      { ownerId: 'su-b', action: 'heal' },
+      { ownerId: 'su-c', action: 'defer-budget' },
+    ]);
+    expect(state.get('su-c')?.attemptsMs).toEqual([]);
+
+    // Same rolling-window recovery property as cluster-fork: capacity returns
+    // after the window drains; the deferred owner gets its FIRST real attempt.
+    expect(planInteractiveHeal(state, [{ ownerId: 'su-c', dark: true }], INOW + 11 * M, 2, budget)).toEqual([
+      { ownerId: 'su-c', action: 'heal' },
+    ]);
+    expect(state.get('su-c')?.attemptsMs).toHaveLength(1);
+  });
+
+  it('reconnect jitter is stable per owner/window, bounded, and disableable for tests', () => {
+    const a = interactiveHealJitterMs('su-a', INOW, 2_000);
+    expect(a).toBeGreaterThan(0);
+    expect(a).toBeLessThanOrEqual(2_000);
+    expect(interactiveHealJitterMs('su-a', INOW, 2_000)).toBe(a);
+    expect(interactiveHealJitterMs('su-a', INOW, 0)).toBe(0);
+  });
 });
 
 describe('healedWakeText', () => {
@@ -264,13 +304,13 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
   // mcp-dark-int:% escalation whose owner is not in THIS pass's dark set —
   // including, critically, when there are ZERO live hosts at all.
 
-  /** Fake postgres tag routing on query text: an escalations-phase SELECT, an
-   *  escalations UPDATE (recovery clear), a coord_presence SELECT, and a
-   *  routines (armed-loop) SELECT — the four query shapes checkInteractiveMcpDark
-   *  issues. `openPhases` seeds the standing (still-open) escalation rows. */
+  /** Fake postgres tag routing on query text: escalation read/write,
+   *  coord_presence, armed loops, and the shared call-origin tool-surface query.
+   *  `openPhases` seeds the standing (still-open) escalation rows. */
   function fakeSql(opts: {
     openPhases: string[];
     presenceByOwner?: Record<string, number | null>;
+    toolSurfaceByOwner?: Record<string, { hookCalls: number; windowMinutes: number }>;
   }) {
     const updatedPhases: string[] = [];
     const tag = ((strings: TemplateStringsArray, ...values: unknown[]) => {
@@ -283,6 +323,15 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
         const arr = values.find((v) => Array.isArray(v)) as string[] | undefined;
         if (arr) updatedPhases.push(...arr);
         return Promise.resolve([]);
+      }
+      if (q.includes('harness_shared.memory_session_epochs')) {
+        return Promise.resolve(
+          Object.entries(opts.toolSurfaceByOwner ?? {}).map(([owner_id, surface]) => ({
+            owner_id,
+            hook_calls: surface.hookCalls,
+            window_minutes: surface.windowMinutes,
+          })),
+        );
       }
       if (q.includes('coord_presence')) {
         const owners = values[0] as string[];
@@ -311,7 +360,10 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     const { tag, updatedPhases } = fakeSql({ openPhases: [phase] });
     listLiveHostsMock.mockReturnValue([]); // the session has fully ended — no pty host left
 
-    const out = await checkInteractiveMcpDark(tag);
+    const out = await checkInteractiveMcpDark(tag, {
+      jitterMaxMs: 0,
+      sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+    });
 
     expect(updatedPhases).toContain(phase);
     expect(out.recovered).toContain('su-39f079d3-4154-495e-af05-710c5a1148ea');
@@ -339,6 +391,55 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
     vi.useRealTimers();
   });
 
+  it('a live zero-presence host with call-origin proof enters the existing /mcp heal ladder', async () => {
+    const owner = 'su-dark-from-birth';
+    const { tag } = fakeSql({
+      openPhases: [],
+      toolSurfaceByOwner: { [owner]: { hookCalls: 23, windowMinutes: 4 } },
+    });
+    listLiveHostsMock.mockReturnValue([{ ownerId: owner, startedAt: INOW - 60 * M, lastActivityAt: INOW - 1 * M }]);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+
+    const out = await checkInteractiveMcpDark(tag, {
+      jitterMaxMs: 0,
+      sharedBudget: { attemptsMs: [], maxAttempts: 4, windowMs: 10 * M },
+    });
+
+    expect(out.darkOwners).toContain(owner);
+    expect(out.healSent).toContain(owner);
+    expect(mcpReconnectViaPtyMock).toHaveBeenCalledWith(owner);
+    vi.useRealTimers();
+  });
+
+  it('a correlated dark-from-birth burst obeys the shared budget and reports every deferred owner', async () => {
+    const owners = ['su-burst-a', 'su-burst-b', 'su-burst-c'];
+    const { tag } = fakeSql({
+      openPhases: [],
+      toolSurfaceByOwner: Object.fromEntries(owners.map((owner) => [owner, { hookCalls: 25, windowMinutes: 5 }])),
+    });
+    listLiveHostsMock.mockReturnValue(
+      owners.map((ownerId) => ({
+        ownerId,
+        startedAt: INOW - 60 * M,
+        lastActivityAt: INOW - 1 * M,
+      })),
+    );
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(INOW);
+
+    const out = await checkInteractiveMcpDark(tag, {
+      jitterMaxMs: 0,
+      sharedBudget: { attemptsMs: [], maxAttempts: 2, windowMs: 10 * M },
+    });
+
+    expect(out.darkOwners).toEqual(owners);
+    expect(out.healSent).toEqual(owners.slice(0, 2));
+    expect(out.budgetDeferred).toEqual([owners[2]]);
+    expect(mcpReconnectViaPtyMock).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
   it('never throws when the escalations SELECT itself fails (fail-soft, per the function contract)', async () => {
     const throwingSql = (() => Promise.reject(new Error('pg connection reset'))) as never;
     await expect(checkInteractiveMcpDark(throwingSql)).resolves.toEqual({
@@ -346,6 +447,7 @@ describe('checkInteractiveMcpDark — recovery sweep durability follow-up (EI-12
       healed: [],
       healSent: [],
       notified: [],
+      budgetDeferred: [],
       recovered: [],
       configRepaired: [],
     });

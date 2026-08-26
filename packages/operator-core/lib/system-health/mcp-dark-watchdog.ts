@@ -41,6 +41,7 @@ import os from 'node:os';
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent } from '../severe-event-broadcast';
+import { readOrientationToolSurfaces, type OrientationToolSurface } from '../turn-start-orientation';
 
 /** Supervisor beat is ~60s; fresh within 3× ⇒ the process is alive. */
 const DEFAULT_SUPERVISOR_FRESH_MS = 3 * 60_000; // 3 min
@@ -329,6 +330,13 @@ const INTERACTIVE_PHASE_PREFIX = 'mcp-dark-int:';
 /** Heal attempts per owner per rolling hour before falling back to notify. */
 const DEFAULT_HEAL_MAX_ATTEMPTS = 2;
 const HEAL_ATTEMPT_WINDOW_MS = 60 * 60_000;
+/** Fleet-wide reconnect-storm guard. Mirrors cluster-fork's proven rolling
+ * maxRespawns shape: a full window defers, then automatically drains. */
+const DEFAULT_SHARED_HEAL_MAX_ATTEMPTS = 4;
+const DEFAULT_SHARED_HEAL_WINDOW_MS = 10 * 60_000;
+/** Small owner-stable spread so the admitted reconnects do not re-handshake in
+ * lockstep. Detection is already minutes past the server's Retry-After: 2s. */
+const DEFAULT_HEAL_JITTER_MAX_MS = 2_000;
 /** Ignore hosts younger than this — a fresh session hasn't tool-called yet. */
 const DEFAULT_INTERACTIVE_GRACE_MS = 10 * 60_000;
 /** No-loop clause: pty activity fresher than this counts as "session in use". */
@@ -349,6 +357,9 @@ export interface InteractiveDarkSnapshot {
   hostLastActivityMs: number | null;
   /** coord_presence.heartbeat_at — the TOOL-CALL-COUPLED beat (epoch ms). */
   presenceHeartbeatMs: number | null;
+  /** Positive proof that this IS a Papercusp agent whose MCP surface loaded
+   * empty: context-epoch anchor + hook-origin calls + zero agent-origin calls. */
+  toolSurface?: OrientationToolSurface | null;
   /** An ACTIVE loop routine (harness_shared.routines loop-<owner>) + its interval. */
   loopActive: boolean;
   loopIntervalSec: number | null;
@@ -390,15 +401,28 @@ export function evaluateInteractiveMcpDark(
   // FOREVER — the owner-visible "agents keep getting /mcp" spam. And the heal can
   // never succeed: the `/mcp` macro only RECONNECTS a server the running session
   // already declares, so it fails every pass ("cursor never reached
-  // 'papercusp-su' in 40 downs"). A genuinely dark-FROM-BIRTH papercusp session
-  // is the same unhealable-by-`/mcp` shape (server not loaded) and is instead
-  // recovered by the config-repair on its next relaunch/resume
-  // (ensureInteractiveClaudeConfig) — not by /mcp-spamming a live one. An
-  // ARMED-loop session always has ≥1 beat (the loop:arm call itself is an MCP
-  // call that registers presence), so this guard never suppresses the real
-  // transport-death target — a session that WAS calling (has a beat) and whose
-  // beat is now stale. Require a REAL (however stale) beat before "dark".
-  if (s.presenceHeartbeatMs == null) return { dark: false, reason: null };
+  // 'papercusp-su' in 40 downs"). That remains true when null presence is the
+  // ONLY signal. EI-21552041967359872 adds the narrow exception below: the
+  // independently-measured call-origin split proves a Papercusp launch is
+  // taking hook-backed turns while completing zero agent calls, and the heal
+  // path repairs its config before invoking /mcp. An ARMED-loop session always
+  // has ≥1 beat (the loop:arm call itself is an MCP call), so the original
+  // transport-death target — a session that WAS calling and then froze — is
+  // unchanged.
+  if (s.presenceHeartbeatMs == null) {
+    // EI-21552041967359872 / D-004: null presence remains non-actionable BY
+    // ITSELF. The call-origin split supplies the positive evidence the old guard
+    // lacked: hook calls prove a Papercusp launch is taking turns through the
+    // operator; zero agent calls since the context epoch proves MCP never loaded.
+    if (!s.toolSurface) return { dark: false, reason: null };
+    return {
+      dark: true,
+      reason:
+        `interactive Papercusp session is taking turns (${s.toolSurface.hookCalls} hook-origin calls over ` +
+        `${s.toolSurface.windowMinutes}m) but has completed zero agent-origin MCP calls since its context epoch — ` +
+        `the initial tool surface loaded empty (dark from birth).`,
+    };
+  }
   const staleMs = nowMs - s.presenceHeartbeatMs;
 
   if (s.loopActive) {
@@ -429,7 +453,20 @@ export function evaluateInteractiveMcpDark(
   };
 }
 
-export type InteractiveHealAction = 'heal' | 'notify' | 'announce-healed' | 'none';
+export type InteractiveHealAction = 'heal' | 'defer-budget' | 'notify' | 'announce-healed' | 'none';
+
+/** Mutable process-wide rolling budget. The background primary owns one
+ * instance; tests inject a fresh one so no pass leaks capacity across cases. */
+export interface InteractiveHealBudgetState {
+  attemptsMs: number[];
+  maxAttempts: number;
+  windowMs: number;
+}
+
+export interface InteractiveHealStep {
+  ownerId: string;
+  action: InteractiveHealAction;
+}
 
 interface OwnerHealState {
   attemptsMs: number[];
@@ -467,8 +504,14 @@ export function planInteractiveHeal(
   verdicts: Array<{ ownerId: string; dark: boolean; recovered?: boolean }>,
   nowMs: number,
   maxAttempts = DEFAULT_HEAL_MAX_ATTEMPTS,
-): Array<{ ownerId: string; action: InteractiveHealAction }> {
-  const out: Array<{ ownerId: string; action: InteractiveHealAction }> = [];
+  sharedBudget?: InteractiveHealBudgetState,
+): InteractiveHealStep[] {
+  const out: InteractiveHealStep[] = [];
+  if (sharedBudget) {
+    while (sharedBudget.attemptsMs.length && nowMs - sharedBudget.attemptsMs[0]! >= sharedBudget.windowMs) {
+      sharedBudget.attemptsMs.shift();
+    }
+  }
   for (const v of verdicts) {
     const st = state.get(v.ownerId);
     if (v.recovered) {
@@ -495,7 +538,15 @@ export function planInteractiveHeal(
     const cur = st ?? { attemptsMs: [], sentCount: 0, notified: false };
     cur.attemptsMs = cur.attemptsMs.filter((t) => nowMs - t < HEAL_ATTEMPT_WINDOW_MS);
     if (cur.attemptsMs.length < maxAttempts) {
+      if (sharedBudget && sharedBudget.attemptsMs.length >= sharedBudget.maxAttempts) {
+        // Do NOT consume the owner's attempt: this session has not been tried.
+        // The rolling window drains automatically, then a later sweep admits it.
+        state.set(v.ownerId, cur);
+        out.push({ ownerId: v.ownerId, action: 'defer-budget' });
+        continue;
+      }
       cur.attemptsMs.push(nowMs);
+      sharedBudget?.attemptsMs.push(nowMs);
       state.set(v.ownerId, cur);
       out.push({ ownerId: v.ownerId, action: 'heal' });
     } else if (!cur.notified) {
@@ -508,6 +559,20 @@ export function planInteractiveHeal(
     }
   }
   return out;
+}
+
+/** Stable bounded jitter for one admitted reconnect. Owner identity spreads a
+ * burst; the rolling-window epoch changes the delay on a later attempt. */
+export function interactiveHealJitterMs(ownerId: string, nowMs: number, maxMs = DEFAULT_HEAL_JITTER_MAX_MS): number {
+  const cap = Math.max(0, Math.floor(maxMs));
+  if (cap === 0) return 0;
+  const key = `${ownerId}:${Math.floor(nowMs / DEFAULT_SHARED_HEAL_WINDOW_MS)}`;
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < key.length; i += 1) {
+    hash ^= key.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return 1 + ((hash >>> 0) % cap);
 }
 
 /** Executor callback: mark that a 'heal' action's macro envelope actually LANDED
@@ -531,12 +596,20 @@ export function healedWakeText(ownerId: string, staleMins: number): string {
 }
 
 const interactiveHealState = new Map<string, OwnerHealState>();
+const interactiveHealBudget: InteractiveHealBudgetState = {
+  attemptsMs: [],
+  maxAttempts: DEFAULT_SHARED_HEAL_MAX_ATTEMPTS,
+  windowMs: DEFAULT_SHARED_HEAL_WINDOW_MS,
+};
 
 export interface InteractiveMcpDarkResult {
   darkOwners: string[];
   healed: string[];
   healSent: string[];
   notified: string[];
+  /** Owners proven dark but deferred without consuming a per-owner attempt
+   * because the process-wide reconnect budget is full. */
+  budgetDeferred: string[];
   /** Escalation phases cleared this pass because their owner is no longer in
    *  the current dark set — either a live session that recovered, OR (the
    *  case the per-owner heal ladder can never reach) a session that ENDED
@@ -559,9 +632,23 @@ export interface InteractiveMcpDarkResult {
  */
 export async function checkInteractiveMcpDark(
   sql: Sql,
-  opts: InteractiveDarkThresholds & { maxAttempts?: number } = {},
+  opts: InteractiveDarkThresholds & {
+    maxAttempts?: number;
+    sharedMaxAttempts?: number;
+    sharedWindowMs?: number;
+    jitterMaxMs?: number;
+    sharedBudget?: InteractiveHealBudgetState;
+  } = {},
 ): Promise<InteractiveMcpDarkResult> {
-  const out: InteractiveMcpDarkResult = { darkOwners: [], healed: [], healSent: [], notified: [], recovered: [], configRepaired: [] };
+  const out: InteractiveMcpDarkResult = {
+    darkOwners: [],
+    healed: [],
+    healSent: [],
+    notified: [],
+    budgetDeferred: [],
+    recovered: [],
+    configRepaired: [],
+  };
   try {
     const discovery = await import('../events/await/psu-pty-discovery');
     const hosts = discovery.listLiveHosts();
@@ -580,23 +667,30 @@ export async function checkInteractiveMcpDark(
     // live hosts means zero owners can be dark THIS pass), which the recovery
     // sweep below then treats identically to "all clear".
     if (owners.length > 0) {
-      const presenceRows = await sql<{ owner_id: string; presence_ms: string | number | null }[]>`
-        SELECT owner_id, extract(epoch from heartbeat_at) * 1000 AS presence_ms
-          FROM harness_shared.coord_presence
-         WHERE owner_id = ANY(${owners})`;
-      const loopRows = await sql<
-        { target_owner_id: string; reschedule_interval_sec: string | number | null }[]
-      >`
-        SELECT target_owner_id, reschedule_interval_sec
-          FROM harness_shared.routines
-         WHERE active
-           AND reschedule_interval_sec IS NOT NULL
-           AND name LIKE 'loop-%'
-           AND target_owner_id = ANY(${owners})`;
-      const presenceBy = new Map(presenceRows.map((r) => [r.owner_id, r.presence_ms != null ? Number(r.presence_ms) : null]));
-      const loopBy = new Map(
-        loopRows.map((r) => [r.target_owner_id, r.reschedule_interval_sec != null ? Number(r.reschedule_interval_sec) : null]),
+      const [presenceRows, loopRows, toolSurfaceRows] = await Promise.all([
+        sql<{ owner_id: string; presence_ms: string | number | null }[]>`
+          SELECT owner_id, extract(epoch from heartbeat_at) * 1000 AS presence_ms
+            FROM harness_shared.coord_presence
+           WHERE owner_id = ANY(${owners})`,
+        sql<{ target_owner_id: string; reschedule_interval_sec: string | number | null }[]>`
+          SELECT target_owner_id, reschedule_interval_sec
+            FROM harness_shared.routines
+           WHERE active
+             AND reschedule_interval_sec IS NOT NULL
+             AND name LIKE 'loop-%'
+             AND target_owner_id = ANY(${owners})`,
+        readOrientationToolSurfaces(sql, owners),
+      ]);
+      const presenceBy = new Map(
+        presenceRows.map((r) => [r.owner_id, r.presence_ms != null ? Number(r.presence_ms) : null]),
       );
+      const loopBy = new Map(
+        loopRows.map((r) => [
+          r.target_owner_id,
+          r.reschedule_interval_sec != null ? Number(r.reschedule_interval_sec) : null,
+        ]),
+      );
+      const toolSurfaceBy = new Map(toolSurfaceRows.map((r) => [r.ownerId, r]));
 
       const verdictByOwner = new Map<
         string,
@@ -610,6 +704,7 @@ export async function checkInteractiveMcpDark(
             hostStartedMs: h.startedAt ?? null,
             hostLastActivityMs: h.lastActivityAt ?? null,
             presenceHeartbeatMs: presenceMs,
+            toolSurface: toolSurfaceBy.get(h.ownerId) ?? null,
             loopActive: loopBy.has(h.ownerId),
             loopIntervalSec: loopBy.get(h.ownerId) ?? null,
           },
@@ -629,16 +724,29 @@ export async function checkInteractiveMcpDark(
       }
       out.darkOwners = [...verdictByOwner.entries()].filter(([, v]) => v.dark).map(([o]) => o);
 
+      const sharedBudgetState = opts.sharedBudget ?? interactiveHealBudget;
+      // Per-pass overrides must never retune the process-global defaults for
+      // later sweeps; only the timestamp array is intentionally shared.
+      const sharedBudget: InteractiveHealBudgetState = {
+        attemptsMs: sharedBudgetState.attemptsMs,
+        maxAttempts: opts.sharedMaxAttempts ?? sharedBudgetState.maxAttempts,
+        windowMs: opts.sharedWindowMs ?? sharedBudgetState.windowMs,
+      };
       const plan = planInteractiveHeal(
         interactiveHealState,
         [...verdictByOwner.entries()].map(([ownerId, v]) => ({ ownerId, dark: v.dark, recovered: v.recovered })),
         now,
         opts.maxAttempts ?? DEFAULT_HEAL_MAX_ATTEMPTS,
+        sharedBudget,
       );
 
       for (const step of plan) {
         const v = verdictByOwner.get(step.ownerId);
         try {
+          if (step.action === 'heal') {
+            const jitterMs = interactiveHealJitterMs(step.ownerId, now, opts.jitterMaxMs ?? DEFAULT_HEAL_JITTER_MAX_MS);
+            if (jitterMs > 0) await new Promise((resolve) => setTimeout(resolve, jitterMs));
+          }
           await runInteractiveHealStep(step, v, { sql, discovery, out, now });
         } catch (e) {
           // One owner's failure must not abort the rest of the pass (live incident
@@ -669,7 +777,9 @@ export async function checkInteractiveMcpDark(
       SELECT phase FROM harness_shared.harness_escalations
        WHERE phase LIKE ${INTERACTIVE_PHASE_PREFIX + '%'} AND escalation IS NOT NULL`;
     const darkInteractivePhases = new Set(out.darkOwners.map((o) => INTERACTIVE_PHASE_PREFIX + o));
-    const toRecoverInteractive = alertedInteractiveRows.map((r) => r.phase).filter((p) => !darkInteractivePhases.has(p));
+    const toRecoverInteractive = alertedInteractiveRows
+      .map((r) => r.phase)
+      .filter((p) => !darkInteractivePhases.has(p));
     if (toRecoverInteractive.length > 0) {
       await sql`
         UPDATE harness_shared.harness_escalations
@@ -689,7 +799,7 @@ export async function checkInteractiveMcpDark(
 /** One planned action for one owner — factored out so the pass loop can isolate
  *  failures per owner (2026-07-14). */
 async function runInteractiveHealStep(
-  step: { ownerId: string; action: InteractiveHealAction },
+  step: InteractiveHealStep,
   v: { dark: boolean; recovered: boolean; reason: string | null; staleMins: number } | undefined,
   ctx: {
     sql: Sql;
@@ -699,7 +809,13 @@ async function runInteractiveHealStep(
   },
 ): Promise<void> {
   const { sql, discovery, out, now } = ctx;
-  if (step.action === 'heal') {
+  if (step.action === 'defer-budget') {
+    out.budgetDeferred.push(step.ownerId);
+    console.warn(
+      `[mcp-dark-watchdog] interactive DARK ${step.ownerId} — reconnect DEFERRED: ` +
+        `shared rolling budget exhausted; owner attempt not consumed`,
+    );
+  } else if (step.action === 'heal') {
     // EI-13020: a `/mcp` reconnect can only reconnect servers the session's config
     // DECLARES. If this session is dark because its CLAUDE_CONFIG_DIR holds the
     // EI-12938 stub `.claude.json` (an `oauthAccount` but NO `mcpServers` — what
@@ -828,10 +944,7 @@ let restartAtMs: number | null = null;
  * The interactive transport-death sweep (P-005) rides the same timer; its own kill-switch is
  * PAPERCUSP_MCP_DARK_INTERACTIVE='0'.
  */
-export function startMcpDarkWatchdog(
-  sql: Sql,
-  opts: McpDarkThresholds & { intervalMs?: number } = {},
-): void {
+export function startMcpDarkWatchdog(sql: Sql, opts: McpDarkThresholds & { intervalMs?: number } = {}): void {
   if (process.env.PAPERCUSP_MCP_DARK_WATCHDOG === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
   restartAtMs = Date.now();

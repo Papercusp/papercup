@@ -51,6 +51,7 @@
 
 import type { CursorState } from './agent-tools/coordination/read-cursors';
 import type { ScoredItem } from './harness/improvements/digest';
+import type { Sql } from 'postgres';
 import { renderCarryBlindWindowLine, type CarryBlindWindow } from './carry-blind-window';
 import { capPreservingOperativeDetailed } from './operative-clause';
 import { workItemFetchHint } from './work-item-fetch-hint';
@@ -267,7 +268,67 @@ const IMPROVEMENT_TRIAGE_WINDOW_LIMIT = 100;
  * margin above the low-activity noise floor while still firing within a few turns of
  * onset. Live 6h sample: 1 flagged of 243 active agent owners (0.41%).
  */
-const TOOLLESS_HOOK_THRESHOLD = 20;
+export const TOOLLESS_HOOK_THRESHOLD = 20;
+
+/** One owner whose call-origin split proves its Papercusp MCP surface loaded
+ * empty. Kept beside OrientationToolSurface so every consumer uses the same
+ * units, epoch anchor, threshold, and deliberately-unscoped invocation query. */
+export interface OrientationToolSurfaceOwner extends OrientationToolSurface {
+  ownerId: string;
+}
+
+/**
+ * Read the call-origin split for one or many owners in one bounded SQL shape.
+ *
+ * This is the shared source of truth for both the turn-start warning and the
+ * mcp-dark watchdog's recovery consumer. Keeping the query here prevents the
+ * two from drifting on the three load-bearing constraints above: anchor on the
+ * current context epoch, require zero agent-origin calls, and NEVER filter by
+ * harness/workspace (workspace-global tools legitimately record `*`).
+ */
+export async function readOrientationToolSurfaces(
+  sql: Sql,
+  ownerIds: string[],
+): Promise<OrientationToolSurfaceOwner[]> {
+  if (ownerIds.length === 0) return [];
+  const rows = await sql<Array<{ owner_id: string; hook_calls: string | number; window_minutes: string | number }>>`
+    WITH anchors AS (
+      SELECT session_id AS owner_id, bumped_at
+        FROM harness_shared.memory_session_epochs
+       WHERE session_id = ANY(${ownerIds})
+    ), silent AS (
+      SELECT a.owner_id, a.bumped_at
+        FROM anchors a
+       WHERE NOT EXISTS (
+               SELECT 1
+                 FROM harness_shared.tool_invocations t
+                WHERE t.coord_owner_id = a.owner_id
+                  AND t.invoked_at >= a.bumped_at
+                  AND t.call_origin = 'agent'
+             )
+    )
+    SELECT s.owner_id,
+           count(*) FILTER (WHERE t.call_origin = 'hook') AS hook_calls,
+           floor(extract(epoch FROM (now() - s.bumped_at)) / 60)::int AS window_minutes
+      FROM silent s
+      LEFT JOIN harness_shared.tool_invocations t
+        ON t.coord_owner_id = s.owner_id
+       AND t.invoked_at >= s.bumped_at
+     GROUP BY s.owner_id, s.bumped_at
+  `;
+  return rows.flatMap((row) => {
+    const hookCalls = Number(row.hook_calls);
+    if (!Number.isFinite(hookCalls) || hookCalls < TOOLLESS_HOOK_THRESHOLD) return [];
+    const windowMinutes = Number(row.window_minutes);
+    return [
+      {
+        ownerId: row.owner_id,
+        hookCalls,
+        windowMinutes: Number.isFinite(windowMinutes) ? windowMinutes : 0,
+      },
+    ];
+  });
+}
 
 /** True when there is genuinely nothing worth spending a single character on. */
 export function isEmptyOrientation(state: OrientationState): boolean {
@@ -426,9 +487,7 @@ export function fingerprintOrientation(
     // unbounded count would keep growing with the successor's own calls and
     // re-emit a different line every turn — the noise this token's stability
     // buys us.) The epoch bump at the boundary guarantees the first emission.
-    carryBlind: state.carryBlindWindow
-      ? `${state.carryBlindWindow.cutAtMs}:${state.carryBlindWindow.callsAfter}`
-      : '',
+    carryBlind: state.carryBlindWindow ? `${state.carryBlindWindow.cutAtMs}:${state.carryBlindWindow.callsAfter}` : '',
     epoch,
   };
 }
@@ -591,9 +650,7 @@ export function renderOrientationLines(state: OrientationState, committed: Curso
     const population = lowerBound
       ? `at least ${pending} untriaged in ${considered}-row window`
       : `${pending} untriaged`;
-    lines.push(
-      `- improvement triage: ${population}; top ${top.id} [${top.lane}] — ${compactHeadline(top.title)}`,
-    );
+    lines.push(`- improvement triage: ${population}; top ${top.id} [${top.lane}] — ${compactHeadline(top.title)}`);
   }
   if (state.held.length > 0) {
     const shown = state.held.slice(0, HELD_DISPLAY_CAP);
@@ -685,10 +742,7 @@ export interface OrientationDeps {
   /** Existing improvement triage/ranking path, reduced to one bounded row. */
   improvementTriage: (workspaceId: string) => Promise<OrientationImprovementTriage | null>;
   /** P-011 exact-plan executable width, or null when paused/unknown/broad. */
-  executableFrontier: (
-    ownerId: string,
-    workspaceId: string,
-  ) => Promise<OrientationExecutableFrontier | null>;
+  executableFrontier: (ownerId: string, workspaceId: string) => Promise<OrientationExecutableFrontier | null>;
   /** KEYS of never-drop standing facts in this agent's scopes (workspace + owner). */
   neverDropFacts: (ownerId: string, workspaceId: string) => Promise<string[]>;
   /**
@@ -931,9 +985,7 @@ export function defaultOrientationDeps(): OrientationDeps {
           label: 'turn-start executable frontier',
         },
       );
-      return value
-        ? { planSlug: value.planSlug, executableWidth: value.executableWidth }
-        : null;
+      return value ? { planSlug: value.planSlug, executableWidth: value.executableWidth } : null;
     },
     // P-023 / D-008. The memory ledger's own epoch reader, reused rather than
     // re-derived: `currentSessionEpoch` is already best-effort by contract
@@ -965,45 +1017,11 @@ export function defaultOrientationDeps(): OrientationDeps {
     // agent calls moved to a NEW ownerId while hook beats kept landing on the old
     // one) from reading as permanently toolless.
     toolSurface: async (ownerId) => {
-      const [{ getOrgPg }, timeout] = await Promise.all([
-        import('@papercusp/db-org'),
-        import('./bounded-timeout'),
-      ]);
+      const [{ getOrgPg }, timeout] = await Promise.all([import('@papercusp/db-org'), import('./bounded-timeout')]);
       const { sql } = getOrgPg();
       const read = async (): Promise<OrientationToolSurface | null> => {
-        // NOT EXISTS is the cheap leg and gates the row: a healthy agent has an
-        // agent-origin call almost immediately, the (coord_owner_id, invoked_at)
-        // index stops at the first hit, and the hook count is never computed. Only
-        // a genuinely silent owner pays for the count.
-        const rows = await sql<Array<{ hook_calls: string | number; window_minutes: number }>>`
-          WITH anchor AS (
-            SELECT bumped_at
-              FROM harness_shared.memory_session_epochs
-             WHERE session_id = ${ownerId}
-          )
-          SELECT (
-                   SELECT count(*)
-                     FROM harness_shared.tool_invocations t
-                    WHERE t.coord_owner_id = ${ownerId}
-                      AND t.invoked_at >= a.bumped_at
-                      AND t.call_origin = 'hook'
-                 ) AS hook_calls,
-                 floor(extract(epoch FROM (now() - a.bumped_at)) / 60)::int AS window_minutes
-            FROM anchor a
-           WHERE NOT EXISTS (
-                   SELECT 1
-                     FROM harness_shared.tool_invocations t2
-                    WHERE t2.coord_owner_id = ${ownerId}
-                      AND t2.invoked_at >= a.bumped_at
-                      AND t2.call_origin = 'agent'
-                 )
-        `;
-        const row = rows[0];
-        if (!row) return null;
-        const hookCalls = Number(row.hook_calls);
-        if (!Number.isFinite(hookCalls) || hookCalls < TOOLLESS_HOOK_THRESHOLD) return null;
-        const windowMinutes = Number(row.window_minutes);
-        return { hookCalls, windowMinutes: Number.isFinite(windowMinutes) ? windowMinutes : 0 };
+        const row = (await readOrientationToolSurfaces(sql, [ownerId]))[0];
+        return row ? { hookCalls: row.hookCalls, windowMinutes: row.windowMinutes } : null;
       };
       const { value } = await timeout.withBoundedTimeout(read(), {
         fallback: null as OrientationToolSurface | null,
@@ -1078,9 +1096,11 @@ export async function buildTurnStartOrientationBlock(input: {
       // re-read. A second read here could land after a boundary and commit a
       // generation the agent was never actually told about, which would
       // reproduce the exact stale suppression this change removes.
-      await stage(ownerId, ORIENTATION_CURSOR_SURFACE, fingerprintOrientation(state, epoch, ack?.committed ?? null)).catch(
-        () => {},
-      );
+      await stage(
+        ownerId,
+        ORIENTATION_CURSOR_SURFACE,
+        fingerprintOrientation(state, epoch, ack?.committed ?? null),
+      ).catch(() => {});
     }
     return block;
   } catch {
