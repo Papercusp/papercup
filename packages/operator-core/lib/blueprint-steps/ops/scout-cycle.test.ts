@@ -21,16 +21,18 @@ vi.mock('../../scout/run.js', () => ({ runScoutCycleTick }));
 
 // WI-5785 (P-051 regression): mocks for the LAZY production-deps path (used only by
 // the "lazy production deps" describe block below, which never calls setScoutCycleDeps).
-const { registerScoutAction, registrants, hiveSingleRunner, scoutCeiling } = vi.hoisted(() => ({
+const { registerScoutAction, registrants, hiveSingleRunner, scoutCeiling, admissionPromoter } = vi.hoisted(() => ({
   registerScoutAction: { productionScoutRunner: vi.fn() },
   registrants: { recordScoutTickToGovernor: vi.fn() },
   hiveSingleRunner: { checkHiveSingleRunner: vi.fn().mockResolvedValue({ run: true }) },
   scoutCeiling: { scoutWorkspaceCeilingGate: vi.fn() },
+  admissionPromoter: { readWorkItemAdmissionProducerPressure: vi.fn() },
 }));
 vi.mock('../../scout/register-scout-action.js', () => registerScoutAction);
 vi.mock('../../learning-governor/registrants.js', () => registrants);
 vi.mock('../../hive-single-runner.js', () => hiveSingleRunner);
 vi.mock('../../learning-governor/scout-ceiling.js', () => scoutCeiling);
+vi.mock('../../work-items-admission-promoter.js', () => admissionPromoter);
 
 // Pin WORKSPACE_COORDINATION OFF so the installSlug assertion exercises the
 // per-hive default (`ctx.harnessSlug ?? 'op'`) this test was written for, rather
@@ -68,12 +70,21 @@ describe('scoutCycleOp.run', () => {
   it('a fired cycle projects all tick fields', async () => {
     setScoutCycleDeps(fakeDeps as never);
     runScoutCycleTick.mockResolvedValue({
-      fired: true, reason: 'idle+friction', cycleId: 'cyc-1', routedCount: 3, costUsd: 0.4,
+      fired: true,
+      reason: 'idle+friction',
+      cycleId: 'cyc-1',
+      routedCount: 3,
+      costUsd: 0.4,
     });
     const r = await scoutCycleOp.run({}, ctx() as never);
     expect(r).toEqual({
-      fired: true, reason: 'idle+friction', cycleId: 'cyc-1', routedCount: 3,
-      costUsd: 0.4, retryAfterSec: undefined, error: undefined,
+      fired: true,
+      reason: 'idle+friction',
+      cycleId: 'cyc-1',
+      routedCount: 3,
+      costUsd: 0.4,
+      retryAfterSec: undefined,
+      error: undefined,
     });
   });
 
@@ -118,7 +129,7 @@ describe('scoutCycleOp.run', () => {
 // ceiling — the tests above all inject fakeDeps and so never exercised it. Cover the
 // lazy-build branch directly to pin the wiring so it can't silently drop again.
 describe('scoutCycleOp lazy production deps (WI-5785)', () => {
-  it('wires workspaceCeilingGate (alongside runCycle/recordGovernor/hiveRunnerGate) into the deps runScoutCycleTick receives', async () => {
+  it('wires spend and admission-pressure gates into the deps runScoutCycleTick receives', async () => {
     runScoutCycleTick.mockResolvedValue({ fired: false, reason: 'too-soon' });
     await scoutCycleOp.run({}, ctx() as never);
     const [, deps] = runScoutCycleTick.mock.calls[0];
@@ -126,5 +137,6 @@ describe('scoutCycleOp lazy production deps (WI-5785)', () => {
     expect(deps.recordGovernor).toBe(registrants.recordScoutTickToGovernor);
     expect(typeof deps.hiveRunnerGate).toBe('function');
     expect(deps.workspaceCeilingGate).toBe(scoutCeiling.scoutWorkspaceCeilingGate);
+    expect(deps.admissionPressureGate).toBe(admissionPromoter.readWorkItemAdmissionProducerPressure);
   });
 });

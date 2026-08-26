@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   admissionPairKey,
   buildPromoterPrompt,
+  decideWorkItemAdmissionProducerPressure,
   evaluatePromoterLiveness,
   parsePromoterJudgements,
   planPromoterDispositions,
@@ -9,6 +10,50 @@ import {
   type PromoterJudgement,
   type PromoterPair,
 } from './work-items-admission-promoter';
+
+const queueHealth = (pending: number, sampleSize = 0, p95Ms: number | null = null) => ({
+  pending,
+  unreviewed: 0,
+  promotedToFirstClaim: { sampleSize, p50Ms: p95Ms, p95Ms },
+});
+
+describe('decideWorkItemAdmissionProducerPressure', () => {
+  it('preserves the configured Scout budget for a drained/normal queue and treats missing latency as neutral', () => {
+    expect(decideWorkItemAdmissionProducerPressure(queueHealth(0))).toMatchObject({
+      level: 'normal',
+      pending: 0,
+      latencySampleSize: 0,
+      p95Ms: null,
+      maxIdeators: null,
+    });
+    expect(decideWorkItemAdmissionProducerPressure(queueHealth(20, 4, 90 * 60_000))).toMatchObject({
+      level: 'normal',
+      maxIdeators: null,
+    });
+  });
+
+  it('caps at three ideators above one promoter batch or one liveness window', () => {
+    expect(decideWorkItemAdmissionProducerPressure(queueHealth(21))).toMatchObject({
+      level: 'elevated',
+      maxIdeators: 3,
+    });
+    expect(decideWorkItemAdmissionProducerPressure(queueHealth(0, 10, 90 * 60_000 + 1))).toMatchObject({
+      level: 'elevated',
+      maxIdeators: 3,
+    });
+  });
+
+  it('caps at one ideator above two promoter batches or two liveness windows', () => {
+    expect(decideWorkItemAdmissionProducerPressure(queueHealth(41))).toMatchObject({
+      level: 'deep',
+      maxIdeators: 1,
+    });
+    expect(decideWorkItemAdmissionProducerPressure(queueHealth(0, 10, 180 * 60_000 + 1))).toMatchObject({
+      level: 'deep',
+      maxIdeators: 1,
+    });
+  });
+});
 
 const item = (id: string, overrides: Partial<PromoterItem> = {}): PromoterItem => ({
   id,

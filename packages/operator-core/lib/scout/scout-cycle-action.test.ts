@@ -42,14 +42,19 @@ describe('parseScoutCycleConfig', () => {
 });
 
 describe('makeScoutCycleAction', () => {
-  function fakeBuilder(state: Partial<ScoutCadenceState>, calls: { ran: number; persisted: number }): ScoutTickDepsBuilder {
+  function fakeBuilder(
+    state: Partial<ScoutCadenceState>,
+    calls: { ran: number; persisted: number },
+  ): ScoutTickDepsBuilder {
     return (depsCtx, runCycle) => ({
       readCadenceState: async () => ({ idleRatio: 0, frictionSignals: 0, lastRunAtMs: null, nowMs: NOW, ...state }),
       runCycle: async ({ budget, cycleId }) => {
         calls.ran += 1;
         return runCycle({ harnessSlug: depsCtx.installSlug, workspaceId: depsCtx.workspaceId, budget, cycleId });
       },
-      persistRouted: async () => { calls.persisted += 1; },
+      persistRouted: async () => {
+        calls.persisted += 1;
+      },
       recordFire: async () => {},
       refreshOutcomes: async () => {},
       newCycleId: () => 'cyc',
@@ -58,7 +63,10 @@ describe('makeScoutCycleAction', () => {
 
   it('fires + persists when the gate says fire (idle)', async () => {
     const calls = { ran: 0, persisted: 0 };
-    const runCycle = async () => ({ provenance: [{ ideaId: 'i', lens: 'analogical' as const, rail: 'gym' as const, routedRef: 'gym:1' }], costUsd: 0.1 });
+    const runCycle = async () => ({
+      provenance: [{ ideaId: 'i', lens: 'analogical' as const, rail: 'gym' as const, routedRef: 'gym:1' }],
+      costUsd: 0.1,
+    });
     const handler = makeScoutCycleAction(runCycle, fakeBuilder({ idleRatio: 1 }, calls));
     await handler(ctx);
     expect(calls.ran).toBe(1);
@@ -67,7 +75,10 @@ describe('makeScoutCycleAction', () => {
 
   it('no-ops (no cycle, no persist) when the cadence gate withholds', async () => {
     const calls = { ran: 0, persisted: 0 };
-    const handler = makeScoutCycleAction(async () => ({ provenance: [] }), fakeBuilder({ idleRatio: 0, lastRunAtMs: NOW - 60_000 }, calls));
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [] }),
+      fakeBuilder({ idleRatio: 0, lastRunAtMs: NOW - 60_000 }, calls),
+    );
     await handler({ ...ctx, payloadTemplate: { cadence: { minIntervalSec: 3600 } } });
     expect(calls.ran).toBe(0);
     expect(calls.persisted).toBe(0);
@@ -117,10 +128,18 @@ describe('makeScoutCycleAction', () => {
     const handler = makeScoutCycleAction(
       runCycle,
       fakeBuilder({ idleRatio: 1 }, calls),
-      async (input) => (gov.push({ harnessSlug: input.harnessSlug, perCycleBudgetUsd: input.perCycleBudgetUsd }), { applied: true as const }),
+      async (input) => (
+        gov.push({ harnessSlug: input.harnessSlug, perCycleBudgetUsd: input.perCycleBudgetUsd }),
+        { applied: true as const }
+      ),
     );
     // The per-hive routine ctx: install_slug is the HIVE slug, payload carries the per-hive cap.
-    await handler({ installSlug: 'hive-acme', workspaceId: 'w', triggerConfig: {}, payloadTemplate: { budget: { maxCostUsd: 0.75 } } });
+    await handler({
+      installSlug: 'hive-acme',
+      workspaceId: 'w',
+      triggerConfig: {},
+      payloadTemplate: { budget: { maxCostUsd: 0.75 } },
+    });
     expect(calls.ran).toBe(1);
     // The cycle runner was invoked scoped to the HIVE (its slug is the harnessSlug — drives per-hive lenses + routing).
     expect(cycleScopes).toEqual([{ harnessSlug: 'hive-acme', workspaceId: 'w', maxCostUsd: 0.75 }]);
@@ -133,12 +152,25 @@ describe('makeScoutCycleAction', () => {
     const cycleByHive: Record<string, number | undefined> = {};
     const handlerFor = (calls: { ran: number; persisted: number }) =>
       makeScoutCycleAction(
-        async ({ harnessSlug, budget }) => ((cycleByHive[harnessSlug] = budget.maxCostUsd), { provenance: [], costUsd: 0.1 }),
+        async ({ harnessSlug, budget }) => (
+          (cycleByHive[harnessSlug] = budget.maxCostUsd),
+          { provenance: [], costUsd: 0.1 }
+        ),
         fakeBuilder({ idleRatio: 1 }, calls),
         async (input) => ((govByHive[input.harnessSlug] = input.perCycleBudgetUsd), { applied: true as const }),
       );
-    await handlerFor({ ran: 0, persisted: 0 })({ installSlug: 'hive-acme', workspaceId: 'w', triggerConfig: {}, payloadTemplate: { budget: { maxCostUsd: 0.5 } } });
-    await handlerFor({ ran: 0, persisted: 0 })({ installSlug: 'hive-beta', workspaceId: 'w', triggerConfig: {}, payloadTemplate: { budget: { maxCostUsd: 2 } } });
+    await handlerFor({ ran: 0, persisted: 0 })({
+      installSlug: 'hive-acme',
+      workspaceId: 'w',
+      triggerConfig: {},
+      payloadTemplate: { budget: { maxCostUsd: 0.5 } },
+    });
+    await handlerFor({ ran: 0, persisted: 0 })({
+      installSlug: 'hive-beta',
+      workspaceId: 'w',
+      triggerConfig: {},
+      payloadTemplate: { budget: { maxCostUsd: 2 } },
+    });
     // Each hive's cycle + governor mirror carried its OWN slug + payload budget — no cross-hive bleed.
     expect(cycleByHive).toEqual({ 'hive-acme': 0.5, 'hive-beta': 2 });
     expect(govByHive).toEqual({ 'hive-acme': 0.5, 'hive-beta': 2 });
@@ -185,15 +217,62 @@ describe('makeScoutCycleAction', () => {
       provenance: [{ ideaId: 'i', lens: 'analogical' as const, rail: 'gym' as const, routedRef: 'gym:1' }],
       costUsd: 0.1,
     });
-    const handler = makeScoutCycleAction(
-      runCycle,
-      fakeBuilder({ idleRatio: 1 }, calls),
-      undefined,
-      async () => ({ allow: true, totalScoutSpentUsd: 3, ceilingUsd: 10, remainingUsd: 7, scoutLoopCount: 2 }),
-    );
+    const handler = makeScoutCycleAction(runCycle, fakeBuilder({ idleRatio: 1 }, calls), undefined, async () => ({
+      allow: true,
+      totalScoutSpentUsd: 3,
+      ceilingUsd: 10,
+      remainingUsd: 7,
+      scoutLoopCount: 2,
+    }));
     await handler(ctx);
     expect(calls.ran).toBe(1); // under the ceiling ⇒ the cycle fires
     expect(calls.persisted).toBe(1);
+  });
+
+  it('caps the live cycle ideator fan-out from P-005 queue pressure and restores it when drained (P-010)', async () => {
+    const observed: number[] = [];
+    const calls = { ran: 0, persisted: 0 };
+    const handler = makeScoutCycleAction(
+      async ({ budget }) => {
+        observed.push(budget.maxIdeators);
+        return { provenance: [], costUsd: 0.1 };
+      },
+      fakeBuilder({ idleRatio: 1 }, calls),
+      undefined,
+      undefined,
+      async () => ({
+        source: 'p005-queue-health',
+        level: 'deep',
+        pending: 41,
+        latencySampleSize: 0,
+        p95Ms: null,
+        maxIdeators: 1,
+        reasons: ['deep queue'],
+      }),
+    );
+    await handler({ ...ctx, payloadTemplate: { budget: { maxIdeators: 6 } } });
+
+    const drained = makeScoutCycleAction(
+      async ({ budget }) => {
+        observed.push(budget.maxIdeators);
+        return { provenance: [], costUsd: 0.1 };
+      },
+      fakeBuilder({ idleRatio: 1 }, { ran: 0, persisted: 0 }),
+      undefined,
+      undefined,
+      async () => ({
+        source: 'p005-queue-health',
+        level: 'normal',
+        pending: 0,
+        latencySampleSize: 0,
+        p95Ms: null,
+        maxIdeators: null,
+        reasons: ['drained'],
+      }),
+    );
+    await drained({ ...ctx, payloadTemplate: { budget: { maxIdeators: 6 } } });
+
+    expect(observed).toEqual([1, 6]);
   });
 
   it('a refused cycle still MIRRORS the per-cycle cap (fired:null) to the governor (P-051)', async () => {
@@ -203,7 +282,10 @@ describe('makeScoutCycleAction', () => {
     const handler = makeScoutCycleAction(
       async () => ({ provenance: [], costUsd: 0.1 }),
       fakeBuilder({ idleRatio: 1 }, calls),
-      async (input) => (gov.push({ harnessSlug: input.harnessSlug, perCycleBudgetUsd: input.perCycleBudgetUsd, fired: input.fired }), { applied: true as const }),
+      async (input) => (
+        gov.push({ harnessSlug: input.harnessSlug, perCycleBudgetUsd: input.perCycleBudgetUsd, fired: input.fired }),
+        { applied: true as const }
+      ),
       async () => ({
         allow: false,
         reason: 'workspace-ceiling-exceeded' as const,
@@ -232,7 +314,12 @@ describe('makeScoutCycleAction', () => {
       return fakeBuilder({ idleRatio: 1 }, { ran: 0, persisted: 0 })(depsCtx, runCycle);
     };
     const handler = makeScoutCycleAction(async () => ({ provenance: [], costUsd: 0.1 }), capturingBuilder);
-    await handler({ installSlug: 'hive-acme', workspaceId: 'w', triggerConfig: {}, payloadTemplate: { budget: { maxCostUsd: 0.5 } } });
+    await handler({
+      installSlug: 'hive-acme',
+      workspaceId: 'w',
+      triggerConfig: {},
+      payloadTemplate: { budget: { maxCostUsd: 0.5 } },
+    });
     expect(mockGetHiveScoutCfg).toHaveBeenCalledWith('w', 'hive-acme', 'scout');
     // The delta is merged UNDER `scout`, preserving the routine's existing `budget` block.
     expect(captured).toEqual({
@@ -249,7 +336,12 @@ describe('makeScoutCycleAction', () => {
       return fakeBuilder({ idleRatio: 1 }, { ran: 0, persisted: 0 })(depsCtx, runCycle);
     };
     const handler = makeScoutCycleAction(async () => ({ provenance: [], costUsd: 0.1 }), capturingBuilder);
-    await handler({ installSlug: 'hive-acme', workspaceId: 'w', triggerConfig: {}, payloadTemplate: { budget: { maxCostUsd: 0.5 } } });
+    await handler({
+      installSlug: 'hive-acme',
+      workspaceId: 'w',
+      triggerConfig: {},
+      payloadTemplate: { budget: { maxCostUsd: 0.5 } },
+    });
     expect(captured).toEqual({ budget: { maxCostUsd: 0.5 } });
   });
 });
@@ -269,15 +361,17 @@ describe('runScoutCycleTick — P-019 hiveRunnerGate preflight', () => {
   const input = { workspaceId: 'w', installSlug: 'hive-acme', payloadTemplate: null };
   // A buildDeps whose cadence ALWAYS fires — so the only thing that can hold the
   // cycle in these cases is the runner gate.
-  const alwaysFireBuilder = (calls: { ran: number }): ScoutTickDepsBuilder => (depsCtx, runCycle) => ({
-    readCadenceState: async () => ({ idleRatio: 1, frictionSignals: 0, lastRunAtMs: null, nowMs: NOW }),
-    runCycle: async ({ budget, cycleId }) => {
-      calls.ran += 1;
-      return runCycle({ harnessSlug: depsCtx.installSlug, workspaceId: depsCtx.workspaceId, budget, cycleId });
-    },
-    persistRouted: async () => {},
-    newCycleId: () => 'cyc',
-  });
+  const alwaysFireBuilder =
+    (calls: { ran: number }): ScoutTickDepsBuilder =>
+    (depsCtx, runCycle) => ({
+      readCadenceState: async () => ({ idleRatio: 1, frictionSignals: 0, lastRunAtMs: null, nowMs: NOW }),
+      runCycle: async ({ budget, cycleId }) => {
+        calls.ran += 1;
+        return runCycle({ harnessSlug: depsCtx.installSlug, workspaceId: depsCtx.workspaceId, budget, cycleId });
+      },
+      persistRouted: async () => {},
+      newCycleId: () => 'cyc',
+    });
 
   it('stands down (fired:false, reason:not-hive-runner) when this node is NOT the runner — no cycle', async () => {
     const { runScoutCycleTick } = await import('./run');

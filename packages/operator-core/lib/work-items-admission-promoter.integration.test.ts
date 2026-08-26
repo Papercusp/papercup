@@ -10,6 +10,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const {
   readWorkItemAdmissionSnapshot,
+  readWorkItemAdmissionProducerPressure,
   runWorkItemAdmissionFailOpen,
   runWorkItemAdmissionPromoter,
   WORK_ITEM_ADMISSION_PROMOTER,
@@ -322,5 +323,15 @@ describe('work-item admission promoter (real Postgres)', () => {
       latestCensusRise: { runId: 'promoter-rise', delta: 1 },
     });
     expect(snapshot.censusTrend.map((point) => point.runId)).toEqual(['census-old', 'promoter-rise']);
+    await expect(
+      readWorkItemAdmissionProducerPressure({ workspaceId: WS, harnessSlug: HARNESS, sql: db.sql }),
+    ).resolves.toMatchObject({
+      source: 'p005-queue-health',
+      level: 'normal',
+      pending: 1,
+      latencySampleSize: 2,
+      p95Ms: 4800,
+      maxIdeators: null,
+    });
   });
 });

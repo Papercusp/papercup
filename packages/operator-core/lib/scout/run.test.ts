@@ -42,7 +42,14 @@ describe('parseScoutCycleConfig', () => {
   });
 
   it('extracts the cadence + budget objects, dropping unknown / bad-shape keys', () => {
-    expect(parseScoutCycleConfig({ cadence: { x: 1 }, budget: { maxCostUsd: 2 }, cycleTimeoutMs: 1_500_000, junk: 5 } as never)).toEqual({
+    expect(
+      parseScoutCycleConfig({
+        cadence: { x: 1 },
+        budget: { maxCostUsd: 2 },
+        cycleTimeoutMs: 1_500_000,
+        junk: 5,
+      } as never),
+    ).toEqual({
       cadence: { x: 1 },
       budget: { maxCostUsd: 2 },
       cycleTimeoutMs: 1_500_000,
@@ -51,15 +58,17 @@ describe('parseScoutCycleConfig', () => {
   });
 
   it('unwraps blueprint-run nested payloads and honors explicit cycle timeouts', () => {
-    expect(parseScoutCycleConfig({
-      blueprintId: 'scout',
-      cycleTimeoutMs: 120_000,
-      payload: {
-        cadence: { minIntervalSec: 3600 },
-        budget: { maxCostUsd: 3 },
+    expect(
+      parseScoutCycleConfig({
+        blueprintId: 'scout',
         cycleTimeoutMs: 120_000,
-      },
-    } as never)).toEqual({
+        payload: {
+          cadence: { minIntervalSec: 3600 },
+          budget: { maxCostUsd: 3 },
+          cycleTimeoutMs: 120_000,
+        },
+      } as never),
+    ).toEqual({
       cadence: { minIntervalSec: 3600 },
       budget: { maxCostUsd: 3 },
       cycleTimeoutMs: 120_000,
@@ -99,7 +108,11 @@ describe('productionDepsBuilder', () => {
 
     const onPhase = vi.fn();
     const built = sched.buildScoutTickDeps.mock.calls[0][0];
-    await built.runCycle({ budget: { maxCostUsd: 1, maxIdeators: 1, maxCriticsPerIdea: 2 }, cycleId: 'cyc-1', onPhase });
+    await built.runCycle({
+      budget: { maxCostUsd: 1, maxIdeators: 1, maxCriticsPerIdea: 2 },
+      cycleId: 'cyc-1',
+      onPhase,
+    });
 
     expect(runCycle.mock.calls[0][0].onPhase).toBe(onPhase);
   });
@@ -129,7 +142,10 @@ describe('productionDepsBuilder', () => {
 describe('runScoutCycleTick — gates + governor mirror', () => {
   it('hiveRunnerGate refusal short-circuits as not-hive-runner and records a gated tick', async () => {
     const recordGovernor = vi.fn();
-    const res = await runScoutCycleTick(baseInput, mkDeps({ recordGovernor, hiveRunnerGate: async () => ({ run: false, reason: 'standby' }) }));
+    const res = await runScoutCycleTick(
+      baseInput,
+      mkDeps({ recordGovernor, hiveRunnerGate: async () => ({ run: false, reason: 'standby' }) }),
+    );
     expect(res).toEqual({ fired: false, reason: 'not-hive-runner' });
     expect(sched.runScoutTick).not.toHaveBeenCalled();
     expect(recordGovernor).not.toHaveBeenCalled();
@@ -176,18 +192,62 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
     const recordGovernor = vi.fn();
     const res = await runScoutCycleTick(
       baseInput,
-      mkDeps({ recordGovernor, hiveRunnerGate: async () => ({ run: true }), workspaceCeilingGate: async () => ({ allow: true }) }),
+      mkDeps({
+        recordGovernor,
+        hiveRunnerGate: async () => ({ run: true }),
+        workspaceCeilingGate: async () => ({ allow: true }),
+      }),
     );
     expect(res).toMatchObject({ fired: true, costUsd: 2.25 });
     expect(sched.runScoutTick).toHaveBeenCalledTimes(1);
     expect(recordGovernor.mock.calls[0][0]).toMatchObject({ fired: { costUsd: 2.25, cycleId: 'cyc-9' } });
   });
 
-  it('passes a configured cycle timeout through to runScoutTick', async () => {
+  it('reduces ideator admission under deep queue pressure and records the exact pressure on the tick', async () => {
+    sched.runScoutTick.mockImplementationOnce(async (deps, opts) => {
+      await deps.recordTick?.({ status: 'ran', detail: { cycleId: 'c-pressure' } });
+      return { fired: true, costUsd: 0.2, cycleId: 'c-pressure', budget: opts.budget } as never;
+    });
+    const pressure = {
+      source: 'p005-queue-health' as const,
+      level: 'deep' as const,
+      pending: 41,
+      latencySampleSize: 0,
+      p95Ms: null,
+      maxIdeators: 1,
+      reasons: ['pending 41 exceeds two promoter batches (40)'],
+    };
     await runScoutCycleTick(
-      { ...baseInput, payloadTemplate: { cycleTimeoutMs: 1_500_000 } },
-      mkDeps(),
+      { ...baseInput, payloadTemplate: { budget: { maxCostUsd: 2, maxIdeators: 6 } } },
+      mkDeps({ admissionPressureGate: async () => pressure }),
     );
+    expect(sched.runScoutTick.mock.calls[0][1]?.budget).toMatchObject({ maxCostUsd: 2, maxIdeators: 1 });
+    expect(recordTick).toHaveBeenCalledWith({
+      status: 'ran',
+      detail: { cycleId: 'c-pressure', admissionThrottle: pressure },
+    });
+  });
+
+  it('restores the configured ideator budget when the queue drains', async () => {
+    await runScoutCycleTick(
+      { ...baseInput, payloadTemplate: { budget: { maxIdeators: 5 } } },
+      mkDeps({
+        admissionPressureGate: async () => ({
+          source: 'p005-queue-health',
+          level: 'normal',
+          pending: 0,
+          latencySampleSize: 0,
+          p95Ms: null,
+          maxIdeators: null,
+          reasons: ['drained'],
+        }),
+      }),
+    );
+    expect(sched.runScoutTick.mock.calls[0][1]?.budget).toEqual({ maxIdeators: 5 });
+  });
+
+  it('passes a configured cycle timeout through to runScoutTick', async () => {
+    await runScoutCycleTick({ ...baseInput, payloadTemplate: { cycleTimeoutMs: 1_500_000 } }, mkDeps());
     expect(sched.runScoutTick.mock.calls[0][1]).toMatchObject({ cycleTimeoutMs: 1_500_000 });
   });
 

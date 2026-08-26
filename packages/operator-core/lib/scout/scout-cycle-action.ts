@@ -24,6 +24,7 @@
 import { registerSystemAction, type SystemActionCtx } from '../harness/routines/system-actions';
 import { recordScoutTickToGovernor } from '../learning-governor/registrants';
 import { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
+import { readWorkItemAdmissionProducerPressure } from '../work-items-admission-promoter';
 import {
   runScoutCycleTick,
   parseScoutCycleConfig,
@@ -41,12 +42,7 @@ import {
  * Re-exported here so the action's existing test contract (which imports them from
  * this module) keeps working.
  */
-export {
-  parseScoutCycleConfig,
-  type ScoutCycleRunner,
-  type ScoutTickDepsBuilder,
-  type ScoutCycleActionConfig,
-};
+export { parseScoutCycleConfig, type ScoutCycleRunner, type ScoutTickDepsBuilder, type ScoutCycleActionConfig };
 
 /** The action name; a routine targets it via `target_role: 'system:scout-cycle'`. */
 export const SCOUT_CYCLE_ACTION = 'scout-cycle';
@@ -69,13 +65,15 @@ export function makeScoutCycleAction(
   // P-051: the workspace-wide scout spend ceiling preflight. Same PG-free
   // contract — unwired in unit tests, wired at boot.
   workspaceCeilingGate?: typeof scoutWorkspaceCeilingGate,
+  // P-010: reuse P-005's queue-health writer to bound producer fan-out. Unwired
+  // keeps the PG-free factory contract; boot wires the production reader.
+  admissionPressureGate?: typeof readWorkItemAdmissionProducerPressure,
 ) {
   return async function scoutCycleAction(ctx: SystemActionCtx): Promise<void> {
     // Owner idle-activity toggle (queen-steering-panel P-006): the owner can gate
     // Scout idea-grading OFF for the home hive. Fail-soft → runs (default ON).
     const { idleActivityAllowed } = await import('../owner-steering');
     if (!(await idleActivityAllowed(ctx.workspaceId, 'scout'))) {
-       
       console.log(`[scout-cycle] ${ctx.installSlug}: skipped — owner idle-activity toggle (scout) is OFF`);
       return;
     }
@@ -143,22 +141,18 @@ export function makeScoutCycleAction(
         buildDeps,
         ...(recordGovernor ? { recordGovernor } : {}),
         ...(workspaceCeilingGate ? { workspaceCeilingGate } : {}),
+        ...(admissionPressureGate ? { admissionPressureGate } : {}),
       },
     );
 
     if (result.fired) {
-       
       console.log(
         `[scout-cycle] ${ctx.installSlug}: fired (${result.reason}) cycle=${result.cycleId} routed=${result.routedCount}`,
       );
     } else if (result.reason === 'cycle-error') {
-       
       console.warn(`[scout-cycle] ${ctx.installSlug}: cycle error — ${result.error}`);
     } else if (result.reason === 'workspace-ceiling') {
-       
-      console.warn(
-        `[scout-cycle] ${ctx.installSlug}: refused — workspace-wide scout spend ceiling reached (P-051)`,
-      );
+      console.warn(`[scout-cycle] ${ctx.installSlug}: refused — workspace-wide scout spend ceiling reached (P-051)`);
     }
     // A withheld tick (min-interval / no-trigger / circuit) is the common, silent no-op.
   };
@@ -175,6 +169,12 @@ export function registerScoutCycleAction(runCycle: ScoutCycleRunner): void {
     // Wire BOTH governor seams at boot: the post-tick spend mirror
     // (recordScoutTickToGovernor) and the P-051 workspace-wide ceiling preflight
     // (scoutWorkspaceCeilingGate). Both flag-gated + best-effort/fail-open.
-    makeScoutCycleAction(runCycle, undefined, recordScoutTickToGovernor, scoutWorkspaceCeilingGate),
+    makeScoutCycleAction(
+      runCycle,
+      undefined,
+      recordScoutTickToGovernor,
+      scoutWorkspaceCeilingGate,
+      readWorkItemAdmissionProducerPressure,
+    ),
   );
 }

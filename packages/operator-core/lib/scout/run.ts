@@ -44,6 +44,7 @@ import { resolveScoutBudget, type ScoutBudget } from './budget';
 import { parseScoutConfigBlock, resolveScoutConfig, type ScoutConfig } from './config';
 import type { recordScoutTickToGovernor } from '../learning-governor/registrants';
 import type { scoutWorkspaceCeilingGate } from '../learning-governor/scout-ceiling';
+import type { WorkItemAdmissionProducerPressure } from '../work-items-admission-promoter';
 
 /** Runs ONE budgeted Scout cycle for a harness (wraps cb4b9's runScoutCycle + ports). */
 export type ScoutCycleRunner = (ctx: {
@@ -188,6 +189,14 @@ export interface ScoutCycleDeps {
    */
   workspaceCeilingGate?: typeof scoutWorkspaceCeilingGate;
   /**
+   * P-010 work-queue pressure preflight. Production reads the P-005 queue-health
+   * writer and returns an ideator cap; unavailable data fails open.
+   */
+  admissionPressureGate?: (input: {
+    workspaceId: string;
+    harnessSlug: string;
+  }) => Promise<WorkItemAdmissionProducerPressure>;
+  /**
    * P-019 cross-node SINGLE-RUNNER gate (boot wires checkHiveSingleRunner).
    * Consulted FIRST — before any cadence/budget work: in a SHARED Hive scout's
    * single-flight claim (autoloop.claimFire) is per-NODE only, so each node's
@@ -206,10 +215,7 @@ export interface ScoutCycleDeps {
  * sub-budget mirror. Returns the tick result so the caller can log. Never depends on
  * a flag or a governor preflight — Scout's gate is the cadence (D-009).
  */
-export async function runScoutCycleTick(
-  input: ScoutCycleInput,
-  deps: ScoutCycleDeps,
-): Promise<ScoutTickResult> {
+export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycleDeps): Promise<ScoutTickResult> {
   const cfg = parseScoutCycleConfig(input.payloadTemplate);
   const tickDeps = (deps.buildDeps ?? productionDepsBuilder)(input, deps.runCycle);
   const note = async (rec: ScoutTickRecord): Promise<void> => {
@@ -271,9 +277,42 @@ export async function runScoutCycleTick(
     }
   }
 
-  const result = await runScoutTick(tickDeps, {
+  let admissionPressure: WorkItemAdmissionProducerPressure | undefined;
+  if (deps.admissionPressureGate) {
+    try {
+      admissionPressure = await deps.admissionPressureGate({
+        workspaceId: input.workspaceId,
+        harnessSlug: input.installSlug,
+      });
+    } catch {
+      // A queue-health read is a throttle hint, never authority to silence the
+      // producer. The production reader also returns an explicit unavailable
+      // verdict; this keeps injected/legacy seams equally fail-open.
+    }
+  }
+  let governedBudget = cfg.budget;
+  if (admissionPressure?.maxIdeators != null) {
+    const resolved = resolveScoutBudget(cfg.budget);
+    governedBudget = {
+      ...resolved,
+      maxIdeators: Math.min(resolved.maxIdeators, admissionPressure.maxIdeators),
+    };
+  }
+  const governedTickDeps =
+    admissionPressure && tickDeps.recordTick
+      ? {
+          ...tickDeps,
+          recordTick: (record: ScoutTickRecord) =>
+            tickDeps.recordTick!({
+              ...record,
+              detail: { ...(record.detail ?? {}), admissionThrottle: admissionPressure },
+            }),
+        }
+      : tickDeps;
+
+  const result = await runScoutTick(governedTickDeps, {
     ...(cfg.cadence ? { cadence: cfg.cadence } : {}),
-    ...(cfg.budget ? { budget: cfg.budget } : {}),
+    ...(governedBudget ? { budget: governedBudget } : {}),
     ...(cfg.cycleTimeoutMs != null ? { cycleTimeoutMs: cfg.cycleTimeoutMs } : {}),
   });
 

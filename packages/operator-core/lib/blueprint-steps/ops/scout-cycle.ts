@@ -24,28 +24,30 @@ import { registerCoordOp } from '../../coord-ops/registry.js';
 import { runScoutCycleTick, type ScoutCycleDeps } from '../../scout/run.js';
 
 /** Declared input I/O — the cadence + budget overrides (the routine's payload knobs). */
-const args = z.object({
-  /** Cadence overrides (minIntervalSec / idleThreshold / frictionThreshold). */
-  cadence: z
-    .object({
-      minIntervalSec: z.number().nonnegative().optional(),
-      idleThreshold: z.number().optional(),
-      frictionThreshold: z.number().optional(),
-    })
-    .passthrough()
-    .optional(),
-  /** Per-cycle budget overrides (maxCostUsd / maxIdeators / maxCriticsPerIdea). */
-  budget: z
-    .object({
-      maxCostUsd: z.number().nonnegative().optional(),
-      maxIdeators: z.number().int().nonnegative().optional(),
-      maxCriticsPerIdea: z.number().int().nonnegative().optional(),
-    })
-    .passthrough()
-    .optional(),
-  /** Optional wall-clock cap for the cycle body; env/default applies when omitted. */
-  cycleTimeoutMs: z.number().positive().optional(),
-}).passthrough();
+const args = z
+  .object({
+    /** Cadence overrides (minIntervalSec / idleThreshold / frictionThreshold). */
+    cadence: z
+      .object({
+        minIntervalSec: z.number().nonnegative().optional(),
+        idleThreshold: z.number().optional(),
+        frictionThreshold: z.number().optional(),
+      })
+      .passthrough()
+      .optional(),
+    /** Per-cycle budget overrides (maxCostUsd / maxIdeators / maxCriticsPerIdea). */
+    budget: z
+      .object({
+        maxCostUsd: z.number().nonnegative().optional(),
+        maxIdeators: z.number().int().nonnegative().optional(),
+        maxCriticsPerIdea: z.number().int().nonnegative().optional(),
+      })
+      .passthrough()
+      .optional(),
+    /** Optional wall-clock cap for the cycle body; env/default applies when omitted. */
+    cycleTimeoutMs: z.number().positive().optional(),
+  })
+  .passthrough();
 
 /** Declared output I/O — the tick result (a fired cycle or the self-gate that withheld it). */
 const result = z.object({
@@ -105,6 +107,7 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         { recordScoutTickToGovernor },
         { checkHiveSingleRunner },
         { scoutWorkspaceCeilingGate },
+        { readWorkItemAdmissionProducerPressure },
       ] = await Promise.all([
         import('../../scout/register-scout-action.js'),
         import('../../learning-governor/registrants.js'),
@@ -120,6 +123,7 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         // hundreds of dollars with no aggregate stop. Wiring it restores the
         // "byte-for-byte the routine path" contract this file's header claims.
         import('../../learning-governor/scout-ceiling.js'),
+        import('../../work-items-admission-promoter.js'),
       ]);
       deps = {
         runCycle: productionScoutRunner,
@@ -127,12 +131,13 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
         // P-019: stand down on a SHARED-Hive node that is not the elected per-Hive
         // single runner, so only ONE node's scout loop fires across the Hive. At
         // N=1 / standalone this always resolves run:true (authority / not-in-hive).
-        hiveRunnerGate: ({ workspaceId: ws, installSlug }) =>
-          checkHiveSingleRunner(ws, installSlug),
+        hiveRunnerGate: ({ workspaceId: ws, installSlug }) => checkHiveSingleRunner(ws, installSlug),
         // P-051: the workspace-wide scout spend ceiling preflight — sums every
         // `blender:<hive>` registrant's ledgered spend and refuses a new cycle
         // once the aggregate crosses the (owner-tunable) ceiling.
         workspaceCeilingGate: scoutWorkspaceCeilingGate,
+        // P-010: preserve routine/blueprint parity for queue-health throttling.
+        admissionPressureGate: readWorkItemAdmissionProducerPressure,
       };
     }
 
