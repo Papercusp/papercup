@@ -121,9 +121,49 @@ const status = {
       sources: [
         {
           kind: "facebook",
+          providerAccountId: "facebook-user-1",
           status: "degraded",
           lastConnectedAt: "2026-08-23T00:05:00.000Z",
           lastSyncAt: "2026-08-23T00:10:00.000Z",
+        },
+        {
+          kind: "facebook",
+          providerAccountId: "facebook-user-2",
+          status: "connected",
+          lastConnectedAt: "2026-08-23T00:06:00.000Z",
+          lastSyncAt: "2026-08-23T00:11:00.000Z",
+        },
+      ],
+      accounts: [
+        {
+          providerAccountId: "facebook-user-1",
+          displayName: "Owner One",
+          connected: true,
+          status: "degraded",
+          sources: [
+            {
+              kind: "facebook",
+              providerAccountId: "facebook-user-1",
+              status: "degraded",
+              lastConnectedAt: "2026-08-23T00:05:00.000Z",
+              lastSyncAt: "2026-08-23T00:10:00.000Z",
+            },
+          ],
+        },
+        {
+          providerAccountId: "facebook-user-2",
+          displayName: "Owner Two",
+          connected: true,
+          status: "connected",
+          sources: [
+            {
+              kind: "facebook",
+              providerAccountId: "facebook-user-2",
+              status: "connected",
+              lastConnectedAt: "2026-08-23T00:06:00.000Z",
+              lastSyncAt: "2026-08-23T00:11:00.000Z",
+            },
+          ],
         },
       ],
     },
@@ -180,7 +220,7 @@ beforeEach(() => {
         return Response.json({ ok: true, ...body });
       }
       if (
-        url === "/api/user/personal-vault/integrations/facebook" &&
+        url.startsWith("/api/user/personal-vault/integrations/facebook?") &&
         init?.method === "DELETE"
       ) {
         return Response.json({ ok: true, disconnectedSources: 1 });
@@ -404,21 +444,33 @@ describe("PersonalVaultSettingsPage", () => {
     expect(
       within(card!).getByText(/For fuller Facebook history/i),
     ).toBeTruthy();
+    const accountCard = within(card!)
+      .getByRole("heading", { name: "Owner Two" })
+      .closest("section");
+    expect(accountCard).toBeTruthy();
     expect(
-      within(card!).getByRole("button", { name: "Reconnect Facebook" }),
+      within(accountCard!).getByRole("button", { name: "Reconnect Owner Two" }),
+    ).toBeTruthy();
+    expect(
+      within(card!).getByRole("button", { name: "Add Facebook Account" }),
     ).toBeTruthy();
     expect(facebookPersonalVaultConnectHref()).toBe(
       "/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner",
+    );
+    expect(facebookPersonalVaultConnectHref("facebook-user-2")).toBe(
+      "/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner&account=facebook-user-2",
     );
     expect(
       screen.getByRole("note", { name: "Live integration privacy" })
         .textContent,
     ).toContain("Purge remains a separate, explicit action");
 
-    fireEvent.click(within(card!).getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(
+      within(accountCard!).getByRole("button", { name: "Disconnect Owner Two" }),
+    );
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
-        "/api/user/personal-vault/integrations/facebook",
+        "/api/user/personal-vault/integrations/facebook?account=facebook-user-2",
         { method: "DELETE" },
       );
     });

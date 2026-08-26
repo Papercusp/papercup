@@ -47,6 +47,10 @@ const sourceMocks = vi.hoisted(() => ({
     providerAccountId: 'owner@example.com',
     displayName: 'owner@example.com',
   })),
+  resolveFacebookAccount: vi.fn(async () => ({
+    providerAccountId: 'facebook-user-1',
+    displayName: 'Owner One',
+  })),
   listOwned: vi.fn(async (): Promise<unknown[]> => []),
   renameAccount: vi.fn(async (): Promise<unknown[]> => []),
   sql: { test: true },
@@ -79,6 +83,7 @@ vi.mock('../../external-triggers/gmail-flagship', () => ({
 vi.mock('../../external-triggers/facebook', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../external-triggers/facebook')>()),
   provisionOwnedFacebookPersonalVaultSource: sourceMocks.provisionFacebook,
+  resolveFacebookPersonalVaultProviderAccount: sourceMocks.resolveFacebookAccount,
 }));
 vi.mock('../../oauth/state', () => ({
   verifyAndConsumeState: async (token: string) => {
@@ -122,7 +127,7 @@ vi.mock('../../oauth/state', () => ({
         },
       };
     }
-    if (token === 'facebook.valid' || token === 'facebook.missing') {
+    if (token === 'facebook.valid' || token === 'facebook.missing' || token === 'facebook.mismatch') {
       return {
         ok: true,
         privateContext:
@@ -131,11 +136,17 @@ vi.mock('../../oauth/state', () => ({
             : {
                 ownerUserId: '22222222-2222-4222-8222-222222222222',
                 workspaceId: 'workspace-1',
+                ...(token === 'facebook.mismatch'
+                  ? { reconnectProviderAccountId: 'facebook-user-1' }
+                  : {}),
               },
         claims: {
           plugin: 'facebook-personal-vault',
           harness: 'papercusp',
-          field: 'owner-22222222-2222-4222-8222-222222222222',
+          field:
+            token === 'facebook.mismatch'
+              ? 'existing-facebook-field'
+              : 'owner-22222222-2222-4222-8222-222222222222',
           providerHost: 'www.facebook.com',
           provider: 'facebook',
         },
@@ -179,6 +190,11 @@ beforeEach(async () => {
   sourceMocks.resolveGoogleAccount.mockResolvedValue({
     providerAccountId: 'owner@example.com',
     displayName: 'owner@example.com',
+  });
+  sourceMocks.resolveFacebookAccount.mockReset();
+  sourceMocks.resolveFacebookAccount.mockResolvedValue({
+    providerAccountId: 'facebook-user-1',
+    displayName: 'Owner One',
   });
   sourceMocks.listOwned.mockReset();
   sourceMocks.listOwned.mockResolvedValue([]);
@@ -439,7 +455,30 @@ describe('GET /api/oauth/callback', () => {
     expect(sourceMocks.provision).not.toHaveBeenCalled();
   });
 
-  it('stores the Facebook token under the private plugin and provisions exactly one owned source', async () => {
+  it('stores one Facebook account without replacing another account token or source', async () => {
+    const cfgDir = join(TMP_HOME, 'harnesses/papercusp/plugin-configs');
+    const cfgPath = join(cfgDir, 'facebook-personal-vault.json');
+    await fs.mkdir(cfgDir, { recursive: true });
+    await fs.writeFile(
+      cfgPath,
+      JSON.stringify({
+        'other-facebook-field': 'keep-other-facebook-access',
+        'other-facebook-field_refresh': 'keep-other-facebook-refresh',
+      }),
+    );
+    sourceMocks.listOwned.mockResolvedValue([
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        workspaceId: 'workspace-1',
+        kind: 'facebook',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        providerAccountId: 'facebook-user-2',
+        credentialRef: 'facebook-personal-vault:other-facebook-field',
+        status: 'connected',
+        config: { displayName: 'Owner Two' },
+        cursor: { since: 'keep-other-cursor' },
+      },
+    ]);
     providers.registerProvider({
       id: 'facebook',
       config: {
@@ -468,13 +507,49 @@ describe('GET /api/oauth/callback', () => {
     expect(sourceMocks.provisionFacebook).toHaveBeenCalledWith(sourceMocks.sql, {
       workspaceId: 'workspace-1',
       ownerUserId: '22222222-2222-4222-8222-222222222222',
+      providerAccountId: 'facebook-user-1',
+      displayName: 'Owner One',
       field: 'owner-22222222-2222-4222-8222-222222222222',
       createdBy: 'owner:22222222-2222-4222-8222-222222222222',
     });
-    const cfgPath = join(TMP_HOME, 'harnesses/papercusp/plugin-configs/facebook-personal-vault.json');
     const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
     expect(cfg['owner-22222222-2222-4222-8222-222222222222']).toBe('facebook-long-lived');
     expect(cfg['owner-22222222-2222-4222-8222-222222222222_refresh']).toBe('facebook-long-lived');
+    expect(cfg['other-facebook-field']).toBe('keep-other-facebook-access');
+    expect(cfg['other-facebook-field_refresh']).toBe('keep-other-facebook-refresh');
+  });
+
+  it('fails closed when a targeted Facebook reconnect authenticates a different account', async () => {
+    sourceMocks.resolveFacebookAccount.mockResolvedValue({
+      providerAccountId: 'facebook-user-2',
+      displayName: 'Owner Two',
+    });
+    providers.registerProvider({
+      id: 'facebook',
+      config: {
+        clientId: 'facebook-app',
+        clientSecret: 'facebook-secret',
+        authorizeUrl: 'https://www.facebook.com/dialog/oauth',
+        tokenUrl: 'https://graph.facebook.com/oauth/access_token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({ accessToken: 'must-not-store' }),
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(
+      new Request('http://x/api/oauth/callback?code=authorization-code&state=facebook.mismatch'),
+    );
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe(
+      'http://x/settings/personal-vault?oauth_error=facebook_personal_vault_account_mismatch',
+    );
+    expect(sourceMocks.renameAccount).not.toHaveBeenCalled();
+    expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();
+    await expect(
+      fs.access(join(TMP_HOME, 'harnesses/papercusp/plugin-configs/facebook-personal-vault.json')),
+    ).rejects.toThrow();
   });
 
   it('fails closed when a Facebook callback lacks server-owned identity context', async () => {

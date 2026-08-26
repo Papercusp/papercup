@@ -69,8 +69,18 @@ describe('Facebook adapter with the real delivery ledger and Personal Vault sink
       workspaceId: WS,
       kind: 'facebook',
       ownerUserId: userId,
-      credentialRef: 'facebook-personal-vault:owner',
+      providerAccountId: 'profile-1',
+      credentialRef: 'facebook-personal-vault:owner-1',
       status: 'ready',
+    });
+    const otherAccount = await createOwnedExternalTriggerSource(sql, {
+      workspaceId: WS,
+      kind: 'facebook',
+      ownerUserId: userId,
+      providerAccountId: 'profile-2',
+      credentialRef: 'facebook-personal-vault:owner-2',
+      status: 'connected',
+      cursor: { since: '2026-08-22T00:00:00.000Z', keep: 'other-account' },
     });
     const responses = [
       { id: 'profile-1', name: 'Owner', about: 'Private profile context' },
@@ -103,6 +113,11 @@ describe('Facebook adapter with the real delivery ledger and Personal Vault sink
     expect(advanced).toMatchObject({
       status: 'connected',
       cursor: { since: FIRST_NOW.toISOString(), lastSyncAt: FIRST_NOW.toISOString(), profileId: 'profile-1' },
+    });
+    await expect(getExternalTriggerSource(sql, WS, otherAccount.id)).resolves.toMatchObject({
+      providerAccountId: 'profile-2',
+      credentialRef: 'facebook-personal-vault:owner-2',
+      cursor: { since: '2026-08-22T00:00:00.000Z', keep: 'other-account' },
     });
     now = SECOND_NOW;
     await expect(syncFacebookPersonalVaultSource(sql, advanced!, 'access-token', deps)).resolves.toMatchObject({

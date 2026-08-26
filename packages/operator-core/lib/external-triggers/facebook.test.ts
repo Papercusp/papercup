@@ -4,6 +4,7 @@ import {
   normalizeFacebookPhoto,
   normalizeFacebookPost,
   normalizeFacebookProfile,
+  resolveFacebookPersonalVaultProviderAccount,
   syncFacebookPersonalVaultSource,
 } from './facebook';
 import type { ExternalTriggerSourceRow } from './source-store';
@@ -67,6 +68,23 @@ describe('Facebook Personal Vault adapter', () => {
     expect(() => facebookPersonalVaultOAuthField('facebook-personal-vault:../owner')).toThrow(
       'facebook_personal_vault_credential_ref_invalid',
     );
+  });
+
+  it('resolves the provider-native account id and display name from the bearer token', async () => {
+    const fetchImpl = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      expect(url.pathname).toBe('/me');
+      expect(url.searchParams.get('fields')).toBe('id,name');
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer private-token');
+      return json({ id: 'facebook-user-1', name: 'Owner One' });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      resolveFacebookPersonalVaultProviderAccount('private-token', {
+        fetch: fetchImpl,
+        apiOrigin: 'https://graph.test',
+      }),
+    ).resolves.toEqual({ providerAccountId: 'facebook-user-1', displayName: 'Owner One' });
   });
 
   it('walks cursor pages, uses the prior since watermark, and advances only after every delivery succeeds', async () => {

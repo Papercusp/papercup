@@ -3,14 +3,14 @@ import type { ExternalTriggerSourceRow } from '../../external-triggers/source-st
 import { getSystemAction } from './system-actions';
 import { runFacebookPersonalVaultPoll } from './facebook-personal-vault-poll-action';
 
-function source(id: string): ExternalTriggerSourceRow {
+function source(id: string, providerAccountId = 'facebook-user-1'): ExternalTriggerSourceRow {
   return {
     id,
     workspaceId: 'papercusp-workspace',
     kind: 'facebook',
     ownerUserId: '22222222-2222-4222-8222-222222222222',
-    credentialRef: 'facebook-personal-vault:owner',
-    providerAccountId: 'facebook-user-1',
+    credentialRef: `facebook-personal-vault:${providerAccountId}`,
+    providerAccountId,
     status: 'connected',
     config: {},
     cursor: {},
@@ -68,6 +68,42 @@ describe('facebook-personal-vault-poll system action', () => {
       'source-provider',
       { status: 'degraded', lastError: 'facebook_graph_feed_list_503' },
     );
+  });
+
+  it('resolves and syncs each Facebook account through its own credential and cursor', async () => {
+    const sources = [source('source-one', 'facebook-user-1'), source('source-two', 'facebook-user-2')];
+    const resolveAccessToken = vi.fn(async (current: ExternalTriggerSourceRow) =>
+      `token:${current.providerAccountId}`,
+    );
+    const syncSource = vi.fn(async () => ({
+      profile: 1,
+      posts: 1,
+      photos: 1,
+      feedPages: 1,
+      photoPages: 1,
+      since: 'now',
+    }));
+
+    await expect(
+      runFacebookPersonalVaultPoll(
+        {
+          workspaceId: 'papercusp-workspace',
+          installSlug: 'papercusp',
+          triggerConfig: {},
+          payloadTemplate: null,
+        },
+        {
+          sql: {} as never,
+          listSources: vi.fn(async () => sources),
+          resolveAccessToken,
+          syncSource,
+        },
+      ),
+    ).resolves.toMatchObject({ sources: 2, succeeded: 2, failed: 0, profiles: 2, posts: 2, photos: 2 });
+    expect(resolveAccessToken).toHaveBeenNthCalledWith(1, sources[0], 'papercusp');
+    expect(resolveAccessToken).toHaveBeenNthCalledWith(2, sources[1], 'papercusp');
+    expect(syncSource).toHaveBeenNthCalledWith(1, expect.anything(), sources[0], 'token:facebook-user-1');
+    expect(syncSource).toHaveBeenNthCalledWith(2, expect.anything(), sources[1], 'token:facebook-user-2');
   });
 
   it('registers the durable handler', () => {
