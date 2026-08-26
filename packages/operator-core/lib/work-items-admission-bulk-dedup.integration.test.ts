@@ -51,6 +51,19 @@ const DDL = `
     origin text NOT NULL,
     routed_at bigint NOT NULL
   );
+  CREATE TABLE harness_shared.work_item_occurrences (
+    occurrence_id bigserial PRIMARY KEY,
+    workspace_id text NOT NULL,
+    canonical_harness_slug text NOT NULL,
+    canonical_work_item_id text NOT NULL,
+    reporter text,
+    source_tool text NOT NULL,
+    report_kind text NOT NULL,
+    reported_title text NOT NULL,
+    evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+    admission_identity jsonb,
+    occurred_at timestamptz NOT NULL DEFAULT now()
+  );
   CREATE TABLE harness_shared.dedup_edges (
     workspace_id text NOT NULL,
     harness_slug text NOT NULL,
@@ -120,6 +133,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.scout_routed_ideas,
+    harness_shared.work_item_occurrences,
     harness_shared.dedup_edges, harness_shared.dedup_adjudications,
     harness_shared.admission_runs, harness_shared.dedup_shard_map`;
 });
