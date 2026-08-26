@@ -289,6 +289,24 @@ describe('verifyTurnRefs / resolveCurrentTurnStamp (tmp transcript)', () => {
     );
     expect(turns).toHaveLength(2);
   });
+
+  it('parseUserTurns reads native Codex response_item user messages', () => {
+    const ts = '2026-08-26T13:46:56.884Z';
+    const turns = parseUserTurns(JSON.stringify({
+      timestamp: ts,
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{ type: 'input_text', text: '⟦turn-origin:fleet-kickoff nonce:f5abd41d8d21b75f⟧\nresume' }],
+      },
+    }));
+
+    expect(turns).toEqual([{
+      ts,
+      text: '⟦turn-origin:fleet-kickoff nonce:f5abd41d8d21b75f⟧\nresume',
+    }]);
+  });
 });
 
 // EI-19297300002186512: a checkpoint's [turn:…] ref was reported found:false

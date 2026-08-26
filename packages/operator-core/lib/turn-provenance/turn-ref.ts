@@ -269,17 +269,33 @@ export function parseUserTurns(jsonl: string): RecordedUserTurn[] {
     } catch {
       continue; // torn first line of a tail read
     }
-    if (o.type !== 'user' || o.isMeta === true) continue;
-    const m = (o.message ?? {}) as Record<string, unknown>;
-    const c = m.content;
+    let c: unknown;
+    if (o.type === 'user' && o.isMeta !== true) {
+      const m = (o.message ?? {}) as Record<string, unknown>;
+      c = m.content;
+    } else if (o.type === 'response_item') {
+      // Native Codex rollouts store prompts as response_item/message rows,
+      // not Claude's top-level `type:'user'` shape. The carry verifier reads
+      // both transcript families, so its parser must do the same; otherwise
+      // it can locate the correct managed Codex file and still report every
+      // genuine turn as absent (EI-21394895717783013 live successor repro).
+      const payload = (o.payload ?? {}) as Record<string, unknown>;
+      if (payload.type !== 'message' || payload.role !== 'user') continue;
+      c = payload.content;
+    } else {
+      continue;
+    }
     let text: string;
     if (typeof c === 'string') {
       text = c;
     } else if (Array.isArray(c)) {
       const texts = c
         .filter(
-          (b): b is { type: string; text: string } =>
-            !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'text',
+          (b): b is { type: string; text: string } => {
+            if (!b || typeof b !== 'object') return false;
+            const type = (b as { type?: unknown }).type;
+            return (type === 'text' || type === 'input_text') && typeof (b as { text?: unknown }).text === 'string';
+          },
         )
         .map((b) => b.text);
       if (!texts.length) continue; // tool_result-only plumbing
