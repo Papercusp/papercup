@@ -121,6 +121,17 @@ export function serializeStoredMcpResult(result: StoredMcpResult): string {
   let json = `{"content":[${contentParts.join(',')}]`;
   if (result.isError) json += ',"isError":true';
   if (result._meta) json += `,"_meta":${JSON.stringify(result._meta)}`;
+  // EI-21508946450217911: a tool that declares an outputSchema (scheduler:get_next,
+  // every object-rooted projected tool) MUST return structuredContent — the MCP
+  // SDK's CLIENT-side check throws -32600 "has an output schema but did not return
+  // structured content" otherwise. Dropping this field here made every idempotent
+  // replay of such a tool schema-invalid, breaking the prescribed recovery path
+  // itself: the caller retrying a timed-out call could never get a schema-valid
+  // verdict back. Serialize it when present so a replay carries the same shape the
+  // fresh response had.
+  if (result.structuredContent !== undefined) {
+    json += `,"structuredContent":${JSON.stringify(result.structuredContent)}`;
+  }
   json += '}';
   return json;
 }

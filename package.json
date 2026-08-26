@@ -171,7 +171,7 @@
     "format:check:scoped": "node scripts/check-format.mjs",
     "format:write:scoped": "node scripts/check-format.mjs --write",
     "test": "PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs",
-    "test:file": "PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/test-files.mjs",
+    "test:file": "PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_COALESCE=0 bash scripts/pc-heavy.sh node scripts/test-files.mjs",
     "test:affected": "AFFECTED_TASK_VERDICT_RESUME=1 PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs",
     "test:related": "PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --related",
     "test:affected:integration": "AFFECTED_TASK_VERDICT_RESUME=1 PC_HEAVY_RETRY_PREEMPTIONS=3 PC_HEAVY_PREEMPT_AFTER_READY=1 PC_HEAVY_KEY_ENV=AFFECTED_BASE,AFFECTED_RETRY_FAILED bash scripts/pc-heavy.sh node scripts/affected-tests.mjs --integration",
