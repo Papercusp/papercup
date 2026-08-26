@@ -237,8 +237,8 @@ export interface TimelineEntry {
  * a large postmortem page must not become an invalid JSON prefix for a caller
  * that asked for machine-readable output.
  */
-const timelineResultSchema = z.object({
-  ok: z.boolean(),
+const timelineSuccessResultSchema = z.object({
+  ok: z.literal(true),
   owner: z.string(),
   since: z.string(),
   until: z.string(),
@@ -293,6 +293,25 @@ const timelineResultSchema = z.object({
     assumption_count: z.number().int().nonnegative().optional(),
   })),
 });
+
+const timelineErrorResultSchema = z.object({
+  ok: z.literal(false),
+  error: z.string(),
+  message: z.string().optional(),
+  note: z.string().optional(),
+  owner: z.string().optional(),
+  matches: z.array(z.string()).optional(),
+}).passthrough();
+
+/**
+ * MCP outputSchema must describe every handler result, not only successful
+ * pages. Otherwise a valid cursor/owner error cannot be attached as structured
+ * content and strict MCP clients replace the useful error with -32600.
+ */
+export const timelineResultSchema = z.discriminatedUnion('ok', [
+  timelineSuccessResultSchema,
+  timelineErrorResultSchema,
+]);
 
 /**
  * P-024 (c): which assumption watermarks a page needs resolved — DISTINCT, and
@@ -620,7 +639,7 @@ export default defineTool({
     const rows = await ctx.tx<TimelineEntry[]>`
       (
         SELECT 'turn' AS kind, COALESCE(ts, ingested_at)::text AS ts,
-               CONCAT(${SESSION_TURN_REF_PREFIX}, source_kind, ':', session_id, ':', turn_idx) AS ref,
+               CONCAT(${SESSION_TURN_REF_PREFIX}::text, source_kind, ':', session_id, ':', turn_idx) AS ref,
                '[' || speaker || '] ' || left(text, 300) AS text,
                NULL::text AS tool_name, NULL::text AS status, false AS auto,
                NULL::text AS call_origin, NULL::text AS call_origin_source,

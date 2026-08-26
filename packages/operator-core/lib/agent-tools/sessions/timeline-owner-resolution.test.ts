@@ -74,6 +74,10 @@ describe('sessions:timeline owner resolution', () => {
       ),
     );
     expect(timelineQuery?.slice(1)).toContain(SESSION_TURN_REF_PREFIX);
+    const prefixParam = timelineQuery?.slice(1).indexOf(SESSION_TURN_REF_PREFIX) ?? -1;
+    const templateParts = timelineQuery?.[0] as readonly string[] | undefined;
+    expect(prefixParam).toBeGreaterThanOrEqual(0);
+    expect(templateParts?.[prefixParam + 1]).toMatch(/^::text/);
   });
 
   it('normalizes a unique short owner handle before constructing the history query', async () => {
