@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { parsePlan } from '@papercusp/plan-parser';
 import {
   ensureGmailRespondDraftBinding,
+  GMAIL_RESPOND_DRAFT_EXECUTION,
   GMAIL_RESPOND_DRAFT_EVENT,
   GMAIL_RESPOND_DRAFT_EVENT_FILTER,
   GMAIL_RESPOND_DRAFT_INPUT_SCHEMA,
@@ -44,6 +45,7 @@ describe('Gmail flagship respond-with-draft binding', () => {
 
   it('installs the plan before one disarmed binding filtered to complete inbound messages', async () => {
     const ensurePlan = vi.fn(async () => ({ created: true, schemaAdded: true }));
+    const migrateLegacyBinding = vi.fn(async () => ({ migrated: 0, detached: 0 }));
     const ensureBinding = vi.fn(async (_sql, _workspaceId, input) => ({
       id: '33333333-3333-4333-8333-333333333333',
       sourceId: input.sourceId,
@@ -63,15 +65,19 @@ describe('Gmail flagship respond-with-draft binding', () => {
     const result = await ensureGmailRespondDraftBinding({} as never, source.workspaceId, source, 'owner:fixture', {
       ensurePlan,
       ensureBinding,
+      migrateLegacyBinding,
     });
     expect(result).toMatchObject({ plan: { created: true }, binding: { armed: false } });
+    expect(ensurePlan).toHaveBeenCalledBefore(migrateLegacyBinding);
+    expect(migrateLegacyBinding).toHaveBeenCalledBefore(ensureBinding);
     expect(ensurePlan).toHaveBeenCalledBefore(ensureBinding);
     expect(ensureBinding).toHaveBeenCalledWith(expect.anything(), source.workspaceId, {
       sourceId: source.id,
-      planHarnessSlug: 'papercusp',
+      planHarnessSlug: 'email',
       planSlug: GMAIL_RESPOND_DRAFT_PLAN,
       eventPattern: GMAIL_RESPOND_DRAFT_EVENT,
       eventFilter: GMAIL_RESPOND_DRAFT_EVENT_FILTER,
+      execution: GMAIL_RESPOND_DRAFT_EXECUTION,
       createdBy: 'owner:fixture',
     });
   });
