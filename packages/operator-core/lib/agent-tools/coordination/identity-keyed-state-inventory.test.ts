@@ -131,6 +131,14 @@ const ALLOWLIST: Record<string, Classification> = {
     status: 'exempt',
     reason: 'append-only activity LOG (who did what, when) — not a current-holder claim any reader treats as live.',
   },
+  'event_wake_attempts.subscriber_id': {
+    status: 'exempt',
+    reason:
+      'migration 958 append-only required-wake OUTCOME ledger: inbox-wake.ts stamps the recipient that was ' +
+      'actually targeted, and presence-wakeability.ts reads only recent attempts to decide whether that original ' +
+      'session missed a required wake. It is evidence, not a live await/claim; rebinding would falsify the recipient ' +
+      "and could transfer an old session's miss/queued evidence onto the new session.",
+  },
   'triage_snapshots.taken_by': {
     status: 'exempt',
     reason:
