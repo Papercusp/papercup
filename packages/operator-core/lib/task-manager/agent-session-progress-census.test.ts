@@ -58,6 +58,15 @@ function naiveQuietCount(
 }
 
 describe('censusAgentSessionProgress', () => {
+  it('bounds dead-headless memory residency to 90 minutes while leaving the presence veto to the reaper', () => {
+    expect(DEFAULT_QUIET_MS).toBe(90 * 60 * 1000);
+    const census = censusAgentSessionProgress([row({ taskId: 'parked' })], {
+      now: NOW,
+      statMtimeMs: reader({ '/logs/parked.log': NOW - 91 * 60 * 1000 }),
+    });
+    expect(census.quietRows.map((entry) => entry.taskId)).toEqual(['parked']);
+  });
+
   it('CALIBRATION: separates a working session from a stalled one', () => {
     const rows = [row({ taskId: 'working' }), row({ taskId: 'stalled' })];
     const census = censusAgentSessionProgress(rows, {

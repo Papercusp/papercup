@@ -71,6 +71,10 @@
   "files": [
     "scripts/lib/not-checked.mjs",
     "scripts/lib/task-exit-class.mjs",
+    // WI-42146 / P-047 — the test-certified watermark that decouples the affected-test
+    // diff base from the green-main pointer. Registered for this list's first reason: it
+    // is imported directly by affected-tests-test-certified-base.test.ts.
+    "scripts/lib/test-certified-base.mjs",
     // WI-38300 — the load-suspect classifier, sibling of task-exit-class.mjs above and
     // registered for the FIRST reason this list exists: it is imported directly by
     // affected-tests-load-suspect.test.ts, which would otherwise pay a TS7016 that gets

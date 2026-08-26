@@ -22,7 +22,8 @@
  *                       "start and stop a session, processes remain" defect.
  *
  *   quiet-zombie      — the row is RUNNING but its log has not been written
- *                       for >= quietMs (default 6h, the census's validated
+ *                       for >= quietMs (default 90m, plus an independent fresh
+ *                       presence-heartbeat veto; the census's validated
  *                       window) AND no fresh coord-presence heartbeat vouches
  *                       for its owner. These are sessions that will never take
  *                       another turn: forks/consult-revivals that never got

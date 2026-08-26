@@ -56,9 +56,15 @@
 
 import { isLiveOwnedState, type TaskRow } from './types';
 
-/** Six hours: the quiet window the 2026-08-23 census used, and the one its KEEP
- *  rule was validated against (35 scopes held BECAUSE their logs were fresh). */
-export const DEFAULT_QUIET_MS = 6 * 60 * 60 * 1000;
+/** Ninety minutes: enough for a long tool call plus the 15-minute presence
+ * safety window, while bounding the memory cost of a dead headless fleet.
+ *
+ * The original six-hour calibration was safe but operationally too slow: with
+ * 400+ warm agent sessions it left 126 log-silent scopes resident long enough
+ * to drive memory+IO PSI and active swap-in. A genuinely live session is still
+ * protected independently by a fresh coord_presence heartbeat in the reaper;
+ * unreadable/missing logs remain fail-safe and are never classified as quiet. */
+export const DEFAULT_QUIET_MS = 90 * 60 * 1000;
 
 /**
  * A task younger than this is never residue, however quiet. A session that has
