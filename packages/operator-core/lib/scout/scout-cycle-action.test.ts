@@ -5,7 +5,7 @@
  * faked so the handler runs with no PG (the runScoutTick core is covered in
  * scheduler.test.ts).
  */
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   parseScoutCycleConfig,
   makeScoutCycleAction,
@@ -24,8 +24,20 @@ vi.mock('../hive-settings-store', () => ({ getHiveLocalBlueprintConfig: vi.fn() 
 import { getHiveLocalBlueprintConfig } from '../hive-settings-store';
 const mockGetHiveScoutCfg = getHiveLocalBlueprintConfig as unknown as ReturnType<typeof vi.fn>;
 
+const { isWorkspaceCoordinationOn } = vi.hoisted(() => ({
+  isWorkspaceCoordinationOn: vi.fn(async () => false),
+}));
+vi.mock('../workspace-brain-scope', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, isWorkspaceCoordinationOn };
+});
+
 const NOW = Date.parse('2026-06-08T12:00:00Z');
 const ctx: SystemActionCtx = { installSlug: 'papercup', workspaceId: 'w', triggerConfig: {}, payloadTemplate: null };
+
+beforeEach(() => {
+  isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
+});
 
 describe('parseScoutCycleConfig', () => {
   it('extracts cadence + budget objects', () => {
@@ -275,6 +287,31 @@ describe('makeScoutCycleAction', () => {
     expect(observed).toEqual([1, 6]);
   });
 
+  it('reads workspace-wide queue pressure when the routine uses workspace coordination (D-019)', async () => {
+    isWorkspaceCoordinationOn.mockResolvedValueOnce(true);
+    const admissionScopes: Array<{ workspaceId: string; harnessSlug?: string }> = [];
+    const handler = makeScoutCycleAction(
+      async () => ({ provenance: [], costUsd: 0.1 }),
+      fakeBuilder({ idleRatio: 1 }, { ran: 0, persisted: 0 }),
+      undefined,
+      undefined,
+      async (input) => {
+        admissionScopes.push(input);
+        return {
+          source: 'p005-queue-health',
+          level: 'normal',
+          pending: 17,
+          latencySampleSize: 0,
+          p95Ms: null,
+          maxIdeators: null,
+          reasons: ['normal workspace queue'],
+        };
+      },
+    );
+    await handler({ ...ctx, installSlug: 'w' });
+    expect(admissionScopes).toEqual([{ workspaceId: 'w' }]);
+  });
+
   it('a refused cycle still MIRRORS the per-cycle cap (fired:null) to the governor (P-051)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const calls = { ran: 0, persisted: 0 };
@@ -358,7 +395,12 @@ describe('registerScoutCycleAction', () => {
 // PREFLIGHT in runScoutCycleTick — consulted before cadence/budget/ceiling so a
 // SHARED-Hive node that is not the elected per-Hive runner does nothing at all.
 describe('runScoutCycleTick — P-019 hiveRunnerGate preflight', () => {
-  const input = { workspaceId: 'w', installSlug: 'hive-acme', payloadTemplate: null };
+  const input = {
+    workspaceId: 'w',
+    installSlug: 'hive-acme',
+    admissionQueueScope: { kind: 'harness' as const, harnessSlug: 'hive-acme' },
+    payloadTemplate: null,
+  };
   // A buildDeps whose cadence ALWAYS fires — so the only thing that can hold the
   // cycle in these cases is the runner gate.
   const alwaysFireBuilder =

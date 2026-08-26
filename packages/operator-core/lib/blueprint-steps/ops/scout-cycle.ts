@@ -94,7 +94,14 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
     // lens-weights under the sentinel. OFF ⇒ the per-hive install slug,
     // byte-identical to today.
     const { isWorkspaceCoordinationOn, workspaceBrainScopeKey } = await import('../../workspace-brain-scope.js');
-    const installSlug = workspaceBrainScopeKey(workspaceId, perHiveInstall, await isWorkspaceCoordinationOn());
+    const workspaceCoordinationOn = await isWorkspaceCoordinationOn();
+    const installSlug = workspaceBrainScopeKey(workspaceId, perHiveInstall, workspaceCoordinationOn);
+    // D-019: the workspace sentinel is the tick/single-flight identity, not a
+    // harness_slug. A workspace Scout aggregates queue health across the workspace;
+    // only legacy per-hive Scout filters to the real hive.
+    const admissionQueueScope = workspaceCoordinationOn
+      ? ({ kind: 'workspace' } as const)
+      : ({ kind: 'harness', harnessSlug: perHiveInstall } as const);
 
     // Default to the SAME production wiring the boot path registers
     // (register-scout-action.ts): the real llmCall-backed cycle runner + the
@@ -142,7 +149,12 @@ export const scoutCycleOp: CoordOp<z.infer<typeof args>, z.infer<typeof result>>
     }
 
     const tick = await runScoutCycleTick(
-      { workspaceId, installSlug, payloadTemplate: (a as Record<string, unknown>) ?? null },
+      {
+        workspaceId,
+        installSlug,
+        admissionQueueScope,
+        payloadTemplate: (a as Record<string, unknown>) ?? null,
+      },
       deps,
     );
     ctx.log?.(

@@ -134,8 +134,18 @@ export function makeScoutCycleAction(
       // hive_settings unavailable → use the routine payload as-is (behavior-neutral).
     }
 
+    const { isWorkspaceCoordinationOn } = await import('../workspace-brain-scope');
+    const admissionQueueScope = (await isWorkspaceCoordinationOn())
+      ? ({ kind: 'workspace' } as const)
+      : ({ kind: 'harness', harnessSlug: ctx.installSlug } as const);
+
     const result = await runScoutCycleTick(
-      { workspaceId: ctx.workspaceId, installSlug: ctx.installSlug, payloadTemplate },
+      {
+        workspaceId: ctx.workspaceId,
+        installSlug: ctx.installSlug,
+        admissionQueueScope,
+        payloadTemplate,
+      },
       {
         runCycle,
         buildDeps,

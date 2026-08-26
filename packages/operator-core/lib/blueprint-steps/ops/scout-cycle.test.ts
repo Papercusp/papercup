@@ -16,6 +16,9 @@ const { registerCoordOp, runScoutCycleTick } = vi.hoisted(() => ({
   registerCoordOp: vi.fn(),
   runScoutCycleTick: vi.fn(),
 }));
+const { isWorkspaceCoordinationOn } = vi.hoisted(() => ({
+  isWorkspaceCoordinationOn: vi.fn(async () => false),
+}));
 vi.mock('../../coord-ops/registry.js', () => ({ registerCoordOp }));
 vi.mock('../../scout/run.js', () => ({ runScoutCycleTick }));
 
@@ -40,7 +43,7 @@ vi.mock('../../work-items-admission-promoter.js', () => admissionPromoter);
 // it to. Keep the pure workspaceBrainScopeKey real so the threading is still real.
 vi.mock('../../workspace-brain-scope.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
-  return { ...actual, isWorkspaceCoordinationOn: () => Promise.resolve(false) };
+  return { ...actual, isWorkspaceCoordinationOn };
 });
 
 import { scoutCycleOp, setScoutCycleDeps } from './scout-cycle';
@@ -50,6 +53,7 @@ const fakeDeps = { runCycle: vi.fn(), recordGovernor: vi.fn(), hiveRunnerGate: v
 
 afterEach(() => {
   runScoutCycleTick.mockReset();
+  isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
   setScoutCycleDeps(null);
 });
 
@@ -103,8 +107,26 @@ describe('scoutCycleOp.run', () => {
     const payload = { budget: { maxCostUsd: 1 } };
     await scoutCycleOp.run(payload, ctx({ harnessSlug: undefined }) as never);
     const [arg0, arg1] = runScoutCycleTick.mock.calls[0];
-    expect(arg0).toEqual({ workspaceId: 'ws-1', installSlug: 'op', payloadTemplate: payload });
+    expect(arg0).toEqual({
+      workspaceId: 'ws-1',
+      installSlug: 'op',
+      admissionQueueScope: { kind: 'harness', harnessSlug: 'op' },
+      payloadTemplate: payload,
+    });
     expect(arg1).toBe(fakeDeps);
+  });
+
+  it('keeps the workspace tick sentinel separate from workspace-wide queue health', async () => {
+    isWorkspaceCoordinationOn.mockResolvedValueOnce(true);
+    setScoutCycleDeps(fakeDeps as never);
+    runScoutCycleTick.mockResolvedValue({ fired: false, reason: 'too-soon' });
+    await scoutCycleOp.run({}, ctx() as never);
+    expect(runScoutCycleTick.mock.calls[0][0]).toEqual({
+      workspaceId: 'ws-1',
+      installSlug: 'ws-1',
+      admissionQueueScope: { kind: 'workspace' },
+      payloadTemplate: {},
+    });
   });
 
   it('declares and threads cycleTimeoutMs through the routine payload', async () => {

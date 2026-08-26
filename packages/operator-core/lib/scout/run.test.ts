@@ -17,7 +17,12 @@ vi.mock('./scheduler', () => sched);
 
 import { runScoutCycleTick, parseScoutCycleConfig, productionDepsBuilder, type ScoutCycleDeps } from './run';
 
-const baseInput = { workspaceId: 'ws', installSlug: 'h', payloadTemplate: null };
+const baseInput = {
+  workspaceId: 'ws',
+  installSlug: 'h',
+  admissionQueueScope: { kind: 'harness' as const, harnessSlug: 'h' },
+  payloadTemplate: null,
+};
 const runCycle = vi.fn();
 const recordTick = vi.fn();
 const buildDeps = vi.fn(() => ({ recordTick })); // fake tick deps — the mocked runScoutTick ignores them
@@ -82,6 +87,7 @@ describe('productionDepsBuilder', () => {
       {
         workspaceId: 'ws',
         installSlug: 'h',
+        admissionQueueScope: { kind: 'harness', harnessSlug: 'h' },
         payloadTemplate: {
           blueprintId: 'scout',
           payload: { scout: { models: { ideator: 'chatgpt:5.5' } } },
@@ -101,6 +107,7 @@ describe('productionDepsBuilder', () => {
       {
         workspaceId: 'ws',
         installSlug: 'h',
+        admissionQueueScope: { kind: 'harness', harnessSlug: 'h' },
         payloadTemplate: null,
       },
       runCycle,
@@ -122,6 +129,7 @@ describe('productionDepsBuilder', () => {
       {
         workspaceId: 'ws',
         installSlug: 'h',
+        admissionQueueScope: { kind: 'harness', harnessSlug: 'h' },
         payloadTemplate: null,
       },
       runCycle,
@@ -217,15 +225,38 @@ describe('runScoutCycleTick — gates + governor mirror', () => {
       maxIdeators: 1,
       reasons: ['pending 41 exceeds two promoter batches (40)'],
     };
+    const admissionPressureGate = vi.fn(async () => pressure);
     await runScoutCycleTick(
       { ...baseInput, payloadTemplate: { budget: { maxCostUsd: 2, maxIdeators: 6 } } },
-      mkDeps({ admissionPressureGate: async () => pressure }),
+      mkDeps({ admissionPressureGate }),
     );
+    expect(admissionPressureGate).toHaveBeenCalledWith({ workspaceId: 'ws', harnessSlug: 'h' });
     expect(sched.runScoutTick.mock.calls[0][1]?.budget).toMatchObject({ maxCostUsd: 2, maxIdeators: 1 });
     expect(recordTick).toHaveBeenCalledWith({
       status: 'ran',
       detail: { cycleId: 'c-pressure', admissionThrottle: pressure },
     });
+  });
+
+  it('aggregates queue pressure across the workspace without treating the tick sentinel as a harness slug', async () => {
+    const admissionPressureGate = vi.fn(async () => ({
+      source: 'p005-queue-health' as const,
+      level: 'normal' as const,
+      pending: 17,
+      latencySampleSize: 0,
+      p95Ms: null,
+      maxIdeators: null,
+      reasons: ['normal workspace queue'],
+    }));
+    await runScoutCycleTick(
+      {
+        ...baseInput,
+        installSlug: 'ws',
+        admissionQueueScope: { kind: 'workspace' },
+      },
+      mkDeps({ admissionPressureGate }),
+    );
+    expect(admissionPressureGate).toHaveBeenCalledWith({ workspaceId: 'ws' });
   });
 
   it('restores the configured ideator budget when the queue drains', async () => {

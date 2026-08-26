@@ -79,10 +79,19 @@ export interface ScoutCycleActionConfig {
   cycleTimeoutMs?: number;
 }
 
+/**
+ * Queue-health scope is deliberately separate from the Scout tick identity.
+ * Workspace coordination keys ticks/single-flight by the workspace sentinel, but
+ * that sentinel is not a harness slug: the one workspace Scout must aggregate the
+ * whole workspace queue. Legacy per-hive Scout instead filters to the real hive.
+ */
+export type ScoutAdmissionQueueScope = { kind: 'workspace' } | { kind: 'harness'; harnessSlug: string };
+
 /** The normalized routine ctx the orchestration needs (action + op both supply it). */
 export interface ScoutCycleInput {
   workspaceId: string;
   installSlug: string;
+  admissionQueueScope: ScoutAdmissionQueueScope;
   payloadTemplate: Record<string, unknown> | null;
 }
 
@@ -194,7 +203,7 @@ export interface ScoutCycleDeps {
    */
   admissionPressureGate?: (input: {
     workspaceId: string;
-    harnessSlug: string;
+    harnessSlug?: string;
   }) => Promise<WorkItemAdmissionProducerPressure>;
   /**
    * P-019 cross-node SINGLE-RUNNER gate (boot wires checkHiveSingleRunner).
@@ -280,10 +289,11 @@ export async function runScoutCycleTick(input: ScoutCycleInput, deps: ScoutCycle
   let admissionPressure: WorkItemAdmissionProducerPressure | undefined;
   if (deps.admissionPressureGate) {
     try {
-      admissionPressure = await deps.admissionPressureGate({
-        workspaceId: input.workspaceId,
-        harnessSlug: input.installSlug,
-      });
+      const admissionScope =
+        input.admissionQueueScope.kind === 'workspace'
+          ? { workspaceId: input.workspaceId }
+          : { workspaceId: input.workspaceId, harnessSlug: input.admissionQueueScope.harnessSlug };
+      admissionPressure = await deps.admissionPressureGate(admissionScope);
     } catch {
       // A queue-health read is a throttle hint, never authority to silence the
       // producer. The production reader also returns an explicit unavailable
