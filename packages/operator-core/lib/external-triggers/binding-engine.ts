@@ -482,13 +482,32 @@ async function claimPendingTriggerRuns(
 ): Promise<ClaimedTriggerRun[]> {
   return sql.begin(
     async (tx) => tx<ClaimedTriggerRun[]>`
-    WITH candidates AS (
+    WITH cancelled_disarmed AS (
+      UPDATE harness_shared.trigger_runs tr
+         SET status = 'cancelled',
+             completed_at = now(),
+             updated_at = now(),
+             next_attempt_at = now(),
+             error = COALESCE(tr.error, 'binding disarmed before dispatch')
+        FROM harness_shared.trigger_bindings binding
+       WHERE binding.workspace_id = tr.workspace_id
+         AND binding.id = tr.binding_id
+         AND binding.detached_at IS NULL
+         AND binding.armed = FALSE
+         AND (
+           tr.status IN ('pending', 'failed')
+           OR (tr.status = 'running'
+               AND tr.started_at < now() - (${staleAfterSeconds} * interval '1 second'))
+         )
+      RETURNING tr.workspace_id, tr.id
+    ), candidates AS (
       SELECT tr.workspace_id, tr.id
         FROM harness_shared.trigger_runs tr
         JOIN harness_shared.trigger_bindings binding
           ON binding.workspace_id = tr.workspace_id
          AND binding.id = tr.binding_id
          AND binding.detached_at IS NULL
+         AND binding.armed = TRUE
        WHERE tr.next_attempt_at <= now()
          AND (
            (tr.attempts < ${DEFAULT_MAX_ATTEMPTS}

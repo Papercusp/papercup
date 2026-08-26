@@ -429,6 +429,39 @@ describe('external trigger durable dispatch', () => {
     expect(recovered[0]).toEqual({ status: 'succeeded', attempts: 6 });
   });
 
+  it('terminalizes retry residue after a binding is disarmed and reaps stale running rows', async () => {
+    const failedId = await seedTriggerRun({ status: 'failed', attempts: 23 });
+    const runningId = await seedTriggerRun({ status: 'running', attempts: 21 });
+    await sql`
+      UPDATE harness_shared.trigger_runs
+         SET error = 'external_trigger_agentic_dispatch_failed:target_unwakeable',
+             outcome = ${JSON.stringify({
+               dispatchFailure: {
+                 code: 'target_unwakeable', target: 'dead-agent', recoverable: true, queuePreserved: true,
+               },
+             })}::text::jsonb,
+             next_attempt_at = now() - interval '1 second',
+             started_at = CASE WHEN id = ${runningId} THEN now() - interval '10 minutes' ELSE started_at END
+       WHERE workspace_id = ${WS} AND id IN (${failedId}, ${runningId})`;
+    await sql`
+      UPDATE harness_shared.trigger_bindings SET armed = FALSE
+       WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+
+    expect(await dispatchPendingTriggerRuns(sql, { runPlan: vi.fn(), staleAfterSeconds: 60 }))
+      .toMatchObject({ claimed: 0, failed: 0 });
+    const rows = await sql<Array<{ id: string; status: string; error: string }>>`
+      SELECT id::text, status, error
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id IN (${failedId}, ${runningId})
+       ORDER BY id`;
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.status === 'cancelled')).toBe(true);
+    expect(rows.map((row) => row.error)).toEqual([
+      'external_trigger_agentic_dispatch_failed:target_unwakeable',
+      'external_trigger_agentic_dispatch_failed:target_unwakeable',
+    ]);
+  });
+
   it('passes the complete Calendar-upcoming trigger input into the meeting-prep plan run', async () => {
     const args = {
       trigger: {
