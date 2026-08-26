@@ -237,6 +237,11 @@
     // unit-testable. Registered for the first reason this list exists: it is imported
     // directly by affected-tests-task-progress-line.test.ts, which would otherwise pay
     // a TS7016 absorbed into that file's permanent tsc baseline.
-    "scripts/lib/task-progress-line.mjs"
+    "scripts/lib/task-progress-line.mjs",
+    // WI-41775 — the MODULE axis of check-lint-guard-reachability: which lib/release
+    // detector modules no production path calls. Registered for this list's usual
+    // reason: it is imported directly by module-reachability.test.ts, which would
+    // otherwise pay a TS7016 absorbed into that file's permanent tsc baseline.
+    "scripts/lib/module-reachability.mjs"
   ]
 }
