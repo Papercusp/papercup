@@ -82,6 +82,16 @@ describe('test-files router', () => {
     expect(route.requested).toBe('test/build-windows-identity.test.js');
   });
 
+  it('routes root maintenance .test.mjs suites to Node:test', () => {
+    for (const file of ['scripts/npm-install-safe.test.mjs', 'scripts/cpu-profile.test.mjs']) {
+      const route = discoverTestRoute(file);
+      expect(route.runner).toBe('node');
+      expect(route.cwd).toBe(REPO_ROOT);
+      expect(route.config).toBeNull();
+      expect(route.requested).toBe(file);
+    }
+  });
+
   it('classifies source modules as unsupported rather than test files', () => {
     expect(isTestFilePath('lib/agent-tools/capability/inspect.ts')).toBe(false);
     expect(isTestFilePath('lib/agent-tools/capability/inspect.test.ts')).toBe(true);

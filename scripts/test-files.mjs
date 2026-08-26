@@ -217,6 +217,14 @@ const NON_WORKSPACE_VITEST_ROUTES = [
 // Keep this route explicit, like the templates route above, so a path cannot be silently sent to
 // an arbitrary package's runner just because it happens to end in `.test.js`.
 const NON_WORKSPACE_NODE_ROUTES = [
+  // Root maintenance scripts use Node's built-in runner directly. Without this
+  // route the repository-root Vitest config imports them, their node:test cases
+  // pass, and Vitest then reports the same file red as "No test suite found".
+  {
+    prefix: 'scripts/',
+    pathPattern: /\.test\.mjs$/,
+    cwd: '.',
+  },
   {
     prefix: 'papercusp-desktop/test/',
     pathPattern: /\.test\.[cm]?js$/,
