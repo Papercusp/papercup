@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 827,
+  "count": 829,
   "tools": [
     {
       "name": "ablation:report",
@@ -1715,7 +1715,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Create a new backup snapshot of the workspace. Use before risky migrations or major state changes.",
-        "notWhen": "For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead."
+        "notWhen": "For routine commits, this isn't needed — backup snapshots are heavyweight (whole-workspace). For per-harness portable snapshots, use the snapshots tools instead. To reconcile a still-running receipt returned by an earlier call, pass that row as resumeSnapshotId instead of creating another snapshot."
       }
     },
     {
@@ -18203,6 +18203,79 @@
         "when": "A granted plan or binding needs the owner's imported Gmail, Calendar, Contacts, Facebook/Instagram, or X context. Pass scopes and participant/time filters as narrowly as possible.",
         "notWhen": "General workspace memory/search — use memory:search or search:semantic. Never use from coding/review work; those roles are hard-denied.",
         "chaining": "The result contains bounded snippets only. Use the returned source/externalId as provenance in the consuming brief."
+      }
+    },
+    {
+      "name": "pilot:assign",
+      "http": {
+        "path": "/api/agent-tools/pilot/assign",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Preview or materialize the seeded, permuted-block assignment for the directed-pair 3-arm pilot. confirm is false by default. A confirmed cohort fails closed unless A/B carry one solo participant, C carries director+implementer sessions, and any B assignment has a terminal live probe whose testedSha equals deployedSha. Writes the auditable pilotArm/seed/stratum/block/participant-window payload stamp, then re-derives it; a failed multi-row write rolls back its pilot keys.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Preparing or starting a real directed-pair pilot cohort. Preview first, record the seed, bind exact participant session ids + claim-window starts, then confirm only after the arm-B live probe passes.",
+        "notWhen": "Hand-picking arms, assigning trivial/high-risk work, or grading/collecting completed results (pilot:collect). Never use generic payload edits to bypass this gate.",
+        "chaining": "pilot:assign { confirm:false } → run/verify the arm-B probe → pilot:assign { same seed/candidates, confirm:true } → execute items → blinded scorecards:emit → pilot:collect."
+      }
+    },
+    {
+      "name": "pilot:collect",
+      "http": {
+        "path": "/api/agent-tools/pilot/collect",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Collect a completed directed-pair pilot cohort from canonical work-item, scorecard and usage ledgers and build the D-022 report. Verifies the seeded assignment, requires one complete post-assignment scorecard from a non-participant grader, attributes cost to every stamped participant session inside its claim window (two costs for arm C), and returns explicit gaps instead of fabricating zero cost or a floor score.",
+      "capabilities": [
+        "coord:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward",
+        "judge"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Pilot items are terminal and have blinded rubric scorecards; you need per-item ArmObservation rows plus per-arm score, interval, wall-clock, cost and rare-event summaries.",
+        "notWhen": "Assigning/stamping a cohort (pilot:assign), emitting grades (scorecards:emit), or reading unfinished items as outcomes.",
+        "chaining": "pilot:assign → execute/complete → scorecards:emit with subject.ref=<item id> → pilot:collect → record the verdict in the plan and drive the adaptive tier gate."
       }
     },
     {

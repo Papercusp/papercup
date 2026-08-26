@@ -496,6 +496,20 @@ export interface ListTasksFilter {
   /** Include rows that ended before now — off by default, so the common read is
    *  "what is running" and history is opt-in. */
   includeEnded?: boolean;
+  /**
+   * Match only rows whose label starts with this string.
+   *
+   * The label is `detail.label` — a jsonb field, NOT a column; `task_ledger` has no
+   * `label` column at all. Pushing the prefix down here is what makes a label lookup
+   * correct rather than merely likely: filtering AFTER a capped `limit` silently
+   * misses any matching row that fell outside the window, and on this box the ledger
+   * carries five figures of rows against a default window of 200.
+   *
+   * `starts_with()`, never `LIKE prefix || '%'`: a label prefix legitimately contains
+   * `_`, which LIKE reads as a single-character wildcard, so LIKE would match labels
+   * that merely resemble the prefix. `starts_with` takes the operand literally.
+   */
+  labelPrefix?: string;
   limit?: number;
 }
 
@@ -513,6 +527,7 @@ export async function listTasks(filter: ListTasksFilter = {}, inject?: Sql): Pro
        ${filter.workItemId ? sql`AND work_item_id = ${filter.workItemId}` : sql``}
        ${filter.rootTaskId ? sql`AND root_task_id = ${filter.rootTaskId}` : sql``}
        ${filter.sessionId ? sql`AND session_id = ${filter.sessionId}` : sql``}
+       ${filter.labelPrefix ? sql`AND starts_with(detail ->> 'label', ${filter.labelPrefix})` : sql``}
      ORDER BY started_at DESC
      LIMIT ${limit}
   `;
