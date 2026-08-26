@@ -342,7 +342,7 @@ export function parsePromoterJudgements(payload: unknown): PromoterJudgement[] {
   return parsed.judgements;
 }
 
-function responsePayload(response: PromoterLlmResult): unknown {
+export function responsePayload(response: PromoterLlmResult): unknown {
   if (response.json !== undefined) return response.json;
   const text = response.text.trim();
   if (!text) throw new Error('promoter model returned empty output');
@@ -844,7 +844,14 @@ export async function readWorkItemAdmissionSnapshot(opts: {
   };
 }
 
-async function linkPair(sql: OrgSql, workspaceId: string, harnessSlug: string, a: string, b: string, nowMs: number) {
+export async function linkAdmissionPair(
+  sql: OrgSql,
+  workspaceId: string,
+  harnessSlug: string,
+  a: string,
+  b: string,
+  nowMs: number,
+) {
   await sql`
     UPDATE harness_shared.work_items
        SET see_also = CASE
@@ -863,7 +870,7 @@ async function linkPair(sql: OrgSql, workspaceId: string, harnessSlug: string, a
      WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${b}`;
 }
 
-async function persistPlan(
+export async function persistAdmissionPlan(
   sql: OrgSql,
   input: {
     workspaceId: string;
@@ -873,8 +880,16 @@ async function persistPlan(
     nowMs: number;
     pending: readonly PromoterItem[];
     plan: PromoterPlan;
+    /** Bulk stages adjudicate an already-admitted corpus and must not re-promote every distinct item. */
+    promoteUnmerged?: boolean;
+    /** Promoter merges are pending-only; bulk stages may merge any still-live corpus member. */
+    mergeAnyAdmission?: boolean;
+    actor?: string;
   },
 ): Promise<void> {
+  const actor = input.actor ?? PROMOTER_ACTOR;
+  const promoteUnmerged = input.promoteUnmerged ?? true;
+  const terminal = [...ALL_TERMINAL_STATUSES];
   for (const adjudication of input.plan.adjudications) {
     const [a, b] = canonicalIds(adjudication.a, adjudication.b);
     const evidence = JSON.stringify({
@@ -890,15 +905,16 @@ async function persistPlan(
       ON CONFLICT (workspace_id, harness_slug, a, b) DO NOTHING`;
   }
   for (const pair of input.plan.relatedPairs) {
-    await linkPair(sql, input.workspaceId, input.harnessSlug, pair.a, pair.b, input.nowMs);
+    await linkAdmissionPair(sql, input.workspaceId, input.harnessSlug, pair.a, pair.b, input.nowMs);
   }
   const pendingById = new Map(input.pending.map((item) => [item.id, item]));
   for (const disposition of input.plan.dispositions) {
     if (disposition.action === 'hold') continue;
     if (disposition.action === 'promote') {
+      if (!promoteUnmerged) continue;
       await sql`
         UPDATE harness_shared.work_items
-           SET admission = 'admitted', admitted_at = now(), admitted_by = ${PROMOTER_ACTOR},
+           SET admission = 'admitted', admitted_at = now(), admitted_by = ${actor},
                updated_ts = ${input.nowMs}
          WHERE workspace_id = ${input.workspaceId}
            AND harness_slug = ${input.harnessSlug}
@@ -907,7 +923,14 @@ async function persistPlan(
       continue;
     }
     const pending = pendingById.get(disposition.itemId);
-    await linkPair(sql, input.workspaceId, input.harnessSlug, disposition.itemId, disposition.canonicalId, input.nowMs);
+    await linkAdmissionPair(
+      sql,
+      input.workspaceId,
+      input.harnessSlug,
+      disposition.itemId,
+      disposition.canonicalId,
+      input.nowMs,
+    );
     if (pending) {
       await recordIssueOccurrence(
         {
@@ -927,24 +950,49 @@ async function persistPlan(
         sql,
       );
     }
-    const terminalReason = `duplicate of ${disposition.canonicalId} (admission promoter ${input.runId})`;
-    await sql`
-      UPDATE harness_shared.work_items
-         SET status = 'dropped', admission = 'admitted', admitted_at = now(), admitted_by = ${PROMOTER_ACTOR},
-             terminal_reason = ${terminalReason}, terminal_owner = ${PROMOTER_ACTOR}, closed_ts = ${input.nowMs},
-             payload = COALESCE(payload, '{}'::jsonb) ||
-               jsonb_build_object(
-                 'admissionMerge',
+    const terminalReason = `duplicate of ${disposition.canonicalId} (${actor} ${input.runId})`;
+    if (input.mergeAnyAdmission === true) {
+      await sql`
+        UPDATE harness_shared.work_items
+           SET status = 'dropped',
+               admission = 'admitted',
+               admitted_at = COALESCE(admitted_at, now()),
+               admitted_by = COALESCE(admitted_by, ${actor}),
+               terminal_reason = ${terminalReason}, terminal_owner = ${actor}, closed_ts = ${input.nowMs},
+               payload = COALESCE(payload, '{}'::jsonb) ||
                  jsonb_build_object(
-                   'canonicalId', ${disposition.canonicalId}::text,
-                   'runId', ${input.runId}::text
-                 )
-               ),
-             updated_ts = ${input.nowMs}
-       WHERE workspace_id = ${input.workspaceId}
-         AND harness_slug = ${input.harnessSlug}
-         AND feature_id = ${disposition.itemId}
-         AND admission = 'pending'`;
+                   'admissionMerge',
+                   jsonb_build_object(
+                     'canonicalId', ${disposition.canonicalId}::text,
+                     'runId', ${input.runId}::text,
+                     'actor', ${actor}::text
+                   )
+                 ),
+               updated_ts = ${input.nowMs}
+         WHERE workspace_id = ${input.workspaceId}
+           AND harness_slug = ${input.harnessSlug}
+           AND feature_id = ${disposition.itemId}
+           AND (status IS NULL OR NOT (status = ANY(${terminal}::text[])))`;
+    } else {
+      await sql`
+        UPDATE harness_shared.work_items
+           SET status = 'dropped', admission = 'admitted', admitted_at = now(), admitted_by = ${actor},
+               terminal_reason = ${terminalReason}, terminal_owner = ${actor}, closed_ts = ${input.nowMs},
+               payload = COALESCE(payload, '{}'::jsonb) ||
+                 jsonb_build_object(
+                   'admissionMerge',
+                   jsonb_build_object(
+                     'canonicalId', ${disposition.canonicalId}::text,
+                     'runId', ${input.runId}::text,
+                     'actor', ${actor}::text
+                   )
+                 ),
+               updated_ts = ${input.nowMs}
+         WHERE workspace_id = ${input.workspaceId}
+           AND harness_slug = ${input.harnessSlug}
+           AND feature_id = ${disposition.itemId}
+           AND admission = 'pending'`;
+    }
   }
 }
 
@@ -996,7 +1044,7 @@ export async function runWorkItemAdmissionPromoter(opts: {
       tokensOut = response.outputTokens;
     }
     const plan = planPromoterDispositions(pending, pairs, judgements);
-    await persistPlan(sql, {
+    await persistAdmissionPlan(sql, {
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
       runId,
