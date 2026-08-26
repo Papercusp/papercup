@@ -310,6 +310,28 @@ export function invariantCutKeys(dropped) {
 }
 
 /**
+ * How many chars must be freed elsewhere for each cut invariant to be RETAINED.
+ *
+ * `invariantCutKeys` above answers WHICH rail was evicted; on its own that sends the
+ * author bisecting their own prose to discover BY HOW MUCH, which is the expensive half
+ * (EI-21457175960786261). The projector already holds both numbers, so it should say so.
+ *
+ * The arithmetic is the same one an author would do by hand: a composition that currently
+ * omits the part must additionally accommodate its body, so the excess over budget is
+ * `composed + body - budget`. It is a FLOOR, not an exact figure — re-including a part can
+ * also re-flow its section heading and shrink the spill block, both of which move the true
+ * number DOWNWARD. Reporting a floor is the safe direction: acting on it always clears the
+ * refusal, whereas an under-estimate would send the author back for a second round, which
+ * is the very loop this exists to end.
+ */
+export function shortfallsForCutInvariants(out, budget) {
+  return out.dropped
+    .filter((part) => part.kind === 'invariant')
+    .map((part) => ({ ...part, shortfall: Math.max(1, out.text.length + part.body.length - budget) }))
+    .sort((a, b) => a.shortfall - b.shortfall);
+}
+
+/**
  * Return the dropped parts carrying a registered live-doc assertion pin.
  *
  * This is deliberately separate from `invariantCutKeys`: a test may pin a rule
@@ -927,6 +949,19 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             `${invariantCuts.join(', ')}. Split evidence out of those canonical rows or ` +
           `reduce other invariant prose; never green a projection that silently omits a safety rail.`,
         );
+        // Name the SHORTFALL, not just the victim. Without this the author knows only
+        // WHICH rail was evicted, and the only way to find out by how much is to bisect
+        // their own prose against repeated runs — measured at roughly an hour in
+        // EI-21457175960786261, for a number the projector already holds. The victim is
+        // also typically unrelated to the part being edited (cutOrder is project_rank DESC
+        // then body-length DESC, so the LARGEST equal-rank invariant goes first), which is
+        // exactly why "trim what you just added until it fits" is such a poor strategy.
+        for (const part of shortfallsForCutInvariants(out, budget)) {
+          console.error(
+            `      → free at least ${fmt(part.shortfall)} char(s) elsewhere to keep ` +
+              `\`${part.part_key}\` (${fmt(part.body.length)} chars).`,
+          );
+        }
       }
       if (docClaimCuts.length) {
         failed = true;

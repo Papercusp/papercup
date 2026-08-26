@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionWarnings, docClaimCutMatches, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readDocClaimPins, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionWarnings, docClaimCutMatches, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readDocClaimPins, readOrder, shortfallsForCutInvariants, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -398,6 +398,51 @@ describe('the budget — the output can never exceed it', () => {
       ]),
     ).toEqual(['safety-rail']);
     expect(invariantCutKeys([part({ kind: 'pointer' }), part({ kind: 'recipe' })])).toEqual([]);
+  });
+
+  describe('shortfallsForCutInvariants — the refusal must say BY HOW MUCH', () => {
+    it('reports the exact chars to free, so the author never bisects their own prose', () => {
+      const out = {
+        text: 'x'.repeat(77_819),
+        dropped: [part({ kind: 'invariant', part_key: 'rail', body: 'y'.repeat(2_206) })],
+      };
+      // The arithmetic an author would otherwise rediscover by hand:
+      // 77,819 composed + 2,206 body - 80,000 budget = 25 over.
+      expect(shortfallsForCutInvariants(out, 80_000)).toMatchObject([{ part_key: 'rail', shortfall: 25 }]);
+    });
+
+    it('reports a FLOOR — freeing the named amount always clears the refusal', () => {
+      // Direction matters more than precision here. Re-including a part can re-flow its
+      // heading and shrink the spill block, so the true cost is <= this figure; an
+      // over-estimate costs one extra trimmed sentence, an under-estimate costs another
+      // whole round-trip. Assert we never under-report.
+      const body = 'y'.repeat(1_000);
+      const out = { text: 'x'.repeat(79_500), dropped: [part({ kind: 'invariant', part_key: 'rail', body })] };
+      const [only] = shortfallsForCutInvariants(out, 80_000);
+      expect(only.shortfall).toBeGreaterThanOrEqual(79_500 + 1_000 - 80_000);
+    });
+
+    it('orders cheapest-to-rescue first and ignores non-invariant cuts', () => {
+      const out = {
+        text: 'x'.repeat(79_000),
+        dropped: [
+          part({ kind: 'invariant', part_key: 'expensive', body: 'y'.repeat(3_000) }),
+          part({ kind: 'pointer', part_key: 'pointer', body: 'y'.repeat(9_000) }),
+          part({ kind: 'invariant', part_key: 'cheap', body: 'y'.repeat(1_500) }),
+        ],
+      };
+      expect(shortfallsForCutInvariants(out, 80_000).map((p: { part_key: string }) => p.part_key)).toEqual([
+        'cheap',
+        'expensive',
+      ]);
+    });
+
+    it('CONTROL — never reports a non-actionable zero or negative', () => {
+      // A part that would fit on its own still has to displace something, so "free 0
+      // chars" would read as "no action needed" while the projection stays refused.
+      const out = { text: 'x'.repeat(10), dropped: [part({ kind: 'invariant', part_key: 'rail', body: 'y' })] };
+      expect(shortfallsForCutInvariants(out, 80_000)[0].shortfall).toBeGreaterThan(0);
+    });
   });
 
   it('names a dropped part carrying a live-doc pin, regardless of its row kind', () => {
