@@ -146,6 +146,11 @@ const LIVE_SERIALIZER_PRESENCE_STALE_MS = PRESENCE_STALE_MS;
 export interface GreenStallThresholds {
   fireStaleMs?: number;
   noGreenMs?: number;
+  /**
+   * P-006 (WI-41755): how long a FIRING gate may record no verdict of any kind before that
+   * silence is itself the alarm. Defaults to `DEFAULT_VERDICTLESS_GRACE_MS` (3h).
+   */
+  verdictlessMs?: number;
   /** How long a durable green-checkpoint-stall row may sit before recovery is retried. */
   greenCheckpointStallRecoveryStaleMs?: number;
   /** Maximum number of bounded recovery dispatch attempts for one stall episode. */
@@ -485,6 +490,16 @@ export interface GreenStallSnapshot {
   lastGreenAt: number | null;
   /** the watchdog's own dedup flag (`gate_health.watchdogAlerted`). */
   watchdogAlerted: boolean;
+  /**
+   * P-006 (WI-41755): epoch ms of the newest recorded verdict of ANY kind (green OR red) —
+   * the newest `pipeline_events` row of kind `green_checkpoint` for this install.
+   *
+   * Deliberately not `lastGreenAt`: a gate producing honest reds is WORKING, so keying the
+   * verdict-less-death limb on greens would alarm on a healthy red streak. Optional so that
+   * every existing constructor (and every test fixture) keeps compiling; absent ⇒ the limb
+   * declines, matching the never-fired / fresh-install rule.
+   */
+  lastVerdictAtMs?: number | null;
   /** The root routine engine is stale; infra-liveness owns this root-cause alarm. */
   routineEngineStale?: boolean;
   /** EI-7505: the failing verdict test(s) from the last red green-checkpoint tick
@@ -507,6 +522,17 @@ export interface GreenStallVerdict {
   fireStale: boolean;
   /** no green verdict in noGreenMs (the deep backstop). */
   verdictStale: boolean;
+  /**
+   * P-006 (WI-41755): the routine is FIRING but has recorded no verdict of ANY kind in
+   * `verdictlessMs` — every run is dying before it writes one.
+   *
+   * ⚠ Distinct from `verdictStale`, and the two must not be collapsed: `verdictStale` means
+   * "no GREEN in 12h", which a gate producing honest reds satisfies while working perfectly.
+   * This means "no verdict AT ALL", which no working gate ever satisfies. It is also the only
+   * limb that can fire while `fireStale` is false — which is the whole point, because a gate
+   * whose every run dies keeps updating `last_fired_at` and so looks healthy to that limb.
+   */
+  verdictless: boolean;
   /**
    * P-016: this pass DECLINED TO JUDGE — the root routine engine is stale, so
    * infra-liveness owns the root-cause alarm and this symptom-level one is
@@ -562,7 +588,35 @@ export function evaluateGreenStall(
   const suppressed = rootEngineStale || checkpointRunDelivering;
   const fireStale = !suppressed && s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
   const verdictStale = !suppressed && s.lastGreenAt != null && now - s.lastGreenAt > noGreenMs;
-  const stalled = fireStale || verdictStale;
+  /**
+   * P-006 (WI-41755): the gate is FIRING but has recorded no verdict of any kind — every run
+   * is dying before it can write one.
+   *
+   * This limb exists because the other two structurally cannot see that failure:
+   *   · `fireStale` asks whether the routine FIRED. In a verdict-less death it fires fine —
+   *     `last_fired_at` updates on every hourly tick — so this stays false forever.
+   *   · `verdictStale` keys on `lastGreenAt`, so it waits out DEFAULT_NO_GREEN_MS (12h) before
+   *     saying anything, and a gate that greened two hours ago and has been dying ever since
+   *     is silent for the rest of that window.
+   * Between them a dead gate can run unreported for up to 12h — which is the shape of the
+   * 2026-08-02 647-minute incident.
+   *
+   * Keyed on ANY verdict (green OR red), never on greens: a gate legitimately producing reds
+   * is WORKING, and must not trip this. Measured 2026-08-25 across 10 installs, a healthy gate
+   * records a verdict every ~45min, so the 3h window sits >3x above the healthy interval.
+   *
+   * Requires `lastVerdictAtMs != null`: with no verdict ever recorded there is no reference
+   * point to measure a silent window against, and a fresh install must not alarm (same rule
+   * the never-fired case follows above).
+   */
+  const verdictlessMs = opts.verdictlessMs ?? DEFAULT_VERDICTLESS_GRACE_MS;
+  const verdictless =
+    !suppressed &&
+    !fireStale &&
+    s.lastFiredMs != null &&
+    s.lastVerdictAtMs != null &&
+    now - s.lastVerdictAtMs > verdictlessMs;
+  const stalled = fireStale || verdictStale || verdictless;
 
   let reason: string | null = null;
   if (stalled) {
@@ -575,6 +629,12 @@ export function evaluateGreenStall(
     if (verdictStale && s.lastGreenAt != null) {
       parts.push(`no GREEN verdict in ~${hrs(now - s.lastGreenAt)}h`);
     }
+    if (verdictless && s.lastVerdictAtMs != null) {
+      parts.push(
+        `the routine is FIRING but has recorded NO verdict (green or red) in ~${hrs(now - s.lastVerdictAtMs)}h — ` +
+          `every run is dying before it can write one. This is NOT a failing suite and NOT a red: no verdict about the code exists`,
+      );
+    }
     reason = parts.join('; ');
     // EI-7505: name the failing test(s) directly in the alarm reason so a
     // responder doesn't have to hand-spelunk harness_shared.test_runs (which
@@ -585,7 +645,7 @@ export function evaluateGreenStall(
       reason += `. Failing verdict test(s): ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}`;
     }
   }
-  return { stalled, fireStale, verdictStale, suppressed, reason };
+  return { stalled, fireStale, verdictStale, verdictless, suppressed, reason };
 }
 
 /** Pure: the `harness_escalations` body for a watchdog-detected stall (testable). */
@@ -1496,16 +1556,28 @@ export async function checkGreenStall(
         install_slug: string;
         workspace_id: string;
         last_fired_ms: string | number | null;
+        last_verdict_ms: string | number | null;
         gh: { lastGreenAt?: number; watchdogAlerted?: boolean; failingTests?: string[] } | null;
       }[]
     >`
-      SELECT install_slug,
-             workspace_id,
-             extract(epoch from last_fired_at) * 1000 AS last_fired_ms,
-             metadata->'gate_health' AS gh
-        FROM harness_shared.routines
-       WHERE target_role = 'system:green-checkpoint'
-         AND active = true`;
+      SELECT r.install_slug,
+             r.workspace_id,
+             extract(epoch from r.last_fired_at) * 1000 AS last_fired_ms,
+             r.metadata->'gate_health' AS gh,
+             -- P-006 (WI-41755): when this install last recorded ANY verdict (green OR red),
+             -- so "the gate is firing but recording nothing" is detectable. Deliberately a
+             -- correlated subquery on the EXISTING sweep rather than a second round-trip:
+             -- pipeline_events_slug_kind_created_idx is (install_slug, kind, created_at DESC),
+             -- so this is an O(1) index lookup per install and the sweep stays cheap.
+             (SELECT extract(epoch from pe.created_at) * 1000
+                FROM harness_shared.pipeline_events pe
+               WHERE pe.install_slug = r.install_slug
+                 AND pe.kind = 'green_checkpoint'
+               ORDER BY pe.created_at DESC
+               LIMIT 1) AS last_verdict_ms
+        FROM harness_shared.routines r
+       WHERE r.target_role = 'system:green-checkpoint'
+         AND r.active = true`;
 
     const now = Date.now();
     // This axis is deliberately independent: a paused routine never reaches
@@ -1522,6 +1594,7 @@ export async function checkGreenStall(
     const routineEngine = await readRoutineEngineLiveness(sql, { nowMs: now });
     for (const row of rows) {
       const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;
+      const lastVerdictAtMs = row.last_verdict_ms != null ? Number(row.last_verdict_ms) : null;
       const lastGreenAt = row.gh?.lastGreenAt ?? null;
       const watchdogAlerted = row.gh?.watchdogAlerted ?? false;
       // EI-7505: gate_health.failingTests, threaded through by trackGateStall
@@ -1531,6 +1604,7 @@ export async function checkGreenStall(
       const verdict = evaluateGreenStall(
         {
           lastFiredMs,
+          lastVerdictAtMs,
           lastGreenAt,
           watchdogAlerted,
           routineEngineStale: routineEngine.stale,

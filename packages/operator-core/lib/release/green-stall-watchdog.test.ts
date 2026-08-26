@@ -390,6 +390,147 @@ describe('attributeVerdictStale — the alarm may not assert a cause it did not 
   });
 });
 
+describe('evaluateGreenStall — the verdictless limb: FIRING but recording nothing (P-006 / WI-41755)', () => {
+  /** A gate mid-cadence: it fired 20 minutes ago, so `fireStale` is false. */
+  const FIRING = NOW - 20 * 60 * 1000;
+
+  it('THE 12h HOLE: greened recently, still firing, but no verdict in 5h ⇒ STALLED', () => {
+    // Before this limb, BOTH other limbs read this as healthy:
+    //   fireStale    — false, the routine is firing hourly on schedule.
+    //   verdictStale — false, it greened only 2h ago (needs 12h).
+    // …while every run since has been dying silently. That is the gap.
+    const v = evaluateGreenStall(
+      {
+        lastFiredMs: FIRING,
+        lastVerdictAtMs: NOW - 5 * H,
+        lastGreenAt: NOW - 2 * H,
+        watchdogAlerted: false,
+      },
+      NOW,
+    );
+    expect(v.fireStale).toBe(false);
+    expect(v.verdictStale).toBe(false);
+    expect(v.verdictless).toBe(true);
+    expect(v.stalled).toBe(true);
+    expect(v.reason).toContain('FIRING but has recorded NO verdict');
+    expect(v.reason).toContain('NOT a failing suite');
+  });
+
+  it('a HEALTHY gate (verdict ~45min ago, the measured live cadence) never trips it', () => {
+    const v = evaluateGreenStall(
+      {
+        lastFiredMs: FIRING,
+        lastVerdictAtMs: NOW - 45 * 60 * 1000,
+        lastGreenAt: NOW - 45 * 60 * 1000,
+        watchdogAlerted: false,
+      },
+      NOW,
+    );
+    expect(v.verdictless).toBe(false);
+    expect(v.stalled).toBe(false);
+  });
+
+  it('THE FALSE-POSITIVE GUARD: a gate producing honest REDS hourly is WORKING', () => {
+    // Keyed on ANY verdict, never on greens — otherwise a legitimate red streak,
+    // which is a gate doing its job, would read as a dead gate.
+    const v = evaluateGreenStall(
+      {
+        lastFiredMs: FIRING,
+        lastVerdictAtMs: NOW - 30 * 60 * 1000, // reds ARE verdicts
+        lastGreenAt: NOW - 20 * H, // no GREEN in 20h
+        watchdogAlerted: false,
+      },
+      NOW,
+    );
+    expect(v.verdictless).toBe(false);
+    // The 12h no-green backstop still owns this case, unchanged.
+    expect(v.verdictStale).toBe(true);
+  });
+
+  it('is mutually exclusive with fireStale — a routine that is NOT firing is that other bug', () => {
+    const v = evaluateGreenStall(
+      {
+        lastFiredMs: NOW - 8 * H, // not firing at all
+        lastVerdictAtMs: NOW - 9 * H,
+        lastGreenAt: NOW - 9 * H,
+        watchdogAlerted: false,
+      },
+      NOW,
+    );
+    expect(v.fireStale).toBe(true);
+    expect(v.verdictless).toBe(false);
+  });
+
+  it('declines with no verdict ever recorded — a fresh install must not alarm', () => {
+    const v = evaluateGreenStall(
+      { lastFiredMs: FIRING, lastVerdictAtMs: null, lastGreenAt: null, watchdogAlerted: false },
+      NOW,
+    );
+    expect(v.verdictless).toBe(false);
+  });
+
+  it('omitting lastVerdictAtMs entirely preserves pre-P-006 behaviour', () => {
+    const v = evaluateGreenStall(
+      { lastFiredMs: FIRING, lastGreenAt: NOW - 2 * H, watchdogAlerted: false },
+      NOW,
+    );
+    expect(v.verdictless).toBe(false);
+    expect(v.stalled).toBe(false);
+  });
+
+  it('a suppressed pass does not judge this limb either', () => {
+    const v = evaluateGreenStall(
+      {
+        lastFiredMs: FIRING,
+        lastVerdictAtMs: NOW - 5 * H,
+        lastGreenAt: NOW - 2 * H,
+        watchdogAlerted: false,
+        routineEngineStale: true,
+      },
+      NOW,
+    );
+    expect(v.suppressed).toBe(true);
+    expect(v.verdictless).toBe(false);
+    // suppressed is NOT healthy — the file's own warning; assert we did not claim health.
+    expect(v.stalled).toBe(false);
+  });
+
+  it('an in-flight delivering run is suppressed, not called dead', () => {
+    const v = evaluateGreenStall(
+      {
+        lastFiredMs: FIRING,
+        lastVerdictAtMs: NOW - 5 * H,
+        lastGreenAt: NOW - 2 * H,
+        watchdogAlerted: false,
+        checkpointRunActive: true,
+        checkpointRunPhase: 'delivering',
+      },
+      NOW,
+    );
+    expect(v.verdictless).toBe(false);
+  });
+
+  it('the threshold is configurable and its boundary is exclusive', () => {
+    const at = evaluateGreenStall(
+      { lastFiredMs: FIRING, lastVerdictAtMs: NOW - 1 * H, lastGreenAt: NOW, watchdogAlerted: false },
+      NOW,
+      { verdictlessMs: 1 * H },
+    );
+    expect(at.verdictless).toBe(false); // exactly at the deadline is still in flight
+    const past = evaluateGreenStall(
+      {
+        lastFiredMs: FIRING,
+        lastVerdictAtMs: NOW - 1 * H - 1,
+        lastGreenAt: NOW,
+        watchdogAlerted: false,
+      },
+      NOW,
+      { verdictlessMs: 1 * H },
+    );
+    expect(past.verdictless).toBe(true);
+  });
+});
+
 describe('verdict-less death — a fire that recorded NOTHING (P-006 / WI-41755)', () => {
   const T = Date.parse('2026-08-25T23:00:00.000Z');
 
