@@ -32,6 +32,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { InvalidInputError } from '@papercusp/tooldef';
 import { activeWorkspaceId } from '../workspace-registry';
+import { boundedOrgTxn } from '../pg-bounded-txn';
 // P-008 (b): the unknown vocabulary a failed dependency read records. Imported,
 // never re-declared — cell-contract.ts declares itself the canonical home and
 // forbids a local copy, and a second enumeration is precisely how a caller's
@@ -1207,6 +1208,13 @@ export function clampFactBody(raw: string): string {
  *  so a fact near the end of its own life loses. Not oldest-updated; that ended
  *  at WI-7292. */
 export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<AssertFactResult> {
+  // EI-21488671343297100: the cap guard, append and sweep are separate
+  // statements, so every production write must own one transaction for the
+  // transaction-scoped cap lock below to cover the whole decision. Tests may
+  // still inject a base Sql for sequential fixtures; concurrent callers must
+  // inject a transaction or omit the argument and take this bounded wrapper.
+  if (!inject) return boundedOrgTxn((tx) => assertFact(input, tx));
+
   // EI-7463: these are CALLER-input mistakes (a bad scope/ref pairing, an
   // empty key/body after trim), not server faults — throw InvalidInputError
   // so the dispatcher codes them `invalid_input` (400) instead of the default
@@ -1372,6 +1380,22 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   const recheck = normalizeFactRecheck(input.recheck);
   const dependsOn = normalizeFactDependencies(input.dependsOn);
   const claim = input.claim && typeof input.claim === 'object' ? input.claim : null;
+
+  // EI-21488671343297100: serialize one cap population's complete seat
+  // decision. This MUST be its own statement: under READ COMMITTED PostgreSQL
+  // fixes a statement's snapshot before waiting inside it, so folding the lock
+  // into the guard query lets a waiter acquire the lock and still read the stale
+  // pre-wait population. The following guard/append/sweep statements then see a
+  // fresh snapshot while this transaction owns the lock. Exempt facts take no
+  // seat and need no cap lock.
+  if (!isFactCapExempt({ key, kind })) {
+    const partitionKey = JSON.stringify([ws, input.scope, ref ?? '', capPartition]);
+    await sql`
+      SELECT pg_advisory_xact_lock(
+        hashtext('papercusp:agent-facts-cap:v1'),
+        hashtext(${partitionKey})
+      )`;
+  }
 
   // EI-21442182972969040: an ordinary at-cap write must not silently destroy
   // another author's verified fact. Run this admission check BEFORE the
