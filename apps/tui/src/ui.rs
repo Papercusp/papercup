@@ -44,6 +44,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         if app.critical_path_open {
             draw_critical_path(f, app);
         }
+        if app.session_switcher.is_some() {
+            draw_session_switcher(f, app);
+        }
         return;
     }
 
@@ -164,6 +167,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if app.critical_path_open {
         draw_critical_path(f, app);
+    }
+    if app.session_switcher.is_some() {
+        draw_session_switcher(f, app);
     }
 }
 
@@ -2437,6 +2443,34 @@ fn card_lines(app: &App, inner_w: usize) -> Vec<Line<'static>> {
             }
         }
     }
+
+    // P-026 / D-008: an agent's own pushed fleet transitions use the SAME
+    // semantic-card registry as transcript tool calls. The activity ring is
+    // newest-first; reverse the bounded slice so these read chronologically.
+    let own_events = app.visible_own_fleet_events();
+    if !own_events.is_empty() {
+        lines.push(Line::from(Span::styled("fleet events", Theme::dim())));
+    }
+    for event in own_events.into_iter().rev() {
+        let Some(card) = crate::semantic_tool_cards::card_for_activity(event) else {
+            continue;
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  ⚡ {}", card.title),
+            Theme::dim(),
+        )));
+        for row in &card.rows {
+            let style = match row.tone {
+                SemanticTone::Neutral => Theme::dim(),
+                SemanticTone::Positive => Theme::success(),
+                SemanticTone::Warning => Theme::warn(),
+            };
+            lines.push(Line::from(Span::styled(
+                trunc(&format!("    {}: {}", row.label, row.value), inner_w),
+                style,
+            )));
+        }
+    }
     lines
 }
 
@@ -3303,6 +3337,102 @@ fn draw_session_picker(f: &mut Frame, picker: &crate::session_config::SessionPic
         .highlight_symbol("> ");
     f.render_widget(Clear, area);
     f.render_stateful_widget(list, area, &mut state);
+}
+
+/// D-009's global session switcher. It is a transient routing overlay, never a
+/// destination: every row is still activated through App::resolve_agent_route.
+fn draw_session_switcher(f: &mut Frame, app: &App) {
+    let Some(switcher) = &app.session_switcher else {
+        return;
+    };
+    let area = centered_rect(84, 76, f.area());
+    f.render_widget(Clear, area);
+    let block = Theme::popup_block(Line::from(
+        " Sessions · Ctrl-S · fuzzy live + parked + ended + recorded ",
+    ));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(inner);
+
+    let loading = if switcher.loading {
+        "  searching…"
+    } else {
+        ""
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("filter › ", Theme::title_active()),
+            Span::raw(switcher.query.clone()),
+            Span::styled(loading, Theme::dim()),
+        ]))
+        .style(Theme::popup()),
+        chunks[0],
+    );
+
+    let rows = app.visible_session_switcher();
+    if rows.is_empty() {
+        f.render_widget(
+            Paragraph::new("No sessions match this filter.")
+                .style(Theme::dim())
+                .wrap(Wrap { trim: false }),
+            chunks[1],
+        );
+    } else {
+        let items: Vec<ListItem> = rows
+            .iter()
+            .map(|row| {
+                let state = row
+                    .session_state
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| (!row.liveness.is_empty()).then_some(row.liveness.as_str()))
+                    .unwrap_or("unknown")
+                    .to_ascii_lowercase();
+                let (marker, state_style) = match state.as_str() {
+                    "live" => ("● LIVE", Theme::success()),
+                    "parked" => ("Ⅱ PARKED", Theme::warn()),
+                    "ended" => ("○ ENDED", Theme::dim()),
+                    "recorded" => ("◇ RECORDED", Theme::dim()),
+                    _ => ("· UNKNOWN", Theme::dim()),
+                };
+                let role = row.role.as_deref().unwrap_or(&row.source);
+                let plan = row.current_plan_slug.as_deref().unwrap_or("no plan");
+                let detail = row.intent.as_deref().unwrap_or(plan);
+                ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(format!("{marker:<12}"), state_style),
+                        Span::styled(trunc(&row.label, 28), Theme::title_active()),
+                        Span::styled(format!("  · {role}"), Theme::dim()),
+                    ]),
+                    Line::from(Span::styled(
+                        format!("  {} · {}", trunc(&row.owner_id, 24), trunc(detail, 58)),
+                        Theme::dim(),
+                    )),
+                ])
+            })
+            .collect();
+        let mut state = ListState::default();
+        state.select(Some(switcher.sel.min(rows.len().saturating_sub(1))));
+        f.render_stateful_widget(
+            List::new(items)
+                .style(Theme::popup())
+                .highlight_style(Theme::selected())
+                .highlight_symbol("> "),
+            chunks[1],
+            &mut state,
+        );
+    }
+    f.render_widget(
+        Paragraph::new("j/k move · Tab MRU · Enter route · Esc close").style(Theme::dim()),
+        chunks[2],
+    );
 }
 
 /// The Fleet `[r]/[n]/[f]` no-session action menu (pui-workbench-usability

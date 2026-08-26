@@ -4,7 +4,7 @@
 //! ingestion/bounding, the transcript owns layout, and unknown tools return `None`
 //! so the generic card remains the lossless fallback.
 
-use crate::models::{ChatToolCall, ToolOutcome};
+use crate::models::{ActivityRow, ChatToolCall, ToolOutcome};
 use serde_json::Value;
 
 const ROW_VALUE_CHARS: usize = 180;
@@ -29,6 +29,23 @@ pub(crate) struct SemanticToolCard {
     pub rows: Vec<SemanticRow>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FleetEventClass {
+    Exception,
+    Claim,
+    Gate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FleetEventSemantic {
+    pub transition: String,
+    pub fleet_slug: String,
+    pub class: FleetEventClass,
+    pub title: String,
+    pub subject: String,
+    pub detail: String,
+}
+
 pub(crate) fn card_for_tool(tool: &ChatToolCall) -> Option<SemanticToolCard> {
     let (name, input) = effective_call(tool);
     if tool_name_is(name, "work_items:complete") {
@@ -50,6 +67,105 @@ pub(crate) fn card_for_tool(tool: &ChatToolCall) -> Option<SemanticToolCard> {
         return Some(checkpoint_card(input, tool.result.as_ref()));
     }
     None
+}
+
+/// Interpret the activity-ledger row written by the fleet event bridge. This is
+/// shared by the leader tape and the agent's inline transcript cards so the two
+/// renderers cannot disagree about an event's meaning.
+pub(crate) fn fleet_event_semantic(row: &ActivityRow) -> Option<FleetEventSemantic> {
+    if row.tool_name.as_deref() != Some("fleet:event") {
+        return None;
+    }
+    let detail = row.detail.as_ref()?.as_object()?;
+    let transition = detail.get("transition")?.as_str()?.to_string();
+    let fleet_slug = detail.get("fleetSlug")?.as_str()?.to_string();
+    let payload = detail.get("payload").and_then(Value::as_object);
+    let value = |key: &str| payload.and_then(|p| p.get(key)).and_then(compact);
+    let actor = value("agentId")
+        .or_else(|| value("assignee"))
+        .or_else(|| value("priorAssignee"))
+        .unwrap_or_else(|| row.owner_id.clone());
+    let item = value("id");
+    let state = value("state");
+    let from = value("from");
+    let to = value("to");
+
+    let (class, title, subject, event_detail) = match transition.as_str() {
+        "member-dead" => (
+            FleetEventClass::Exception,
+            "Fleet member died",
+            actor,
+            format!(
+                "{} → {}",
+                from.unwrap_or_else(|| "unknown".into()),
+                to.unwrap_or_else(|| "ended".into())
+            ),
+        ),
+        "context-critical" => (
+            FleetEventClass::Exception,
+            "Context critical",
+            actor,
+            format!(
+                "{} → {}",
+                from.unwrap_or_else(|| "unknown".into()),
+                to.unwrap_or_else(|| "critical".into())
+            ),
+        ),
+        "admission-blocked" => (
+            FleetEventClass::Exception,
+            "Fleet admission blocked",
+            fleet_slug.clone(),
+            format!(
+                "{} → {}",
+                from.unwrap_or_else(|| "0".into()),
+                to.unwrap_or_else(|| "1".into())
+            ),
+        ),
+        "claim-released" => (
+            FleetEventClass::Claim,
+            "Claim released",
+            item.unwrap_or_else(|| "work item".into()),
+            format!("by {actor} · re-placeable"),
+        ),
+        "item-completed" => (
+            FleetEventClass::Claim,
+            "Item completed",
+            item.unwrap_or_else(|| "work item".into()),
+            format!("{} · by {actor}", state.unwrap_or_else(|| "done".into())),
+        ),
+        "drained" => (
+            FleetEventClass::Gate,
+            "Fleet drained",
+            fleet_slug.clone(),
+            "all claimable lanes settled".into(),
+        ),
+        _ => return None,
+    };
+
+    Some(FleetEventSemantic {
+        transition,
+        fleet_slug,
+        class,
+        title: title.into(),
+        subject,
+        detail: event_detail,
+    })
+}
+
+pub(crate) fn card_for_activity(row: &ActivityRow) -> Option<SemanticToolCard> {
+    let event = fleet_event_semantic(row)?;
+    let tone = match event.class {
+        FleetEventClass::Exception => SemanticTone::Warning,
+        FleetEventClass::Claim | FleetEventClass::Gate => SemanticTone::Positive,
+    };
+    Some(SemanticToolCard {
+        title: event.title,
+        rows: vec![
+            self::row("fleet", event.fleet_slug, SemanticTone::Neutral),
+            self::row("subject", event.subject, tone),
+            self::row("detail", event.detail, SemanticTone::Neutral),
+        ],
+    })
 }
 
 fn effective_call<'a>(tool: &'a ChatToolCall) -> (&'a str, Option<&'a Value>) {
@@ -422,6 +538,25 @@ mod tests {
         }
     }
 
+    fn fleet_activity(transition: &str, payload: Value) -> ActivityRow {
+        ActivityRow {
+            owner_id: payload
+                .get("agentId")
+                .and_then(Value::as_str)
+                .unwrap_or("fleet:pui-cockpit")
+                .into(),
+            kind: "lifecycle".into(),
+            tool_name: Some("fleet:event".into()),
+            detail: Some(json!({
+                "eventKey": format!("fleet:{transition}:pui-cockpit"),
+                "fleetSlug": "pui-cockpit",
+                "transition": transition,
+                "payload": payload,
+            })),
+            ..ActivityRow::default()
+        }
+    }
+
     #[test]
     fn completion_surfaces_evidence_not_raw_envelope() {
         let card = card_for_tool(&call(
@@ -506,5 +641,23 @@ mod tests {
         );
         assert_eq!(card_for_tool(&wrapped).unwrap().title, "Task done · t-1");
         assert!(card_for_tool(&call("capability:read", json!({"file_path":"x"}), None)).is_none());
+    }
+
+    #[test]
+    fn fleet_activity_cards_share_typed_semantics_with_the_tape() {
+        let row = fleet_activity(
+            "member-dead",
+            json!({"fleetSlug":"pui-cockpit","agentId":"su-a","from":"live","to":"ended"}),
+        );
+        let event = fleet_event_semantic(&row).unwrap();
+        assert_eq!(event.class, FleetEventClass::Exception);
+        assert_eq!(event.subject, "su-a");
+        assert_eq!(event.detail, "live → ended");
+        let card = card_for_activity(&row).unwrap();
+        assert_eq!(card.title, "Fleet member died");
+        assert!(card
+            .rows
+            .iter()
+            .any(|r| r.label == "fleet" && r.value == "pui-cockpit"));
     }
 }

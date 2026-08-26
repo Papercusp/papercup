@@ -2578,6 +2578,27 @@ impl App {
             .collect()
     }
 
+    /// Fleet transitions relevant to the agent currently in view. An
+    /// owner-scoped pui pane means "my events"; the leader cockpit's selected
+    /// member is the fallback. Kept newest-first like the activity ledger.
+    pub fn visible_own_fleet_events(&self) -> Vec<&ActivityRow> {
+        let owner = match &self.wake_filter {
+            WakeFilter::Owner(owner) => Some(owner.as_str()),
+            _ => self.bee.owner_id.as_deref(),
+        };
+        let Some(owner) = owner else {
+            return Vec::new();
+        };
+        self.visible_fleet_activity()
+            .into_iter()
+            .filter(|row| {
+                row.owner_id == owner
+                    && crate::semantic_tool_cards::fleet_event_semantic(row).is_some()
+            })
+            .take(20)
+            .collect()
+    }
+
     /// The Memory tab's visible entries (D-006): search hits while a query is
     /// active, else the full list. `memory_sel` indexes THIS list.
     pub fn visible_memories(&self) -> &[crate::models::MemoryEntry] {
