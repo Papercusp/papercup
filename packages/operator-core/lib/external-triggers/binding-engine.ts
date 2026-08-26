@@ -24,6 +24,30 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 type Db = postgres.Sql | postgres.TransactionSql;
 
 const DEFAULT_STORM_WINDOW_SECONDS = 60;
+/**
+ * EVERY binding gets a cap. An ABSENT `maxRuns` used to mean UNBOUNDED, which
+ * made `{ windowSeconds: 60 }` — the exact shape the admin composer persists
+ * when the caller states no policy — a rate window with nothing to rate-limit
+ * against. On 2026-08-26 a Gmail poller closed a 2h35m resync gap and that
+ * binding minted 228 autonomous plan runs in 68s (~3.4/s), each one a real
+ * agent launch, until it was disarmed by hand (EI-21500982767775449).
+ *
+ * Half-specified config is more dangerous than absent config: `windowSeconds`
+ * alone READS as configured in every dump of the row, so the missing cap is
+ * invisible while the present field looks like rate limiting. That is why the
+ * repair is a DEFAULT rather than a refusal — a refusal protects rows written
+ * after it lands and leaves every already-stored row uncapped.
+ *
+ * 12 runs / 60s is ~720/hour: far above any human-paced source, far below a
+ * replayed backlog, and the same magnitude as the social conservative default
+ * (`FALLBACK_MAX_RUNS`, 12/300s), so the system tells ONE story about a safe
+ * autonomous launch rate. Overflow is recorded as a `skipped` trigger_run
+ * carrying `external_trigger_storm_limit`, so a throttled burst stays visible
+ * rather than being silently dropped. A caller that genuinely needs more says
+ * so with an explicit `maxRuns`; asking for unbounded is deliberately not
+ * expressible.
+ */
+const DEFAULT_STORM_MAX_RUNS = 12;
 const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_STALE_AFTER_SECONDS = 60;
@@ -88,7 +112,13 @@ interface TriggerRunArgs {
 }
 
 export interface StormPolicy {
-  maxRuns: number | null;
+  /**
+   * Always a positive integer. `null` is deliberately NOT representable: an
+   * unbounded policy is the defect `DEFAULT_STORM_MAX_RUNS` exists to remove,
+   * and making the type express that is what stops a future caller from
+   * reintroducing it one `?? null` at a time.
+   */
+  maxRuns: number;
   windowSeconds: number;
 }
 
@@ -225,12 +255,17 @@ function positiveInteger(value: unknown, field: string): number {
   return parsed;
 }
 
-/** Parse the small, explicit v1 storm-policy vocabulary. Empty means unbounded. */
+/**
+ * Parse the small, explicit v1 storm-policy vocabulary. An empty or
+ * cap-less policy resolves to the bounded default, never to unbounded —
+ * see `DEFAULT_STORM_MAX_RUNS`.
+ */
 export function parseStormPolicy(raw: Record<string, unknown>): StormPolicy {
   const maxRaw = raw.maxRuns ?? raw.max_runs;
   const windowRaw = raw.windowSeconds ?? raw.window_seconds;
   return {
-    maxRuns: maxRaw === undefined || maxRaw === null ? null : positiveInteger(maxRaw, 'storm_max_runs'),
+    maxRuns:
+      maxRaw === undefined || maxRaw === null ? DEFAULT_STORM_MAX_RUNS : positiveInteger(maxRaw, 'storm_max_runs'),
     windowSeconds:
       windowRaw === undefined || windowRaw === null
         ? DEFAULT_STORM_WINDOW_SECONDS
@@ -349,23 +384,23 @@ async function queueOneBinding(
       });
     }
 
-    if (storm.maxRuns !== null) {
-      const recent = await tx<Array<{ count: number }>>`
-        SELECT count(*)::int AS count
-          FROM harness_shared.trigger_runs
-         WHERE workspace_id = ${event.workspaceId}
-           AND binding_id = ${binding.id}
-           AND status <> 'cancelled'
-           AND triggered_at >= now() - (${storm.windowSeconds} * interval '1 second')`;
-      if ((recent[0]?.count ?? 0) >= storm.maxRuns) {
-        return insertTerminalTriggerRun(tx, {
-          event,
-          binding,
-          deliveryId,
-          status: 'skipped',
-          error: `external_trigger_storm_limit:${storm.maxRuns}/${storm.windowSeconds}s`,
-        });
-      }
+    // Unconditional: `parseStormPolicy` always yields a cap, so there is no
+    // longer a policy shape that skips this check.
+    const recent = await tx<Array<{ count: number }>>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${event.workspaceId}
+         AND binding_id = ${binding.id}
+         AND status <> 'cancelled'
+         AND triggered_at >= now() - (${storm.windowSeconds} * interval '1 second')`;
+    if ((recent[0]?.count ?? 0) >= storm.maxRuns) {
+      return insertTerminalTriggerRun(tx, {
+        event,
+        binding,
+        deliveryId,
+        status: 'skipped',
+        error: `external_trigger_storm_limit:${storm.maxRuns}/${storm.windowSeconds}s`,
+      });
     }
 
     const args = JSON.stringify(triggerArgs(event));

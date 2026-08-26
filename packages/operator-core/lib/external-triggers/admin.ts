@@ -699,11 +699,19 @@ function required(value: string | null | undefined, field: string): string {
   return normalized;
 }
 
+/**
+ * Persist BOTH halves of the policy, always. The stored row previously omitted
+ * `maxRuns` whenever the caller left it unset, which is how a live binding came
+ * to read `{"windowSeconds":60}` — a window with no cap — in every dump anyone
+ * inspected (EI-21500982767775449). `parseStormPolicy` now resolves the cap, so
+ * writing it back is what makes the row state its own effective policy instead
+ * of depending on a reader applying the same default.
+ */
 function normalizedStormPolicy(raw: Record<string, unknown> = {}): Record<string, unknown> {
   const parsed = parseStormPolicy(raw);
   return {
     windowSeconds: parsed.windowSeconds,
-    ...(parsed.maxRuns === null ? {} : { maxRuns: parsed.maxRuns }),
+    maxRuns: parsed.maxRuns,
   };
 }
 
@@ -1388,16 +1396,15 @@ export async function updateExternalTriggerBindingStormPolicy(
   sql: postgres.Sql,
   workspaceId: string,
   id: string,
+  // `maxRuns: null` stays ACCEPTED at the boundary (the admin route's schema
+  // still nulls it) but no longer MEANS unbounded — parseStormPolicy resolves
+  // it to the bounded default, and the row is written with that cap.
   input: { maxRuns: number | null; windowSeconds: number },
 ): Promise<{ id: string; stormPolicy: Record<string, unknown>; updatedAt: string } | null> {
-  const parsed = parseStormPolicy({
+  const stormPolicy: Record<string, unknown> = normalizedStormPolicy({
     maxRuns: input.maxRuns,
     windowSeconds: input.windowSeconds,
   });
-  const stormPolicy: Record<string, unknown> = {
-    windowSeconds: parsed.windowSeconds,
-    ...(parsed.maxRuns === null ? {} : { maxRuns: parsed.maxRuns }),
-  };
   const rows = await sql<
     Array<{
       id: string;
