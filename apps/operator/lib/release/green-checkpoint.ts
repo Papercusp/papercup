@@ -761,6 +761,21 @@ export interface CheckpointResult {
      *  stack, which is exactly what the marker-less path cannot supply.
      *  See {@link buildCrashCheckpointResult}. */
     | "error"
+    /** P-007 (green-main-fast-2026-08-25): the run could not START because the immutable
+     *  dependency generation for the candidate's exact input fingerprint was never published,
+     *  so `dependency_generation_select_inputs` refused with exit 74 before a single test ran.
+     *  A measured, NAMED prerequisite outage — not an unknown crash.
+     *
+     *  ⚠ Deliberately NOT 'infra-inconclusive'. Both members of that class (the pc-heavy drain
+     *  refusal, the torn dependency snapshot) are SELF-CLEARING — heavy slots drain, dependency
+     *  writers settle — which is precisely why they are classified 'noop' and leave gate_health
+     *  untouched. A missing prewarm is NOT self-clearing: it stays missing until the producer
+     *  (WI-41491) publishes that fingerprint. Silencing it would let a persistent prewarm outage
+     *  render no verdict forever with gate_health untouched — the exact failure the 'error'
+     *  docblock above warns about. So this stays in the LOUD, counted 'no-verdict' class; what
+     *  it adds over 'error' is a NAME and the missing fingerprint, not a quieter counter.
+     *  See {@link buildTerminalFailureCheckpointResult}. */
+    | "dependency-prewarm-missing"
     /** EI-21436432400491183: the candidate was already fossil-old when this red suite result
      *  was ready to publish. No code verdict is rendered; the next run must judge a fresher tip. */
     | "candidate-fossil";
@@ -1029,6 +1044,41 @@ export function buildTerminalFailureCheckpointResult(opts: {
       detail.includes(
         "live node_modules changed while pinning an existing generation",
       ));
+  // P-007: the prewarm PREREQUISITE was absent, so the gate never reached a test. Exit 74 is
+  // dependency_generation_select_inputs' own distinct refusal code (the torn-snapshot cases
+  // above are 75), and the FATAL line is required too so an unrelated 74 from elsewhere in the
+  // script cannot borrow this classification.
+  const dependencyPrewarmMissing =
+    detail.includes("dependency-generation.sh") &&
+    detail.includes("exited 74") &&
+    detail.includes(
+      "no prewarmed dependency generation for input fingerprint",
+    );
+
+  if (dependencyPrewarmMissing) {
+    // Name the exact fingerprint the producer must publish. Without it the operator reading this
+    // verdict has to go dig the fingerprint out of the run log, which is what made the 2026-08-26
+    // outage read as an anonymous crash.
+    const fingerprint =
+      /no prewarmed dependency generation for input fingerprint ([0-9a-f]{8,64})/.exec(
+        detail,
+      )?.[1] ?? null;
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "dependency-prewarm-missing",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint could not START: no prewarmed immutable dependency generation exists " +
+        `for this candidate's input fingerprint${fingerprint ? ` ${fingerprint}` : ""}, so the ` +
+        "selector refused (exit 74) before any test ran. NO code verdict was rendered — this says " +
+        "nothing about the candidate, and its files must not be triaged. This does NOT clear on " +
+        "its own: it stays broken until the dependency-generation producer publishes that " +
+        `fingerprint (WI-41491). ${detail}`,
+    };
+  }
 
   if (!materializationDeferred && !dependencySnapshotChanged)
     return buildCrashCheckpointResult(opts);
