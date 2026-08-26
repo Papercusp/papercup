@@ -2180,7 +2180,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
               id: 'peer-12',
               claim: 'PEER-12 holds',
               recheck: 'probe 12',
-              verified: 'measured 12',
+              verified: expect.stringMatching(/^measured 12 @\d{4}-\d{2}-\d{2}T/),
               sinceMs: expect.any(Number),
             }),
           ]);
