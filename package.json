@@ -283,7 +283,6 @@
     "lint:no-identity-literals": "node scripts/check-no-identity-literals.mjs",
     "lint:no-identity-literals:all": "node scripts/check-no-identity-literals.mjs --all",
     "lint:systemd-dropins-installed": "node scripts/check-systemd-dropins-installed.mjs",
-    "lint:systemd-dropins-installed:list": "node scripts/check-systemd-dropins-installed.mjs --list",
     "lint:as-committed": "node scripts/lint-as-committed.mjs",
     "lint:no-conflict-markers": "node scripts/check-conflict-markers.mjs",
     "lint:no-self-referential-export": "node scripts/check-no-self-referential-export.mjs",
