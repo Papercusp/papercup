@@ -44,6 +44,7 @@ import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { isRetryableLockFailure } from './pg-retryable-failure';
 import { checkMigrationDrift, resolveSqlDir, sqlDirCandidates } from './migration-drift';
 import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from './migration-deploy-guard';
+import { assertMigrationPassesPreApplyLints } from './migration-preapply-lint';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises';
@@ -368,6 +369,7 @@ export async function applyPendingMigrationsNow(
   // is never re-blocked merely because its companion later moved on.
   const deployedReleaseRoot = resolveDeployedReleaseRoot(sqlDir);
   const guardPendingMigration = async (file: string, sqlText: string): Promise<void> => {
+    assertMigrationPassesPreApplyLints({ filename: file, sqlText, sqlDir });
     const verdict = verifyPendingCodeDeployMigration({
       filename: file,
       sqlText,
