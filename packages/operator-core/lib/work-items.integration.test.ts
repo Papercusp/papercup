@@ -1708,12 +1708,17 @@ describe('C4 — observeWorkItem claimability consistency with claim/release', (
   // this locks the same guarantee for the issue family the unified surface now also promises.
   it('issue-family claim is atomic: a held bug refuses a competing claim; same-assignee re-claim is idempotent', async () => {
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'contended bug', harness: 'papercup', createdBy: 'agA' });
-    expect((await wi.claimWorkItem(bug.id, 'A'))?.assignee).toBe('A');
+    const firstClaim = await wi.claimWorkItem(bug.id, 'A');
+    expect(firstClaim?.assignee).toBe('A');
+    expect(firstClaim?.lastProgressAt).toBeNull();
     // A different agent CANNOT steal the held bug — the claim is refused (null), holder unchanged.
     expect(await wi.claimWorkItem(bug.id, 'B')).toBeNull();
     expect((await db.sql`SELECT assignee FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].assignee).toBe('A');
-    // The holder re-claiming its own bug is idempotent (not a refusal).
-    expect((await wi.claimWorkItem(bug.id, 'A'))?.assignee).toBe('A');
+    // The holder re-claiming its own bug is idempotent (not a refusal), and a
+    // claim remains distinct from real work: it must not fabricate progress.
+    const reclaimed = await wi.claimWorkItem(bug.id, 'A');
+    expect(reclaimed?.assignee).toBe('A');
+    expect(reclaimed?.lastProgressAt).toBeNull();
   });
 });
 

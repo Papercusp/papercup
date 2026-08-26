@@ -54,18 +54,13 @@ const WORK_ITEMS_DDL = `
     workspace_id text NOT NULL,
     harness_slug text NOT NULL,
     feature_id text NOT NULL,
+    status text NOT NULL DEFAULT 'open',
+    item_kind text NOT NULL DEFAULT 'feature',
+    taken_by text,
+    taken_at timestamptz,
     last_progress_at timestamptz,
     admission text, admitted_at timestamptz, admitted_by text,
     PRIMARY KEY (workspace_id, harness_slug, feature_id))`;
-const ENGINEER_ISSUES_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.engineer_issues (
-    workspace_id text NOT NULL DEFAULT 'default',
-    issue_id text NOT NULL,
-    state text NOT NULL DEFAULT 'open',
-    assignee text,
-    assigned_at timestamptz,
-    updated_at timestamptz,
-    PRIMARY KEY (workspace_id, issue_id))`;
 
 let db: FreshPgDb;
 // EI-9013: the store now canonicalizes the workspace via resolveConcreteWorkspaceId,
@@ -80,7 +75,6 @@ beforeAll(async () => {
   h.sql = db.sql;
   await db.sql.unsafe(CARRY_NOTES_DDL);
   await db.sql.unsafe(WORK_ITEMS_DDL);
-  await db.sql.unsafe(ENGINEER_ISSUES_DDL);
 }, 60_000);
 afterAll(async () => {
   if (PRIOR_WS_ENV === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
@@ -90,7 +84,6 @@ afterAll(async () => {
 beforeEach(async () => {
   await db.sql`DELETE FROM harness_shared.carry_notes`;
   await db.sql`DELETE FROM harness_shared.work_items`;
-  await db.sql`DELETE FROM harness_shared.engineer_issues`;
 });
 
 async function rowCount(): Promise<number> {
@@ -155,29 +148,61 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-HANDOFF' })).toBe('predecessor left this');
   });
 
-  it('checkpoint progress refreshes issue-family assigned_at, the current issue progress anchor', async () => {
+  it('checkpoint advances issue progress without rewriting its claim-acquisition time (EI-21498578211680100)', async () => {
     await db.sql`
-      INSERT INTO harness_shared.engineer_issues
-        (workspace_id, issue_id, state, assignee, assigned_at, updated_at)
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, status, item_kind, taken_by, taken_at, last_progress_at)
       VALUES
-        ('default', 'WI-ISSUE-PROGRESS', 'open', 'su-holder', now() - interval '30 minutes', now() - interval '30 minutes')`;
+        ('default', 'operator:default', 'WI-ISSUE-PROGRESS', 'open', 'bug', 'su-holder',
+         now() - interval '30 minutes', now() - interval '20 minutes')`;
 
-    const [before] = await db.sql<{ assigned_at: Date; updated_at: Date }[]>`
-      SELECT assigned_at, updated_at
-        FROM harness_shared.engineer_issues
-       WHERE issue_id = 'WI-ISSUE-PROGRESS'`;
+    const [before] = await db.sql<{ taken_at: Date; last_progress_at: Date }[]>`
+      SELECT taken_at, last_progress_at
+        FROM harness_shared.work_items
+       WHERE feature_id = 'WI-ISSUE-PROGRESS'`;
 
-    expect(await setWorkItemCheckpoint(
-      { harness: HARNESS, workItemId: 'WI-ISSUE-PROGRESS' },
-      'still working; refreshed progress anchor',
-    )).toBe('still working; refreshed progress anchor');
+    expect(
+      await setWorkItemCheckpoint(
+        { harness: HARNESS, workItemId: 'WI-ISSUE-PROGRESS' },
+        'still working; preserve the original claim clock',
+      ),
+    ).toBe('still working; preserve the original claim clock');
 
-    const [after] = await db.sql<{ assigned_at: Date; updated_at: Date }[]>`
-      SELECT assigned_at, updated_at
-        FROM harness_shared.engineer_issues
-       WHERE issue_id = 'WI-ISSUE-PROGRESS'`;
-    expect(after.assigned_at.getTime()).toBeGreaterThan(before.assigned_at.getTime());
-    expect(after.updated_at.getTime()).toBeGreaterThan(before.updated_at.getTime());
+    const [after] = await db.sql<{ taken_at: Date; last_progress_at: Date }[]>`
+      SELECT taken_at, last_progress_at
+        FROM harness_shared.work_items
+       WHERE feature_id = 'WI-ISSUE-PROGRESS'`;
+    expect(after.taken_at.getTime()).toBe(before.taken_at.getTime());
+    expect(after.last_progress_at.getTime()).toBeGreaterThan(before.last_progress_at.getTime());
+  });
+
+  it('checkpoint keeps feature progress harness-scoped and preserves its claim time', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, status, item_kind, taken_by, taken_at, last_progress_at)
+      VALUES
+        ('default', ${HARNESS}, 'F-SCOPED-PROGRESS', 'open', 'feature', 'su-holder',
+         now() - interval '30 minutes', now() - interval '20 minutes'),
+        ('default', 'h2', 'F-SCOPED-PROGRESS', 'open', 'feature', 'su-other',
+         now() - interval '40 minutes', now() - interval '10 minutes')`;
+
+    const before = await db.sql<{ harness_slug: string; taken_at: Date; last_progress_at: Date }[]>`
+      SELECT harness_slug, taken_at, last_progress_at
+        FROM harness_shared.work_items
+       WHERE feature_id = 'F-SCOPED-PROGRESS'
+       ORDER BY harness_slug`;
+
+    await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'F-SCOPED-PROGRESS' }, 'feature progress');
+
+    const after = await db.sql<{ harness_slug: string; taken_at: Date; last_progress_at: Date }[]>`
+      SELECT harness_slug, taken_at, last_progress_at
+        FROM harness_shared.work_items
+       WHERE feature_id = 'F-SCOPED-PROGRESS'
+       ORDER BY harness_slug`;
+    expect(after.map((row) => row.taken_at.getTime())).toEqual(before.map((row) => row.taken_at.getTime()));
+    expect(after[0].harness_slug).toBe(HARNESS);
+    expect(after[0].last_progress_at.getTime()).toBeGreaterThan(before[0].last_progress_at.getTime());
+    expect(after[1]).toEqual(before[1]);
   });
 
   it('checkpoints are independent per work-item and per harness', async () => {
@@ -226,21 +251,32 @@ describe('work-item checkpoint store (P-010, real PG) — setHiveCarryNote seman
     ).toBe('wildcard write');
     // Readable with the workspace omitted (concrete), passed concretely, and passed as '*'.
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013' })).toBe('wildcard write');
-    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013', workspaceId: 'default' })).toBe('wildcard write');
-    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013', workspaceId: '*' })).toBe('wildcard write');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013', workspaceId: 'default' })).toBe(
+      'wildcard write',
+    );
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013', workspaceId: '*' })).toBe(
+      'wildcard write',
+    );
     // No literal-'*' row was ever persisted.
     const star = await db.sql<{ n: number }[]>`
       SELECT COUNT(*)::int AS n FROM harness_shared.carry_notes WHERE workspace_id = '*'`;
     expect(Number(star[0]?.n ?? 0)).toBe(0);
     // And the reverse direction: a '*'-scoped READ finds a concretely-written row.
-    await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013-B', workspaceId: 'default' }, 'concrete write');
-    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013-B', workspaceId: '*' })).toBe('concrete write');
+    await setWorkItemCheckpoint(
+      { harness: HARNESS, workItemId: 'WI-9013-B', workspaceId: 'default' },
+      'concrete write',
+    );
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-9013-B', workspaceId: '*' })).toBe(
+      'concrete write',
+    );
   });
 
   it('workspace-scoped: a checkpoint in another workspace is invisible here', async () => {
     await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1', workspaceId: 'other-ws' }, 'theirs');
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1' })).toBeNull(); // default ws
-    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1', workspaceId: 'other-ws' })).toBe('theirs');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-1', workspaceId: 'other-ws' })).toBe(
+      'theirs',
+    );
   });
 });
 
@@ -263,9 +299,7 @@ describe('work-item checkpoint store (C6) — concurrent writes + cross-workspac
     // Fire N distinct, individually-coherent writers at the same key simultaneously. The UPSERT
     // serializes them; the survivor must be ONE of the inputs verbatim — no row gets a spliced blob.
     const writers = Array.from({ length: 12 }, (_, i) => `writer-${i}-${'='.repeat(i)}|coherent-snapshot`);
-    await Promise.all(
-      writers.map((cp) => setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-RACE' }, cp)),
-    );
+    await Promise.all(writers.map((cp) => setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-RACE' }, cp)));
     const rows = await rowsFor('WI-RACE');
     expect(rows).toHaveLength(1); // exactly one row survives — the PK held under contention
     expect(writers).toContain(rows[0].checkpoint); // it's one writer's WHOLE value, not a merge
@@ -299,12 +333,18 @@ describe('work-item checkpoint store (C6) — concurrent writes + cross-workspac
 
     // Re-WRITE in WS-A → WS-B is unchanged.
     await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' }, 'A-state-2');
-    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-b' })).toBe('B-state');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-b' })).toBe(
+      'B-state',
+    );
 
     // CLEAR in WS-A (delete that row) → WS-B's row is still present + intact.
-    expect(await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' }, null)).toBeNull();
+    expect(
+      await setWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' }, null),
+    ).toBeNull();
     expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-a' })).toBeNull();
-    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-b' })).toBe('B-state');
+    expect(await getWorkItemCheckpoint({ harness: HARNESS, workItemId: 'WI-ISO', workspaceId: 'ws-b' })).toBe(
+      'B-state',
+    );
     expect(await rowsFor('WI-ISO')).toEqual([{ workspace_id: 'ws-b', checkpoint: 'B-state' }]);
   });
 });

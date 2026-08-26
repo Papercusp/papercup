@@ -81,30 +81,36 @@ export function workItemCheckpointScope(harness: string | null | undefined, work
  *  the work item's progress anchor so the stale-claims STALLED leg (holder alive,
  *  last_progress_at > window) never frees a claim from a bee that is checkpointing.
  *  Best-effort: the checkpoint write must not fail on a progress-bump hiccup. Shared
- *  by {@link setWorkItemCheckpoint} and {@link setWorkItemCheckpointWithPrior}. */
+ *  by {@link setWorkItemCheckpoint} and {@link setWorkItemCheckpointWithPrior}.
+ *
+ *  EI-21498578211680100: progress and claim acquisition are distinct clocks. Migration
+ *  509 added issue-family `last_progress_at` to the unified base table, so checkpointing
+ *  must update that column directly and must NEVER refresh `taken_at` through the
+ *  `engineer_issues.assigned_at` compatibility view. The latter made every checkpoint
+ *  look like a fresh re-claim and destroyed the meaning of `takenAt`. */
 async function bumpCheckpointProgressAnchor(ref: WorkItemCheckpointRef, ws: string): Promise<void> {
   try {
     const { sql } = getOrgPg();
-    // Feature-family progress anchor keys on a concrete harness_slug. A harness-null
-    // item (issue-family EI) has no feature row, so skip this UPDATE — the
-    // engineer_issues UPDATE below is its progress anchor (EI-8805).
-    if (ref.harness && ref.harness !== CHECKPOINT_WILDCARD_HARNESS) {
-      await sql`
-        UPDATE harness_shared.work_items
-           SET last_progress_at = now()
-         WHERE workspace_id = ${ws} AND harness_slug = ${ref.harness} AND feature_id = ${ref.workItemId}`;
-    }
-    // Issue-family rows live in engineer_issues and do not yet have a separate
-    // last_progress_at column. Refresh assigned_at for claimed, open issues so
-    // checkpoint progress keeps the same stale-claim anchor alive.
+    // Issue ids are workspace-unique, while feature ids are harness-scoped. One
+    // base-table write therefore handles both families without touching the
+    // `engineer_issues` view (whose assigned_at aliases the claim-time taken_at).
+    // Credit only a currently-held row, matching markFeatureProgress/
+    // markIssueProgress and keeping holderless historical checkpoints out of the
+    // live progress signal.
     await sql`
-      UPDATE harness_shared.engineer_issues
-         SET assigned_at = now(), updated_at = now()
+      UPDATE harness_shared.work_items
+         SET last_progress_at = now()
        WHERE workspace_id = ${ws}
-         AND issue_id = ${ref.workItemId}
-         AND assignee IS NOT NULL
-         AND assignee <> ''
-         AND state = 'open'`;
+         AND feature_id = ${ref.workItemId}
+         AND taken_by IS NOT NULL
+         AND taken_by <> ''
+         AND (
+           item_kind IN ('bug', 'change', 'task')
+           OR (
+             ${ref.harness !== null && ref.harness !== undefined && ref.harness !== CHECKPOINT_WILDCARD_HARNESS}
+             AND harness_slug = ${ref.harness}
+           )
+         )`;
   } catch {
     /* best-effort */
   }
@@ -232,9 +238,7 @@ export async function setWorkItemCheckpointWithPrior(
       // routes readers to the time heuristics: an honest "we don't know" beats a
       // confident wrong answer, and `depsWarnings` tells the author to fix the refs.
       depsPayload =
-        stamps.length > 0
-          ? { v: DECLARED_DEPS_VERSION, stamps, ...(recomputed ? { recomputed: true } : {}) }
-          : null;
+        stamps.length > 0 ? { v: DECLARED_DEPS_VERSION, stamps, ...(recomputed ? { recomputed: true } : {}) } : null;
       // Only claim `recomputed` if it actually landed on a stored payload.
       if (depsPayload === null) recomputed = false;
       if (warnings.length > 0) depsWarnings = warnings;
@@ -295,9 +299,7 @@ export async function getWorkItemCheckpointDeps(ref: WorkItemCheckpointRef): Pro
  * back to the existing time heuristics (D-013's precedence rule: a declared verdict
  * OVERRIDES them; they remain the fallback for undeclared notes).
  */
-export async function getWorkItemCheckpointFreshness(
-  ref: WorkItemCheckpointRef,
-): Promise<FreshnessResult | undefined> {
+export async function getWorkItemCheckpointFreshness(ref: WorkItemCheckpointRef): Promise<FreshnessResult | undefined> {
   const deps = await getWorkItemCheckpointDeps(ref);
   if (!deps) return undefined;
   const ws = resolveConcreteWorkspaceId(ref.workspaceId);
@@ -375,9 +377,7 @@ export interface ClaimTimeCheckpointHint {
  * returns null (not an empty-string checkpoint object) when nothing was ever
  * written, so a normal fresh claim's response is unaffected.
  */
-export async function getClaimTimeCheckpointHint(
-  ref: WorkItemCheckpointRef,
-): Promise<ClaimTimeCheckpointHint | null> {
+export async function getClaimTimeCheckpointHint(ref: WorkItemCheckpointRef): Promise<ClaimTimeCheckpointHint | null> {
   const { checkpoint, updatedAtMs } = await getWorkItemCheckpointWithMeta(ref).catch(
     () => ({ checkpoint: null, updatedAtMs: null }) as WorkItemCheckpointWithMeta,
   );
