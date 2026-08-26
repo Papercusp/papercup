@@ -12,6 +12,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
+import { randomBytes } from 'node:crypto';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_baseline-coord-fixture';
 import {
   acquireAdvSessionResume,
@@ -22,10 +23,20 @@ import {
   releaseAdvSessionResume,
 } from '../../adv-sessions';
 
-let fx: BaselineCoordFixture;
+let fx: BaselineCoordFixture | null = null;
 let admin: postgres.Sql;
 
-const WS = 'rec-ws';
+const WS = `rec-ws-${randomBytes(6).toString('hex')}`;
+const OTHER_WS = `${WS}-other`;
+
+async function cleanOwnedRows(): Promise<void> {
+  await admin`
+    DELETE FROM harness_shared.agent_launch_idempotency
+     WHERE workspace_id IN (${WS}, ${OTHER_WS})`;
+  await admin`
+    DELETE FROM harness_shared.adv_sessions
+     WHERE workspace_id IN (${WS}, ${OTHER_WS})`;
+}
 
 async function seedAdv(opts: {
   coordOwnerId: string | null;
@@ -54,11 +65,11 @@ beforeAll(async () => {
   admin = fx.admin;
 });
 afterAll(async () => {
-  await admin`TRUNCATE harness_shared.adv_sessions`.catch(() => {});
-  await fx.dispose();
+  await cleanOwnedRows().catch(() => {});
+  if (fx) await fx.dispose();
 });
 beforeEach(async () => {
-  await admin`TRUNCATE harness_shared.adv_sessions`;
+  await cleanOwnedRows();
 });
 
 describe('listRecordedLiveSessions (real PG)', () => {
@@ -92,7 +103,7 @@ describe('listRecordedLiveSessions (real PG)', () => {
 
   it('filters by workspace when given', async () => {
     await seedAdv({ coordOwnerId: 's-mine', workspaceId: WS });
-    await seedAdv({ coordOwnerId: 's-other', workspaceId: 'other-ws' });
+    await seedAdv({ coordOwnerId: 's-other', workspaceId: OTHER_WS });
     const owners = (await listRecordedLiveSessions({ workspaceId: WS })).map((r) => r.coordOwnerId);
     expect(owners).toEqual(['s-mine']);
   });
@@ -203,21 +214,29 @@ describe('claimAdvSessionResume (single-winner Channel 2 resume claim)', () => {
  * adv-session lease before their backend-specific argv is constructed.
  */
 describe('explicit resume reservation lifecycle (lossless handoff)', () => {
-  async function seedEnded(agent: 'claude' | 'omp' | 'codex'): Promise<number> {
+  async function seedEnded(agent: 'claude' | 'omp' | 'codex'): Promise<{
+    id: number;
+    sessionId: string;
+    cwd: string;
+  }> {
+    const suffix = Math.random().toString(36).slice(2, 8);
+    const sessionId = `native-${agent}-${suffix}`;
+    const cwd = `/tmp/resume-${agent}-${suffix}`;
     const rows = await admin`
       INSERT INTO harness_shared.adv_sessions
-        (workspace_id, agent, mode, coord_owner_id, started_at, ended_at, exit_code, ended_by)
+        (workspace_id, agent, mode, coord_owner_id, session_id, cwd,
+         started_at, ended_at, exit_code, ended_by)
       VALUES (${WS}, ${agent}, ${agent === 'omp' ? 'omp' : 'console'},
-              ${`s-reservation-${agent}-${Math.random().toString(36).slice(2, 8)}`},
+              ${`s-reservation-${agent}-${suffix}`}, ${sessionId}, ${cwd},
               now() - interval '10 minutes', now(), 130, 'self')
       RETURNING id`;
-    return Number(rows[0].id);
+    return { id: Number(rows[0].id), sessionId, cwd };
   }
 
   it.each(['claude', 'omp', 'codex'] as const)(
     '%s stays ended while reserved and becomes live only after finalize',
     async (agent) => {
-      const id = await seedEnded(agent);
+      const { id, sessionId, cwd } = await seedEnded(agent);
       const key = `resume-${agent}-${id}`;
 
       const acquired = await acquireAdvSessionResume(id, key, 60);
@@ -233,8 +252,10 @@ describe('explicit resume reservation lifecycle (lossless handoff)', () => {
       expect(reserved.resume_claimed_at).not.toBeNull();
 
       expect(await finalizeAdvSessionResume(id, key)).toBe(true);
+      // A response lost after commit replays the durable finalize receipt.
+      expect(await finalizeAdvSessionResume(id, key)).toBe(true);
       const [live] = await admin`
-        SELECT ended_at, exit_code, ended_by, ended_signal,
+        SELECT ended_at, exit_code, ended_by, ended_signal, session_id, cwd,
                resume_claim_key, resume_claimed_at
           FROM harness_shared.adv_sessions
          WHERE id = ${id}`;
@@ -245,12 +266,14 @@ describe('explicit resume reservation lifecycle (lossless handoff)', () => {
         ended_signal: null,
         resume_claim_key: null,
         resume_claimed_at: null,
+        session_id: sessionId,
+        cwd,
       });
     },
   );
 
   it('replays one attempt, reports a typed competing reservation, and releases immediately', async () => {
-    const id = await seedEnded('claude');
+    const { id } = await seedEnded('claude');
     const key = `resume-owner-${id}`;
     const competitor = `${key}-competitor`;
 
@@ -269,27 +292,72 @@ describe('explicit resume reservation lifecycle (lossless handoff)', () => {
     });
 
     expect(await releaseAdvSessionResume(id, key)).toBe(true);
+    expect(await releaseAdvSessionResume(id, key)).toBe(true);
     expect(await acquireAdvSessionResume(id, competitor, 60)).toMatchObject({
       status: 'acquired',
       acquired: true,
     });
   });
 
-  it('lets a new claimant replace an expired reservation without a five-minute wait', async () => {
-    const id = await seedEnded('codex');
-    const first = `resume-expired-${id}`;
-    const next = `${first}-next`;
-    expect(await acquireAdvSessionResume(id, first, 60)).toMatchObject({ acquired: true });
-    await admin`
-      UPDATE harness_shared.adv_sessions
-         SET resume_claimed_at = now() - interval '61 seconds'
-       WHERE id = ${id}`;
+  it.each(['claude', 'omp', 'codex'] as const)(
+    '%s lets a new claimant replace an expired reservation without a five-minute wait',
+    async (agent) => {
+      const { id } = await seedEnded(agent);
+      const first = `resume-expired-${id}`;
+      const next = `${first}-next`;
+      expect(await acquireAdvSessionResume(id, first, 60)).toMatchObject({ acquired: true });
+      await admin`
+        UPDATE harness_shared.adv_sessions
+           SET resume_claimed_at = now() - interval '61 seconds'
+         WHERE id = ${id}`;
 
-    expect(await acquireAdvSessionResume(id, next, 60)).toMatchObject({
-      status: 'acquired',
-      acquired: true,
+      expect(await acquireAdvSessionResume(id, next, 60)).toMatchObject({
+        status: 'acquired',
+        acquired: true,
+      });
+    },
+  );
+
+  it.each(['claude', 'omp', 'codex'] as const)('%s admits exactly one of two simultaneous resumers', async (agent) => {
+    const { id } = await seedEnded(agent);
+    const keys = [`resume-race-a-${id}`, `resume-race-b-${id}`] as const;
+    const outcomes = await Promise.all([
+      acquireAdvSessionResume(id, keys[0], 60),
+      acquireAdvSessionResume(id, keys[1], 60),
+    ]);
+    expect(outcomes.filter((outcome) => outcome.status === 'acquired')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === 'reserved')).toHaveLength(1);
+
+    const winnerIndex = outcomes.findIndex((outcome) => outcome.status === 'acquired');
+    const loserIndex = winnerIndex === 0 ? 1 : 0;
+    expect(await finalizeAdvSessionResume(id, keys[winnerIndex])).toBe(true);
+    expect(await finalizeAdvSessionResume(id, keys[loserIndex])).toBe(false);
+    const [row] = await admin`
+        SELECT ended_at, resume_claim_key, resume_claimed_at
+          FROM harness_shared.adv_sessions
+         WHERE id = ${id}`;
+    expect(row).toMatchObject({
+      ended_at: null,
+      resume_claim_key: null,
+      resume_claimed_at: null,
     });
   });
+
+  it.each(['claude', 'omp', 'codex'] as const)(
+    '%s crash-before-spawn release makes the next attempt immediately claimable',
+    async (agent) => {
+      const { id } = await seedEnded(agent);
+      const crashed = `resume-crashed-${id}`;
+      const recovery = `${crashed}-recovery`;
+      expect(await acquireAdvSessionResume(id, crashed, 60)).toMatchObject({ acquired: true });
+      expect(await releaseAdvSessionResume(id, crashed)).toBe(true);
+      expect(await releaseAdvSessionResume(id, crashed)).toBe(true);
+      expect(await acquireAdvSessionResume(id, recovery, 60)).toMatchObject({
+        status: 'acquired',
+        acquired: true,
+      });
+    },
+  );
 });
 
 describe('reactivateAdvSessionByOwner (non-exclusive genuine-activity repair)', () => {
