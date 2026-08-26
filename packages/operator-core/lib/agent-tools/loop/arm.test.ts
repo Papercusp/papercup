@@ -1393,3 +1393,36 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
     });
   });
 });
+describe('loop:arm — carry-only retune inherits interval/goal (EI-21476896242465605)', () => {
+  const ACTIVE_PRIOR = {
+    active: true,
+    goal: 'drain the lane',
+    intervalSec: 300,
+    carry: 'warm',
+    harnessSlug: 'papercusp',
+    kickoff: 'kickoff-prompt',
+    fireCount: 3,
+    armedAt: '2026-08-26T00:00:00Z',
+  };
+  const rawCall = (args: Record<string, unknown>) =>
+    tool.handler(args as never, { harnessSlug: 'papercusp' } as never) as Promise<Out>;
+
+  it('inherits intervalSec and goal from the active loop on a carry-only retune', async () => {
+    priorLoopM.mockResolvedValue(ACTIVE_PRIOR as never);
+    const b = body(await rawCall({ carry: 'cold' }));
+    expect(b.ok).toBe(true);
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({ intervalSec: 300, goal: 'drain the lane', carry: 'cold' }),
+    );
+  });
+
+  it('a FRESH arm missing interval/goal fails invalid_args naming both, before materialize', async () => {
+    priorLoopM.mockResolvedValue(null);
+    const out = await rawCall({ carry: 'warm' });
+    const b = body(out);
+    expect(b.ok).toBe(false);
+    expect(b.error).toBe('invalid_args');
+    expect(b.missing).toEqual(['intervalSec', 'goal']);
+    expect(materializeM).not.toHaveBeenCalled();
+  });
+});
