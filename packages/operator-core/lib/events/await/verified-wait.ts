@@ -43,8 +43,20 @@ export interface ProducerHealthCertificate {
  * A producer's configured routine is not the same thing as an in-flight run.
  * The checkpoint adapter uses these states when the authoritative run probe can
  * tell us that the routine is idle, or cannot tell whether a run exists.
+ *
+ * EI-21502021074096764: `paused` is split out from `idle` for AGENT LEGIBILITY,
+ * not for behaviour — both classify as `expected-idle`/`re-await`. A
+ * deliberately paused producer previously reported `producerState: "idle"`
+ * alongside `active: false`, `routineActive: false`, `candidate: null` and
+ * `verdictStatus: null`. Every one of those five fields reads as "the thing you
+ * are waiting on is not running", so a reader applying the standard
+ * stranded-blocker rule ("if the blocker is not progressing, clearing it is now
+ * YOUR responsibility") is walked straight toward taking over a gate that a live
+ * owner had paused on purpose. The pause provenance WAS present in the same
+ * payload (`routinePauseReason`), but as one explanatory field against five
+ * alarming ones. `paused` puts the answer in the token the reader anchors on.
  */
-export type ProducerHealthObservationState = "active" | "idle" | "unknown";
+export type ProducerHealthObservationState = "active" | "idle" | "paused" | "unknown";
 
 export interface ProducerHealthObservation {
   checkedAtMs: number;
@@ -124,7 +136,14 @@ export function classifyVerifiedWaitTimeout(
   // authoritative adapter reports no candidate/run, the correct timeout
   // action is to re-await, not to wake someone for a takeover. `unknown` is
   // likewise conservative when the run probe could not establish a state.
-  if (observation.state === "idle") {
+  // `paused` is deliberately handled with `idle` and NOT given a classification
+  // of its own: an explicit pause is the strongest possible evidence that no run
+  // is expected right now, so the correct remedy is identical (`re-await`). The
+  // split exists only so the state token the reader sees says WHY no run is
+  // expected. Keeping one classification also means no persisted
+  // `timeout_verification` row, takeover filter, or consumer branch has to learn
+  // a new value (EI-21502021074096764).
+  if (observation.state === "idle" || observation.state === "paused") {
     return { ...base, classification: "expected-idle", nextAction: "re-await" };
   }
   if (observation.state === "unknown") {

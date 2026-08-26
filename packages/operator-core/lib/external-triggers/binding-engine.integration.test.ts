@@ -283,6 +283,57 @@ describe('external trigger durable dispatch', () => {
     expect(succeeded[0].outcome.dispatch.ok).toBe(true);
   });
 
+  it('does not report an agentic dispatch with no executable consumer as succeeded', async () => {
+    const execution = { appHarnessSlug: 'email', agentName: 'email-agent' };
+    await sql`
+      UPDATE harness_shared.trigger_bindings
+         SET action = ${JSON.stringify({ type: 'launch-plan', execution })}::text::jsonb
+       WHERE workspace_id = ${WS} AND id = ${bindingId}`;
+    const triggerRunId = await seedTriggerRun();
+    const runPlan = vi.fn(async () => ({
+      instanceSlug: `${PLAN}@run-${triggerRunPlanToken(triggerRunId)}`,
+      runId: 9004,
+      runSeq: 0,
+      minted: 0,
+      workItemIds: [],
+      actionableWorkItemIds: [],
+      replayed: true,
+      execution,
+      dispatch: {
+        ok: true,
+        target: {
+          requested: 'email-agent', ownerId: 'su-email-recorded', present: true,
+          sessionState: 'recorded', wakeable: false,
+        },
+        assignment: {
+          ok: true, targetAgent: 'email-agent', requested: [], actionable: [],
+          assigned: [], retained: [], skipped: [], failed: [], executionWorkItemIds: [],
+        },
+        wake: null,
+        warning: 'no currently actionable work-items; blocked/parked descendants remain unassigned and target was not woken',
+      },
+    }));
+
+    await expect(dispatchPendingTriggerRuns(sql, { runPlan, announceRunWork: vi.fn() }))
+      .resolves.toMatchObject({ claimed: 1, succeeded: 0, skipped: 1, failed: 0 });
+    const rows = await sql<Array<{
+      status: string;
+      error: string;
+      outcome: Record<string, any>;
+    }>>`
+      SELECT status, error, outcome FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${triggerRunId}`;
+    expect(rows[0]).toMatchObject({
+      status: 'skipped',
+      error: 'external_trigger_agentic_dispatch_no_consumer',
+      outcome: {
+        minted: 0,
+        noConsumer: true,
+        dispatch: { ok: true, wake: null, target: { wakeable: false } },
+      },
+    });
+  });
+
   it('parks a queue-preserved target_absent run beyond the ordinary cap, alerts once, then resolves on recovery', async () => {
     const execution = { appHarnessSlug: 'email', agentName: 'email-agent' };
     await sql`

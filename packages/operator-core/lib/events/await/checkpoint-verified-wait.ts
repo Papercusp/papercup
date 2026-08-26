@@ -144,7 +144,18 @@ function checkpointObservationState(
   // `active` on the routine is configuration/liveness of the scheduler, not
   // proof that a checkpoint is currently running. An explicit pause is even
   // stronger evidence that no run is expected right now.
-  if ((routine?.active === true || explicitlyPaused) && activeRun.candidate == null) {
+  //
+  // EI-21502021074096764: report that pause as its own state rather than
+  // flattening it into `idle`. Both remain non-takeover outcomes classifying as
+  // `expected-idle`, so this changes no downstream behaviour — it changes what
+  // the waiting agent is TOLD. A paused gate rendered `producerState: "idle"`
+  // next to `active: false` / `routineActive: false` / `candidate: null`, which
+  // together read as a stranded producer and invite a takeover of a gate whose
+  // live owner paused it deliberately.
+  if (explicitlyPaused && activeRun.candidate == null) {
+    return 'paused';
+  }
+  if (routine?.active === true && activeRun.candidate == null) {
     return 'idle';
   }
 

@@ -710,6 +710,25 @@ export async function dispatchPendingTriggerRuns(
         launched.instanceSlug,
         launched.runId,
       );
+      if (execution && launched.dispatch!.assignment.executionWorkItemIds.length === 0) {
+        await sql`
+          UPDATE harness_shared.trigger_runs
+             SET status = 'skipped', plan_run_ref = ${String(planRunId)},
+                 outcome = outcome || ${JSON.stringify({
+                   instancePlanSlug: launched.instanceSlug,
+                   planRunId,
+                   minted: launched.minted,
+                   replayed: launched.replayed,
+                   execution,
+                   dispatch: launched.dispatch,
+                   noConsumer: true,
+                 })}::text::jsonb,
+                 error = 'external_trigger_agentic_dispatch_no_consumer',
+                 completed_at = now(), updated_at = now()
+           WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+        result.skipped += 1;
+        continue;
+      }
       if (!execution) await announce(sql, row.workspaceId, planRunId);
       await sql`
         UPDATE harness_shared.trigger_runs

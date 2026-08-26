@@ -283,7 +283,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     file: 'packages/operator-core/lib/system-health/cluster-lag-watchdog.ts',
     executor: 'cluster-primary-timer',
     recovers: ['operator-event-loop'],
-    note: 'The primary SIGKILLs a worker silent past the threshold; cluster-fork respawns it. The primary\'s loop is independent of the wedged worker\'s — the reference design for this whole table.',
+    note: "The primary SIGKILLs a worker silent past the threshold; cluster-fork respawns it. The primary's loop is independent of the wedged worker's — the reference design for this whole table.",
   },
   {
     name: 'memory-watchdog',
@@ -342,7 +342,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     file: 'packages/operator-core/lib/red-queen/engine-death.ts',
     executor: 'operator-in-process-timer',
     recovers: ['routines-tick', 'dbos-executor'],
-    note: 'Every active routine\'s next_fire_at in the past at once = the engine is dead. Armed as a plain interval right after the boot catch, explicitly off DBOS and off the routines engine.',
+    note: "Every active routine's next_fire_at in the past at once = the engine is dead. Armed as a plain interval right after the boot catch, explicitly off DBOS and off the routines engine.",
   },
 
   // ── Release / git pipeline ───────────────────────────────────────────────────────
@@ -391,7 +391,7 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     mitigation: {
       kind: 'out-of-band-backstop',
       backstop: 'service-restart-rate-watchdog',
-      why: 'Request-path supervision alarm running in the host it reports on: it cannot alarm about its OWN host being down. It covers peer/unit liveness; a host that is itself gone is systemd\'s case and shows up as a restart-rate signal.',
+      why: "Request-path supervision alarm running in the host it reports on: it cannot alarm about its OWN host being down. It covers peer/unit liveness; a host that is itself gone is systemd's case and shows up as a restart-rate signal.",
     },
     note: 'R4-3 request-path supervision alarm.',
   },
@@ -528,6 +528,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'P-002 of this plan — semantic leg blocked by the embed budget.',
   },
   {
+    name: 'embed-latency-watchdog',
+    file: 'packages/operator-core/lib/system-health/embed-latency-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: ['external-process'],
+    note: 'Grades per-caller embed latency and unavailability from operator-owned samples. The embed sidecar is an external process, so this in-process observer remains outside the failure domain it reports.',
+  },
+  {
     name: 'compaction-compliance-watchdog',
     file: 'packages/operator-core/lib/system-health/compaction-compliance-watchdog.ts',
     executor: 'operator-in-process-timer',
@@ -581,10 +588,9 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     mitigation: {
       kind: 'out-of-band-backstop',
       backstop: 'goal-liveness-watchdog',
-      why:
-        'The heartbeat cannot recover a steward when the agent layer is empty: its plan-run fire only mints work for the same dispatcher. The in-process goal-liveness watchdog survives that absence and escalates the dark goal, so the heartbeat is an optimization rather than the only detection path.',
+      why: 'The heartbeat cannot recover a steward when the agent layer is empty: its plan-run fire only mints work for the same dispatcher. The in-process goal-liveness watchdog survives that absence and escalates the dark goal, so the heartbeat is an optimization rather than the only detection path.',
     },
-    note: 'The plan\'s motivating case, verified from source. The routine fires system:plan-run, which mints an instance plan and "the instance\'s items as frontier work_items — the harness\'s existing dispatcher executes those work_items, no second execution engine" (plan-run-action.ts). routine-classification.ts already types it { spend: \'llm\' }. So a steward that is dead because nothing is alive to claim its work is "recovered" by minting more work nobody claims.',
+    note: "The plan's motivating case, verified from source. The routine fires system:plan-run, which mints an instance plan and \"the instance's items as frontier work_items — the harness's existing dispatcher executes those work_items, no second execution engine\" (plan-run-action.ts). routine-classification.ts already types it { spend: 'llm' }. So a steward that is dead because nothing is alive to claim its work is \"recovered\" by minting more work nobody claims.",
   },
   {
     name: 'system:unguarded-halt-rescue',
@@ -713,9 +719,7 @@ export interface BrokenBackstop {
   reason: 'missing-backstop-name' | 'unknown-backstop' | 'backstop-also-fate-shared';
 }
 
-export function findBrokenBackstops(
-  mechanisms: readonly RecoveryMechanism[] = RECOVERY_MECHANISMS,
-): BrokenBackstop[] {
+export function findBrokenBackstops(mechanisms: readonly RecoveryMechanism[] = RECOVERY_MECHANISMS): BrokenBackstop[] {
   const byName = new Map(mechanisms.map((m) => [m.name, m]));
   const broken: BrokenBackstop[] = [];
   for (const m of mechanisms) {
@@ -821,7 +825,7 @@ export const HOLDER_LOSS_DISPOSITIONS: Readonly<Record<string, HolderLossDisposi
     kind: 'recovery-mechanism',
     mechanism: 'goal-holder-respawner',
     why:
-      'P-009\'s goal-holder-respawner runs on the operator host, independently of the ' +
+      "P-009's goal-holder-respawner runs on the operator host, independently of the " +
       'agent-session layer it restores. D-001 still makes a goal earn respawn by naming ' +
       'it, D-002 keeps the actor behind its own default-OFF owner-authority flag, and the ' +
       'shared damping policy bounds retries before a deduped give-up escalation.',
@@ -873,9 +877,7 @@ export function findHolderLossGaps(
 /** Render the audit as a markdown table — what P-004 asks to be produced and filed. */
 export function renderRecoveryAuditTable(result: RecoveryAuditResult = auditRecoveryDependencies()): string {
   const order: Record<RecoveryVerdict, number> = { 'fate-shared': 0, 'fate-shared-mitigated': 1, sound: 2 };
-  const rows = [...result.rows].sort(
-    (a, b) => order[a.verdict] - order[b.verdict] || a.name.localeCompare(b.name),
-  );
+  const rows = [...result.rows].sort((a, b) => order[a.verdict] - order[b.verdict] || a.name.localeCompare(b.name));
   const lines = [
     '| mechanism | executor | recovers (shared) | verdict | mitigation |',
     '| --- | --- | --- | --- | --- |',

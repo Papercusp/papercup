@@ -231,6 +231,61 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
   });
 
+  it('EI-21502021074096764: a DELIBERATELY PAUSED routine reports state "paused", not "idle"', async () => {
+    // Reproduces the exact payload that nearly caused a takeover of a live
+    // peer's critical-path gate: every scalar below reads as "the producer is
+    // not running", and only routinePauseReason says it is intentional.
+    const current = snapshot({
+      activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+      routines: {
+        gitSync: null,
+        greenCheckpoint: {
+          name: 'green-checkpoint',
+          active: false,
+          cron: null,
+          lastFiredAtMs: null,
+          nextFireAtMs: null,
+          pause: {
+            reason: 'D-080/D-083: held pending a clean WI-41743 union affected-radius verdict',
+            pausedBy: 'su-de924ac1',
+            pausedAtMs: 1_000,
+          },
+        },
+        releaseTrigger: null,
+      },
+    });
+    const certificate = checkpointProducerCertificate({
+      pipeline: 'papercusp',
+      ownerId: 'su-1',
+      issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000,
+      verificationDeadlineMs: 2_000,
+      snapshot: current,
+    });
+    const observed = await observeCheckpointProducer(certificate, { snapshot: async () => current });
+
+    // The state token itself must carry the pause, so a reader anchoring on it
+    // cannot arrive at "stranded" from an unread sibling field.
+    expect(observed).toMatchObject({
+      state: 'paused',
+      evidence: {
+        producerState: 'paused',
+        active: false,
+        routineActive: false,
+        candidate: null,
+        routinePauseReason:
+          'D-080/D-083: held pending a clean WI-41743 union affected-radius verdict',
+      },
+    });
+    expect(observed.state).not.toBe('idle');
+
+    // Behaviour is deliberately UNCHANGED: still a non-takeover outcome.
+    expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
+      classification: 'expected-idle',
+      nextAction: 're-await',
+    });
+  });
+
   it('EI-21045433666635330: a candidate-bound wait whose probe produced NO reading at all is unknown, never stalled', async () => {
     // activeRun is entirely null here -- the probe never observed anything (a
     // skipped/unresolvable root, a swallowed probe exception) -- as distinct from the

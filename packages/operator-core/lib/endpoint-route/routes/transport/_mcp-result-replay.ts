@@ -164,6 +164,12 @@ export async function storeMcpResult(args: {
       }
     }
   }
+  // EI-21508946450217911: structuredContent is part of the stored payload now —
+  // a large one must count toward the same event-loop gate the content does,
+  // or the gate under-measures by exactly the field this exists to bound.
+  if (args.result.structuredContent !== undefined) {
+    estimatedSize += JSON.stringify(args.result.structuredContent).length;
+  }
   if (estimatedSize > REPLAY_STORE_MAX_BYTES) {
     maybeSweep();
     return;

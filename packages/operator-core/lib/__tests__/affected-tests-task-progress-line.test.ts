@@ -54,10 +54,24 @@ describe('affected-tests synchronous spawn failures', () => {
   it('converts a synchronous E2BIG-class throw into an attributed terminal task result', () => {
     // `spawn()` can throw before returning a ChildProcess (E2BIG does), so an `error`
     // listener alone cannot observe it. Pin all three load-bearing effects: the boundary is
-    // caught, the task is named by a terminal progress marker, and the scheduler receives a
-    // nonzero result instead of a rejected shard / process-level exit-without-verdict.
+    // caught, the durable output record precedes the terminal progress marker, and the
+    // scheduler receives a nonzero attributed result instead of a rejected shard /
+    // process-level exit-without-verdict.
     expect(source).toMatch(/try\s*\{\s*child = spawn\(/);
-    expect(source).toContain('AFFECTED_TASK_PROGRESS state=spawn-error task=${progressTask}');
-    expect(source).toMatch(/resolveRun\(\{\s*status: 1,[\s\S]*?error: spawnError,/);
+    const catchStart = source.indexOf('    } catch (error) {');
+    const catchEnd = source.indexOf('    // EI-21048499991398082:', catchStart);
+    expect(catchStart).toBeGreaterThan(-1);
+    expect(catchEnd).toBeGreaterThan(catchStart);
+    const catchBlock = source.slice(catchStart, catchEnd);
+    expect(catchBlock).toMatch(/const result = \{\s*status: 1,[\s\S]*?error: spawnError,/);
+    expect(catchBlock).toContain('journalCapturedTaskOutput(');
+    expect(catchBlock).toContain('AFFECTED_TASK_PROGRESS state=spawn-error task=${progressTask}');
+    expect(catchBlock).toContain('resolveRun(result);');
+    expect(catchBlock.indexOf('journalCapturedTaskOutput(')).toBeLessThan(
+      catchBlock.indexOf('AFFECTED_TASK_PROGRESS state=spawn-error'),
+    );
+    expect(catchBlock.indexOf('AFFECTED_TASK_PROGRESS state=spawn-error')).toBeLessThan(
+      catchBlock.indexOf('resolveRun(result);'),
+    );
   });
 });

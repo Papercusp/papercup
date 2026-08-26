@@ -15,6 +15,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   validIdempotencyKey,
   lookupStoredMcpResult,
+  serializeStoredMcpResult,
   storeMcpResult,
   sweepExpiredMcpResults,
   type StoredMcpResult,
@@ -56,6 +57,26 @@ describe('MCP result replay (audit P-046 / EI-68)', async () => {
     expect(validIdempotencyKey(42)).toBeNull();
     expect(validIdempotencyKey(undefined)).toBeNull();
     expect(validIdempotencyKey('x'.repeat(201))).toBeNull();
+  });
+
+  // EI-21508946450217911: the stored receipt must carry structuredContent, or
+  // every replay of an outputSchema-declaring tool (scheduler:get_next) fails
+  // the SDK's client-side contract check (-32600) and the prescribed
+  // idempotent-recovery path can never return a schema-valid verdict.
+  it('serializes structuredContent into the stored receipt when present', () => {
+    const structured = { ok: true, claimReceipt: { workItemId: 'EI-1', committed: true } };
+    const json = serializeStoredMcpResult({
+      content: [{ type: 'text', text: '{"ok":true}' }],
+      _meta: { format: 'json' },
+      structuredContent: structured,
+    });
+    const parsed = JSON.parse(json) as { structuredContent?: unknown };
+    expect(parsed.structuredContent).toEqual(structured);
+  });
+
+  it('omits the structuredContent key for results that never had one (shape unchanged)', () => {
+    const json = serializeStoredMcpResult(RESULT);
+    expect(JSON.parse(json)).not.toHaveProperty('structuredContent');
   });
 
   it.skipIf(!live)('stores a result and replays it tagged _meta.replayed', async () => {
@@ -104,6 +125,31 @@ describe('MCP result replay (audit P-046 / EI-68)', async () => {
     expect(replayed!.isError).toBe(true);
     expect(replayed!._meta).toMatchObject({ replayed: true });
   });
+
+  it.skipIf(!live)(
+    'replays an output-schema tool result with its structuredContent intact (scheduler:get_next recovery shape)',
+    async () => {
+      const structured = {
+        ok: true,
+        claimReceipt: { committed: true, workItemId: 'EI-21508946450217911', specId: 'nonp2p-bug-drain' },
+      };
+      await storeMcpResult({
+        ownerKey: OWNER_A,
+        idempotencyKey: 'k-structured',
+        toolName: 'scheduler:get_next',
+        workspaceId: 'default',
+        result: {
+          content: [{ type: 'text', text: JSON.stringify(structured) }],
+          _meta: { format: 'json' },
+          structuredContent: structured,
+        },
+      });
+      const replayed = await lookupStoredMcpResult(OWNER_A, 'k-structured');
+      expect(replayed).not.toBeNull();
+      expect(replayed!.structuredContent).toEqual(structured); // THE regression: schema-valid replay
+      expect(replayed!._meta).toMatchObject({ format: 'json', replayed: true });
+    },
+  );
 
   it.skipIf(!live)('the sweep removes only rows past the 1h TTL; lookup ignores them either way', async () => {
     const { sql } = getOrgPg();
