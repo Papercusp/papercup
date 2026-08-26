@@ -84,6 +84,13 @@ describe.skipIf(!section)("seam-round-trip", () => {
     expect(typeof parseOut, `missing export ${section!.parseOutputExport}`).toBe("function");
   });
 
+  it("configures a real canonical plan-run integration leg", () => {
+    expect(
+      section!.roundTripCommand?.length,
+      "roundTripCommand is required: canned contract parsing cannot prove plan-run promotion, DAG provenance, assignment, or wake delivery",
+    ).toBeGreaterThan(0);
+  });
+
   it("a valid payload.in passes the UP gate", () => {
     expect(parseIn(section!.validInput)).toBeTruthy();
   });
@@ -117,7 +124,6 @@ describe.skipIf(!section)("seam-round-trip", () => {
     "the app's own enqueue→ingest integration leg is green (roundTripCommand)",
     { timeout: 330_000 },
     () => {
-      if (!section!.roundTripCommand?.length) return;
       const [cmd, ...args] = section!.roundTripCommand;
       const run = spawnSync(cmd!, args, {
         cwd: section!.roundTripCwd ? inApp(section!.roundTripCwd) : appRoot!,
