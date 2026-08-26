@@ -64,6 +64,7 @@ import {
   formatInvalidWorkspacePackageVersions,
   formatMissing,
   formatRuntimeFailures,
+  resolveWorkspaceDirs,
 } from "./check-declared-deps-extracted.mjs";
 
 const DEFAULT_REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -94,6 +95,51 @@ export function cacheVerifyArgs(npmArgs = []) {
     }
   }
   return [...CACHE_VERIFY_ARGS, ...cacheArgs];
+}
+
+/**
+ * Resolve npm's repeatable workspace selectors to the canonical repo-relative
+ * directories consumed by the dependency-integrity scanners. npm accepts both
+ * package names and paths, while those scanners intentionally accept paths only.
+ * No selector means a full install and therefore a full-tree verification.
+ */
+export function verificationScopeForNpmArgs({
+  repoRoot = DEFAULT_REPO_ROOT,
+  npmArgs = [],
+  deps = {},
+} = {}) {
+  const selectors = [];
+  for (let index = 0; index < npmArgs.length; index += 1) {
+    const arg = npmArgs[index];
+    if (arg === '--workspace' || arg === '-w') {
+      if (typeof npmArgs[index + 1] === 'string') selectors.push(npmArgs[++index]);
+    } else if (typeof arg === 'string' && arg.startsWith('--workspace=')) {
+      selectors.push(arg.slice('--workspace='.length));
+    } else if (typeof arg === 'string' && arg.startsWith('-w=')) {
+      selectors.push(arg.slice('-w='.length));
+    }
+  }
+  if (selectors.length === 0) return { workspaceDirs: undefined, repairWorkspaceArgs: [] };
+
+  const readJson = deps.readJson ?? ((path) => JSON.parse(readFileSync(path, 'utf8')));
+  const workspaceDirs = resolveWorkspaceDirs(repoRoot, deps);
+  const bySelector = new Map();
+  for (const dir of workspaceDirs) {
+    bySelector.set(dir, dir);
+    bySelector.set(`./${dir}`, dir);
+    const manifest = readJson(join(repoRoot, dir, 'package.json'));
+    if (typeof manifest?.name === 'string') bySelector.set(manifest.name, dir);
+  }
+  const selectedDirs = selectors.map((selector) => {
+    const dir = bySelector.get(selector);
+    if (!dir) throw new Error(`npm workspace selector did not resolve after install: ${selector}`);
+    return dir;
+  });
+  const uniqueDirs = [...new Set(selectedDirs)];
+  return {
+    workspaceDirs: uniqueDirs,
+    repairWorkspaceArgs: selectors.map((selector) => `--workspace=${selector}`),
+  };
 }
 
 /**
@@ -255,6 +301,7 @@ export function removePackageLocalRepairLockEntries({
  */
 export async function verifyDepsExtracted({
   repoRoot = DEFAULT_REPO_ROOT,
+  npmArgs = [],
   runNpm,
   probeSpecifiers,
   deps = {},
@@ -264,14 +311,21 @@ export async function verifyDepsExtracted({
     ((args) =>
       spawnSync("npm", args, { cwd: repoRoot, stdio: "inherit" }).status ?? 1);
 
+  const { workspaceDirs, repairWorkspaceArgs } = verificationScopeForNpmArgs({
+    repoRoot,
+    npmArgs,
+    deps,
+  });
   const inspect = async () => {
-    const declared = await findUnextractedDepsWithRetry({ repoRoot, deps });
+    const declared = await findUnextractedDepsWithRetry({ repoRoot, workspaceDirs, deps });
     const packageLocal = await findIncompleteWorkspacePackagesWithRetry({
       repoRoot,
+      workspaceDirs,
       deps,
     });
     const packageVersions = await findInvalidWorkspacePackageVersionsWithRetry({
       repoRoot,
+      workspaceDirs,
       deps,
     });
     if (
@@ -342,10 +396,11 @@ export async function verifyDepsExtracted({
         .join('\n')}`,
     );
   }
+  const repairArgs = [...REPAIR_ARGS, ...repairWorkspaceArgs];
   console.error(
-    `NPM_INSTALL_SAFE repairing: npm ${REPAIR_ARGS.join(" ")} (one bounded attempt, still holding the lock)`,
+    `NPM_INSTALL_SAFE repairing: npm ${repairArgs.join(" ")} (one bounded attempt, still holding the lock)`,
   );
-  const repairStatus = spawn(REPAIR_ARGS) ?? 1;
+  const repairStatus = spawn(repairArgs) ?? 1;
   if (repairStatus !== 0) {
     console.error(
       `NPM_INSTALL_SAFE_FATAL: repair npm exited ${repairStatus}; dependency integrity is unverified.`,
@@ -534,7 +589,7 @@ export async function main(argv = process.argv.slice(2)) {
       const status = result.status ?? 1;
       // A FAILED npm run reports its own error — never mask it with a dep verdict.
       if (status !== 0 || process.env.PAPERCUSP_SKIP_DEP_VERIFY === '1') return status;
-      return verifyDepsExtracted({ repoRoot });
+      return verifyDepsExtracted({ repoRoot, npmArgs });
     },
     {
       onWaiting: ({ owner, elapsedMs }) => {

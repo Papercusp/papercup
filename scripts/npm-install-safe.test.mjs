@@ -9,6 +9,7 @@ import {
   publishDependencyGeneration,
   repoLockName,
   runCommandUnderInstallMutex,
+  verificationScopeForNpmArgs,
   verifyNpmCache,
 } from './npm-install-safe.mjs';
 import { withFsMutex } from './lib/fs-mutex.mjs';
@@ -26,6 +27,41 @@ test('cacheVerifyArgs preserves an explicit npm cache path', () => {
     '--cache=/tmp/npm-cache',
   ]);
   assert.deepEqual(cacheVerifyArgs(['install']), ['cache', 'verify']);
+});
+
+test('verificationScopeForNpmArgs maps npm workspace names and paths without widening to unselected workspaces', () => {
+  const repoRoot = '/repo';
+  const manifests = new Map([
+    ['/repo/package.json', { workspaces: ['apps/*'] }],
+    ['/repo/apps/web/package.json', { name: '@papercusp/web' }],
+    ['/repo/apps/operator-vite/package.json', { name: '@papercusp/operator-vite' }],
+    ['/repo/apps/operator-docs/package.json', { name: '@papercusp/operator-docs' }],
+  ]);
+  const deps = {
+    readJson: (path) => manifests.get(path),
+    existsSync: (path) => path === '/repo/apps' || manifests.has(path),
+    readDir: () => [
+      { name: 'web', isDir: true },
+      { name: 'operator-vite', isDir: true },
+      { name: 'operator-docs', isDir: true },
+    ],
+  };
+
+  assert.deepEqual(
+    verificationScopeForNpmArgs({
+      repoRoot,
+      npmArgs: ['install', '--workspace=@papercusp/web', '-w', 'apps/operator-vite'],
+      deps,
+    }),
+    {
+      workspaceDirs: ['apps/web', 'apps/operator-vite'],
+      repairWorkspaceArgs: ['--workspace=@papercusp/web', '--workspace=apps/operator-vite'],
+    },
+  );
+  assert.deepEqual(
+    verificationScopeForNpmArgs({ repoRoot, npmArgs: ['install'], deps }),
+    { workspaceDirs: undefined, repairWorkspaceArgs: [] },
+  );
 });
 
 test('verifyNpmCache invokes npm cache verify in the target repo and returns its status', () => {
