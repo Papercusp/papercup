@@ -955,7 +955,7 @@ describe('assertWorkspaceHostRemoteInitializerArgv', () => {
     ['a truncated argv', ['--protocol-version', PROTOCOL]],
     ['an extra flag', [...WORKSPACE_HOST_REMOTE_INITIALIZER_ARGV, '--verbose']],
     ['a reordered argv', ['--json-stdin', '--protocol-version', PROTOCOL]],
-    ['a skewed version', ['--protocol-version', 'papercusp-gcp-iap-initialization-v2', '--json-stdin']],
+    ['a skewed version', ['--protocol-version', 'papercusp-gcp-iap-initialization-v1', '--json-stdin']],
   ])('rejects %s', (_label, argv) => {
     expect(() => assertWorkspaceHostRemoteInitializerArgv(argv as string[])).toThrow(
       WorkspaceHostRemoteInitializerProtocolError,
