@@ -975,6 +975,23 @@ async fn run<B: Backend>(
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::LaunchMany(specs) => {
+                // P-031: resume the crew's ended members the user confirmed in
+                // the crew-restore prompt. Each spec follows the exact `Launch`
+                // path (companion when linked, else the zellij CLI); the
+                // reducer already `record_launch`ed each spec — no re-record.
+                for spec in specs {
+                    match &companion {
+                        Some(c) => c.open_pane(&spec),
+                        None => {
+                            if let Err(e) = Zellij.open_pane(&spec) {
+                                app.update(Event::Error(format!("launch: {e}")));
+                            }
+                        }
+                    }
+                }
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::LaunchPanes { sessions, bees } => {
                 // Reactive work-area panes for new LOCAL workbench launches
                 // (pui-reactive-session-panes D-006). EI-358 CLAIM-THEN-OPEN:
@@ -1047,10 +1064,12 @@ async fn run<B: Backend>(
             Action::Workbench(cmd) => {
                 // Execute a palette workbench command (P12b) off the UI thread; it
                 // reports results back as toasts. SaveCrew needs the current crew
-                // roster, so it's snapshotted here from App.
+                // roster, and RestoreCrew routes members by liveness against the
+                // ACTIVE agent roster (P-031) — both snapshotted here from App.
                 tokio::spawn(execute_workbench_command(
                     cmd,
                     app.launched.clone(),
+                    app.roster.clone(),
                     tx.clone(),
                 ));
                 terminal.draw(|f| ui::draw(f, &app))?;
@@ -1931,6 +1950,7 @@ async fn run_test_file(harness: String, file: String, tx: UnboundedSender<Event>
 async fn execute_workbench_command(
     cmd: app::PaletteCommand,
     members: Vec<models::CrewMember>,
+    roster: Vec<models::RosterEntry>,
     tx: UnboundedSender<Event>,
 ) {
     use app::PaletteCommand as P;
@@ -2035,14 +2055,38 @@ async fn execute_workbench_command(
         },
         P::RestoreCrew(name) => match client.get_crew(&owner, &name).await {
             Ok(Some(crew)) => {
-                let specs = workbench::crew_pane_specs(&crew);
-                let n = specs.len();
-                // Fire-and-forget each pane (LIVE — the companion isn't reachable
-                // from this task; the run loop's fallback path is mirrored).
-                for spec in &specs {
+                // P-031 (crews are the multi-session switch): route each saved
+                // member by LIVENESS instead of blind-spawning a pane per row —
+                // fresh members spawn, live members get focused by the reducer,
+                // parked members are WOKEN (coord:wake), and ended members
+                // PROMPT in the reducer (never a silently smaller workspace,
+                // D-009).
+                let part = workbench::partition_crew(&crew.members, &roster);
+                // Fire-and-forget each fresh pane (LIVE — the companion isn't
+                // reachable from this task; the run loop's fallback is mirrored).
+                for spec in &part.fresh {
                     let _ = Zellij.open_pane(spec);
                 }
-                let _ = tx.send(toast(format!("restoring crew '{name}' ({n} agents)")));
+                let mut woken: Vec<String> = Vec::new();
+                let mut wake_failed: Vec<String> = Vec::new();
+                for entry in &part.parked {
+                    let args = serde_json::json!({
+                        "to": entry.owner_id,
+                        "note": format!("crew '{name}' restore: resume your lane"),
+                    });
+                    match client.run_tool("coord:wake", args).await {
+                        Ok(_) => woken.push(entry.owner_id.clone()),
+                        Err(_) => wake_failed.push(entry.owner_id.clone()),
+                    }
+                }
+                let _ = tx.send(Event::CrewRestoreResolved {
+                    name: name.clone(),
+                    fresh_spawned: part.fresh.len(),
+                    live: part.live,
+                    woken,
+                    wake_failed,
+                    ended: part.ended,
+                });
             }
             Ok(None) => {
                 let _ = tx.send(Event::Error(format!("restore-crew: '{name}' not found")));

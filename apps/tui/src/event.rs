@@ -354,6 +354,20 @@ pub enum Event {
     /// A voice-pipeline state change (record → transcribe → converse → speak),
     /// sourced from the PTT turn task. See `app::VoicePhase`.
     Voice(VoiceMsg),
+    /// A crew RESTORE resolved against the live roster (P-031 — crews are the
+    /// multi-session switch): `fresh_spawned` panes were opened, `live`
+    /// members should be focused (the reducer focuses the first), `woken` /
+    /// `wake_failed` report the `coord:wake` results for parked members, and
+    /// `ended` members await the user's go-ahead in the reducer's
+    /// crew-restore prompt instead of silently vanishing (D-009).
+    CrewRestoreResolved {
+        name: String,
+        fresh_spawned: usize,
+        live: Vec<RosterEntry>,
+        woken: Vec<String>,
+        wake_failed: Vec<String>,
+        ended: Vec<crate::models::CrewMember>,
+    },
 }
 
 /// A message from the voice PTT pipeline (voice-mode-tui-port-2026-06-05).
