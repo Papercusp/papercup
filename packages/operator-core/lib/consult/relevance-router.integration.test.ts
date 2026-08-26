@@ -255,9 +255,13 @@ describe('routeConsult — D-003 honesty invariants', () => {
     expect(r.qualified.map((c) => c.ownerId)).not.toContain('agent-subfloor'); // …so it must not qualify.
   });
 
-  it('no embedder → honest degrade, never a routed verdict', async () => {
+  it('no embedder → unmeasured, NOT a measured absence of qualified peers', async () => {
     const r = await routeConsult(baseParams, deps(null));
-    expect(r.verdict).toBe('no_qualified_responder');
+    // `no_qualified_responder` would claim similarity was computed and nobody
+    // cleared the floor. Nothing was computed here, so the router has no claim
+    // to make about the peer population at all (EI-21485716602970457).
+    expect(r.verdict).toBe('relevance_unmeasured');
+    expect(r.verdict).not.toBe('no_qualified_responder');
     expect(r.qualified).toEqual([]);
     expect(r.snapshot.degraded).toBe('embed-unavailable');
     expect(r.snapshot.candidates).toEqual([]);
@@ -279,7 +283,9 @@ describe('routeConsult — D-003 honesty invariants', () => {
       { ...baseParams, question: 'consult router fallback' },
       deps(null, { getLiveness: async (owners) => Object.fromEntries(owners.map((owner) => [owner, 'live'])) }),
     );
-    expect(r.verdict).toBe('no_qualified_responder');
+    // Lexical candidates DO come back here — which is exactly why the verdict
+    // must not read as "nobody qualified": they were never ranked for relevance.
+    expect(r.verdict).toBe('relevance_unmeasured');
     expect(r.qualified).toEqual([]);
     expect(r.snapshot.degraded).toBe('embed-unavailable');
     expect(r.snapshot.fallback).toBe('lexical');
@@ -299,7 +305,7 @@ describe('routeConsult — D-003 honesty invariants', () => {
       baseParams,
       deps(0, { embed: async () => { throw new Error('sidecar down'); } }),
     );
-    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.verdict).toBe('relevance_unmeasured');
     expect(r.snapshot.degraded).toBe('embed-unavailable');
   });
 });
