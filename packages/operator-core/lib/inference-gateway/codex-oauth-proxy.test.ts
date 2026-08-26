@@ -14,8 +14,11 @@ import * as path from 'node:path';
 import {
   __resetCodexRefreshState,
   accessTokenExpired,
+  aggregateCodexNonStreamResponse,
   buildCodexUpstreamHeaders,
   codexBackendUrl,
+  CodexNonStreamAggregateError,
+  makeCodexNonStreamUpstreamBody,
   normalizeCodexChatGptResponsesBody,
   preflightCodexModel,
   jwtExpMs,
@@ -114,6 +117,101 @@ describe('normalizeCodexChatGptResponsesBody', () => {
     expect(normalizeCodexChatGptResponsesBody(list)).toEqual({ body: list, inputNormalized: false });
     const malformed = Buffer.from('{oops');
     expect(normalizeCodexChatGptResponsesBody(malformed)).toEqual({ body: malformed, inputNormalized: false });
+  });
+});
+
+describe('makeCodexNonStreamUpstreamBody / aggregateCodexNonStreamResponse', () => {
+  async function* chunks(...values: string[]): AsyncGenerator<Uint8Array> {
+    for (const value of values) yield Buffer.from(value, 'utf8');
+  }
+
+  it('turns a public non-stream body into the ChatGPT streaming wire shape', () => {
+    const body = makeCodexNonStreamUpstreamBody(Buffer.from(JSON.stringify({ model: 'gpt-5.6', input: 'hello', stream: false })));
+    expect(body && JSON.parse(body.toString('utf8'))).toEqual({
+      model: 'gpt-5.6',
+      input: 'hello',
+      stream: true,
+      store: false,
+    });
+  });
+
+  it('extracts response.completed from chunked SSE and returns ordinary Responses JSON', async () => {
+    const completed = { id: 'resp_1', model: 'gpt-5.6', output: [{ type: 'message' }] };
+    const wire = `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: completed })}\n\ndata: [DONE]\n\n`;
+    const split = Math.floor(wire.length / 2);
+    const result = await aggregateCodexNonStreamResponse(chunks(wire.slice(0, split), wire.slice(split)), {
+      contentType: 'text/event-stream; charset=utf-8',
+      maxBytes: 16 * 1024,
+      timeoutMs: 1_000,
+    });
+    expect(JSON.parse(result.toString('utf8'))).toEqual(completed);
+  });
+
+  it('accepts a bounded JSON response when the backend ignores stream:true', async () => {
+    const body = JSON.stringify({ id: 'resp_json', output: [] });
+    const result = await aggregateCodexNonStreamResponse(chunks(body), {
+      contentType: 'application/json',
+      maxBytes: 1_024,
+      timeoutMs: 1_000,
+    });
+    expect(result.toString('utf8')).toBe(body);
+  });
+
+  it('rejects an oversized response before retaining it', async () => {
+    await expect(aggregateCodexNonStreamResponse(chunks('data: {"type":"response.created"}\n\n', 'x'.repeat(64)), {
+      contentType: 'text/event-stream',
+      maxBytes: 32,
+      timeoutMs: 1_000,
+    })).rejects.toMatchObject({ code: 'size', name: 'CodexNonStreamAggregateError' } satisfies Partial<CodexNonStreamAggregateError>);
+  });
+
+  it('times out a stalled source and invokes the transport abort hook', async () => {
+    let returned = false;
+    const stalled: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => new Promise<IteratorResult<Uint8Array>>(() => {}),
+          return: async () => {
+            returned = true;
+            return { done: true, value: undefined as never };
+          },
+        };
+      },
+    };
+    const onTimeout = vi.fn();
+    await expect(aggregateCodexNonStreamResponse(stalled, {
+      contentType: 'text/event-stream',
+      maxBytes: 1_024,
+      timeoutMs: 10,
+      onTimeout,
+    })).rejects.toMatchObject({ code: 'timeout' });
+    expect(onTimeout).toHaveBeenCalledOnce();
+    expect(returned).toBe(true);
+  });
+
+  it('cancels aggregation promptly when the downstream signal aborts', async () => {
+    let returned = false;
+    const stalled: AsyncIterable<Uint8Array> = {
+      [Symbol.asyncIterator]() {
+        return {
+          next: () => new Promise<IteratorResult<Uint8Array>>(() => {}),
+          return: async () => {
+            returned = true;
+            return { done: true, value: undefined as never };
+          },
+        };
+      },
+    };
+    const controller = new AbortController();
+    const pending = aggregateCodexNonStreamResponse(stalled, {
+      contentType: 'text/event-stream',
+      maxBytes: 1_024,
+      timeoutMs: 1_000,
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: 'aborted' });
+    expect(returned).toBe(true);
   });
 });
 
