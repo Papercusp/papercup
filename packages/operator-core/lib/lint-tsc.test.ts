@@ -722,6 +722,18 @@ describe('tsc child heap (WI-37503)', () => {
     expect(env.PC_HEAVY_FRESH_AFTER).toBe('17');
     expect(env.NODE_OPTIONS).toContain('--max-old-space-size=');
   });
+
+  it('retries exact exclusive-materializer preemptions without hiding caller overrides', () => {
+    const prev = process.env.PC_HEAVY_RETRY_PREEMPTIONS;
+    delete process.env.PC_HEAVY_RETRY_PREEMPTIONS;
+    try {
+      expect(tscChildEnv().PC_HEAVY_RETRY_PREEMPTIONS).toBe('3');
+      expect(tscChildEnv({ PC_HEAVY_RETRY_PREEMPTIONS: '0' }).PC_HEAVY_RETRY_PREEMPTIONS).toBe('0');
+    } finally {
+      if (prev === undefined) delete process.env.PC_HEAVY_RETRY_PREEMPTIONS;
+      else process.env.PC_HEAVY_RETRY_PREEMPTIONS = prev;
+    }
+  });
 });
 
 // EI-847: the operator-vite counterpart of the gate above, built on the same shared
