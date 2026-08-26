@@ -38,11 +38,24 @@
  *
  * This governs the HUMAN-NOTIFY leg ONLY. The `gate-red-streak:<harness>` condition and
  * the claimable work-item it mints keep WI-6228's `oneShot:true` semantics untouched:
- * re-NOTIFY, never re-mint, never re-open the condition. Those two legs fire from one flag
- * today; wiring this is what separates them.
+ * re-NOTIFY, never re-mint, never re-open the condition. Separating those two legs is
+ * exactly what wiring this ladder achieved.
  *
- * PURE + INERT: nothing imports this yet, and it performs no I/O. Wiring is a follow-up
- * one-call-site change tracked on WI-42116.
+ * PURE, AND WIRED — do not wire it again. The exported functions still perform no I/O, but
+ * this module IS imported: WI-42116 (done) landed the call site, and
+ * `harness/routines/release-actions.ts` calls `decideStallNotification` +
+ * `describeLadderPosition` on the gate-stall tick. There is exactly ONE production call
+ * site and there must remain exactly one — a second would notify the owner twice per rung,
+ * reintroducing the EI-7472 re-spam this ladder's bounded, super-linear design exists to
+ * avoid.
+ *
+ * ⚠ This header previously described the module as still inert and its wiring as a
+ * pending follow-up, for hours after that wiring landed (EI-21528303638863879). That is a
+ * double-wire trap rather than a cosmetic lag: a reader who checks WI-42116, finds it
+ * `done`, and reads this module as still inert concludes the item was closed WITHOUT its
+ * wiring — the exact inverse of the truth. Wiring status is a fact the CODE owns, so it is
+ * now pinned by `doc-claims/stall-ladder-wiring-status.test.ts` instead of being
+ * hand-maintained here.
  */
 
 /**
