@@ -7,11 +7,7 @@
  * operator cache, tag invalidation, and durable L2 tier.
  */
 import { cachedRead } from '../../cache';
-import {
-  listPlanIndexRows,
-  resolvePlanScope,
-  type PlanIndexRow,
-} from './source';
+import { listPlanIndexRows, resolvePlanScope, type PlanIndexRow } from './source';
 
 export const PLAN_INDEX_ROWS_SOFT_TTL_MS = 45_000;
 export const PLAN_INDEX_ROWS_HARD_TTL_MS = 5 * 60_000;
@@ -53,9 +49,7 @@ function planIndexRowsCacheKey(
  * `harness_plans` covers row/item/status changes; `trigger_bindings` covers the
  * derived `hasExternalTrigger` projection in the index query.
  */
-export async function listPlanIndexRowsCached(
-  opts: ListPlanIndexRowsOptions = {},
-): Promise<PlanIndexRow[]> {
+export async function listPlanIndexRowsCached(opts: ListPlanIndexRowsOptions = {}): Promise<PlanIndexRow[]> {
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   const sourceOpts: ListPlanIndexRowsOptions = {
     ...opts,
