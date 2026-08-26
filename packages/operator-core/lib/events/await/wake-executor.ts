@@ -82,6 +82,7 @@ import {
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
+import { getWorkItem } from '../../work-items';
 // EI-20489286325396940: `payloadIsTimeout` + `wakeSummaryHeadline` live in
 // timeout-fallback.ts (PG-free, beside the other timeout wording) so engine.ts can
 // import the summary renderer WITHOUT going through this module — engine.test.ts
@@ -515,6 +516,60 @@ export function withWakeTimeout<T>(p: Promise<T>, label: string, ms: number): Pr
  *  imports engine). Same "two owners, one string, in lockstep" pattern as
  *  TURN_SUBMIT_CR_DELAY_MS above. */
 const COORD_INBOX_WAKE_PREFIX = 'coord:inbox-wake:';
+/**
+ * EI-21555327100993502: fleet claim-release wakes are emitted when an item is
+ * returned to the pool, but the delivery can sit behind a gate/retry long
+ * enough for another agent to claim that item again. Re-check the item at the
+ * actual delivery boundary before re-invoking the fleet leader.
+ */
+const FLEET_CLAIM_RELEASED_PREFIX = 'fleet:claim-released:';
+const FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS = 1_000;
+
+type FleetClaimReleasedPayload = {
+  id: string;
+  harness?: string;
+};
+
+/** Parse only the payload shape needed by the delivery-time claim check. */
+function parseFleetClaimReleasedPayload(payload: unknown): FleetClaimReleasedPayload | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const record = payload as { id?: unknown; harness?: unknown };
+  if (typeof record.id !== 'string' || record.id.trim().length === 0) return null;
+  if (record.harness !== undefined && record.harness !== null && typeof record.harness !== 'string') return null;
+  return {
+    id: record.id,
+    ...(typeof record.harness === 'string' ? { harness: record.harness } : {}),
+  };
+}
+
+/**
+ * Read the current claim for a fleet-scoped release wake. Every uncertain result
+ * is deliberately `null`: a missing/malformed payload, a missing item, a
+ * rejected lookup, or a timeout must preserve the normal wake rather than
+ * silently strand it. The timeout bounds a wedged PG connection on this hot
+ * delivery path.
+ */
+async function currentFleetClaimReleasedItem(
+  d: DeliveryWork,
+  lookup: typeof getWorkItem,
+  timeoutMs: number,
+): Promise<Awaited<ReturnType<typeof getWorkItem>> | null> {
+  if (!d.eventKey.startsWith(FLEET_CLAIM_RELEASED_PREFIX) || d.eventKey.length <= FLEET_CLAIM_RELEASED_PREFIX.length) {
+    return null;
+  }
+  const parsed = parseFleetClaimReleasedPayload(d.payload);
+  if (!parsed) return null;
+  try {
+    return await withWakeTimeout(
+      Promise.resolve().then(() => lookup(parsed.id, parsed.harness)),
+      `fleet claim-release lookup/${parsed.id}`,
+      Math.max(1, timeoutMs),
+    );
+  } catch {
+    // Fail open even if an injected lookup violates the Promise contract.
+    return null;
+  }
+}
 
 type LoopDeliveryMarker = {
   marker: ColdLoopMarker;
@@ -1552,6 +1607,12 @@ export interface ExecuteWakeDeps {
   presence?: typeof getPresence;
   /** EI-203843: durable release-latch read, before any wake reanimation. */
   getSessionLifecycle?: (ownerId: string) => Promise<SessionBriefLifecycle | null>;
+  /** EI-21555327100993502: delivery-time lookup for fleet claim-release wakes.
+   *  A re-claimed item is downgraded to inbox so a delayed fleet wake cannot
+   *  spend a leader turn on an event that is no longer actionable. */
+  getCurrentWorkItem?: typeof getWorkItem;
+  /** Upper bound for the delivery-time fleet claim lookup. */
+  fleetClaimReleasedLookupTimeoutMs?: number;
   alive?: (pid: number | null) => boolean;
   /** WI-666: whether this owner has an active engine loop. Only loop owners
    *  are eligible for the bounded alive-but-uninjectable recovery leg. */
@@ -2091,6 +2152,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const kill = deps.kill ?? killPty;
   const presence = deps.presence ?? getPresence;
   const getSessionLifecycle = deps.getSessionLifecycle ?? getSessionBriefLifecycle;
+  const getCurrentWorkItem = deps.getCurrentWorkItem ?? getWorkItem;
+  const fleetClaimReleasedLookupTimeoutMs =
+    deps.fleetClaimReleasedLookupTimeoutMs ?? FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS;
   const alive = deps.alive ?? pidAlive;
   const isLoopArmed =
     deps.isLoopArmed ?? (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
@@ -2140,6 +2204,31 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
           `session ${d.subscriberId} is released from fleet ${released.fleet} ` +
           `(marked ${released.at} by ${released.by}) — end now; queued wake suppressed`,
       };
+    }
+
+    // EI-21555327100993502: `fleet:claim-released:<slug>` is a snapshot of an
+    // item returning to the pool. It is allowed to arrive late, after another
+    // worker has already claimed that same item. Re-check immediately before
+    // any injection/resume side effect and use the durable inbox as an
+    // informational fallback when the event is no longer actionable. The
+    // helper fails open on every uncertain read, preserving the normal wake.
+    const currentReleasedItem = await currentFleetClaimReleasedItem(
+      d,
+      getCurrentWorkItem,
+      fleetClaimReleasedLookupTimeoutMs,
+    );
+    if (currentReleasedItem && typeof currentReleasedItem.assignee === 'string' && currentReleasedItem.assignee.trim()) {
+      const staleDelivery = {
+        ...d,
+        summary:
+          `${d.summary} (delivery-time check: ${currentReleasedItem.id} is already claimed by ` +
+          `${currentReleasedItem.assignee}; wake downgraded to inbox)`,
+      };
+      return degradeToInboxOrDrop(
+        staleDelivery,
+        `work item ${currentReleasedItem.id} is already claimed by ${currentReleasedItem.assignee}`,
+        sendCoordMessage,
+      );
     }
 
     // EI-21157954408185498: a loop fire can already be queued when loop:end or

@@ -151,6 +151,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     spawnDetached: vi.fn(() => 1234),
     presence: vi.fn(async () => livePresence) as never,
     getSessionLifecycle: vi.fn(async () => null),
+    getCurrentWorkItem: vi.fn(async () => null) as never,
     alive: vi.fn(() => true),
     isLoopArmed: vi.fn(async () => false),
     // WI-6860: hermetic by default — the real getLoopStatus opens a live PG
