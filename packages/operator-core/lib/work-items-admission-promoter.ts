@@ -852,22 +852,49 @@ export async function linkAdmissionPair(
   b: string,
   nowMs: number,
 ) {
-  await sql`
-    UPDATE harness_shared.work_items
-       SET see_also = CASE
-             WHEN ${b} = ANY(COALESCE(see_also, ARRAY[]::text[])) THEN see_also
-             ELSE array_append(COALESCE(see_also, ARRAY[]::text[]), ${b})
-           END,
-           updated_ts = ${nowMs}
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${a}`;
-  await sql`
-    UPDATE harness_shared.work_items
-       SET see_also = CASE
-             WHEN ${a} = ANY(COALESCE(see_also, ARRAY[]::text[])) THEN see_also
-             ELSE array_append(COALESCE(see_also, ARRAY[]::text[]), ${a})
-           END,
-           updated_ts = ${nowMs}
-     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND feature_id = ${b}`;
+  await persistAdmissionLinks(sql, workspaceId, harnessSlug, [{ a, b }], nowMs);
+}
+
+async function persistAdmissionLinks(
+  sql: OrgSql,
+  workspaceId: string,
+  harnessSlug: string,
+  pairs: readonly { a: string; b: string }[],
+  nowMs: number,
+): Promise<void> {
+  const links = new Map<string, Set<string>>();
+  for (const pair of pairs) {
+    if (!pair.a || !pair.b || pair.a === pair.b) continue;
+    const fromA = links.get(pair.a) ?? new Set<string>();
+    const fromB = links.get(pair.b) ?? new Set<string>();
+    fromA.add(pair.b);
+    fromB.add(pair.a);
+    links.set(pair.a, fromA);
+    links.set(pair.b, fromB);
+  }
+  const rows = [...links.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([itemId, relatedIds]) => ({ itemId, relatedIds: [...relatedIds].sort() }));
+  for (let offset = 0; offset < rows.length; offset += 1_000) {
+    const batch = rows.slice(offset, offset + 1_000);
+    await sql`
+      WITH incoming AS MATERIALIZED (
+        SELECT x."itemId" AS item_id, x."relatedIds" AS related_ids
+          FROM jsonb_to_recordset(${JSON.stringify(batch)}::text::jsonb)
+            AS x("itemId" text, "relatedIds" text[])
+      )
+      UPDATE harness_shared.work_items wi
+         SET see_also = ARRAY(
+               SELECT DISTINCT related_id
+                 FROM unnest(COALESCE(wi.see_also, ARRAY[]::text[]) || incoming.related_ids) AS related_id
+                ORDER BY related_id
+             ),
+             updated_ts = ${nowMs}
+        FROM incoming
+       WHERE wi.workspace_id = ${workspaceId}
+         AND wi.harness_slug = ${harnessSlug}
+         AND wi.feature_id = incoming.item_id`;
+  }
 }
 
 export async function persistAdmissionPlan(
@@ -890,24 +917,48 @@ export async function persistAdmissionPlan(
   const actor = input.actor ?? PROMOTER_ACTOR;
   const promoteUnmerged = input.promoteUnmerged ?? true;
   const terminal = [...ALL_TERMINAL_STATUSES];
-  for (const adjudication of input.plan.adjudications) {
+  const adjudicationRows = input.plan.adjudications.map((adjudication) => {
     const [a, b] = canonicalIds(adjudication.a, adjudication.b);
-    const evidence = JSON.stringify({
-      reason: adjudication.reason,
-      signals: adjudication.signals,
-      cosine: adjudication.cosine,
-    });
+    return {
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      a,
+      b,
+      verdict: adjudication.verdict,
+      canonical: adjudication.canonical,
+      judgedBy: input.modelId,
+      runId: input.runId,
+      evidence: {
+        reason: adjudication.reason,
+        signals: adjudication.signals,
+        cosine: adjudication.cosine,
+      },
+    };
+  });
+  for (let offset = 0; offset < adjudicationRows.length; offset += 1_000) {
+    const batch = adjudicationRows.slice(offset, offset + 1_000);
     await sql`
       INSERT INTO harness_shared.dedup_adjudications
         (workspace_id, harness_slug, a, b, verdict, canonical, judged_by, run_id, evidence)
-      VALUES (${input.workspaceId}, ${input.harnessSlug}, ${a}, ${b}, ${adjudication.verdict},
-              ${adjudication.canonical}, ${input.modelId}, ${input.runId}, ${evidence}::text::jsonb)
+      SELECT x."workspaceId", x."harnessSlug", x.a, x.b, x.verdict, x.canonical,
+             x."judgedBy", x."runId", x.evidence
+        FROM jsonb_to_recordset(${JSON.stringify(batch)}::text::jsonb) AS x(
+               "workspaceId" text, "harnessSlug" text, a text, b text, verdict text,
+               canonical text, "judgedBy" text, "runId" text, evidence jsonb
+             )
       ON CONFLICT (workspace_id, harness_slug, a, b) DO NOTHING`;
   }
-  for (const pair of input.plan.relatedPairs) {
-    await linkAdmissionPair(sql, input.workspaceId, input.harnessSlug, pair.a, pair.b, input.nowMs);
-  }
   const pendingById = new Map(input.pending.map((item) => [item.id, item]));
+  const mergePairs = input.plan.dispositions.flatMap((disposition) =>
+    disposition.action === 'merge' ? [{ a: disposition.itemId, b: disposition.canonicalId }] : [],
+  );
+  await persistAdmissionLinks(
+    sql,
+    input.workspaceId,
+    input.harnessSlug,
+    [...input.plan.relatedPairs, ...mergePairs],
+    input.nowMs,
+  );
   for (const disposition of input.plan.dispositions) {
     if (disposition.action === 'hold') continue;
     if (disposition.action === 'promote') {
@@ -923,14 +974,6 @@ export async function persistAdmissionPlan(
       continue;
     }
     const pending = pendingById.get(disposition.itemId);
-    await linkAdmissionPair(
-      sql,
-      input.workspaceId,
-      input.harnessSlug,
-      disposition.itemId,
-      disposition.canonicalId,
-      input.nowMs,
-    );
     if (pending) {
       await recordIssueOccurrence(
         {
