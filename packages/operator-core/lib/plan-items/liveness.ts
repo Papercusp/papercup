@@ -321,6 +321,8 @@ export interface MergedPlanItemState {
   itemId: string;
   /** The plan item's effective status (todo/wip/…); null if the id isn't in the plan (orphan record). */
   itemStatus: string | null;
+  /** Structured plan-DAG dependencies. Empty for roots and orphan records. */
+  blockedBy: string[];
   disposition: PlanItemDisposition;
   assignment: PlanItemAssignment | null;
   /** The live claim (a lapsed/expired claim is reported as null — it no longer holds). */
@@ -354,8 +356,12 @@ export async function mergedPlanItemStates(
   const read = await readPlanBySlug(planSlug, { harnessSlug });
   const planItems = read
     ? read.row.items.length > 0
-      ? read.row.items.map((i) => ({ id: i.id, status: i.status }))
-      : read.parsed.items.map((i) => ({ id: i.id, status: i.storedStatus as string }))
+      ? read.row.items.map((i) => ({ id: i.id, status: i.status, blockedBy: i.blockedBy }))
+      : read.parsed.items.map((i) => ({
+          id: i.id,
+          status: i.storedStatus as string,
+          blockedBy: i.blockedBy,
+        }))
     : [];
 
   const [assignments, claims] = await Promise.all([
@@ -371,6 +377,7 @@ export async function mergedPlanItemStates(
   for (const c of claims) ids.add(c.itemId);
 
   const planStatus = new Map(planItems.map((i) => [i.id, i.status] as const));
+  const planBlockers = new Map(planItems.map((i) => [i.id, i.blockedBy] as const));
   const out: MergedPlanItemState[] = [];
   for (const id of [...ids].sort()) {
     const assignment = aByItem.get(id) ?? null;
@@ -379,6 +386,7 @@ export async function mergedPlanItemStates(
     out.push({
       itemId: id,
       itemStatus: planStatus.has(id) ? (planStatus.get(id) ?? null) : null,
+      blockedBy: planBlockers.get(id) ?? [],
       disposition: disposition(assignment, liveClaim),
       assignment,
       claim: liveClaim,

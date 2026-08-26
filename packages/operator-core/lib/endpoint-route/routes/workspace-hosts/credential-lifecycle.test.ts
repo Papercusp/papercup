@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseWorkspaceHostRemoteInitializerRequest } from '@papercusp/deployment-driver';
 import type { RouteContext } from '../../define-route';
 import { routeRegistrationOrder } from '../../register';
 import {
@@ -6,6 +7,10 @@ import {
   WorkspaceHostDesiredSpecUnavailableError,
   WorkspaceHostInitializationControllerProfileError,
 } from '../../../workspace-host/initialization-operations-resolver';
+import {
+  GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
+  GcpIapWorkspaceHostInitializationOperations,
+} from '../../../workspace-host/gcp-iap-initialization-operations';
 import {
   createWorkspaceHostCredentialLifecycleRoute,
   type WorkspaceHostCredentialLifecycleRouteDependencies,
@@ -101,6 +106,53 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({
       id: 'bind-cloud', kind: 'bind', input: expect.objectContaining({ channel: 'cloud' }),
     }));
+  });
+
+  it('carries a planner lifecycle step through the route and GCP transport exactly once', async () => {
+    const transport = vi.fn(async (command: { stdin: string }) => {
+      const request = parseWorkspaceHostRemoteInitializerRequest(JSON.parse(command.stdin));
+      expect(request.step).toMatchObject({
+        id: 'bind-cloud',
+        kind: 'bind',
+        input: {
+          channel: 'cloud',
+          credentialRef: step.credentialRef,
+          delivery: step.delivery,
+        },
+      });
+      expect(request.step).not.toHaveProperty('channel');
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify({
+          protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
+          stepId: step.id,
+          status: 'succeeded',
+          observedAt: '2026-08-26T10:01:00.000Z',
+          publicEvidence: {},
+        }),
+      };
+    });
+    const operations = new GcpIapWorkspaceHostInitializationOperations(
+      {
+        projectId: 'active-alcove-504205-q3',
+        zone: 'us-central1-a',
+        instanceName: 'pc-workspace-1',
+        sshUser: 'papercusp-workspace',
+        knownHostsFile: '/var/lib/papercusp/controller/known_hosts',
+        remoteEntrypoint: '/opt/papercusp/current/bin/papercusp-workspace-initialize',
+      },
+      { run: transport },
+    );
+    const dependencies = harness().dependencies;
+    dependencies.resolveOperationsForHost = vi.fn(async () => ({
+      desired: {} as never,
+      operations,
+    }));
+
+    const response = await post(dependencies, bodies.rotate);
+
+    expect(response.status).toBe(200);
+    expect(transport).toHaveBeenCalledOnce();
   });
 
   it('returns 400 for malformed bodies before resolving controller state', async () => {

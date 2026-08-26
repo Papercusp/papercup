@@ -269,39 +269,20 @@ export function comparePredicate(
 
 /** Pull the comparable payload out of a ToolResult: structuredContent when present,
  *  else a tolerant JSON.parse of the first text content block (raw string if it
- *  isn't JSON), else the `data` from an in-process raw ToolResponse envelope. */
+ *  isn't JSON). */
 export function extractToolPayload(result: unknown): unknown {
-  const r = result as
-    | { structuredContent?: unknown; content?: Array<{ type?: string; text?: string }>; data?: unknown }
-    | null;
+  const r = result as { structuredContent?: unknown; content?: Array<{ type?: string; text?: string }> } | null;
   if (r == null) return null;
-  const unwrapDataEnvelope = (value: unknown): unknown => {
-    if (
-      value !== null &&
-      typeof value === 'object' &&
-      !Array.isArray(value) &&
-      Object.keys(value).length === 1 &&
-      Object.hasOwn(value, 'data')
-    ) {
-      return (value as { data: unknown }).data;
-    }
-    return value;
-  };
-  if (r.structuredContent !== undefined) return unwrapDataEnvelope(r.structuredContent);
+  if (r.structuredContent !== undefined) return r.structuredContent;
   const text = r.content?.[0]?.text;
   if (typeof text === 'string') {
     try {
-      return unwrapDataEnvelope(JSON.parse(text));
+      return JSON.parse(text);
     } catch {
       return text;
     }
   }
-  // `dispatchProjectedTool`'s in-process transport returns the handler's raw
-  // ToolResponse. Content-encoded transports have already serialized `data` into
-  // structuredContent/text above, but this boundary has neither. Only unwrap the
-  // exact one-key envelope: a domain payload may legitimately contain a `data`
-  // field alongside other fields and must remain intact.
-  return unwrapDataEnvelope(r);
+  return r;
 }
 
 /* ── Store ─────────────────────────────────────────────────────────────────── */
@@ -608,6 +589,13 @@ export async function dispatchReadOnlyTool(
       gateBypass: { capability: true, quota: true },
       profile: 'engineer',
       transport: 'in_process',
+      // Cells and predicate watches are MACHINE consumers: they project one
+      // registered path after dispatch. Session-tier shaping before that
+      // projection can omit the very path they declared and manufacture an
+      // `insufficient-data` result from a healthy resolver. Keep the internal
+      // payload lossless; only the cell/watch result reaches the caller.
+      contextTier: 'full',
+      payloadTierOverride: 'full',
       log: () => {},
       progress: () => {},
       emit: () => {},

@@ -29,7 +29,7 @@ function claim(itemId: string, ownerName: string, mode: 'availability' | 'activi
 function merged(over: Partial<MergedPlanItemState> & Pick<MergedPlanItemState, 'itemId' | 'disposition'>): MergedPlanItemState {
   return {
     // P-029/D-060 made `holder` required on MergedPlanItemState; unheld ⇒ null.
-    itemStatus: 'todo', assignment: null, claim: null, holder: null, inPlan: true, ...over,
+    itemStatus: 'todo', blockedBy: [], assignment: null, claim: null, holder: null, inPlan: true, ...over,
   };
 }
 
@@ -44,8 +44,8 @@ describe('shapePlanItemStates', () => {
       merged({ itemId: 'P-001', disposition: 'pooled' }),
     ]);
     expect(dto.items[0]).toEqual({
-      itemId: 'P-001', itemStatus: 'todo', inPlan: true, disposition: 'pooled',
-      assigneeName: null, claimOwner: null, claimOwnerName: null,
+      itemId: 'P-001', itemStatus: 'todo', blockedBy: [], inPlan: true, disposition: 'pooled',
+      assigneeName: null, claimOwner: null, claimOwnerId: null, claimOwnerName: null,
       claimIntent: null, claimLivenessMode: null, claimExpiresTs: null,
     });
   });
@@ -54,13 +54,14 @@ describe('shapePlanItemStates', () => {
     const dto = shapePlanItemStates('papercup', 'p', 'activity', [
       merged({
         itemId: 'P-002', disposition: 'active',
+        blockedBy: ['P-001'],
         assignment: assignment('P-002', 'builder-1'),
         claim: claim('P-002', 'builder-1', 'activity'),
       }),
     ]);
     expect(dto.items[0]).toMatchObject({
-      itemId: 'P-002', disposition: 'active', assigneeName: 'builder-1',
-      claimOwner: 'su · abc', claimOwnerName: 'builder-1',
+      itemId: 'P-002', blockedBy: ['P-001'], disposition: 'active', assigneeName: 'builder-1',
+      claimOwner: 'su · abc', claimOwnerId: 'su-abc', claimOwnerName: 'builder-1',
       claimIntent: 'building', claimLivenessMode: 'activity',
       claimExpiresTs: '2026-06-04T00:20:00Z',
     });

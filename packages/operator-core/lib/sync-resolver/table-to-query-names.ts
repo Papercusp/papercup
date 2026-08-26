@@ -106,7 +106,13 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Sessions tab is keyed by plan_slug, not a row PK — full-bust here so a new
   // session recorded for a plan (or one ending) live-refreshes the tab. Low
   // write rate + a small per-plan payload keep the broad bust cheap.
-  'harness_shared.adv_sessions': ['advSessions.list', 'advSessions.summary', 'advRoster.list', 'planSessions.list'],
+  'harness_shared.adv_sessions': [
+    'advSessions.list',
+    'advSessions.summary',
+    'advRoster.list',
+    'planSessions.list',
+    'conversations.contextProjection',
+  ],
   /* agent_modes — the standing MODE per agent per axis (auto / ideate / drain /
      grade). session-chat-popup-timestamps-and-modes-2026-08-09 P-003; trigger
      attached in migration 763.
@@ -135,6 +141,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // this entry is its only invalidation path, so dropping it silently returns
     // the popup to remount-only refresh.
     'goals.detail',
+    // P-030: foreign conversation contexts render the same official mode rows
+    // as the roster rather than reconstructing posture from transcript prose.
+    'conversations.contextProjection',
     /* NOT `agentOrders.byOwner`, deliberately — this list ORIGINALLY named it and
        that was a regression in two ways (caught by resolver-backing-table-coverage's
        stale-PUSH_EXEMPT guard, which is precisely what that guard is for).
@@ -464,6 +473,8 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
      would never be bridged at all and the meters would look simply broken. */
 
   'harness_shared.work_items': [
+    // P-030: current held-work context around a foreign producer session.
+    'conversations.contextProjection',
     // P-005: pending/unreviewed queue counts and promoted→first-claim
     // percentiles are rollups over this base table. A claim or admission write
     // must refresh them alongside the admission_runs ledger.
@@ -753,6 +764,9 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // roster too, not just the fleet view (shared-hive-collaboration P-006 — the
   // rail was a 30s poll before; SSE push replaces it).
   'harness_shared.coord_presence': [
+    // P-030: foreign session intent/plan context. This table already rides the
+    // heartbeat-deduped bridge; adding a consumer does not add another producer.
+    'conversations.contextProjection',
     'fleetAssignments.byHarness',
     'sidebar.fleetCups', // same fleet_assignment view — keep the Swarm sidebar live
     'network.board',

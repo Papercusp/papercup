@@ -170,7 +170,28 @@ if isinstance(tool_response, dict):
 
 # A todo snapshot (Claude TodoWrite / TaskCreate-TaskUpdate, OMP todo_write) rides in
 # tool_input.todos — forward it as `todos` so the server summarises it as kind=todos.
+# Codex update_plan uses the sibling whole-list shape `{plan:[{step,status}]}`.
+# Normalize that producer shape HERE, before the generic cap() turns every list
+# into the irreversible string "[N items]". The same telemetry row can then feed
+# both the fleet activity summary and P-030's read-only foreign task projection;
+# there is still one hook write and no parallel task store.
 todos = tool_input.get('todos') if isinstance(tool_input.get('todos'), list) else None
+if str(tool_name).strip().casefold() == 'update_plan' and isinstance(tool_input.get('plan'), list):
+    todos = []
+    for step in tool_input['plan'][:100]:
+        if not isinstance(step, dict):
+            continue
+        content = step.get('step')
+        status_value = step.get('status')
+        if not isinstance(content, str) or not content.strip():
+            continue
+        if status_value not in ('pending', 'in_progress', 'completed'):
+            continue
+        todos.append({
+            'content': content,
+            'activeForm': content,
+            'status': status_value,
+        })
 
 
 def cap(v):

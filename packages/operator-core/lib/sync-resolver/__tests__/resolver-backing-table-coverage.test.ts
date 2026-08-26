@@ -65,6 +65,22 @@ import { OPERATOR_STATE_SYNC_NAMES } from '../../operator-state-pg';
  * from a bug.
  */
 const PUSH_EXEMPT: Record<string, string> = {
+  // P-030 foreign conversation projection: these are deliberately NOT given
+  // another per-row invalidation producer. session_turns/tool_invocations are
+  // the two hottest append ledgers, while plan_item_claims is renewed on every
+  // turn. Active foreign sessions already repaint through the projection's
+  // mapped coord_presence/adv_sessions/work_items/agent_modes sources, and the
+  // sync layer's drift/focus refresh covers a historical mounted session.
+  // RE-ARM: replace these exemptions with a SESSION-SCOPED producer push if the
+  // bridge gains a partial-args target for {sourceKind,sessionId}; never attach
+  // coarse per-row triggers that full-bust every mounted conversation.
+  'conversations.contextProjection :: harness_shared.session_turns':
+    'high-volume append transcript ledger; active-session repaint rides existing mapped context writes, with drift/focus refresh for historical rows. Re-arm only with a session-scoped producer push.',
+  'conversations.contextProjection :: harness_shared.tool_invocations':
+    'high-volume per-call telemetry ledger; the relevant activity:report dispatch also advances mapped agent context. Re-arm only with a session-scoped producer push, not a table-wide per-call trigger.',
+  'conversations.contextProjection :: harness_shared.plan_item_claims':
+    'lease-renewed on every turn; claim acquisition/release also moves mapped presence/work context. A coarse trigger would full-bust every open conversation on heartbeat churn.',
+
   // The plan-lock banner (semantic-search-fingerprint-coverage-2026-08-03 P-025).
   // Structurally exempt rather than merely unwired: `agent_file_locks` lives in the
   // SEPARATE `papercusp_su` database, so it is not reachable by a trigger on the

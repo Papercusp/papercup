@@ -104,25 +104,6 @@ describe('extractToolPayload', () => {
     });
   });
 
-  it('unwraps the raw ToolResponse data envelope returned by in-process dispatch', () => {
-    expect(extractToolPayload({ data: { changeInCandidate: { judgingSha: null } } })).toEqual({
-      changeInCandidate: { judgingSha: null },
-    });
-  });
-
-  it('unwraps a data envelope after structured or text serialization', () => {
-    const payload = { changeInCandidate: { judgingSha: null } };
-    expect(extractToolPayload({ structuredContent: { data: payload } })).toEqual(payload);
-    expect(extractToolPayload({ content: [{ type: 'text', text: JSON.stringify({ data: payload }) }] })).toEqual(payload);
-  });
-
-  it('preserves a domain payload that has data alongside other fields', () => {
-    expect(extractToolPayload({ data: { n: 1 }, status: 'value' })).toEqual({
-      data: { n: 1 },
-      status: 'value',
-    });
-  });
-
   it('returns the raw string when the text block is not JSON', () => {
     expect(extractToolPayload({ content: [{ type: 'text', text: 'plain words' }] })).toBe('plain words');
   });

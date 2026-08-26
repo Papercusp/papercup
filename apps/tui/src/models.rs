@@ -1662,6 +1662,9 @@ pub struct PlanItemState {
     /// The plan item's effective status (todo/wip/…); null for an orphan record.
     #[serde(default)]
     pub item_status: Option<String>,
+    /// Direct plan-DAG dependencies. Roots and orphan records use an empty list.
+    #[serde(default)]
+    pub blocked_by: Vec<String>,
     #[serde(default)]
     pub in_plan: bool,
     /// pooled | assigned-idle | active | claimed-pooled | claimed-mismatch.
@@ -1673,6 +1676,9 @@ pub struct PlanItemState {
     /// Live claim holder's display label (ownerLabel ?? owner), or null.
     #[serde(default)]
     pub claim_owner: Option<String>,
+    /// Stable live-claim owner id; joins the fleet assignment's context pressure.
+    #[serde(default)]
+    pub claim_owner_id: Option<String>,
     /// Live claim holder's agent-NAME, or null.
     #[serde(default)]
     pub claim_owner_name: Option<String>,
@@ -3265,11 +3271,11 @@ mod tests {
         // item (no assignment/claim) + one active (assigned + live claim by the
         // assignee, with a liveness mode + intent).
         let j = r#"{"harness":"papercup","plan":"my-plan","harnessLivenessMode":"availability","items":[
-            {"itemId":"P-001","itemStatus":"todo","inPlan":true,"disposition":"pooled",
-             "assigneeName":null,"claimOwner":null,"claimOwnerName":null,"claimIntent":null,
+            {"itemId":"P-001","itemStatus":"todo","blockedBy":[],"inPlan":true,"disposition":"pooled",
+             "assigneeName":null,"claimOwner":null,"claimOwnerId":null,"claimOwnerName":null,"claimIntent":null,
              "claimLivenessMode":null,"claimExpiresTs":null},
-            {"itemId":"P-002","itemStatus":"wip","inPlan":true,"disposition":"active",
-             "assigneeName":"builder-1","claimOwner":"su · abc","claimOwnerName":"builder-1",
+            {"itemId":"P-002","itemStatus":"wip","blockedBy":["P-001"],"inPlan":true,"disposition":"active",
+             "assigneeName":"builder-1","claimOwner":"su · abc","claimOwnerId":"su-abc","claimOwnerName":"builder-1",
              "claimIntent":"building","claimLivenessMode":"activity","claimExpiresTs":"2026-06-04T00:20:00Z"}
         ]}"#;
         let r: PlanItemStates = serde_json::from_str(j).unwrap();
@@ -3278,8 +3284,11 @@ mod tests {
         assert_eq!(r.items.len(), 2);
         assert_eq!(r.items[0].item_id, "P-001");
         assert_eq!(r.items[0].disposition, "pooled");
+        assert!(r.items[0].blocked_by.is_empty());
         assert_eq!(r.items[0].assignee_name, None);
         assert_eq!(r.items[1].disposition, "active");
+        assert_eq!(r.items[1].blocked_by, ["P-001"]);
+        assert_eq!(r.items[1].claim_owner_id.as_deref(), Some("su-abc"));
         assert_eq!(r.items[1].assignee_name.as_deref(), Some("builder-1"));
         assert_eq!(r.items[1].claim_owner_name.as_deref(), Some("builder-1"));
         assert_eq!(r.items[1].claim_liveness_mode.as_deref(), Some("activity"));

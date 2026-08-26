@@ -186,6 +186,31 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
     expect(r.stdout).toBe('');
   });
 
+  it('normalizes a Codex update_plan snapshot before generic input capping loses the list', async () => {
+    nextResult = { ok: true, id: 1 };
+    const r = await run('sid-update-plan', {}, {
+      tool_name: 'update_plan',
+      tool_input: {
+        explanation: 'Advance after verification',
+        plan: [
+          { step: 'Inspect the seam', status: 'completed' },
+          { step: 'Implement the adapter', status: 'in_progress' },
+          { step: 'Run focused tests', status: 'pending' },
+        ],
+      },
+    });
+    expect(r.status).toBe(0);
+    expect(lastRequest?.body.params.arguments).toMatchObject({
+      tool_name: 'update_plan',
+      todos: [
+        { content: 'Inspect the seam', activeForm: 'Inspect the seam', status: 'completed' },
+        { content: 'Implement the adapter', activeForm: 'Implement the adapter', status: 'in_progress' },
+        { content: 'Run focused tests', activeForm: 'Run focused tests', status: 'pending' },
+      ],
+    });
+    expect(lastRequest?.body.params.arguments.tool_input).toBeUndefined();
+  });
+
   it('first call: sends only a generation cursor and preserves a pre-session inbox injection', async () => {
     const sid = 'sid-seed';
     nextResult = {

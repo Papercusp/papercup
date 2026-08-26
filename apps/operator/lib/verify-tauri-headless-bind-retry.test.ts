@@ -40,6 +40,16 @@ const SCRIPT =
 const src = readFileSync(SCRIPT, 'utf8');
 const BUILD_RS = resolve(__dirname, '../../../papercusp-desktop/src-tauri/build.rs');
 
+/**
+ * The variable name out of bash's `set -u` diagnostic ("foo: unbound variable"), or
+ * undefined when the failure was something else. Deliberately narrow: it must stay
+ * silent on an ordinary non-zero exit so it never re-labels an unrelated failure as
+ * stand-in drift. The control case below pins it to what THIS bash actually prints.
+ */
+function unboundVarFrom(stderr: string | undefined): string | undefined {
+  return stderr?.match(/([A-Za-z_][A-Za-z0-9_]*): unbound variable/)?.[1];
+}
+
 describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-time port race', () => {
   it('is the right script (guards a vacuous suite)', () => {
     expect(src).toContain('verify-tauri-headless');
@@ -253,6 +263,21 @@ if port_lost_to_squatter; then
 fi
 `;
       const run = spawnSync('bash', ['-c', probe, '_', dir], { encoding: 'utf8' });
+
+      // The assignments above are a hand-maintained mirror of the variables
+      // write_and_launch_tauri() reads from its SURROUNDING scope — the probe runs it
+      // in isolation under `set -u`, so a variable the script grows but this block
+      // lacks kills the probe with an opaque "line N: FOO: unbound variable" that says
+      // nothing about the mirror or about which change introduced it. That is exactly
+      // how NATIVE_TERMINAL landed on 2026-08-26: the script started passing
+      // PAPERCUSP_NATIVE_TERMINAL="$NATIVE_TERMINAL", this block did not follow, and the
+      // red surfaced hours later inside an unrelated agent's affected-tests run.
+      // The detector was never missing; its diagnostic was. Name the repair instead.
+      const unbound = unboundVarFrom(run.stderr);
+      expect(
+        unbound,
+        `write_and_launch_tauri() now reads $${unbound} from its surrounding scope, but the probe's stand-in assignments do not define it. Add "${unbound}=<the script's own default>" to that block — do NOT give the variable a :- default inside the script, which would mask a genuine unset in a real run.`,
+      ).toBeUndefined();
       expect(run.status, run.stderr).toBe(0);
 
       const attempt1 = readFileSync(join(dir, 'attempt1.sh'), 'utf8');
@@ -269,5 +294,22 @@ fi
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it('CONTROL (falsifiability): the stand-in drift diagnostic reads a REAL bash `set -u` failure', () => {
+    // Pinned against live bash rather than a remembered message format, so this cannot
+    // rot into a detector that silently stops matching what bash prints. Without this
+    // control the assertion above would pass just as happily with a regex that never
+    // fires — which is the same silent gap the NATIVE_TERMINAL drift exploited.
+    const real = spawnSync('bash', ['-c', 'set -u; echo "$PROBE_DEFINITELY_NOT_SET"'], {
+      encoding: 'utf8',
+    });
+    expect(real.status, 'bash must actually fail on an unset variable under set -u').not.toBe(0);
+    expect(unboundVarFrom(real.stderr)).toBe('PROBE_DEFINITELY_NOT_SET');
+
+    // ...and stays silent on an ordinary failure, so a broken script is never
+    // misreported as stand-in drift.
+    expect(unboundVarFrom('probe.sh: line 4: cargo: command not found')).toBeUndefined();
+    expect(unboundVarFrom(undefined)).toBeUndefined();
   });
 });

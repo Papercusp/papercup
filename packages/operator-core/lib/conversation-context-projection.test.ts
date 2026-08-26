@@ -1,9 +1,14 @@
+import type { Sql } from 'postgres';
 import { describe, expect, it } from 'vitest';
 import {
   CONVERSATION_CONTEXT_PROJECTION_VERSION,
+  foreignTaskSnapshot,
+  foreignToolFrames,
   loopMessageFrames,
   projectConversationContext,
   projectLiveLoopEvent,
+  readConversationContextProjection,
+  type ForeignProjectionToolRow,
 } from './conversation-context-projection';
 
 const BASE = {
@@ -36,6 +41,136 @@ describe('conversation context projection', () => {
       expect.objectContaining({ kind: 'context', section: 'intent' }),
     ]));
     expect(projected.frames.some((frame) => frame.kind === 'reasoning')).toBe(false);
+  });
+
+  it('normalizes the newest foreign whole-list task snapshot and native tool wrapper', () => {
+    const rows: ForeignProjectionToolRow[] = [
+      {
+        id: 12,
+        tool_name: 'activity:report',
+        args_json: {
+          tool_name: 'update_plan',
+          tool_use_id: 'call-plan',
+          todos: [
+            { content: 'Inspect', activeForm: 'Inspect', status: 'completed' },
+            { content: 'Implement', activeForm: 'Implement', status: 'in_progress' },
+          ],
+        },
+        status: 'ok',
+        error_message: null,
+        invoked_at: '2026-08-26T00:00:02Z',
+        coord_owner_id: 'su-foreign',
+        goal_ref: 'WI-9',
+      },
+      {
+        id: 11,
+        tool_name: 'activity:report',
+        args_json: {
+          tool_name: 'TodoWrite',
+          tool_use_id: 'call-old',
+          todos: [{ content: 'Old snapshot', activeForm: 'Old', status: 'pending' }],
+        },
+        status: 'ok',
+        error_message: null,
+        invoked_at: '2026-08-26T00:00:01Z',
+        coord_owner_id: 'su-foreign',
+        goal_ref: 'WI-9',
+      },
+    ];
+
+    expect(foreignTaskSnapshot(rows)).toEqual([
+      expect.objectContaining({ content: 'Inspect', status: 'completed', position: 0, links: [] }),
+      expect.objectContaining({ content: 'Implement', status: 'in_progress', position: 1, links: [] }),
+    ]);
+    expect(foreignToolFrames(rows)).toEqual([
+      expect.objectContaining({ callId: 'call-old', name: 'TodoWrite', state: 'succeeded' }),
+      expect.objectContaining({ callId: 'call-plan', name: 'update_plan', state: 'succeeded' }),
+    ]);
+  });
+
+  it('reads a bounded foreign session through the shared read-only projection', async () => {
+    const queries: string[] = [];
+    const sql = ((strings: TemplateStringsArray) => {
+      const text = strings.join('?');
+      queries.push(text);
+      if (text.includes('FROM harness_shared.adv_sessions')) {
+        return Promise.resolve([{
+          coord_owner_id: 'su-foreign', role: 'su', feature: null,
+          plan_slug: 'plan-a', harness_slug: 'papercusp',
+          started_at: '2026-08-26T00:00:00Z', ended_at: null,
+        }]);
+      }
+      if (text.includes('FROM harness_shared.session_turns')) {
+        return Promise.resolve([
+          { turn_idx: 0, speaker: 'user', ts: '2026-08-26T00:00:00Z', text: 'Build it', owner: 'su-foreign', harness_slug: 'papercusp' },
+          { turn_idx: 1, speaker: 'assistant', ts: '2026-08-26T00:00:01Z', text: 'Working', owner: 'su-foreign', harness_slug: 'papercusp' },
+        ]);
+      }
+      if (text.includes('FROM harness_shared.tool_invocations')) {
+        return Promise.resolve([{
+          id: 22,
+          tool_name: 'activity:report',
+          args_json: {
+            owner: 'su-foreign', session_id: 'session-1', tool_name: 'update_plan',
+            tool_use_id: 'plan-call',
+            todos: [{ content: 'Ship adapter', activeForm: 'Shipping adapter', status: 'in_progress' }],
+          },
+          status: 'ok', error_message: null, invoked_at: '2026-08-26T00:00:02Z',
+          coord_owner_id: 'su-foreign', goal_ref: 'WI-9',
+        }]);
+      }
+      if (text.includes('FROM harness_shared.coord_presence')) {
+        return Promise.resolve([{
+          owner_id: 'su-foreign', owner_label: 'Foreign SU', intent: 'Ship the adapter',
+          current_plan_slug: 'plan-a', agent_role: 'su',
+        }]);
+      }
+      if (text.includes('FROM harness_shared.agent_modes')) {
+        return Promise.resolve([{
+          workspace_id: 'ws', owner_id: 'su-foreign', axis_key: 'autonomy', mode: 'auto',
+          reason: 'Owner directed', set_by: 'su-foreign', owner_directed: true,
+          set_at: '2026-08-26T00:00:00Z', subject: null,
+        }]);
+      }
+      if (text.includes('FROM harness_shared.plan_item_claims')) {
+        return Promise.resolve([{ plan_slug: 'plan-a', item_id: 'P-030' }]);
+      }
+      if (text.includes('FROM harness_shared.work_items')) {
+        return Promise.resolve([{ feature_id: 'WI-9', title: 'Foreign projection', status: 'wip' }]);
+      }
+      throw new Error(`unexpected query: ${text}`);
+    }) as unknown as Sql;
+
+    const projected = await readConversationContextProjection({
+      workspaceId: 'ws',
+      sourceKind: 'codex',
+      sessionId: 'session-1',
+      harness: 'papercusp',
+    }, { sql });
+
+    expect(projected?.session).toMatchObject({
+      sourceKind: 'codex',
+      sessionId: 'session-1',
+      linkedWorkItemId: 'WI-9',
+      capabilityTier: 'producer-readonly',
+    });
+    expect(projected?.capabilities).toEqual({
+      liveFrames: false,
+      taskWrite: false,
+      approvalWrite: false,
+    });
+    expect(projected?.frames).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'message', text: 'Build it' }),
+      expect.objectContaining({ kind: 'tool', name: 'update_plan', callId: 'plan-call' }),
+      expect.objectContaining({ kind: 'task', content: 'Ship adapter', status: 'in_progress' }),
+      expect.objectContaining({ kind: 'context', section: 'mode' }),
+      expect.objectContaining({ kind: 'context', section: 'intent' }),
+      expect.objectContaining({ kind: 'context', section: 'plan' }),
+      expect.objectContaining({ kind: 'context', section: 'held' }),
+    ]));
+    expect(projected?.frames.some((frame) => frame.kind === 'reasoning' || frame.kind === 'approval')).toBe(false);
+    expect(queries.filter((query) => query.includes('session_turns'))).toHaveLength(1);
+    expect(queries.filter((query) => query.includes('tool_invocations'))).toHaveLength(1);
   });
 
   it('uses a fresh owned-loop ledger and correlates tool calls with results once', () => {

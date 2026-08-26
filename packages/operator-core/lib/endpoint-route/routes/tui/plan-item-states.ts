@@ -30,12 +30,16 @@ export interface PlanItemStateDto {
   itemId: string;
   /** The plan item's effective status (todo/wip/…); null if the record is an orphan (not in the plan). */
   itemStatus: string | null;
+  /** Plan-item ids this row directly depends on. */
+  blockedBy: string[];
   inPlan: boolean;
   disposition: PlanItemDisposition;
   /** Durable assignment (the stable agent-NAME the item belongs to), or null if pooled. */
   assigneeName: string | null;
   /** Live claim holder's display label (ownerLabel ?? owner), or null if no live claim. */
   claimOwner: string | null;
+  /** Stable live-claim owner id, used to join fleet context pressure. */
+  claimOwnerId: string | null;
   /** Live claim holder's agent-NAME (how it lines up with the assignment), or null. */
   claimOwnerName: string | null;
   /** Live claim's declared intent, or null. */
@@ -71,10 +75,12 @@ export function shapePlanItemStates(
     items: states.map((s) => ({
       itemId: s.itemId,
       itemStatus: s.itemStatus,
+      blockedBy: s.blockedBy,
       inPlan: s.inPlan,
       disposition: s.disposition,
       assigneeName: s.assignment?.assigneeName ?? null,
       claimOwner: s.claim ? (s.claim.ownerLabel ?? s.claim.owner) : null,
+      claimOwnerId: s.claim?.owner ?? null,
       claimOwnerName: s.claim?.ownerName ?? null,
       claimIntent: s.claim?.intent && s.claim.intent.trim() ? s.claim.intent : null,
       claimLivenessMode: s.claim?.livenessMode ?? null,

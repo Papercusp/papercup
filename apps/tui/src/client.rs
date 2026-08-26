@@ -828,6 +828,110 @@ impl OperatorClient {
         Ok(entries)
     }
 
+    /// Global session-switcher rows: live + ended launch records from the roster,
+    /// enriched by the owner-scoped indexed transcript search. Search hits with
+    /// no launch record remain visible as `recorded` rows; routing them still
+    /// goes through the ordinary resolver, which truthfully offers its menu.
+    pub async fn session_switcher_rows(&self, query: &str) -> Result<Vec<RosterEntry>> {
+        let v = self.roster().await?;
+        let resp = serde_json::from_value::<RosterResponse>(v).context("decode roster")?;
+        let mut rows = resp.active;
+        rows.extend(resp.ended);
+
+        let trimmed = query.trim();
+        let args = if trimmed.is_empty() {
+            serde_json::json!({ "query": "%", "mode": "verbatim", "limit": 20, "context": 0 })
+        } else {
+            serde_json::json!({ "query": trimmed, "mode": "hybrid", "limit": 20, "context": 0 })
+        };
+        let env = self.run_tool("sessions:search", args).await?;
+        let inner = run_tool_inner_json(&env)?;
+        for hit in inner
+            .get("results")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let Some(provenance) = hit.get("provenance") else {
+                continue;
+            };
+            let source = provenance
+                .get("source_kind")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim();
+            let session_id = provenance
+                .get("session_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .trim();
+            if source.is_empty() || session_id.is_empty() {
+                continue;
+            }
+            let owner = provenance
+                .get("owner")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let already_present = rows.iter().any(|row| {
+                row.native_session
+                    .as_ref()
+                    .and_then(|native| {
+                        models::ConversationContextProjectionTarget::from_native_session(native, None)
+                    })
+                    .is_some_and(|target| {
+                        target.source_kind == source && target.session_id == session_id
+                    })
+                    || (!owner.is_empty() && row.owner_id == owner)
+            });
+            if already_present {
+                continue;
+            }
+            let missing = Some("indexed transcript has no resumable launch record".to_string());
+            let native_session = match source {
+                "claude" => Some(models::NativeSessionHandle::Claude {
+                    source: source.to_string(),
+                    owner_id: (!owner.is_empty()).then_some(owner.clone()),
+                    session_id: Some(session_id.to_string()),
+                    config_dir: None,
+                    exact_resume_supported: false,
+                    missing_reason: missing,
+                }),
+                "codex" => Some(models::NativeSessionHandle::Codex {
+                    source: source.to_string(),
+                    owner_id: (!owner.is_empty()).then_some(owner.clone()),
+                    codex_home: String::new(),
+                    rollout_id: Some(session_id.to_string()),
+                    exact_resume_supported: false,
+                    missing_reason: missing,
+                }),
+                "omp" => Some(models::NativeSessionHandle::Omp {
+                    source: source.to_string(),
+                    owner_id: (!owner.is_empty()).then_some(owner.clone()),
+                    omp_thread_id: Some(session_id.to_string()),
+                    agent_home: None,
+                    exact_resume_supported: false,
+                    missing_reason: missing,
+                }),
+                _ => None,
+            };
+            rows.push(RosterEntry {
+                owner_id: owner.clone(),
+                label: if owner.is_empty() {
+                    format!("{source} · {}", &session_id[..session_id.len().min(12)])
+                } else {
+                    owner
+                },
+                source: source.to_string(),
+                agent: Some(source.to_string()),
+                session_state: Some("recorded".to_string()),
+                native_session,
+                ..RosterEntry::default()
+            });
+        }
+        Ok(rows)
+    }
+
     pub async fn plans_typed(&self) -> Result<Vec<PlanSummary>> {
         let v = self.plans_list().await?;
         let mut plans = serde_json::from_value::<PlansResponse>(v)

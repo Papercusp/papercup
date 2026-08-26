@@ -1,7 +1,6 @@
 /** POST /workspace-hosts/:hostId/credential-lifecycle — durable rotate/revoke/reconnect/rebind. */
 import { defineTool } from '@papercusp/agent-mcp';
 import {
-  encodeWorkspaceHostCredentialLifecycleStep,
   type WorkspaceHostCredentialLifecycleStep,
   type WorkspaceHostInitializationStep,
 } from '@papercusp/deployment-driver';
@@ -158,9 +157,11 @@ export function createWorkspaceHostCredentialLifecycleRoute(
 
       const operations = {
         async execute(step: WorkspaceHostCredentialLifecycleStep) {
-          // The shared encoder is the only definition of lifecycle-on-initializer wire carriage.
+          // Keep the planner shape intact until the concrete transport boundary. The GCP IAP
+          // adapter owns lifecycle-on-initializer wire encoding; encoding here as well would make
+          // it flatten an already-flattened step and silently drop channel/ref/delivery.
           return hostOperations.execute(
-            encodeWorkspaceHostCredentialLifecycleStep(step) as unknown as WorkspaceHostInitializationStep,
+            step as unknown as WorkspaceHostInitializationStep,
           );
         },
       };

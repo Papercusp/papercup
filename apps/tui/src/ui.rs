@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame,
 };
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 pub fn draw(f: &mut Frame, app: &App) {
     // Pinned single-pane dock mode (native-terminal-desktop P-013 / D-011): the
@@ -39,6 +40,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         // pinned dock pane (mail/conversation/plan detail, depending on focus).
         if app.fleet_detail_open {
             draw_fleet_detail(f, app);
+        }
+        if app.critical_path_open {
+            draw_critical_path(f, app);
         }
         return;
     }
@@ -157,6 +161,249 @@ pub fn draw(f: &mut Frame, app: &App) {
     // floats above the body + the other overlays.
     if app.fleet_detail_open {
         draw_fleet_detail(f, app);
+    }
+    if app.critical_path_open {
+        draw_critical_path(f, app);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CriticalPathNode {
+    item_id: String,
+    status: String,
+    depth: usize,
+    waiters: usize,
+    holder: Option<String>,
+    pressure: Option<String>,
+    unclaimed: bool,
+    cycle: bool,
+}
+
+fn terminal_plan_item(status: Option<&str>) -> bool {
+    matches!(
+        status.unwrap_or_default().to_ascii_lowercase().as_str(),
+        "done" | "dropped" | "resolved" | "deprecated" | "cancelled" | "canceled"
+    )
+}
+
+/// Derive P-028's remaining-work DAG at render time. Completed blockers vanish
+/// from the scheduling graph, dangling refs are ignored, and cyclic residue is
+/// kept visible in a final loud column rather than recursing forever.
+fn critical_path_columns(
+    states: &crate::models::PlanItemStates,
+    assignments: &[crate::models::BeeAssignment],
+) -> Vec<Vec<CriticalPathNode>> {
+    let active: BTreeMap<String, &crate::models::PlanItemState> = states
+        .items
+        .iter()
+        .filter(|item| item.in_plan && !terminal_plan_item(item.item_status.as_deref()))
+        .map(|item| (item.item_id.clone(), item))
+        .collect();
+    if active.is_empty() {
+        return Vec::new();
+    }
+
+    let mut indegree: BTreeMap<String, usize> =
+        active.keys().map(|id| (id.clone(), 0)).collect();
+    let mut dependents: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (item_id, item) in &active {
+        let blockers: BTreeSet<String> = item
+            .blocked_by
+            .iter()
+            .filter(|blocker| active.contains_key(*blocker))
+            .cloned()
+            .collect();
+        indegree.insert(item_id.clone(), blockers.len());
+        for blocker in blockers {
+            dependents.entry(blocker).or_default().push(item_id.clone());
+        }
+    }
+    for children in dependents.values_mut() {
+        children.sort();
+        children.dedup();
+    }
+
+    let mut ready: BTreeSet<String> = indegree
+        .iter()
+        .filter(|(_, degree)| **degree == 0)
+        .map(|(id, _)| id.clone())
+        .collect();
+    let mut depth: HashMap<String, usize> = active.keys().map(|id| (id.clone(), 0)).collect();
+    let mut processed = HashSet::new();
+    while let Some(id) = ready.iter().next().cloned() {
+        ready.remove(&id);
+        processed.insert(id.clone());
+        let next_depth = depth.get(&id).copied().unwrap_or(0) + 1;
+        for child in dependents.get(&id).into_iter().flatten() {
+            depth
+                .entry(child.clone())
+                .and_modify(|value| *value = (*value).max(next_depth))
+                .or_insert(next_depth);
+            if let Some(degree) = indegree.get_mut(child) {
+                *degree = degree.saturating_sub(1);
+                if *degree == 0 {
+                    ready.insert(child.clone());
+                }
+            }
+        }
+    }
+    let cycle_depth = processed
+        .iter()
+        .filter_map(|id| depth.get(id))
+        .copied()
+        .max()
+        .unwrap_or(0)
+        + 1;
+    for id in active.keys().filter(|id| !processed.contains(*id)) {
+        depth.insert(id.clone(), cycle_depth);
+    }
+
+    let pressure_by_owner: HashMap<&str, &str> = assignments
+        .iter()
+        .filter_map(|assignment| {
+            assignment
+                .context_pressure
+                .as_deref()
+                .map(|pressure| (assignment.agent_id.as_str(), pressure))
+        })
+        .collect();
+    let mut columns: BTreeMap<usize, Vec<CriticalPathNode>> = BTreeMap::new();
+    for (item_id, item) in active {
+        let mut waiting = HashSet::new();
+        let mut stack = dependents.get(&item_id).cloned().unwrap_or_default();
+        while let Some(child) = stack.pop() {
+            if waiting.insert(child.clone()) {
+                stack.extend(dependents.get(&child).into_iter().flatten().cloned());
+            }
+        }
+        let item_depth = depth.get(&item_id).copied().unwrap_or(0);
+        let pressure = item
+            .claim_owner_id
+            .as_deref()
+            .and_then(|owner| pressure_by_owner.get(owner).copied())
+            .map(str::to_string);
+        columns.entry(item_depth).or_default().push(CriticalPathNode {
+            item_id,
+            status: item.item_status.clone().unwrap_or_else(|| "unknown".into()),
+            depth: item_depth,
+            waiters: waiting.len(),
+            holder: item.claim_owner.clone(),
+            pressure,
+            unclaimed: item.claim_owner_id.is_none(),
+            cycle: !processed.contains(&item.item_id),
+        });
+    }
+    let mut out: Vec<Vec<CriticalPathNode>> = columns.into_values().collect();
+    for column in &mut out {
+        column.sort_by(|a, b| {
+            b.waiters
+                .cmp(&a.waiters)
+                .then(b.unclaimed.cmp(&a.unclaimed))
+                .then(a.item_id.cmp(&b.item_id))
+        });
+    }
+    out
+}
+
+/// P-028: a modal scheduling view whose horizontal axis is dependency depth,
+/// never status. Each remaining node carries live holder/context pressure and
+/// the number of transitive downstream lanes waiting on it.
+fn draw_critical_path(f: &mut Frame, app: &App) {
+    let area = centered_rect(94, 82, f.area());
+    f.render_widget(Clear, area);
+    let plan = app
+        .critical_path_target
+        .as_ref()
+        .map(|(_, plan)| plan.as_str())
+        .unwrap_or("plan");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Critical path · {plan} · dependency depth → · K/Esc close "))
+        .style(Theme::panel_active());
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let Some(states) = app.critical_path_states.as_ref().filter(|states| {
+        app.critical_path_target
+            .as_ref()
+            .is_some_and(|(harness, plan)| states.harness == *harness && states.plan == *plan)
+    }) else {
+        f.render_widget(
+            Paragraph::new("loading dependency graph…").style(Theme::dim()),
+            inner,
+        );
+        return;
+    };
+    let columns = critical_path_columns(states, &app.fleet.all_assignments);
+    if columns.is_empty() {
+        f.render_widget(
+            Paragraph::new("No non-terminal plan items — the remaining-work graph is clear.")
+                .style(Theme::success()),
+            inner,
+        );
+        return;
+    }
+    let constraints = vec![Constraint::Ratio(1, columns.len() as u32); columns.len()];
+    let areas = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(constraints)
+        .split(inner);
+    for (column, area) in columns.iter().zip(areas.iter()) {
+        let depth = column.first().map(|node| node.depth).unwrap_or(0);
+        let rows: Vec<ListItem> = column
+            .iter()
+            .map(|node| {
+                let marker = if node.cycle {
+                    "⟳ CYCLE"
+                } else if node.unclaimed {
+                    "⚠ UNCLAIMED"
+                } else {
+                    "● CLAIMED"
+                };
+                let marker_style = if node.cycle {
+                    Theme::danger()
+                } else if node.unclaimed {
+                    Theme::warn()
+                } else {
+                    Theme::success()
+                };
+                let holder = node.holder.as_deref().unwrap_or("—");
+                let pressure = node.pressure.as_deref().unwrap_or("—");
+                let pressure_style = match pressure {
+                    "critical" => Theme::danger(),
+                    "high" => Theme::warn(),
+                    _ => Theme::dim(),
+                };
+                ListItem::new(Text::from(vec![
+                    Line::from(Span::styled(marker, marker_style)),
+                    Line::from(Span::styled(
+                        format!("{} [{}]", node.item_id, node.status),
+                        Theme::title_active(),
+                    )),
+                    Line::from(vec![
+                        Span::styled("holder   ", Theme::dim()),
+                        Span::raw(holder.to_string()),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("pressure ", Theme::dim()),
+                        Span::styled(pressure.to_string(), pressure_style),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("waiting  ", Theme::dim()),
+                        Span::raw(format!("{} lane{}", node.waiters, if node.waiters == 1 { "" } else { "s" })),
+                    ]),
+                    Line::from(""),
+                ]))
+            })
+            .collect();
+        f.render_widget(
+            List::new(rows).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(format!(" depth {depth} ")),
+            ),
+            *area,
+        );
     }
 }
 

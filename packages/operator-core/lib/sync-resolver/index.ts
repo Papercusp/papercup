@@ -7427,6 +7427,16 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       'harness_shared.agent_loop_sessions',
       'harness_shared.agent_loop_approvals',
       'harness_shared.session_tasks',
+      // P-030 producer-readonly adapters. session_turns/tool_invocations are
+      // bounded append-ledger reads; the remaining tables supply the current
+      // identity/intent/mode/claim context around that immutable session key.
+      'harness_shared.session_turns',
+      'harness_shared.tool_invocations',
+      'harness_shared.adv_sessions',
+      'harness_shared.coord_presence',
+      'harness_shared.agent_modes',
+      'harness_shared.plan_item_claims',
+      'harness_shared.work_items',
     ],
     argsSchema: z.object({
       sourceKind: z.string().min(1),

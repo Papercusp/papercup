@@ -7792,51 +7792,38 @@ async function runGreenCheckpointInner(
         await deps.writeFrozenRepairQueue?.(repairQueue);
       }
       /**
-       * WI-42207 / WI-42148 — an EXHAUSTED pin is released, not retained.
+       * WI-42207 — DO NOT release the pin here. This was tried and reverted; the design is
+       * deliberate and `green-checkpoint.test.ts` guards it ("persists automation exhaustion as
+       * blocked and never selects a newer staging tip", including a `cleanupFrozenRepairWorktree`
+       * stub that throws with "an exhausted queue must remain durable").
        *
-       * This branch used to end "retaining it as queue head and refusing to select a newer
-       * staging tip", which is a permanent deadlock rather than a hold. Once automated repair is
-       * exhausted the three facts are: the candidate is IMMUTABLE, so no fix landed on staging can
-       * ever change its verdict; repair has already given up on making it green itself; and
-       * replacement required a green the pin could not produce. `main` therefore could not advance
-       * again without a human — which is exactly how it went. WI-42148 filed this ("Today this is
-       * a deadlock, not a flake") and noted that main's last green commit is itself titled
-       * "Repair frozen candidate f9030aa73955", i.e. the previous occurrence was hand-repaired.
+       * The tension is real and worth naming rather than silently resolving: WI-42148 calls this
+       * state "a deadlock, not a flake" because an exhausted pin is IMMUTABLE — no fix landed on
+       * staging can change its verdict — so retaining it means `main` cannot advance again without
+       * a human. WI-39944 wants the blocked queue retained precisely BECAUSE it is a dead end: it
+       * is the durable record of which candidate exhausted repair, and dropping it invites a
+       * re-cut / re-fail / re-exhaust churn loop that masks a genuinely persistent red.
        *
-       * Holding an exhausted pin has no upside to trade away: stabilising a candidate is only
-       * worth anything while repair can still act on it. So release it and let the NEXT run cut a
-       * fresh tip through the ordinary path. The age-based release earlier in this function is the
-       * backstop that already bounded this to CANDIDATE_FOSSIL_AGE_MS; this removes the remaining
-       * stall and, more importantly, stops the state being reported as progress.
-       *
-       * Kept LOUD and bounded per WI-42148's own condition — "so it can never mask a genuine
-       * persistent red as churn": the release names the exhaustion reason and the abandoned
-       * candidate in the summary, and the tick still records a non-green outcome, so a repeatedly
-       * unpassable tree still escalates through the ordinary streak/stall surfaces.
+       * Both are right about their own concern, and reconciling them is a design decision with an
+       * owner, not something to settle from inside this branch. What closes the SAFETY gap without
+       * touching either contract is the age-based release earlier in this function: an exhausted
+       * pin still fossilizes, and is then released on evidence of staleness rather than on the
+       * exhaustion state itself. That bounds this from "frozen until a human intervenes" to
+       * "bounded by CANDIDATE_FOSSIL_AGE_MS", while the blocked record stays durable as designed.
        */
-      const abandoned = repairQueue;
-      await deps.writeFrozenRepairQueue?.(null);
-      await deps
-        .cleanupFrozenRepairWorktree?.(abandoned)
-        .catch((e) =>
-          deps.log(
-            `warn: exhausted-repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-          ),
-        );
-      repairQueue = null;
       const summary =
-        `frozen candidate ${abandoned.candidate.slice(0, 8)} exhausted automated repair ` +
-        `(${decision.reason}) at ${abandoned.repairHead.slice(0, 8)}; RELEASED the pin so the next ` +
-        `run cuts a fresh staging tip — an exhausted pin is immutable and can never go green, so ` +
-        `retaining it would freeze main until a human intervened (WI-42207/WI-42148)`;
+        `frozen candidate ${repairQueue.candidate.slice(0, 8)} exhausted automated repair ` +
+        `(${decision.reason}) at ${repairQueue.repairHead.slice(0, 8)}; retaining it as queue head ` +
+        `and refusing to select a newer staging tip`;
       deps.log(summary);
       return {
         advanced: false,
-        candidate: abandoned.repairHead,
+        candidate: repairQueue.repairHead,
         from: lastReady,
         green: null,
         reason: "repair-in-progress",
         summary,
+        repairQueue,
       };
     } else if (decision.kind === "test-candidate") {
       candidate = await revParse(cfg.integrationRoot, decision.candidate);

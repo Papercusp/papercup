@@ -1152,7 +1152,7 @@ async function completeMultipartArtifact(c: Context<{ Bindings: Env }>): Promise
   } catch (error) {
     return multipartStorageFailure(c, error, 'complete');
   }
-  if (!descriptorMatches(completed, 'server.tgz', bundleSha256, expected)) {
+  if (!completed || !descriptorMatches(completed, 'server.tgz', bundleSha256, expected)) {
     await c.env.ARTIFACTS.delete(multipartStateKey(bundleSha256, uploadId)).catch(() => undefined);
     return c.json({ error: 'multipart_completed_object_mismatch' }, 409);
   }

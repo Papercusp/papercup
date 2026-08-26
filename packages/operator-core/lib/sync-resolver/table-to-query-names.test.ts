@@ -105,6 +105,19 @@ describe('queryNamesForTriggerEvent', () => {
     );
   });
 
+  it('invalidates the shared conversation projection from its low-churn foreign context tables', () => {
+    for (const table of ['adv_sessions', 'agent_modes', 'work_items', 'coord_presence']) {
+      expect(queryNamesForTriggerEvent(`harness_shared.${table}.changed`)).toContain(
+        'conversations.contextProjection',
+      );
+    }
+    // The append/lease ledgers are deliberately coverage-exempt rather than
+    // gaining coarse high-volume triggers; see resolver-backing-table-coverage.
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.session_turns']).toBeUndefined();
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.tool_invocations']).toBeUndefined();
+    expect(TABLE_TO_QUERY_NAMES['harness_shared.plan_item_claims']).toBeUndefined();
+  });
+
   it('maps the design-write tables (data-sync-push-completion P-003)', () => {
     // Sketch saves land on harness_design_artifacts (trigger attached mig 380) → push
     // the sketch pane. Feature design-state flips land on work_items → push the dashboard.
