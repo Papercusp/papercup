@@ -57,18 +57,29 @@ async function postEnded(body: unknown): Promise<Response> {
 
 describe('POST bootstrap-su/session-ended — child-exit classification', () => {
   it('records an observed ordinary exit as self with an explicit null signal', async () => {
-    const res = await postEnded({ advSessionId: 42, exitCode: 0 });
+    const res = await postEnded({ advSessionId: 42, exitCode: 0, endAttemptKey: 'end-42' });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
-    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 0, 'self', { signal: null });
+    expect(await res.json()).toEqual({ ok: true, ended: true, endAttemptKey: 'end-42' });
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 0, 'self', {
+      signal: null,
+      throwOnError: true,
+    });
   });
 
   it('records a valid signal as signal provenance, including exit code 0', async () => {
-    const res = await postEnded({ advSessionId: 42, exitCode: 0, killedBySignal: 'SIGHUP' });
+    const res = await postEnded({
+      advSessionId: 42,
+      exitCode: 0,
+      killedBySignal: 'SIGHUP',
+      endAttemptKey: 'end-signal-42',
+    });
 
     expect(res.status).toBe(200);
-    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 0, 'signal', { signal: 'SIGHUP' });
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 0, 'signal', {
+      signal: 'SIGHUP',
+      throwOnError: true,
+    });
   });
 
   it('records a claimed resume launch failure as cleanup and clears signal provenance', async () => {
@@ -77,33 +88,53 @@ describe('POST bootstrap-su/session-ended — child-exit classification', () => 
       exitCode: null,
       killedBySignal: 'SIGTERM',
       launchFailed: true,
+      endAttemptKey: 'end-cleanup-42',
     });
 
     expect(res.status).toBe(200);
-    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'cleanup', { signal: null });
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, null, 'cleanup', {
+      signal: null,
+      throwOnError: true,
+    });
   });
 
   it('rejects malformed or non-positive ids without touching the datastore', async () => {
     for (const advSessionId of [undefined, 0, -1, 1.5, '42']) {
-      const res = await postEnded({ advSessionId });
+      const res = await postEnded({ advSessionId, endAttemptKey: 'end-bad-id' });
       expect(res.status).toBe(400);
     }
     expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
   });
 
   it('degrades an invalid signal to an explicit ordinary exit rather than persisting it', async () => {
-    const res = await postEnded({ advSessionId: 42, exitCode: 1, killedBySignal: "SIGHUP'; DROP TABLE" });
+    const res = await postEnded({
+      advSessionId: 42,
+      exitCode: 1,
+      killedBySignal: "SIGHUP'; DROP TABLE",
+      endAttemptKey: 'end-invalid-signal',
+    });
 
     expect(res.status).toBe(200);
-    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 1, 'self', { signal: null });
+    expect(markAdvSessionEndedMock).toHaveBeenCalledWith(42, 1, 'self', {
+      signal: null,
+      throwOnError: true,
+    });
   });
 
   it('returns 503 when ending cannot be persisted', async () => {
     markAdvSessionEndedMock.mockRejectedValueOnce(new Error('adv session store unavailable'));
 
-    const res = await postEnded({ advSessionId: 42, exitCode: 1 });
+    const res = await postEnded({ advSessionId: 42, exitCode: 1, endAttemptKey: 'end-fail-42' });
 
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ ok: false, error: 'adv session store unavailable' });
+  });
+
+  it('requires a bounded stable endAttemptKey before touching the datastore', async () => {
+    for (const endAttemptKey of [undefined, '', '   ', 42, 'x'.repeat(201)]) {
+      const res = await postEnded({ advSessionId: 42, endAttemptKey });
+      expect(res.status).toBe(400);
+    }
+    expect(markAdvSessionEndedMock).not.toHaveBeenCalled();
   });
 });
