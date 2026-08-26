@@ -1358,7 +1358,7 @@ async function resolveRubricWriteScope(
       );
     }
     if (existing?.harness_slug) return { workspaceId, harnessSlug: existing.harness_slug };
-  } catch {
+  } catch (error) {
     // Database availability failures retain the historical default-home fallback, but a
     // namespace collision is caller input and must remain fail-closed.
     if (error instanceof Error && error.message.startsWith('invalid_args: proposeRubric: rubricId')) throw error;
