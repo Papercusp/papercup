@@ -161,6 +161,43 @@ describe('pc-heavy retry loop isolates each attempt\'s stdout (WI-42126)', () =>
     expect(countOccurrences(run.stdout, 'OK-LINE-1')).toBe(1);
   });
 
+  it('keeps the LAST attempt\'s answer when attempts disagree — not a merge, not the first', () => {
+    // Raised in review (su-ebcbe6a2) against the observed test:affected case, and it is a
+    // real gap in the cases above: when every attempt emits IDENTICAL text, "exactly one
+    // copy" is satisfied by last-attempt-wins AND by a dedupe-by-identity. Those are
+    // different fixes, and only one of them is correct.
+    //
+    // Attempts are NOT always identical. The measured test:affected instance carried four
+    // manifests with four DIFFERENT runStartHead values, because each attempt re-derived
+    // against a shared tree that had moved: the copies were competing ANSWERS, not repeats.
+    // Dedupe would have kept an arbitrary one; splicing would emit a run that never existed.
+    // The only defensible rule is that stdout belongs to the attempt whose exit code is
+    // returned, so this pins that rule with attempts that are distinguishable.
+    const counter = join(slotDir, `attempt-counter-${Date.now()}`);
+    const command = [
+      `n=$(cat ${counter} 2>/dev/null || echo 0)`,
+      'n=$((n+1))',
+      `echo $n > ${counter}`,
+      'echo "ATTEMPT-$n"',
+      // Fail the first two attempts, succeed on the third.
+      'if [ "$n" -lt 3 ]; then',
+      '  printf "%s\\n" "PC_HEAVY_RESULT status=preempted reason=exclusive-materializer" > "$PC_HEAVY_PREEMPT_RESULT_FILE"',
+      '  exit 75',
+      'fi',
+      'exit 0',
+    ].join('\n');
+
+    const run = runPcHeavy(command, 2);
+
+    expect(run.status, 'the third attempt succeeds, so the run must succeed').toBe(0);
+    // The surviving answer, and ONLY it.
+    expect(run.stdout).toContain('ATTEMPT-3');
+    // Superseded answers must not reach the caller — this is what distinguishes
+    // last-attempt-wins from dedupe (which would keep ATTEMPT-1) and from splicing.
+    expect(run.stdout, 'a superseded attempt\'s answer must never reach the caller').not.toContain('ATTEMPT-1');
+    expect(run.stdout).not.toContain('ATTEMPT-2');
+  });
+
   it('never splices attempts together or falls back to a non-returned attempt', () => {
     // A partial (preempted mid-stream) attempt UNDER-reports errors. Under
     // `lint:tsc --update` that would silently ratchet baselines DOWN and mask real
