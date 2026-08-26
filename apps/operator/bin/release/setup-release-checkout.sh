@@ -57,6 +57,14 @@
 #                             [--integration <dir>] [--release <dir>]
 #                             [--prepare-existing]
 #                             [--source-only]
+#                             [--source-integrity allow-live-tree|object-sourced]
+#
+# `--source-integrity object-sourced` (P-008) refuses the one materialization path
+# that reads the integration tree's live working directory instead of git objects
+# — `extract_submodule_source`'s rsync last resort — and exits 3 instead. Pass it
+# from any caller whose output is a promotion VERDICT; the live deploy keeps the
+# default `allow-live-tree`, where a drifted submodule beats no serving operator.
+# Either way the run emits a `CANDIDATE_SOURCE_INTEGRITY ... live_tree=N` line.
 #
 # `--prepare-existing` is a dependency-only recovery mode for a clone that has
 # already been pinned and had its submodules checked out by an earlier step. It
@@ -89,6 +97,26 @@ NODE_MODULES_GENERATION_ID="${NODE_MODULES_GENERATION_ID:-}"
 NODE_MODULES_GENERATION_TOKEN="${NODE_MODULES_GENERATION_TOKEN:-}"
 NODE_MODULES_WORKSPACE_DIRS=()
 DEPENDENCY_GENERATION_ROOT="${PAPERCUSP_DEPENDENCY_GENERATION_ROOT:-}"
+# P-008 (green-main-fast-2026-08-25) — SOURCE integrity, the peer of the
+# dependency-generation pin above. Every other leg of candidate materialization is
+# already sourced from immutable git OBJECTS: the superproject is a worktree
+# detached at the frozen sha, submodules are `git clone --local` of the pinned
+# gitlink, and node_modules is an independent copy pinned to a verified generation
+# id. `extract_submodule_source`'s LAST RESORT is the one remaining path that reads
+# the integration tree's live WORKING DIRECTORY (`rsync ... "$INTEGRATION_ROOT/..."`),
+# which on this shared checkout holds every peer agent's uncommitted, possibly
+# mid-write edits. A tree built that way corresponds to NO COMMIT, and the
+# asymmetry is what matters: a RED from it is unreproducible (the tree is already
+# gone), while a GREEN fast-forwards `main` to a sha whose tested content was never
+# that sha — the gate certifying a commit it did not actually test.
+#   allow-live-tree (DEFAULT) = historical behaviour, byte-for-byte. The live
+#     DEPLOY wants it: a drifted submodule beats no serving operator at all, and
+#     the deploy renders no promotion verdict.
+#   object-sourced = refuse the live-tree rsync and fail closed. For any caller
+#     whose output is a VERDICT (green-checkpoint), where an unmaterializable
+#     candidate must surface as a typed infra fault, never as a silent judgement
+#     on a tree that never existed.
+SOURCE_INTEGRITY_MODE="${SOURCE_INTEGRITY_MODE:-allow-live-tree}"
 
 # Any error after exact-ID selection must release this process-owned reader
 # lease. A successful path promotes the checkout marker into a persistent pin
@@ -113,6 +141,7 @@ while [ $# -gt 0 ]; do
     --node-modules-generation-token) NODE_MODULES_GENERATION_TOKEN="$2"; shift 2 ;;
     --node-modules-workspace-dir) NODE_MODULES_WORKSPACE_DIRS+=("$2"); shift 2 ;;
     --dependency-generation-root) DEPENDENCY_GENERATION_ROOT="$2"; shift 2 ;;
+    --source-integrity) SOURCE_INTEGRITY_MODE="$2"; shift 2 ;;
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
     --build-spa) BUILD_SPA="1"; shift ;;
@@ -129,6 +158,10 @@ esac
 case "$NODE_MODULES_GENERATION_MODE" in
   required|off) ;;
   *) echo "[setup-release] bad --node-modules-generation mode: $NODE_MODULES_GENERATION_MODE" >&2; exit 2 ;;
+esac
+case "$SOURCE_INTEGRITY_MODE" in
+  allow-live-tree|object-sourced) ;;
+  *) echo "[setup-release] bad --source-integrity mode: $SOURCE_INTEGRITY_MODE" >&2; exit 2 ;;
 esac
 if [ -n "$NODE_MODULES_GENERATION_ID" ] \
   && { [ "$NODE_MODULES_GENERATION_MODE" != "required" ] || [ "$NODE_MODULES_COPY_MODE" != "copy" ]; }; then
@@ -397,8 +430,22 @@ extract_submodule_source() {  # <repo-relative path> <pinned sha>
     fi
   fi
   rm -f "$tar_file"
+  # P-008: this is the ONLY remaining path that sources candidate content from the
+  # integration tree's live WORKING DIRECTORY rather than from immutable git
+  # objects. Under `object-sourced` it is refused: a caller that renders a
+  # promotion VERDICT must never judge a tree that corresponds to no commit, and
+  # failing closed converts an invisible, unreproducible verdict into a loud,
+  # diagnosable infra fault. Return 2 (not 1) so the caller can distinguish
+  # "materialization is impossible here" from "materialized, but drifted".
+  if [ "$SOURCE_INTEGRITY_MODE" = "object-sourced" ]; then
+    log "FATAL git archive $rel_path@$sha failed or incomplete and --source-integrity=object-sourced forbids the live-tree rsync fallback — the pinned objects for this submodule are unreadable, so this candidate cannot be materialized from git objects. Refusing to splice the integration tree's uncommitted working directory into a tree that will be judged."
+    return 2
+  fi
   log "WARN git archive $rel_path@$sha failed or incomplete; rsync'ing integration HEAD (pin may drift)"
   rsync -a --exclude='node_modules' --exclude='.git' "$INTEGRATION_ROOT/$rel_path/" "$RELEASE_ROOT/$rel_path/"
+  # Signal DRIFT distinctly from a clean object-sourced extraction so the caller's
+  # integrity marker can count it. Only reachable in allow-live-tree mode.
+  return 1
 }
 
 # EI-19299565558496583: clone a REAL submodule repository at the pinned sha. This
@@ -453,6 +500,12 @@ if [ "$PREPARE_EXISTING" = "0" ]; then
 log "cloning submodule repos at pinned shas (local objects; real .git so --recurse-submodules works)"
 _sub_cloned=0
 _sub_fallback=0
+# P-008: submodules materialized by rsync'ing the integration tree's live working
+# directory rather than from git objects. Counted separately from _sub_fallback,
+# which only says "the clone did not work" — the archive fallback is still fully
+# object-sourced and pin-exact. This counter is the one that means "this tree
+# contains content that is in no commit".
+_sub_live_tree=0
 while IFS= read -r P; do
   [ -n "$P" ] || continue
   [ -d "$INTEGRATION_ROOT/$P" ] || { log "WARN integration submodule missing: $P — skipping"; continue; }
@@ -464,7 +517,19 @@ while IFS= read -r P; do
   else
     _sub_fallback=$((_sub_fallback + 1))
     log "WARN clone failed for $P@${S:0:10} — falling back to git archive extraction (that submodule gets NO .git, so tracked-files guards will not see inside it)"
-    extract_submodule_source "$P" "$S"
+    # P-008: capture the status instead of letting `set -e` act on it — the
+    # function now reports WHICH source it used, and the two non-zero cases mean
+    # opposite things (1 = materialized from the live tree, 2 = refused).
+    _extract_rc=0
+    extract_submodule_source "$P" "$S" || _extract_rc=$?
+    case "$_extract_rc" in
+      0) ;;
+      1) _sub_live_tree=$((_sub_live_tree + 1)) ;;
+      *)
+        log "FATAL candidate source for $P@${S:0:10} is not materializable from git objects; aborting rather than judging a tree that matches no commit"
+        exit 3
+        ;;
+    esac
   fi
 # P-009: read the submodule list from the TARGET commit's .gitmodules blob, NOT the
 # integration tree's current working copy — a submodule added/removed on staging while
@@ -488,6 +553,13 @@ _plain="$(git -C "$RELEASE_ROOT" ls-files 2>/dev/null | wc -l | tr -d ' ')"
 _recursive="$(git -C "$RELEASE_ROOT" ls-files --recurse-submodules 2>/dev/null | wc -l | tr -d ' ')"
 _uninit="$(git -C "$RELEASE_ROOT" submodule status 2>/dev/null | grep -c '^-' || true)"
 log "submodule recursion: cloned=$_sub_cloned archive-fallback=$_sub_fallback tracked plain=$_plain recursive=$_recursive uninitialized=$_uninit"
+# P-008: machine-readable SOURCE-integrity marker, the deliberate peer of the
+# DEPENDENCY_GENERATION_PIN line the checkpoint already parses and asserts. Emitted
+# on EVERY source materialization so the answer to "was this candidate built purely
+# from git objects?" is a greppable fact in the run log rather than an inference
+# from the absence of a WARN. `live_tree=` is the number that matters: non-zero
+# means the tree carries content belonging to no commit.
+log "CANDIDATE_SOURCE_INTEGRITY mode=$SOURCE_INTEGRITY_MODE object_sourced=$((_sub_cloned + _sub_fallback - _sub_live_tree)) cloned=$_sub_cloned archive=$((_sub_fallback - _sub_live_tree)) live_tree=$_sub_live_tree"
 if [ "$_sub_cloned" -gt 0 ] && [ "$_recursive" -le "$_plain" ]; then
   log "WARN recursion added NO files despite $_sub_cloned cloned submodule repo(s) — tracked-files guards are probably scanning the superproject only"
 fi
