@@ -559,7 +559,75 @@ for (let i = 0; i < args.length; i += 1) {
   positionalArgs.push(token);
 }
 
-const base = arg("--base", process.env.AFFECTED_BASE || "origin/main");
+// WI-42146 / green-main-fast-2026-08-25 P-047 — LOOP 1: RADIUS INFLATION.
+//
+// `origin/main` only fast-forwards on a GREEN checkpoint, so using it as the diff
+// base couples the SIZE of every run to the AGE of the outage: the longer main
+// stays red, the more paths read as "affected", the longer each run takes, the
+// likelier it is to be preempted / time out / lose its verdict — which keeps main
+// red. Recovery cost grows with the outage, which is why this never self-heals.
+// Measured 2026-08-26 with main 6 days stale: changedPaths=4572 committed=4570
+// baseBehind=3868 workspaces=75 tasks=105, against workspaces=5 tasks=23 for an
+// explicitly-scoped 3-file change. The comment at ~750 below already recorded the
+// same degradation at a mere 460 commits behind.
+//
+// The fix is NOT to narrow the radius — the gate legitimately certifies the whole
+// candidate. It is to stop conflating two different facts: "tests are certified
+// through sha X" and "main fast-forwarded to sha X". The current streak's
+// failingTests is ["lint:tsc"] — the TESTS were not what failed, yet every later
+// run re-ran the entire inflated test radius anyway. So we keep our own watermark,
+// advanced whenever the affected-test LEG passes, and diff against that.
+//
+// A git ref, not a state file or a DB row: it is git's own primitive for "a commit
+// pointer", it is atomic, it needs no new dependency inside a script the gate runs
+// in an isolated checkout, and it cannot drift out of sync with the objects it names.
+const TEST_CERTIFIED_REF = "refs/papercusp/test-certified";
+
+/** Read-only git, hardened: ANY failure yields null so the caller falls back. */
+function gitTry(argv) {
+  try {
+    return execFileSync("git", argv, {
+      cwd: ROOT,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The diff base, resolved FAIL-SAFE: every branch that cannot be positively
+ * verified falls back to today's `origin/main` behaviour, so the worst case of a
+ * missing, corrupt, foreign, or stale watermark is the status quo — never a
+ * silently NARROWED run, which would under-test and is the one outcome that must
+ * be impossible here.
+ *
+ * Both ancestry checks are load-bearing:
+ *   - watermark must be an ANCESTOR OF HEAD, or its diff would describe a history
+ *     this checkout is not on (a rebase, a different pot's ref, a force-push);
+ *   - `origin/main` must be an ancestor of the WATERMARK, i.e. the watermark is
+ *     strictly at-or-ahead of main. If it is behind, main already gives the
+ *     smaller radius and we take it. This also means the watermark can only ever
+ *     SHRINK the run relative to today, never grow it.
+ */
+function resolveTestCertifiedBase() {
+  if (process.env.AFFECTED_TEST_CERTIFIED_BASE === "0") return "origin/main";
+  const sha = gitTry(["rev-parse", "--verify", "--quiet", `${TEST_CERTIFIED_REF}^{commit}`]);
+  if (!sha) return "origin/main";
+  if (gitTry(["merge-base", "--is-ancestor", sha, "HEAD"]) === null) return "origin/main";
+  if (gitTry(["merge-base", "--is-ancestor", "origin/main", sha]) === null) return "origin/main";
+  // Say so out loud: a run whose radius came from somewhere other than the
+  // documented default must never be a silent difference when someone reads the log.
+  process.stderr.write(
+    `AFFECTED_BASE_SOURCE ref=${TEST_CERTIFIED_REF} sha=${sha.slice(0, 12)} ` +
+      `(test-certified watermark, at-or-ahead of origin/main; set AFFECTED_TEST_CERTIFIED_BASE=0 to disable)\n`,
+  );
+  return sha;
+}
+
+const explicitBase = arg("--base", process.env.AFFECTED_BASE || null);
+const base = explicitBase || resolveTestCertifiedBase();
 const runIntegration = has("--integration");
 const runAll = has("--all");
 // EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
@@ -4862,5 +4930,38 @@ if (failed) {
 }
 outSync("\nAll affected tests passed.");
 outSync(resultLine("passed"));
+
+// WI-42146 / P-047 — advance the test-certified watermark. STRICT by construction:
+// this line is only reachable after every `failed` / `undeterminedTasks` exit above,
+// and the extra guards below refuse every run that measured less than its own full
+// derived radius. Advancing after a SCOPED run is the one mistake that would matter
+// — it would certify code the run never executed — so scope is checked from argv
+// directly rather than from a variable that some later refactor could redefine.
+try {
+  const scoped =
+    process.argv.includes("--changed-paths") ||
+    process.argv.includes("--range-from") ||
+    process.argv.includes("--range-to");
+  if (
+    process.env.AFFECTED_TEST_CERTIFIED_BASE !== "0" &&
+    !scoped &&
+    !failed &&
+    !undeterminedTasks &&
+    !timedOutTasks &&
+    RUN_START_HEAD
+  ) {
+    // Certify the sha the run STARTED at, never current HEAD: git-sync commits the
+    // shared tree continuously, so HEAD has very likely moved during a run this long,
+    // and certifying it would vouch for commits no task ever saw.
+    if (gitTry(["update-ref", TEST_CERTIFIED_REF, RUN_START_HEAD]) !== null) {
+      outSync(
+        `AFFECTED_TEST_CERTIFIED ref=${TEST_CERTIFIED_REF} sha=${String(RUN_START_HEAD).slice(0, 12)} ` +
+          `tasks=${tasks.length} — the next unscoped run diffs from here instead of origin/main`,
+      );
+    }
+  }
+} catch {
+  /* advancing the watermark is an optimization; never fail a green run over it */
+}
 terminalEmitted = true;
 outSync(`Full run log: ${RUN_LOG_PATH}`);
