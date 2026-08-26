@@ -62,11 +62,14 @@ import {
 import {
   describeLaunchRoles,
   expandPairedMembers,
+  implementersToConfine,
   pairIndexOfSeat,
   pairsToCouple,
   resolveLaunchOptions,
   wholePairSeats,
 } from './pair-launch-options';
+import { directedImplementerConfinement } from '../../capability-envelope/session-confinement';
+import { declareSessionConfinement } from '../../capability-envelope/session-confinement-store';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, formatSpecRef, type ClaimSpec } from '../../scheduler/claim-spec';
 import type { SpecPoolEffect } from '../../scheduler/spec-pool-preview';
 import {
@@ -3569,6 +3572,49 @@ export default defineTool({
     // its durable transaction must retain the original cohort/history. Replacing the
     // transaction here would make fleet:status lose the only recovery ledger and cause
     // the next retry to mint another set of owner IDs.
+    // ── P-004 / D-016(b): CONFINE EACH IMPLEMENTER BEFORE IT EXISTS ──────────────────
+    // The confinement is keyed on the coord ownerId, and `requestedMemberIds` is where the
+    // launcher MINTS those ids — so this is the first moment the key is known, and it is
+    // still before any process has been spawned. That ordering is the whole mechanism
+    // (D-017 §4): the resolver reads a sync cache and a cold miss reads as "unconfined",
+    // which cannot be made fail-closed (unconfined is the default for every session in the
+    // fleet). Writing here means the row — and this process's cache entry — exist before the
+    // confined session does, so there is no window rather than a small one.
+    //
+    // FAIL-HARD, unlike the auto-coupling block far below. That one is fail-soft because by
+    // the time it runs the members are already live, and reporting a failed launch for a
+    // fleet that opened is worse than an uncoupled pair the result names. Here nothing has
+    // spawned yet, so refusing costs only the launch — while continuing would open an
+    // implementer that can complete its own work items and arm its own loops, which is
+    // exactly the theatre this line of work exists to end, and would do it invisibly.
+    // A RESUME is skipped deliberately, and it cannot leave a hole: this block runs before the
+    // launch transaction exists, so a refusal here returns with nothing spawned and nothing to
+    // resume. Reaching a resume therefore PROVES the confinements were already declared. The
+    // skip also avoids a real hazard — a partial replay carries only the unresolved identities,
+    // so `liveMembers + i` no longer maps to the original seats, and re-deriving roles from it
+    // could confine a DIRECTOR.
+    if (launchFleetType === 'paired' && !resumeOwnerIds) {
+      const preSpawnSeatOwners = new Map<number, string>();
+      requestedMemberIds.forEach((ownerId, i) => preSpawnSeatOwners.set(liveMembers + i, ownerId));
+      const engagementScope = planSlug ?? fleetSlug;
+      for (const seat of implementersToConfine(preSpawnSeatOwners)) {
+        const declared = await declareSessionConfinement({
+          ownerId: seat.implementer,
+          confinement: directedImplementerConfinement({
+            directorSid: seat.director ?? `the pair-director for pair ${seat.pairIndex}`,
+            scope: engagementScope,
+          }),
+        });
+        if (!declared.ok) {
+          return err(
+            `refusing to launch: could not confine the implementer in pair ${seat.pairIndex} ` +
+              `(${seat.implementer}) — ${declared.reason}. An implementer that launches ` +
+              `unconfined can complete its own work items and select its own work, which is ` +
+              `the failure the paired fleet exists to prevent. Nothing was spawned.`,
+          );
+        }
+      }
+    }
     const resumedLaunchTransaction = resumeOwnerIds && priorLaunchTransaction ? priorLaunchTransaction : null;
     const transactionRequestedMemberIds = resumedLaunchTransaction?.requestedMemberIds ?? requestedMemberIds;
     const memberCommands = Array.from({ length: openCount }, (_v, i) => {

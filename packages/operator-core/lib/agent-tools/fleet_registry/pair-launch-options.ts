@@ -342,6 +342,52 @@ export function pairsToCouple(seatOwners: ReadonlyMap<number, string>): PairToCo
   return out;
 }
 
+/** One implementer seat that must be confined before it is spawned (P-004). */
+export interface ImplementerToConfine {
+  pairIndex: number;
+  seat: number;
+  implementer: string;
+  /**
+   * The coupled director, when its seat is in this wave — named verbatim in the
+   * implementer's refusals. `null` when the director opened in an earlier wave, which
+   * costs the refusal a name but never the confinement itself.
+   */
+  director: string | null;
+}
+
+/**
+ * Which seats in this wave are IMPLEMENTERS, so the launch can declare their confinement
+ * before spawning them (P-004 / D-017 §4). Same absolute-seat convention as
+ * `pairsToCouple`.
+ *
+ * ⚠ THE INCOMPLETE-PAIR POLICY IS THE OPPOSITE OF `pairsToCouple`'s, ON PURPOSE. Coupling
+ * SKIPS a half-open pair, because a dangling edge renders on every later roster as a
+ * healthy pair and hides the missing half. Confinement must NOT skip: the failure mode
+ * here is an implementer running UNCONFINED — free to complete its own work items and arm
+ * its own loops, which is precisely the theatre D-015 was written to end — and that failure
+ * is invisible, because an unconfined session looks exactly like a session with nothing to
+ * deny. So an implementer whose director is absent is still confined; only the director's
+ * NAME in the refusal text is lost.
+ */
+export function implementersToConfine(
+  seatOwners: ReadonlyMap<number, string>,
+): ImplementerToConfine[] {
+  const out: ImplementerToConfine[] = [];
+  for (const seat of [...seatOwners.keys()].sort((a, b) => a - b)) {
+    if (pairSeatRole(seat) !== 'implementer') continue;
+    const implementer = seatOwners.get(seat);
+    if (!implementer) continue;
+    const pairIndex = pairIndexOfSeat(seat);
+    out.push({
+      pairIndex,
+      seat,
+      implementer,
+      director: seatOwners.get(pairIndex * 2) ?? null,
+    });
+  }
+  return out;
+}
+
 /**
  * The spawn-announcement line(s) the persona rule requires. A paired launch owes
  * the owner ONE LINE PER ROLE (account + model + carry), not a merged summary —
