@@ -26,6 +26,7 @@ const critique = (over: Record<string, unknown> = {}) => ({
   critiquePosts: 2,
   declinePosts: 0,
   critics: ['su-reviewer'],
+  relevance: { matched: true, matchedRefs: ['ar-some-plan'], via: ['question'] },
   ...over,
 });
 
@@ -152,7 +153,13 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res.ok).toBe(true);
     // The emitter is passed through so the core can exclude the emitter's OWN posts.
-    expect(readVettingConsultCritique).toHaveBeenCalledWith({}, 'ws-test', 'conv-vet-1', 'su-author');
+    expect(readVettingConsultCritique).toHaveBeenCalledWith(
+      {},
+      'ws-test',
+      'conv-vet-1',
+      'su-author',
+      ['ar-some-plan', 'some-plan-2026-08-17'],
+    );
     const payload = captureImprovement.mock.calls[0][0] as {
       payloadExtra: { observation: Record<string, unknown> };
     };
@@ -357,6 +364,19 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
     const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
     expect(res.ok).toBe(true);
     expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses third-party critique from a consult unrelated to the vetted rubric', async () => {
+    readVettingConsultCritique.mockResolvedValue(
+      critique({ relevance: { matched: false, matchedRefs: [], via: [] } }),
+    );
+    const res = await emitScorecard(vettingArgs() as never, EMIT_INPUT);
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('expected refusal');
+    expect(res.error).toContain('vetting_consult_unrelated');
+    expect(res.error).toContain('ar-some-plan');
+    expect(res.error).toContain('some-plan-2026-08-17');
+    expect(captureImprovement).not.toHaveBeenCalled();
   });
 
   it('a re-emit that upgrades a WAIVED stamp to a real critiqued one is a vetting change, not unchanged-evidence', async () => {
