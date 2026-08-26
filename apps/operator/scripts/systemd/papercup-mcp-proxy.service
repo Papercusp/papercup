@@ -9,6 +9,14 @@ After=network-online.target
 Type=simple
 WorkingDirectory=%h/papercupai-workspace/papercusp/apps/operator
 Environment=PAPERCUSP_MCP_PROXY_PORT=9071
+# EI-21524993137902308: a 30-member fleet reconnect can occupy the historical
+# eight-slot control reserve with initialize/orient/scheduler traffic while
+# ordinary long-running calls fill the rest of the 200-request hard ceiling.
+# Reserve enough of that EXISTING ceiling for fleet control; this does not raise
+# total proxy concurrency or upstream socket count. Cap simultaneous handshakes
+# at 32 so one complete 30-member wave can join without an unbounded herd.
+Environment=PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE=64
+Environment=PAPERCUSP_MCP_PROXY_MAX_HANDSHAKES_IN_FLIGHT=32
 # :3071-3079 are taken on the dev box; 9071 is free. Override TARGET/RETRY via env if needed.
 # Pin Node 25 (ABI 141) like the rest of the fleet (infra-fail-fast-build-integrity P-003):
 # linuxbrew Node 25 first, nvm22 dropped — without this the unit inherits the ambient
