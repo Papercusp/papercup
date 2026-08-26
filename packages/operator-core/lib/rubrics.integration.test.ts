@@ -190,6 +190,46 @@ describe('reads — a rubric-template plan resolves as a Rubric', () => {
 });
 
 describe('writes — propose / ratify author + promote a rubric-template plan', () => {
+  it('refuses to overwrite an ordinary plan whose slug collides with rubricId', async () => {
+    const body = `---
+title: Existing work plan
+status: draft
+created: 2026-08-26
+updated: 2026-08-26
+---
+
+# Existing work plan
+
+## Now
+
+Preserve this plan body.
+`;
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', 'colliding-work-plan', ${body}, md5(${body}), 1,
+              'Existing work plan', 'draft', '2026-08-26', '2026-08-26', 'su-test', false, null, 'local')`;
+
+    await expect(
+      rubrics.proposeRubric({
+        rubricId: 'colliding-work-plan',
+        characteristic: 'acceptance',
+        title: 'Would overwrite the plan',
+        criteria: sampleCriteria,
+        by: 'su-test',
+      }),
+    ).rejects.toThrow(/collides with an existing non-rubric plan/);
+
+    const [preserved] = await db.adminSql<{ content: string; template: string | null; version: number }[]>`
+      SELECT content, template, version
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND harness_slug = 'papercusp'
+         AND plan_slug = 'colliding-work-plan'`;
+    expect(preserved).toEqual({ content: body, template: null, version: 1 });
+  });
+
   it('propose creates a PROPOSED rubric (draft plan) with criteria + default rating scale', async () => {
     const r = await rubrics.proposeRubric({
       rubricId: 'pot-coordination-health',
