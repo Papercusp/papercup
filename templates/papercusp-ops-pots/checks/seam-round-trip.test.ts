@@ -19,7 +19,7 @@
  *     validOutput: object         // a payload.out fixture the gate must ACCEPT
  *     invalidOutput: object       // a payload.out fixture the gate must REJECT
  *     agentBlueprint?: string     // stable app-agent blueprint — cross-checks workItem.kind
- *     roundTripCommand?: string[] // OPTIONAL: the app's own full enqueue→ingest
+ *     roundTripCommand: string[]  // REQUIRED: the app's own full plan-run→ingest
  *     roundTripCwd?: string       //   integration leg (spawned, must exit 0)
  *     roundTripTimeoutMs?: number //   default 300000
  *   }
@@ -29,7 +29,7 @@
  * round trip; a malformed out-payload is REJECTED (never silently ingested —
  * the reject is what the ingest-sentinel reacts to); and the stable app-agent
  * blueprint declares the same seam kind. The live enqueue→DB-row leg is app
- * infrastructure — delegate it via `roundTripCommand` to the app's own
+ * infrastructure — it MUST be delegated via `roundTripCommand` to the app's own
  * integration suite (consumer #1: the research-seam tests).
  */
 import { spawnSync } from "node:child_process";
