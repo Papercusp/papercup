@@ -22,7 +22,7 @@ import {
   type PlanItemLiveClaimBlock,
 } from '../../scheduler/plan-item-lane-guard';
 import { wakeRecipients, type WakeRecipientsResult } from './inbox-wake';
-import { assemblePresenceSnapshot, resolvePresenceScope } from './presence-snapshot';
+import { assemblePresenceSnapshot, matchesOwner, resolvePresenceScope } from './presence-snapshot';
 import { listSessionsForAgentName, type AdoptionRow } from '../../plan-items/agent-names';
 
 const UNASSIGNED_FRONTIER_STATES = new Set(['open', 'failing', 'todo']);
@@ -356,7 +356,10 @@ export async function resolveStableAgentTarget(
     );
     const adoptions: AdoptionRow[] = scope.wsId ? await deps.listSessions(scope.wsId, args.targetAgent) : [];
     const candidateOwnerIds = adoptions.length > 0 ? adoptions.map((row) => row.sessionOwnerId) : [args.targetAgent];
-    const snapshot = await deps.snapshot(scope);
+    const snapshot = await deps.snapshot(
+      scope,
+      adoptions.length === 0 ? { owner: args.targetAgent } : {},
+    );
     const rows = snapshot.active as Array<Record<string, unknown>>;
     const byOwnerId = new Map(
       rows
@@ -366,10 +369,15 @@ export async function resolveStableAgentTarget(
     const adoptedRows = candidateOwnerIds
       .map((ownerId) => byOwnerId.get(ownerId))
       .filter((row): row is Record<string, unknown> & { ownerId: string } => Boolean(row));
+    const directRow =
+      adoptions.length === 0
+        ? rows.find((candidate) => candidate.ownerId === args.targetAgent) ??
+          rows.find((candidate) => matchesOwner(candidate as never, args.targetAgent))
+        : undefined;
     const row =
       adoptedRows.find((candidate) => candidate.wakeable === true) ??
       adoptedRows[0] ??
-      (adoptions.length === 0 ? rows[0] : undefined);
+      directRow;
     if (!row) {
       return {
         requested: args.targetAgent,

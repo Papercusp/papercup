@@ -111,7 +111,9 @@ describe('Gmail flagship desktop flow', () => {
     // Upgrade guard: reconnecting an installation provisioned before direct
     // execution existed updates the one semantic binding instead of duplicating it.
     await sql`
-      UPDATE harness_shared.trigger_bindings SET action = '{"type":"launch-plan"}'::jsonb
+      UPDATE harness_shared.trigger_bindings
+         SET plan_harness_slug = ${GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS},
+             action = '{"type":"launch-plan"}'::jsonb
        WHERE workspace_id = ${WS} AND id = ${first.binding.id}::uuid`;
     const second = await ensureGmailRespondDraftBinding(sql, WS, source, `owner:${userId}`);
     expect(second).toMatchObject({

@@ -333,4 +333,23 @@ describe('resolveStableAgentTarget', () => {
       wakeable: false,
     });
   });
+
+  it('falls back to the requested raw owner id without selecting an unrelated roster row', async () => {
+    const d = targetDeps([
+      { ownerId: 'su-unrelated', sessionState: 'live', wakeable: true },
+      { ownerId: 'su-direct', sessionState: 'parked', wakeable: true },
+    ]);
+    d.listSessions = vi.fn(async () => []);
+
+    const result = await resolveStableAgentTarget(
+      { targetAgent: 'su-direct', workspaceId: 'ws', harness: 'email' },
+      d,
+    );
+
+    expect(result.ownerId).toBe('su-direct');
+    expect(d.snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ wsId: 'ws' }),
+      { owner: 'su-direct' },
+    );
+  });
 });
