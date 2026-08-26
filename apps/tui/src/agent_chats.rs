@@ -950,6 +950,10 @@ mod tests {
                 "explanation": "Cleared by operator"
             })
         );
+        assert_eq!(
+            serde_json::to_value(AgentChatTaskAction::Promote).unwrap(),
+            json!("promote")
+        );
     }
 
     #[test]
