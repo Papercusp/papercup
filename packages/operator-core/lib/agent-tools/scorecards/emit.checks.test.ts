@@ -51,6 +51,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return { ...real, getOrgPg: () => ({ sql: {} }) };
 });
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
+// These tests own deterministic criterion checks, not the post-write wake bridge.
+// Keep the newly-created-card event from reaching its real PG-backed await latch.
+vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
 vi.mock('../../resolve-harness-paths', () => ({
   resolveHarnessPaths: (...a: unknown[]) => resolveHarnessPaths(...a),
 }));

@@ -69,6 +69,9 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 // emit's push-on-write dynamic-imports sync-sse after a created card; the stub sql
 // above cannot carry a real NOTIFY, so neutralize the bus rather than half-mock it.
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
+// Vetting tests own stamp/refusal behavior, not the post-write wake bridge. Keep a
+// created scorecard from reaching the real PG-backed await latch through stub sql.
+vi.mock('../../scorecard-emitted-events', () => ({ emitScorecardEmitted: async () => {} }));
 
 import { emitScorecard } from './emit';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
