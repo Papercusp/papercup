@@ -9,13 +9,20 @@
  * singular `slug`, and a string-valued `slugs`, into the `slugs: [...]` array the
  * schema wants BEFORE validation, instead of rejecting a well-intentioned read.
  *
- * Additive + identity-preserving: a well-formed `slugs` array is returned
- * untouched, so the published tools/list schema (built via z.toJSONSchema of the
- * OUTPUT object) is unchanged and well-shaped callers are unaffected.
+ * Additive + identity-preserving: a well-formed `slugs` array with canonical
+ * extensionless refs is returned untouched, so the published tools/list schema
+ * (built via z.toJSONSchema of the OUTPUT object) is unchanged and well-shaped
+ * callers are unaffected. Projected `.md`/`.mdx` refs are normalized because
+ * docs:author returns a filesystem `path` as well as the extensionless `ref`.
  */
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/** Convert a filesystem-shaped authored-doc ref into the Starlight slug form. */
+export function normalizeDocsGetRef(value: string): string {
+  return value.trim().replace(/\.(?:md|mdx)$/i, '');
 }
 
 /**
@@ -28,13 +35,13 @@ function toSlugArray(value: unknown): string[] | undefined {
   if (Array.isArray(value)) {
     const arr = value
       .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
-      .map((v) => v.trim());
+      .map(normalizeDocsGetRef);
     return arr.length > 0 ? arr : undefined;
   }
   if (typeof value === 'string') {
     const parts = value
       .split(/[\s,]+/)
-      .map((s) => s.trim())
+      .map(normalizeDocsGetRef)
       .filter((s) => s.length > 0);
     return parts.length > 0 ? parts : undefined;
   }
@@ -45,7 +52,11 @@ function toSlugArray(value: unknown): string[] | undefined {
 export function coerceDocsGetSlugs(raw: unknown): unknown {
   if (!isPlainObject(raw)) return raw;
   // A well-formed slugs array is left untouched (identity — no needless clone).
-  if (Array.isArray(raw.slugs) && raw.slugs.length > 0 && raw.slugs.every((s) => typeof s === 'string')) {
+  if (
+    Array.isArray(raw.slugs) &&
+    raw.slugs.length > 0 &&
+    raw.slugs.every((s) => typeof s === 'string' && normalizeDocsGetRef(s) === s.trim())
+  ) {
     return raw;
   }
   // Prefer a string/array under `slugs`; else the singular `slug` misuse.

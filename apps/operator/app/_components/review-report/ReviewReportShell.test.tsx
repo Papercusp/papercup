@@ -455,7 +455,7 @@ describe("selection + apply", () => {
     // Chromium moves focus to BODY before React's layout effects run when the
     // live data disables Apply. jsdom retains it, so reproduce the browser's
     // null-related focusout explicitly before committing the applied rows.
-    apply.blur();
+    focusBody();
     expect(document.activeElement).toBe(document.body);
     rerender(<ReviewReportShell {...props} groups={applied} />);
 

@@ -94,10 +94,24 @@ describe('docs:author search refresh', () => {
 
   it('invalidates the engineering adapter before refreshing the authored page', async () => {
     const result = await callAuthor(baseArgs);
-    const payload = JSON.parse(result.content[0].text) as { ok: boolean };
+    const payload = JSON.parse(result.content[0].text) as {
+      ok: boolean;
+      ref?: string;
+      harness?: string;
+      storageHarness?: string;
+      surface?: string;
+      read?: { slugs?: string[]; harness?: string };
+    };
 
     expect(result.isError).not.toBe(true);
     expect(payload.ok).toBe(true);
+    expect(payload).toMatchObject({
+      ref: 'agent-insights/current-refresh',
+      harness: 'engineering',
+      storageHarness: 'papercusp',
+      surface: 'engineering',
+      read: { slugs: ['agent-insights/current-refresh'], harness: 'engineering' },
+    });
     expect(h.invalidateEngineeringAdapter).toHaveBeenCalledTimes(1);
     expect(h.refreshDocPageSections).toHaveBeenCalledWith(h.engineeringAdapter, 'agent-insights/current-refresh');
     expect(h.order).toEqual(['invalidate', 'refresh']);
