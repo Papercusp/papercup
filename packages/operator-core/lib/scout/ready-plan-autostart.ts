@@ -198,6 +198,12 @@ export interface ReadyScoutStartResult {
   flagOff: boolean;
   /** Did THIS call put the plan onto the retired op_status axis? */
   axisWritten: boolean;
+  /** Promotion was refused because the plan is missing required spec-triad legs. */
+  specTriadBlocked?: true;
+  /** The missing spec-triad legs, when promotion was refused. */
+  specTriadMissing?: string[];
+  /** The repair work-item filed by the promotion refusal, if any. */
+  specTriadWorkItem?: string | null;
 }
 
 /** Start ONE ratified scout plan in the hive's own workspace: promote its items
@@ -271,6 +277,13 @@ export async function startReadyScoutPlan(
     promoted: result.promoted,
     flagOff: result.flagOff === true,
     axisWritten: axisLive,
+    ...(result.specTriadBlocked
+      ? {
+          specTriadBlocked: true as const,
+          specTriadMissing: result.specTriadMissing,
+          specTriadWorkItem: result.specTriadWorkItem,
+        }
+      : {}),
   };
 }
 
@@ -280,7 +293,14 @@ export interface ScoutReadyAutostartResult {
   /** `promoted` = items reached work_items with the op_status axis RETIRED (P-070);
    *  `latched` = the retired-branch per-plan debounce is still inside its quiet
    *  window, so this tick deliberately did nothing. */
-  outcome: 'started' | 'promoted' | 'latched' | 'decompose-nudged' | 'skipped' | 'error';
+  outcome:
+    | 'started'
+    | 'promoted'
+    | 'spec-triad-blocked'
+    | 'latched'
+    | 'decompose-nudged'
+    | 'skipped'
+    | 'error';
   planSlug?: string;
   promoted?: number;
   reason: string;
@@ -312,6 +332,45 @@ async function fireDecomposeWake(
     source: 'scout-ready-decompose',
     body: `${list}`,
     harnessSlug,
+  });
+}
+
+/**
+ * Tell the steward why a ratified scout plan did not reach the work-item queue.
+ * Promotion already files the repair item; this nudge makes the refusal visible at
+ * the same boundary where the steward was told that adding items would be enough.
+ */
+async function fireSpecTriadWake(
+  sql: Sql,
+  workspaceId: string,
+  installSlug: string,
+  planSlug: string,
+  missing: readonly string[] | undefined,
+  repairWorkItem: string | null | undefined,
+): Promise<void> {
+  const missingText = missing?.length ? missing.join(', ') : 'required sections';
+  const repairText = repairWorkItem
+    ? `Repair work-item: ${repairWorkItem}.`
+    : 'No repair work-item was returned; inspect the promotion refusal directly.';
+  const summary =
+    `Steward action required: ratified scout plan ${planSlug} was not promoted because ` +
+    `its spec triad is incomplete (missing: ${missingText}). ${repairText}`;
+
+  await deliverScoutNudge({
+    workspaceId,
+    mugOwner: await resolveMugOwner(sql, workspaceId, installSlug),
+    summary,
+    payload: {
+      kind: 'scout-ready-spec-triad-blocked',
+      planSlug,
+      missing: missing ?? [],
+      repairWorkItem: repairWorkItem ?? null,
+    },
+    source: 'scout-ready-spec-triad',
+    body:
+      `${summary} Add the missing ## sections to the plan, then rerun promotion ` +
+      `(plans:start or the next ready-plan sweep).`,
+    harnessSlug: installSlug,
   });
 }
 
@@ -440,14 +499,33 @@ export async function scoutReadyAutostartSweep(
               { workspaceId, planStorageSlug, planSlug: plan.planSlug },
               { mugKettleSystemEnabledFn: async () => axisLive },
             );
+            if (r.specTriadBlocked) {
+              await fireSpecTriadWake(
+                sql,
+                workspaceId,
+                installSlug,
+                plan.planSlug,
+                r.specTriadMissing,
+                r.specTriadWorkItem,
+              );
+            }
             const promotedSomething = r.outcome === 'started' || r.outcome === 'promoted';
             results.push({
               workspaceId,
               installSlug,
-              outcome: promotedSomething ? (r.axisWritten ? 'started' : 'promoted') : 'skipped',
+              outcome: r.specTriadBlocked
+                ? 'spec-triad-blocked'
+                : promotedSomething
+                  ? r.axisWritten
+                    ? 'started'
+                    : 'promoted'
+                  : 'skipped',
               planSlug: plan.planSlug,
               promoted: r.promoted,
-              reason: promotedSomething
+              reason: r.specTriadBlocked
+                ? `promotion refused by spec triad (missing: ${r.specTriadMissing?.join(', ') || 'required sections'})` +
+                  (r.specTriadWorkItem ? `; repair ${r.specTriadWorkItem}` : '')
+                : promotedSomething
                 ? r.flagOff
                   ? 'promotion no-oped: PLAN_WORKITEM_PROMOTION flag is OFF — items will NOT reach the queue until it is flipped'
                   : r.axisWritten
