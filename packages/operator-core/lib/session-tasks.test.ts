@@ -171,6 +171,40 @@ describe('reduceSessionTasks', () => {
     expect(dropped.tasks[0]).toMatchObject({ status: 'dropped' });
   });
 
+  it('edits one task atomically without replacing unrelated task metadata', () => {
+    const current = [
+      task({
+        id: 'task-a',
+        status: 'blocked',
+        blockerRef: 'wi:WI-9',
+        explanation: 'Waiting on the ledger',
+      }),
+      task({
+        id: 'task-b',
+        content: 'Unrelated task',
+        activeForm: 'Doing unrelated task',
+        position: 1,
+      }),
+    ];
+
+    const out = reduce(current, {
+      op: 'edit',
+      taskId: 'task-a',
+      content: 'Edited task',
+      explanation: 'Clarified by the user',
+    });
+
+    expect(out).toMatchObject({ op: 'edit', changedTaskId: 'task-a' });
+    expect(out.tasks[0]).toEqual({
+      ...current[0],
+      content: 'Edited task',
+      activeForm: 'Edited task',
+      explanation: 'Clarified by the user',
+      updatedAt: NEXT,
+    });
+    expect(out.tasks[1]).toEqual(current[1]);
+  });
+
   it('returns precise validation codes for invalid transitions and fields', () => {
     expectCode(
       () => reduce([task({ status: 'completed' })], { op: 'start', taskId: 'task-a' }),

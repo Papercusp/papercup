@@ -24,12 +24,25 @@ export const SESSION_TASK_OPS = [
   'drop',
   'block',
   'unblock',
+  'edit',
   'append',
+  'link',
+  'unlink',
+  'promote',
   'view',
 ] as const;
 
+export const SESSION_TASK_LINK_RELATIONS = ['for', 'relates'] as const;
+
 export type SessionTaskStatus = (typeof SESSION_TASK_STATUSES)[number];
 export type SessionTaskOp = (typeof SESSION_TASK_OPS)[number];
+export type SessionTaskLinkRelation = (typeof SESSION_TASK_LINK_RELATIONS)[number];
+
+export interface SessionTaskWorkItemLink {
+  workItemId: string;
+  workItemHarness: string | null;
+  relation: SessionTaskLinkRelation;
+}
 
 export interface SessionTask {
   id: string;
@@ -41,6 +54,7 @@ export interface SessionTask {
   position: number;
   createdAt: string;
   updatedAt: string;
+  links: SessionTaskWorkItemLink[];
 }
 
 export interface SessionTaskSeed {
@@ -59,6 +73,25 @@ export interface SessionTaskOpArgs {
   activeForm?: string;
   blockerRef?: string;
   explanation?: string;
+  workItemId?: string;
+  workItemHarness?: string;
+  relation?: SessionTaskLinkRelation;
+  workItemKind?: string;
+  workItemTitle?: string;
+  workItemSummary?: string;
+}
+
+export interface SessionTaskBridge {
+  seedWorkItem?: SessionTaskWorkItemLink | null;
+  promoteTask?: (
+    task: SessionTask,
+    request: { kind?: string; title?: string; summary?: string; harness?: string },
+  ) => Promise<SessionTaskWorkItemLink>;
+  syncProgress?: (
+    link: SessionTaskWorkItemLink,
+    task: SessionTask,
+    op: SessionTaskOp,
+  ) => Promise<void>;
 }
 
 export interface SessionTaskStoreArgs extends SessionTaskOpArgs {
@@ -66,12 +99,15 @@ export interface SessionTaskStoreArgs extends SessionTaskOpArgs {
   sessionId: string;
   idFactory: () => string;
   now?: string;
+  bridge?: SessionTaskBridge;
 }
 
 export interface SessionTaskResult {
   op: SessionTaskOp;
   changedTaskId: string | null;
   tasks: SessionTask[];
+  links: SessionTaskWorkItemLink[];
+  bridgeWarnings?: string[];
 }
 
 type SqlLike = Sql | TransactionSql;
@@ -86,6 +122,13 @@ interface SessionTaskRow {
   position: number;
   created_at: Date | string;
   updated_at: Date | string;
+}
+
+interface SessionTaskLinkRow {
+  task_id: string;
+  relation: SessionTaskLinkRelation;
+  work_item_harness: string;
+  work_item_id: string;
 }
 
 export class SessionTaskValidationError extends Error {
@@ -287,6 +330,22 @@ export function reduceSessionTasks(
   const taskId = present(args.taskId, 'task_id', 160);
   const target = taskById(tasks, taskId);
   const targetIndex = tasks.findIndex((task) => task.id === taskId);
+
+  if (op === 'edit') {
+    assertAllowedFields(args, op, ['taskId', 'content', 'activeForm', 'explanation']);
+    const content = present(args.content, 'content', 4_000);
+    const activeForm = args.activeForm === undefined
+      ? content
+      : present(args.activeForm, 'activeForm', 500);
+    tasks[targetIndex] = {
+      ...target,
+      content,
+      activeForm,
+      explanation,
+      updatedAt: now,
+    };
+    return { op, changedTaskId: taskId, tasks };
+  }
 
   if (op === 'start') {
     assertAllowedFields(args, op, ['taskId', 'activeForm', 'explanation']);
