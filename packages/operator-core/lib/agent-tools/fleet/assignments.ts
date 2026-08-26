@@ -80,6 +80,7 @@ import { getPlanRow, planItemsForRow, planSlugsForHarness } from '../plans/sourc
 import { resolveEffectiveStatusForItems } from '../plans/effective-status';
 import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../../fleet-dag-view';
 import { getLoopStatuses, type LoopStatus, type LifecycleBackoffInfo } from '../../harness/routines/loop';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** Coverage levels most-covered → least, for sorting the rollup. Every member of
  *  CoverageLevel must appear: `indexOf` returns -1 for an unlisted one, which sorts
@@ -97,6 +98,33 @@ export const COVERAGE_ORDER = [
 /** A 'complete' coverage entry stays in the DEFAULT rollup only while its newest
  *  linked work-item update is this recent (EI-9015). */
 export const COVERAGE_ACTIVE_WINDOW_MS = 7 * 24 * 3600 * 1000;
+
+/**
+ * Keep each fleet:assignments sub-read below the MCP client deadline. The
+ * handler is a supervisory read: a slow optional leg must degrade its own
+ * fields, not strand the whole roster (WI-3818 / EI-21526112676676081).
+ */
+export const FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS = 8_000;
+
+const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
+  'assignments',
+  'coverage',
+  'harnessPlans',
+  'wakeability',
+  'recorded',
+  'selfwake',
+  'recordedEnded',
+  'parkedOn',
+  'contextPressure',
+  'unanswered',
+  'loop',
+  'lastToolCalls',
+  'wakeModeOverrides',
+  'defaultWakeMode',
+  'verdicts',
+  'residue',
+  'dag',
+] as const;
 
 /**
  * EI-9015: the ACTIVE-scope coverage default. coord_links edges never expire, so the
@@ -852,14 +880,55 @@ export default defineTool({
     // falls through to the concrete active workspace instead of leaking the
     // sentinel into the query.
     const workspaceId = resolveConcreteWorkspaceId(args.workspace, actorWorkspace);
-    const rows = await listFleetAssignments({
-      workspaceId,
-      agent: queryAgent,
-      plan: args.plan,
-      fleet: args.fleet,
-      harness: args.harness,
-      activeOnly: !args.include_lapsed,
-    });
+    const degradedLegs = new Set<string>();
+    const boundedRead = async <T>(
+      label: string,
+      work: () => Promise<T>,
+      fallback: T,
+    ): Promise<T> => {
+      const result = await withBoundedTimeout(work, {
+        fallback,
+        timeoutMs: FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS,
+        label: `fleet:assignments:${label}`,
+      });
+      if (result.degraded) degradedLegs.add(label);
+      return result.value;
+    };
+
+    // Start the independent top-level reads together. In particular, a stalled
+    // assignment query must not prevent the coverage read from making progress,
+    // and neither may hold the caller until the MCP client gives up.
+    const rowsPromise = boundedRead(
+      'assignments',
+      () =>
+        listFleetAssignments({
+          workspaceId,
+          agent: queryAgent,
+          plan: args.plan,
+          fleet: args.fleet,
+          harness: args.harness,
+          activeOnly: !args.include_lapsed,
+        }),
+      [] as FleetAssignmentRow[],
+    );
+    const coveragePromise = boundedRead(
+      'coverage',
+      () => getAllPlanItemCoverage(),
+      new Map<string, PlanItemCoverage>(),
+    );
+    const harnessPlansPromise =
+      args.harness && !args.plan
+        ? boundedRead(
+            'harnessPlans',
+            () => planSlugsForHarness(workspaceId, args.harness as string),
+            new Set<string>(),
+          )
+        : Promise.resolve<Set<string> | null>(null);
+    const [rows, coverageRead, harnessPlans] = await Promise.all([
+      rowsPromise,
+      coveragePromise,
+      harnessPlansPromise,
+    ]);
     // P-010 (fleet-lead-instrumentation-audit-2026-08-09): the filter and the
     // number that describes it are derived together, so this response can say
     // WHICH population its `agents` count counted. Same fleet, same minutes:
@@ -890,30 +959,118 @@ export default defineTool({
       nextFireAt?: string | null;
       loopMode?: 'work' | 'monitor' | null;
     })[] = agentPopulation.rows;
-    // EI-6077: reconcile `alive` against coord:presence's own wakeability signal
-    // (see reconcileWakeability above) — best-effort, a query failure just leaves
-    // today's heartbeat-only `alive` and an absent `sessionState` (state unknown).
-    await reconcileWakeability(agents).catch(() => {});
-    // P-001 (fleet-member-dx): stamp `parkedOn` — active non-inbox-wake events:await
-    // keys — so a deliberately-benched member reads as parked, not abandoned.
-    // Best-effort: a failure just omits the field.
-    await decorateParkedOn(agents).catch(() => {});
-    // P-010 (agent-operability): fold the authoritative loop engine into the
-    // lifecycle before deriving verdicts. Healthy loop-owned monitors are
-    // monitoring/waiting/event-parked with nextFireAt, never false stalls or
-    // declared-unclaimed smells. One batch query covers the whole fleet.
-    await decorateLoopMonitorStates(agents).catch(() => {});
-    // EI-8995: stamp the single derived per-member `verdict` (+ wakeMode +
-    // lastToolCallAt) after wakeability, parked events, and loop state settle.
-    // Best-effort: a failure leaves the rows verdict-less, never breaks the read.
-    await decorateMemberVerdicts(agents).catch(() => {});
-    // P-007 (fleet-deltas-leader-primitives): stamp `contextPressure`
-    // (ok|high|critical|null) — best-effort, never breaks the read. Independent
-    // of the joins above (its own batch query).
-    await decorateContextPressure(agents).catch(() => {});
-    // P-007 (fleet-reliability-verification-2026-07-10): stamp `unanswered` —
-    // directed messages with no reply/ack yet. Best-effort, own batch query.
-    await decorateUnansweredDirected(agents).catch(() => {});
+    const runDecoration = async (label: string, work: () => Promise<unknown>): Promise<void> => {
+      try {
+        await work();
+      } catch {
+        // Preserve the pre-existing best-effort contract, but make the omitted
+        // leg visible to the caller instead of silently returning a partial read.
+        degradedLegs.add(label);
+      }
+    };
+
+    // EI-6077 / P-001 / P-007: these reads are independent once the agent rows
+    // exist. Start them together, with each underlying fetch bounded separately
+    // so one slow PG leg cannot consume the whole handler's request budget.
+    await Promise.all([
+      runDecoration('wakeability', () =>
+        reconcileWakeability(
+          agents,
+          (ids) =>
+            boundedRead(
+              'wakeability',
+              () => fetchWakeability(ids),
+              new Map<string, WakeabilitySignals>(),
+            ),
+          (ids) =>
+            boundedRead(
+              'recorded',
+              () => recordedLiveOwnerIds(ids),
+              new Set<string>(),
+            ),
+          (ids) =>
+            boundedRead(
+              'selfwake',
+              () => fetchSelfWake(ids),
+              new Map<string, SelfWakeSignals>(),
+            ),
+          (ids) =>
+            boundedRead(
+              'recordedEnded',
+              () => endedRecordedOwnerIds(ids),
+              new Set<string>(),
+            ),
+        ),
+      ),
+      // P-001 (fleet-member-dx): stamp `parkedOn` — active non-inbox-wake
+      // events:await keys — so a deliberately-benched member reads as parked,
+      // not abandoned.
+      runDecoration('parkedOn', () =>
+        decorateParkedOn(agents, (ids) =>
+          boundedRead(
+            'parkedOn',
+            () => listParkedAwaitsForSubscribers(ids),
+            [] as Array<{ subscriberId: string; eventKey: string }>,
+          ),
+        ),
+      ),
+      runDecoration('contextPressure', () =>
+        decorateContextPressure(agents, (ids) =>
+          boundedRead(
+            'contextPressure',
+            () => fetchContextPressure(ids),
+            new Map<string, ContextPressureBucket>(),
+          ),
+        ),
+      ),
+      runDecoration('unanswered', () =>
+        decorateUnansweredDirected(agents, (ids) =>
+          boundedRead(
+            'unanswered',
+            () => fetchUnansweredDirected(ids),
+            new Map<string, UnansweredDirectedSummary>(),
+          ),
+        ),
+      ),
+    ]);
+
+    // P-010: loop state depends on parkedOn (parked event keys change the
+    // lifecycle verdict), so it starts after the independent first wave settles.
+    await runDecoration('loop', () =>
+      decorateLoopMonitorStates(agents, (ids) =>
+        boundedRead(
+          'loop',
+          () => getLoopStatuses(ids),
+          new Map<string, LoopStatus>(),
+        ),
+      ),
+    );
+
+    // EI-8995: verdicts depend on wakeability, parked events, and loop state;
+    // their three source reads are independent and bounded in the helper call.
+    await runDecoration('verdicts', () =>
+      decorateMemberVerdicts(
+        agents,
+        (ids) =>
+          boundedRead(
+            'lastToolCalls',
+            () => lastToolCallAtByOwner(ids),
+            new Map<string, string>(),
+          ),
+        () =>
+          boundedRead(
+            'wakeModeOverrides',
+            () => getAllWakeModeOverrides(),
+            new Map<string, WakeMode>(),
+          ),
+        () =>
+          boundedRead(
+            'defaultWakeMode',
+            () => getDefaultWakeMode(),
+            'auto' as WakeMode,
+          ),
+      ),
+    );
     // EI-18698865231464142: `orphaned`/`stalled` below read straight off `rows`,
     // whose `.orphaned` was set by the DATA layer's endedRecordedOwnerIds-keyed
     // downgrade — which has no key for a non-session (role-string) holder like
@@ -960,8 +1117,10 @@ export default defineTool({
     // that interface gained `reason` (TS2345 at the summarizeFor call below, +1 over
     // baseline — a fleet-wide gate red, since test:affected is type-blind and cannot see
     // it). Deriving it means the next field added there cannot reopen this.
-    const residueMap = await resolveTerminalPlanItemResidue([...orphans, ...stalled]).catch(
-      (): Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>> => new Map(),
+    const residueMap = await boundedRead(
+      'residue',
+      () => resolveTerminalPlanItemResidue([...orphans, ...stalled]),
+      new Map() as Awaited<ReturnType<typeof resolveTerminalPlanItemResidue>>,
     );
     const summarizeFor = (row: FleetAssignmentRow) =>
       summarizeOrphan(
