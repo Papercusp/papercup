@@ -170,7 +170,6 @@ describe('open-task reminder IO (P-005)', () => {
     const first = await sweepOpenTaskReminder({
       ownerId: 'su-owner-1',
       workspaceId: 'ws-1',
-      ownerInteractiveTurn: false,
     });
 
     expect(applySessionTaskOp).toHaveBeenCalledWith(
