@@ -6456,7 +6456,10 @@ mod tests {
             "ENDED",
             "RECORDED",
         ] {
-            assert!(normal.contains(expected), "missing {expected:?}: {normal:?}");
+            assert!(
+                normal.contains(expected),
+                "missing {expected:?}: {normal:?}"
+            );
         }
 
         app.pinned = Some(Tab::Fleet);
