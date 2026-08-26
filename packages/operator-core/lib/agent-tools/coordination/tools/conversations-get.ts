@@ -14,13 +14,13 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../roles';
 import { resolveAgentIdentity, type AgentIdentity } from '../identity';
-import { getConversation } from '../conversations';
+import { getConversation, getConsultStates } from '../conversations';
 import { mergeIds, runBulk, bulkContent } from '../../_bulk';
 
 export default defineTool({
   name: 'conversations:get',
   description:
-    'Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item\'s { ok:false } without failing the rest.',
+    'Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item\'s { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays "open" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting).',
   guidance: {
     when: 'You have one or more conversation_ids (from coord:ask, conversations:list, or an inbox notice) and want the full thread. Pass every id you need at once via `ids` instead of calling per id.',
     notWhen: 'Browsing many → conversations:list.',
@@ -55,15 +55,43 @@ export default defineTool({
       identity = undefined;
     }
     const ids = mergeIds(args.id, args.ids);
+    // EI-21510601647367544: pre-fetch consult lifecycle in ONE query rather than
+    // per-id inside the bulk loop (up to 100 ids ⇒ up to 100 round-trips).
+    // Fail-soft inside getConsultStates: on error this is an empty map and the
+    // read degrades to its previous shape.
+    const consultStates = await getConsultStates(ids, identity);
     const env = await runBulk(
       ids,
       async (id) => {
         const detail = await getConversation(id, identity);
         if (!detail) return { ok: false as const, id, error: 'not_found' };
         const { conversation: c, topics, posts, subscriber_count } = detail;
+        const consult = consultStates.get(id);
         return {
           ok: true as const,
           id,
+          /**
+           * Present ONLY for a consult conversation, so no existing consumer
+           * shape changes. `conversation.state` above is the CONVERSATION's
+           * state and stays 'open' after the consult itself has expired and
+           * closed; `consult.state` is the lifecycle answer. Read this one
+           * before concluding anything about whether a consult is still live —
+           * and note that empty `posts` is NOT evidence of a stalled consult,
+           * because a cascade advance wakes the next selectee instead of
+           * posting to the thread (EI-21510601647367544).
+           */
+          ...(consult
+            ? {
+                consult: {
+                  state: consult.state,
+                  latency_contract: consult.latency_contract,
+                  responder_id: consult.responder_id,
+                  expires_at: consult.expires_at,
+                  closed_at: consult.closed_at,
+                  wakes_used: consult.wakes_used,
+                },
+              }
+            : {}),
           conversation: {
             id: c.id,
             kind: c.kind,

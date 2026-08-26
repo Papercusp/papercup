@@ -456,6 +456,78 @@ export function getConversation(id: string, identity?: AgentIdentity): Promise<C
   return identity ? withConversationsIdentityScope(identity, undefined, run) : run();
 }
 
+/**
+ * A consult's LIFECYCLE state, which lives in `harness_shared.consult_state` —
+ * a different table from the conversation row itself.
+ *
+ * EI-21510601647367544: those two states diverge, and the divergence is
+ * actively misleading. A consult whose window elapsed is swept to
+ * `state:'expired'` + `closed_at` by `system:consult-expiry-sweep`, but its
+ * CONVERSATION row keeps reading `state:'open'`. Since a cascade advance wakes
+ * the next selectee rather than posting to the thread, `posts:[]` also stays
+ * empty on a perfectly healthy consult. So an agent reading only the
+ * conversation sees `open` + zero posts for both "still waiting on a responder"
+ * and "expired and closed an hour ago", and the natural inference from that
+ * pair — nobody is acting on this, it is stranded — is wrong in the second
+ * case. Measured instance: conv-mt9jw66p read `open` at 08:37Z, 49 minutes
+ * after its consult_state row was expired and closed at 07:48:28Z.
+ *
+ * There is no dedicated consult-status verb to point at instead — the consult
+ * surface is exactly get_feedback / reply / decline / close — so the lifecycle
+ * has to reach the reader through the conversation read they already make.
+ *
+ * Batched deliberately: `conversations:get` accepts up to 100 ids, and a
+ * per-id lookup inside its bulk loop would be 100 round-trips for one read.
+ */
+export interface ConsultLifecycleState {
+  conversation_id: string;
+  state: string;
+  latency_contract: string | null;
+  responder_id: string | null;
+  expires_at: string | null;
+  closed_at: string | null;
+  wakes_used: number | null;
+}
+
+export function getConsultStates(
+  conversationIds: readonly string[],
+  identity?: AgentIdentity,
+): Promise<Map<string, ConsultLifecycleState>> {
+  const run = async (): Promise<Map<string, ConsultLifecycleState>> => {
+    const out = new Map<string, ConsultLifecycleState>();
+    if (conversationIds.length === 0) return out;
+    try {
+      const { sql } = getOrgPg();
+      const rows = await sql`
+        SELECT conversation_id, state, latency_contract, responder_id,
+               expires_at, closed_at, wakes_used
+          FROM harness_shared.consult_state
+         WHERE workspace_id = ${conversationsScopeWorkspace()}
+           AND conversation_id = ANY(${conversationIds as string[]}::text[])
+      `;
+      for (const r of rows as unknown as ConsultLifecycleState[]) {
+        out.set(r.conversation_id, {
+          conversation_id: r.conversation_id,
+          state: r.state,
+          latency_contract: r.latency_contract ?? null,
+          responder_id: r.responder_id ?? null,
+          expires_at: r.expires_at ?? null,
+          closed_at: r.closed_at ?? null,
+          wakes_used: r.wakes_used ?? null,
+        });
+      }
+    } catch (err) {
+      // FAIL-SOFT, and deliberately so: this is supplementary context on an
+      // established read path. A consult-lifecycle lookup that fails must
+      // degrade `conversations:get` to its previous behaviour (no `consult`
+      // block), never break the thread read the caller actually asked for.
+      console.warn('[conversations] consult lifecycle lookup failed; omitting consult state', err);
+    }
+    return out;
+  };
+  return identity ? withConversationsIdentityScope(identity, undefined, run) : run();
+}
+
 export function promoteConversation(
   identity: AgentIdentity,
   input: PromoteConversationInput,
