@@ -19,6 +19,7 @@ vi.mock('../../events/await/store', () => ({
 
 import catalog from './catalog';
 import { familyKeyPrefix, EVENT_CATALOG } from '../../events/await/catalog';
+import { HARD_CAP, promptWeight } from '../tool-guidance-budget';
 
 const call = async (args: Record<string, unknown> = {}) => {
   const res = (await catalog.handler(args as never, {} as never)) as { content: Array<{ text: string }> };
@@ -31,6 +32,10 @@ beforeEach(() => {
 });
 
 describe('events:catalog — live_awaiters', () => {
+  it('stays within the prompt-weight hard cap', () => {
+    expect(promptWeight(catalog)).toBeLessThanOrEqual(HARD_CAP);
+  });
+
   it('documents context-derived visibility instead of caller-supplied scope/pot filters', () => {
     expect(catalog.description).toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
     expect(catalog.guidance.notWhen).toMatch(/Do not pass `scope`, `pot`, or `harness` as JSON filters/i);
