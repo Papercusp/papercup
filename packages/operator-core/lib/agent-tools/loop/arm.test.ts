@@ -12,6 +12,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/loop/arm.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 // `onFlagChange` is required even though this suite never exercises it: importing
 // locks/configure.ts pulls in txn-timeouts-config.ts, which calls onFlagChange() at
@@ -907,6 +908,17 @@ describe('loop:arm — WI-5557 TIER 1: unbounded warm-carry WORK loop warning (a
   it('either dead-man guard set (maxDurationSec) suppresses the warning', async () => {
     const b = body(await call({ maxDurationSec: 3600 }));
     expect(b.unboundedWarmLoopWarning).toBeNull();
+  });
+
+  it('publishes the no-duration-ceiling form as omission, never zero', () => {
+    const schema = z.toJSONSchema(tool.args as never) as {
+      properties?: { maxDurationSec?: { description?: string; exclusiveMinimum?: number } };
+    };
+    const field = schema.properties?.maxDurationSec;
+    expect(field?.exclusiveMinimum).toBe(0);
+    expect(field?.description).toContain('OMIT');
+    expect(field?.description).toContain('maxDurationSec: 0');
+    expect(field?.description).toContain('invalid');
   });
 });
 
