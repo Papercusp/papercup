@@ -46,9 +46,11 @@ import {
 import { categoryOf } from '../../cupboard/tools-search';
 import {
   arrayItemConstraintText,
+  mergeRepeatedPropertySchema,
   renderSchemaBounds,
   schemaToText,
   type ToolDiscoveryEntry,
+  unionRequiredKeyHint,
 } from '../../cupboard/tools-discovery';
 import { findTools, type Embedder } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
@@ -266,30 +268,6 @@ type TopLevelSchemaProjection = {
   unionHint: string;
 };
 
-function scalarSchemaValues(raw: unknown): Array<string | number | boolean | null> | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const node = raw as JsonSchemaNode;
-  if (Object.prototype.hasOwnProperty.call(node, 'const')) {
-    const value = node.const;
-    return value === null || ['string', 'number', 'boolean'].includes(typeof value)
-      ? [value as string | number | boolean | null]
-      : null;
-  }
-  if (!Array.isArray(node.enum)) return null;
-  const values = node.enum.filter(
-    (value): value is string | number | boolean | null =>
-      value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean',
-  );
-  return values.length === node.enum.length ? values : null;
-}
-
-function mergeRepeatedPropertySchema(prior: unknown, next: unknown): unknown {
-  const left = scalarSchemaValues(prior);
-  const right = scalarSchemaValues(next);
-  if (!left || !right) return prior;
-  return { enum: [...new Set([...left, ...right])] };
-}
-
 function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjection | null {
   const directProps = root.properties;
   if (directProps && typeof directProps === 'object' && !Array.isArray(directProps)) {
@@ -333,18 +311,7 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
   }
   if (merged.size === 0) return null;
 
-  const unionHint =
-    branches.length > 1
-      ? branches
-          .map((branch) =>
-            Array.isArray(branch.required)
-              ? branch.required.filter((v): v is string => typeof v === 'string')
-              : [],
-          )
-          .filter((names) => names.length > 0)
-          .map((names) => names.join('&'))
-          .join('|')
-      : '';
+  const unionHint = branches.length > 1 ? unionRequiredKeyHint(branches) : '';
   const required = new Set<string>();
   for (const [name, entry] of merged) {
     if (entry.presentIn === branches.length && entry.requiredInAll) required.add(name);

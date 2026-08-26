@@ -217,6 +217,8 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
       ],
     });
 
+    expect(compact).toContain('one-of:op;');
+    expect(compact).not.toContain('one-of:op|op');
     expect(compact).toContain('op:enum(get|set|hold|unhold)');
     expect(compact).toContain('stallReds?:integer');
     expect(compact).toContain('enabled?:boolean');

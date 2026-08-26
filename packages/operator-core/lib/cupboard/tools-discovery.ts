@@ -220,6 +220,51 @@ export function renderSchemaBounds(nodes: readonly unknown[]): string {
         : '';
 }
 
+function scalarSchemaValues(raw: unknown): Array<string | number | boolean | null> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const node = raw as { enum?: unknown; const?: unknown };
+  if (Object.prototype.hasOwnProperty.call(node, 'const')) {
+    const value = node.const;
+    return value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+      ? [value]
+      : null;
+  }
+  if (!Array.isArray(node.enum)) return null;
+  const values = node.enum.filter(
+    (value): value is string | number | boolean | null =>
+      value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean',
+  );
+  return values.length === node.enum.length ? values : null;
+}
+
+/** Merge repeated scalar properties in a root union (usually a discriminator). */
+export function mergeRepeatedPropertySchema(prior: unknown, next: unknown): unknown {
+  const left = scalarSchemaValues(prior);
+  const right = scalarSchemaValues(next);
+  if (!left || !right) return prior;
+  return { enum: [...new Set([...left, ...right])] };
+}
+
+/** Render each distinct set of branch-required keys once in union order. */
+export function unionRequiredKeyHint(branches: readonly { required?: unknown }[]): string {
+  const seen = new Set<string>();
+  return branches
+    .map((branch) =>
+      Array.isArray(branch.required)
+        ? branch.required.filter((value): value is string => typeof value === 'string')
+        : [],
+    )
+    .filter((names) => names.length > 0)
+    .filter((names) => {
+      const key = [...names].sort().join('&');
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((names) => names.join('&'))
+    .join('|');
+}
+
 /**
  * Render a tool's JSON inputSchema into one compact searchable/embeddable line:
  * `key:type description; otherKey?:enum …` (a `?` marks an optional property).
@@ -266,6 +311,10 @@ export function schemaToText(inputSchema: unknown): string | null {
       if (prior) {
         prior.presentIn += 1;
         prior.requiredInAll = prior.requiredInAll && required.has(name);
+        // A discriminated union repeats the discriminator in every branch with
+        // a different literal. Keep every accepted operation visible in the
+        // searchable schema instead of retaining only the first branch.
+        prior.raw = mergeRepeatedPropertySchema(prior.raw, raw);
       } else {
         merged.set(name, { raw, presentIn: 1, requiredInAll: required.has(name) });
       }
@@ -273,15 +322,7 @@ export function schemaToText(inputSchema: unknown): string | null {
   }
   if (merged.size === 0) return null;
 
-  const unionHint = branches.length > 1
-    ? branches
-      .map((branch) => Array.isArray(branch.required)
-        ? branch.required.filter((v): v is string => typeof v === 'string')
-        : [])
-      .filter((names) => names.length > 0)
-      .map((names) => names.join('&'))
-      .join('|')
-    : '';
+  const unionHint = branches.length > 1 ? unionRequiredKeyHint(branches) : '';
   const parts: string[] = [];
   for (const [name, entry] of merged) {
     const raw = entry.raw;

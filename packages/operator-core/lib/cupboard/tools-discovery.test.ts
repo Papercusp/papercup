@@ -287,6 +287,24 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(txt).toContain('sha?:string');
   });
 
+  it('merges every discriminated-union literal and deduplicates repeated required-key hints', () => {
+    const txt = schemaToText({
+      oneOf: [
+        { type: 'object', required: ['op'], properties: { op: { const: 'get' }, stallReds: { type: 'integer' } } },
+        { type: 'object', required: ['op'], properties: { op: { const: 'set' }, enabled: { type: 'boolean' } } },
+        { type: 'object', required: ['op'], properties: { op: { const: 'hold' }, reason: { type: 'string' } } },
+        { type: 'object', required: ['op'], properties: { op: { const: 'unhold' } } },
+      ],
+    });
+
+    expect(txt).toContain('one-of:op;');
+    expect(txt).not.toContain('one-of:op|op');
+    expect(txt).toContain('op:enum(get|set|hold|unhold)');
+    expect(txt).toContain('stallReds?:integer');
+    expect(txt).toContain('enabled?:boolean');
+    expect(txt).toContain('reason?:string');
+  });
+
   describe('EI-13181: numeric/length bounds (same lossy-discovery class as EI-13164 — a min/max is dropped just like an enum was)', () => {
     it('a min+max integer (sessions:digest\'s real z.number().int().min(1).max(100)) renders the inclusive range', () => {
       // zod's toJSONSchema for `z.number().int().min(1).max(100).optional().describe('Default 30.')`
