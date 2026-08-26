@@ -65,27 +65,31 @@ import {
 import { buildScoutPlanTemplate } from './scout-plan-draft';
 import type { Sql } from 'postgres';
 
-const cand = (planSlug: string, hasOpenItems: boolean): ScoutReadyCandidate => ({
+const cand = (planSlug: string, hasOpenItems: boolean, hasAnyItems = hasOpenItems): ScoutReadyCandidate => ({
   planSlug,
   title: planSlug,
   hasOpenItems,
+  hasAnyItems,
 });
 
 describe('partitionReadyCandidates (pure)', () => {
   it('splits startable (has items) from itemless', () => {
-    const { startable, itemless } = partitionReadyCandidates([
+    const { startable, itemless, finished } = partitionReadyCandidates([
       cand('a', true),
       cand('b', false),
       cand('c', true),
+      cand('d', false, true),
     ]);
     expect(startable.map((c) => c.planSlug)).toEqual(['a', 'c']);
     expect(itemless.map((c) => c.planSlug)).toEqual(['b']);
+    expect(finished.map((c) => c.planSlug)).toEqual(['d']);
   });
 
   it('handles the empty set', () => {
-    const { startable, itemless } = partitionReadyCandidates([]);
+    const { startable, itemless, finished } = partitionReadyCandidates([]);
     expect(startable).toEqual([]);
     expect(itemless).toEqual([]);
+    expect(finished).toEqual([]);
   });
 });
 
