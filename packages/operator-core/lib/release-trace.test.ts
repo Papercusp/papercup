@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 import type { PipelinePosition } from './git-pipeline-position';
 import type { DeployStatus } from './release-deploy-launch';
 import { buildReleaseTrace, classifyReleaseWake, type ReleaseTraceGate, type ReleaseTraceInput } from './release-trace';
+import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 
 const sha = 'a'.repeat(40);
 const green = sha;
 const deployed = sha;
+const NO_QUALIFICATION = projectCheckpointQualificationState(null, 0);
 
 function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
   return {
@@ -66,6 +68,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       // EI-19405864032365760 made this REQUIRED for the same reason: `null` says this gate
       // RENDERED a verdict (no preflight abort recorded), which is what this fixture describes.
       inconclusive: null,
+      qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: green,
@@ -1325,18 +1328,14 @@ describe('EI-21456558908416090: withheld manual checkpoint-run authority', () =>
   });
 
   it('CONTROL: withheld:false is authority GRANTED, not withheld', () => {
-    const out = buildReleaseTrace(
-      staleGate({ manualRunAuthority: { ...withheld, withheld: false } }),
-    );
+    const out = buildReleaseTrace(staleGate({ manualRunAuthority: { ...withheld, withheld: false } }));
     expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
   });
 
   it('CONTROL: a withheld authority with a blank governingRef does not suppress', () => {
     // An unattributable prohibition is how an unexplained frozen gate happens. It must not be
     // able to silently remove the recommendation with nothing naming who to ask.
-    const out = buildReleaseTrace(
-      staleGate({ manualRunAuthority: { ...withheld, governingRef: '   ' } }),
-    );
+    const out = buildReleaseTrace(staleGate({ manualRunAuthority: { ...withheld, governingRef: '   ' } }));
     expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
   });
 
@@ -1402,9 +1401,9 @@ describe('EI-21456558908416090: withheld manual checkpoint-run authority', () =>
     expect(out.constraints).toContainEqual(
       expect.objectContaining({ code: 'manual-checkpoint-authority-withheld', blocking: false }),
     );
-    expect(
-      out.constraints.find((c) => c.code === 'manual-checkpoint-authority-withheld')?.summary,
-    ).toMatch(/Scheduled gate fires are unaffected/);
+    expect(out.constraints.find((c) => c.code === 'manual-checkpoint-authority-withheld')?.summary).toMatch(
+      /Scheduled gate fires are unaffected/,
+    );
   });
 
   it('does not double-report when the in-module D-053 consumed authority already applies', () => {

@@ -58,6 +58,7 @@ import type { DevDeployState } from './dev-deploy-state';
 import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import type { RuntimeVintageRow } from './runtime-vintage';
+import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
 
 /** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
 const HEALTHY_GIT_SYNC = {
@@ -116,6 +117,9 @@ const NO_SWEEP: SweepExposure = {
   nextSweepInMs: null,
   detail: null,
 };
+
+/** No logical qualification attempt exists in these otherwise fully measured fixtures. */
+const NO_QUALIFICATION = projectCheckpointQualificationState(null, 0);
 
 /** A fake `git` runner keyed by arg shape + a per-ref containment map. */
 function fakeGit(opts: {
@@ -341,6 +345,7 @@ const snap = (
       // semantically correct default rather than a compiler-silencer: these fixtures describe a
       // gate that RENDERED a verdict, which is exactly the case where no abort is recorded.
       inconclusive: null,
+      qualification: NO_QUALIFICATION,
       ...gate,
     },
     gitSync: { lastStatus },
@@ -610,7 +615,7 @@ describe('gitPipelinePosition (P-002)', () => {
      * to show the drop against ITS parent. That measures a change inside the ref's
      * history, which is the one reading a lagging ref cannot counterfeit.
      */
-    it('a MARKER removed by the caller CORRECTS the leg when the REF\'S OWN history shows the drop', async () => {
+    it("a MARKER removed by the caller CORRECTS the leg when the REF'S OWN history shows the drop", async () => {
       const git = fakeGit({
         pathCommit: PEER,
         contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
@@ -1387,6 +1392,7 @@ describe('gitPipelinePosition (P-002)', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            qualification: NO_QUALIFICATION,
           }),
       },
     );
@@ -1432,6 +1438,7 @@ describe('gitPipelinePosition (P-002)', () => {
               commitsBehindTip: null,
               observedCandidate: null,
               inconclusive: null,
+              qualification: NO_QUALIFICATION,
             },
             'synced',
             {
@@ -1485,6 +1492,7 @@ describe('gitPipelinePosition (P-002)', () => {
               commitsBehindTip: null,
               observedCandidate: null,
               inconclusive: null,
+              qualification: NO_QUALIFICATION,
               lastGreenAtMs: Date.now() - 5 * 60_000,
             },
             'synced',
@@ -1789,6 +1797,7 @@ describe('gitPipelinePosition (P-002)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
@@ -2114,6 +2123,7 @@ describe('computeStages: position x health', () => {
       commitsBehindTip: null,
       observedCandidate: null,
       inconclusive: null,
+      qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: 'g',
@@ -2385,6 +2395,7 @@ describe('computeStages: position x health', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          qualification: NO_QUALIFICATION,
         },
       }),
     );
@@ -2440,6 +2451,7 @@ describe('computeStages: position x health', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          qualification: NO_QUALIFICATION,
         },
       }),
     );
@@ -2463,6 +2475,7 @@ describe('computeStages: position x health', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          qualification: NO_QUALIFICATION,
         },
       }),
     );
@@ -2521,6 +2534,7 @@ describe('computeStages: position x health', () => {
         'migration preflight ABORTED this run — 1 migration(s) are pending. Pending: 727-widen-vectors.sql: null value',
       observedAtMs: 1,
     },
+    qualification: NO_QUALIFICATION,
   });
 
   it('⭐ EI-19405864032365760: an ABORTED gate reports the abort, not the stale red streak', () => {
@@ -2564,7 +2578,8 @@ describe('computeStages: position x health', () => {
   });
 
   it('EI-214333: a safely retireable queue owns the gate detail and exact next action', () => {
-    const nextAction = "release:repair-queue { op: 'retire', expectedCandidate: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }";
+    const nextAction =
+      "release:repair-queue { op: 'retire', expectedCandidate: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }";
     const s = computeStages(
       input({
         positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
@@ -2668,6 +2683,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -2699,6 +2715,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -2730,6 +2747,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -2761,6 +2779,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -2800,6 +2819,7 @@ describe('computeStages: position x health', () => {
             commitsBehindTip: null,
             observedCandidate: null,
             inconclusive: null,
+            qualification: NO_QUALIFICATION,
           },
           verdictProvenance: {
             lastGreenSha: 'g',
@@ -3248,6 +3268,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
       commitsBehindTip: null,
       observedCandidate: null,
       inconclusive: null,
+      qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: 'g',
@@ -3366,6 +3387,7 @@ describe('the serving STAGE and summary never claim "live" off a git fact', () =
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
@@ -3601,6 +3623,7 @@ describe('changeInCandidate (P-004)', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          qualification: NO_QUALIFICATION,
         },
         verdictProvenance: {
           lastGreenSha: 'g',
@@ -3642,6 +3665,7 @@ describe('changeInCandidate (P-004)', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          qualification: NO_QUALIFICATION,
         },
         changeInCandidate: contained({
           judgingSha: 'cand1234567890',
@@ -3670,6 +3694,7 @@ describe('changeInCandidate (P-004)', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          qualification: NO_QUALIFICATION,
         },
       });
       expect(s.detail).toMatch(/Gate is RED \(3 consecutive\)/);
@@ -3690,6 +3715,7 @@ describe('changeInCandidate (P-004)', () => {
           commitsBehindTip: null,
           observedCandidate: null,
           inconclusive: null,
+          qualification: NO_QUALIFICATION,
         },
         changeInCandidate: contained({
           nextCandidateSha: 'cand1234567890',
@@ -3743,6 +3769,7 @@ describe('changeInCandidate (P-004)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        qualification: NO_QUALIFICATION,
       },
       verdictProvenance: {
         lastGreenSha: 'readysha0',
@@ -4359,6 +4386,7 @@ describe('stage levers (P-005)', () => {
       commitsBehindTip: null,
       observedCandidate: null,
       inconclusive: null,
+      qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: 'g',
@@ -4398,6 +4426,7 @@ describe('stage levers (P-005)', () => {
     commitsBehindTip: null,
     observedCandidate: null,
     inconclusive: null,
+    qualification: NO_QUALIFICATION,
   };
   /** A suite really is running — the EI-18797292094433710 state, where waiting IS the lever. */
   const IN_FLIGHT = {
@@ -4457,6 +4486,7 @@ describe('stage levers (P-005)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        qualification: NO_QUALIFICATION,
       },
       changeInCandidate: { ...NO_CANDIDATE, judgingContainsPath: false, missingReason: 'uncommitted' },
     });
@@ -4480,6 +4510,7 @@ describe('stage levers (P-005)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        qualification: NO_QUALIFICATION,
       },
     });
     expect(l).toMatch(/fix the reds/);
@@ -4708,6 +4739,7 @@ describe('stage levers (P-005)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        qualification: NO_QUALIFICATION,
       },
       changeInCandidate: {
         ...NO_CANDIDATE,
@@ -4738,6 +4770,7 @@ describe('stage levers (P-005)', () => {
         commitsBehindTip: null,
         observedCandidate: null,
         inconclusive: null,
+        qualification: NO_QUALIFICATION,
       },
       changeInCandidate: {
         ...NO_CANDIDATE,
@@ -5104,6 +5137,7 @@ describe('sweep exposure (P-006)', () => {
       commitsBehindTip: null,
       observedCandidate: null,
       inconclusive: null,
+      qualification: NO_QUALIFICATION,
     },
     verdictProvenance: {
       lastGreenSha: 'g',
