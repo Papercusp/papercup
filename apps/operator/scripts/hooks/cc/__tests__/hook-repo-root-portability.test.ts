@@ -81,8 +81,14 @@ export function findHardcodedRootAssignments(text: string): string[] {
   return out;
 }
 
-/** Guard/hook scripts: the executable surface where fail-open costs the fleet. */
-function guardScripts(): string[] {
+/**
+ * Guard/hook scripts: the executable surface where fail-open costs the fleet.
+ *
+ * `includeTestFixtures` exists ONLY so the exclusion below can be measured against
+ * the same walker rather than a second hand-rolled one — a filter you cannot
+ * measure is a filter that can silently start excluding everything.
+ */
+function guardScripts({ includeTestFixtures = false } = {}): string[] {
   const found: string[] = [];
   const walk = (dir: string) => {
     let entries: string[];
@@ -95,7 +101,17 @@ function guardScripts(): string[] {
       const p = join(dir, e);
       if (statSync(p).isDirectory()) {
         if (e !== 'node_modules' && e !== '__tests__') walk(p);
-      } else if (e.endsWith('.mjs')) {
+      } else if (e.endsWith('.mjs') && (includeTestFixtures || !e.endsWith('.test.mjs'))) {
+        // A `*.test.mjs` sibling is FIXTURE code, not a guard: it never runs as a
+        // hook, so it cannot fail open, and its roots are synthetic trees handed to
+        // pure helpers (`verificationScopeForNpmArgs({ repoRoot: '/repo', ... })`).
+        // This completes the carve-out the `__tests__` DIRECTORY exclusion above
+        // already began — the same false-positive class as the `selfTest()` skip in
+        // findHardcodedRootAssignments, one level up in the POPULATION rather than
+        // inside one file. WI-37593 fixed the inner case by dodging the offending
+        // file instead of the detector, and the class recurred (WI-42119, 2026-08-26):
+        // a new node:test case in scripts/npm-install-safe.test.mjs red-pinned
+        // @papercusp/web fleet-wide for every agent running test:affected.
         found.push(p);
       }
     }
@@ -163,6 +179,36 @@ describe('guard scripts derive their repo root (WI-10811)', () => {
   it('calibration: the file WI-10811 fixed is clean, so a pass here is meaningful', () => {
     const fixed = resolve(ROOT, 'apps/operator/scripts/hooks/cc/pretooluse-control-bytes-content-guard.mjs');
     expect(findHardcodedRootAssignments(readFileSync(fixed, 'utf8'))).toEqual([]);
+  });
+
+  it('the *.test.mjs exclusion is narrow, non-vacuous, and not how the ratchet goes quiet (WI-42119)', () => {
+    const scanned = guardScripts();
+    const withFixtures = guardScripts({ includeTestFixtures: true });
+
+    // 1. It excludes exactly what it claims to.
+    expect(scanned.filter((f) => f.endsWith('.test.mjs'))).toEqual([]);
+
+    // 2. It is NOT vacuous: there really are `*.test.mjs` files under the scanned
+    //    roots today, so a regression that drops the filter re-reds immediately
+    //    rather than sitting dormant until someone adds the next fixture.
+    expect(
+      withFixtures.length,
+      'no *.test.mjs under the scanned roots — this exclusion now protects nothing and its removal would be undetectable',
+    ).toBeGreaterThan(scanned.length);
+
+    // 3. It did not hollow out the population. This is the failure direction that
+    //    LOOKS like success: a filter that over-matches leaves the ratchet green
+    //    forever. Both files the calibration cases above assert about must survive.
+    expect(scanned.length).toBeGreaterThan(10);
+    for (const required of [
+      'apps/operator/scripts/hooks/cc/pretooluse-control-bytes-content-guard.mjs',
+      'apps/operator/scripts/hooks/cc/posttooluse-css-design-primitives-nudge.mjs',
+    ]) {
+      expect(
+        scanned.some((f) => f.endsWith(required)),
+        `${required} fell out of the scanned population — the ratchet is no longer watching it`,
+      ).toBe(true);
+    }
   });
 
   it('THE RATCHET: no guard script hardcodes its repo root', () => {
