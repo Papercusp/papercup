@@ -31,6 +31,7 @@ import {
 import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
+import type { LiveReleaseCertification } from './release/live-release-certification';
 import {
   buildDeployTerminalShell,
   DEPLOY_TERMINAL_MARKER_PATH,
@@ -100,6 +101,20 @@ function mkSnap(
   } as unknown as GitPipelineSnapshot;
 }
 
+function liveCertification(
+  status: LiveReleaseCertification['status'] = 'certified',
+): LiveReleaseCertification {
+  return {
+    status,
+    targetSha: 'greenpin0sha',
+    certified: status === 'certified',
+    reason: status === 'certified' ? 'exact source certified' : `certification ${status}`,
+    bankPath: '/tmp/verdicts.jsonl',
+    evidence: null,
+    invalidLines: 0,
+  };
+}
+
 describe('computeDeployStatus — decision tree', () => {
   it('projects the normalized repair queue into release status', () => {
     const repairQueue = {
@@ -129,6 +144,41 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true);
     expect(s.recommendation).toMatch(/trigger/i);
+  });
+
+  it('P-010: a measured missing exact-SHA certificate blocks an otherwise-green deploy', () => {
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 0, fireStale: false }, { deployedBehindGreenPin: 2 }),
+      null,
+      liveCertification('missing'),
+    );
+
+    expect(s.state).toBe('live-certification-required');
+    expect(s.canTriggerGreen).toBe(false);
+    expect(s.liveCertification?.status).toBe('missing');
+    expect(s.recommendation).toMatch(/fail-closed|independent certification/i);
+  });
+
+  it('P-010: a measured exact-SHA live RED is distinct from missing certification', () => {
+    const s = computeDeployStatus(
+      mkSnap({}, { deployedBehindGreenPin: 1 }),
+      null,
+      liveCertification('failed'),
+    );
+
+    expect(s.state).toBe('live-certification-failed');
+    expect(s.canTriggerGreen).toBe(false);
+  });
+
+  it('P-010: a current exact-SHA live certificate preserves the green deploy path', () => {
+    const s = computeDeployStatus(
+      mkSnap({}, { deployedBehindGreenPin: 1 }),
+      null,
+      liveCertification('certified'),
+    );
+
+    expect(s.state).toBe('green-deployable');
+    expect(s.canTriggerGreen).toBe(true);
   });
 
   it('gate-red: reds present → NOT triggerable, recommendation says fix the reds', () => {

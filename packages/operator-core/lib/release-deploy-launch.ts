@@ -33,6 +33,10 @@ import {
 } from './release-deploy-terminal';
 import { isRecordedInconclusiveStatus } from './release/gate-abort-status';
 import { isRecordableVerdict } from './release/gate-verdict-target';
+import {
+  readLiveReleaseCertification,
+  type LiveReleaseCertification,
+} from './release/live-release-certification';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 
 /**
@@ -221,6 +225,8 @@ export type DeployStateKind =
   | 'up-to-date' // live :3070 is at the green pin; nothing to deploy
   | 'deploy-in-flight' // EI-18724155280048738: a deploy is RUNNING right now — do not trigger another
   | 'green-deployable' // green code is ahead + deployable but not yet live (the trigger case)
+  | 'live-certification-required' // P-010: code is green, but exact-SHA live qualification is absent/stale/unreadable
+  | 'live-certification-failed' // P-010: the exact-SHA specialized live verdict is RED
   | 'release-trigger-paused' // a deliberate release safety hold blocks ordinary deploys
   | 'release-trigger-unavailable' // release-trigger is absent/inactive without usable pause provenance
   | 'gate-red' // the gate is RED — the green pin can't advance until the reds are fixed
@@ -338,6 +344,10 @@ export interface DeployStatus {
     blocked: boolean;
     blockReason: string | null;
   };
+  /** P-010: specialized live/federation qualification for the exact green pin.
+   * Null only on pure legacy callers that did not supply a reader, or when no
+   * green pin exists yet. `readDeployStatus()` always measures it when a pin exists. */
+  liveCertification: LiveReleaseCertification | null;
   /** True iff `trigger` would do something safe + useful: there is green code ahead of the
    *  live deploy AND the gate is not currently red/wedged. */
   canTriggerGreen: boolean;
@@ -356,7 +366,11 @@ export interface DeployStatus {
  * Pure: derive the deploy status + the decision-tree recommendation from a pipeline snapshot.
  * Exported for unit testing — no I/O.
  */
-export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployInFlight | null = null): DeployStatus {
+export function computeDeployStatus(
+  snap: GitPipelineSnapshot,
+  inFlight: DeployInFlight | null = null,
+  liveCertification?: LiveReleaseCertification | null,
+): DeployStatus {
   const g = snap.gate;
   const d = snap.deploy;
   /**
@@ -559,7 +573,11 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // a definite reason) is strictly better than letting the caller fire and rely on systemd-run
   // exiting 1 on the duplicate unit — that path reports the hedged "a deploy MAY already be in
   // flight", which is the same can't-tell-two-states-apart defect one layer down.
-  const canTriggerGreen = hasGreenAhead && !inFlight?.active && !releaseTriggerBlocked;
+  // Undefined preserves the pure function's historical fixture/caller contract. The
+  // production read path always supplies a measured certificate when a green pin exists.
+  const certificationAllowsDeploy = liveCertification === undefined || liveCertification?.certified === true;
+  const canTriggerGreen =
+    hasGreenAhead && !inFlight?.active && !releaseTriggerBlocked && certificationAllowsDeploy;
 
   // WI-4489: a RED is only authoritative if its verdict is CURRENT. `gate_health` is a cache that a
   // starved writer freezes: a `skipped-locked` fire is a no-op that leaves the blob untouched while
@@ -601,6 +619,15 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       ? `A deliberate release safety hold blocks ordinary deploys${pause.pausedBy ? ` (paused by ${pause.pausedBy}` : ''}${pause.pausedAtMs ? ` at ${new Date(pause.pausedAtMs).toISOString()}` : ''}${pause.pausedBy ? ')' : ''}: ${pause.reason ?? 'no reason recorded'}. ` +
         'Do NOT resume the routine or run release:deploy trigger until the recorded hold condition is satisfied. Force remains the explicit audited override.'
       : `${releaseTriggerBlockReason}. Refusing an ordinary deploy while its control state is unavailable; restore/verify the routine control before retrying. Force remains the explicit audited override.`;
+  } else if (hasGreenAhead && liveCertification !== undefined && liveCertification?.certified !== true) {
+    state = liveCertification?.status === 'failed'
+      ? 'live-certification-failed'
+      : 'live-certification-required';
+    recommendation =
+      `Green main is ahead, but ordinary deployment is fail-closed on exact-SHA live certification: ` +
+      `${liveCertification?.reason ?? 'no certification reading is available'}. ` +
+      `The release-trigger will launch or await the independent certification run for ${d.greenPin?.sha?.slice(0, 12) ?? 'the green pin'}; ` +
+      `do not force past it unless explicitly accepting an uncertified deployment.`;
   } else if (hasGreenAhead) {
     // There IS green, deployable code that hasn't reached :3070 — the expedite case.
     state = 'green-deployable';
@@ -706,6 +733,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       blocked: releaseTriggerBlocked,
       blockReason: releaseTriggerBlockReason,
     },
+    liveCertification: liveCertification ?? null,
     canTriggerGreen,
     nothingToDeploy,
     state,
@@ -719,6 +747,8 @@ export interface ReadDeployStatusDeps {
   loadSnapshot?: () => Promise<GitPipelineSnapshot>;
   /** Injectable in-flight probe (default: the real systemd read). */
   loadInFlight?: () => Promise<DeployInFlight>;
+  /** Injectable P-010 exact-SHA live-certification reader. */
+  loadLiveCertification?: (targetSha: string) => Promise<LiveReleaseCertification>;
 }
 
 /** Read the current deploy status (the snapshot + the in-flight probe + the pure computation).
@@ -741,7 +771,20 @@ export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise
     load(),
     loadInFlight().catch(() => null),
   ]);
-  return computeDeployStatus(snap, inFlight);
+  const targetSha = snap.deploy.greenPin?.sha ?? null;
+  const loadCertification = deps.loadLiveCertification ?? ((sha: string) => readLiveReleaseCertification(sha));
+  const certification = targetSha
+    ? await loadCertification(targetSha).catch((error): LiveReleaseCertification => ({
+        status: 'unreadable',
+        targetSha,
+        certified: false,
+        reason: `live-certification read failed: ${error instanceof Error ? error.message : String(error)}`,
+        bankPath: null,
+        evidence: null,
+        invalidLines: 0,
+      }))
+    : null;
+  return computeDeployStatus(snap, inFlight, certification);
 }
 
 // ─── Detached deploy launch ───────────────────────────────────────────────────
