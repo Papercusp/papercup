@@ -9,6 +9,8 @@ import type { Sql } from 'postgres';
 import { InvalidInputError } from '@papercusp/tooldef';
 import {
   assertFact,
+  excerptEvictedBody,
+  FACT_EVICTION_EXCERPT_CHARS,
   parseFactSourceProvenance,
   parseFactMeasurement,
   FACT_VOLATILE_MAX_TTL_SEC,
@@ -507,5 +509,39 @@ describe('clampFactBody — over-cap bodies truncate instead of rejecting (P-007
       const body = 'a discriminator rule with a verdict clause. '.repeat(Math.ceil(len / 46)).slice(0, len).trim();
       expect(clampFactBody(body)).toBe(body);
     }
+  });
+});
+
+describe('excerptEvictedBody (EI-21393210182770949)', () => {
+  it('returns a short body whole and does not mark it truncated', () => {
+    const body = 'a peer measured this and it is not yet acted on';
+    expect(excerptEvictedBody(body)).toEqual({ bodyExcerpt: body, bodyTruncated: false });
+  });
+
+  it('marks a long body truncated and caps it at the excerpt budget', () => {
+    const body = 'x'.repeat(FACT_EVICTION_EXCERPT_CHARS + 500);
+    const out = excerptEvictedBody(body);
+    expect(out.bodyTruncated).toBe(true);
+    expect(out.bodyExcerpt).toHaveLength(FACT_EVICTION_EXCERPT_CHARS);
+    // The point of the flag: a reader must be able to tell an excerpt from a
+    // whole body, or they will act on a partial fact believing it complete.
+    expect(body.startsWith(out.bodyExcerpt)).toBe(true);
+  });
+
+  it('BOUNDARY: a body exactly at the budget is whole, not truncated', () => {
+    // The off-by-one that would silently mark complete bodies as partial and
+    // send every reader on a needless facts:list round-trip.
+    const exact = 'y'.repeat(FACT_EVICTION_EXCERPT_CHARS);
+    expect(excerptEvictedBody(exact)).toEqual({ bodyExcerpt: exact, bodyTruncated: false });
+
+    const oneOver = 'y'.repeat(FACT_EVICTION_EXCERPT_CHARS + 1);
+    expect(excerptEvictedBody(oneOver).bodyTruncated).toBe(true);
+  });
+
+  it('degrades a null/undefined body to an empty excerpt rather than throwing', () => {
+    // An eviction receipt is the wrong place to discover a NOT NULL column
+    // stopped being NOT NULL.
+    expect(excerptEvictedBody(null)).toEqual({ bodyExcerpt: '', bodyTruncated: false });
+    expect(excerptEvictedBody(undefined)).toEqual({ bodyExcerpt: '', bodyTruncated: false });
   });
 });

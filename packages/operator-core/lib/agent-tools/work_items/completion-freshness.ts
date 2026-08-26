@@ -115,6 +115,31 @@ export function completionTreeContentIdentityMatches(
       ),
   );
 }
+/**
+ * EI-21502635666260946: the WRITE-TIME half of the content-identity floor. A
+ * close may claim `committed` only when the server could PROVE every declared
+ * `filesChanged` path carries identical blob content in the working tree and
+ * committed HEAD. Missing, mismatched, or unavailable identity never qualifies
+ * — the close downgrades to `proposed` (record-and-warn, never rejected).
+ *
+ * This is also the contract mirrored in SQL by
+ * harness_shared.downgrade_unproven_committed_close() (migration 972), which
+ * enforces the same floor below the deploy boundary so a frozen release gate
+ * serving an older build cannot mint stronger authority than this source
+ * permits. Keep the two in sync: any change here must update
+ * completion_content_identity_proven() and its migration test.
+ */
+export function committedCloseDowngradedForUnprovenContentIdentity(
+  authorityByEvidence: string,
+  filesChanged: readonly string[] | undefined,
+  treeStamp: CompletionTreeStamp | undefined,
+): boolean {
+  return (
+    authorityByEvidence === 'committed' &&
+    Boolean(filesChanged?.length) &&
+    !completionTreeContentIdentityMatches(treeStamp?.contentIdentity)
+  );
+}
 
 /**
  * Read the current checkout HEAD without spawning git.
