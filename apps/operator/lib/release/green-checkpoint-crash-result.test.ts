@@ -305,6 +305,12 @@ describe('WI-41252 / D-066: dependency-generation torn snapshots are not code re
       'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo exited 75: ' +
         '[dependency-generation] FATAL: live node_modules changed while pinning an existing generation',
     ],
+    [
+      'exact-ref inputs changed before selector publication',
+      'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo ' +
+        '--ensure-ref e8d04df9 exited 75: [dependency-generation] FATAL: dependency inputs ' +
+        'changed during generation prewarm; refusing a stale selector',
+    ],
   ])('classifies %s as infra-inconclusive with the exact dependency phase', (_label, message) => {
     const r = buildTerminalFailureCheckpointResult({
       candidate: 'dfe7bd9f4e56',
@@ -323,13 +329,13 @@ describe('WI-41252 / D-066: dependency-generation torn snapshots are not code re
     expect(r.crashed).toBeUndefined();
     expect(r.summary).toContain('pinning an immutable dependency generation');
     expect(r.summary).toContain('refused a torn snapshot');
+    expect(r.summary).toContain('stale exact-ref selector');
     expect(r.summary).toContain('No code verdict was rendered');
   });
 
   it.each([
     ['wrong exit', 'dependency-generation.sh exited 1: refusing a torn snapshot'],
     ['missing script identity', 'publisher exited 75: refusing a torn snapshot'],
-    ['missing torn-source marker', 'dependency-generation.sh exited 75: unknown failure'],
   ])('keeps an incomplete dependency signature on the generic crash path: %s', (_label, message) => {
     const r = buildTerminalFailureCheckpointResult({
       candidate: 'dfe7bd9f4e56',
@@ -341,6 +347,18 @@ describe('WI-41252 / D-066: dependency-generation torn snapshots are not code re
     expect(r.reason).toBe('error');
     expect(r.crashed).toBe(true);
     expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
+  });
+
+  it('uses the dependency-generation writer\'s reserved exit-75 contract, not message prose', () => {
+    const r = buildTerminalFailureCheckpointResult({
+      candidate: 'dfe7bd9f4e56',
+      error: new Error('dependency-generation.sh exited 75: future live-input drift wording'),
+      runId: 'run-dependency-generation',
+    });
+
+    expect(r.reason).toBe('infra-inconclusive');
+    expect(r.green).toBeNull();
+    expect(r.crashed).toBeUndefined();
   });
 });
 
