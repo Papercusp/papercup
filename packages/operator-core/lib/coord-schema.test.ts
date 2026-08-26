@@ -66,6 +66,20 @@ describe('renderInjection — positional [coord+N] block', () => {
     expect(out).not.toContain('from'); // no column header
   });
 
+  it('renders a stale basedOn warning inline for the receiver', () => {
+    const entry = {
+      ...e({ summary: 'Please complete WI-41692' }),
+      staleBasis: [{
+        ref: 'work-item:WI-41692',
+        readAt: '2026-08-25T21:09:16.000Z',
+        versionAtSend: 'done@1787692247721',
+        changedAt: '2026-08-25T21:10:47.721Z',
+        stateAtSend: 'done',
+      }],
+    } as never;
+    expect(renderInjection([entry])).toContain('⚠ stale basis: WI-41692 changed after read (now done)');
+  });
+
   it('collapses intents to latest-per-peer (only the newest from a sender)', () => {
     const out = renderInjection([
       e({ from: 'su-aaaa1111-z', lifecycle: 'intent', summary: 'old intent', ts: '2026-06-06T00:00:00.000Z' }),
