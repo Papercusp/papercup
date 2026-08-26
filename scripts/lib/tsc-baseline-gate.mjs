@@ -1408,7 +1408,20 @@ export function tscChildEnv(extra = {}) {
       `--max-old-space-size=${TSC_HEAP_MB}`,
     );
   }
-  return { ...process.env, ...extra, NODE_OPTIONS: nodeOptions };
+  // EI-21459562605356711: an exclusive dependency materializer may cooperatively
+  // preempt this ordinary heavy-slot holder. pc-heavy reports that exact outcome
+  // as exit 75 plus `PC_HEAVY_RESULT status=preempted`, but without an opted-in
+  // retry this wrapper receives no compiler stdout and mislabels the attributable,
+  // retryable transition as "tsc produced no output — toolchain failure". Give the
+  // compiler a small bounded retry budget. Explicit caller/extra values remain
+  // authoritative so diagnostics and constrained environments can disable or tune it.
+  const retryPreemptions = process.env.PC_HEAVY_RETRY_PREEMPTIONS ?? '3';
+  return {
+    ...process.env,
+    PC_HEAVY_RETRY_PREEMPTIONS: retryPreemptions,
+    ...extra,
+    NODE_OPTIONS: nodeOptions,
+  };
 }
 
 export function projectPrefixFromTscCommand(tscCommand) {
