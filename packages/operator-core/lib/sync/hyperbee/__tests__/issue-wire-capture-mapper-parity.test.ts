@@ -25,11 +25,19 @@
  *  1. `federated-column-completeness.integration.test.ts` runs the real mapper over a
  *     SYNTHETIC full-column row, so `created_at` was always present and the fabricating
  *     branch never ran. It proves "table column → mapper key"; it cannot see the SQL.
- *  2. `engineer-issues-federation-trigger.integration.test.ts` DOES drive real SQL, but
- *     it loads migrations only through 197 and so exercises `capture_engineer_issues_
- *     outbox` against a real `engineer_issues` TABLE. P-010 (work-items-unify) turned
- *     that into a compat VIEW; the live producer is `capture_work_items_outbox` on
- *     `work_items`. That test has been guarding a code path production no longer runs.
+ *  2. `engineer-issues-federation-trigger.integration.test.ts` (DELETED, WI-41780) DID
+ *     drive real SQL, but loaded migrations only through 197, so it exercised
+ *     `capture_engineer_issues_outbox` against a real `engineer_issues` TABLE. P-010
+ *     (work-items-unify) turned that into a compat VIEW; the live producer is
+ *     `capture_work_items_outbox` on `work_items`. It had been guarding a code path
+ *     production no longer runs, and mig-969 then DROPPED its subject function outright
+ *     as unreachable dead code (EI-21474657831529811) — so the file was green while
+ *     exercising a function that does not exist at head, via a schema shape that does
+ *     not exist at head. Its live-mapper (RESHAPE) assertions were verified to be a
+ *     strict SUBSET of the `outboxRowToLocalWriteOp — engineer_issues` block in
+ *     `../feature-issue-op-keys.test.ts` (which additionally covers del ops,
+ *     `terminal_reason`, `storage_harness_slug`, and BOTH the harness-qualified and
+ *     the pre-829 bare-key forms), so deleting it dropped no live coverage.
  *
  * So this check deliberately spans BOTH artifacts and asserts the one invariant that
  * actually matters — every key the mapper consumes is emitted by the shipped capture

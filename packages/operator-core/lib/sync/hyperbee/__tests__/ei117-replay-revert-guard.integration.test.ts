@@ -89,8 +89,9 @@ describe('EI-117 replay/revert guard (real PG: migs 102+125+214 + the real plans
     `);
 
     // Mig 102 (archive) attaches generic capture triggers to the consolidated
-    // tables, so column-faithful stubs must exist first (pattern shared with
-    // engineer-issues-federation-trigger.integration.test.ts).
+    // tables, so column-faithful stubs must exist first. (This stub pattern was
+    // shared with engineer-issues-federation-trigger.integration.test.ts, deleted
+    // under WI-41780 as a historical-schema test; the pattern itself is unaffected.)
     await db.sql.unsafe(`
       CREATE TABLE harness_shared.harness_features_consolidated (
         workspace_id TEXT NOT NULL DEFAULT '', harness_slug TEXT NOT NULL,
