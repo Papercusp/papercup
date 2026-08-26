@@ -449,4 +449,21 @@ describe("coord:plan-events tier defaults (P-022 — ctx-tier-adaptive, hook-saf
     const out = await runPlanEvents(120, "trimmed", { limit: 80 });
     expect(out.events).toHaveLength(80);
   });
+
+  // EI-21510692284064707 recurrence guard: limit:N over an ascending list must
+  // keep the NEWEST N (slice(-N)), so the returned max timestamp equals the
+  // SOURCE max timestamp — a bounded authority check that kept the oldest tail
+  // would silently go stale while claiming `total`/`truncated` honesty.
+  it("limit keeps the NEWEST tail — returned max ts equals source max ts", async () => {
+    const out = await runPlanEvents(33, "full", { limit: 12 });
+    expect(out.total).toBe(33);
+    expect(out.truncated).toBe(true);
+    expect(out.events).toHaveLength(12);
+    // Source rows are i=0..32 ascending; the kept window is i=21..32.
+    const slugs = out.events.map((e) => String(e.plan_slug));
+    expect(slugs[0]).toBe("plan-21");
+    expect(slugs[slugs.length - 1]).toBe("plan-32");
+    const maxTs = out.events.map((e) => String(e.ts)).sort().at(-1);
+    expect(maxTs).toBe("2026-07-01T00:32:00Z");
+  });
 });
