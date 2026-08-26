@@ -779,9 +779,14 @@ async function readCellValue(
           'resolver-failed',
           `the resolver ("${spec.changeSignal.tool}") did not respond within ${CELL_READ_TIMEOUT_MS}ms. ` +
             'readCell stopped waiting on it (WI-6488) — this bounds the CALLER, not the resolver: the ' +
-            'dispatch may still be running in the background. If this recurs for the same cell, the ' +
-            "resolver itself likely has a genuine hang (a wedged lock, an unbounded external call) that " +
-            'needs its own fix, not a longer timeout.',
+            'dispatch may still be running in the background, and may well be about to succeed. ' +
+            `⚠ CALL THE RESOLVER'S OWN TOOL DIRECTLY ("${spec.changeSignal.tool}") — it is not subject ` +
+            'to this bound and usually answers with the same values. Do that before concluding anything ' +
+            'about the resolver. EI-21544761852770720: five consecutive readings of this message across ' +
+            'two cells were read as a wedged resolver; the direct call then returned a full payload ' +
+            'seconds later. A slow resolver and a hung one are indistinguishable FROM THIS MESSAGE, so ' +
+            'it must not name a cause. If the direct call also fails to return, THEN you have evidence ' +
+            'of a genuine hang worth investigating.',
         ),
       };
     }
