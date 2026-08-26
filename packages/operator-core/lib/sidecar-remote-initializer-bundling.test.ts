@@ -82,6 +82,23 @@ const remoteInitializerProtocolVersion = (): string => {
   return match[1];
 };
 
+/**
+ * WI-42161: run the verifier's OWN derivation pipeline, in bash, against the real source file.
+ * Asserting the shell TEXT alone would still pass if the pipeline were subtly broken — a wrong
+ * `-A` window, or a regex that no longer matches the constant's formatting — and a derivation
+ * that silently yields nothing is exactly the failure the fail-closed branch exists to catch.
+ * Executing it is what proves the verifier resolves a real version at build time.
+ */
+const deriveVerifierProtocolVersion = (): string => {
+  const pipeline =
+    `grep -A1 'WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION *=' "$1" ` +
+    `| grep -oE "'papercusp-gcp-iap-initialization-v[0-9]+'" | head -1 | tr -d "'"`;
+  const result = spawnSync('bash', ['-c', pipeline, 'bash', REMOTE_INITIALIZER_SRC], {
+    encoding: 'utf8',
+  });
+  return (result.stdout ?? '').trim();
+};
+
 describe('workspace-host remote initializer — source contract', () => {
   it('the entrypoint source file exists and wires the production deps', () => {
     expect(existsSync(ENTRYPOINT_TS)).toBe(true);
@@ -239,9 +256,25 @@ describe.skipIf(!desktopPresent)(
       const protocolVersion = remoteInitializerProtocolVersion();
       // The runtime half of this guard. Presence + executable bit are satisfied by an empty file;
       // only executing the thing distinguishes "a file is there" from "the initializer shipped".
-      // Derive the expected value from the protocol's source of truth. A coordinated future
-      // version bump stays possible, while a verifier literal that lags it fails immediately.
-      expect(script).toContain(`_ri_ver="${protocolVersion}"`);
+      //
+      // WI-42161: this assertion used to pin a LITERAL (`_ri_ver="<version>"`) against the
+      // protocol's source of truth, so that "a verifier literal that lags it fails immediately".
+      // That guard was real but only ever judged the tree the TEST runs in. The r5c vm-release
+      // build cut an immutable snapshot whose verifier said v1 while its own source constant said
+      // v2, burned ~48 minutes, and failed at line 22,607 of a 22,612-line log — this test was
+      // green throughout, because staging was self-consistent and the snapshot was never judged.
+      // The verifier now DERIVES the version from the constant at runtime, so the two ends cannot
+      // drift in ANY tree, snapshot included (which is what the source file's own comment already
+      // promised). Assert the derivation, not a literal a future bump could desynchronize again.
+      expect(script).toContain('WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION');
+      expect(script).toMatch(/_ri_ver="\$\(grep -A1 'WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION/);
+      // The derivation must still resolve to the real current version through the real file.
+      expect(deriveVerifierProtocolVersion()).toBe(protocolVersion);
+      // And it must FAIL CLOSED. `grep -qF ""` matches every artifact, so an empty _ri_ver would
+      // turn the content assertion below into a silently vacuous gate — strictly worse than the
+      // drift this replaced. Pin both halves so neither can be "simplified" away.
+      expect(script).toContain('refusing a vacuous content assertion');
+      expect(script).toContain('__UNDERIVABLE_INITIALIZER_PROTOCOL_VERSION__');
       expect(script).toContain('_ri_invalid_request="{\\"protocolVersion\\":\\"$_ri_ver\\"}"');
       expect(script).toContain('producer/verifier version skew');
       expect(script).toContain('WorkspaceHostRemoteInitializerProtocolError');
