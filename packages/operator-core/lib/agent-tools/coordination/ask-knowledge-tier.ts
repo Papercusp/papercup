@@ -81,6 +81,7 @@ export async function runKnowledgeTier(
     // ACTUAL per-query embed call inside runHybridSearch.
     const embedder = await buildQueryEmbedder({ acquireBudgetMs: interactiveEmbedAcquireBudgetMs() });
     const { results, embedderAvailable: ea } = await runHybridSearch(SEARCH_SOURCES, {
+      caller: 'ask-knowledge-tier',
       sql,
       query: input.query,
       workspaceId: input.workspaceId ?? '',

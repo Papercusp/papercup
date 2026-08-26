@@ -638,6 +638,7 @@ export async function recallCorpusContext(
 
       const search = (lexicalMode: 'and' | 'coverage-graded', queryFor: string) =>
         runHybridSearch(sources, {
+          caller: 'midturn:related-context',
           sql,
           query: queryFor,
           workspaceId: input.workspaceId,

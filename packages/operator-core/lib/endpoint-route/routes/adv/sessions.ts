@@ -937,6 +937,7 @@ const searchTranscripts = defineTool({
     // burn past the 30s budget under host load). Abort → throw → the route
     // stack's aborted-catch path returns the 408.
     const { results } = await runHybridSearch(sources, {
+      caller: 'adv:sessions-search',
       sql,
       query: q,
       workspaceId: activeWorkspaceId(),

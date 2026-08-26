@@ -73,6 +73,7 @@ async function searchProse(q: string, mode: 'bm25' | 'hybrid', limit: number): P
     // too, not just the acquisition above.
     ({ results } = await runHybridSearch(SEARCH_SOURCES, {
       ...ctx,
+      caller: 'user:search',
       mode: 'hybrid',
       embedder,
       embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),

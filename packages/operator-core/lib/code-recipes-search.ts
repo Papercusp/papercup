@@ -194,6 +194,7 @@ export async function searchSimilarRecipes(
   // more than 100 candidates.
   const searchLimit = Math.min(100, Math.max(limit + (input.excludeId ? 1 : 0) + 5, limit * 8 + 20));
   const { results } = await runHybridSearch([codeRecipesSource], {
+    caller: 'code-run:recipe-search',
     sql,
     query,
     // recipes are global (P-001): the engine requires a workspaceId/scopeFilter but

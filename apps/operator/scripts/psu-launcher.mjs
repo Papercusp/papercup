@@ -3188,8 +3188,8 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // MANDATES for recording a cross-lane ruling. Full rationale lives beside the canonical
   // list in libs/papercusp/packages/orchestrator/src/invoke.ts.
   "plans:add-decision",
-  // MIRROR of the canonical CORE admission (EI-21503656260697108): the shared spine's
-  // spine now holds 45 entries, matching the canonical list and its <=45 ratchet. mode:set remains
+  // MIRROR of the canonical CORE admission (EI-21503656260697108): the shared spine
+  // now holds 45 entries, matching the canonical list and its <=45 ratchet. mode:set remains
   // the only Claude-only deferred verb (CLAUDE_SEED_EXTRA_TOOL_NAMES below).
   "work_items:claimable",
   "tools:find",
@@ -3294,10 +3294,10 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   //   mode:set             124 reaches/56 callers, 1,732 B, 73.3 reach/KB — an
   //     unregistered mode is invisible session state that a compaction silently drops.
   // NARROWED GAP: OMP/codex still cannot reach it directly. The shared spine sits at its
-  // deliberate ratchet (44 here, 45 canonical), so admitting it means raising a cap in
+  // deliberate ratchet (45 entries, canonical <=45), so admitting it means raising a cap in
   // the change that fills it — the DARK_FLAGS-watermark anti-pattern. That needs a
   // deliberate budget decision priced in WIRE BYTES per D-001, not another quiet append.
-  // deliberate ratchet (45 entries, canonical <=45), so admitting it means raising a cap in
+  // It stays reachable everywhere via tools:find/invoke.
   "mode:set",
 ];
 export function claudeSeedToolNames(env = process.env) {

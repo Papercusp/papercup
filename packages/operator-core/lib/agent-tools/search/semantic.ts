@@ -146,6 +146,7 @@ export default defineTool({
     // fetch which has no client-side timeout) could otherwise run unbounded
     // and blow this tool's own budget. Reuses the same interactive default.
     const { results, totalHits, embedderAvailable, legs } = await runHybridSearch(sources, {
+      caller: 'search:semantic',
       sql: ctx.tx,
       query: args.query,
       workspaceId: ctx.workspaceId ?? '',

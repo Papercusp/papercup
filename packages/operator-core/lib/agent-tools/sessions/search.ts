@@ -198,6 +198,7 @@ export default defineTool({
       // WI-3929 (same class as EI-9312): bound the ACTUAL per-query embed
       // call inside runHybridSearch, not just the acquisition above.
       const { results } = await runHybridSearch(sources, {
+        caller: 'sessions:search',
         sql: ctx.tx,
         query: args.query,
         workspaceId,

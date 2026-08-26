@@ -428,6 +428,7 @@ export default defineTool({
     };
 
     const { results, legs, applied } = await runHybridSearch([source], {
+      caller: 'plans:search',
       sql: lazyOrgSql,
       query,
       // Both legs resolve their own workspace/harness scope from `opts` (the
