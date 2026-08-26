@@ -74,7 +74,6 @@ import {
 } from '../../coord-lifecycle/records';
 import {
   committedCloseDowngradedForUnprovenContentIdentity,
-  completionTreeContentIdentityMatches,
   completionTreeStamp,
   completionTreeStampForEvidence,
 } from './completion-freshness';
