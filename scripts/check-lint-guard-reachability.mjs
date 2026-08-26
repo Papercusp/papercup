@@ -423,12 +423,14 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
 /**
  * Detector modules whose unreachability is ACKNOWLEDGED. Seeded 2026-08-26 from the
  * first measuring run — 21 of 81 `lib/release/**` modules, pinned at their MEASURED
- * size so the set can only shrink.
+ * size so the set can only shrink. GRADUATIONS SINCE SEEDING (each dropped the
+ * watermark by one, which is the only way it may move):
+ *   · `_tmp-fire-git-sync.ts` — deleted 2026-08-26; a committed scratch file, 21 → 20.
  *
  * ⚠ SHRINK-ONLY, same doctrine as ACKNOWLEDGED_UNREACHABLE above and for the same
  * reason: the correct way to clear an entry is to WIRE the module or DELETE it, never
- * to append here. Wiring all 21 at once would land a wall of new gate legs on the
- * fleet — which is the precise move this file exists to warn against.
+ * to append here. Wiring the whole set at once would land a wall of new gate legs on
+ * the fleet — which is the precise move this file exists to warn against.
  *
  * ⚠ Every entry is a debt with an owner, not a blessing. `testedButUnwired` entries are
  * the dangerous ones: they LOOK covered (green unit test, plan-audited citation) while
@@ -464,16 +466,13 @@ export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
   ['apps/operator/lib/release/runtime-workspace-build-coverage.ts', '2 tests, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/rollback.ts', '3 tests, 0 callers. ⚠ NAME IS LOAD-BEARING: verify the live rollback path before retiring'],
   ['apps/operator/lib/release/preview-data-plane.ts', 'no test, no caller — wire-or-retire'],
-
-  // ── Not a detector at all. Named `_tmp-`, tracked anyway. Pure deletion. ─────
-  ['apps/operator/lib/release/_tmp-fire-git-sync.ts', 'a committed scratch file — delete it; needs no wire-or-retire deliberation'],
 ]);
 
 /**
  * ⚠ SHRINK-ONLY. Pinned to the seeded population size so a NEWLY orphaned detector
  * module fails the build on the commit that orphans it, exactly as the script axis does.
  */
-export const UNREACHABLE_MODULES_HIGH_WATERMARK = 21;
+export const UNREACHABLE_MODULES_HIGH_WATERMARK = 20;
 
 export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained', 'repo-wide']);
 
