@@ -1,10 +1,11 @@
 /**
- * work_items:bulk_dedup — execute P-006's model-backed, ratcheted bulk pass.
+ * work_items:bulk_dedup — enqueue P-006's model-backed, ratcheted bulk pass.
  *
  * This extends the work_items family instead of adding a parallel maintenance
- * surface. Every invocation first writes a fresh pinned census/shard map, then
- * executes only the D-002-selected scope. `confirm:true` is intentionally
- * mandatory because merge verdicts terminalize duplicate work-items.
+ * surface. Every invocation materializes a durable due-now one-shot; that
+ * action writes a fresh pinned census/shard map and executes only the
+ * D-002-selected scope. `confirm:true` is intentionally mandatory because
+ * merge verdicts terminalize duplicate work-items.
  */
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';

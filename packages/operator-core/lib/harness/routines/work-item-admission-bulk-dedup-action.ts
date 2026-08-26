@@ -19,6 +19,15 @@ function optionalPositiveInteger(value: unknown): number | undefined {
   return n;
 }
 
+function optionalNonNegativeInteger(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`bulk dedup expected a non-negative integer, received ${String(value)}`);
+  }
+  return n;
+}
+
 export interface AdmissionBulkDedupActionDeps {
   run: (ctx: SystemActionCtx) => Promise<BulkDedupRunResult>;
   invalidate: () => Promise<void>;
@@ -47,7 +56,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<BulkDedupRunResult> 
       targetTokens: optionalPositiveInteger(payload.targetTokens),
       ceilingTokens: optionalPositiveInteger(payload.ceilingTokens),
       chunkCount: optionalPositiveInteger(payload.chunkCount),
-      fullCorpusPairThreshold: optionalPositiveInteger(payload.fullCorpusPairThreshold),
+      fullCorpusPairThreshold: optionalNonNegativeInteger(payload.fullCorpusPairThreshold),
     },
     llmCall: (input) => llmCall({ ...input, priority: 'scout' }),
   });

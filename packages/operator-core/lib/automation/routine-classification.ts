@@ -315,6 +315,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Runs at most one batched strong-model duplicate judgement over the pending work-item batch',
   },
+  'system:work-item-admission-bulk-dedup': {
+    spend: 'llm',
+    why: 'Runs the reviewed staged corpus dedup pass through bounded strong-model shard judgements',
+  },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },

@@ -485,6 +485,7 @@ import './sql-read-census-action';
 // duplication-only promoter plus an independently scheduled deterministic
 // fail-open/liveness guard. Neither action spawns an agent.
 import './work-item-admission-promoter-action';
+import './work-item-admission-bulk-dedup-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`
 // — the failed-unit reconciler, a bespoke ephemeral (tier:'ephemeral', 60s) operator-HOME cadence
 // (same reasoning as hive-git-gc-action's deviation from the generic per-install triggers.schedule
