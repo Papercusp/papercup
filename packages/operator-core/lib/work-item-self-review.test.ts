@@ -7,10 +7,12 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  SESSION_TURN_PARTS_WORKSPACE_ID,
   claimsSelfReview,
   itemIsArmB,
   judgeSelfReview,
   lastEditAtMs,
+  normalizeToolName,
   selfReviewLedgerQuery,
   toSelfReviewLedgerRow,
   type SelfReviewLedgerRow,
@@ -240,7 +242,9 @@ describe('judgeSelfReview', () => {
     it('still reports yield on an uncorroborated claim, so the arm is measurable either way', () => {
       const v = judgeSelfReview({
         evidence: { ...REVIEWED, changedAsResult: ['clamped the bound'] },
-        ledger: [],
+        // A non-empty ledger with no review in it. An EMPTY one is `unobservable`, a
+        // different verdict with a different reason (EI-21481919801123128).
+        ledger: [row('capability:edit', 1)],
       });
       expect(v.verdict).toBe('uncorroborated');
       expect(v.yieldedChange).toBe(true);
@@ -252,5 +256,197 @@ describe('judgeSelfReview', () => {
     // spelling would be evadable by invoking the other.
     const v = judgeSelfReview({ evidence: REVIEWED, ledger: [row('capability_git', 5)] });
     expect(v.verdict).toBe('corroborated');
+  });
+});
+
+/**
+ * EI-21481919801123128 — the gate could only see agents who routed their reads through MCP.
+ *
+ * The controls matter more here than anywhere else in this file, because the fix WIDENS what
+ * counts as evidence. Every "now passes" case below is paired with a case that must still
+ * fail, or the fix would be indistinguishable from deleting the gate.
+ */
+describe('native-client review corroboration', () => {
+  describe('normalizeToolName — the same call wears three names across two ledgers', () => {
+    it('folds the colon, mangled-MCP, and native spellings onto one key', () => {
+      // tool_invocations stores the first; session_turn_parts stores the second for that
+      // IDENTICAL call, and the third for the native one.
+      expect(normalizeToolName('capability:read')).toBe('capability_read');
+      expect(normalizeToolName('mcp__papercusp-su__capability_read')).toBe('capability_read');
+      expect(normalizeToolName('  capability:READ  ')).toBe('capability_read');
+      expect(normalizeToolName('Read')).toBe('read');
+    });
+
+    it('strips only the mcp server segment, not a tool name that merely contains __', () => {
+      // A greedy strip would eat the tool name itself and fold unrelated tools together.
+      expect(normalizeToolName('mcp__papercusp-su__work_items_get')).toBe('work_items_get');
+      expect(normalizeToolName('not_mcp__thing')).toBe('not_mcp__thing');
+    });
+  });
+
+  describe('the fix: a review performed with native tools is corroborated', () => {
+    it('corroborates a native Read — the motivating case', () => {
+      // Before the fix this exact ledger produced `uncorroborated` and REFUSED an honest
+      // close, while an agent doing the same read via capability:read passed.
+      const v = judgeSelfReview({ evidence: REVIEWED, ledger: [row('Read', 5)] });
+      expect(v.verdict).toBe('corroborated');
+    });
+
+    it('corroborates Grep and Glob, and the mangled MCP spelling from the transcript', () => {
+      for (const tool of ['Grep', 'Glob', 'mcp__papercusp-su__capability_read']) {
+        expect(judgeSelfReview({ evidence: REVIEWED, ledger: [row(tool, 5)] }).verdict, tool)
+          .toBe('corroborated');
+      }
+    });
+  });
+
+  describe('the control: widening did not dissolve the gate', () => {
+    it('STILL refuses a claimed review with no read of the code in a VISIBLE ledger', () => {
+      const v = judgeSelfReview({
+        evidence: REVIEWED,
+        ledger: [row('coord:send', 4), row('Write', 5), row('work_items:get', 6)],
+      });
+      expect(v.verdict).toBe('uncorroborated');
+    });
+
+    it('does NOT let a shell command corroborate a review', () => {
+      // Bash is the highest-volume native tool and is arbitrary — `git diff` is a review,
+      // `npm test` is not. Admitting the class would manufacture evidence, which the module
+      // docstring calls worse than having no gate at all.
+      const v = judgeSelfReview({ evidence: REVIEWED, ledger: [row('Bash', 5)] });
+      expect(v.verdict).toBe('uncorroborated');
+      // ...and the refusal says so, so a Bash-only reviewer can comply with one call rather
+      // than guessing why an honest review was rejected.
+      expect(v.reason).toMatch(/shell commands/i);
+    });
+
+    it('does not treat a shell command as an EDIT either — the mirror defect', () => {
+      // If Bash counted as an edit, any command after a review would read as a subsequent
+      // mutation and turn honest closes into `stale-review`.
+      const v = judgeSelfReview({
+        evidence: REVIEWED,
+        ledger: [row('Read', 5), row('Bash', 9)],
+      });
+      expect(v.verdict).toBe('corroborated');
+    });
+  });
+
+  describe('native EDITS move the clock a review must beat', () => {
+    // The defect that widening reviews alone would have introduced: a native-editing agent
+    // would have had NO recorded edits, so `lastEditAtMs` would be undefined and the
+    // stale-review check could never fire for exactly the agents newly able to pass.
+    it.each(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])(
+      'a native %s after the review is stale-review, not a pass',
+      (editTool) => {
+        const v = judgeSelfReview({
+          evidence: REVIEWED,
+          ledger: [row('Read', 5), row(editTool, 9)],
+        });
+        expect(v.verdict).toBe('stale-review');
+      },
+    );
+
+    it('a native review AFTER a native edit is corroborated', () => {
+      const v = judgeSelfReview({
+        evidence: REVIEWED,
+        ledger: [row('Edit', 5), row('Read', 9)],
+      });
+      expect(v.verdict).toBe('corroborated');
+    });
+
+    it('lastEditAtMs sees native edits', () => {
+      expect(lastEditAtMs([row('Edit', 1), row('Write', 5), row('Read', 9)])).toBe(T(5));
+    });
+  });
+
+  describe('`unobservable` — a blind instrument must not refuse', () => {
+    it('an EMPTY ledger is unobservable, not uncorroborated', () => {
+      // Reaching work_items:complete requires having made at least one call in the window,
+      // so zero rows is positive evidence of blindness — not evidence of inactivity.
+      const v = judgeSelfReview({ evidence: REVIEWED, ledger: [] });
+      expect(v.verdict).toBe('unobservable');
+      expect(v.ledgerVisible).toBe(false);
+      expect(v.reason).toMatch(/blind/i);
+    });
+
+    it('a VISIBLE ledger with no review is still uncorroborated — the discriminating pair', () => {
+      // One row apart from the case above. If both returned the same verdict, the blindness
+      // detector would just be a blanket amnesty.
+      const v = judgeSelfReview({ evidence: REVIEWED, ledger: [row('coord:send', 1)] });
+      expect(v.verdict).toBe('uncorroborated');
+      expect(v.ledgerVisible).toBe(true);
+    });
+
+    it('still refuses not-claimed even when blind — that needs no ledger to establish', () => {
+      const v = judgeSelfReview({ evidence: {}, ledger: [] });
+      expect(v.verdict).toBe('not-claimed');
+    });
+  });
+
+  describe('cross-source dedup — one MCP call lands in BOTH ledgers', () => {
+    it('counts a single call once, however many ledgers recorded it', () => {
+      // `reviewCalls` is recorded on the completion and read as a pilot measurement. Without
+      // dedup it silently doubles for MCP-routing agents — measuring tool routing again,
+      // which is the very confound this whole fix exists to remove.
+      const v = judgeSelfReview({
+        evidence: REVIEWED,
+        ledger: [
+          { toolName: 'capability:read', invokedAtMs: T(5), source: 'invocations' },
+          { toolName: 'mcp__papercusp-su__capability_read', invokedAtMs: T(5) + 240, source: 'turn-parts' },
+        ],
+      });
+      expect(v.verdict).toBe('corroborated');
+      expect(v.reviewCalls).toHaveLength(1);
+      // The surviving row is the one carrying a real `status`.
+      expect(v.reviewCalls[0]!.source).toBe('invocations');
+    });
+
+    it('does NOT collapse two genuinely distinct reads', () => {
+      const v = judgeSelfReview({
+        evidence: REVIEWED,
+        ledger: [row('Read', 5), row('Read', 9)],
+      });
+      expect(v.reviewCalls).toHaveLength(2);
+    });
+  });
+});
+
+describe('selfReviewLedgerQuery — the second ledger (EI-21481919801123128)', () => {
+  const q = selfReviewLedgerQuery({
+    workspaceId: 'papercusp-workspace',
+    coordOwnerId: 'su-abc',
+    goalRef: 'WI-1',
+    sinceMs: T(0),
+  });
+
+  it('reads session_turn_parts alongside tool_invocations', () => {
+    expect(q.text).toMatch(/harness_shared\.tool_invocations/);
+    expect(q.text).toMatch(/harness_shared\.session_turn_parts/);
+    expect(q.text).toMatch(/UNION ALL/i);
+  });
+
+  it('pins the turn-parts leg to the CORPUS namespace, not the tenant workspace', () => {
+    // session_turn_parts carries workspace_id='default' on every one of its rows; pinning it
+    // to the item's workspace would return a clean zero — the same false-absence shape as
+    // the harness_slug trap, one table over.
+    expect(SESSION_TURN_PARTS_WORKSPACE_ID).toBe('default');
+    expect(q.text).toMatch(/workspace_id = 'default'/);
+    expect(q.text).not.toMatch(/session_turn_parts[\s\S]*workspace_id = \$1/);
+  });
+
+  it('scopes the turn-parts leg by owner and window', () => {
+    expect(q.text).toMatch(/owner = \$2/);
+    expect(q.text).toMatch(/ts >= \$4/);
+  });
+
+  it('keeps the part_kind literal the partial index depends on', () => {
+    // Migration 968 indexes (owner, ts) WHERE part_kind = 'tool_use'. Relaxing this to an
+    // IN (...) loses the index and puts a 2.4M-row seq scan on the completion hot path.
+    expect(q.text).toMatch(/part_kind = 'tool_use'/);
+  });
+
+  it('tags each leg with its source so the rows can be told apart', () => {
+    expect(q.text).toMatch(/'invocations' AS source/);
+    expect(q.text).toMatch(/'turn-parts' AS source/);
   });
 });
