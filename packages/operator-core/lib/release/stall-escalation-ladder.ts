@@ -1,0 +1,224 @@
+/**
+ * Gate-stall escalation LADDER — the decision half (WI-42116, ruling
+ * green-main-fast-2026-08-25 D-022).
+ *
+ * ## The defect this replaces
+ *
+ * `release-actions.ts` escalates a gate stall on the crossing edge
+ * `(stalledByCount || stalledByAge) && !stallAlerted`. `stallAlerted` is then CARRIED on
+ * every subsequent red and reset ONLY by a green. The ladder therefore has exactly ONE
+ * rung: the alarm fires at `stallReds` (default 3) and never fires again, however deep or
+ * long the streak runs.
+ *
+ * Measured on papercusp 2026-08-26: `consecutiveReds: 43`, `stallAlerted: true`, last green
+ * 2026-08-20T20:55:17Z → observed 2026-08-25T23:47:58Z = 122.9 h / 5.12 days of unbroken
+ * red, on ONE alert raised on day one. Reds #4–#43 were silent. That silence is why a
+ * LIVELOCKED gate read as "already alerted, someone's on it" for five days.
+ *
+ * ## ⚠ Why the obvious fix is wrong
+ *
+ * EI-7472 (resolved) is the REASON the one-shot exists: "watchdogAlerted dedup flag is
+ * clobbered every red tick → fleet re-spammed the STALLED severe-event ~hourly". A naive
+ * "re-alert while still red" REINTRODUCES it. The one-shot is a fix, over-corrected — not
+ * an oversight. So this ladder is BOUNDED and SUPER-LINEAR by construction: rungs grow
+ * geometrically, which makes the alert count O(log(stall depth)) rather than O(ticks).
+ * `laddersAreSparse` in the test file pins that property directly.
+ *
+ * ## Why there are TWO axes
+ *
+ * A count-only ladder would ALSO go silent on the exact gate this exists to catch. In
+ * `release-actions.ts`, `carryStreak = recordOnly || alreadyCountedPending` means
+ * `consecutiveReds` does NOT increment on withheld / record-only ticks. A livelocked gate
+ * (every red withheld as `candidate-fossil`, so no verdict ever publishes) can therefore
+ * sit at a FIXED red count indefinitely while time runs on. papercusp was in precisely
+ * that state. So the ladder escalates on whichever axis moves: red COUNT or stall AGE,
+ * each with its own independent high-water mark.
+ *
+ * ## Scope — read before wiring
+ *
+ * This governs the HUMAN-NOTIFY leg ONLY. The `gate-red-streak:<harness>` condition and
+ * the claimable work-item it mints keep WI-6228's `oneShot:true` semantics untouched:
+ * re-NOTIFY, never re-mint, never re-open the condition. Those two legs fire from one flag
+ * today; wiring this is what separates them.
+ *
+ * PURE + INERT: nothing imports this yet, and it performs no I/O. Wiring is a follow-up
+ * one-call-site change tracked on WI-42116.
+ */
+
+/**
+ * Geometric growth factor between rungs. Base 3 over the shipped defaults
+ * (`stallReds: 3`, `stallAgeMs: 6h`) yields count rungs 3, 9, 27, 81, … and age rungs
+ * 6h, 18h, 54h, 162h, … — about 3 alerts across the measured 43-red / 122.9-hour stall,
+ * against 1 today and ~120 under a per-tick repeat.
+ */
+export const STALL_LADDER_GROWTH = 3;
+
+/** A stall is escalated on whichever axis crosses a new rung first. */
+export type StallLadderAxis = 'count' | 'age';
+
+/**
+ * The persisted high-water marks. Both are the value AT WHICH the last notification was
+ * raised, NOT a rung index — storing the threshold itself keeps the record readable and
+ * survives a config change to `stallReds` / `stallAgeMs` without re-alerting spuriously.
+ */
+export interface StallLadderMarks {
+  /** Deepest red count already notified. Absent/null ⇒ never notified on this axis. */
+  stallAlertedAtReds?: number | null;
+  /** Longest stall age (ms) already notified. Absent/null ⇒ never notified on this axis. */
+  stallAlertedAtAgeMs?: number | null;
+  /**
+   * The legacy boolean. Back-compat: `true` with no marks means the OLD one-shot already
+   * fired, so the marks are seeded at the first rung of each axis rather than re-alerting
+   * immediately for a stall that was already announced.
+   */
+  stallAlerted?: boolean | null;
+}
+
+export interface StallLadderInput {
+  /** `gate_health.consecutiveReds` for this tick. */
+  consecutiveReds: number;
+  /** Milliseconds since the last real green, or null when unknown. */
+  stallAgeMs: number | null;
+  /** `releaseCheckpointConfig().stallReds` — the first count rung. */
+  stallRedsThreshold: number;
+  /** `releaseCheckpointConfig().stallAgeMs` — the first age rung. */
+  stallAgeThresholdMs: number;
+  /** The marks carried on `gate_health`. */
+  marks: StallLadderMarks;
+}
+
+export interface StallLadderDecision {
+  /** Raise a human notification on this tick? */
+  shouldNotify: boolean;
+  /** Which axis triggered it, or null when not notifying. */
+  axis: StallLadderAxis | null;
+  /** The rung crossed, in that axis's own units (reds, or ms). */
+  rung: number | null;
+  /** 0-based index of that rung in its geometric series. */
+  rungIndex: number | null;
+  /**
+   * The marks to PERSIST after this tick. Always returned — including when not notifying —
+   * so the caller can write back unconditionally and the back-compat seeding lands even on
+   * a quiet tick.
+   */
+  marks: { stallAlertedAtReds: number | null; stallAlertedAtAgeMs: number | null };
+  /** Human-readable why, for the log line and for tests to assert against. */
+  reason: string;
+}
+
+/**
+ * Highest rung of the geometric series `first * growth^k` that is <= `value`, or null when
+ * `value` has not reached `first`. Returns the rung's value and its index.
+ *
+ * Guards a non-finite / non-positive `first` by refusing to build a series at all — a
+ * misconfigured threshold must go SILENT rather than divide-by-zero into an infinite loop
+ * or alert on every tick.
+ */
+export function highestRungCrossed(
+  value: number | null | undefined,
+  first: number,
+): { rung: number; index: number } | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (!Number.isFinite(first) || first <= 0) return null;
+  if (value < first) return null;
+
+  let rung = first;
+  let index = 0;
+  // Geometric, so this terminates in O(log(value / first)) iterations.
+  while (rung * STALL_LADDER_GROWTH <= value) {
+    rung *= STALL_LADDER_GROWTH;
+    index += 1;
+  }
+  return { rung, index };
+}
+
+/**
+ * Decide whether THIS tick should raise a human stall notification.
+ *
+ * Notifies at most ONCE per tick. When both axes have crossed a new rung on the same tick,
+ * COUNT wins the attribution (it is the more specific signal — an age rung can be crossed
+ * by a gate that is merely paused), but BOTH marks advance, so the quieter axis does not
+ * fire a redundant alert on the following tick.
+ */
+export function decideStallNotification(input: StallLadderInput): StallLadderDecision {
+  const { consecutiveReds, stallAgeMs, stallRedsThreshold, stallAgeThresholdMs, marks } = input;
+
+  const countRung = highestRungCrossed(consecutiveReds, stallRedsThreshold);
+  const ageRung = highestRungCrossed(stallAgeMs, stallAgeThresholdMs);
+
+  // Back-compat: a legacy `stallAlerted: true` with no marks means the old one-shot already
+  // announced this stall. Seed each axis at its FIRST rung so we resume the ladder at the
+  // second rung instead of immediately re-alerting for something already reported.
+  const legacySeeded = marks.stallAlerted === true;
+  const priorReds =
+    marks.stallAlertedAtReds ?? (legacySeeded ? stallRedsThreshold : null);
+  const priorAgeMs =
+    marks.stallAlertedAtAgeMs ?? (legacySeeded ? stallAgeThresholdMs : null);
+
+  const countIsNew = countRung != null && (priorReds == null || countRung.rung > priorReds);
+  const ageIsNew = ageRung != null && (priorAgeMs == null || ageRung.rung > priorAgeMs);
+
+  // Marks only ever advance — never regress. A green resets them by clearing the whole
+  // gate_health block, which is the ONLY intended way back to null.
+  const nextMarks = {
+    stallAlertedAtReds: countRung != null ? Math.max(countRung.rung, priorReds ?? 0) : priorReds,
+    stallAlertedAtAgeMs: ageRung != null ? Math.max(ageRung.rung, priorAgeMs ?? 0) : priorAgeMs,
+  };
+
+  if (!countIsNew && !ageIsNew) {
+    const held =
+      countRung != null || ageRung != null
+        ? 'already notified at this rung — holding (EI-7472: never re-alert per tick)'
+        : 'below the first rung on both axes';
+    return {
+      shouldNotify: false,
+      axis: null,
+      rung: null,
+      rungIndex: null,
+      marks: nextMarks,
+      reason: held,
+    };
+  }
+
+  if (countIsNew) {
+    return {
+      shouldNotify: true,
+      axis: 'count',
+      rung: countRung!.rung,
+      rungIndex: countRung!.index,
+      marks: nextMarks,
+      reason: `red count ${consecutiveReds} crossed rung ${countRung!.rung} (index ${countRung!.index})`,
+    };
+  }
+
+  return {
+    shouldNotify: true,
+    axis: 'age',
+    rung: ageRung!.rung,
+    rungIndex: ageRung!.index,
+    marks: nextMarks,
+    reason: `stall age ${stallAgeMs}ms crossed rung ${ageRung!.rung}ms (index ${ageRung!.index}) — count axis is not advancing (livelocked gate: carryStreak holds consecutiveReds fixed)`,
+  };
+}
+
+/**
+ * A one-line digest of WHERE in the ladder a stall currently sits, for the notification
+ * body. Distinct from the decision above: this is descriptive, and safe to render on any
+ * tick.
+ */
+export function describeLadderPosition(input: StallLadderInput): string {
+  const countRung = highestRungCrossed(input.consecutiveReds, input.stallRedsThreshold);
+  const ageRung = highestRungCrossed(input.stallAgeMs, input.stallAgeThresholdMs);
+  const nextCount = (countRung?.rung ?? input.stallRedsThreshold / STALL_LADDER_GROWTH) * STALL_LADDER_GROWTH;
+  const parts: string[] = [];
+  parts.push(
+    countRung != null
+      ? `escalation ${countRung.index + 1} on the red-count axis (${input.consecutiveReds} reds); next at ${nextCount}`
+      : `below the first red-count rung (${input.consecutiveReds}/${input.stallRedsThreshold})`,
+  );
+  if (ageRung != null) {
+    const hrs = Math.round(ageRung.rung / 3_600_000);
+    parts.push(`age axis past the ${hrs}h rung`);
+  }
+  return parts.join('; ');
+}
