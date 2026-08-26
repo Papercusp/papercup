@@ -66,8 +66,10 @@ vi.mock('../../work-items', () => ({
   SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
 }));
 
+const getWorkItemCheckpoint = vi.fn();
 const setWorkItemCheckpoint = vi.fn();
 vi.mock('../../work-item-checkpoint', () => ({
+  getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
   setWorkItemCheckpoint: (...a: unknown[]) => setWorkItemCheckpoint(...a),
 }));
 const fireReactionInProcess = vi.fn();
@@ -210,6 +212,8 @@ beforeEach(() => {
   subscribeWorkItem.mockResolvedValue({ ok: true });
   setWorkItemCheckpoint.mockReset();
   setWorkItemCheckpoint.mockResolvedValue(null);
+  getWorkItemCheckpoint.mockReset();
+  getWorkItemCheckpoint.mockResolvedValue(null);
   fireReactionInProcess.mockReset();
   fireReactionInProcess.mockResolvedValue({ ok: true });
   attachCompletionEvidenceToSettledItem.mockReset();
@@ -324,6 +328,48 @@ describe('work_items:complete (keyed-array)', () => {
       null,
     );
   });
+
+    // EI-21462047954123123: a checkpoint holding checks is FOLDED into the persisted
+    // `_completionEvidence` before the terminal clear wipes it — "see the checkpoint"
+    // citations must land on a surface that survives the close.
+    it('folds non-empty checkpoint checks into _completionEvidence before clearing', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      getWorkItemCheckpoint.mockResolvedValue(
+        [
+          '## Did',
+          'verification pass done',
+          '',
+          '## Checks',
+          '- ✓ [#gate] gate is green — re-check: state:read',
+          '  Verified 10:00Z: 30/30 passed',
+          '- [ ] main is at abc123 — re-check: git rev-parse main',
+        ].join('\n'),
+      );
+      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      expect(r.ok).toBe(true);
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+        expect.objectContaining({ workItemId: 'F-12' }),
+        null,
+      );
+      const evidenceCall = attachCompletionEvidenceToSettledItem.mock.calls.find((c) =>
+        JSON.stringify(c).includes('checkpointChecksCarried'),
+      );
+      expect(evidenceCall).toBeTruthy();
+      const carried = JSON.stringify(evidenceCall);
+      expect(carried).toContain('gate is green');
+      expect(carried).toContain('main is at abc123');
+    });
+
+    it('writes no checkpointChecksCarried when the checkpoint is empty or absent', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
+      expect(attachCompletionEvidenceToSettledItem).toHaveBeenCalled();
+      expect(JSON.stringify(attachCompletionEvidenceToSettledItem.mock.calls)).not.toContain(
+        'checkpointChecksCarried',
+      );
+    });
 
   it('synchronously converges a linked plan item and claim release before reporting success', async () => {
     const linked = {
