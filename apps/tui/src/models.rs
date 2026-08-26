@@ -261,6 +261,19 @@ pub struct RosterEntry {
     pub current_files: Vec<String>,
     #[serde(default, deserialize_with = "null_as_default")]
     pub liveness: String,
+    /// Authoritative lifecycle verdict from the shared session-state oracle.
+    /// `None` means the oracle leg was unavailable or the payload predates it;
+    /// only then may callers fall back to the legacy heartbeat-age fields.
+    #[serde(default)]
+    pub session_state: Option<String>,
+    /// Whether the oracle observed a turn in flight. This is an activity hint,
+    /// not a second lifecycle verdict.
+    #[serde(default)]
+    pub live_turn: Option<bool>,
+    /// Raw process-heartbeat freshness from the oracle. Kept explicitly named
+    /// so no UI can mistake it for agent liveness.
+    #[serde(default)]
+    pub heartbeat_fresh: Option<bool>,
     #[serde(default)]
     pub stale: bool,
     #[serde(default)]
@@ -373,6 +386,22 @@ pub struct RosterEntry {
 }
 
 impl RosterEntry {
+    /// Is this session actively taking turns according to the shared oracle?
+    /// Known oracle states always win; heartbeat age is compatibility-only for
+    /// absent or unknown states from older/degraded payloads.
+    pub fn is_online(&self) -> bool {
+        match self
+            .session_state
+            .as_deref()
+            .map(str::trim)
+            .filter(|state| !state.is_empty())
+        {
+            Some("live") => true,
+            Some("parked" | "draining" | "suspect" | "ended" | "recorded") => false,
+            Some(_) | None => !self.stale && !self.liveness.eq_ignore_ascii_case("stale"),
+        }
+    }
+
     /// Sort key that GROUPS the roster by fleet for the Fleet-tab display (#3):
     /// fleets alphabetical by slug, agents in NO fleet last. A STABLE sort with
     /// this key keeps the server's within-fleet (newest-heartbeat) order.
@@ -388,7 +417,7 @@ impl RosterEntry {
     /// process). Used to decide focus-vs-resume so a resume never double-spawns a
     /// still-live session (D-001 liveness-first).
     pub fn is_live(&self) -> bool {
-        self.pid_alive != Some(false) && !self.stale && self.liveness != "stale"
+        self.pid_alive != Some(false) && self.is_online()
     }
 
     /// Can this agent be resumed by id? It needs an adv_sessions launch record
@@ -2328,6 +2357,16 @@ pub struct BeeAssignment {
     pub name: Option<String>,
     #[serde(default)]
     pub alive: bool,
+    /// The same shared lifecycle verdict projected by `fleet:assignments`.
+    #[serde(default)]
+    pub session_state: Option<String>,
+    /// Coarse context-pressure bucket (`ok` | `high` | `critical`).
+    #[serde(default)]
+    pub context_pressure: Option<String>,
+    /// Latest genuine tool invocation for this member. This is the sole source
+    /// for the Fleet roster's "spoke" column; heartbeat timestamps never proxy.
+    #[serde(default)]
+    pub last_tool_call_at: Option<String>,
     #[serde(default)]
     pub intent: String,
     /// The bee's work-items in rank order (head-of-line first; unranked last).
@@ -2657,7 +2696,8 @@ mod tests {
             {"ownerId":"su-c8859","label":"su · su-c8859","source":"omp-hook-session",
              "intent":"work","currentFiles":[],"host":"","pid":null,
              "startedAt":"2026-06-03 21:06:01-04","heartbeatAt":"2026-06-04 02:01:56-04",
-             "liveness":"live","stale":false,"workspaceId":"*","userId":null,"revoked":false,
+             "liveness":"live","sessionState":"parked","liveTurn":false,
+             "heartbeatFresh":true,"stale":false,"workspaceId":"*","userId":null,"revoked":false,
              "pidAlive":null,"hasLaunchRecord":true,"advSessionId":341,"currentPlanSlug":null,
              "role":null,"feature":null,"agent":"claude","mode":"console"}
         ]}"#;
@@ -2666,10 +2706,32 @@ mod tests {
         let e = &r.active[0];
         assert_eq!(e.owner_id, "su-c8859");
         assert_eq!(e.liveness, "live");
+        assert_eq!(e.session_state.as_deref(), Some("parked"));
+        assert_eq!(e.live_turn, Some(false));
+        assert_eq!(e.heartbeat_fresh, Some(true));
+        assert!(!e.is_online());
         assert_eq!(e.agent.as_deref(), Some("claude"));
         assert_eq!(e.role, None);
         assert!(e.current_files.is_empty());
         assert!(!e.stale);
+    }
+
+    #[test]
+    fn parses_assignment_liveness_context_and_spoke_fields() {
+        let j = r#"{
+            "agentId":"su-a",
+            "alive":false,
+            "sessionState":"ended",
+            "contextPressure":"critical",
+            "lastToolCallAt":"2026-08-26T20:21:22.456Z"
+        }"#;
+        let a: BeeAssignment = serde_json::from_str(j).unwrap();
+        assert_eq!(a.session_state.as_deref(), Some("ended"));
+        assert_eq!(a.context_pressure.as_deref(), Some("critical"));
+        assert_eq!(
+            a.last_tool_call_at.as_deref(),
+            Some("2026-08-26T20:21:22.456Z")
+        );
     }
 
     #[test]

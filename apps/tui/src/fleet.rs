@@ -24,7 +24,7 @@
 
 use crate::app::App;
 use crate::glyph;
-use crate::models::{ActivityRow, TodoSnapshot, WorkItem};
+use crate::models::{ActivityRow, BeeAssignment, RosterEntry, TodoSnapshot, WorkItem};
 use crate::theme::Theme;
 use crate::ui::trunc;
 use ratatui::{
@@ -268,7 +268,7 @@ pub struct FleetAggregate {
 /// Roll up the fleet headline numbers. Pure over `&App` (reads roster + plans +
 /// fleet.work_items); no borrow of `app.fleet` is held mutably.
 pub fn aggregate(app: &App) -> FleetAggregate {
-    let agents_online = app.roster.iter().filter(|r| !r.stale).count();
+    let agents_online = app.roster.iter().filter(|r| r.is_online()).count();
     let agents_total = app.roster.len();
 
     // Plan progress across the live (non-archived) plans — under the current
@@ -772,16 +772,72 @@ fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, sel: O
     f.render_stateful_widget(list, body, &mut state);
 }
 
-/// Compact liveness legend (owner ask 2026-06-11): the roster's dot vocabulary
-/// plus the heartbeat age that produces each state. The AGE THRESHOLDS mirror
-/// `operator-core/lib/liveness.ts` (LIVE_MS 60s · STALE_MS 10min) — the backend
-/// derives the status and pui only renders it, so these labels are documentation
-/// of the wire contract, not a second derivation.
+/// Authoritative lifecycle state for a roster row. Known shared-oracle values
+/// always win. Heartbeat-age tones are compatibility-only for an older or
+/// degraded payload whose oracle state is absent/unknown.
+fn roster_session_state(r: &RosterEntry) -> &str {
+    match r
+        .session_state
+        .as_deref()
+        .map(str::trim)
+        .filter(|state| !state.is_empty())
+    {
+        Some(state @ ("live" | "parked" | "draining" | "suspect" | "ended" | "recorded")) => state,
+        Some(_) | None if r.stale || r.liveness.eq_ignore_ascii_case("stale") => "stale",
+        Some(_) | None if r.liveness.eq_ignore_ascii_case("live") => "live",
+        Some(_) | None if r.liveness.eq_ignore_ascii_case("idle") => "idle",
+        Some(_) | None => "unknown",
+    }
+}
+
+fn session_state_is_terminal(state: &str) -> bool {
+    matches!(state, "draining" | "suspect" | "ended" | "stale")
+}
+
+fn assignment_for_owner<'a>(app: &'a App, owner_id: &str) -> Option<&'a BeeAssignment> {
+    app.fleet
+        .all_assignments
+        .iter()
+        .find(|a| a.agent_id == owner_id)
+        .or_else(|| {
+            app.bee
+                .assignment
+                .as_ref()
+                .filter(|a| a.agent_id == owner_id)
+        })
+}
+
+/// The roster's "spoke" clock comes ONLY from the assignments surface's
+/// lastToolCallAt field. A heartbeat timestamp is deliberately not accepted.
+fn spoke_text(assignment: Option<&BeeAssignment>) -> String {
+    assignment
+        .and_then(|a| a.last_tool_call_at.as_deref())
+        .filter(|ts| !ts.trim().is_empty())
+        .map(hms)
+        .unwrap_or_else(|| "—".to_string())
+}
+
+fn context_pressure_style(bucket: &str) -> ratatui::style::Style {
+    match bucket {
+        "critical" => Theme::danger(),
+        "high" => Theme::warn(),
+        "ok" => Theme::success(),
+        _ => Theme::dim(),
+    }
+}
+
+/// Compact shared-oracle legend. These are lifecycle classes, not heartbeat
+/// thresholds: a fresh keepalive on an ended session remains ended/dim.
 fn liveness_legend_spans() -> Vec<Span<'static>> {
     let entries: [(&str, &str, bool, &str); 3] = [
-        (glyph::liveness::LIVE, "live <1m", false, "live"),
-        (glyph::liveness::IDLE, "idle <10m", false, "idle"),
-        (glyph::liveness::STALE, "stale ≥10m", true, "stale"),
+        (glyph::liveness::LIVE, "live turn", false, "live"),
+        (glyph::liveness::IDLE, "parked/recorded", false, "parked"),
+        (
+            glyph::liveness::STALE,
+            "draining/suspect/ended",
+            true,
+            "ended",
+        ),
     ];
     let mut spans: Vec<Span<'static>> = Vec::new();
     for (i, (dot, label, stale, liveness)) in entries.into_iter().enumerate() {
@@ -890,8 +946,17 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     let agent_items: Vec<ListItem> = roster
         .iter()
         .map(|r| {
-            // Liveness dot — coloured by freshness (Brief 27 glyph vocabulary).
-            let dot = Theme::liveness_marker(r.stale, &r.liveness);
+            // Shared lifecycle verdict — heartbeat is only a compatibility
+            // fallback when this payload lacks a known sessionState.
+            let session_state = roster_session_state(r);
+            let terminal = session_state_is_terminal(session_state);
+            let dot = Theme::liveness_marker(terminal, session_state);
+            let assignment = assignment_for_owner(app, &r.owner_id);
+            let pressure = assignment
+                .and_then(|a| a.context_pressure.as_deref())
+                .filter(|bucket| !bucket.trim().is_empty())
+                .unwrap_or("—");
+            let spoke = spoke_text(assignment);
             // P-004 (progress-tab-agents-convergence, owner ask 2026-06-11): the
             // kind GLYPH leads each roster row — ☕ mug · 🫖 kettle · 🍵 cup ·
             // 🥤 papercup · 📋 planner · 🛠 su (the owner's own psu sessions) — so workers and
@@ -979,7 +1044,16 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
                 glyph_cell,
                 agent_span,
                 Span::raw(format!("{:<30} ", trunc(&act, 30))),
-                Span::styled(todo, Theme::dim()),
+                Span::styled(format!("{:<8}", trunc(&todo, 7)), Theme::dim()),
+                Span::styled(
+                    format!("{:<10}", trunc(session_state, 9)),
+                    Theme::liveness_style(terminal, session_state),
+                ),
+                Span::styled(
+                    format!("{:<12}", format!("ctx:{pressure}")),
+                    context_pressure_style(pressure),
+                ),
+                Span::styled(format!("spoke:{spoke}"), Theme::dim()),
                 wake_badge,
                 unclaimed_badge,
                 hint_span,
@@ -1044,8 +1118,11 @@ fn draw_agents(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     // Styled column header above the roster (D-005) — one compact legend line
     // rides above it (owner ask 2026-06-11): the kind glyphs (☕ 🫖 🍵 🥤 📋 🛠,
     // flag-on — flag-off rows carry no glyphs) + the liveness dots with their
-    // heartbeat-age thresholds (always — the dots render regardless of flag).
-    let header = format!("    {:<7}{:<31}{}", "agent", "doing now", "todos");
+    // shared-oracle lifecycle classes (always — the dots render regardless of flag).
+    let header = format!(
+        "    {:<7}{:<31}{:<8}{:<10}{:<12}{}",
+        "agent", "doing now", "todos", "state", "context", "spoke"
+    );
     let mut legend_spans: Vec<Span<'static>> = Vec::new();
     if app.hive_agent_tabs {
         legend_spans.extend(crate::agent_pane_kind::legend_line(&app.lexicon).spans);
@@ -1379,9 +1456,8 @@ mod tests {
     }
 
     #[test]
-    fn liveness_legend_names_each_dot_with_its_heartbeat_threshold() {
-        // Owner ask 2026-06-11: the legend documents the wire contract —
-        // thresholds mirror operator-core/lib/liveness.ts (LIVE_MS/STALE_MS).
+    fn liveness_legend_names_shared_oracle_states() {
+        // The legend documents lifecycle verdicts, never heartbeat-age bands.
         let text: String = liveness_legend_spans()
             .iter()
             .map(|s| s.content.as_ref())
@@ -1389,7 +1465,7 @@ mod tests {
         assert_eq!(
             text,
             format!(
-                "{} live <1m · {} idle <10m · {} stale ≥10m",
+                "{} live turn · {} parked/recorded · {} draining/suspect/ended",
                 glyph::liveness::LIVE,
                 glyph::liveness::IDLE,
                 glyph::liveness::STALE
@@ -1403,6 +1479,33 @@ mod tests {
             "live entry mis-styled"
         );
         assert_eq!(spans[4].style, Theme::liveness_style(true, "stale"));
+    }
+
+    #[test]
+    fn ended_oracle_state_beats_a_fresh_heartbeat_and_spoke_uses_tool_calls() {
+        let mut ended = roster_entry("su-ended", false);
+        ended.session_state = Some("ended".into());
+        ended.heartbeat_fresh = Some(true);
+        ended.liveness = "live".into();
+
+        assert!(!ended.is_online(), "fresh heartbeat must not revive ended");
+        assert_eq!(roster_session_state(&ended), "ended");
+        let terminal = session_state_is_terminal(roster_session_state(&ended));
+        let marker = Theme::liveness_marker(terminal, roster_session_state(&ended));
+        assert_eq!(marker.content.as_ref(), glyph::liveness::STALE);
+        assert_eq!(marker.style, Theme::liveness_style(true, "ended"));
+
+        let mut app = App::new();
+        app.set_roster(vec![ended]);
+        assert_eq!(aggregate(&app).agents_online, 0);
+
+        let assignment = BeeAssignment {
+            agent_id: "su-ended".into(),
+            last_tool_call_at: Some("2026-08-26T20:21:22.456Z".into()),
+            ..Default::default()
+        };
+        assert_eq!(spoke_text(Some(&assignment)), "20:21:22");
+        assert_eq!(spoke_text(None), "—");
     }
 
     fn row(owner: &str, kind: &str, summary: &str) -> ActivityRow {
