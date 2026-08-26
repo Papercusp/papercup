@@ -3072,11 +3072,7 @@ async fn fetch_fleet_assignments(tx: UnboundedSender<Event>) {
     }
 }
 
-async fn fetch_fleet_leader_brief(
-    fleet: String,
-    harness: String,
-    tx: UnboundedSender<Event>,
-) {
+async fn fetch_fleet_leader_brief(fleet: String, harness: String, tx: UnboundedSender<Event>) {
     let result = match OperatorClient::from_discovery().await {
         Ok(client) => client
             .fleet_leader_brief(&fleet, &harness)
