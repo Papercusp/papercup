@@ -57,11 +57,18 @@ export const EVALUATION_TRIAL_CONTRACT_LABEL = 'evaluation-trial';
 /** Hex digest characters kept in the derived contract version. */
 const CONTRACT_VERSION_HASH_CHARS = 12;
 
-/** Token for a binding the source does not record at all. */
-const NOT_RECORDED = '?';
+/**
+ * Token for a value the source does not record at all (`undefined`).
+ *
+ * Exported because P-005's evidence sealing must encode the same distinction over
+ * the same tokens: two copies of this convention that drifted apart would let an
+ * evidence hash and a binding hash disagree about what "empty" means, which is the
+ * one disagreement neither mechanism could detect.
+ */
+export const NOT_RECORDED = '?';
 
-/** Token for a binding the source records as genuinely absent / not applicable. */
-const RECORDED_ABSENT = '~';
+/** Token for a value the source records as genuinely absent / not applicable (`null`). */
+export const RECORDED_ABSENT = '~';
 
 /**
  * The contract's field surface, as `path:kind` entries in sorted order.
@@ -211,8 +218,14 @@ function readPath(trial: EvaluationTrial, path: string): unknown {
   return cursor;
 }
 
-/** Encode one binding value as its canonical token. */
-function bindingToken(value: unknown): string {
+/**
+ * Encode one scalar as its canonical token, preserving the `undefined` vs `null`
+ * distinction the whole contract rests on.
+ *
+ * Exported for P-005: evidence sealing hashes the same two empty values and must
+ * encode them identically, so there is exactly one implementation of the rule.
+ */
+export function canonicalToken(value: unknown): string {
   if (value === undefined) return NOT_RECORDED;
   if (value === null) return RECORDED_ABSENT;
   // Binding values are scalars by construction (see TRIAL_BINDING_FIELDS); a
@@ -235,12 +248,12 @@ export function computeTrialIdentity(trial: EvaluationTrial): TrialIdentity {
   for (const field of TRIAL_BINDING_FIELDS) {
     const value = readPath(trial, field);
     if (value === undefined) missingBindings.push(field);
-    lines.push(`${field}=${bindingToken(value)}`);
+    lines.push(`${field}=${canonicalToken(value)}`);
   }
 
   const subjectKey =
-    `${bindingToken(trial.subject?.family)}/${bindingToken(trial.subject?.corpus)}` +
-    `/${bindingToken(trial.subject?.taskId)}@${bindingToken(trial.subject?.taskRevision)}`;
+    `${canonicalToken(trial.subject?.family)}/${canonicalToken(trial.subject?.corpus)}` +
+    `/${canonicalToken(trial.subject?.taskId)}@${canonicalToken(trial.subject?.taskRevision)}`;
 
   const canonical = `${EVALUATION_TRIAL_IDENTITY_DOMAIN}\n${subjectKey}\n${lines.join('\n')}`;
   const bindingHash = createHash('sha256').update(canonical, 'utf8').digest('hex');
