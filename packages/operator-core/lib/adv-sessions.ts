@@ -1191,35 +1191,90 @@ export async function acquireAdvSessionResume(
   });
 }
 
-/** Assert liveness for a reservation after the managed host/direct child has
- * actually spawned. The key match is the one-writer proof. */
-export async function finalizeAdvSessionResume(id: number, resumeClaimKey: string): Promise<boolean> {
+type AdvSessionResumeTransition = 'finalize' | 'release';
+
+/**
+ * Apply one keyed post-acquire transition with a durable replay receipt.
+ *
+ * The row update and receipt commit together. If the HTTP response is lost,
+ * retrying the same session/key/transition reads the original boolean instead
+ * of mistaking "the first request already cleared the reservation" for a key
+ * mismatch. This reuses the launch-idempotency ledger already used by the legacy
+ * keyed resume claim; it is not a second lifecycle registry.
+ */
+async function transitionAdvSessionResume(
+  id: number,
+  resumeClaimKey: string,
+  transition: AdvSessionResumeTransition,
+): Promise<boolean> {
   const key = resumeClaimKey.trim();
   if (!key) return false;
   const { sql } = getOrgPg();
-  const rows = await sql<{ id: number }[]>`
-    UPDATE harness_shared.adv_sessions
-       SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
-           started_at = now(), shutdown_accepted_at = NULL,
-           resume_claim_key = NULL, resume_claimed_at = NULL
-     WHERE id = ${id} AND resume_claim_key = ${key}
-    RETURNING id
-  `;
-  return rows.length > 0;
+  const receiptKind = `psu-resume-${transition}`;
+  const ledgerKey = `${receiptKind}:${id}:${key}`;
+
+  return sql.begin(async (tx) => {
+    const [target] = await tx<Array<{ workspace_id: string }>>`
+      SELECT workspace_id
+        FROM harness_shared.adv_sessions
+       WHERE id = ${id}
+    `;
+    if (!target) return false;
+
+    await tx`
+      INSERT INTO harness_shared.agent_launch_idempotency
+        (workspace_id, idempotency_key, launched_at, launched_by, summary)
+      VALUES (${target.workspace_id}, ${ledgerKey}, ${Date.now()}, NULL, '{}'::jsonb)
+      ON CONFLICT (workspace_id, idempotency_key) DO NOTHING
+    `;
+    const [receipt] = await tx<Array<{ summary: Record<string, unknown> }>>`
+      SELECT summary
+        FROM harness_shared.agent_launch_idempotency
+       WHERE workspace_id = ${target.workspace_id}
+         AND idempotency_key = ${ledgerKey}
+       FOR UPDATE
+    `;
+    if (receipt?.summary?.kind === receiptKind && typeof receipt.summary.transitioned === 'boolean') {
+      return receipt.summary.transitioned;
+    }
+
+    const rows =
+      transition === 'finalize'
+        ? await tx<{ id: number }[]>`
+          UPDATE harness_shared.adv_sessions
+             SET ended_at = NULL, exit_code = NULL, ended_by = NULL, ended_signal = NULL,
+                 started_at = now(), shutdown_accepted_at = NULL,
+                 resume_claim_key = NULL, resume_claimed_at = NULL
+           WHERE id = ${id} AND resume_claim_key = ${key}
+          RETURNING id
+        `
+        : await tx<{ id: number }[]>`
+          UPDATE harness_shared.adv_sessions
+             SET resume_claim_key = NULL, resume_claimed_at = NULL
+           WHERE id = ${id} AND resume_claim_key = ${key}
+          RETURNING id
+        `;
+    const transitioned = rows.length > 0;
+    const summary = JSON.stringify({ kind: receiptKind, transitioned });
+    await tx`
+      UPDATE harness_shared.agent_launch_idempotency
+         SET summary = ${summary}::text::jsonb
+       WHERE workspace_id = ${target.workspace_id}
+         AND idempotency_key = ${ledgerKey}
+    `;
+    return transitioned;
+  });
+}
+
+/** Assert liveness for a reservation after the managed host/direct child has
+ * actually spawned. The key match is the one-writer proof. */
+export async function finalizeAdvSessionResume(id: number, resumeClaimKey: string): Promise<boolean> {
+  return transitionAdvSessionResume(id, resumeClaimKey, 'finalize');
 }
 
 /** Release a pre-spawn/failed reservation while preserving terminal evidence. */
 export async function releaseAdvSessionResume(id: number, resumeClaimKey: string): Promise<boolean> {
-  const key = resumeClaimKey.trim();
-  if (!key) return false;
-  const { sql } = getOrgPg();
-  const rows = await sql<{ id: number }[]>`
-    UPDATE harness_shared.adv_sessions
-       SET resume_claim_key = NULL, resume_claimed_at = NULL
-     WHERE id = ${id} AND resume_claim_key = ${key}
-    RETURNING id
-  `;
-  return rows.length > 0;
+  return transitionAdvSessionResume(id, resumeClaimKey, 'release');
 }
 
 /**
