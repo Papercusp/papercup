@@ -38,7 +38,7 @@ describe('session task typed blocker refs', () => {
   });
 
   it('clears a released lock and waits on a live holder', async () => {
-    const releasedSql = vi.fn(async () => []);
+    const releasedSql = vi.fn(async (_strings: TemplateStringsArray, _coordinationDomain: string) => []);
     await expect(resolveSessionTaskBlocker(releasedSql as never, scope, 'lock:a.ts'))
       .resolves.toMatchObject({ status: 'cleared', autoUnblocks: true });
     expect(releasedSql.mock.calls[0]?.[1]).toBe('/repo');
