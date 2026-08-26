@@ -847,21 +847,45 @@ async function writeGitSyncErrorEscalation(
   );
 }
 
-/** Previous tick's EI-18 + content-guard counters from the routine metadata. */
+/** Previous tick's EI-18 + content-guard counters from the routine metadata.
+ *
+ *  EI-21230011589307899 also reads the own-head-publish refusal recorded by the
+ *  PREVIOUS tick's publish leg (that leg runs after the escalation decision, so this
+ *  is the freshest value obtainable here) plus `last_publish_blocked_at`, the freeze
+ *  point this reader saw one tick earlier — the pair is what distinguishes a NEW
+ *  freeze (broadcast) from a persisting one (refresh the row silently). */
 async function readEscalationCounters(
   slug: string,
   workspaceId: string,
-): Promise<{ errTicks: number; oversizedKeys: string[]; contentTicks: number }> {
+): Promise<{
+  errTicks: number;
+  oversizedKeys: string[];
+  contentTicks: number;
+  publishRefusal: { refused: string; blockedAtCommit: string | null } | null;
+  prevPublishBlockedAtCommit: string | null;
+}> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ et: number; lo: string[] | null; ct: number }[]>`
+  const rows = await sql<
+    { et: number; lo: string[] | null; ct: number; pubrefused: string | null; pubblocked: string | null; lastpub: string | null }[]
+  >`
     SELECT coalesce((metadata->>'consecutive_error_ticks')::int, 0) AS et,
            array(SELECT jsonb_array_elements_text(coalesce(metadata->'last_oversized', '[]'::jsonb))) AS lo,
-           coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct
+           coalesce((metadata->>'consecutive_content_error_ticks')::int, 0) AS ct,
+           metadata->'own_head_publish'->>'refused' AS pubrefused,
+           metadata->'own_head_publish'->>'blockedAtCommit' AS pubblocked,
+           metadata->>'last_publish_blocked_at' AS lastpub
       FROM harness_shared.routines
      WHERE install_slug = ${slug} AND workspace_id = ${workspaceId} AND target_role = 'system:git-sync'
      LIMIT 1
   `;
-  return { errTicks: rows[0]?.et ?? 0, oversizedKeys: rows[0]?.lo ?? [], contentTicks: rows[0]?.ct ?? 0 };
+  const refused = rows[0]?.pubrefused ?? null;
+  return {
+    errTicks: rows[0]?.et ?? 0,
+    oversizedKeys: rows[0]?.lo ?? [],
+    contentTicks: rows[0]?.ct ?? 0,
+    publishRefusal: refused ? { refused, blockedAtCommit: rows[0]?.pubblocked ?? null } : null,
+    prevPublishBlockedAtCommit: rows[0]?.lastpub ?? null,
+  };
 }
 
 /**
