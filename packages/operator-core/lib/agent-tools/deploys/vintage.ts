@@ -63,6 +63,43 @@ export interface VintageReport {
   rows: VintageRowReport[];
 }
 
+/**
+ * Keep the diagnostic fan-out bounded. A workspace can accumulate many
+ * current runtime rows (the live Papercusp workspace has exceeded 100), and
+ * starting one git process per row serially makes this read exceed the
+ * dispatch deadline. Each probe starts two independent rev-list calls, so a
+ * four-item pool caps the git-process burst at eight.
+ */
+const VINTAGE_PROBE_CONCURRENCY = 4;
+
+/** Bounded-concurrency map that preserves input order. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const workerCount = Math.min(Math.max(1, limit), items.length);
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      out[index] = await fn(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+interface VintageLag {
+  commitsBehindStaging: number | null;
+  commitsAheadOfStaging: number | null;
+}
+
+function parseCommitCount(value: string | null): number | null {
+  return value ? Number(value) : null;
+}
+
 export function noteFor(behind: number | null, ahead: number | null, treeSha: string | null): string {
   if (!treeSha) return 'no treeSha reported — cannot resolve a commit position.';
   if (behind === null) return `treeSha ${treeSha.slice(0, 9)} does not resolve in this checkout (unknown commit — likely a packaged bundle built from a different clone).`;
@@ -83,20 +120,37 @@ export async function buildVintageReport(
   const stagingHeadShortSha = stagingHeadSha ? stagingHeadSha.slice(0, 9) : null;
 
   const rawRows = await loadRows();
+  // Multiple runtimes commonly carry the same build. Probe each SHA once and
+  // reuse its lag for every row, rather than multiplying git work by the row
+  // count. Two rev-list calls preserve the old behavior for unrelated commit
+  // histories (where a three-dot symmetric-difference query would fail).
+  const treeShas = Array.from(
+    new Set(rawRows.map((r) => r.treeSha).filter((sha): sha is string => Boolean(sha))),
+  );
+  const lagByTreeSha = new Map<string, VintageLag>();
+  if (stagingHeadSha && treeShas.length > 0) {
+    const lagEntries = await mapWithConcurrency(treeShas, VINTAGE_PROBE_CONCURRENCY, async (treeSha) => {
+      const [behind, ahead] = await Promise.all([
+        git(root, ['rev-list', '--count', `${treeSha}..origin/staging`]),
+        git(root, ['rev-list', '--count', `origin/staging..${treeSha}`]),
+      ]);
+      return {
+        treeSha,
+        lag: {
+          commitsBehindStaging: parseCommitCount(behind),
+          commitsAheadOfStaging: parseCommitCount(ahead),
+        },
+      };
+    });
+    for (const { treeSha, lag } of lagEntries) lagByTreeSha.set(treeSha, lag);
+  }
+
   const now = Date.now();
   const rows: VintageRowReport[] = [];
   for (const r of rawRows) {
-    let commitsBehindStaging: number | null = null;
-    let commitsAheadOfStaging: number | null = null;
-    if (r.treeSha && stagingHeadSha) {
-      const resolved = await git(root, ['rev-parse', '--verify', `${r.treeSha}^{commit}`]);
-      if (resolved) {
-        const behind = await git(root, ['rev-list', '--count', `${r.treeSha}..origin/staging`]);
-        const ahead = await git(root, ['rev-list', '--count', `origin/staging..${r.treeSha}`]);
-        commitsBehindStaging = behind ? Number(behind) : null;
-        commitsAheadOfStaging = ahead ? Number(ahead) : null;
-      }
-    }
+    const lag = r.treeSha ? lagByTreeSha.get(r.treeSha) : undefined;
+    const commitsBehindStaging = lag?.commitsBehindStaging ?? null;
+    const commitsAheadOfStaging = lag?.commitsAheadOfStaging ?? null;
     rows.push({
       workspaceId: r.workspaceId,
       unit: r.unit,
@@ -136,6 +190,11 @@ export default defineTool({
   // (60s), surfacing as a bare `write CONNECTION_CLOSED 127.0.0.1:6432`.
   // See ProjectedTool.skipWorkspaceTx.
   skipWorkspaceTx: true,
+  // EI-21388223987997525: the runtime ledger can contain 100+ rows and each
+  // row needs local git ancestry reads. The probes are bounded and
+  // SHA-deduplicated above, but retain margin over the 60s default so a busy
+  // host restart cannot abort a healthy read at the dispatch boundary.
+  timeoutSec: 120,
   agentRoles: ['operator', 'architect', 'debugger', 'release-manager', 'release-fixer', 'cup'],
   args: z.object({ workspace: z.string().min(1).optional() }),
   async handler(args) {

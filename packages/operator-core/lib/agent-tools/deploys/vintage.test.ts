@@ -6,7 +6,7 @@
  * loaders) so this needs no real git checkout / PG — pure logic only.
  */
 import { describe, it, expect } from 'vitest';
-import { buildVintageReport, noteFor, type GitRunner } from './vintage';
+import tool, { buildVintageReport, noteFor, type GitRunner } from './vintage';
 import type { RuntimeVintageRow } from '../../runtime-vintage';
 
 function row(overrides: Partial<RuntimeVintageRow> = {}): RuntimeVintageRow {
@@ -113,6 +113,50 @@ describe('deploys:vintage — buildVintageReport', () => {
       loadRoot: async () => '/fake/repo',
     });
     expect(report.rows[0].reportedAgeMs).toBeGreaterThanOrEqual(59_000);
+  });
+
+  it('deduplicates equal tree SHAs so repeated runtime rows share one lag probe', async () => {
+    const calls: string[][] = [];
+    const git: GitRunner = async (_repo, args) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse' && args[2] === 'origin/staging') return 'stagingsha';
+      if (args[0] === 'rev-list' && args[2] === 'sha-behind..origin/staging') return '3';
+      if (args[0] === 'rev-list' && args[2] === 'origin/staging..sha-behind') return '0';
+      return null;
+    };
+    const report = await buildVintageReport({
+      git,
+      loadRows: async () => [row(), row({ unit: 'gateway' }), row({ unit: 'watchdog' })],
+      loadRoot: async () => '/fake/repo',
+    });
+
+    expect(report.rows).toHaveLength(3);
+    expect(report.rows.map((r) => r.commitsBehindStaging)).toEqual([3, 3, 3]);
+    expect(calls.filter((args) => args[0] === 'rev-list')).toHaveLength(2);
+  });
+
+  it('bounds concurrent lag probes while allowing independent SHAs to overlap', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const git: GitRunner = async (_repo, args) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await Promise.resolve();
+      active -= 1;
+      if (args[0] === 'rev-parse' && args[2] === 'origin/staging') return 'stagingsha';
+      if (args[0] === 'rev-list') return '0';
+      return null;
+    };
+    const rows = Array.from({ length: 10 }, (_, i) => row({ unit: `runtime-${i}`, treeSha: `sha-${i}` }));
+    await buildVintageReport({ git, loadRows: async () => rows, loadRoot: async () => '/fake/repo' });
+
+    // Four concurrent SHA probes, each with two rev-list calls.
+    expect(maxActive).toBeGreaterThan(2);
+    expect(maxActive).toBeLessThanOrEqual(8);
+  });
+
+  it('declares a dispatch deadline with room for a busy runtime ledger', () => {
+    expect((tool as unknown as { timeoutSec?: number }).timeoutSec).toBe(120);
   });
 });
 
