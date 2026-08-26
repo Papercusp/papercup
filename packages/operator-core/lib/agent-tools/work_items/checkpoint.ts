@@ -445,9 +445,9 @@ export default defineTool({
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Writes are verify-read — a suspicious shrink can be BLOCKED; see `returns`. ' +
-    'Refuses a peer-held item (`not_holder`) and active writes to terminal items (`terminal_item`); explicit clears remain allowed for finish cleanup. ' +
-    '`rowsMode:"merge"` is the default additive check-row form when the body should still replace; use `rowsMode:"replace"` to retire rows. ' +
-    'For a complete authoritative body+rows replacement pass append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true.',
+    'Refuses a peer-held item (`not_holder`) and active writes to terminal items (`terminal_item`); explicit clears still allowed. ' +
+    '`rowsMode:"merge"` (default) adds check rows while the body still replaces; `"replace"` retires rows. ' +
+    'Full body+rows replacement: append:false, rowsMode:"replace", confirmShrink:true, confirmRetire:true.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
