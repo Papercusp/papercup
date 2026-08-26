@@ -221,7 +221,15 @@ export function selectionSnapshot(min: number, max: number, selected: SelectedRe
 }
 
 export interface RouteResult {
-  verdict: 'routed' | 'no_qualified_responder';
+  /**
+   * `no_qualified_responder` is a MEASURED absence — similarity was computed and
+   * nobody cleared the floor. `relevance_unmeasured` is the opposite epistemic
+   * state: the embedder was unavailable, so relevance was never measured at all
+   * and this route has no claim to make about the peer population. Keeping them
+   * distinct is what lets a caller tell "retrying is pointless" from "retrying
+   * is the whole fix" (EI-21485716602970457).
+   */
+  verdict: 'routed' | 'no_qualified_responder' | 'relevance_unmeasured';
   /** Candidates clearing BOTH floors, best first (≤ maxQualified). */
   qualified: RoutingCandidate[];
   snapshot: RoutingSnapshot;
@@ -403,7 +411,14 @@ export async function routeConsult(
     candidates.sort((a, b) => b.score - a.score || a.ownerId.localeCompare(b.ownerId));
     const snapshotCandidates = candidates.slice(0, maxCandidates);
     return {
-      verdict: 'no_qualified_responder',
+      // NOT `no_qualified_responder`: that verdict asserts a MEASURED conclusion
+      // about the peer population, and on this path nothing was measured — the
+      // embedder is down, so similarity was never computed and no candidate was
+      // ever ranked against the floor. Emitting the measured verdict here makes
+      // an instrument failure indistinguishable from a real finding, and the
+      // caller's rational response to the two is opposite (retry vs. don't).
+      // EI-21485716602970457.
+      verdict: 'relevance_unmeasured',
       qualified: [],
       snapshot: { ...base, candidates: snapshotCandidates, degraded: 'embed-unavailable', fallback: 'lexical' },
       queryVec: null,
