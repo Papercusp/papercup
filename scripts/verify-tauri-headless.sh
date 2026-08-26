@@ -145,6 +145,12 @@
 #                                full migration replay is ~10-30s; a pre-built
 #                                seed extract is ~1s). Only used with
 #                                VERIFY_TAURI_ISOLATED_DB=1.
+#   VERIFY_TAURI_NATIVE_TERMINAL
+#                               1 = preserve the caller's native-terminal
+#                                strategy/command overrides and boot the dock for
+#                                live platform verification. Default 0 keeps the
+#                                dock disabled so ordinary UI verifiers remain
+#                                isolated from terminal processes/windows.
 #   PAPERCUSP_REPO_DIR          repo root (default: derived from this script)
 #   VERIFY_TAURI_DISPLAY_NUM    Xvfb display number (default: auto-picked, >=90)
 #   VERIFY_TAURI_TIMEOUT        seconds to wait for the bridge AFTER the desktop
@@ -420,6 +426,14 @@ TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # desktop process even exists, so give the build its own bounded clock and
 # start TIMEOUT only after Cargo emits its Running ... papercusp-desktop marker.
 BUILD_TIMEOUT="${VERIFY_TAURI_BUILD_TIMEOUT:-300}"
+NATIVE_TERMINAL="${VERIFY_TAURI_NATIVE_TERMINAL:-0}"
+case "$NATIVE_TERMINAL" in
+  0|1) ;;
+  *)
+    echo "FATAL: VERIFY_TAURI_NATIVE_TERMINAL must be 0 or 1 (got '$NATIVE_TERMINAL')" >&2
+    exit 2
+    ;;
+esac
 # EI-11641: pin the isolated verify sidecar's memory-watchdog high-water mark. The
 # sidecar boots the full operator (substrate + the DBOS routines tick that
 # dev-operator-ifneeded.sh enables), so its FRESH-boot RSS is background-primary-
@@ -1648,7 +1662,7 @@ exec env -u WAYLAND_DISPLAY -u PAPERCUSP_SPAWNER_IPC_SOCKET \\
   XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   OPERATOR_DEV_PORT="$DEV_PORT" OPERATOR_DEV_PTY_PORT="$PTY_PORT" \\
   PAPERCUSP_BIND_HOST=127.0.0.1 \\
-  PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL=0 \\
+  PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL="$NATIVE_TERMINAL" \\
   PAPERCUSP_VERIFY_TAURI_DEV_URL="$TAURI_DEV_URL" \\
   PAPERCUSP_CLUSTER=0 PAPERCUSP_CLUSTER_WORKERS=0 \\
   PAPERCUSP_SPAWNER_SIDECAR=0 PAPERCUSP_SPAWNER_SIDECAR_MODE=0 \\
