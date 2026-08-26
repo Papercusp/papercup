@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 826,
+  "count": 827,
   "tools": [
     {
       "name": "ablation:report",
@@ -29105,6 +29105,42 @@
         "when": "You are making (or, as a cup, PROPOSING) a non-re-derivable structural change to a plan-run node — split it, drop/re-approach the approach, expand a deferred region. Record it here in ONE call before dispatching the dependent work; the durable record is the resumable truth.",
         "notWhen": "A routine progress update / finding → work_items:comment. Re-prioritizing the frontier (re-derivable, costs nothing to lose) → no amend needed. Finishing a node → work_items:complete / set_state.",
         "chaining": "work_items:get → work_items:amend { id, kind, rationale }. A bee PROPOSES (disposition=proposed); the Mug DISPOSES. requiresCompensation=true ⇒ a worker is mid-execution on the node — coordinate (coord:send) before/with the change."
+      }
+    },
+    {
+      "name": "work_items:bulk_dedup",
+      "http": {
+        "path": "/api/agent-tools/work_items/bulk_dedup",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run the staged work-item bulk deduplicator for one harness. It creates a fresh pinned census/shard map, applies the promoter duplication-only charter to the D-002-selected full-corpus or machine-emitter-targeted scope, merges only r-finding-merge verdicts, and transactionally refuses any census rise. Requires confirm:true because accepted merge verdicts terminalize duplicate rows.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A reviewed bulk-dedup plan is ready to execute and its current corpus must converge under the admission census ratchet.",
+        "notWhen": "Quick filing or ordinary pending-item admission — the durable work-item admission promoter handles those automatically.",
+        "chaining": "work_items:bulk_dedup { harness, confirm:true } → inspect workItemAdmission.runs / admin admission history for the stage and final census."
       }
     },
     {
