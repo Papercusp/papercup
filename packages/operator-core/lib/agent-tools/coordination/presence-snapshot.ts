@@ -742,8 +742,11 @@ export async function assemblePresenceSnapshot(
   // as matched:0/fromSessionLog:false — an explicit not-found, distinct from the
   // synthesized-ended case.
   if (targeted) {
+    // `targeted` being true means opts.owner is a non-empty string (EI-9454);
+    // the alias re-asserts that narrowing once for every targeted-only use below.
+    const needle = opts.owner as string;
     summary.ownerLookup = {
-      needle: opts.owner,
+      needle,
       matched: scoped.length,
       // True only when a session-log-synthesized row actually SURVIVED the
       // owner filter — never merely because the leg ran.
