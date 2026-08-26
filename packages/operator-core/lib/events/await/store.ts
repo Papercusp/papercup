@@ -24,6 +24,7 @@ import { keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from '.
 import { WAKE_TURN_CHANNELS } from './types';
 import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
+import { reconcileEventExternalBlockers } from '../../work-items';
 import type {
   AwaitPolicy,
   AwaitRow,
@@ -855,6 +856,7 @@ export async function retireAnnouncement(input: {
     if (retired.length === 0) {
       return { ...base, reason: 'already_settled' as const };
     }
+    await reconcileEventExternalBlockers(tx, String(retired[0].event_key), input.subscriberId);
     return {
       retired: true,
       announcementId: input.announcementId,
@@ -2213,12 +2215,16 @@ export async function registerAnnouncement(input: {
        WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
     `;
     const generation = Number(generationRows[0]?.next_generation ?? 1);
-    await tx`
+    const superseded = await tx`
       UPDATE harness_shared.event_awaits
          SET superseded_at = COALESCE(superseded_at, now())
        WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${input.eventKey}
          AND superseded_at IS NULL
+      RETURNING event_key
     `;
+    if (superseded.length > 0) {
+      await reconcileEventExternalBlockers(tx, input.eventKey, input.subscriberId);
+    }
     const rows = await tx`
       INSERT INTO harness_shared.event_awaits
         (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts,

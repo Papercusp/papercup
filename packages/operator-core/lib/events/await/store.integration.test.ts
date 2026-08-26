@@ -141,13 +141,14 @@ beforeAll(async () => {
       last_fired_by text, last_payload jsonb, fire_count bigint NOT NULL DEFAULT 1,
       PRIMARY KEY (workspace_id, event_key)
     )`);
-  // EI-20540454577146535: a minimal stand-in for the harness_shared.work_items VIEW —
-  // only the two columns terminalWorkItemIds() reads (store.ts). Real callers see a
-  // cross-family view; this fixture only needs feature_id/status to exist.
+  // EI-20540454577146535: a minimal stand-in for the harness_shared.work_items base —
+  // terminalWorkItemIds() only needs feature_id/status, while the event-settlement
+  // regression below also exercises payload/item_kind/updated_ts reconciliation.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.work_items (
       workspace_id text NOT NULL DEFAULT 'default', feature_id text NOT NULL, status text,
       harness_slug text NOT NULL DEFAULT 'papercusp', condition_key text,
+      item_kind text NOT NULL DEFAULT 'bug', payload jsonb, updated_ts bigint NOT NULL DEFAULT 0,
       taken_by text, last_progress_at timestamptz,
       admission text, admitted_at timestamptz, admitted_by text
     )`);
@@ -193,6 +194,34 @@ async function waitForAnnouncementAdvisoryLock(eventKey: string, expected: 'held
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(`timed out waiting for announcement advisory lock to be ${expected}`);
+}
+
+function eventBlocker(eventKey: string) {
+  return {
+    kind: 'event',
+    capability: 'live-dependency',
+    capabilitySource: 'inferred',
+    ref: eventKey,
+    summary: `await ${eventKey}`,
+    status: 'active',
+    createdAt: '2026-08-26T14:00:00.000Z',
+    createdBy: 'test-agent',
+    updatedAt: '2026-08-26T14:00:00.000Z',
+  };
+}
+
+function runtimeBlocker() {
+  return {
+    kind: 'runtime',
+    capability: 'live-dependency',
+    capabilitySource: 'inferred',
+    ref: 'runtime:still-live',
+    summary: 'runtime dependency remains',
+    status: 'active',
+    createdAt: '2026-08-26T14:00:00.000Z',
+    createdBy: 'test-agent',
+    updatedAt: '2026-08-26T14:00:00.000Z',
+  };
 }
 
 describe('await-event store (PG)', () => {
@@ -460,6 +489,76 @@ describe('await-event store (PG)', () => {
     `;
     expect(stored[0].fired_at).toBeNull();
     expect(stored[0].superseded_at).not.toBeNull();
+  });
+
+  it('retirement clears the matching event blocker and restores an auto-blocked issue', async () => {
+    const eventKey = 'gate:announcement-retire-reconciles-blocker';
+    const announcement = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES (
+        'EI-retire-reconcile', 'blocked', 'bug',
+        ${JSON.stringify({
+          _claimHold: true,
+          held_open_by: 'test-agent',
+          held_open_reason: 'blocked',
+          externalBlockers: [eventBlocker(eventKey)],
+        })}::text::jsonb
+      )
+    `;
+
+    await expect(
+      retireAnnouncement({ announcementId: announcement.id, subscriberId: 'declarer' }),
+    ).resolves.toMatchObject({ retired: true });
+
+    const rows = await rootSql`
+      SELECT status, payload
+        FROM harness_shared.work_items
+       WHERE feature_id = 'EI-retire-reconcile'
+    `;
+    expect(rows[0].status).toBe('open');
+    expect(rows[0].payload).toMatchObject({
+      externalBlockers: [
+        expect.objectContaining({ kind: 'event', ref: eventKey, status: 'cleared', clearedBy: 'declarer' }),
+      ],
+    });
+    expect(rows[0].payload).not.toHaveProperty('_claimHold');
+    expect(rows[0].payload).not.toHaveProperty('held_open_reason');
+  });
+
+  it('same-key supersession clears only the event blocker and preserves unrelated blockers', async () => {
+    const eventKey = 'gate:announcement-supersede-reconciles-blocker';
+    const first = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    await rootSql`
+      INSERT INTO harness_shared.work_items (feature_id, status, item_kind, payload)
+      VALUES (
+        'EI-supersede-reconcile', 'blocked', 'bug',
+        ${JSON.stringify({
+          _claimHold: true,
+          held_open_by: 'test-agent',
+          held_open_reason: 'blocked',
+          externalBlockers: [eventBlocker(eventKey), runtimeBlocker()],
+        })}::text::jsonb
+      )
+    `;
+
+    const second = await registerAnnouncement({ subscriberId: 'declarer', eventKey, scopeKind: 'global' });
+    expect(second.causalGeneration).toBeGreaterThan(first.causalGeneration ?? 0);
+
+    const rows = await rootSql`
+      SELECT status, payload
+        FROM harness_shared.work_items
+       WHERE feature_id = 'EI-supersede-reconcile'
+    `;
+    expect(rows[0].status).toBe('blocked');
+    expect(rows[0].payload).toMatchObject({
+      externalBlockers: [
+        expect.objectContaining({ kind: 'event', ref: eventKey, status: 'cleared' }),
+        expect.objectContaining({ kind: 'runtime', ref: 'runtime:still-live', status: 'active' }),
+      ],
+    });
+    expect(rows[0].payload).toHaveProperty('_claimHold', true);
+    expect(rows[0].payload).toHaveProperty('held_open_reason', 'blocked');
   });
 
   it('guards announcement retirement by owner, generation, and fired state', async () => {
