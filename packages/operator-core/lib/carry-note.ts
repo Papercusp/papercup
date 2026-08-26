@@ -1516,6 +1516,14 @@ export function mergeCarryRows(opts: {
  * ? PREDICTED one survived purely by sitting earlier in the note — losing the expensive
  * half of the pair. {@link evidenceFirst} sinks the PREDICTED rows to the tail so the cap
  * cuts the cheapest-to-reproduce rows first.
+ *
+ * ⚠ REACH LIMIT of that rule (EI-21514029457263901). Supplied rows are placed FIRST, so
+ * `evidenceFirst` only decides anything while the supplied list leaves seats for carried
+ * rows to compete for. Once the supplied list ALONE meets `maxRows`, every unmatched
+ * carried row is evicted regardless of evidence — which is precisely the write that loses
+ * the most rows at once. Do not restate the evidence rule as an unconditional guarantee;
+ * `carry-note.test.ts` "evidence ordering STOPS PROTECTING once the supplied list alone
+ * fills the cap" pins this so the prose cannot drift back.
  */
 function upsertOntoPrior<T extends { id?: string; claim: string }>(
   supplied: ReadonlyArray<T>,

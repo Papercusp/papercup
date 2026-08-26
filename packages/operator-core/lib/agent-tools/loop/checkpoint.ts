@@ -433,9 +433,9 @@ export default defineTool({
             'Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
             'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
             "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows " +
-            'up to the row cap — on overflow supplied rows win, the evicted carried rows are named in ' +
-            '`checksDropped`, and ? PREDICTED rows are evicted before ✓ VERIFIED ones; ' +
-            "pass rowsMode:'replace' to retire them; [] clears under replace.",
+            'up to the row cap — on overflow supplied rows win and evicted rows are named in ' +
+            '`checksDropped`; PREDICTED yields before VERIFIED only while seats remain, so supplying ≥ the cap ' +
+            "evicts EVERY unmatched carried row; pass rowsMode:'replace' to retire them; [] clears under replace.",
         ),
       rowsMode: z
         .enum(['replace', 'merge'])
@@ -445,8 +445,8 @@ export default defineTool({
             '(else by exact claim text) and unmentioned rows SURVIVE, so adding/updating ONE row needs only that ' +
             'row — but only UP TO THE ROW CAP. If the union overflows the cap, supplied rows win and the carried ' +
             'rows that yield are named in `checksDropped`: merge is non-destructive while it fits, not ' +
-            'unconditionally. Within that yielding remainder, ? PREDICTED rows are evicted BEFORE ✓ VERIFIED ones, ' +
-            'so a hard-won observation is never dropped in favour of a hypothesis that sat earlier in the note. ' +
+            'unconditionally. Within the yielding remainder PREDICTED rows go first; but supplied rows are placed ' +
+            'first overall, so a supplied list that alone fills the cap evicts every carried row, evidence or not. ' +
             "'replace' makes the list the new set and is the only retirement path. Under 'merge' a [] list is a " +
             'no-op, never a clear.',
         ),
