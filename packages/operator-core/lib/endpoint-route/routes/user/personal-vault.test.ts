@@ -5,7 +5,6 @@ const mocks = vi.hoisted(() => ({
   sql: vi.fn(),
   getUser: vi.fn(),
   parsePlan: vi.fn(),
-  parseArchive: vi.fn(),
   enabled: vi.fn(),
   setEnabled: vi.fn(),
   stats: vi.fn(),
@@ -13,7 +12,14 @@ const mocks = vi.hoisted(() => ({
   replaceGrant: vi.fn(),
   revokeGrant: vi.fn(),
   purge: vi.fn(),
-  upsert: vi.fn(),
+  reserveImport: vi.fn(),
+  storeImport: vi.fn(),
+  finalizeImport: vi.fn(),
+  releaseImport: vi.fn(),
+  removeImportArchive: vi.fn(),
+  listImportJobs: vi.fn(),
+  cancelImport: vi.fn(),
+  retryImport: vi.fn(),
   listSources: vi.fn(),
   getSource: vi.fn(),
   disconnectSources: vi.fn(),
@@ -31,7 +37,22 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 vi.mock('@papercusp/plan-parser', () => ({ parsePlan: mocks.parsePlan }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: mocks.getUser }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../../../personal-vault/archive-import', () => ({ parsePersonalArchive: mocks.parseArchive }));
+vi.mock('../../../personal-vault/import-jobs', async () => {
+  const actual = await vi.importActual<typeof import('../../../personal-vault/import-jobs')>(
+    '../../../personal-vault/import-jobs',
+  );
+  return {
+    ...actual,
+    reservePersonalVaultImportUpload: mocks.reserveImport,
+    storeReservedPersonalVaultImportArchive: mocks.storeImport,
+    finalizePersonalVaultImportUpload: mocks.finalizeImport,
+    releasePersonalVaultImportUpload: mocks.releaseImport,
+    removePersonalVaultImportArchive: mocks.removeImportArchive,
+    listPersonalVaultImportJobs: mocks.listImportJobs,
+    requestPersonalVaultImportCancellation: mocks.cancelImport,
+    retryPersonalVaultImportJob: mocks.retryImport,
+  };
+});
 vi.mock('../../../external-triggers/source-store', () => ({
   listOwnedExternalTriggerSources: mocks.listSources,
   getExternalTriggerSource: mocks.getSource,
@@ -79,13 +100,47 @@ vi.mock('../../../personal-vault/store', async () => {
     replacePersonalGrant: mocks.replaceGrant,
     revokePersonalGrant: mocks.revokeGrant,
     purgePersonalSource: mocks.purge,
-    upsertPersonalDocuments: mocks.upsert,
   };
 });
 
 import routes, { declaredPersonalScopes } from './personal-vault';
 
 const SOURCE_ID = '00000000-0000-4000-8000-000000000101';
+const IMPORT_ID = '00000000-0000-4000-8000-000000000201';
+
+const importJob = (overrides: Record<string, unknown> = {}) => ({
+  id: IMPORT_ID,
+  workspaceId: 'ws-test',
+  userId: 'user-1',
+  sourceId: null,
+  providerAccountId: null,
+  filename: 'takeout.mbox',
+  storagePath: '/tmp/personal-vault/import.archive',
+  contentType: 'application/mbox',
+  contentSha256: 'a'.repeat(64),
+  idempotencyKey: 'b'.repeat(64),
+  sizeBytes: 4,
+  status: 'queued',
+  bytesProcessed: 0,
+  entriesProcessed: 0,
+  documentsSeen: 0,
+  documentsImported: 0,
+  checkpoint: { entryIndex: 0, recordIndex: 0 },
+  warnings: [],
+  cancelRequested: false,
+  attemptCount: 0,
+  maxAttempts: 5,
+  nextAttemptAt: '2026-08-26T00:00:00.000Z',
+  leaseOwner: null,
+  leaseExpiresAt: null,
+  retainedUntil: '2026-09-02T00:00:00.000Z',
+  lastError: null,
+  startedAt: null,
+  completedAt: null,
+  createdAt: '2026-08-26T00:00:00.000Z',
+  updatedAt: '2026-08-26T00:00:00.000Z',
+  ...overrides,
+});
 
 const route = (method: string, path: string): RouteDefinition => {
   const found = (routes as RouteDefinition[]).find(
@@ -106,7 +161,28 @@ beforeEach(() => {
   mocks.replaceGrant.mockResolvedValue({ id: 'grant-1', scopes: ['personal:gmail'], revoked: 0 });
   mocks.revokeGrant.mockResolvedValue(true);
   mocks.purge.mockResolvedValue({ documents: 2, cursors: 1, aliases: 1, identities: 1 });
-  mocks.upsert.mockResolvedValue({ insertedOrUpdated: 1, ids: ['doc-1'] });
+  mocks.reserveImport.mockResolvedValue({
+    id: '00000000-0000-4000-8000-000000000202',
+    workspaceId: 'ws-test',
+    userId: 'user-1',
+    filename: 'takeout.mbox',
+    storagePath: '/tmp/personal-vault/import.partial',
+    declaredSizeBytes: 4,
+    reservedBytes: 4,
+    receivedBytes: 0,
+    expiresAt: '2026-08-27T00:00:00.000Z',
+  });
+  mocks.storeImport.mockResolvedValue({
+    storagePath: '/tmp/personal-vault/import.archive',
+    contentSha256: 'a'.repeat(64),
+    sizeBytes: 4,
+  });
+  mocks.finalizeImport.mockResolvedValue(importJob());
+  mocks.releaseImport.mockResolvedValue(undefined);
+  mocks.removeImportArchive.mockResolvedValue(undefined);
+  mocks.listImportJobs.mockResolvedValue([importJob()]);
+  mocks.cancelImport.mockResolvedValue(importJob({ status: 'cancelled', storagePath: null }));
+  mocks.retryImport.mockResolvedValue(importJob());
   mocks.loadProviders.mockResolvedValue(['google']);
   mocks.getProvider.mockImplementation((id: string) => (id === 'google' ? { id: 'google' } : null));
   mocks.listSources.mockResolvedValue([
@@ -157,11 +233,6 @@ beforeEach(() => {
       'https://www.googleapis.com/auth/calendar.events',
       'https://www.googleapis.com/auth/contacts.readonly',
     ],
-  });
-  mocks.parseArchive.mockReturnValue({
-    documents: [{ source: 'gmail', kind: 'message', text: 'hello' }],
-    sources: ['gmail'],
-    warnings: [],
   });
   mocks.parsePlan.mockReturnValue({ frontmatter: { raw: { personalScopes: ['personal:gmail'] } } });
   mocks.sql.mockResolvedValue([
@@ -561,43 +632,94 @@ describe('Personal Vault owner routes', () => {
     });
   });
 
-  it('parses multipart archives locally and upserts through the vault store', async () => {
-    const form = new FormData();
-    form.set('file', new File(['mail'], 'takeout.mbox', { type: 'application/mbox' }));
+  it('streams a raw archive body into a durable background job', async () => {
     const response = await invoke(
       'POST',
       '/user/personal-vault/import',
-      new Request('http://localhost/user/personal-vault/import', { method: 'POST', body: form }),
+      new Request('http://localhost/user/personal-vault/import', {
+        method: 'POST',
+        headers: {
+          'content-length': '4',
+          'content-type': 'application/mbox',
+          'x-papercusp-filename': encodeURIComponent('takeout.mbox'),
+        },
+        body: 'mail',
+      }),
     );
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({ documents: 1, sources: ['gmail'] });
-    expect(mocks.parseArchive).toHaveBeenCalledWith('takeout.mbox', expect.any(Buffer));
-    expect(mocks.upsert).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', [
-      expect.objectContaining({ sourceId: null, providerAccountId: null }),
-    ]);
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      duplicate: false,
+      job: { id: IMPORT_ID, filename: 'takeout.mbox', status: 'queued' },
+    });
+    expect(mocks.reserveImport).toHaveBeenCalledWith(mocks.sql, {
+      workspaceId: 'ws-test',
+      userId: 'user-1',
+      filename: 'takeout.mbox',
+      declaredSizeBytes: 4,
+    });
+    expect(mocks.storeImport).toHaveBeenCalledWith(
+      mocks.sql,
+      expect.objectContaining({ filename: 'takeout.mbox' }),
+      expect.anything(),
+    );
+    expect(mocks.finalizeImport).toHaveBeenCalledWith(
+      mocks.sql,
+      expect.objectContaining({ filename: 'takeout.mbox' }),
+      expect.objectContaining({ sizeBytes: 4 }),
+      { contentType: 'application/mbox', sourceId: null, providerAccountId: null },
+    );
   });
 
-  it('binds an archive import to the server-owned source account', async () => {
-    const form = new FormData();
-    form.set('file', new File(['mail'], 'takeout.mbox', { type: 'application/mbox' }));
-    form.set('sourceId', SOURCE_ID);
+  it('reserves the fail-closed maximum for a body without Content-Length', async () => {
     const response = await invoke(
       'POST',
       '/user/personal-vault/import',
-      new Request('http://localhost/user/personal-vault/import', { method: 'POST', body: form }),
+      new Request('http://localhost/user/personal-vault/import', {
+        method: 'POST',
+        headers: { 'x-papercusp-filename': 'history.zip' },
+        body: 'mail',
+      }),
     );
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toMatchObject({
+    expect(response.status).toBe(202);
+    expect(mocks.reserveImport).toHaveBeenCalledWith(
+      mocks.sql,
+      expect.objectContaining({ declaredSizeBytes: null }),
+    );
+  });
+
+  it('binds a raw archive import to the server-owned source account', async () => {
+    mocks.finalizeImport.mockResolvedValueOnce(importJob({
       sourceId: SOURCE_ID,
       providerAccountId: 'owner@example.com',
+    }));
+    const response = await invoke(
+      'POST',
+      '/user/personal-vault/import',
+      new Request(`http://localhost/user/personal-vault/import?sourceId=${SOURCE_ID}`, {
+        method: 'POST',
+        headers: {
+          'content-length': '4',
+          'content-type': 'application/mbox',
+          'x-papercusp-filename': 'takeout.mbox',
+        },
+        body: 'mail',
+      }),
+    );
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      job: { sourceId: SOURCE_ID, providerAccountId: 'owner@example.com' },
     });
     expect(mocks.getSource).toHaveBeenCalledWith(mocks.sql, 'ws-test', SOURCE_ID);
-    expect(mocks.upsert).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', [
+    expect(mocks.finalizeImport).toHaveBeenCalledWith(
+      mocks.sql,
+      expect.anything(),
+      expect.anything(),
       expect.objectContaining({
         sourceId: SOURCE_ID,
         providerAccountId: 'owner@example.com',
       }),
-    ]);
+    );
   });
 
   it('refuses to import through a source owned by another user', async () => {
@@ -608,17 +730,76 @@ describe('Personal Vault owner routes', () => {
       ownerUserId: 'user-2',
       providerAccountId: 'other@example.com',
     });
-    const form = new FormData();
-    form.set('file', new File(['mail'], 'takeout.mbox', { type: 'application/mbox' }));
-    form.set('sourceId', SOURCE_ID);
     const response = await invoke(
       'POST',
       '/user/personal-vault/import',
-      new Request('http://localhost/user/personal-vault/import', { method: 'POST', body: form }),
+      new Request(`http://localhost/user/personal-vault/import?sourceId=${SOURCE_ID}`, {
+        method: 'POST',
+        headers: {
+          'content-length': '4',
+          'x-papercusp-filename': 'takeout.mbox',
+        },
+        body: 'mail',
+      }),
     );
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: 'personal_import_source_not_owned' });
-    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(mocks.reserveImport).not.toHaveBeenCalled();
+  });
+
+  it('removes a newly streamed duplicate after idempotent job finalization', async () => {
+    mocks.finalizeImport.mockResolvedValueOnce(importJob({ storagePath: '/tmp/personal-vault/original.archive' }));
+    const response = await invoke(
+      'POST',
+      '/user/personal-vault/import',
+      new Request('http://localhost/user/personal-vault/import', {
+        method: 'POST',
+        headers: {
+          'content-length': '4',
+          'x-papercusp-filename': 'takeout.mbox',
+        },
+        body: 'mail',
+      }),
+    );
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({ duplicate: true });
+    expect(mocks.removeImportArchive).toHaveBeenCalledWith(
+      'ws-test',
+      '/tmp/personal-vault/import.archive',
+    );
+  });
+
+  it('lists, cancels, and retries only the current owner import jobs', async () => {
+    const listed = await invoke(
+      'GET',
+      '/user/personal-vault/imports',
+      new Request('http://localhost/user/personal-vault/imports'),
+    );
+    await expect(listed.json()).resolves.toMatchObject({
+      ok: true,
+      jobs: [{ id: IMPORT_ID, status: 'queued' }],
+    });
+    expect(mocks.listImportJobs).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', 50);
+
+    const cancelled = await invoke(
+      'DELETE',
+      '/user/personal-vault/imports',
+      new Request(`http://localhost/user/personal-vault/imports?id=${IMPORT_ID}`, { method: 'DELETE' }),
+    );
+    await expect(cancelled.json()).resolves.toMatchObject({ job: { id: IMPORT_ID, status: 'cancelled' } });
+    expect(mocks.cancelImport).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', IMPORT_ID);
+
+    const retried = await invoke(
+      'POST',
+      '/user/personal-vault/imports/retry',
+      new Request('http://localhost/user/personal-vault/imports/retry', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ id: IMPORT_ID }),
+      }),
+    );
+    await expect(retried.json()).resolves.toMatchObject({ job: { id: IMPORT_ID, status: 'queued' } });
+    expect(mocks.retryImport).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', IMPORT_ID);
   });
 
   it('previews and approves only scopes declared by the plan template', async () => {
