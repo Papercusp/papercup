@@ -3,10 +3,12 @@
  * lint:no-ungated-mug-kettle — the RECURRENCE GUARD for the mug/kettle/cup retirement.
  * plan `retire-mug-kettle-su-only-2026-08-09` · P-016, seeded from P-005's census.
  *
- * WHAT IT FAILS ON: a NEW mug/kettle/cup entry point that is not behind the
- * MUG_KETTLE_SYSTEM gate. It is a RATCHET, not a retrofit demand — the existing
- * population is baselined, so this never asks anyone to go gate 200 pre-existing
- * sites; it asks that the NEXT one added be gated.
+ * WHAT IT FAILS ON:
+ *   1. a NEW mug/kettle/cup entry point that is not behind the MUG_KETTLE_SYSTEM
+ *      gate. This family is a shrink-only ratchet over a reviewed baseline.
+ *   2. CURRENT agentic template or su-prompt guidance that recommends Queen/Mug/
+ *      Kettle execution. This family has NO baseline: explicitly historical,
+ *      retirement, and refusal prose is allowed; active prescriptions are not.
  *
  * ── TWO DETECTOR FAMILIES, AND WHY THE SECOND ONE EXISTS ──────────────────────
  *
@@ -78,6 +80,10 @@ import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { writeStdoutSync } from './lib/write-stdout-sync.mjs';
 import { buildBaselineDocument, evaluateBaselineReseed } from './lib/mug-kettle-baseline.mjs';
 import { substrateRemediationLines } from './lib/mug-kettle-substrate.mjs';
+import {
+  collectActiveRetiredGuidance,
+  findRetiredGuidanceOffenders,
+} from './lib/retired-tier-guidance.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = path.join(REPO_ROOT, 'scripts', 'ungated-mug-kettle-baseline.json');
@@ -250,6 +256,33 @@ function collectCensus() {
 /** Line numbers drift under every unrelated edit, so they are NOT part of identity. */
 const keyOf = (f) => `${f.category}|${f.subject}|${f.file}`;
 
+function activeGuidanceFailed(result) {
+  return result.missingPaths.length > 0 || result.readErrors.length > 0 || result.offenders.length > 0;
+}
+
+function printActiveGuidanceFailures(result) {
+  if (result.missingPaths.length) {
+    console.error('\n✖ current-guidance guard lost required canonical path(s):');
+    for (const file of result.missingPaths) console.error(`  missing: ${file}`);
+  }
+  if (result.readErrors.length) {
+    console.error('\n✖ current-guidance guard could not read maintained source(s):');
+    for (const error of result.readErrors) console.error(`  ${error.file}: ${error.message}`);
+  }
+  if (result.offenders.length) {
+    console.error('\n✖ active agentic guidance recommends a retired Queen/Mug/Kettle executor:\n');
+    for (const finding of result.offenders) {
+      console.error(`  ${finding.file}:${finding.line}  [${finding.roles.join(', ')}]`);
+      console.error(`    ${finding.excerpt}`);
+    }
+    console.error(
+      '\nReplace the prescription with canonical plan promotion + actionable assignment + required wake.\n' +
+      'Historical text is allowed only when the same statement explicitly says retired, historical,\n' +
+      'replaced, or refuses the old mechanism. Plan records and retired prompt trees are not scanned.\n',
+    );
+  }
+}
+
 function loadBaseline() {
   if (!fs.existsSync(BASELINE_PATH)) return { keys: new Set(), raw: null };
   const raw = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
@@ -331,6 +364,7 @@ if (checkFile) {
 
   const CENSUS_FAMILIES = 'ui, tool, flag, spawn-role, prompt, wake, system-action, blueprint-launch';
   const roleDoor = inspectFile(abs, src);
+  const guidanceOffenders = findRetiredGuidanceOffenders(checkFile, src);
 
   if (roleDoor && roleDoor.gated) {
     console.log(`GATED  ${checkFile}:${roleDoor.line}  ${roleDoor.detail}`);
@@ -343,10 +377,19 @@ if (checkFile) {
     console.log(`no role-parameterized door detected in ${checkFile}`);
   }
 
+  if (guidanceOffenders.length) {
+    console.error(`\n✖ ${guidanceOffenders.length} retired-executor guidance finding(s) in ${checkFile}:`);
+    for (const finding of guidanceOffenders) {
+      console.error(`  ${finding.file}:${finding.line} [${finding.roles.join(', ')}] ${finding.excerpt}`);
+    }
+  } else {
+    console.log(`no current Queen/Mug/Kettle execution prescription detected in ${checkFile}`);
+  }
+
   let censusOffenders = [];
   if (!wantFull) {
     // NOT "nothing to gate". This is the whole fix: say what was not looked at.
-    console.log(`⚠ NOT A CLEAN BILL — only the role-door family was checked.`);
+    console.log(`⚠ NOT A CLEAN BILL — role-door + current-guidance were checked.`);
     console.log(`  NOT inspected here: ${CENSUS_FAMILIES}.`);
     console.log(`  Re-run with --full for those, or run the full guard (npm run lint:no-ungated-mug-kettle).`);
   } else {
@@ -367,13 +410,18 @@ if (checkFile) {
     }
   }
 
-  process.exit((roleDoor && !roleDoor.gated) || censusOffenders.length ? 1 : 0);
+  process.exit((roleDoor && !roleDoor.gated) || censusOffenders.length || guidanceOffenders.length ? 1 : 0);
 }
 
 const findings = [...collectCensus(), ...collectRoleDoors()];
 const roleDoors = findings.filter((f) => f.category === 'role-door');
+const activeGuidance = collectActiveRetiredGuidance(REPO_ROOT);
 
 if (has('--list')) {
+  if (activeGuidanceFailed(activeGuidance)) {
+    printActiveGuidanceFailures(activeGuidance);
+    process.exit(1);
+  }
   // The baseline is re-seeded from THIS, never from a hand-run grep (CLAUDE.md).
   // Written SYNCHRONOUSLY so `--list | …` cannot silently re-seed from a truncated set.
   writeStdoutSync(JSON.stringify({ entries: findings.map(keyOf).sort() }, null, 2));
@@ -387,6 +435,11 @@ const newlyGated = novel.filter((f) => f.gated);
 const stale = [...baseline].filter((k) => !findings.some((f) => keyOf(f) === k));
 
 if (has('--reseed')) {
+  if (activeGuidanceFailed(activeGuidance)) {
+    console.error('check-ungated-mug-kettle: refusing to reseed while current guidance is invalid.');
+    printActiveGuidanceFailures(activeGuidance);
+    process.exit(1);
+  }
   const evaluation = evaluateBaselineReseed({
     previousEntries: baselineRaw?.entries ?? [],
     currentEntries: findings.map(keyOf),
@@ -428,13 +481,16 @@ if (has('--json')) {
     roleDoorsUngated: roleDoors.filter((f) => !f.gated).map(keyOf),
     baselineSize: baseline.size,
     offenders, newlyGated, stale,
+    activeGuidance,
   }, null, 2));
-  process.exit(offenders.length ? 1 : 0);
+  process.exit(offenders.length || activeGuidanceFailed(activeGuidance) ? 1 : 0);
 }
 
 console.log(`mug/kettle entry points: ${findings.length} live+non-substrate ` +
   `(${roleDoors.length} role-parameterized door(s), ${roleDoors.filter((f) => f.gated).length} gated)`);
 console.log(`baseline: ${baseline.size} known${baselineRaw?.generatedAt ? ` (seeded ${baselineRaw.generatedAt})` : ''}`);
+console.log(`current guidance: ${activeGuidance.filesScanned} maintained file(s) scanned, ` +
+  `${activeGuidance.offenders.length} retired-executor prescription(s)`);
 
 if (newlyGated.length) {
   console.log(`\n${newlyGated.length} new entry point(s), correctly GATED — add to the baseline when convenient:`);
@@ -460,7 +516,13 @@ if (offenders.length) {
   console.error(`    if (isRetiredTierRole(role) && !(await mugKettleSystemEnabled())) return <refusal>;`);
   for (const line of substrateRemediationLines(offenders)) console.error(line);
   console.error(`Plan: retire-mug-kettle-su-only-2026-08-09 (D-017/D-018/D-019/D-020/D-021/D-022).`);
-  process.exitCode = 1;
 } else {
   console.log('\n✓ no new ungated mug/kettle entry points');
+}
+
+if (activeGuidanceFailed(activeGuidance)) {
+  printActiveGuidanceFailures(activeGuidance);
+  process.exitCode = 1;
+} else {
+  console.log('✓ active agentic template + su guidance names no retired executor as current');
 }
