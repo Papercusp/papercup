@@ -34,6 +34,7 @@ const fakeSql = ((_s: TemplateStringsArray, ..._v: unknown[]) =>
   Promise.resolve([])) as unknown as postgres.Sql;
 
 const OPTS = { workspaceId: 'ws', harnessSlug: 'hive-home', sql: fakeSql };
+const LOCAL_PROVENANCE = { authorPubkey: '', origin: 'local' as const };
 
 /** A roster row whose hive-home does NOT match the bound slug — the dropped case. */
 function row(over: Partial<HiveMemberRow> = {}): HiveMemberRow {
@@ -70,7 +71,7 @@ describe('EI-18771324701216281 — a cross-Hive roster drop warns by default, ra
   it('warns on the FIRST drop with NO env var set — the regression this fixes', async () => {
     delete process.env.PAPERCUSP_A003_TRACE;
     const p = buildHiveMembersProjection(OPTS);
-    await p.writeToPg(row(), undefined);
+    await p.writeToPg(row(), LOCAL_PROVENANCE);
 
     expect(warn).toHaveBeenCalledTimes(1);
     const msg = String(warn.mock.calls[0][0]);
@@ -83,31 +84,31 @@ describe('EI-18771324701216281 — a cross-Hive roster drop warns by default, ra
 
   it('RATE-LIMITED: a burst emits once, and the suppressed COUNT rides the next window', async () => {
     const p = buildHiveMembersProjection(OPTS);
-    for (let i = 0; i < 500; i++) await p.writeToPg(row(), undefined);
+    for (let i = 0; i < 500; i++) await p.writeToPg(row(), LOCAL_PROVENANCE);
     expect(warn).toHaveBeenCalledTimes(1); // 500 drops, 1 line — not an outage
 
     // Next window: one line, carrying the 499 it swallowed. The magnitude is not lost.
     nowMs += 90_000;
-    await p.writeToPg(row(), undefined);
+    await p.writeToPg(row(), LOCAL_PROVENANCE);
     expect(warn).toHaveBeenCalledTimes(2);
     expect(String(warn.mock.calls[1][0])).toContain('499 further drop(s) suppressed');
   });
 
   it('a DISTINCT mismatch is never masked by an already-throttled one', async () => {
     const p = buildHiveMembersProjection(OPTS);
-    await p.writeToPg(row(), undefined);
-    await p.writeToPg(row(), undefined); // suppressed
+    await p.writeToPg(row(), LOCAL_PROVENANCE);
+    await p.writeToPg(row(), LOCAL_PROVENANCE); // suppressed
     expect(warn).toHaveBeenCalledTimes(1);
 
     // A different hive-home is a different problem and gets its own immediate line.
-    await p.writeToPg(row({ pot_home_slug: 'third-hive' }), undefined);
+    await p.writeToPg(row({ pot_home_slug: 'third-hive' }), LOCAL_PROVENANCE);
     expect(warn).toHaveBeenCalledTimes(2);
     expect(String(warn.mock.calls[1][0])).toContain("'third-hive'");
   });
 
   it('a MATCHING row never warns — the warning tracks drops, not traffic', async () => {
     const p = buildHiveMembersProjection(OPTS);
-    await p.writeToPg(row({ pot_home_slug: 'hive-home' }), undefined);
+    await p.writeToPg(row({ pot_home_slug: 'hive-home' }), LOCAL_PROVENANCE);
     expect(warn).not.toHaveBeenCalled();
   });
 
@@ -115,12 +116,12 @@ describe('EI-18771324701216281 — a cross-Hive roster drop warns by default, ra
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const p = buildHiveMembersProjection(OPTS);
-      await p.writeToPg(row(), undefined);
+      await p.writeToPg(row(), LOCAL_PROVENANCE);
       expect(err).not.toHaveBeenCalled(); // env var unset ⇒ no trace…
       expect(warn).toHaveBeenCalledTimes(1); // …but the warning still fired
 
       process.env.PAPERCUSP_A003_TRACE = '1';
-      await p.writeToPg(row(), undefined);
+      await p.writeToPg(row(), LOCAL_PROVENANCE);
       expect(err).toHaveBeenCalledTimes(1); // trace is per-op, deliberately un-throttled
       expect(warn).toHaveBeenCalledTimes(1); // warning still throttled in-window
     } finally {

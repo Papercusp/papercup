@@ -49,6 +49,7 @@ const devicePubkey = deviceKp.pubkeyBase64;
 const otherKp = generateEd25519KeypairDer();
 
 const opts: WorkOffersProjectionOpts = { workspaceId: WS, harnessSlug: HIVE };
+const LOCAL_PROVENANCE = { authorPubkey: '', origin: 'local' as const };
 
 /** A row whose record_json + signature are genuinely consistent, signed by `kp`. */
 function signedRow(
@@ -220,7 +221,7 @@ describe('writeToPg gate (TEETH) + demux + disposition invariant + delete', () =
     const gated = buildWorkOffersProjection({
       ...opts, sql: closed.sql, onDroppedOffer: (reason) => dropped.push(reason),
     });
-    await gated.writeToPg(forged, undefined);
+    await gated.writeToPg(forged, LOCAL_PROVENANCE);
     expect(closed.calls.length).toBe(0);
     expect(dropped).toEqual(['signer_unattested']); // no member resolvable at all here
 
@@ -229,7 +230,7 @@ describe('writeToPg gate (TEETH) + demux + disposition invariant + delete', () =
     const neutered = buildWorkOffersProjection({
       ...opts, sql: open.sql, verifyRecord: async () => true,
     });
-    await neutered.writeToPg(forged, undefined);
+    await neutered.writeToPg(forged, LOCAL_PROVENANCE);
     expect(open.calls.length).toBe(1);
     expect(open.calls[0]!.text).toMatch(/INSERT INTO harness_shared\.p2p_work_offers/);
     expect(open.calls[0]!.text).toMatch(/fed_order_key/); // the LWW guard is in the statement
@@ -238,7 +239,7 @@ describe('writeToPg gate (TEETH) + demux + disposition invariant + delete', () =
   it('the upsert NEVER touches local_disposition (a remote refresh cannot clear a host refusal)', async () => {
     const { sql, calls } = fakeTemplateSql();
     const p = buildWorkOffersProjection({ ...opts, sql, verifyRecord: async () => true });
-    await p.writeToPg(signedRow(), undefined);
+    await p.writeToPg(signedRow(), LOCAL_PROVENANCE);
     expect(calls.length).toBe(1);
     // The column may appear in comments; assert it is never ASSIGNED.
     expect(calls[0]!.text).not.toMatch(/local_disposition\s*=/);
@@ -251,7 +252,7 @@ describe('writeToPg gate (TEETH) + demux + disposition invariant + delete', () =
       ...opts, sql, verifyRecord: async () => true,
       onDroppedOffer: (reason) => dropped.push(reason),
     });
-    await p.writeToPg(signedRow({}, { harness_slug: 'some-other-hive' }), undefined);
+    await p.writeToPg(signedRow({}, { harness_slug: 'some-other-hive' }), LOCAL_PROVENANCE);
     expect(calls.length).toBe(0);
     // EI-18746869686083430: the demux drop is REPORTED now (it was a bare return —
     // the one path on which an inbound offer vanished with no trace at all).
@@ -266,7 +267,7 @@ describe('writeToPg gate (TEETH) + demux + disposition invariant + delete', () =
     try {
       const { sql, calls } = fakeAppliedSql(1);
       const p = buildWorkOffersProjection({ ...opts, sql, verifyRecord: async () => true });
-      await p.writeToPg(signedRow({}, { harness_slug: 'some-other-hive' }), undefined);
+      await p.writeToPg(signedRow({}, { harness_slug: 'some-other-hive' }), LOCAL_PROVENANCE);
       await new Promise((resolve) => setTimeout(resolve, 0)); // fire-and-forget bump
       expect(calls.filter((c) => /INSERT INTO harness_shared\.p2p_work_offers/.test(c.text)).length).toBe(0);
       const counter = calls.find((c) => /p2p_refused_op_counters/.test(c.text));
@@ -382,7 +383,7 @@ describe('P-009 spawn-request honor hook (WI-1940 pattern)', () => {
   it('does NOT fire for local origin / a seat row / an LWW-skipped upsert', async () => {
     const applied = fakeAppliedSql(1);
     const p1 = buildWorkOffersProjection({ ...opts, sql: applied.sql, verifyRecord: async () => true });
-    await p1.writeToPg(signedRow(spawnReqOver), undefined); // origin defaults 'local'
+    await p1.writeToPg(signedRow(spawnReqOver), LOCAL_PROVENANCE);
     await p1.writeToPg(signedRow(), { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'h' } as never); // kind seat
     const skipped = fakeAppliedSql(0); // LWW guard filtered the upsert
     const dropped: string[] = [];
@@ -418,7 +419,7 @@ describe('P-009 spawn-request honor hook (WI-1940 pattern)', () => {
       ...opts, sql, verifyRecord: async () => false,
       onDroppedOffer: (reason) => dropped.push(reason),
     });
-    await p.writeToPg(signedRow(), undefined);
+    await p.writeToPg(signedRow(), LOCAL_PROVENANCE);
     expect(calls.length).toBe(0);
     expect(dropped).toEqual(['unspecified']);
   });

@@ -46,6 +46,7 @@ const hiveKp = generateEd25519KeypairDer();
 const hivePubkey = hiveKp.pubkeyBase64;
 
 const opts: FleetDirectoryProjectionOpts = { workspaceId: WS, harnessSlug: HIVE };
+const LOCAL_PROVENANCE = { authorPubkey: '', origin: 'local' as const };
 
 /** A row whose record_json + signature are genuinely consistent, signed by `kp`. */
 function signedRow(
@@ -175,7 +176,7 @@ describe('writeToPg gate (TEETH) + demux + delete', () => {
     // Default gate (no attestation resolvable) ⇒ no write.
     const closed = fakeTemplateSql();
     const gated = buildFleetDirectoryProjection({ ...opts, sql: closed.sql });
-    await gated.writeToPg(forged, undefined);
+    await gated.writeToPg(forged, LOCAL_PROVENANCE);
     expect(closed.calls.length).toBe(0);
 
     // Neutered gate ⇒ the SAME forged row applies — the verifier is load-bearing.
@@ -183,7 +184,7 @@ describe('writeToPg gate (TEETH) + demux + delete', () => {
     const neutered = buildFleetDirectoryProjection({
       ...opts, sql: open.sql, verifyRecord: async () => true,
     });
-    await neutered.writeToPg(forged, undefined);
+    await neutered.writeToPg(forged, LOCAL_PROVENANCE);
     expect(open.calls.length).toBe(1);
     expect(open.calls[0]!.text).toMatch(/INSERT INTO harness_shared\.p2p_fleet_directory/);
     expect(open.calls[0]!.text).toMatch(/fed_order_key/); // the LWW guard is in the statement
@@ -192,7 +193,7 @@ describe('writeToPg gate (TEETH) + demux + delete', () => {
   it('demuxes on the hive-home slug even with a neutered verifier', async () => {
     const { sql, calls } = fakeTemplateSql();
     const p = buildFleetDirectoryProjection({ ...opts, sql, verifyRecord: async () => true });
-    await p.writeToPg(signedRow({}, { harness_slug: 'some-other-hive' }), undefined);
+    await p.writeToPg(signedRow({}, { harness_slug: 'some-other-hive' }), LOCAL_PROVENANCE);
     expect(calls.length).toBe(0);
   });
 
