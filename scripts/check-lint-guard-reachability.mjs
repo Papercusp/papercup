@@ -1255,6 +1255,10 @@ function runModuleReachability({ files, workspaceDirByName }) {
   return {
     measurable: true,
     reason: null,
+    // Every row, not only the dead ones: "which files keep this module alive" is the
+    // first question anyone auditing a verdict here asks, and recomputing the graph to
+    // answer it is how a reader ends up trusting the headline instead of checking it.
+    rows: result.rows,
     population: population.length,
     resolvedEdges: graph.resolvedEdges,
     unresolvedRelativeCount: health.unresolvedRelativeCount,
@@ -1369,6 +1373,10 @@ function main() {
       : null,
   });
 
+  // The module axis rides in the SAME machine-readable report. Two separate reports
+  // would let a consumer read one and believe it had read the census.
+  census.modules = moduleAxis;
+
   if (json) {
     console.log(JSON.stringify(census, null, 2));
     if (censusOnly) {
@@ -1407,6 +1415,24 @@ function main() {
       console.log(`\nCOVERAGE NOT MEASURED (${census.coverageUnmeasured.length}) — enforced; scan shape not comparable:`);
       for (const r of census.coverageUnmeasured) {
         console.log(`  ${r.name}  —  ${r.coverage.reason}`);
+      }
+    }
+    if (!json) {
+      if (!moduleAxis.measurable) {
+        console.log(`\nMODULE AXIS NOT MEASURED — ${moduleAxis.reason}`);
+      } else {
+        console.log(
+          `\nDETECTOR MODULES CALLED BY NOTHING (${moduleAxis.dead.length} of ${moduleAxis.population}) —` +
+            ' built, often tested, on no production path:',
+        );
+        for (const r of moduleAxis.dead) {
+          const why = r.testedButUnwired
+            ? `TESTED-BUT-UNWIRED (${r.testImporters.length} test${r.testImporters.length === 1 ? '' : 's'})`
+            : 'no test, no caller';
+          const ack = ACKNOWLEDGED_UNREACHABLE_MODULES.get(r.module);
+          console.log(`  [${why}] ${r.module}`);
+          if (ack) console.log(`      acknowledged: ${ack}`);
+        }
       }
     }
     // Let Node drain any output written above before ending. `process.exit()` can
@@ -1527,6 +1553,53 @@ function main() {
     console.error('   This set is SHRINK-ONLY. Wire or retire a guard instead of appending here.');
   }
 
+  // ── MODULE AXIS verdicts ────────────────────────────────────────────────────
+  if (!moduleAxis.measurable) {
+    // Fail OPEN and say so. See runModuleReachability's header: an unmeasurable graph
+    // is an instrument fault, and red-pinning the fleet on one teaches everybody to
+    // distrust this leg.
+    console.warn(`⚠ module axis SKIPPED: ${moduleAxis.reason}.\n  Reporting the script axis only.`);
+  } else {
+    if (moduleAxis.unacknowledged.length) {
+      failed = true;
+      console.error(
+        `\n❌ ${moduleAxis.unacknowledged.length} detector module(s) under lib/release/ are called by NO production path:`,
+      );
+      for (const r of moduleAxis.unacknowledged) {
+        console.error(`     ${r.module}`);
+        if (r.testedButUnwired) {
+          console.error(
+            `       ⚠ ${r.testImporters.length} passing test${r.testImporters.length === 1 ? '' : 's'} import it — it LOOKS covered and enforces nothing.`,
+          );
+        }
+        if (r.productionImporters.length) {
+          console.error(
+            `       reached only from module(s) that are themselves dead: ${r.productionImporters.slice(0, 3).join(', ')}`,
+          );
+        }
+      }
+      console.error('   WIRE it (call it from a blocking path) or DELETE it. A unit test is not a caller,');
+      console.error('   and a plan code-truth citation proves the code EXISTS, never that anything RUNS it.');
+    }
+
+    if (moduleAxis.staleAcknowledged.length) {
+      failed = true;
+      console.error(
+        `\n❌ ${moduleAxis.staleAcknowledged.length} STALE acknowledged-unreachable module entr(ies) — now wired or deleted:`,
+      );
+      for (const m of moduleAxis.staleAcknowledged) console.error(`     ${m}`);
+      console.error('   Remove them; the ratchet only counts if a paid-down entry leaves the set.');
+    }
+
+    if (ACKNOWLEDGED_UNREACHABLE_MODULES.size > UNREACHABLE_MODULES_HIGH_WATERMARK) {
+      failed = true;
+      console.error(
+        `\n❌ acknowledged-unreachable-modules set exceeds its watermark: ${ACKNOWLEDGED_UNREACHABLE_MODULES.size} > ${UNREACHABLE_MODULES_HIGH_WATERMARK}.`,
+      );
+      console.error('   This set is SHRINK-ONLY. Wire or delete the module instead of appending here.');
+    }
+  }
+
   if (failed) {
     // The JSON report was written before the diagnostics. Preserve the failure
     // status without aborting the asynchronous stdout write (EI-19455452259628697).
@@ -1572,6 +1645,19 @@ function main() {
       '  ⚠ ENFORCED = a blocking path RUNS it, never that it runs BEFORE the damage. Hosts that\n' +
         '    bundle the WORKING TREE (:3170, bg-host) are past every commit-time guard by construction.',
     );
+    // The module debt goes in the PASS line for the same reason the script debt does: a
+    // green that reads "guards are enforced" while 21 detector modules run nowhere is
+    // exactly the quotable-green this file exists to stop.
+    if (!moduleAxis.measurable) {
+      console.log(`  ⚠ module axis NOT MEASURED — ${moduleAxis.reason}.`);
+    } else {
+      const tested = moduleAxis.dead.filter((r) => r.testedButUnwired).length;
+      console.log(
+        `  ⚠ separately, ${moduleAxis.dead.length}/${moduleAxis.population} lib/release detector MODULES are called by no ` +
+          `production path (${tested} of them tested, so they read as covered)\n` +
+          `    — acknowledged, ceiling ${UNREACHABLE_MODULES_HIGH_WATERMARK}, shrink-only. \`--census\` lists each one.`,
+      );
+    }
   }
   // Keep the JSON path machine-readable and let Node drain it before the process ends.
   process.exitCode = 0;
