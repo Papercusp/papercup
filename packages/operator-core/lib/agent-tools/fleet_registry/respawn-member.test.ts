@@ -202,6 +202,55 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(result).toMatchObject({ verified: true, newMemberOwnerId: 'su-respawn-b' });
   });
 
+  it('keeps concurrent respawn responses attributed to their own pre-pinned replacement', async () => {
+    const members = ['old-member-a', 'old-member-b'];
+    const launchKeys = ['respawn-key-a', 'respawn-key-b'];
+    let rosterReads = 0;
+
+    resolveFleetMemberTarget.mockImplementation(async (_ctx: unknown, member: string) => ({
+      ok: true,
+      callerId: LEADER,
+      workspaceId: 'ws',
+      identity: { ownerId: LEADER },
+      slug: SLUG,
+      fleet: { fleetSlug: SLUG, leaderOwnerId: LEADER },
+      memberOwnerId: member,
+      memberRole: 'member',
+      invokedAs: 'leader',
+    }));
+    listFleetPresence.mockImplementation(async () => {
+      rosterReads += 1;
+      if (rosterReads <= members.length) return [row(LEADER), ...members.map((member) => row(member))];
+      const launchedOwners = launchHandler.mock.calls.map((call, index) => {
+        const launchArgs = call[0] as { __respawnOwnerId?: string };
+        // The fallback names model the pre-fix launch path, which minted both
+        // identities inside bootstrap and gave the verifier no correlation key.
+        return launchArgs.__respawnOwnerId ?? `su-replacement-${index + 1}`;
+      });
+      return [row(LEADER), ...launchedOwners.map((owner) => row(owner))];
+    });
+
+    const responses = await Promise.all(
+      members.map((member, index) =>
+        tool.handler(
+          { member, model: 'opus[1m]', idempotencyKey: launchKeys[index], verifySec: 1 } as never,
+          {} as never,
+        ),
+      ),
+    );
+    const payloads = responses.map(parse);
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toMatchObject({ ok: true, oldMember: members[0], verified: true });
+    expect(payloads[1]).toMatchObject({ ok: true, oldMember: members[1], verified: true });
+    expect(payloads[0].replacementOwner).not.toBe(payloads[1].replacementOwner);
+    expect(payloads[0].newMember).toBe(payloads[0].replacementOwner);
+    expect(payloads[1].newMember).toBe(payloads[1].replacementOwner);
+    expect(launchHandler.mock.calls.map((call) => (call[0] as { __respawnOwnerId?: string }).__respawnOwnerId)).toEqual(
+      expect.arrayContaining(payloads.map((payload) => payload.replacementOwner)),
+    );
+  });
+
   it('uses the audited respawn door to correct a saved visible member to headless while preserving the rest of its profile', async () => {
     resolveSavedFleetLaunchSpec.mockResolvedValueOnce({
       ok: true,
