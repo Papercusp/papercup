@@ -60,6 +60,69 @@ dependency_generation_input_fingerprint() {
   } | dependency_generation_sha256
 }
 
+# Derive the same cheap dependency-input key from an immutable Git commit without
+# materialising a checkout. Only lockfiles participate in the key, so walk those
+# blobs directly and recurse through the commit's recorded submodule gitlinks.
+# This is the producer-side seam used before the checkpoint run-lock: a moving
+# integration worktree can publish only when its live lockfiles are compatible
+# with the exact candidate fingerprint.
+dependency_generation_input_manifest_ref() {
+  local root="$1" ref="$2" prefix="${3:-}"
+  local record metadata mode type object rel digest submodule_path submodule_object
+  while IFS= read -r -d '' record; do
+    metadata="${record%%$'\t'*}"
+    rel="${record#*$'\t'}"
+    read -r mode type object <<< "$metadata"
+    [ "$type" = 'blob' ] || continue
+    case "$rel" in
+      package-lock.json|*/package-lock.json|npm-shrinkwrap.json|*/npm-shrinkwrap.json) ;;
+      *) continue ;;
+    esac
+    case "$rel" in
+      .papercusp/*|*/.papercusp/*|node_modules/*|*/node_modules/*) continue ;;
+    esac
+    digest="$(git -C "$root" cat-file blob "$object" | dependency_generation_sha256)" || return 1
+    printf '%s\t%s\n' "${prefix}${rel}" "$digest"
+  done < <(git -C "$root" ls-tree -r -z "$ref")
+
+  while IFS= read -r submodule_path; do
+    [ -n "$submodule_path" ] || continue
+    submodule_object="$(
+      git -C "$root" ls-tree "$ref" -- "$submodule_path" \
+        | awk '$1 == "160000" && $2 == "commit" { print $3; exit }'
+    )"
+    [ -n "$submodule_object" ] || {
+      dependency_generation_log \
+        "FATAL: exact dependency-input ref $ref has no gitlink for submodule $submodule_path"
+      return 74
+    }
+    [ -d "$root/$submodule_path" ] \
+      && git -C "$root/$submodule_path" cat-file -e "$submodule_object^{commit}" 2>/dev/null || {
+        dependency_generation_log \
+          "FATAL: exact dependency-input ref $ref requires unavailable submodule $submodule_path@$submodule_object"
+        return 74
+      }
+    dependency_generation_input_manifest_ref \
+      "$root/$submodule_path" "$submodule_object" "${prefix}${submodule_path}/" || return $?
+  done < <(
+    git -C "$root" config --blob "$ref:.gitmodules" --get-regexp '\.path$' 2>/dev/null \
+      | awk '{ print $2 }'
+  )
+}
+
+dependency_generation_input_fingerprint_ref() {
+  local root="$1" ref="$2" manifest
+  ref="$(git -C "$root" rev-parse --verify "$ref^{commit}" 2>/dev/null)" || {
+    dependency_generation_log "FATAL: dependency-input ref is not a commit: $ref"
+    return 74
+  }
+  manifest="$(dependency_generation_input_manifest_ref "$root" "$ref" | LC_ALL=C sort)" || return $?
+  {
+    printf 'schema\t1\n'
+    [ -z "$manifest" ] || printf '%s\n' "$manifest"
+  } | dependency_generation_sha256
+}
+
 dependency_generation_device() {
   local path="$1" parent
   while [ ! -e "$path" ]; do
@@ -418,10 +481,9 @@ dependency_generation_publish_input_selector() {
     "indexed prewarmed dependency inputs $input_fingerprint as $DEPENDENCY_GENERATION_ID"
 }
 
-dependency_generation_select_inputs() {
-  local input_root="$1" generation_root="$2"
-  local input_fingerprint selector schema recorded_input identity token
-  input_fingerprint="$(dependency_generation_input_fingerprint "$input_root")" || return 1
+dependency_generation_select_input_fingerprint() {
+  local input_fingerprint="$1" generation_root="$2"
+  local selector schema recorded_input identity token
   selector="$generation_root/.inputs/$input_fingerprint"
   if [ ! -f "$selector" ]; then
     dependency_generation_log \
@@ -438,6 +500,12 @@ dependency_generation_select_inputs() {
   fi
   dependency_generation_select_prevalidated "$generation_root" "$identity" "$token" || return $?
   DEPENDENCY_GENERATION_INPUT_FINGERPRINT="$input_fingerprint"
+}
+
+dependency_generation_select_inputs() {
+  local input_root="$1" generation_root="$2" input_fingerprint
+  input_fingerprint="$(dependency_generation_input_fingerprint "$input_root")" || return 1
+  dependency_generation_select_input_fingerprint "$input_fingerprint" "$generation_root"
 }
 
 dependency_generation_marker_matches() {
@@ -1018,8 +1086,8 @@ dependency_generation_ensure() {
 }
 
 dependency_generation_main() {
-  local integration_root='' generation_root='' select_inputs_from='' retention_rc=0
-  local input_before='' input_after=''
+  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' retention_rc=0
+  local input_before='' input_after='' exact_input='' selector=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1027,6 +1095,7 @@ dependency_generation_main() {
       --generation-root) generation_root="$2"; shift 2 ;;
       --workspace-dir) workspace_dirs+=("$2"); shift 2 ;;
       --select-inputs-from) select_inputs_from="$2"; shift 2 ;;
+      --ensure-ref) ensure_ref="$2"; shift 2 ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done
@@ -1036,6 +1105,10 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   generation_root="${generation_root:-$integration_root/.papercusp/dependency-generations}"
+  if [ -n "$select_inputs_from" ] && [ -n "$ensure_ref" ]; then
+    dependency_generation_log '--select-inputs-from and --ensure-ref are mutually exclusive'
+    return 2
+  fi
   if [ -n "$select_inputs_from" ]; then
     [ "${#workspace_dirs[@]}" -eq 0 ] || {
       dependency_generation_log '--select-inputs-from cannot publish a workspace-scoped generation'
@@ -1048,6 +1121,33 @@ dependency_generation_main() {
       "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" \
       "$DEPENDENCY_GENERATION_PATH"
     return 0
+  fi
+  if [ -n "$ensure_ref" ]; then
+    [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--ensure-ref cannot publish a workspace-scoped generation'
+      return 2
+    }
+    ensure_ref="$(git -C "$integration_root" rev-parse --verify "$ensure_ref^{commit}" 2>/dev/null)" || {
+      dependency_generation_log "FATAL: --ensure-ref is not a commit: $ensure_ref"
+      return 74
+    }
+    exact_input="$(
+      dependency_generation_input_fingerprint_ref "$integration_root" "$ensure_ref"
+    )" || return $?
+    selector="$generation_root/.inputs/$exact_input"
+    if [ -f "$selector" ]; then
+      # An existing selector must validate as-is. Token/marker drift is corruption,
+      # not a cache miss to hide by republishing a replacement.
+      dependency_generation_select_input_fingerprint \
+        "$exact_input" "$generation_root" || return $?
+      printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s scope=full reused=true token=%s path=%s\n' \
+        "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
+        "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" "$DEPENDENCY_GENERATION_TOKEN" \
+        "$DEPENDENCY_GENERATION_PATH"
+      return 0
+    fi
+    dependency_generation_log \
+      "exact ref $ensure_ref has unseen dependency inputs $exact_input; prewarming before checkpoint serialization"
   fi
   dependency_generation_configure_workspace_dirs \
     "$integration_root" "${workspace_dirs[@]}" || return $?
@@ -1079,6 +1179,12 @@ dependency_generation_main() {
     return "$retention_rc"
   }
   dependency_generation_release_selector_lease
+  if [ -n "$ensure_ref" ]; then
+    # Publication indexed the LIVE integration inputs. Re-open by the exact
+    # candidate key so incompatible live/candidate inputs remain a typed miss.
+    dependency_generation_select_input_fingerprint \
+      "$exact_input" "$generation_root" || return $?
+  fi
   printf 'DEPENDENCY_GENERATION_RESULT schema=1 identity=%s source=%s input=%s closure=%s scope=%s reused=%s token=%s path=%s\n' \
     "$DEPENDENCY_GENERATION_ID" "$DEPENDENCY_GENERATION_SOURCE_FINGERPRINT" \
     "$DEPENDENCY_GENERATION_INPUT_FINGERPRINT" \
