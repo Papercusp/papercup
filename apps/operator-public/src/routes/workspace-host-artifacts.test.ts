@@ -17,6 +17,7 @@ import type { Env } from '../env.ts';
 import { buildApi } from './index.ts';
 import {
   WORKSPACE_HOST_ARTIFACT_PREFIX,
+  WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES,
   WORKSPACE_HOST_PUBLIC_CACHE_CONTROL,
 } from './workspace-host-artifacts.ts';
 
@@ -42,8 +43,9 @@ afterEach(() => {
 
 async function fixture(
   mutate?: (manifest: Record<string, unknown>) => void,
+  bundleOverride?: Uint8Array,
 ): Promise<Fixture> {
-  const bundle = new TextEncoder().encode('verified workspace-host server bundle');
+  const bundle = bundleOverride ?? new TextEncoder().encode('verified workspace-host server bundle');
   const signature = new TextEncoder().encode('untrusted comment: signature\nRWSignedBundle');
   const signingPublicKey = 'untrusted comment: Papercusp workspace-host release key\nRWQpublickey';
   const [bundleSha256, signatureSha256, signingKeySha256] = await Promise.all([
@@ -230,6 +232,97 @@ async function upload(
   );
 }
 
+interface MultipartPlanPart {
+  partNumber: number;
+  sha256: string;
+  sizeBytes: number;
+}
+
+interface UploadedMultipartPart {
+  partNumber: number;
+  etag: string;
+}
+
+async function initiateMultipart(
+  env: Env,
+  bundleSha256: string,
+  sizeBytes: number,
+  parts: MultipartPlanPart[],
+): Promise<Response> {
+  return api.request(
+    `/admin/artifacts/workspace-host/sha256/${bundleSha256}/server.tgz/multipart`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer github-token',
+        'content-type': 'application/json',
+        'x-artifact-sha256': bundleSha256,
+        'x-artifact-size': String(sizeBytes),
+      },
+      body: JSON.stringify({ parts }),
+    },
+    env,
+  );
+}
+
+async function uploadMultipartPart(
+  env: Env,
+  bundleSha256: string,
+  uploadId: string,
+  partNumber: number,
+  bytes: Uint8Array,
+  declaredSha256: string,
+): Promise<Response> {
+  const body = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return api.request(
+    `/admin/artifacts/workspace-host/sha256/${bundleSha256}/server.tgz/multipart/parts/${partNumber}?uploadId=${encodeURIComponent(uploadId)}`,
+    {
+      method: 'PUT',
+      headers: {
+        authorization: 'Bearer github-token',
+        'content-type': 'application/octet-stream',
+        'content-length': String(bytes.byteLength),
+        'x-part-sha256': declaredSha256,
+        'x-part-size': String(bytes.byteLength),
+      },
+      body,
+    },
+    env,
+  );
+}
+
+async function completeMultipart(
+  env: Env,
+  bundleSha256: string,
+  uploadId: string,
+  parts: UploadedMultipartPart[],
+): Promise<Response> {
+  return api.request(
+    `/admin/artifacts/workspace-host/sha256/${bundleSha256}/server.tgz/multipart/complete?uploadId=${encodeURIComponent(uploadId)}`,
+    {
+      method: 'POST',
+      headers: {
+        authorization: 'Bearer github-token',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ parts }),
+    },
+    env,
+  );
+}
+
+async function abortMultipart(
+  env: Env,
+  bundleSha256: string,
+  uploadId: string,
+): Promise<Response> {
+  return api.request(
+    `/admin/artifacts/workspace-host/sha256/${bundleSha256}/server.tgz/multipart?uploadId=${encodeURIComponent(uploadId)}`,
+    { method: 'DELETE', headers: { authorization: 'Bearer github-token' } },
+    env,
+  );
+}
+
 async function uploadFixture(env: Env, value: Fixture): Promise<Response[]> {
   return Promise.all([
     upload(env, value.bundleSha256, 'server.tgz', value.bundle, value.bundleSha256),
@@ -300,6 +393,235 @@ describe('workspace-host artifact publication', () => {
       env,
     );
     expect(hidden.status).toBe(404);
+  });
+
+  it('redirects oversized direct uploads to multipart and rejects an invalid bounded part plan', async () => {
+    const bundleSha256 = 'a'.repeat(64);
+    const { env } = authedEnv();
+    const oversized = await api.request(
+      `/admin/artifacts/workspace-host/sha256/${bundleSha256}/server.tgz`,
+      {
+        method: 'PUT',
+        headers: {
+          authorization: 'Bearer github-token',
+          'content-length': '1',
+          'x-artifact-sha256': bundleSha256,
+          'x-artifact-size': String(64 * 1024 * 1024 + 1),
+        },
+        body: new Uint8Array([1]),
+      },
+      env,
+    );
+    expect(oversized.status).toBe(413);
+    expect(await oversized.json()).toMatchObject({
+      error: 'artifact_too_large',
+      multipart: { maxPartBytes: WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES },
+    });
+
+    const invalidPlan = await initiateMultipart(
+      env,
+      bundleSha256,
+      10 * 1024 * 1024 + 1,
+      [
+        { partNumber: 1, sha256: 'b'.repeat(64), sizeBytes: 5 * 1024 * 1024 },
+        { partNumber: 2, sha256: 'c'.repeat(64), sizeBytes: 5 * 1024 * 1024 + 1 },
+      ],
+    );
+    expect(invalidPlan.status).toBe(400);
+    expect(await invalidPlan.json()).toMatchObject({
+      error: 'invalid_multipart_plan',
+      errors: ['the final multipart part cannot exceed the regular part size'],
+    });
+  });
+
+  it('uploads a bounded multipart bundle with verified replay, incomplete, conflict, and finalize behavior', async () => {
+    const regularPartBytes = 5 * 1024 * 1024;
+    const firstPart = new Uint8Array(regularPartBytes).fill(0x61);
+    const finalPart = new TextEncoder().encode('final multipart bytes');
+    const bundle = new Uint8Array(firstPart.byteLength + finalPart.byteLength);
+    bundle.set(firstPart, 0);
+    bundle.set(finalPart, firstPart.byteLength);
+    const value = await fixture(undefined, bundle);
+    const parts: MultipartPlanPart[] = [
+      {
+        partNumber: 1,
+        sha256: await sha256Hex(firstPart),
+        sizeBytes: firstPart.byteLength,
+      },
+      {
+        partNumber: 2,
+        sha256: await sha256Hex(finalPart),
+        sizeBytes: finalPart.byteLength,
+      },
+    ];
+    const { env, r2 } = authedEnv();
+
+    const initiated = await initiateMultipart(
+      env,
+      value.bundleSha256,
+      bundle.byteLength,
+      parts,
+    );
+    expect(initiated.status).toBe(201);
+    const initiatedBody = await initiated.json() as {
+      uploadId: string;
+      partCount: number;
+      partSizeBytes: number;
+      maxPartBytes: number;
+      deduped: boolean;
+    };
+    expect(initiatedBody).toMatchObject({
+      partCount: 2,
+      partSizeBytes: regularPartBytes,
+      maxPartBytes: WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES,
+      deduped: false,
+    });
+    expect(r2.multipartUploads.size).toBe(1);
+
+    const rejectedPart = await uploadMultipartPart(
+      env,
+      value.bundleSha256,
+      initiatedBody.uploadId,
+      1,
+      firstPart,
+      '0'.repeat(64),
+    );
+    expect(rejectedPart.status).toBe(400);
+    expect(await rejectedPart.json()).toMatchObject({ error: 'multipart_part_digest_mismatch' });
+
+    const firstUpload = await uploadMultipartPart(
+      env,
+      value.bundleSha256,
+      initiatedBody.uploadId,
+      1,
+      firstPart,
+      parts[0].sha256,
+    );
+    expect(firstUpload.status).toBe(200);
+    const firstUploadBody = await firstUpload.json() as UploadedMultipartPart;
+    const firstUploaded: UploadedMultipartPart = {
+      partNumber: firstUploadBody.partNumber,
+      etag: firstUploadBody.etag,
+    };
+    const firstReplay = await uploadMultipartPart(
+      env,
+      value.bundleSha256,
+      initiatedBody.uploadId,
+      1,
+      firstPart,
+      parts[0].sha256,
+    );
+    expect(firstReplay.status).toBe(200);
+    expect(await firstReplay.json()).toMatchObject({ etag: firstUploaded.etag });
+
+    const incomplete = await completeMultipart(
+      env,
+      value.bundleSha256,
+      initiatedBody.uploadId,
+      [firstUploaded, { partNumber: 2, etag: 'missing-part' }],
+    );
+    expect(incomplete.status).toBe(409);
+    expect(await incomplete.json()).toMatchObject({ error: 'multipart_upload_incomplete' });
+
+    const finalUpload = await uploadMultipartPart(
+      env,
+      value.bundleSha256,
+      initiatedBody.uploadId,
+      2,
+      finalPart,
+      parts[1].sha256,
+    );
+    expect(finalUpload.status).toBe(200);
+    const finalUploadBody = await finalUpload.json() as UploadedMultipartPart;
+    const finalUploaded: UploadedMultipartPart = {
+      partNumber: finalUploadBody.partNumber,
+      etag: finalUploadBody.etag,
+    };
+
+    const completed = await completeMultipart(
+      env,
+      value.bundleSha256,
+      initiatedBody.uploadId,
+      [firstUploaded, finalUploaded],
+    );
+    expect(completed.status).toBe(201);
+    expect(await completed.json()).toMatchObject({ deduped: false, bytes: bundle.byteLength });
+    expect(r2.multipartUploads.size).toBe(0);
+    const bundleKey = `${WORKSPACE_HOST_ARTIFACT_PREFIX}/${value.bundleSha256}/server.tgz`;
+    const storedBundle = r2.data.get(bundleKey)!;
+    expect(storedBundle.byteLength).toBe(bundle.byteLength);
+    expect(await sha256Hex(storedBundle)).toBe(value.bundleSha256);
+
+    const completedReplay = await completeMultipart(
+      env,
+      value.bundleSha256,
+      initiatedBody.uploadId,
+      [firstUploaded, finalUploaded],
+    );
+    expect(completedReplay.status).toBe(200);
+    expect(await completedReplay.json()).toMatchObject({ deduped: true });
+
+    const conflictingInitiate = await initiateMultipart(
+      env,
+      value.bundleSha256,
+      bundle.byteLength + 1,
+      parts,
+    );
+    expect(conflictingInitiate.status).toBe(409);
+    expect(await conflictingInitiate.json()).toMatchObject({ error: 'artifact_conflict' });
+
+    expect((await upload(
+      env,
+      value.bundleSha256,
+      'server.tgz.minisig',
+      value.signature,
+      value.signatureSha256,
+    )).status).toBe(201);
+    expect((await upload(
+      env,
+      value.bundleSha256,
+      'manifest.json',
+      value.manifestBytes,
+      value.manifestSha256,
+    )).status).toBe(201);
+    expect((await finalize(env, value.bundleSha256)).status).toBe(201);
+    const published = await api.request(
+      `/artifacts/workspace-host/sha256/${value.bundleSha256}/server.tgz`,
+      {},
+      env,
+    );
+    expect(published.status).toBe(200);
+    const publishedBundle = new Uint8Array(await published.arrayBuffer());
+    expect(publishedBundle.byteLength).toBe(bundle.byteLength);
+    expect(await sha256Hex(publishedBundle)).toBe(value.bundleSha256);
+  });
+
+  it('aborts multipart state idempotently and refuses parts after closure', async () => {
+    const bundle = new TextEncoder().encode('small abortable multipart body');
+    const bundleSha256 = await sha256Hex(bundle);
+    const partSha256 = await sha256Hex(bundle);
+    const { env, r2 } = authedEnv();
+    const initiated = await initiateMultipart(env, bundleSha256, bundle.byteLength, [
+      { partNumber: 1, sha256: partSha256, sizeBytes: bundle.byteLength },
+    ]);
+    const { uploadId } = await initiated.json() as { uploadId: string };
+    expect(initiated.status).toBe(201);
+    expect(r2.multipartUploads.size).toBe(1);
+
+    expect((await abortMultipart(env, bundleSha256, uploadId)).status).toBe(204);
+    expect((await abortMultipart(env, bundleSha256, uploadId)).status).toBe(204);
+    expect(r2.multipartUploads.size).toBe(0);
+    const closedPart = await uploadMultipartPart(
+      env,
+      bundleSha256,
+      uploadId,
+      1,
+      bundle,
+      partSha256,
+    );
+    expect(closedPart.status).toBe(404);
+    expect(await closedPart.json()).toMatchObject({ error: 'multipart_upload_not_found' });
+    expect(r2.data.has(`${WORKSPACE_HOST_ARTIFACT_PREFIX}/${bundleSha256}/server.tgz`)).toBe(false);
   });
 
   it('refuses finalization until all three verified objects exist', async () => {

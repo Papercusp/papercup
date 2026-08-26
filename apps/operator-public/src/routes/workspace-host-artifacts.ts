@@ -1,10 +1,13 @@
 /**
- * D-105/D-107 workspace-host artifact publication.
+ * D-105/D-107/D-112 workspace-host artifact publication.
  *
  * Operator-authenticated uploads land create-only in the existing Cupboard R2
  * bucket. Public GET/HEAD remain indistinguishable from missing until a
  * create-only finalization marker binds the bundle, detached signature,
  * manifest, signing key, and trust receipts to one verified digest.
+ * Large server bundles use a private immutable part plan plus native R2
+ * multipart state, keeping every Worker request bounded while preserving the
+ * exact content-addressed server.tgz key consumed by finalization and readers.
  */
 
 import { isHexSha256, sha256Hex } from '@papercusp/artifact-registry';
@@ -34,6 +37,15 @@ const PUBLICATION_SCHEMA_VERSION = 1;
 const PUBLICATION_KIND = 'papercusp-workspace-host-release';
 const FINALIZATION_KIND = 'papercusp-workspace-host-finalization';
 const ARTIFACT_TRUST_VERSION = 'artifact-trust-v1';
+const MULTIPART_STATE_SCHEMA_VERSION = 1;
+const MULTIPART_STATE_KIND = 'papercusp-workspace-host-multipart-upload';
+const MULTIPART_STATE_NAMESPACE = 'workspace-host-multipart-v1';
+const MULTIPART_MIN_PART_BYTES = 5 * 1024 * 1024;
+export const WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES = 32 * 1024 * 1024;
+export const WORKSPACE_HOST_MULTIPART_MAX_PARTS = 1024;
+export const WORKSPACE_HOST_MULTIPART_MAX_BUNDLE_BYTES =
+  WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES * WORKSPACE_HOST_MULTIPART_MAX_PARTS;
+const MULTIPART_CONTROL_MAX_BYTES = 512 * 1024;
 const MAX_BYTES: Readonly<Record<WorkspaceHostArtifactFile, number>> = {
   'server.tgz': 64 * 1024 * 1024,
   'server.tgz.minisig': 64 * 1024,
@@ -67,6 +79,25 @@ interface FinalizationRecord {
   finalizedByGithubUserId: number;
 }
 
+interface MultipartPartPlan {
+  partNumber: number;
+  sha256: string;
+  sizeBytes: number;
+}
+
+interface MultipartUploadState {
+  schemaVersion: typeof MULTIPART_STATE_SCHEMA_VERSION;
+  kind: typeof MULTIPART_STATE_KIND;
+  bundleSha256: string;
+  /** Short API capability token; never the opaque native R2 upload id. */
+  uploadId: string;
+  r2UploadId: string;
+  sizeBytes: number;
+  createdAt: string;
+  createdByGithubUserId: number;
+  parts: MultipartPartPlan[];
+}
+
 type JsonRecord = Record<string, unknown>;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -92,10 +123,251 @@ function finalizationKey(bundleSha256: string): string {
   return `${artifactPrefix(bundleSha256)}/${FINALIZATION_FILE}`;
 }
 
+function multipartStateKey(bundleSha256: string, uploadId: string): string {
+  return `${artifactPrefix(bundleSha256)}/.multipart/${encodeURIComponent(uploadId)}.json`;
+}
+
 function parsePositiveInteger(value: string | undefined): number | null {
   if (!value || !/^[1-9][0-9]*$/.test(value)) return null;
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
+function isMultipartUploadId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
+  );
+}
+
+function isR2MultipartUploadId(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= 8192 &&
+    !/[\u0000-\u001f\u007f]/.test(value)
+  );
+}
+
+function r2ErrorCode(error: unknown): number | null {
+  if (!isRecord(error) && !(error instanceof Error)) return null;
+  const explicit = isRecord(error) && typeof error.code === 'number' ? error.code : null;
+  if (explicit !== null && Number.isSafeInteger(explicit)) return explicit;
+  const message = error instanceof Error
+    ? error.message
+    : isRecord(error) && typeof error.message === 'string'
+      ? error.message
+      : '';
+  const match = message.match(/\((\d+)\)\s*$/);
+  return match ? Number(match[1]) : null;
+}
+
+function multipartStorageFailure(
+  c: Context<{ Bindings: Env }>,
+  error: unknown,
+  phase: 'initiate' | 'part' | 'complete' | 'abort',
+): Response {
+  const code = r2ErrorCode(error);
+  if (code === 10024) return c.json({ error: 'multipart_upload_not_found' }, 404);
+  if (code === 10025) return c.json({ error: 'multipart_upload_incomplete' }, 409);
+  if (code === 10011 || code === 10048) {
+    return c.json({ error: 'multipart_parts_invalid' }, 400);
+  }
+  if (code === 10058) return c.json({ error: 'artifact_storage_rate_limited' }, 429);
+  return c.json({ error: 'artifact_storage_unavailable', phase }, 502);
+}
+
+async function readBoundedJson(
+  request: Request,
+  maxBytes: number,
+): Promise<{ ok: true; value: unknown } | { ok: false; error: 'invalid_json' | 'request_too_large' }> {
+  const declaredLength = request.headers.get('content-length');
+  if (declaredLength) {
+    const parsedLength = parsePositiveInteger(declaredLength);
+    if (parsedLength === null || parsedLength > maxBytes) {
+      return { ok: false, error: 'request_too_large' };
+    }
+  }
+  const body = await request.arrayBuffer();
+  if (body.byteLength === 0) return { ok: false, error: 'invalid_json' };
+  if (body.byteLength > maxBytes) return { ok: false, error: 'request_too_large' };
+  try {
+    return { ok: true, value: JSON.parse(new TextDecoder().decode(body)) };
+  } catch {
+    return { ok: false, error: 'invalid_json' };
+  }
+}
+
+function parseMultipartPlan(
+  value: unknown,
+  expectedSizeBytes: number,
+): { parts: MultipartPartPlan[]; errors: string[] } {
+  const errors: string[] = [];
+  if (!isRecord(value) || !Array.isArray(value.parts)) {
+    return { parts: [], errors: ['parts must be an array'] };
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'parts') errors.push(`unexpected multipart plan field '${key}'`);
+  }
+  if (value.parts.length === 0 || value.parts.length > WORKSPACE_HOST_MULTIPART_MAX_PARTS) {
+    errors.push(`parts must contain 1-${WORKSPACE_HOST_MULTIPART_MAX_PARTS} entries`);
+  }
+
+  const parts: MultipartPartPlan[] = [];
+  for (let index = 0; index < value.parts.length; index += 1) {
+    const candidate = value.parts[index];
+    if (!isRecord(candidate)) {
+      errors.push(`parts[${index}] must be an object`);
+      continue;
+    }
+    for (const key of Object.keys(candidate)) {
+      if (!['partNumber', 'sha256', 'sizeBytes'].includes(key)) {
+        errors.push(`unexpected parts[${index}] field '${key}'`);
+      }
+    }
+    const partNumber = Number(candidate.partNumber);
+    const sizeBytes = Number(candidate.sizeBytes);
+    if (!Number.isSafeInteger(partNumber) || partNumber !== index + 1) {
+      errors.push(`parts[${index}].partNumber must equal ${index + 1}`);
+    }
+    if (!isHexSha256(candidate.sha256)) {
+      errors.push(`parts[${index}].sha256 must be a lowercase SHA-256 digest`);
+    }
+    if (
+      !Number.isSafeInteger(sizeBytes) ||
+      sizeBytes <= 0 ||
+      sizeBytes > WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES
+    ) {
+      errors.push(
+        `parts[${index}].sizeBytes must be between 1 and ${WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES}`,
+      );
+    }
+    if (
+      Number.isSafeInteger(partNumber) &&
+      isHexSha256(candidate.sha256) &&
+      Number.isSafeInteger(sizeBytes) &&
+      sizeBytes > 0 &&
+      sizeBytes <= WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES
+    ) {
+      parts.push({ partNumber, sha256: candidate.sha256, sizeBytes });
+    }
+  }
+
+  if (parts.length === value.parts.length && parts.length > 0) {
+    const regularPartBytes = parts[0].sizeBytes;
+    if (parts.length > 1 && regularPartBytes < MULTIPART_MIN_PART_BYTES) {
+      errors.push(`every non-final part must be at least ${MULTIPART_MIN_PART_BYTES} bytes`);
+    }
+    for (let index = 0; index < parts.length - 1; index += 1) {
+      if (parts[index].sizeBytes !== regularPartBytes) {
+        errors.push('all non-final multipart parts must have identical sizes');
+        break;
+      }
+    }
+    if (parts.at(-1)!.sizeBytes > regularPartBytes) {
+      errors.push('the final multipart part cannot exceed the regular part size');
+    }
+    const totalBytes = parts.reduce((sum, part) => sum + part.sizeBytes, 0);
+    if (!Number.isSafeInteger(totalBytes) || totalBytes !== expectedSizeBytes) {
+      errors.push('multipart part sizes must sum to x-artifact-size');
+    }
+  }
+  return { parts, errors: [...new Set(errors)] };
+}
+
+function parseMultipartState(
+  value: unknown,
+  bundleSha256: string,
+  uploadId: string,
+): MultipartUploadState | null {
+  if (
+    !isRecord(value) ||
+    value.schemaVersion !== MULTIPART_STATE_SCHEMA_VERSION ||
+    value.kind !== MULTIPART_STATE_KIND ||
+    value.bundleSha256 !== bundleSha256 ||
+    value.uploadId !== uploadId ||
+    !isR2MultipartUploadId(value.r2UploadId) ||
+    !Number.isSafeInteger(value.sizeBytes) ||
+    Number(value.sizeBytes) <= 0 ||
+    Number(value.sizeBytes) > WORKSPACE_HOST_MULTIPART_MAX_BUNDLE_BYTES ||
+    typeof value.createdAt !== 'string' ||
+    !Number.isFinite(Date.parse(value.createdAt)) ||
+    !Number.isSafeInteger(value.createdByGithubUserId) ||
+    Number(value.createdByGithubUserId) <= 0
+  ) {
+    return null;
+  }
+  const plan = parseMultipartPlan({ parts: value.parts }, Number(value.sizeBytes));
+  if (plan.errors.length > 0) return null;
+  return {
+    schemaVersion: MULTIPART_STATE_SCHEMA_VERSION,
+    kind: MULTIPART_STATE_KIND,
+    bundleSha256,
+    uploadId,
+    r2UploadId: value.r2UploadId,
+    sizeBytes: Number(value.sizeBytes),
+    createdAt: value.createdAt,
+    createdByGithubUserId: Number(value.createdByGithubUserId),
+    parts: plan.parts,
+  };
+}
+
+async function readMultipartState(
+  env: Env,
+  bundleSha256: string,
+  uploadId: string,
+): Promise<MultipartUploadState | null> {
+  const object = await env.ARTIFACTS.get(multipartStateKey(bundleSha256, uploadId));
+  if (!object || object.size > MULTIPART_CONTROL_MAX_BYTES) return null;
+  try {
+    const state = parseMultipartState(JSON.parse(await object.text()), bundleSha256, uploadId);
+    const metadata = object.customMetadata ?? {};
+    if (
+      !state ||
+      metadata.namespace !== MULTIPART_STATE_NAMESPACE ||
+      metadata.bundleSha256 !== bundleSha256 ||
+      metadata.uploadId !== uploadId ||
+      metadata.createdByGithubUserId !== String(state.createdByGithubUserId)
+    ) {
+      return null;
+    }
+    return state;
+  } catch {
+    return null;
+  }
+}
+
+function parseCompletionParts(
+  value: unknown,
+  plan: readonly MultipartPartPlan[],
+): { parts: R2UploadedPart[]; error: string | null } {
+  if (!isRecord(value) || !Array.isArray(value.parts)) {
+    return { parts: [], error: 'parts must be an array' };
+  }
+  for (const key of Object.keys(value)) {
+    if (key !== 'parts') return { parts: [], error: `unexpected completion field '${key}'` };
+  }
+  if (value.parts.length !== plan.length) {
+    return { parts: [], error: 'completion must include every planned part exactly once' };
+  }
+  const parts: R2UploadedPart[] = [];
+  for (let index = 0; index < value.parts.length; index += 1) {
+    const candidate = value.parts[index];
+    if (!isRecord(candidate)) return { parts: [], error: `parts[${index}] must be an object` };
+    for (const key of Object.keys(candidate)) {
+      if (!['partNumber', 'etag'].includes(key)) {
+        return { parts: [], error: `unexpected parts[${index}] field '${key}'` };
+      }
+    }
+    if (candidate.partNumber !== plan[index].partNumber) {
+      return { parts: [], error: `parts[${index}].partNumber must equal ${plan[index].partNumber}` };
+    }
+    if (typeof candidate.etag !== 'string' || candidate.etag.length === 0 || candidate.etag.length > 512) {
+      return { parts: [], error: `parts[${index}].etag is invalid` };
+    }
+    parts.push({ partNumber: plan[index].partNumber, etag: candidate.etag });
+  }
+  return { parts, error: null };
 }
 
 function metadataFor(
@@ -523,6 +795,21 @@ async function uploadArtifact(c: Context<{ Bindings: Env }>): Promise<Response> 
     return c.json({ error: 'bundle_digest_mismatch' }, 400);
   }
   if (declaredSize > MAX_BYTES[file]) {
+    if (file === 'server.tgz') {
+      return c.json(
+        {
+          error: 'artifact_too_large',
+          maxBytes: MAX_BYTES[file],
+          multipart: {
+            endpoint: `/admin/artifacts/workspace-host/sha256/${bundleSha256}/server.tgz/multipart`,
+            maxPartBytes: WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES,
+            maxParts: WORKSPACE_HOST_MULTIPART_MAX_PARTS,
+            maxBundleBytes: WORKSPACE_HOST_MULTIPART_MAX_BUNDLE_BYTES,
+          },
+        },
+        413,
+      );
+    }
     return c.json({ error: 'artifact_too_large', maxBytes: MAX_BYTES[file] }, 413);
   }
   const contentLength = c.req.header('content-length');
@@ -569,6 +856,345 @@ async function uploadArtifact(c: Context<{ Bindings: Env }>): Promise<Response> 
     { ok: true, file, sha256: declaredSha256, bytes: declaredSize, deduped: false },
     201,
   );
+}
+
+async function initiateMultipartArtifact(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const operator = await requireOperator(c);
+  if (operator instanceof Response) return operator;
+
+  const bundleSha256 = c.req.param('bundleSha256');
+  if (!isHexSha256(bundleSha256)) return c.json({ error: 'invalid_bundle_sha256' }, 400);
+  const declaredSha256 = c.req.header('x-artifact-sha256') ?? '';
+  const declaredSize = parsePositiveInteger(c.req.header('x-artifact-size'));
+  if (!isHexSha256(declaredSha256)) return c.json({ error: 'invalid_artifact_sha256' }, 400);
+  if (declaredSha256 !== bundleSha256) return c.json({ error: 'bundle_digest_mismatch' }, 400);
+  if (declaredSize === null) return c.json({ error: 'invalid_artifact_size' }, 400);
+  if (declaredSize > WORKSPACE_HOST_MULTIPART_MAX_BUNDLE_BYTES) {
+    return c.json(
+      { error: 'artifact_too_large', maxBytes: WORKSPACE_HOST_MULTIPART_MAX_BUNDLE_BYTES },
+      413,
+    );
+  }
+
+  const key = artifactKey(bundleSha256, 'server.tgz');
+  const expected = { sha256: bundleSha256, sizeBytes: declaredSize };
+  const existing = await c.env.ARTIFACTS.head(key);
+  if (existing) {
+    if (descriptorMatches(existing, 'server.tgz', bundleSha256, expected)) {
+      return c.json({
+        ok: true,
+        file: 'server.tgz',
+        sha256: bundleSha256,
+        bytes: declaredSize,
+        deduped: true,
+      });
+    }
+    return c.json({ error: 'artifact_conflict', file: 'server.tgz' }, 409);
+  }
+  if (await c.env.ARTIFACTS.head(finalizationKey(bundleSha256))) {
+    return c.json({ error: 'artifact_finalized' }, 409);
+  }
+
+  const body = await readBoundedJson(c.req.raw, MULTIPART_CONTROL_MAX_BYTES);
+  if (!body.ok) {
+    return c.json(
+      { error: body.error },
+      body.error === 'request_too_large' ? 413 : 400,
+    );
+  }
+  const plan = parseMultipartPlan(body.value, declaredSize);
+  if (plan.errors.length > 0) {
+    return c.json({ error: 'invalid_multipart_plan', errors: plan.errors }, 400);
+  }
+
+  let upload: R2MultipartUpload;
+  try {
+    upload = await c.env.ARTIFACTS.createMultipartUpload(key, {
+      httpMetadata: { contentType: CONTENT_TYPE['server.tgz'] },
+      customMetadata: {
+        ...metadataFor('server.tgz', bundleSha256, bundleSha256, declaredSize, operator.id),
+        uploadMode: 'multipart',
+      },
+    });
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'initiate');
+  }
+  if (!isR2MultipartUploadId(upload.uploadId)) {
+    await upload.abort().catch(() => undefined);
+    return c.json({ error: 'invalid_storage_upload_id' }, 502);
+  }
+  const uploadId = crypto.randomUUID();
+
+  const state: MultipartUploadState = {
+    schemaVersion: MULTIPART_STATE_SCHEMA_VERSION,
+    kind: MULTIPART_STATE_KIND,
+    bundleSha256,
+    uploadId,
+    r2UploadId: upload.uploadId,
+    sizeBytes: declaredSize,
+    createdAt: new Date().toISOString(),
+    createdByGithubUserId: operator.id,
+    parts: plan.parts,
+  };
+  try {
+    const stateOutcome = await putCreateOnly(
+      c.env.ARTIFACTS,
+      multipartStateKey(bundleSha256, uploadId),
+      JSON.stringify(state),
+      {
+        httpMetadata: { contentType: 'application/json; charset=utf-8' },
+        customMetadata: {
+          namespace: MULTIPART_STATE_NAMESPACE,
+          bundleSha256,
+          uploadId,
+          createdByGithubUserId: String(operator.id),
+        },
+      },
+    );
+    if (stateOutcome === 'exists') {
+      await upload.abort().catch(() => undefined);
+      return c.json({ error: 'multipart_upload_conflict' }, 409);
+    }
+  } catch (error) {
+    await upload.abort().catch(() => undefined);
+    return multipartStorageFailure(c, error, 'initiate');
+  }
+
+  return c.json(
+    {
+      ok: true,
+      file: 'server.tgz',
+      uploadId,
+      sha256: bundleSha256,
+      bytes: declaredSize,
+      partSizeBytes: plan.parts[0].sizeBytes,
+      partCount: plan.parts.length,
+      maxPartBytes: WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES,
+      maxParts: WORKSPACE_HOST_MULTIPART_MAX_PARTS,
+      deduped: false,
+    },
+    201,
+  );
+}
+
+async function uploadMultipartPart(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const operator = await requireOperator(c);
+  if (operator instanceof Response) return operator;
+  const bundleSha256 = c.req.param('bundleSha256');
+  const uploadId = c.req.query('uploadId');
+  const partNumber = parsePositiveInteger(c.req.param('partNumber'));
+  if (!isHexSha256(bundleSha256)) return c.json({ error: 'invalid_bundle_sha256' }, 400);
+  if (!isMultipartUploadId(uploadId)) return c.json({ error: 'invalid_multipart_upload_id' }, 400);
+  if (
+    partNumber === null ||
+    partNumber > WORKSPACE_HOST_MULTIPART_MAX_PARTS
+  ) {
+    return c.json({ error: 'invalid_multipart_part_number' }, 400);
+  }
+
+  let state: MultipartUploadState | null;
+  try {
+    state = await readMultipartState(c.env, bundleSha256, uploadId);
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'part');
+  }
+  if (!state) return c.json({ error: 'multipart_upload_not_found' }, 404);
+  if (state.createdByGithubUserId !== operator.id) {
+    return c.json({ error: 'multipart_upload_owner_mismatch' }, 403);
+  }
+  const expected = state.parts[partNumber - 1];
+  if (!expected || expected.partNumber !== partNumber) {
+    return c.json({ error: 'multipart_part_not_planned' }, 400);
+  }
+
+  const declaredSha256 = c.req.header('x-part-sha256') ?? '';
+  const declaredSize = parsePositiveInteger(c.req.header('x-part-size'));
+  if (!isHexSha256(declaredSha256) || declaredSha256 !== expected.sha256) {
+    return c.json({ error: 'multipart_part_digest_mismatch' }, 400);
+  }
+  if (declaredSize === null || declaredSize !== expected.sizeBytes) {
+    return c.json({ error: 'multipart_part_size_mismatch' }, 400);
+  }
+  const contentLength = parsePositiveInteger(c.req.header('content-length'));
+  if (contentLength === null) return c.json({ error: 'content_length_required' }, 411);
+  if (contentLength !== expected.sizeBytes) {
+    return c.json({ error: 'content_length_mismatch' }, 400);
+  }
+
+  const body = await c.req.raw.arrayBuffer();
+  if (body.byteLength !== expected.sizeBytes) {
+    return c.json({ error: 'multipart_part_size_mismatch' }, 400);
+  }
+  const actualSha256 = await sha256Hex(body);
+  if (actualSha256 !== expected.sha256) {
+    return c.json(
+      { error: 'multipart_part_sha256_mismatch', expected: expected.sha256, actual: actualSha256 },
+      400,
+    );
+  }
+
+  try {
+    const part = await c.env.ARTIFACTS
+      .resumeMultipartUpload(artifactKey(bundleSha256, 'server.tgz'), state.r2UploadId)
+      .uploadPart(partNumber, body);
+    return c.json({
+      ok: true,
+      uploadId,
+      partNumber: part.partNumber,
+      etag: part.etag,
+      sha256: actualSha256,
+      bytes: body.byteLength,
+    });
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'part');
+  }
+}
+
+async function completeMultipartArtifact(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const operator = await requireOperator(c);
+  if (operator instanceof Response) return operator;
+  const bundleSha256 = c.req.param('bundleSha256');
+  const uploadId = c.req.query('uploadId');
+  if (!isHexSha256(bundleSha256)) return c.json({ error: 'invalid_bundle_sha256' }, 400);
+  if (!isMultipartUploadId(uploadId)) return c.json({ error: 'invalid_multipart_upload_id' }, 400);
+
+  const key = artifactKey(bundleSha256, 'server.tgz');
+  let state: MultipartUploadState | null;
+  try {
+    state = await readMultipartState(c.env, bundleSha256, uploadId);
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'complete');
+  }
+  if (!state) {
+    const existing = await c.env.ARTIFACTS.head(key);
+    const descriptor = descriptorFromObject(existing, 'server.tgz', bundleSha256);
+    if (descriptor) {
+      return c.json({
+        ok: true,
+        file: 'server.tgz',
+        sha256: bundleSha256,
+        bytes: descriptor.sizeBytes,
+        deduped: true,
+      });
+    }
+    if (existing) return c.json({ error: 'artifact_conflict', file: 'server.tgz' }, 409);
+    return c.json({ error: 'multipart_upload_not_found' }, 404);
+  }
+  if (state.createdByGithubUserId !== operator.id) {
+    return c.json({ error: 'multipart_upload_owner_mismatch' }, 403);
+  }
+
+  const expected = { sha256: bundleSha256, sizeBytes: state.sizeBytes };
+  const existing = await c.env.ARTIFACTS.head(key);
+  if (existing) {
+    if (!descriptorMatches(existing, 'server.tgz', bundleSha256, expected)) {
+      return c.json({ error: 'artifact_conflict', file: 'server.tgz' }, 409);
+    }
+    await c.env.ARTIFACTS
+      .resumeMultipartUpload(key, state.r2UploadId)
+      .abort()
+      .catch(() => undefined);
+    await c.env.ARTIFACTS.delete(multipartStateKey(bundleSha256, uploadId));
+    return c.json({
+      ok: true,
+      file: 'server.tgz',
+      sha256: bundleSha256,
+      bytes: state.sizeBytes,
+      deduped: true,
+    });
+  }
+  if (await c.env.ARTIFACTS.head(finalizationKey(bundleSha256))) {
+    return c.json({ error: 'artifact_finalized' }, 409);
+  }
+
+  const body = await readBoundedJson(c.req.raw, MULTIPART_CONTROL_MAX_BYTES);
+  if (!body.ok) {
+    return c.json(
+      { error: body.error },
+      body.error === 'request_too_large' ? 413 : 400,
+    );
+  }
+  const completion = parseCompletionParts(body.value, state.parts);
+  if (completion.error) {
+    return c.json({ error: 'invalid_multipart_completion', detail: completion.error }, 400);
+  }
+
+  let completed: R2Object;
+  try {
+    completed = await c.env.ARTIFACTS
+      .resumeMultipartUpload(key, state.r2UploadId)
+      .complete(completion.parts);
+  } catch (error) {
+    if (r2ErrorCode(error) === 10024) {
+      const raced = await c.env.ARTIFACTS.head(key);
+      if (descriptorMatches(raced, 'server.tgz', bundleSha256, expected)) {
+        await c.env.ARTIFACTS.delete(multipartStateKey(bundleSha256, uploadId));
+        return c.json({
+          ok: true,
+          file: 'server.tgz',
+          sha256: bundleSha256,
+          bytes: state.sizeBytes,
+          deduped: true,
+        });
+      }
+      await c.env.ARTIFACTS.delete(multipartStateKey(bundleSha256, uploadId)).catch(() => undefined);
+    }
+    return multipartStorageFailure(c, error, 'complete');
+  }
+
+  if (!descriptorMatches(completed, 'server.tgz', bundleSha256, expected)) {
+    await c.env.ARTIFACTS.delete(multipartStateKey(bundleSha256, uploadId)).catch(() => undefined);
+    return c.json({ error: 'multipart_completed_object_mismatch' }, 409);
+  }
+  try {
+    await c.env.ARTIFACTS.delete(multipartStateKey(bundleSha256, uploadId));
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'complete');
+  }
+  return c.json(
+    {
+      ok: true,
+      file: 'server.tgz',
+      sha256: bundleSha256,
+      bytes: state.sizeBytes,
+      etag: completed.httpEtag,
+      deduped: false,
+    },
+    201,
+  );
+}
+
+async function abortMultipartArtifact(c: Context<{ Bindings: Env }>): Promise<Response> {
+  const operator = await requireOperator(c);
+  if (operator instanceof Response) return operator;
+  const bundleSha256 = c.req.param('bundleSha256');
+  const uploadId = c.req.query('uploadId');
+  if (!isHexSha256(bundleSha256)) return c.json({ error: 'invalid_bundle_sha256' }, 400);
+  if (!isMultipartUploadId(uploadId)) return c.json({ error: 'invalid_multipart_upload_id' }, 400);
+
+  let state: MultipartUploadState | null;
+  try {
+    state = await readMultipartState(c.env, bundleSha256, uploadId);
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'abort');
+  }
+  if (!state) return new Response(null, { status: 204 });
+  if (state.createdByGithubUserId !== operator.id) {
+    return c.json({ error: 'multipart_upload_owner_mismatch' }, 403);
+  }
+  try {
+    await c.env.ARTIFACTS
+      .resumeMultipartUpload(artifactKey(bundleSha256, 'server.tgz'), state.r2UploadId)
+      .abort();
+  } catch (error) {
+    if (r2ErrorCode(error) !== 10024) return multipartStorageFailure(c, error, 'abort');
+  }
+  try {
+    await c.env.ARTIFACTS.delete(multipartStateKey(bundleSha256, uploadId));
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'abort');
+  }
+  return new Response(null, { status: 204 });
 }
 
 async function finalizeArtifact(c: Context<{ Bindings: Env }>): Promise<Response> {
@@ -680,7 +1306,13 @@ export function workspaceHostArtifactsRoute(): Hono<{ Bindings: Env }> {
   const app = new Hono<{ Bindings: Env }>();
   const adminPath = '/admin/artifacts/workspace-host/sha256/:bundleSha256/:file';
   const publicPath = '/artifacts/workspace-host/sha256/:bundleSha256/:file';
+  const multipartPath =
+    '/admin/artifacts/workspace-host/sha256/:bundleSha256/server.tgz/multipart';
 
+  app.post(multipartPath, initiateMultipartArtifact);
+  app.put(`${multipartPath}/parts/:partNumber`, uploadMultipartPart);
+  app.post(`${multipartPath}/complete`, completeMultipartArtifact);
+  app.delete(multipartPath, abortMultipartArtifact);
   app.put(adminPath, uploadArtifact);
   app.post('/admin/artifacts/workspace-host/sha256/:bundleSha256/finalize', finalizeArtifact);
   app.get(publicPath, (c) => serveArtifact(c, false));
