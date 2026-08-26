@@ -102,7 +102,7 @@ const factRank = (f: unknown): number => FACT_SCOPE_RANK[(f as { scope?: string 
  *  bare `facts:list` EXCERPTS bodies by default, so pointing a reader there to
  *  recover an excerpted body hands them a second excerpt. A recovery pointer
  *  that does not recover is worse than none — it closes the question. */
-const FACTS_MORE = 'facts:list { full:true }';
+const FACTS_MORE = 'facts:list { all:true }';
 
 /** Population of a dropped fact set by scope, for the disclosure below. */
 const countByScope = (fs: readonly unknown[]): Record<string, number> => {

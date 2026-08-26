@@ -81,12 +81,12 @@ export const ORIENT_OPTIONAL_PRIORITY = {
     {
       name: 'facts',
       fields: ['facts', 'factsWithheld', 'factsNarrowed', 'factsTruncated', 'factsBodiesTruncated'],
-      recoverVia: 'facts:list { full:true }',
+      recoverVia: 'facts:list { all:true }',
     },
     {
       name: 'factEvictionDisclosures',
       fields: ['factEvictionDisclosures'],
-      recoverVia: 'facts:list { full:true }',
+      recoverVia: 'facts:list { all:true }',
     },
     { name: 'host', fields: ['host'], recoverVia: 'next coord:orient (host snapshot is always re-delivered)' },
     { name: 'memory', fields: ['memory'], recoverVia: 'memory:search { query }' },

@@ -289,7 +289,7 @@ describe('shapeOrient trimmed', () => {
     expect(out.factsTruncated).toMatchObject({
       total: 20,
       shown: 8,
-      more: 'facts:list { full:true }',
+      more: 'facts:list { all:true }',
     });
     // The drop is RANKED, not random, so the disclosure names the classes lost:
     // 12 workspace facts were dropped wholesale here.
@@ -301,7 +301,7 @@ describe('shapeOrient trimmed', () => {
   it('discloses how many fact BODIES it clipped, not just how many facts it dropped', () => {
     // Distinct from factsTruncated: a fact can survive the COUNT cap and still be
     // delivered with most of its body gone. Both cuts are losses; both are named.
-    expect(out.factsBodiesTruncated).toMatchObject({ cap: 200, more: 'facts:list { full:true }' });
+    expect(out.factsBodiesTruncated).toMatchObject({ cap: 200, more: 'facts:list { all:true }' });
     expect((out.factsBodiesTruncated as { facts: number }).facts).toBeGreaterThan(0);
   });
 

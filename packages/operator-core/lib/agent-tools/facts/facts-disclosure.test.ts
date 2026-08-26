@@ -16,8 +16,10 @@ import factsListTool, {
   findLiveFactVersion,
   FACTS_LIST_EXCERPT_CHARS,
   FACTS_LIST_DEFAULT_LIMIT,
+  FACTS_LIST_ALL_LIMIT,
   FACTS_LIST_MAX_LIMIT,
   clampFactsListLimit,
+  factsListEffectiveLimit,
   factsListLimitDisclosure,
   factSlotAliasCandidates,
   selectFactKeyMatch,
@@ -231,6 +233,14 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
     expect(factsListLimitDisclosure(100)).toEqual({
       limitCapped: { requested: 100, applied: FACTS_LIST_MAX_LIMIT, reason: 'result_door_budget' },
     });
+  });
+
+  it('provides an explicit complete-population escape hatch independent of body projection', () => {
+    expect(factsListEffectiveLimit(1, true)).toBe(FACTS_LIST_ALL_LIMIT);
+    expect(factsListEffectiveLimit(100, true)).toBe(FACTS_LIST_ALL_LIMIT);
+    expect(factsListEffectiveLimit(100, false)).toBe(FACTS_LIST_MAX_LIMIT);
+    expect(factsListTool.args.shape.all.description).toMatch(/complete live population/i);
+    expect(factsListTool.args.shape.all.description).toMatch(/Orthogonal to full:true/);
   });
 
   it('excerpts a long body and says so, instead of returning 500 chars per row', () => {

@@ -39,11 +39,18 @@ import {
 export const FACTS_LIST_DEFAULT_LIMIT = 4;
 /** Keep caller-supplied pages inside the same result-door-safe row ceiling. */
 export const FACTS_LIST_MAX_LIMIT = FACTS_LIST_DEFAULT_LIMIT;
+/** Explicit census escape hatch. The result door may spill this response, but no rows are hidden. */
+export const FACTS_LIST_ALL_LIMIT = 200;
 
 /** Clamp a caller's page size to the result-door-safe row ceiling. PURE. */
 export function clampFactsListLimit(limit?: number): number {
   if (limit === undefined || !Number.isFinite(limit)) return FACTS_LIST_DEFAULT_LIMIT;
   return Math.max(1, Math.min(Math.floor(limit), FACTS_LIST_MAX_LIMIT));
+}
+
+/** Resolve the store limit for a bounded page versus an explicitly requested census. PURE. */
+export function factsListEffectiveLimit(limit?: number, all = false): number {
+  return all ? FACTS_LIST_ALL_LIMIT : clampFactsListLimit(limit);
 }
 
 /** Tell callers when their explicit page size was reduced for result-door safety. PURE. */
@@ -248,6 +255,12 @@ export default defineTool({
       .describe(
         'Return COMPLETE fact bodies instead of excerpts. Default false — bodies are excerpted (with body_truncated + body_full_chars) so a busy scope cannot blow the tool-output budget (EI-10948). Use when you need a fact verbatim, ideally with a tighter `limit`.',
       ),
+    all: z
+      .boolean()
+      .optional()
+      .describe(
+        `Return the complete live population (up to the enforced ${FACTS_LIST_ALL_LIMIT}-fact per-scope cap) instead of the result-door-safe ${FACTS_LIST_MAX_LIMIT}-row page. Large results may spill to the result-door scratch cursor; use projection or key for a smaller read. Orthogonal to full:true, which controls body excerpts.`,
+      ),
     key: z
       .string()
       .max(200)
@@ -379,7 +392,7 @@ export default defineTool({
     }
     const facts = await listFacts(
       { scope: args.scope, scopeRef: scopeRef ?? null },
-      { limit: clampFactsListLimit(args.limit) },
+      { limit: factsListEffectiveLimit(args.limit, args.all === true) },
     );
     // EI-10947: flag facts whose source work-item has CLOSED — facts:list is where an
     // agent goes "hunting a stale fact to retract" (see guidance), so this is exactly
@@ -407,7 +420,7 @@ export default defineTool({
     // to a file. The irony that hurt: the one read that shows you your stale facts was
     // the one that blew up. Excerpt by default, exactly as work_items:list already does.
     const rows = annotated.map((f) => projectFact(f, args.full === true));
-    const limitDisclosure = factsListLimitDisclosure(args.limit);
+    const limitDisclosure = args.all === true ? undefined : factsListLimitDisclosure(args.limit);
     // WI-38910: `count` is the PAGE SIZE, and the page is 4 rows by default. Read
     // alone it is indistinguishable from a census — on this box `count: 4` came
     // back for a workspace scope holding hundreds of live facts. That matters
@@ -457,8 +470,9 @@ export default defineTool({
                 `\`count\` is the PAGE SIZE, not the census. The page is the ${rows.length} most ` +
                 `recently updated. Pass \`key\` to check one specific fact (the read to make ` +
                 `before asserting, since a duplicate assert evicts a peer's fact), or narrow ` +
-                `the scope; the page size itself is capped at ${FACTS_LIST_MAX_LIMIT} to stay ` +
-                `inside the result door.`,
+                `the scope. To enumerate the complete population, pass \`all:true\`; large ` +
+                `responses may spill to the result-door scratch cursor. The ordinary page is ` +
+                `capped at ${FACTS_LIST_MAX_LIMIT} to stay inside the result door.`,
             }
           : {}),
         ...(limitDisclosure ?? {}),
