@@ -7,6 +7,7 @@ import {
   assignCohort,
   assignmentPayloadPatch,
   asPilotArm,
+  blockKey,
   blockPermutation,
   existingArm,
   verifyAssignments,
@@ -187,10 +188,24 @@ describe('blockPermutation', () => {
     }
   });
 
-  it('cannot collide across a separator in the seed key', () => {
-    // seed:"a|b" + stratum:"c" must not hash to the same block as seed:"a" + stratum:"b|c".
-    // A naive string join would make these identical.
-    expect(blockPermutation('a|b', 'c', 0)).not.toEqual(blockPermutation('a', 'b|c', 0));
+  it('derives from an INJECTIVE key — a separator inside a value cannot collide', () => {
+    // Asserted on the key, not the permutation: there are only 6 permutations of 3 arms, so
+    // two genuinely distinct keys collide by chance one time in six. A test written against
+    // blockPermutation here fails on correct code — it did, before this was split out.
+    const pairs: Array<[[string, string, number], [string, string, number]]> = [
+      [['a|b', 'c', 0], ['a', 'b|c', 0]],
+      [['a', 'b', 0], ['a', 'b', 1]],
+      [['ab', 'c', 0], ['a', 'bc', 0]],
+      [['a"b', 'c', 0], ['a', 'b', 0]],
+      [['', 'ab', 0], ['ab', '', 0]],
+    ];
+    for (const [left, right] of pairs) {
+      expect(blockKey(...left)).not.toEqual(blockKey(...right));
+    }
+  });
+
+  it('has a key that is stable for identical inputs', () => {
+    expect(blockKey('s', 'db', 2)).toEqual(blockKey('s', 'db', 2));
   });
 });
 
