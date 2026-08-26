@@ -44,6 +44,12 @@ import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
 import { mapSessionTimeline } from './session-transcript-mapping';
 import { classifyStreamFreshness, streamFreshnessMessage } from './stream-freshness';
 import { mergeSentEchoes, useSentEchoes } from './sent-message-echo';
+import {
+  ConversationContextProjectionView,
+  mergeConversationProjectionMessages,
+  useConversationContextProjection,
+  type ConversationContextProjectionTarget,
+} from './ConversationContextProjectionView';
 /* D-011: the session resolve, the SSE url builder and the send state machine
    were extracted here so the goal popup can host this same conversation
    without forking any of them. Re-exported below for the existing importers. */
@@ -773,6 +779,7 @@ export function LiveSessionChat({
   sendError,
   focusAnchor,
   focusTerm,
+  projectionTarget = null,
 }: {
   streamUrl: string;
   /** The su agent this session belongs to — resolves its roster entry for the
@@ -789,6 +796,9 @@ export function LiveSessionChat({
   /** The search term — used to CORROBORATE the stream's anchor before
    *  trusting it (see the `focusIndex` memo below). */
   focusTerm?: string | null;
+  /** The canonical projection identity. Unsupported source kinds deliberately
+   * resolve to no row until their producer adapter lands. */
+  projectionTarget?: ConversationContextProjectionTarget | null;
 }) {
   const { events, status, thinking, anchor, transport, lastSignalAt } = useAgentThinkingStream('', '', '', streamUrl);
 
@@ -835,6 +845,11 @@ export function LiveSessionChat({
      stream — keeps pointing at the same turns. */
   const echoes = useSentEchoes(sessionOwnerId);
   const messages = useMemo(() => mergeSentEchoes(mapped.messages, echoes), [mapped.messages, echoes]);
+  const { projection } = useConversationContextProjection(projectionTarget);
+  const projectedMessages = useMemo(
+    () => mergeConversationProjectionMessages(projection, messages),
+    [messages, projection],
+  );
 
   /* Search deep-link (owner ask 2026-08-02, part b). The stream's `anchor`
      event names the matched entry by its index in the FLAT timeline the server
@@ -934,40 +949,47 @@ export function LiveSessionChat({
        and "no conversation yet" would then be a confident false statement about
        the agent rather than an honest one about our connection to it. */
     banner = <div style={ERROR_BANNER_STYLE} data-stream-freshness={freshness}>{freshnessNote}</div>;
-  } else if (status === 'live' && messages.length === 0) {
+  } else if (status === 'live' && projectedMessages.length === 0) {
     banner = <div style={BANNER_STYLE}>No conversation text in this session yet.</div>;
   }
 
   return (
-    <OperatorChat
-      messages={messages}
-      focusAnchor={focusAnchor}
-      focusIndex={focusIndex}
-      busy={sending}
-      peerBusy={thinking}
-      passive={composerState.passive}
-      composerDisabled={composerState.disabled}
-      composerDisabledMessage={composerState.message}
-      onSend={onSend}
-      banner={banner}
-      error={sendError}
-      agentName={agentName}
-      renderAvatar={renderAvatar}
-      paneIcon={paneIcon}
-      // P-004: no footer. Everything it held was READ-ONLY state, and Direction
-      // D's spatial rule is that description sits ABOVE the transcript and
-      // operation below it — so those facts now render as the status band at
-      // the top of the conversation region (SessionStateHeader), and the space
-      // under the composer belongs entirely to controls.
-      // chat-ref-pills-2026-07-26 P-008: scopes this session's WI-/EI-/F- ref
-      // pills (live hydration + the popup destination) to the harness the
-      // roster attributes this agent's spawned run to — the SAME roster
-      // entry the identity chip (P-012) and footer (P-007) already read, no
-      // new query. Null (no matching spawned-agent run, e.g. an interactive
-      // psu session) degrades to static pills, same as any other
-      // unscoped conversation.
-      harnessSlug={rosterEntry?.harnessSlug ?? undefined}
-    />
+    <div className="pc-conversation-context-layout">
+      <ConversationContextProjectionView projection={projection} />
+      <div className="pc-conversation-context-layout__chat">
+        <OperatorChat
+          messages={projectedMessages}
+          focusAnchor={focusAnchor}
+          // The native stream's flat-entry index cannot address projection-only
+          // tool rows. Once a projection exists, use the corroborated text anchor.
+          focusIndex={projection ? undefined : focusIndex}
+          busy={sending}
+          peerBusy={thinking}
+          passive={composerState.passive}
+          composerDisabled={composerState.disabled}
+          composerDisabledMessage={composerState.message}
+          onSend={onSend}
+          banner={banner}
+          error={sendError}
+          agentName={agentName}
+          renderAvatar={renderAvatar}
+          paneIcon={paneIcon}
+          // P-004: no footer. Everything it held was READ-ONLY state, and Direction
+          // D's spatial rule is that description sits ABOVE the transcript and
+          // operation below it — so those facts now render as the status band at
+          // the top of the conversation region (SessionStateHeader), and the space
+          // under the composer belongs entirely to controls.
+          // chat-ref-pills-2026-07-26 P-008: scopes this session's WI-/EI-/F- ref
+          // pills (live hydration + the popup destination) to the harness the
+          // roster attributes this agent's spawned run to — the SAME roster
+          // entry the identity chip (P-012) and footer (P-007) already read, no
+          // new query. Null (no matching spawned-agent run, e.g. an interactive
+          // psu session) degrades to static pills, same as any other
+          // unscoped conversation.
+          harnessSlug={projection?.session.harness ?? rosterEntry?.harnessSlug ?? undefined}
+        />
+      </div>
+    </div>
   );
 }
 
@@ -1995,6 +2017,11 @@ export default function SessionChatModal({
               sendError={sendError}
               focusAnchor={focusAnchor}
               focusTerm={focusTerm}
+              projectionTarget={resolved ? {
+                sourceKind: resolved.source_kind,
+                sessionId: focusSessionId || resolved.session_id,
+                harness: actionRosterEntry?.harnessSlug ?? null,
+              } : null}
             />
           </>
         ) : null}

@@ -8,7 +8,7 @@
  * never reconstruct tasks, context, approvals, or tool calls from their source
  * tables. The named query below is the one shared seam.
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import type {
@@ -17,6 +17,7 @@ import type {
   ConversationContextSectionFrame,
   ConversationTaskFrame,
 } from '@papercusp/operator-core/lib/conversation-context-projection';
+import type { AgentChatTaskAction } from '@papercusp/operator-core/lib/endpoint-route/routes/agent-chats/task-ops';
 import type { ChatMessage } from './chat-types';
 import './conversation-context-projection.css';
 
@@ -24,6 +25,14 @@ export interface ConversationContextProjectionTarget {
   sourceKind: string;
   sessionId: string;
   harness?: string | null;
+}
+
+export interface ConversationTaskActionInput {
+  action: AgentChatTaskAction;
+  taskId?: string;
+  content?: string;
+  activeForm?: string;
+  explanation?: string;
 }
 
 function isProjectionFor(
@@ -55,9 +64,36 @@ export function useConversationContextProjection(
     staleTime: 5_000,
   });
   const candidate = query.data?.[0];
+  const targetKey = target
+    ? `${target.sourceKind}\u0000${target.sessionId}\u0000${target.harness ?? ''}`
+    : '';
+  const serverProjection = isProjectionFor(candidate, target) ? candidate : null;
+  const [accepted, setAccepted] = useState<{
+    targetKey: string;
+    projection: ConversationContextProjection;
+    priorServerProjection: ConversationContextProjection | null;
+  } | null>(null);
+  const acceptProjection = useCallback((projection: ConversationContextProjection) => {
+    if (!isProjectionFor(projection, target)) return;
+    setAccepted({ targetKey, projection, priorServerProjection: serverProjection });
+  }, [serverProjection, target, targetKey]);
+
+  // A mutation response paints immediately. Once the subscription advances to
+  // a new canonical row, hand authority straight back to the shared query.
+  useEffect(() => {
+    if (
+      accepted &&
+      accepted.targetKey === targetKey &&
+      serverProjection !== accepted.priorServerProjection
+    ) {
+      setAccepted(null);
+    }
+  }, [accepted, serverProjection, targetKey]);
+
   return {
     ...query,
-    projection: isProjectionFor(candidate, target) ? candidate : null,
+    projection: accepted?.targetKey === targetKey ? accepted.projection : serverProjection,
+    acceptProjection,
   };
 }
 

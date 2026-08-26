@@ -17,10 +17,13 @@
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { ConversationContextProjection } from '@papercusp/operator-core/lib/conversation-context-projection';
 
 // useSyncQuery → a single chat row matching the panel's chatId so `chat`
 // populates from the cache (loadChat takes the cached-row path, no REST fetch).
 let syncRows: Array<Record<string, unknown>> = [];
+let projectionRows: ConversationContextProjection[] = [];
+const syncCalls: Array<{ queryName?: string; args?: unknown }> = [];
 // Whether the subscription is still resolving. Default false = settled, which is
 // what every pre-existing test wants; the WI-5125 cases below flip it to assert
 // the loading-vs-resolved-but-empty distinction.
@@ -28,13 +31,24 @@ let syncLoading = false;
 const invalidateSpy = vi.fn();
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
-  useSyncQuery: () => ({
-    data: syncRows,
+  useSyncQuery: (input: { queryName?: string; args?: unknown }) => {
+    syncCalls.push(input);
+    return {
+    data: input.queryName === 'conversations.contextProjection' ? projectionRows : syncRows,
     loading: syncLoading,
     fetching: false,
     error: null,
     invalidate: invalidateSpy,
-  }),
+    };
+  },
+}));
+
+let lastOperatorChatProps: Record<string, unknown> | null = null;
+vi.mock('@/app/_components/OperatorChat', () => ({
+  OperatorChat: (props: Record<string, unknown>) => {
+    lastOperatorChatProps = props;
+    return <div data-testid="operator-chat-probe" />;
+  },
 }));
 
 // The confirm dialog is only used by archive; stub it out of the way.
@@ -91,6 +105,9 @@ function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
 afterEach(() => {
   cleanup();
   syncRows = [];
+  projectionRows = [];
+  syncCalls.length = 0;
+  lastOperatorChatProps = null;
   syncLoading = false;
   vi.unstubAllGlobals();
   vi.clearAllMocks();
@@ -116,6 +133,44 @@ describe('ChatPanel — conversation-thread-load perf interaction (P-006)', () =
     expect(perfMarks.begin).toHaveBeenCalledWith('conversation-thread-load');
     // …and ends once that chat's transcript first renders.
     await waitFor(() => expect(perfMarks.end).toHaveBeenCalledWith('conversation-thread-load'));
+  });
+});
+
+describe('ChatPanel — shared conversation/context projection (P-009)', () => {
+  it('queries the canonical frame source and hands its tool frames to OperatorChat', async () => {
+    syncRows = [chatRow([{ role: 'user', content: 'Ship it', ts: '2026-08-26T00:00:00Z' }])];
+    projectionRows = [{
+      schemaVersion: 'conversation-context-v1',
+      session: {
+        sourceKind: 'agent_chat',
+        sessionId: CHAT,
+        harness: SLUG,
+        role: 'worker',
+        linkedWorkItemId: 'WI-42177',
+        capabilityTier: 'owned-loop',
+      },
+      capabilities: { liveFrames: true, taskWrite: true, approvalWrite: true },
+      frames: [
+        { id: 'm1', kind: 'message', role: 'user', text: 'Ship it', timestamp: '2026-08-26T00:00:00Z' },
+        { id: 'tool-1', kind: 'tool', callId: 'c1', name: 'work_items:complete', input: { id: 'WI-42177' }, stepIndex: 1, needsApproval: false, state: 'succeeded' },
+        { id: 'ctx-1', kind: 'context', section: 'identity', title: 'Identity', entries: [{ label: 'Harness', value: SLUG }] },
+      ],
+    }];
+
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+
+    expect(await screen.findByTestId('conversation-context-projection')).toBeTruthy();
+    expect(screen.getByText(SLUG)).toBeTruthy();
+    expect(syncCalls).toContainEqual(expect.objectContaining({
+      queryName: 'conversations.contextProjection',
+      args: { sourceKind: 'agent_chat', sessionId: CHAT, harness: SLUG },
+    }));
+    expect(lastOperatorChatProps?.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'tool-1',
+        tools: [{ name: 'work_items:complete', input: { id: 'WI-42177' } }],
+      }),
+    ]));
   });
 });
 

@@ -23,6 +23,13 @@ import { Tooltip } from './Tooltip';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { beginInteraction, endInteraction, PERF_INTERACTIONS } from '@/app/_components/perf/perf-marks';
+import { OperatorChat } from '@/app/_components/OperatorChat';
+import type { ChatMessage } from '@/app/_components/chat/chat-types';
+import {
+  ConversationContextProjectionView,
+  mergeConversationProjectionMessages,
+  useConversationContextProjection,
+} from '@/app/_components/chat/ConversationContextProjectionView';
 
 interface TranscriptTurn {
   role: 'user' | 'assistant';
@@ -122,6 +129,11 @@ export default function ChatPanel({ slug, chatId, mode, context, initialMessage,
     args: { id: chatId, workspaceId },
     enabled: !!chatId,
     staleTime: 30_000,
+  });
+  const { projection } = useConversationContextProjection({
+    sourceKind: 'agent_chat',
+    sessionId: chatId,
+    harness: slug,
   });
 
   const loadChat = useCallback(async () => {
@@ -358,6 +370,26 @@ export default function ChatPanel({ slug, chatId, mode, context, initialMessage,
 
   const costUsd = useMemo(() => (chat?.total_cost_usd_cents ?? 0) / 100, [chat?.total_cost_usd_cents]);
   const tokensTotal = (chat?.total_input_tokens ?? 0) + (chat?.total_output_tokens ?? 0);
+  const liveProjectionTail = useMemo<ChatMessage[]>(() => {
+    const messages: ChatMessage[] = (chat?.transcript ?? []).map((turn, index) => ({
+      id: `agent-chat-live:${index}`,
+      role: turn.role,
+      content: turn.content,
+      ts: turn.ts,
+    }));
+    if (sendState.kind === 'streaming') {
+      messages.push({
+        id: 'agent-chat-live:streaming',
+        role: 'assistant',
+        content: sendState.partial,
+      });
+    }
+    return messages;
+  }, [chat?.transcript, sendState]);
+  const projectedMessages = useMemo(
+    () => mergeConversationProjectionMessages(projection, liveProjectionTail),
+    [liveProjectionTail, projection],
+  );
 
   if (loadError) {
     return (
@@ -408,84 +440,115 @@ export default function ChatPanel({ slug, chatId, mode, context, initialMessage,
         </Tooltip>
       </div>
 
-      {chat.feature_lock?.active && (
-        <div className="chat-panel__lock-warning" role="status">
-          <AlertTriangle size={12} />
-          <span>
-            Feature {chat.feature_id} is being worked on autonomously
-            {chat.feature_lock.taken_by ? ` (${chat.feature_lock.taken_by})` : ''}.
-            This chat will advise but not commit code; for guidance the worker should pick up,
-            ask it to leave a note in <code>.papercusp/notes/{chat.feature_id}.md</code>.
-          </span>
+      {projection ? (
+        <div className="pc-conversation-context-layout">
+          <ConversationContextProjectionView projection={projection} />
+          <div className="pc-conversation-context-layout__chat">
+            <OperatorChat
+              messages={projectedMessages}
+              busy={sendState.kind === 'streaming'}
+              passive={false}
+              onSend={(content) => { void send(content); }}
+              banner={chat.feature_lock?.active ? (
+                <div className="chat-panel__lock-warning" role="status">
+                  <AlertTriangle size={12} />
+                  <span>
+                    Feature {chat.feature_id} is being worked on autonomously
+                    {chat.feature_lock.taken_by ? ` (${chat.feature_lock.taken_by})` : ''}.
+                    This chat will advise but not commit code; for guidance the worker should pick up,
+                    ask it to leave a note in <code>.papercusp/notes/{chat.feature_id}.md</code>.
+                  </span>
+                </div>
+              ) : null}
+              error={sendState.kind === 'error' ? sendState.message : null}
+              agentName={chat.role}
+              harnessSlug={slug}
+              showQuickDraftPrompts={false}
+            />
+          </div>
         </div>
-      )}
+      ) : (
+        <>
+          {chat.feature_lock?.active && (
+            <div className="chat-panel__lock-warning" role="status">
+              <AlertTriangle size={12} />
+              <span>
+                Feature {chat.feature_id} is being worked on autonomously
+                {chat.feature_lock.taken_by ? ` (${chat.feature_lock.taken_by})` : ''}.
+                This chat will advise but not commit code; for guidance the worker should pick up,
+                ask it to leave a note in <code>.papercusp/notes/{chat.feature_id}.md</code>.
+              </span>
+            </div>
+          )}
 
-      <div ref={transcriptScrollRef} className="chat-panel__transcript">
-        {chat.transcript.length === 0 && sendState.kind === 'idle' && (
-          <div className="chat-panel__empty">
-            Start the conversation. The agent has the same context the autonomous {chat.role} would{chat.feature_id ? ` for feature ${chat.feature_id}` : ''}.
+          <div ref={transcriptScrollRef} className="chat-panel__transcript">
+            {chat.transcript.length === 0 && sendState.kind === 'idle' && (
+              <div className="chat-panel__empty">
+                Start the conversation. The agent has the same context the autonomous {chat.role} would{chat.feature_id ? ` for feature ${chat.feature_id}` : ''}.
+              </div>
+            )}
+            {chat.transcript.map((t, i) => (
+              <div key={i} className={`chat-turn chat-turn--${t.role}${t.error ? ' chat-turn--error' : ''}`}>
+                <div className="chat-turn__role">
+                  {t.error && <AlertTriangle size={11} />}{t.role}{t.error ? ' · failed' : ''}
+                </div>
+                <div className="chat-turn__body">{t.content}</div>
+              </div>
+            ))}
+            {sendState.kind === 'streaming' && (
+              <div className="chat-turn chat-turn--assistant chat-turn--streaming">
+                <div className="chat-turn__role">
+                  <Loader2 size={11} className="chat-panel__spin" /> assistant
+                </div>
+                <div className="chat-turn__body">{sendState.partial || '…'}</div>
+              </div>
+            )}
+            {sendState.kind === 'error' && (
+              <div className="chat-panel__send-error" role="alert">
+                <AlertTriangle size={12} /> {sendState.message}
+                <Tooltip label="Dismiss">
+                  <button onClick={() => setSendState({ kind: 'idle' })}>
+                    <RotateCcw size={11} />
+                  </button>
+                </Tooltip>
+              </div>
+            )}
           </div>
-        )}
-        {chat.transcript.map((t, i) => (
-          <div key={i} className={`chat-turn chat-turn--${t.role}${t.error ? ' chat-turn--error' : ''}`}>
-            <div className="chat-turn__role">
-              {t.error && <AlertTriangle size={11} />}{t.role}{t.error ? ' · failed' : ''}
-            </div>
-            <div className="chat-turn__body">{t.content}</div>
-          </div>
-        ))}
-        {sendState.kind === 'streaming' && (
-          <div className="chat-turn chat-turn--assistant chat-turn--streaming">
-            <div className="chat-turn__role">
-              <Loader2 size={11} className="chat-panel__spin" /> assistant
-            </div>
-            <div className="chat-turn__body">{sendState.partial || '…'}</div>
-          </div>
-        )}
-        {sendState.kind === 'error' && (
-          <div className="chat-panel__send-error" role="alert">
-            <AlertTriangle size={12} /> {sendState.message}
-            <Tooltip label="Dismiss">
-              <button onClick={() => setSendState({ kind: 'idle' })}>
-                <RotateCcw size={11} />
+
+          <form
+            className="chat-panel__compose"
+            onSubmit={(e) => { e.preventDefault(); void send(); }}
+          >
+            <textarea
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  void send();
+                }
+              }}
+              placeholder={
+                sendState.kind === 'streaming'
+                  ? 'agent is responding…'
+                  : `Message ${chat.role}${chat.feature_id ? ` about ${chat.feature_id}` : ''}… (Shift+Enter for newline)`
+              }
+              disabled={sendState.kind === 'streaming'}
+              rows={2}
+              className="chat-panel__input"
+            />
+            <Tooltip label="Send (Enter)">
+              <button
+                type="submit"
+                disabled={sendState.kind === 'streaming' || !draft.trim()}
+                className="chat-panel__send"
+              >
+                {sendState.kind === 'streaming' ? <Loader2 size={13} className="chat-panel__spin" /> : <Send size={13} />}
               </button>
             </Tooltip>
-          </div>
-        )}
-      </div>
-
-      <form
-        className="chat-panel__compose"
-        onSubmit={(e) => { e.preventDefault(); void send(); }}
-      >
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              void send();
-            }
-          }}
-          placeholder={
-            sendState.kind === 'streaming'
-              ? 'agent is responding…'
-              : `Message ${chat.role}${chat.feature_id ? ` about ${chat.feature_id}` : ''}… (Shift+Enter for newline)`
-          }
-          disabled={sendState.kind === 'streaming'}
-          rows={2}
-          className="chat-panel__input"
-        />
-        <Tooltip label="Send (Enter)">
-          <button
-            type="submit"
-            disabled={sendState.kind === 'streaming' || !draft.trim()}
-            className="chat-panel__send"
-          >
-            {sendState.kind === 'streaming' ? <Loader2 size={13} className="chat-panel__spin" /> : <Send size={13} />}
-          </button>
-        </Tooltip>
-      </form>
+          </form>
+        </>
+      )}
     </div>
   );
 }
