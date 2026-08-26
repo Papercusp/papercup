@@ -890,8 +890,8 @@ export default defineTool({
     // EI-19395290807657827 — resolve a blocker-motivated interval BEFORE it is threaded
     // into the kickoff / overwrite-note / materializeLoop, so every downstream consumer
     // sees the interval that is actually armed rather than the one that was requested.
-    const intervalSec = backoff.intervalSec;
     const backoff = resolveBlockedBackoff(intervalSecArg, args.blockedOn ?? null, livePush);
+    const intervalSec = backoff.intervalSec;
     // EI-18792078711601844 — read the prior loop this arm is about to UPSERT over
     // EI-21424742792137469: an unspecified carry on a FRESH arm always defaults
     // WARM. Session/headless detection must not override the fleet/owner launch
