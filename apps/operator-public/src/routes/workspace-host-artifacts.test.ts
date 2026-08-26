@@ -455,6 +455,8 @@ describe('workspace-host artifact publication', () => {
       },
     ];
     const { env, r2 } = authedEnv();
+    const opaqueNativeUploadId = `opaque/native+r2=${'x'.repeat(600)}`;
+    r2.nextMultipartUploadId = opaqueNativeUploadId;
 
     const initiated = await initiateMultipart(
       env,
@@ -476,7 +478,12 @@ describe('workspace-host artifact publication', () => {
       maxPartBytes: WORKSPACE_HOST_MULTIPART_MAX_PART_BYTES,
       deduped: false,
     });
+    expect(initiatedBody.uploadId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(initiatedBody.uploadId).not.toBe(opaqueNativeUploadId);
     expect(r2.multipartUploads.size).toBe(1);
+    expect(r2.multipartUploads.has(opaqueNativeUploadId)).toBe(true);
 
     const rejectedPart = await uploadMultipartPart(
       env,
