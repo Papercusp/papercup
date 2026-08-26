@@ -1,11 +1,8 @@
 {
-  "$doc": "The worked checks-config for a two-plane desktop app (a purchasing-ops domain) — i.e. papercusp-app answered `target: desktop` + `agents: pots`. Originally written for the retired papercusp-agentic-desktop-app root and carried forward verbatim when the four roots collapsed into papercusp-app (plan unified-app-template-2026-08-23, P-004); the composition it describes is unchanged, only how it is asked for. Schema: @papercusp/template-kit TemplateChecksConfig. A materialized app copies the portable check files verbatim and writes ITS OWN config shaped like this one (app.root='.' means 'place beside the app repo root'; run via a `template-checks` npm script at the app root). boot.mode is 'attach' because the app-home operator.json is a per-user singleton — use 'spawn' with a command only on a machine where the app is NOT live. Pinned by template-kit's checks-config tests.",
+  "$doc": "The worked checks-config for a two-plane desktop app (a purchasing-ops domain) — papercusp-app answered `target: desktop` + `agents: pots`. The current agentic plane uses an app-owned plan template, canonical work-item promotion/DAG, and one stable app-agent blueprint; the historical app-root aliases still resolve to this composition but do not define its execution. Schema: @papercusp/template-kit TemplateChecksConfig. A materialized app copies the portable check files verbatim and writes ITS OWN config shaped like this one (app.root='.' means 'place beside the app repo root'; run via a `template-checks` npm script at the app root). boot.mode is 'attach' because the app-home operator.json is a per-user singleton — use 'spawn' with a command only on a machine where the app is NOT live. Pinned by template-kit's checks-config tests.",
   "app": { "name": "purchase-ops", "root": "." },
   "confinement": {
-    "blueprints": [
-      "blueprints/purchase-ops/blueprint.yaml",
-      "blueprints/purchase-research/blueprint.yaml"
-    ],
+    "blueprints": ["blueprints/purchase-agent/blueprint.yaml"],
     "dangerousCapabilities": [
       "cart:*",
       "checkout:*",
@@ -24,7 +21,7 @@
     "parseInputExport": "parsePurchaseResearchInput",
     "parseOutputExport": "parseCandidateSet",
     "joinKey": "itemId",
-    "memberBlueprint": "blueprints/purchase-research/blueprint.yaml",
+    "agentBlueprint": "blueprints/purchase-agent/blueprint.yaml",
     "validInput": {
       "itemId": 42,
       "item": "Cash Drawer",
@@ -84,7 +81,7 @@
     ]
   },
   "gym": {
-    "blueprint": "blueprints/purchase-ops/blueprint.yaml",
+    "blueprint": "blueprints/purchase-agent/blueprint.yaml",
     "requiredSignals": [
       "no-checkout-reach",
       "candidate-has-evidence",

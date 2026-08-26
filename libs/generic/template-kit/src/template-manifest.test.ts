@@ -177,6 +177,23 @@ describe("REFERENCE_TEMPLATES (the retro-fitted quartermaster manifests — P-00
       ["embedded-postgres-server", "hono-host", "tauri-release-kit", "tauri-shell"],
     );
   });
+
+  it("the agentic aspect declares the canonical plan/DAG plus stable-agent execution contract", () => {
+    expect(PAPERCUSP_OPS_HIVES_TEMPLATE.blueprints).toEqual(["app-agent"]);
+    expect(PAPERCUSP_OPS_HIVES_TEMPLATE.decisionPoints.map((point) => point.id)).toEqual(
+      expect.arrayContaining(["plan-template", "execution-target"]),
+    );
+    expect(PAPERCUSP_OPS_HIVES_TEMPLATE.musts?.map((must) => must.id)).toEqual(
+      expect.arrayContaining([
+        "canonical-plan-work-plane",
+        "stable-agent-direct-dispatch",
+        "target-failure-is-loud",
+      ]),
+    );
+    expect(PAPERCUSP_APP_TEMPLATE.musts?.map((must) => must.id)).toContain(
+      "agentic-plan-work-plane",
+    );
+  });
 });
 
 describe("P-015 schema extensions — category / requires / docs", () => {

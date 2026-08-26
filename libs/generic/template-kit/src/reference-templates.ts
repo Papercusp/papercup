@@ -54,7 +54,7 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
     {
       id: "seam-work-item-kind",
       prompt:
-        "What work_item kind crosses the seam (worked instances: purchase-research, bet-analysis)?",
+        "What work_item kind and id prefix cross the seam (worked instances: purchase-research/PR, bet-analysis/BA)?",
     },
     {
       id: "plan-template",
@@ -109,7 +109,7 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
     {
       id: "gym-signals",
       run: "checks/gym-signals.test.ts",
-      summary: "the hive's guardrail gym signals are present and wired",
+      summary: "the stable app agent's guardrail gym signals are present and wired",
     },
   ],
   musts: [

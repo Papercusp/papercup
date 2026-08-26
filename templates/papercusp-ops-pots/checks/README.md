@@ -9,9 +9,9 @@ union rule — `@papercusp/template-kit` `composeTemplates`).
 
 | check | file | pins |
 |---|---|---|
-| `confinement-guard` | `confinement-guard.test.ts` | no hive role's `capabilities:`/`tools:` matches a dangerous pattern (cart/checkout/vault/approvals-write analogs) |
-| `seam-round-trip` | `seam-round-trip.test.ts` | the contract package exposes both wire gates; valid in/out payloads parse; the join key echoes unchanged; a malformed payload.out is REJECTED; the member blueprint declares the same seam kind; optionally delegates the live enqueue→ingest leg to the app's own integration suite |
-| `gym-signals` | `gym-signals.test.ts` | the hive blueprint declares `gym.collectTrace` + every required guardrail signal id |
+| `confinement-guard` | `confinement-guard.test.ts` | no app-agent role's `capabilities:`/`tools:` matches a dangerous pattern (cart/checkout/vault/approvals-write analogs) |
+| `seam-round-trip` | `seam-round-trip.test.ts` | the contract package exposes both wire gates; valid in/out payloads parse; the join key echoes unchanged; a malformed payload.out is REJECTED; the stable app-agent blueprint declares the same seam kind; optionally delegates the live enqueue→ingest leg to the app's own integration suite |
+| `gym-signals` | `gym-signals.test.ts` | the stable app-agent blueprint declares `gym.collectTrace` + every required guardrail signal id |
 
 ## How they run
 
@@ -30,6 +30,8 @@ Worked example: the worked config at
 TEMPLATE_CHECKS_CONFIG=/path/to/checks-config.json npx vitest run checks/
 ```
 
-In THIS repo the checks also run as the `@papercusp/templates` workspace
-(`npm test -w @papercusp/templates`): unconfigured, these three skip and
-`composition-integrity` runs — the template gym (P-009) runs them configured.
+In this monorepo, validate the machine schema/reference twin with
+`npm test -w @papercusp/template-kit` and the bundled template tree with
+`cd packages/operator-core && npx vitest run lib/cupboard/template-bundle-integrity.test.ts`.
+These portable checks run only from a materialized app (or the template gym)
+with `TEMPLATE_CHECKS_CONFIG`; there is no separate templates workspace.

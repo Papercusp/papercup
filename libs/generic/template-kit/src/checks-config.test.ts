@@ -30,6 +30,7 @@ const valid = {
       ts: "2026-07-04T00:00:00Z",
     },
     invalidOutput: { itemId: 42, candidates: [] },
+    agentBlueprint: "blueprints/purchase-agent/blueprint.yaml",
   },
   boot: { mode: "attach", discoveryFile: "~/.quartermaster/operator.json" },
   nativeDesktop: {
@@ -298,6 +299,9 @@ describe("validateChecksConfig", () => {
   it("parseChecksConfig throws on invalid, returns typed on valid", () => {
     expect(() => parseChecksConfig({})).toThrow(/invalid checks config/);
     expect(parseChecksConfig(valid).app.name).toBe("quartermaster");
+    expect(parseChecksConfig(valid).seam?.agentBlueprint).toBe(
+      "blueprints/purchase-agent/blueprint.yaml",
+    );
   });
 
   it("the committed worked-example reference config validates", () => {

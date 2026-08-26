@@ -40,7 +40,9 @@ that shape the composition — above all `target`, which picks the chassis.
    `pots` layers `papercusp-ops-pots` onto this same root, which is why there
    is no separate "agentic" template to switch to: the agent plane was always a
    layer on the same app. Treat it as an architectural commitment, not a
-   feature flag — it introduces the judgment plane and the one typed seam.
+   feature flag — it introduces app-owned plan runs, canonical work-item
+   promotion with a blocked-by DAG, stable-agent assignment + required wake,
+   and the one typed seam.
 4. **Answer `domain`** — the noun the app ledgers and surfaces. Every
    aspect-level decision point (schema, panels, lexicon terms, searchable
    surfaces) derives from it.
@@ -79,11 +81,16 @@ that shape the composition — above all `target`, which picks the chassis.
    `+25%` suggests, and only running both suites would say by how much. Choose
    `both` because the app genuinely ships two artifacts, never because it
    sounded more flexible.
-5. **`agents-are-explicit`** — no hives and no seam unless you answered
-   `agents: pots`. The default answer cannot drag the plane in, and
+5. **`agents-are-explicit`** — no agent work plane and no seam unless you
+   answered `agents: pots`. The default answer cannot drag the plane in, and
    `checks/composition-integrity.test.ts` proves it rather than asserting it.
-6. **`one-seam`** — with the plane composed, the deterministic and judgment
-   halves meet at exactly ONE typed seam. That discipline is
+6. **`agentic-plan-work-plane`** — with `agents: pots`, every external or
+   scheduled run uses an app-owned plan template, canonical promotion, real
+   `blocked-by` edges, and `execution { appHarnessSlug, agentName }`. Only the
+   actionable frontier is assigned and durably woken. Do not hide scheduling,
+   direct work-item creation, or generic-pool dispatch in app code.
+7. **`one-seam`** — with the plane composed, the deterministic app and agentic
+   work plane meet at exactly ONE typed seam. That discipline is
    `papercusp-ops-pots`' own Tier B MUST; honor it, do not re-invent it in app
    code.
 
@@ -105,7 +112,7 @@ that shape the composition — above all `target`, which picks the chassis.
 
 Re-answer `agents` as `pots` and re-expand the closure. Do **not** grow an
 ad-hoc orchestration loop inside app code: `papercusp-ops-pots` exists so the
-judgment plane arrives with its seam contract and its checks attached, and an
-app that hand-rolls one gets neither. Nothing else about the app changes — the
-chassis, data layer and UI closure are the same either way, which is exactly
-why this is an answer and not a different template.
+plan/work-item/stable-agent execution contract arrives with its seam and checks
+attached, and an app that hand-rolls one gets neither. Nothing else about the
+app changes—the chassis, data layer and UI closure are the same either way,
+which is exactly why this is an answer and not a different template.

@@ -25,8 +25,8 @@ contracts:
 decisionPoints:
   - id: seam-work-item-kind
     prompt: >-
-      What work_item kind crosses the seam (worked instances: purchase-research,
-      bet-analysis)?
+      What work_item kind and id prefix cross the seam (worked instances:
+      purchase-research/PR, bet-analysis/BA)?
   - id: plan-template
     prompt: >-
       Which app-owned plan template defines the run inputs and blocked-by DAG
@@ -71,7 +71,7 @@ checks:
       table row exists
   - id: gym-signals
     run: checks/gym-signals.test.ts
-    summary: the hive's guardrail gym signals are present and wired
+    summary: the stable app agent's guardrail gym signals are present and wired
 musts:
   - id: canonical-plan-work-plane
     rule: "Every external or scheduled agentic run uses an app-owned plan template and canonical plan-item promotion; never raw work-item inserts, direct work_items:create, or a parallel scheduler"
