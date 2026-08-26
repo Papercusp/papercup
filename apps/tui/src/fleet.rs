@@ -481,12 +481,6 @@ fn draw_fleet_legend(f: &mut Frame, app: &App, area: Rect, comms: bool) {
     spans.push(Span::styled(marker, Theme::title_active()));
     spans.push(Span::styled(keys, Theme::info()));
     spans.push(Span::styled(toggle, Theme::info()));
-    if app.fleet.leader_brief.is_some() && !comms {
-        spans.push(Span::styled(
-            " · leader: b bench · w wake · r relaunch · g fire gate · s bump spec",
-            Theme::warn(),
-        ));
-    }
     let line = Line::from(spans);
     f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
 }
@@ -654,11 +648,7 @@ fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
     }
 }
 
-fn draw_leader_cockpit(
-    f: &mut Frame,
-    brief: &crate::models::FleetLeaderBrief,
-    area: Rect,
-) {
+fn draw_leader_cockpit(f: &mut Frame, brief: &crate::models::FleetLeaderBrief, area: Rect) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -713,8 +703,14 @@ fn draw_leader_cockpit(
     );
 
     let gates = match brief.announced_gates.as_ref() {
-        None => vec![Line::from(Span::styled("(gate read unavailable)", Theme::warn()))],
-        Some(gates) if gates.is_empty() => vec![Line::from(Span::styled("(no announced gates)", Theme::dim()))],
+        None => vec![Line::from(Span::styled(
+            "(gate read unavailable)",
+            Theme::warn(),
+        ))],
+        Some(gates) if gates.is_empty() => vec![Line::from(Span::styled(
+            "(no announced gates)",
+            Theme::dim(),
+        ))],
         Some(gates) => gates
             .iter()
             .map(|gate| {
@@ -729,7 +725,7 @@ fn draw_leader_cockpit(
             .collect(),
     };
     f.render_widget(
-        Paragraph::new(gates).block(Theme::block(" announced gates · g arms selected ".into(), false)),
+        Paragraph::new(gates).block(Theme::block(" announced gates ".into(), false)),
         rows[1],
     );
 
@@ -767,7 +763,10 @@ fn draw_leader_cockpit(
         )),
     ];
     f.render_widget(
-        Paragraph::new(lower).block(Theme::block(" declared invariants + admission ".into(), false)),
+        Paragraph::new(lower).block(Theme::block(
+            " declared invariants + admission ".into(),
+            false,
+        )),
         rows[2],
     );
 }
@@ -1599,12 +1598,8 @@ fn draw_tape(f: &mut Frame, app: &App, area: Rect) {
                 crate::semantic_tool_cards::FleetEventClass::Exception => {
                     ("! exception", Theme::warn())
                 }
-                crate::semantic_tool_cards::FleetEventClass::Claim => {
-                    ("↪ claim", Theme::info())
-                }
-                crate::semantic_tool_cards::FleetEventClass::Gate => {
-                    ("◆ gate", Theme::success())
-                }
+                crate::semantic_tool_cards::FleetEventClass::Claim => ("↪ claim", Theme::info()),
+                crate::semantic_tool_cards::FleetEventClass::Gate => ("◆ gate", Theme::success()),
             };
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{:<8} ", hms(&row.created_at)), Theme::dim()),
@@ -1785,6 +1780,26 @@ mod tests {
         r
     }
 
+    fn fleet_event_row(transition: &str, payload: serde_json::Value) -> ActivityRow {
+        ActivityRow {
+            id: transition.into(),
+            owner_id: "su-a".into(),
+            agent: Some("codex".into()),
+            harness_slug: Some("papercusp".into()),
+            kind: "lifecycle".into(),
+            tool_name: Some("fleet:event".into()),
+            summary: Some(format!("fleet:{transition}")),
+            status: Some("ok".into()),
+            detail: Some(serde_json::json!({
+                "eventKey": format!("fleet:pui-cockpit:{transition}"),
+                "fleetSlug": "pui-cockpit",
+                "transition": transition,
+                "payload": payload,
+            })),
+            created_at: "2026-08-26T22:00:00Z".into(),
+        }
+    }
+
     #[test]
     fn agent_id_fleet_label_shows_id_and_fleet() {
         // In a fleet → shortened id + the fleet slug (WI-1355).
@@ -1871,6 +1886,50 @@ mod tests {
         assert_eq!(
             latest.get("su-a").unwrap().summary.as_deref(),
             Some("second")
+        );
+    }
+
+    #[test]
+    fn tape_filters_shared_semantic_classes_without_collapsing_rows() {
+        let rows = [
+            fleet_event_row("member-dead", json!({"agentId":"su-a"})),
+            fleet_event_row(
+                "claim-released",
+                json!({"id":"WI-1","priorAssignee":"su-a"}),
+            ),
+            fleet_event_row("drained", json!({})),
+        ];
+        let semantics: Vec<_> = rows
+            .iter()
+            .map(|row| crate::semantic_tool_cards::fleet_event_semantic(row).unwrap())
+            .collect();
+        assert_eq!(
+            semantics
+                .iter()
+                .filter(|event| TapeFilter::All.matches(event.class))
+                .count(),
+            3
+        );
+        assert_eq!(
+            semantics
+                .iter()
+                .filter(|event| TapeFilter::Exceptions.matches(event.class))
+                .count(),
+            1
+        );
+        assert_eq!(
+            semantics
+                .iter()
+                .filter(|event| TapeFilter::Claims.matches(event.class))
+                .count(),
+            1
+        );
+        assert_eq!(
+            semantics
+                .iter()
+                .filter(|event| TapeFilter::Gates.matches(event.class))
+                .count(),
+            1
         );
     }
 
@@ -2224,9 +2283,26 @@ mod tests {
         assert!(mirror.contains("Activity mirror"), "mirror feed missing");
         assert!(mirror.contains("[mirror]"));
 
+        app.fleet.activity.insert(
+            0,
+            fleet_event_row(
+                "claim-released",
+                json!({"id":"WI-1","priorAssignee":"su-a"}),
+            ),
+        );
+        app.fleet.mode = FleetMode::Tape;
+        let tape = render(&app);
+        assert!(tape.contains("Transition tape"), "transition tape missing");
+        assert!(
+            tape.contains("Claim released"),
+            "semantic transition missing"
+        );
+        assert!(tape.contains("[tape]"));
+
         if std::env::var("PUI_DUMP").is_ok() {
             let _ = std::fs::write("/tmp/fleet-curated.txt", wrap(&curated));
             let _ = std::fs::write("/tmp/fleet-mirror.txt", wrap(&mirror));
+            let _ = std::fs::write("/tmp/fleet-tape.txt", wrap(&tape));
             eprintln!("dumped /tmp/fleet-curated.txt + /tmp/fleet-mirror.txt");
         }
     }

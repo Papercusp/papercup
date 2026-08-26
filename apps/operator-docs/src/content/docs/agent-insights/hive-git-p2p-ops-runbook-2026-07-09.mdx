@@ -26,7 +26,10 @@ documents:
   - "packages/operator-core/lib/sync/pot-git/github-divergence.ts"
   - "packages/operator-core/lib/authority/lock-authority.ts"
   - "packages/operator-core/lib/release/git-sync-stall-watchdog.ts"
+  - "packages/operator-core/lib/endpoint-route/routes/desktop/git-hive-mode.ts"
   - "papercusp-desktop/bin/hive-git-drill.sh"
+plans:
+  - "p2p-git-live-activation-2026-07-09"
 updated: 2026-07-17
 generated:
   by: agent
@@ -48,7 +51,7 @@ does not need special-casing for commit-only members.
 Plan: `p2p-git-live-activation-2026-07-09` (P-501). Design doc:
 `docs/plans/p2p-git-research-2026-07-01.md`.
 
-### Where things actually stand (updated 2026-07-17 — every Phase-2 leg is now wired)
+### Where things actually stand (updated 2026-08-26 — wiring is present; public release remains NO-GO)
 
 **All of P-201..P-205 have landed.** `git-sync-action.ts::handleGitSync` runs
 the following legs, in this order, on every tick of any non-`legacy` hive
@@ -107,19 +110,17 @@ merge (lease-gated) → staging-advance → every member's worktree ff-advances
 bare no-op beyond commit-only** — it now drives real peer replication; only
 the GitHub bridge leg additionally requires `bridged` mode.
 
-**What is still NOT proven live**, per the plan's Phase 3 drill
-(`p2p-git-live-activation-2026-07-09`, `## Now`): the mechanics above are
-proven in-process (drill LEGS MODE/A/B/C/D/F all green, single-box) and, as
-of P-302 (2026-07-17), the cold-join bootstrap leg (G-8) has been proven on
-the REAL 2-machine rig too. Still open: **Leg E (P-306)** — flip a real hive
-to `bridged` and confirm the commit-only watchdog analysis below holds under
-genuine multi-machine wall-clock/network timing (currently only
-static-verified); **Leg G (P-308)** chaos (integrator-kill mid-advance, PG
-blip, lease failover) — needs legs A-F live under one genuine multi-machine
-run first. Re-verify this section against
-`git log -p -- packages/operator-core/lib/harness/git-sync/git-sync-action.ts`
-and the plan's `## Now` before trusting it; the remaining gap is REAL-RIG
-proof, not missing wiring.
+**What is still NOT proven live**, per the signed release map and current plan
+(`p2p-git-live-activation-2026-07-09`): the production wiring exists, but
+public release remains **NO-GO**. The 2026-08-26 rig evidence established a
+live peer link, a completed G-8 cold join, zero steady-state churn after the
+startup transient, and supporting ref replication. That was a short supporting
+window, not terminal acceptance; the primary `papercusp.git` namespace still
+needed a bounded live-write diagnosis. D-044 closes two announce-frame
+residuals but explicitly carries zero release bearing. The signed finish line
+is still **P-302 → P-306 → P-308 → P-402 (72-hour soak)**. Re-read the plan's
+current decisions and `## Now` before operating; never promote a single-box
+drill, frame observation, or partial transfer into a GO claim.
 
 ## Mode flip + rollback
 
@@ -129,15 +130,26 @@ needed — `git-sync-action.ts` re-consults it every fire, per-tick, not just at
 routine-seed time).
 
 ```ts
-import { setHiveGitMode, getHiveGitMode } from 'packages/operator-core/lib/harness/git-sync/hive-git-mode';
+import { readPotGitMode, setPotGitMode } from 'packages/operator-core/lib/harness/git-sync/hive-git-mode';
 
-await setHiveGitMode(workspaceId, hiveHomeSlug, 'bridged');   // flip on
-await setHiveGitMode(workspaceId, hiveHomeSlug, null);        // ROLLBACK: delete the row → reads as 'legacy' again
+await setPotGitMode(workspaceId, potHomeSlug, 'bridged'); // flip on
+const verified = await readPotGitMode(workspaceId, potHomeSlug);
+if (verified.mode !== 'bridged' || verified.source !== 'set') throw new Error('mode flip did not verify');
+await setPotGitMode(workspaceId, potHomeSlug, null);      // rollback: delete the row
 ```
 
-**Rollback is a single delete, and it is safe by construction:**
-`getHiveGitMode` is **fail-open** — an absent row, a malformed value, AND a
-settings-store read error all coerce to `'legacy'` (never throws). So:
+The loopback operator lever is `GET/POST /api/desktop/git/hive-mode` with
+explicit `workspace` + `slug`. It re-reads after a write, returns the read
+`source`, reports settings-store read/verify failures as 503, and reports a
+post-write mismatch as 409; do not claim a successful flip from the fail-soft
+runtime getter alone.
+
+**Rollback is a single delete.** `getPotGitMode` deliberately remains
+fail-soft for the recurring git-sync runtime path: absent, malformed, or
+settings-store-read failure yields `legacy` so a healthy legacy Pot keeps
+pushing. `readPotGitMode` exposes whether that value was `set`, `absent`,
+`invalid`, or `error`; operator verification must inspect that distinction.
+So:
 
 - `mode → null` (or any settings-store outage) instantly restores **today's
   behavior byte-for-byte**: every member's git-sync pushes origin directly
@@ -289,7 +301,7 @@ bin/hive-git-drill.sh                 # uses the newest built .deb by default
 KEEP_UP=1 bin/hive-git-drill.sh        # leave the sidecar(s) up for inspection after
 ```
 
-**Current leg census (2026-07-17):**
+**Current acceptance boundary (reconciled 2026-08-26; the script table is capability coverage, not a signed GO):**
 
 | leg | plan item | status | proves |
 |---|---|---|---|
@@ -305,10 +317,7 @@ KEEP_UP=1 bin/hive-git-drill.sh        # leave the sidecar(s) up for inspection 
 Legs MODE/A-D/F run **single-box, in-process** (real production code paths,
 fake/local transport) — sufficient to prove the mechanics, not sufficient to
 close E/G, which need the actual 2-machine rig
-(`docs/plans/LIVE-1-rig-runbook-2026-07-02.md`). As of P-302 (2026-07-17) leg
-A's underlying mechanism (G-8 cold-join) has ALSO been proven on the real rig
-— see the plan's `## Now` for the live-rig evidence trail; that proof lives on
-the plan, not duplicated into this drill script. Do not hand-author a second
+(`docs/plans/LIVE-1-rig-runbook-2026-07-02.md`). A 2026-08-26 real-rig window supplied supporting peer-link, cold-join, churn, and ref-replication evidence, but it did not complete P-302/P-306/P-308 or the 72-hour P-402 soak. See the plan decisions and signed release map for the current evidence boundary; this table does not supersede them. Do not hand-author a second
 drill script for a leg this one already scaffolds — flip its SKIP to a live
 assert in this same file as rig proof lands.
 
@@ -335,7 +344,7 @@ this analysis — re-open, don't assume this note covers it forever.
 
 ## Kill-switch / rollback summary (one-line version)
 
-`setHiveGitMode(ws, hive, null)` → immediate, fail-open, byte-for-byte revert
+`setPotGitMode(ws, pot, null)` → delete the explicit row; the next runtime read falls back
 to legacy behavior on every member's next tick. No flag exists for the P2P
 drivers themselves (by design — same pattern as `FLAGS.GITHUB_BRIDGE`:
 activation is **structural**, gated by `hiveGit.mode`, not a separate

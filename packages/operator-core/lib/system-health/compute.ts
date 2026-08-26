@@ -1680,8 +1680,8 @@ export function tallyPlans(
 
 async function collectPlans(ctx: HealthCtx): Promise<HealthPanel<PlansHealth>> {
   return panelSafe<PlansHealth>('plans', async () => {
-    const { listPlanIndexRows } = await import('../agent-tools/plans/source');
-    const rows = await listPlanIndexRows({ workspaceId: ctx.ws });
+    const { listPlanIndexRowsCached } = await import('../agent-tools/plans/index-cache');
+    const rows = await listPlanIndexRowsCached({ workspaceId: ctx.ws });
     const data = tallyPlans(rows, ctx.now);
     const status = plansStatus(data);
     return {

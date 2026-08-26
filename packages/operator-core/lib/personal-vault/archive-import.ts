@@ -388,6 +388,13 @@ async function* streamOneEntry(
       }
       recordIndex += 1;
     }
+    if (recordIndex === 0) {
+      yield {
+        warning: `${path}: unsupported Meta JSON shape (expected a messages array)`,
+        checkpoint: { entryIndex: entryIndex + 1, recordIndex: 0 },
+        bytesProcessed: bytesBefore + entryBytes,
+      };
+    }
     return;
   }
 

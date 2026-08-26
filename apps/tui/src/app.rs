@@ -6747,6 +6747,33 @@ impl App {
             // Launch a native agent pane from the Fleet tab (the old Sessions
             // launcher, folded in — D-002b).
             KeyCode::Char('n') if self.tab == Tab::Fleet => Action::Launch(self.launch_spec()),
+            // P-026 transition-tape filters. These are contextual to Tape so
+            // curated `c` remains the comms toggle and the global tab keys keep
+            // their established meanings elsewhere.
+            KeyCode::Char('a')
+                if self.tab == Tab::Fleet && self.fleet.mode == crate::fleet::FleetMode::Tape =>
+            {
+                self.fleet.tape_filter = crate::fleet::TapeFilter::All;
+                Action::Render
+            }
+            KeyCode::Char('!')
+                if self.tab == Tab::Fleet && self.fleet.mode == crate::fleet::FleetMode::Tape =>
+            {
+                self.fleet.tape_filter = crate::fleet::TapeFilter::Exceptions;
+                Action::Render
+            }
+            KeyCode::Char('c')
+                if self.tab == Tab::Fleet && self.fleet.mode == crate::fleet::FleetMode::Tape =>
+            {
+                self.fleet.tape_filter = crate::fleet::TapeFilter::Claims;
+                Action::Render
+            }
+            KeyCode::Char('g')
+                if self.tab == Tab::Fleet && self.fleet.mode == crate::fleet::FleetMode::Tape =>
+            {
+                self.fleet.tape_filter = crate::fleet::TapeFilter::Gates;
+                Action::Render
+            }
             // Comms sub-view toggle (pui-dock-consolidation-2026-06-07 #3/#4):
             // 'c' on the Fleet tab swaps the dossier + plan-progress view for the
             // comms view (selected agent's inbox/outbox over the whole-fleet
@@ -7771,6 +7798,133 @@ mod tests {
 
     fn key(c: char, mods: KeyModifiers) -> Event {
         Event::Key(KeyEvent::new(KeyCode::Char(c), mods))
+    }
+
+    fn switcher_entry(label: &str, state: &str, id: i64) -> RosterEntry {
+        RosterEntry {
+            owner_id: format!("su-{id}"),
+            label: label.into(),
+            source: "codex".into(),
+            session_state: Some(state.into()),
+            adv_session_id: Some(id),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn session_switcher_reducer_ignores_stale_query_results() {
+        let mut a = App::new();
+        a.session_switcher = Some(SessionSwitcher {
+            query: "new".into(),
+            rows: vec![switcher_entry("current", "live", 1)],
+            loading: true,
+            ..Default::default()
+        });
+
+        assert_eq!(
+            a.update(Event::SessionSwitcher {
+                query: "old".into(),
+                result: Ok(vec![switcher_entry("stale", "ended", 2)]),
+            }),
+            Action::Render
+        );
+        let sw = a.session_switcher.as_ref().unwrap();
+        assert_eq!(sw.rows[0].label, "current");
+        assert!(
+            sw.loading,
+            "a stale response must not finish the live query"
+        );
+
+        a.update(Event::SessionSwitcher {
+            query: "new".into(),
+            result: Ok(vec![switcher_entry("fresh", "parked", 3)]),
+        });
+        let sw = a.session_switcher.as_ref().unwrap();
+        assert_eq!(sw.rows[0].label, "fresh");
+        assert!(!sw.loading);
+    }
+
+    #[test]
+    fn session_switcher_fuzzy_score_wins_then_recency_breaks_ties() {
+        let mut a = App::new();
+        a.session_switcher = Some(SessionSwitcher {
+            query: "alpha".into(),
+            rows: vec![
+                switcher_entry("recent alpha", "live", 1),
+                switcher_entry("alpha older", "ended", 2),
+                switcher_entry("alpha oldest", "recorded", 3),
+                switcher_entry("unrelated", "parked", 4),
+            ],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            a.visible_session_switcher()
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha older", "alpha oldest", "recent alpha"]
+        );
+    }
+
+    #[test]
+    fn session_switcher_tab_cycles_mru_and_enter_keeps_it_bounded() {
+        let mut a = App::new();
+        let rows = vec![
+            switcher_entry("one", "live", 11),
+            switcher_entry("two", "live", 12),
+            switcher_entry("three", "live", 13),
+        ];
+        a.session_mru = vec!["adv:13".into(), "adv:12".into()];
+        a.session_switcher = Some(SessionSwitcher {
+            rows,
+            ..Default::default()
+        });
+        assert_eq!(a.session_switcher_key(KeyCode::Tab), Action::Render);
+        assert_eq!(a.session_switcher.as_ref().unwrap().sel, 2);
+        a.session_switcher_key(KeyCode::Tab);
+        assert_eq!(a.session_switcher.as_ref().unwrap().sel, 1);
+
+        for id in 100..110 {
+            a.session_switcher = Some(SessionSwitcher {
+                rows: vec![switcher_entry(&format!("session {id}"), "ended", id)],
+                ..Default::default()
+            });
+            a.session_switcher_key(KeyCode::Enter);
+        }
+        assert_eq!(a.session_mru.len(), 8);
+        assert_eq!(a.session_mru.first().map(String::as_str), Some("adv:109"));
+        assert_eq!(a.session_mru.last().map(String::as_str), Some("adv:102"));
+    }
+
+    #[test]
+    fn session_switcher_enter_reuses_the_existing_agent_route() {
+        let mut a = App::new();
+        let mut entry = live_windowed_entry("claude");
+        entry.adv_session_id = Some(99);
+        entry.label = "switch target".into();
+        let expected = a.resolve_agent_route(&entry);
+        a.session_switcher = Some(SessionSwitcher {
+            rows: vec![entry],
+            ..Default::default()
+        });
+
+        let actual = a.session_switcher_key(KeyCode::Enter);
+        match (expected, actual) {
+            (
+                AgentRoute::FocusWindow {
+                    adv_session_id: expected_id,
+                    ..
+                },
+                Action::FocusWindow {
+                    adv_session_id: actual_id,
+                    ..
+                },
+            ) => assert_eq!(actual_id, expected_id),
+            other => panic!("switcher diverged from resolve_agent_route: {other:?}"),
+        }
+        assert!(a.session_switcher.is_none());
+        assert_eq!(a.session_mru.first().map(String::as_str), Some("adv:99"));
     }
 
     #[test]
@@ -11311,15 +11465,25 @@ mod tests {
 
     #[test]
     fn key_4_switches_to_brew_and_tab_toggles_mode() {
-        // Fleet is digit '4' (D-002); the curated↔mirror toggle moved from
-        // `m` to `Tab` (frees `m` for the Memory tab), mirroring Pots' column Tab.
-        use crate::fleet::FleetMode;
+        // Fleet is digit '4' (D-002); Tab cycles the three renderers over the
+        // shared activity projection and `m` remains free for Memory.
+        use crate::fleet::{FleetMode, TapeFilter};
         let mut a = App::new();
         a.update(key('4', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Fleet);
         assert_eq!(a.fleet.mode, FleetMode::Curated);
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         assert_eq!(a.fleet.mode, FleetMode::Mirror);
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.fleet.mode, FleetMode::Tape);
+        a.update(key('!', KeyModifiers::NONE));
+        assert_eq!(a.fleet.tape_filter, TapeFilter::Exceptions);
+        a.update(key('c', KeyModifiers::NONE));
+        assert_eq!(a.fleet.tape_filter, TapeFilter::Claims);
+        a.update(key('g', KeyModifiers::NONE));
+        assert_eq!(a.fleet.tape_filter, TapeFilter::Gates);
+        a.update(key('a', KeyModifiers::NONE));
+        assert_eq!(a.fleet.tape_filter, TapeFilter::All);
         a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
         assert_eq!(a.fleet.mode, FleetMode::Curated);
         // Tab only toggles the mode on the Fleet tab (elsewhere it's column-switch

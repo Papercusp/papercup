@@ -37,7 +37,8 @@ import {
   crossMachineRigExclusionSql,
 } from '../work-items';
 import { loadHarnessRegistry } from '../harness-registry';
-import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/source';
+import type { PlanIndexRow } from '../agent-tools/plans/source';
+import { listPlanIndexRowsCached } from '../agent-tools/plans/index-cache';
 import { reconcileStartStatus, isTerminalPlanStatus } from '../agent-tools/plans/plan-start-state';
 import { rankPlacements, type PlacementCandidate } from './placement-ranker';
 import type { Ranked } from '../queue-ranker';
@@ -939,7 +940,7 @@ export async function potReadyFrontierDepth(workspaceId: string, potHomeSlug: st
   const planRowsPerHarness = await Promise.all(
     planSlugs.map(async (slug) => {
       try {
-        return await listPlanIndexRows({ harnessSlug: slug, workspaceId });
+        return await listPlanIndexRowsCached({ harnessSlug: slug, workspaceId });
       } catch (err) {
         console.warn(
           `[pot-frontier-depth] plan read failed for '${slug}' — plan-item lanes treated unblocked:`,
@@ -1093,7 +1094,7 @@ function defaultSurveyDeps(workspaceId: string): SurveyDeps {
     // emptying the Mug's frontier so she placed nothing. The survey already scopes
     // to this workspace's harnesses, so its workspaceId IS the correct plan scope
     // (the error's sanctioned "or pass an explicit workspaceId" path).
-    listPlanRows: (harnessSlug) => listPlanIndexRows({ harnessSlug, workspaceId }),
+    listPlanRows: (harnessSlug) => listPlanIndexRowsCached({ harnessSlug, workspaceId }),
     fetchFrontier: (surveySlugs, limit) => {
       const { sql } = getOrgPg();
       return fetchFrontierRows(sql, workspaceId, surveySlugs, limit);
