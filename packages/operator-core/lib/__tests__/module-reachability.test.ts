@@ -259,6 +259,76 @@ describe('buildImportGraph', () => {
   });
 });
 
+describe('grace period for newly-added modules', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const NOW = Date.parse('2026-08-26T06:00:00Z');
+  const OLD = 'apps/operator/lib/release/certified-but-dead.ts';
+  const FRESH = 'apps/operator/lib/release/being-written-right-now.ts';
+
+  // ⚠ BOTH DIRECTIONS ARE LOAD-BEARING. Only the pair distinguishes a working grace
+  // period from a detector that has simply stopped reporting: a test that asserted only
+  // "the fresh module does not fail" passes just as well against an axis gutted to
+  // return nothing at all.
+  it('JUDGES a module past the grace period — the detector still detects', () => {
+    const { judged, inFlight } = partitionByGracePeriod({
+      modules: [{ module: OLD }],
+      addedAtByModule: new Map([[OLD, NOW - (NEW_MODULE_GRACE_DAYS + 1) * DAY]]),
+      now: NOW,
+    });
+    expect(judged.map((r) => r.module)).toEqual([OLD]);
+    expect(inFlight).toEqual([]);
+  });
+
+  it('SPARES a module inside the grace period — in-flight work never red-pins the fleet', () => {
+    const { judged, inFlight } = partitionByGracePeriod({
+      modules: [{ module: FRESH }],
+      addedAtByModule: new Map([[FRESH, NOW - 20 * 60 * 1000]]),
+      now: NOW,
+    });
+    expect(judged).toEqual([]);
+    expect(inFlight.map((r) => r.module)).toEqual([FRESH]);
+    expect(inFlight[0]!.ageDays).toBeLessThan(1);
+  });
+
+  it('splits a mixed population instead of failing or sparing all of it', () => {
+    const { judged, inFlight } = partitionByGracePeriod({
+      modules: [{ module: OLD }, { module: FRESH }],
+      addedAtByModule: new Map([
+        [OLD, NOW - 30 * DAY],
+        [FRESH, NOW - 1 * DAY],
+      ]),
+      now: NOW,
+    });
+    expect(judged.map((r) => r.module)).toEqual([OLD]);
+    expect(inFlight.map((r) => r.module)).toEqual([FRESH]);
+  });
+
+  it('FAILS OPEN on an unknown add-date rather than red-pinning on its own degraded lookup', () => {
+    // An empty map is exactly what readModuleAddDates returns when git fails. The axis
+    // must go advisory, not hard-fail every unreachable module at once.
+    const { judged, inFlight } = partitionByGracePeriod({
+      modules: [{ module: OLD }, { module: FRESH }],
+      addedAtByModule: new Map(),
+      now: NOW,
+    });
+    expect(judged).toEqual([]);
+    expect(inFlight.map((r) => r.module)).toEqual([OLD, FRESH]);
+    expect(inFlight.every((r) => r.ageDays === null)).toBe(true);
+  });
+
+  it('preserves the diagnostic fields the report prints for each module', () => {
+    // The row carries testedButUnwired/testImporters; dropping them on the way through
+    // the partition would silently blank the "it LOOKS covered" warning.
+    const row = { module: OLD, testedButUnwired: true, testImporters: ['a.test.ts'] };
+    const { judged } = partitionByGracePeriod({
+      modules: [row],
+      addedAtByModule: new Map([[OLD, NOW - 90 * DAY]]),
+      now: NOW,
+    });
+    expect(judged[0]).toMatchObject({ testedButUnwired: true, testImporters: ['a.test.ts'] });
+  });
+});
+
 describe('helpers', () => {
   it('classifies test files, and finds only fully-qualified release paths', () => {
     expect(isTestFile(DETECTOR_TEST)).toBe(true);

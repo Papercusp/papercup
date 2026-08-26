@@ -1304,7 +1304,7 @@ function runModuleReachability({ files, workspaceDirByName }) {
  * @param {string[]} modules repo-relative module paths
  * @returns {Map<string, number>} module -> epoch ms it was ADDED
  */
-function readModuleAddDates(modules) {
+export function readModuleAddDates(modules) {
   const added = new Map();
   if (!modules.length) return added;
   try {
@@ -1323,9 +1323,12 @@ function readModuleAddDates(modules) {
         stamp = Number.isFinite(secs) ? secs * 1000 : null;
         continue;
       }
-      // `git log` walks newest-first, so the LAST stamp seen for a path is its
-      // earliest (true) add. Overwrite unconditionally rather than keeping the first.
-      if (stamp !== null && wanted.has(line)) added.set(line, stamp);
+      // `git log` walks newest-first (verified: stamps descend), so the FIRST stamp
+      // seen for a path is its MOST RECENT add. Keep that one, not the earliest.
+      // Only a delete-then-re-add distinguishes them, and there the recent date is the
+      // fail-open answer: a module resurrected yesterday is someone's in-flight work,
+      // and dating it from its original birth would judge it on its first day back.
+      if (stamp !== null && wanted.has(line) && !added.has(line)) added.set(line, stamp);
     }
   } catch {
     return new Map();
