@@ -2539,8 +2539,22 @@ _pc_heavy_run_with_retries() {
   # TTY EXCEPTION: when stdout is a terminal, a human is watching and live progress
   # matters more than the multiplier (a `test:affected` run would otherwise go silent
   # for minutes), and they can see the "retrying after preemption" banner on stderr
-  # that explains any repeat. Machine consumers never hold a TTY, so the parsed path
-  # is always the isolated one. Buffering is skipped entirely in that case.
+  # that explains any repeat. Machine consumers never hold a TTY, so for them STDOUT
+  # is always the isolated one. Buffering is skipped entirely in the TTY case.
+  #
+  # ⚠ SCOPE — THIS ISOLATES STDOUT ONLY, AND THAT IS NOT THE SAME AS "the parsed path".
+  # stderr stays inherited on every attempt (deliberately, so progress streams live and
+  # unbuffered), so a wrapped command whose machine-parsed contracts are emitted on
+  # STDERR is NOT deduplicated by anything here. That is not hypothetical: this repo's
+  # biggest consumer, `npm run test:affected`, splits its own verdict marker across both
+  # streams — `AFFECTED_TESTS_RESULT status=passed` goes to stdout (isolated) while
+  # status=failed, `AFFECTED_TESTS_FAILING_FILES` and the failing-task bullets all go to
+  # stderr (NOT isolated), and green-checkpoint parses `stdout + stderr` concatenated.
+  # Measured harmless today only because affected-tests.mjs registers no signal trap, so
+  # a preempted attempt dies before ANY terminal path and contributes no verdict line to
+  # duplicate — see the guard in
+  # packages/operator-core/lib/__tests__/affected-tests-result-line.test.ts. Before you
+  # widen the parsed surface of a retried command, check which stream it lands on.
   #
   # Fail-open, matching the rest of this wrapper: if the buffer cannot be created we
   # warn and keep today's inherited-stdout behavior rather than refusing to run.

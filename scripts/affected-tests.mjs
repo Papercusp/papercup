@@ -352,6 +352,24 @@ logLine(
 // buys no marker and costs promptness: it converts a killable runner into one that
 // only SIGKILL can stop, against a repo whose kill discipline is load-bearing.
 //
+// SECOND, INDEPENDENT REASON (WI-42144) — the absence of this trap is what keeps a
+// pc-heavy RETRY SERIES from emitting contradictory verdict lines, and that load is
+// carried nowhere else. `npm run test:affected` runs under
+// PC_HEAVY_RETRY_PREEMPTIONS=3, so one invocation can be up to 4 attempts. pc-heavy
+// isolates only STDOUT between attempts; stderr stays inherited, and this script emits
+// its whole FAILURE surface on stderr (`AFFECTED_TESTS_RESULT status=failed`,
+// `AFFECTED_TESTS_FAILING_FILES`, the failing-task bullets) while `status=passed` goes
+// to stdout. green-checkpoint parses the two streams concatenated. Today that is safe
+// for exactly one reason: with no trap, a preempted attempt dies before reaching ANY
+// terminal path, so it contributes no verdict line and there is nothing to duplicate —
+// measured on /tmp/wi42118-affected.log, a real 4-attempt series carrying 4 derivation
+// headers and ZERO verdict/attribution markers, including from an attempt whose
+// test:lane-stateful task had genuinely exited 1 (per-task output is captured and
+// replayed at the end, per the block below, so it never leaked a FAIL row either).
+// Add the trap and a preempted attempt starts writing terminal markers into a stream
+// that is NOT deduplicated. Fixing that would mean isolating stderr too, or moving the
+// failure contracts onto stdout — not just adding the handler.
+//
 // What DOES work is below and above: `exit` covers every in-process way out (an
 // uncaught exception, an unhandled rejection, an early exit that emits no verdict),
 // and for a signal — where by construction nothing of ours can run — the BEGIN line's
