@@ -12,6 +12,20 @@
  */
 export function writeAllSync(fd: number, text: unknown): void;
 /**
+ * Append a record assembled from several parts without yielding the event loop.
+ *
+ * This is intentionally the file analogue of {@link writeAllSync}: callers that
+ * must publish durable evidence before exposing a completion pulse cannot use a
+ * stream, whose buffered writes may still be pending when the process is signalled.
+ * Keeping one fd open also prevents another append from being interleaved between
+ * a record's header, body, and footer.
+ *
+ * @param {string} path - File opened with append semantics.
+ * @param {Iterable<unknown>} parts - Record fragments, written in order.
+ * @returns {void}
+ */
+export function appendAllSync(path: string, parts: Iterable<unknown>): void;
+/**
  * `console.log`-shaped synchronous stdout line (fd 1, appends a newline).
  *
  * @param {unknown} [msg] - Interpolated via a template literal, so any value is accepted.
