@@ -13,9 +13,11 @@ import {
   formatTaskBudgetMarker,
   formatTaskBudgetObservedMarker,
   mergeDurationHistory,
+  pidsEventRefusalDelta,
   planAffectedTaskShards,
   readDurationHistory,
   readTaskCgroupMemoryMaxMb,
+  readTaskCgroupPidsEventMax,
   readTaskCgroupPidsMax,
   resolveGlobalWorkerBudget,
   resolveMemoryBudgetMb,
@@ -521,6 +523,27 @@ describe('resolveMemoryBudgetMb', () => {
     expect(readTaskCgroupPidsMax({ readFile })).toBeNull();
   });
 
+  it('reads the cumulative refused-fork count from pids.events', () => {
+    const files = new Map([
+      ['/proc/self/cgroup', '0::/user.slice/test.scope\n'],
+      ['/sys/fs/cgroup/user.slice/test.scope/pids.events', 'max 121\n'],
+    ]);
+    const readFile = (path: string) => {
+      if (!files.has(path)) throw Object.assign(new Error('missing'), { code: 'ENOENT' });
+      return files.get(path)!;
+    };
+    expect(readTaskCgroupPidsEventMax({ readFile })).toBe(121);
+    files.set('/sys/fs/cgroup/user.slice/test.scope/pids.events', 'max not-a-number');
+    expect(readTaskCgroupPidsEventMax({ readFile })).toBeNull();
+  });
+
+  it('invalidates only red runs when the cgroup refused forks during the run', () => {
+    expect(pidsEventRefusalDelta({ start: 30, end: 121, hasFailures: true })).toBe(91);
+    expect(pidsEventRefusalDelta({ start: 30, end: 121, hasFailures: false })).toBe(0);
+    expect(pidsEventRefusalDelta({ start: 121, end: 121, hasFailures: true })).toBe(0);
+    expect(pidsEventRefusalDelta({ start: null, end: 121, hasFailures: true })).toBe(0);
+  });
+
   it('serializes an 8192-pid task scope instead of admitting two peak-sized test tasks', () => {
     const resolved = resolveTaskBudget({ ...config, taskCgroupPidsMax: 8192 });
     expect(resolved).toMatchObject({
@@ -913,6 +936,8 @@ describe('affected-tests scheduler wiring', () => {
     expect(AFFECTED_TESTS_SRC).toContain('taskCgroupMemoryMaxMb: TASK_CGROUP_MEMORY_MAX_MB');
     expect(AFFECTED_TESTS_SRC).toContain('const TASK_CGROUP_PIDS_MAX = readTaskCgroupPidsMax()');
     expect(AFFECTED_TESTS_SRC).toContain('taskCgroupPidsMax: TASK_CGROUP_PIDS_MAX');
+    expect(AFFECTED_TESTS_SRC).toContain('const TASK_CGROUP_PIDS_EVENTS_MAX_START = readTaskCgroupPidsEventMax()');
+    expect(AFFECTED_TESTS_SRC).toContain('AFFECTED_TESTS_REFUSAL kind=pids-exhausted');
     // MemAvailable, never MemFree/os.freemem() — the latter two ignore reclaimable page cache and
     // read catastrophically low on a long-lived box. (Asserted on the READ, not on the absence of
     // the string "os.freemem()" anywhere in the file: the prose explaining WHY we avoid it names

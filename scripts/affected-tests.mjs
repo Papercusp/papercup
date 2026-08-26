@@ -110,8 +110,10 @@ import {
   formatTaskBudgetObservedMarker,
   mergeDurationHistory,
   planAffectedTaskShards,
+  pidsEventRefusalDelta,
   readDurationHistory,
   readTaskCgroupMemoryMaxMb,
+  readTaskCgroupPidsEventMax,
   readTaskCgroupPidsMax,
   resolveGlobalWorkerBudget,
   resolveMemoryBudgetMb,
@@ -473,6 +475,12 @@ function readMemAvailableMb() {
 const MEM_AVAILABLE_MB = readMemAvailableMb();
 const TASK_CGROUP_MEMORY_MAX_MB = readTaskCgroupMemoryMaxMb();
 const TASK_CGROUP_PIDS_MAX = readTaskCgroupPidsMax();
+// EI-21540797943980235: pids.max cannot be translated into a reliable worker cap because the
+// controller counts threads and suites may spawn an unpredictable number of node/git/npm
+// children. The cumulative refusal counter is the authoritative post-hoc detector: if it moves
+// during a red run, the apparent failures are not a valid verdict. A green run remains valid —
+// a child that failed to fork cannot manufacture a passing assertion.
+const TASK_CGROUP_PIDS_EVENTS_MAX_START = readTaskCgroupPidsEventMax();
 // EI-21472375431146082: a pre-launch TASK_BUDGET_REFUSAL (pids/memory ceiling below one
 // task envelope — e.g. a confined cgroup with pids.max=0) used to escape
 // as a raw throw, and the exit-handler fallback stamped it with the GENERIC
@@ -4817,6 +4825,31 @@ if (quarantinedFailed) {
 // possibly-misreported exit code alone.
 const resultLine = (status) =>
   `AFFECTED_TESTS_RESULT status=${status} tasks=${tasks.length} failed=${failed} quarantinedFailed=${quarantinedFailed} timedOutTasks=${timedOutTasks} undeterminedTasks=${undeterminedTasks}`;
+const taskCgroupPidsEventsMaxEnd =
+  failed || undeterminedTasks ? readTaskCgroupPidsEventMax() : null;
+const refusedForks = pidsEventRefusalDelta({
+  start: TASK_CGROUP_PIDS_EVENTS_MAX_START,
+  end: taskCgroupPidsEventsMaxEnd,
+  hasFailures: Boolean(failed || undeterminedTasks),
+});
+if (refusedForks > 0) {
+  // Exit 78 (EX_CONFIG), matching the pre-launch task-budget refusal. Do not emit the normal
+  // failed verdict or failing-file attribution: fork refusal makes the red UNDETERMINED and
+  // presenting its partial failures as an ordinary test verdict is the defect this guards.
+  errSync(
+    `AFFECTED_TESTS_REFUSAL kind=pids-exhausted refusedForks=${refusedForks}`,
+  );
+  errSync(
+    `${resultLine("refused")} reason=pids-exhausted refusedForks=${refusedForks}`,
+  );
+  errSync(
+    "NOT MEASURED — the task cgroup refused one or more forks during this red run; " +
+      "re-run the named tests outside the constrained scope before source triage.",
+  );
+  terminalEmitted = true;
+  errSync(`Full run log: ${RUN_LOG_PATH}`);
+  process.exit(78);
+}
 if (undeterminedTasks) {
   // A separate marker makes the attribution greppable without forcing triage to infer
   // "failed=0" means process-start uncertainty. The verdict line still says status=failed
@@ -4926,7 +4959,10 @@ try {
     // and certifying it would vouch for commits no task ever saw.
     runStartHead: RUN_START_HEAD,
   });
-  if (decision.advance && gitTry(["update-ref", TEST_CERTIFIED_REF, decision.sha]) !== null) {
+  if (
+    decision.advance &&
+    gitTry(["update-ref", TEST_CERTIFIED_REF, decision.sha]) !== null
+  ) {
     outSync(
       `AFFECTED_TEST_CERTIFIED ref=${TEST_CERTIFIED_REF} sha=${String(decision.sha).slice(0, 12)} ` +
         `tasks=${tasks.length} — the next unscoped run diffs from here instead of origin/main`,
