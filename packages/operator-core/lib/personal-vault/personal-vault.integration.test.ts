@@ -307,17 +307,21 @@ describe('Personal Vault core', () => {
       providerAccountId: 'first@example.com',
     });
     expect(removed).toMatchObject({ documents: 1, cursors: 0 });
-    const remaining = await org.adminSql<Array<{
-      source_id: string;
-      provider_account_id: string;
-    }>>`
+    const remaining = await org.adminSql<
+      Array<{
+        source_id: string;
+        provider_account_id: string;
+      }>
+    >`
       SELECT source_id::text, provider_account_id
         FROM harness_shared.personal_documents
        WHERE workspace_id = ${WS} AND user_id = ${userId} AND source = 'gmail'`;
-    expect(remaining).toEqual([{
-      source_id: secondSourceId,
-      provider_account_id: 'second@example.com',
-    }]);
+    expect(remaining).toEqual([
+      {
+        source_id: secondSourceId,
+        provider_account_id: 'second@example.com',
+      },
+    ]);
     const otherUserRows = await org.adminSql<Array<{ n: number }>>`
       SELECT count(*)::int AS n
         FROM harness_shared.personal_documents

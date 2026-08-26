@@ -247,9 +247,7 @@ describe("PersonalVaultSettingsPage", () => {
         name: "Purge personal:gmail for owner@example.com?",
       }),
     ).toBeTruthy();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Permanently purge" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Permanently purge" }));
 
     await waitFor(() => {
       const purgeCall = fetchMock.mock.calls.find(

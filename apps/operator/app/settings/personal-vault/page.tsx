@@ -527,8 +527,7 @@ export default function PersonalVaultSettingsPage() {
     {
       key: "account",
       header: "Account",
-      render: (source) =>
-        source.provider_account_id ?? "Legacy / unattributed",
+      render: (source) => source.provider_account_id ?? "Legacy / unattributed",
       cellTitle: (source) => source.source_id ?? undefined,
     },
     {
