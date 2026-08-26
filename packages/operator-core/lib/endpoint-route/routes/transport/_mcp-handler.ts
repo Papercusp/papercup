@@ -2972,6 +2972,10 @@ const handler = createMcpHandler(
                     args,
                     canCodeRun: canCodeRunHere,
                     codeRunInSurface,
+                    // clusterTurns models inference turns from DISPATCH proximity.
+                    // Completion time is duration-skewed, so parallel heterogeneous
+                    // calls would otherwise look like several sequential turns.
+                    now: callStartedAt,
                     // EI-21254965187146713: what the call actually COST. The nudge uses it to
                     // refuse to recommend a fold the code:run script budget would kill — the
                     // failure that made an agent pay for the sequential calls it discouraged,
