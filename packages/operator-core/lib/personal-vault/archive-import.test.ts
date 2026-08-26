@@ -1,6 +1,21 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import AdmZip from 'adm-zip';
-import { parseIcs, parseMbox, parsePersonalArchive, parseVcard } from './archive-import';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  parseIcs,
+  parseMbox,
+  parsePersonalArchive,
+  parseVcard,
+  streamPersonalArchiveFile,
+} from './archive-import';
+import { PersonalArchiveEncryptedWriter } from './archive-encryption';
+
+const tempDirs: string[] = [];
+afterEach(async () => {
+  await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
+});
 
 describe('Personal Vault archive importers', () => {
   it('parses Gmail mbox messages with stable ids and participants', () => {
@@ -29,5 +44,49 @@ describe('Personal Vault archive importers', () => {
     expect(parsed.sources).toEqual(['facebook', 'x']);
     expect(parsed.documents.map((d) => d.kind).sort()).toEqual(['message', 'post']);
     expect(parsed.warnings).toEqual([]);
+  });
+
+  it('streams Meta message arrays one record at a time and resumes from a record checkpoint', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'papercusp-meta-import-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'archive.bin');
+    const messages = Array.from({ length: 250 }, (_, index) => ({
+      id: `message-${index}`,
+      sender_name: index % 2 ? 'Ada' : 'Bob',
+      timestamp_ms: 1_787_000_000_000 + index,
+      content: `Message ${index}`,
+    }));
+    const zip = new AdmZip();
+    zip.addFile(
+      'facebook/messages/inbox/thread/message_1.json',
+      Buffer.from(JSON.stringify({ participants: [{ name: 'Ada' }, { name: 'Bob' }], messages })),
+    );
+    const writer = await PersonalArchiveEncryptedWriter.create('workspace-a', path, {
+      chunkBytes: 1024,
+    });
+    await writer.write(zip.toBuffer());
+    await writer.finish();
+
+    const first: string[] = [];
+    for await (const record of streamPersonalArchiveFile(
+      'workspace-a',
+      'facebook.zip',
+      path,
+      {},
+    )) {
+      if (record.document) first.push(record.document.externalId!);
+      if (first.length === 125) break;
+    }
+    const resumed: string[] = [];
+    for await (const record of streamPersonalArchiveFile(
+      'workspace-a',
+      'facebook.zip',
+      path,
+      { entryIndex: 0, recordIndex: 125 },
+    )) {
+      if (record.document) resumed.push(record.document.externalId!);
+    }
+    expect(first).toEqual(messages.slice(0, 125).map(({ id }) => id));
+    expect(resumed).toEqual(messages.slice(125).map(({ id }) => id));
   });
 });
