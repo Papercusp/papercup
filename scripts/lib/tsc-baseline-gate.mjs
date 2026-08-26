@@ -2022,17 +2022,17 @@ export function coalesceWatermarkFor({ root, files, updateFlag }) {
  * Build the argv handed to pc-heavy for one compiler pass.
  *
  * `--files` scopes the GATE verdict, not TypeScript itself, so it is deliberately
- * absent from {@link executableTscCommand}. pc-heavy still needs to know that this
- * is an explicitly scoped lint:tsc call: during a release-gate materialization it
- * routes only those calls through the independent focused lane. Put stable sentinel
- * argv after `sh -c`'s command string — `sh` consumes them only as `$0`/`$1`, while
- * pc-heavy sees them during admission. The sentinel is identical for every scoped
- * caller, preserving the compile coalescing that would be defeated by forwarding
- * each caller's real comma-separated file list.
+ * absent from {@link executableTscCommand}. Put the stable `lint:tsc` sentinel after
+ * `sh -c`'s command string for EVERY compile — `sh` consumes it as `$0`, while
+ * pc-heavy uses it to recognize the finite-cgroup typecheck shape even though the
+ * real compiler command is inside one shell-string argument. A scoped invocation
+ * also carries the stable `--files` marker as `$1`, which lets release-gate
+ * materialization route only those calls through the focused lane. Neither sentinel
+ * includes the caller's real comma-separated file list, preserving coalescing.
  */
 export function pcHeavyCompileArgv(executableTscCommand, scoped) {
-  const argv = ['sh', '-c', `${executableTscCommand} 2>&1`];
-  if (scoped) argv.push('lint:tsc', '--files=__pc_heavy_scoped__');
+  const argv = ['sh', '-c', `${executableTscCommand} 2>&1`, 'lint:tsc'];
+  if (scoped) argv.push('--files=__pc_heavy_scoped__');
   return argv;
 }
 
