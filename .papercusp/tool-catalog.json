@@ -6346,7 +6346,7 @@
           "POST"
         ]
       },
-      "description": "List the live coordination roster and who can take work. Read summary.wakeable and each row's sessionState/wakeable; ended rows appear only for targeted owner lookups. Default scope is your Hive. In a hive-scoped SU session, scope:'workspace' and scope:'all' are rejected with hive_forbidden; browse your Hive by default, or use { owner } / bounded { owners } targeting for workspace peers. An unscoped/admin session is required for workspace-wide browsing. Use scope/pot for explicit scope, owner for one row, owners for a dependency set, or coord:roster { view:'live', project:'ids' } for a broad bounded census. Do not pass legacy harness, ownerId, ownerIds, plan, includeStale, or include_stale keys. For plan-scoped claims use coord:roster { view:'claims', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.",
+      "description": "List the live coordination roster and who can take work. Read summary.wakeable and each row's sessionState/wakeable; ended rows appear only for targeted owner lookups. Default scope is your Hive. In a hive-scoped SU session, scope:'workspace' and scope:'all' are rejected with hive_forbidden; browse your Hive by default, or use { owner } / bounded { owners } targeting for workspace peers. An unscoped/admin session is required for workspace-wide browsing. Use scope/pot for explicit scope, owner for one row, ownerId as a compatibility alias for owner, owners for a dependency set, or coord:roster { view:'live', project:'ids' } for a broad bounded census. ownerId is normalized to the canonical owner selector; do not combine owner and ownerId, or either with owners. Do not pass legacy harness, ownerIds, plan, includeStale, or include_stale keys. For plan-scoped claims use coord:roster { view:'claims', plan } or fleet:assignments { plan }. Use since:<etag> for cheap unchanged reads.",
       "capabilities": [
         "coord:read"
       ],
@@ -6368,7 +6368,7 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, send a required coord:send wake and inspect its result; ended rows need relaunch. Use owner:<id> for one agent, owners:[...] for a bounded dependency set, and coord:roster { view:'live', project:'ids' } for a broad census.",
+        "when": "Use before dispatch or handoff. Choose a parked + wakeable row. Before taking over draining/suspect rows, send a required coord:send wake and inspect its result; ended rows need relaunch. Use owner:<id> (or the ownerId compatibility alias for older callers) for one agent, owners:[...] for a bounded dependency set, and coord:roster { view:'live', project:'ids' } for a broad census.",
         "notWhen": "Not for file ownership (locks:queue), historical ended-agent dumps, or every-turn polling when coord deltas suffice. Presence reports liveness, not file activity; use locks:queue plus git status/file mtimes to see who edits files.",
         "chaining": "Read once and follow coord deltas; if repolling, pass since:<etag> for a tiny unchanged stub."
       }
