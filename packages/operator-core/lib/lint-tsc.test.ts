@@ -906,6 +906,41 @@ describe('parseTscErrors', () => {
     expect(parseTscErrors('')).toEqual([]);
     expect(parseTscErrors('all good\n')).toEqual([]);
   });
+
+  // EI-21523730940957057 — a duplicated compiler stream used to inflate per-file counts once per
+  // copy, so the gate reported `status=regressed` for files whose DISTINCT error count equalled
+  // their baseline. The pair below is the point: the first test proves duplicates collapse, the
+  // second proves the key is the FULL identity, so the dedupe cannot over-collapse distinct errors.
+  it('counts a verbatim-repeated diagnostic once, however many times it is emitted', () => {
+    const line = "lib/foo.ts(10,5): error TS2322: Type 'string' is not assignable to type 'number'.";
+    expect(parseTscErrors([line, line, line].join('\n'))).toEqual([
+      { file: 'lib/foo.ts', code: 'TS2322' },
+    ]);
+    // The regression this guards is the COUNT, so assert it the way the gate consumes it.
+    expect(countByFile(parseTscErrors([line, line, line].join('\n')))).toEqual({ 'lib/foo.ts': 1 });
+    expect(countByFile(parseTscErrors(line))).toEqual({ 'lib/foo.ts': 1 });
+  });
+
+  it('keeps diagnostics that differ in line, column, or code — dedupe is on the full identity', () => {
+    const errors = parseTscErrors(
+      [
+        'lib/foo.ts(10,5): error TS2322: a',
+        'lib/foo.ts(11,5): error TS2322: differs by line',
+        'lib/foo.ts(10,6): error TS2322: differs by column',
+        'lib/foo.ts(10,5): error TS2339: differs by code',
+      ].join('\n'),
+    );
+    expect(errors).toHaveLength(4);
+    expect(countByFile(errors)).toEqual({ 'lib/foo.ts': 4 });
+  });
+
+  it('does not dedupe unattributed diagnostics, which carry no position to identify them by', () => {
+    const bare = 'error TS5042: Option project cannot be mixed with source files.';
+    expect(parseTscErrors([bare, bare].join('\n'))).toEqual([
+      { file: null, code: 'TS5042' },
+      { file: null, code: 'TS5042' },
+    ]);
+  });
 });
 
 describe('nested worktree diagnostic paths (EI-21125819548056320)', () => {
