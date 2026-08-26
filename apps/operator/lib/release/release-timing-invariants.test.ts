@@ -39,6 +39,7 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from "@papercusp/operator-core/lib/dbos/dbos-executor-reaper";
 import {
   GREEN_CHECKPOINT_CRON,
+  greenCheckpointCronForInstall,
   GREEN_CHECKPOINT_FIRE_PERIOD_MS,
   GREEN_CHECKPOINT_PHASE_MARGIN_MS,
   GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
@@ -384,6 +385,20 @@ describe("green-gate schedule is single-sourced (WI-39841 follow-on)", () => {
     // that this file learns to evaluate arbitrary crons.
     expect(GREEN_CHECKPOINT_CRON).toMatch(/^\d{1,2} \d{1,2} \* \* \* \*$/);
     expect(GREEN_CHECKPOINT_FIRE_PERIOD_MS).toBe(60 * MIN);
+  });
+
+  it("deterministically spreads the observed multi-pot fleet across the hour", () => {
+    const installs = [
+      'papercusp-public-site', 'hello-world-2-hive', 'spoon-knife-hive', 'quartermaster',
+      'oddsmith', 'stonebrook-android', 'panda-gallery', 'hello-world-3',
+      'thornbury-iphone', 'hello-world-hive', 'hotel-reservations', 'scout-runtime',
+      'hello-world-3-pot', 'papercusp-public-site-pot', 'calendar', 'quartermaster-hive',
+      'email', 'dummy-pot-0707', 'readinglist', 'sidestage',
+    ];
+    const crons = installs.map(greenCheckpointCronForInstall);
+    expect(new Set(crons).size).toBe(installs.length);
+    expect(crons.every((cron) => /^\d{1,2} \d{1,2} \* \* \* \*$/.test(cron))).toBe(true);
+    expect(greenCheckpointCronForInstall('oddsmith')).toBe(greenCheckpointCronForInstall('oddsmith'));
   });
 
   it("is the ONLY place the gate's cron literal appears", () => {

@@ -14,7 +14,7 @@
  * (so a hive-create rollback removes the rows it added).
  */
 import type postgres from 'postgres';
-import { GREEN_CHECKPOINT_CRON } from '../../release/green-checkpoint-schedule';
+import { greenCheckpointCronForInstall } from '../../release/green-checkpoint-schedule';
 import { resolveHiveReleaseEnv } from './hive-release-env';
 
 export interface SeedHiveReleaseResult {
@@ -32,7 +32,6 @@ const NOOP_UNDO = async () => {};
 
 /** The per-hive routine set. green-checkpoint always; release-trigger only when the hive
  *  declares a deploy target (leg 3). Crons match the operator-home defaults. */
-const GREEN_CHECKPOINT = { name: 'green-checkpoint', target: 'system:green-checkpoint', cron: GREEN_CHECKPOINT_CRON } as const;
 const RELEASE_TRIGGER = { name: 'release-trigger', target: 'system:release-trigger', cron: '0 */15 * * * *' } as const;
 
 export async function seedHiveReleaseRoutines(opts: {
@@ -56,7 +55,12 @@ export async function seedHiveReleaseRoutines(opts: {
   if (!env.enabled) return { seeded: false, reason: env.reason ?? 'gate_disabled', undo: NOOP_UNDO };
 
   const active = opts.active ?? true;
-  const routines = env.hasDeploy ? [GREEN_CHECKPOINT, RELEASE_TRIGGER] : [GREEN_CHECKPOINT];
+  const greenCheckpoint = {
+    name: 'green-checkpoint',
+    target: 'system:green-checkpoint',
+    cron: greenCheckpointCronForInstall(opts.potSlug),
+  } as const;
+  const routines = env.hasDeploy ? [greenCheckpoint, RELEASE_TRIGGER] : [greenCheckpoint];
   const seededNames: string[] = [];
   for (const r of routines) {
     const id = `rt_${opts.potSlug}_${r.name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();

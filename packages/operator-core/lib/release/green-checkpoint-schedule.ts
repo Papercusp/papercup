@@ -31,7 +31,10 @@
  */
 
 /**
- * The cron every green-checkpoint seed site writes into `harness_shared.routines`:
+ * The operator-home cron derived from its install slug. Every seed site calls
+ * `greenCheckpointCronForInstall()` with the row's own install slug instead of
+ * copying this value, so independent pots spread their hourly fires across the
+ * hour instead of stampeding the host-wide materialization barrier.
  * `seed-hive-release-routines.ts`, `apps/operator/lib/release/seed-release-routines.ts`,
  * and `apps/operator/lib/release/retrofit-hive-to-gate.ts`. Hourly at :15, offset from
  * git-sync's every-10-minute ticks.
@@ -42,7 +45,21 @@
  * this constant — coupling it would mean retuning the gate silently moved an unrelated
  * monitor. Match on the routine NAME before assuming a literal is a copy of this one.
  */
-export const GREEN_CHECKPOINT_CRON = '0 15 * * * *';
+export function greenCheckpointCronForInstall(installSlug: string): string {
+  // FNV-1a is tiny, stable across processes/platforms, and has enough avalanche
+  // for this scheduling purpose. Use both seconds and minutes: 3,600 buckets
+  // keep a fleet of tens of installs from clustering on one second while the
+  // hour field preserves the existing once-per-hour cadence.
+  let hash = 0x811c9dc5;
+  for (const char of installSlug) {
+    hash ^= char.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  const secondOfHour = (hash >>> 0) % 3_600;
+  return `${secondOfHour % 60} ${Math.floor(secondOfHour / 60)} * * * *`;
+}
+
+export const GREEN_CHECKPOINT_CRON = greenCheckpointCronForInstall('papercusp');
 
 /** The fire period `GREEN_CHECKPOINT_CRON` implies — one hour. */
 export const GREEN_CHECKPOINT_FIRE_PERIOD_MS = 60 * 60_000;
