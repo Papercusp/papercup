@@ -37,6 +37,7 @@ import { GRADING_INTEGRITY_RUBRIC_REF, gradingAuditGateEnabled, needsGradingAudi
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
+import { emitScorecardEmitted } from '../../scorecard-emitted-events';
 import { evaluateCriterionTestChecks, evaluateCriterionCoverageChecks } from '../../rubrics-criterion-checks';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarnessSlug } from '../plans/source';
@@ -854,6 +855,27 @@ export async function emitScorecard(
       rubric.kind === 'acceptance' && input.role === 'judge'
         ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
         : undefined;
+    // EI-21434202765745827: fire the awaitable "this rubric was just graded" key. The
+    // plan-completion contract REQUIRES a non-implementer to grade an implementer's plan,
+    // so "wait for someone else's scorecard" is the designed happy path of every ship —
+    // but until this emit there was no key for it, and the implementer could only re-poll
+    // scorecards:list. Gated on `result.created` so only a genuinely FILED card wakes
+    // anyone (a refused or re-read emit fires nothing), and fail-soft inside, so a failed
+    // emit can never fail the scorecard write that already succeeded.
+    if (result.created && result.issue?.id) {
+      await emitScorecardEmitted(
+        {
+          issueId: result.issue.id,
+          rubricRef: args.rubricRef,
+          rubricKind: rubric.kind ?? null,
+          subjectKind: args.subject?.kind ?? null,
+          subjectRef: args.subject?.ref ?? null,
+          createdBy: input.createdBy ?? null,
+          hasAcceptance: Boolean(args.acceptance),
+        },
+        input.workspaceId ? { workspaceId: input.workspaceId } : {},
+      );
+    }
     return {
       ok: true as const,
       created: result.created,

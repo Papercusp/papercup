@@ -331,6 +331,23 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true, // P-105: releaseWorkItem fires `claim:released:<id>` (voluntary release + reaper)
   },
   {
+    family: 'scorecard-emitted',
+    keyTemplate: 'scorecard:emitted:<rubricRef>',
+    params: [
+      {
+        name: 'rubricRef',
+        required: true,
+        describe:
+          "the rubric whose grade you are waiting on — an implementer awaits their own plan's acceptance rubric ref",
+      },
+    ],
+    describe:
+      'A scorecard was FILED against this rubric. The plan-completion contract REQUIRES a non-implementer to grade an implementer\'s plan, so "wait for someone else\'s card" is the happy path of every ship — this is what an implementer parks on instead of re-polling scorecards:list. The payload carries `createdBy`, `hasAcceptance`, and the graded subject, so a payload_filter can wake you only for an INDEPENDENT card rather than your own acceptance re-emit.',
+    emitter:
+      'scorecard-emitted-events (packages/operator-core/lib/scorecard-emitted-events.ts) — fired from scorecards:emit at the single point a card is filed, gated on result.created so a refused or re-read emit wakes nobody (EI-21434202765745827)',
+    exists: true,
+  },
+  {
     family: 'fleet-drained',
     keyTemplate: 'fleet:drained:<slug>',
     params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
