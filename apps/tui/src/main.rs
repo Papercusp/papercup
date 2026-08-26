@@ -1134,6 +1134,19 @@ async fn run<B: Backend>(
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::MutateAgentChatTask {
+                harness,
+                chat_id,
+                mutation,
+            } => {
+                tokio::spawn(mutate_agent_chat_task_send(
+                    harness,
+                    chat_id,
+                    mutation,
+                    tx.clone(),
+                ));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::CardRespond {
                 correlation_id,
                 workspace_id,
@@ -3528,6 +3541,44 @@ async fn resolve_agent_chat_approval_send(
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("approval: {e}")));
+        }
+    }
+}
+
+/// Apply one Context-pane task action through the agent-chat task route. The
+/// response carries the same typed projection the subscription invalidation
+/// refreshes for sibling renderers, so the initiating pui pane updates without
+/// waiting for a second round trip.
+async fn mutate_agent_chat_task_send(
+    harness: String,
+    chat_id: String,
+    mutation: agent_chats::AgentChatTaskMutation,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = tx.send(Event::Error(format!("context task: {error}")));
+            return;
+        }
+    };
+    match client
+        .mutate_agent_chat_task(&harness, &chat_id, &mutation)
+        .await
+    {
+        Ok(response) => {
+            let target = models::ConversationContextProjectionTarget::new(
+                "agent_chat",
+                chat_id,
+                Some(harness),
+            );
+            let _ = tx.send(Event::ConversationContextProjectionLoaded {
+                target,
+                projection: Some(response.projection),
+            });
+        }
+        Err(error) => {
+            let _ = tx.send(Event::Error(format!("context task: {error}")));
         }
     }
 }

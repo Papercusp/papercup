@@ -96,7 +96,7 @@ pub struct AgentChatTaskMutationResponse {
     pub tasks: Vec<AgentChatTask>,
     /// The initiating renderer receives the same canonical projection that
     /// the sync invalidation makes available to every other subscriber.
-    pub projection: Value,
+    pub projection: crate::models::ConversationContextProjection,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -969,12 +969,29 @@ mod tests {
                 "createdAt": "2026-08-26T00:00:00.000Z",
                 "updatedAt": "2026-08-26T00:00:01.000Z"
             }],
-            "projection": {"schemaVersion": "conversation-context-v1", "frames": []}
+            "projection": {
+                "schemaVersion": "conversation-context-v1",
+                "session": {
+                    "sourceKind": "agent_chat",
+                    "sessionId": "chat-1",
+                    "harness": "papercusp",
+                    "role": "worker",
+                    "linkedWorkItemId": null,
+                    "capabilityTier": "owned-loop"
+                },
+                "capabilities": {
+                    "liveFrames": true,
+                    "taskWrite": true,
+                    "approvalWrite": true
+                },
+                "frames": []
+            }
         }))
         .expect("decode task mutation response");
         assert_eq!(response.action, AgentChatTaskAction::Check);
         assert_eq!(response.op, "done");
         assert_eq!(response.tasks[0].status, "completed");
+        assert_eq!(response.projection.session.session_id, "chat-1");
     }
 
     #[test]
