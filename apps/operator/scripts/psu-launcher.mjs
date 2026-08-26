@@ -7251,7 +7251,8 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
  * refusal can say WHICH of the four happened.
  *
  * @typedef {{ claimed: true, status: 'acquired', resumeClaimKey: string,
- *             replayed?: boolean, leaseExpiresAt?: string }
+ *             replayed?: boolean, leaseExpiresAt?: string,
+ *             legacyReactivation?: true }
  *   | { claimed: false, reason: 'no-session' | 'http' | 'contended' | 'transport',
  *       detail?: string, status?: 'reserved' | 'live' | 'missing',
  *       retryAfterMs?: number, leaseExpiresAt?: string, resumeClaimKey?: string }
@@ -7377,6 +7378,40 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
         ...(typeof body.leaseExpiresAt === "string"
           ? { leaseExpiresAt: body.leaseExpiresAt }
           : {}),
+      };
+    }
+    // Mixed-version rollout compatibility. The launcher runs from the staging
+    // checkout while the operator serves the green release pin, so the client
+    // can become newer than the endpoint for hours (or longer behind a wedged
+    // gate). Pre-reservation operators atomically reactivated only an ENDED row
+    // and returned { ok, reactivated }. That is still a single-winner claim for
+    // clean-ended sessions; contain its weaker lifecycle semantics explicitly:
+    // launchResume skips the v2 finalize endpoint and re-ends the row on every
+    // pre-spawn failure. A false legacy verdict remains fail-closed because it
+    // cannot distinguish an already-live row from a missing one.
+    if (
+      body?.ok === true &&
+      body?.acquired === undefined &&
+      body?.status === undefined &&
+      typeof body?.reactivated === "boolean"
+    ) {
+      if (body.reactivated) {
+        onNotice(
+          `psu: operator predates typed resume reservations; using its legacy atomic reactivation contract for session #${advSessionId}. ` +
+            "Pre-spawn failures will be re-ended; deploy the current operator to restore lease-backed handoff.\n",
+        );
+        return {
+          claimed: true,
+          status: "acquired",
+          resumeClaimKey: claimKey,
+          legacyReactivation: true,
+        };
+      }
+      return {
+        claimed: false,
+        reason: "contended",
+        status: "live",
+        resumeClaimKey: claimKey,
       };
     }
     return {
@@ -9126,15 +9161,38 @@ async function launchResume(
   }
   let resumeClaimed = false;
   let resumeClaimKey = null;
+  let resumeClaimLegacyReactivation = false;
   const cleanupResumeClaim = async () => {
     if (!resumeClaimed || session.id == null || !resumeClaimKey) return;
     // Flip the local guard before the best-effort network call so a future
     // cleanup path cannot report the same claim twice.
     resumeClaimed = false;
+    if (resumeClaimLegacyReactivation) {
+      // A pre-reservation operator already marked the row live during acquire
+      // and has no release endpoint. Re-end that exact row through the endpoint
+      // every such operator already exposes. reportSessionEnded accepts both
+      // its legacy {ok:true} acknowledgement and the current typed response.
+      const outcome = await reportSessionEnded(session.id, null, {
+        launchFailed: true,
+      });
+      if (!outcome.reported) {
+        console.error(
+          `psu: legacy resume cleanup for session #${session.id} was not acknowledged ` +
+            `(${outcome.reason ?? "unknown"}); the pending end witness will retry on the next resume.`,
+        );
+      }
+      return;
+    }
     await reportSessionResumeReleased(session.id, resumeClaimKey);
   };
   const finalizeResumeClaim = async () => {
     if (!resumeClaimed || session.id == null || !resumeClaimKey) return;
+    if (resumeClaimLegacyReactivation) {
+      // The legacy acquire already performed its one-step live transition.
+      // There is no finalize endpoint to call on that operator generation.
+      resumeClaimed = false;
+      return;
+    }
     const outcome = await reportSessionResumeFinalized(
       session.id,
       resumeClaimKey,
@@ -9190,6 +9248,7 @@ async function launchResume(
     }
     resumeClaimed = true;
     resumeClaimKey = claim.resumeClaimKey;
+    resumeClaimLegacyReactivation = claim.legacyReactivation === true;
   }
   try {
     if (addDir.length && session.agent === "omp") {

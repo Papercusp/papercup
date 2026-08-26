@@ -14,6 +14,7 @@ import {
   hasAdvSessionTerminalEvidence,
   readAdvSessionLaunchRecordByOwner,
   markAdvSessionShutdownAcceptedByOwner,
+  reactivateAdvSessionByOwner,
   repairStaleAdvSessionTerminalMarkers,
   shutdownAcceptedOwnerIds,
   toIsoTimestamp,
@@ -118,6 +119,21 @@ describe('stale adv-session terminal marker repair (EI-21365346411486602)', () =
   it('is a no-op for a blank owner and does not touch the database', async () => {
     await expect(repairStaleAdvSessionTerminalMarkers('   ')).resolves.toBe(0);
     expect(advSessionRowsMock).not.toHaveBeenCalled();
+  });
+
+  it('reactivates either half of the terminal tuple and clears the complete tuple', async () => {
+    advSessionRowsMock.mockResolvedValueOnce([{ id: 17842 }]);
+
+    await expect(reactivateAdvSessionByOwner('su-half-terminal')).resolves.toBe(true);
+
+    const template = (advSessionRowsMock.mock.calls as unknown[][])[0]?.[0];
+    const sql = (template as readonly string[]).join(' ');
+    expect(sql).toContain('(ended_at IS NOT NULL OR ended_by IS NOT NULL)');
+    expect(sql).toContain('ended_at = NULL');
+    expect(sql).toContain('ended_by = NULL');
+    expect(sql).toContain('ended_signal = NULL');
+    expect(sql).toContain('resume_claim_key = NULL');
+    expect(sql).toContain('resume_claimed_at = NULL');
   });
 });
 

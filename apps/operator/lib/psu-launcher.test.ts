@@ -8700,7 +8700,8 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
     });
   });
 
-  it("rejects a legacy/untyped success instead of treating acquisition as liveness", async () => {
+  it("adapts a legacy reactivation success during mixed-version rollout", async () => {
+    const notices: string[] = [];
     const legacyClaim = async () => ({
       ok: true,
       json: async () => ({ ok: true, reactivated: true }),
@@ -8710,8 +8711,37 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
         fetchImpl: legacyClaim,
         operatorUrl: "http://op:1",
         token: "t",
+        resumeClaimKey: "legacy-resume-1",
+        onNotice: (message) => notices.push(message),
       }),
-    ).resolves.toMatchObject({ claimed: false, reason: "http" });
+    ).resolves.toEqual({
+      claimed: true,
+      status: "acquired",
+      resumeClaimKey: "legacy-resume-1",
+      legacyReactivation: true,
+    });
+    expect(notices).toEqual([
+      expect.stringMatching(/legacy atomic reactivation contract/),
+    ]);
+  });
+
+  it("keeps a legacy reactivation refusal fail-closed", async () => {
+    await expect(
+      reportSessionResumed(42, {
+        fetchImpl: async () => ({
+          ok: true,
+          json: async () => ({ ok: true, reactivated: false }),
+        }),
+        operatorUrl: "http://op:1",
+        token: "t",
+        resumeClaimKey: "legacy-resume-lost",
+      }),
+    ).resolves.toEqual({
+      claimed: false,
+      reason: "contended",
+      status: "live",
+      resumeClaimKey: "legacy-resume-lost",
+    });
   });
 
   it("an HTTP failure is reported as HTTP, not as a lost race", async () => {
@@ -9142,11 +9172,24 @@ describe("launchResume wiring — claim before setup or spawn", () => {
       "await reportSessionResumeReleased(session.id, resumeClaimKey);",
       cleanupHelper,
     );
+    const legacyGuard = body.indexOf(
+      "if (resumeClaimLegacyReactivation) {",
+      cleanupGuard,
+    );
+    const legacyCleanup = body.indexOf(
+      "const outcome = await reportSessionEnded(session.id, null, {",
+      legacyGuard,
+    );
     const claimed = body.indexOf("resumeClaimed = true");
     const catchBlock = body.indexOf("} catch (error) {", claimed);
     const cleanupCall = body.indexOf("await cleanupResumeClaim();", catchBlock);
     expect(cleanupHelper).toBeGreaterThan(-1);
     expect(cleanupGuard).toBeGreaterThan(cleanupHelper);
+    expect(legacyGuard).toBeGreaterThan(cleanupGuard);
+    expect(legacyCleanup).toBeGreaterThan(legacyGuard);
+    expect(body.slice(legacyCleanup, cleanupReport)).toContain(
+      "launchFailed: true",
+    );
     expect(cleanupReport).toBeGreaterThan(cleanupGuard);
     expect(claimed).toBeGreaterThan(-1);
     expect(catchBlock).toBeGreaterThan(cleanupReport);
@@ -9161,15 +9204,34 @@ describe("launchResume wiring — claim before setup or spawn", () => {
       "await reportSessionResumeFinalized(",
       finalizeHelper,
     );
+    const legacyGuard = body.indexOf(
+      "if (resumeClaimLegacyReactivation) {",
+      finalizeHelper,
+    );
     const run = body.indexOf("runWrapper({", finalizeReport);
     const runEnd = body.indexOf("});", run);
     const runBody = body.slice(run, runEnd);
 
     expect(finalizeHelper).toBeGreaterThan(-1);
+    expect(legacyGuard).toBeGreaterThan(finalizeHelper);
+    expect(legacyGuard).toBeLessThan(finalizeReport);
     expect(finalizeReport).toBeGreaterThan(finalizeHelper);
     expect(run).toBeGreaterThan(finalizeReport);
     expect(runBody).toContain("onSpawn: finalizeResumeClaim");
     expect(runBody).toContain("onSpawnFailure: cleanupResumeClaim");
+  });
+
+  it("records the acquisition protocol before any post-claim setup", () => {
+    const claimed = body.indexOf("resumeClaimed = true;");
+    const protocol = body.indexOf(
+      "resumeClaimLegacyReactivation = claim.legacyReactivation === true;",
+      claimed,
+    );
+    const setup = body.indexOf("try {", protocol);
+
+    expect(claimed).toBeGreaterThan(-1);
+    expect(protocol).toBeGreaterThan(claimed);
+    expect(setup).toBeGreaterThan(protocol);
   });
 });
 

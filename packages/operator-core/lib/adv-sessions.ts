@@ -1407,8 +1407,9 @@ export async function claimAdvSessionResume(
  * for resume paths that never re-POST bootstrap-su (harness compaction, or any resume that is not
  * `psu --resume`). Called from the declared-activity presence write so the instant a live agent
  * declares intent / orients, a stale `ended_at` left by a prior incarnation is cleared and it reads
- * LIVE instead of `ended`. Touches only the most-recent ENDED row for that owner; idempotent + cheap
- * (a 0-row no-op when the session is already live). This covers non-launch resume
+ * LIVE instead of `ended`. Touches only the most-recent row carrying EITHER half
+ * of the terminal tuple for that owner; idempotent + cheap (a 0-row no-op when
+ * the session is already live). This covers non-launch resume
  * paths that prove liveness through genuine activity. Returns true when a row was re-activated.
  */
 export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise<boolean> {
@@ -1428,7 +1429,8 @@ export async function reactivateAdvSessionByOwner(coordOwnerId: string): Promise
              resume_claim_key = NULL, resume_claimed_at = NULL
        WHERE id = (
          SELECT id FROM harness_shared.adv_sessions
-          WHERE coord_owner_id = ${coordOwnerId} AND ended_at IS NOT NULL
+          WHERE coord_owner_id = ${coordOwnerId}
+            AND (ended_at IS NOT NULL OR ended_by IS NOT NULL)
           ORDER BY started_at DESC
           LIMIT 1
        )
