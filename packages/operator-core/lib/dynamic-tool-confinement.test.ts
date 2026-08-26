@@ -5,6 +5,9 @@
  * D-003 requires this proof before any runtime tier is opened. Pure — no DB, no fs.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   deriveDynamicToolEnvelope,
   checkConfinedCapability,
@@ -14,7 +17,7 @@ import {
   DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS,
   type DynamicToolConfinement,
 } from './dynamic-tool-confinement';
-import type { RoleEnvelope } from './capability-envelope/policy';
+import { matchesAny, type RoleEnvelope } from './capability-envelope/policy';
 
 const DECL: DynamicToolConfinement = {
   capabilities: ['net:fetch', 'intel:read'],
@@ -30,23 +33,16 @@ function envOf(declared: DynamicToolConfinement, role?: RoleEnvelope) {
 
 describe('P-003 adversarial — NO CAPABILITY MINTING / ESCALATION', () => {
   for (const mint of [
-    'capability:grant-role',
-    'capability:grant_role',
-    'capability:revoke-role',
-    'capability:envelope_set_role',
-    'capability:set-tier',
-    'meta:define-tool',
-    'meta:define-datatype',
-    'tools:scaffold',
-    'platform:contribute',
-    'secrets:read',
+    'operator:write',
+    'intel:write',
+    'harness:write',
+    'secrets:operator-credentials:read',
     'processes:kill',
     // The spawn leg. Was `cup:spawn` until P-059 retired that verb; these are
     // the surviving spawn doors it was replaced by in the floor, so the
     // "a confined dynamic tool may never spawn" property is still pinned.
-    'capability:launch-agent',
-    'fleet:launch-on-plan',
-    'fleet:place_batch',
+    'capability:terminal',
+    'work_items:write',
   ]) {
     it(`a tool declaring "${mint}" is REJECTED at derivation (mints_capability)`, () => {
       const r = deriveDynamicToolEnvelope({ capabilities: ['intel:read', mint] });
@@ -63,8 +59,38 @@ describe('P-003 adversarial — NO CAPABILITY MINTING / ESCALATION', () => {
   it('even if a forbidden cap leaked into the allow set, the runtime check DENIES it (deny wins)', () => {
     // Construct an envelope by hand with a minting cap wrongly in `allowCapabilities` —
     // the deny floor must still win at exercise time (defense in depth).
-    const env = { allowCapabilities: ['capability:grant-role'], denyCapabilities: DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS, allowPathGlobs: [], allowDomains: [] };
-    expect(checkConfinedCapability(env, 'capability:grant-role').allow).toBe(false);
+    const env = { allowCapabilities: ['operator:write'], denyCapabilities: DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS, allowPathGlobs: [], allowDomains: [] };
+    expect(checkConfinedCapability(env, 'operator:write').allow).toBe(false);
+  });
+
+  it('pins every forbidden glob to the live defineTool capability namespace', () => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const roots = [
+      resolve(here, '../../agent-mcp/src/tools'),
+      resolve(here, 'agent-tools'),
+    ];
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const path = join(dir, entry.name);
+        if (entry.isDirectory()) walk(path);
+        else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts')) files.push(path);
+      }
+    };
+    for (const root of roots) walk(root);
+    const capabilities = new Set<string>();
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      for (const match of source.matchAll(/\bcapability:\s*['"]([^'"]+)['"]/g)) capabilities.add(match[1]!);
+    }
+
+    // Calibration: prove the walk sees both an ordinary and a protected live cap.
+    expect(capabilities.has('intel:read')).toBe(true);
+    expect(capabilities.has('operator:write')).toBe(true);
+    expect(capabilities.has('definitely:not-a-live-capability')).toBe(false);
+    for (const glob of DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS) {
+      expect([...capabilities].some((cap) => matchesAny(cap, [glob]))).toBe(true);
+    }
   });
 
   it('an ordinary declared capability is allowed; an UNdeclared one is denied (no escalation)', () => {
@@ -75,6 +101,7 @@ describe('P-003 adversarial — NO CAPABILITY MINTING / ESCALATION', () => {
     expect(checkConfinedCapability(env, 'capability:bash').allow).toBe(false);
   });
 });
+
 
 describe('P-003 adversarial — NO FILESYSTEM ESCAPE', () => {
   const env = envOf(DECL);

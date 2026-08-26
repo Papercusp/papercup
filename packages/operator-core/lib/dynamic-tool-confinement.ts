@@ -43,14 +43,13 @@ export interface DynamicToolConfinement {
  * confined tool that tries to exercise one at runtime is denied.
  */
 export const DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS: readonly string[] = [
-  'capability:grant*',
-  'capability:revoke*',
-  'capability:envelope*',
-  'capability:set-tier',
-  'capability:set_protected',
-  'meta:define-*',
-  'tools:scaffold',
-  'platform:contribute',
+  // These are defineTool CAPABILITY values, not tool names. Several privileged
+  // tools share a broader logical capability; denying that whole capability is
+  // deliberate. A no-escalation floor must fail closed when the namespace cannot
+  // distinguish one privileged verb from its siblings.
+  'operator:write', // grant/revoke roles, envelope/tier/config mutation
+  'intel:write', // meta:define-tool/datatype and tools:scaffold
+  'harness:write', // platform:contribute
   'secrets:*',
   'processes:kill',
   // The "spawning fleet" leg of the floor above. This was `cup:spawn` alone
@@ -58,12 +57,8 @@ export const DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS: readonly string[] = [
   // without a replacement would have NARROWED the floor to nothing on this
   // axis, because the surviving spawn doors were never listed beside it. They
   // are now — deny-widening is the safe direction for a no-escalation floor.
-  // ⚠ Despite the constant's name these entries are matched as TOOL NAMES
-  // (`capability:grant_role`, `processes:kill` and `tools:scaffold` are all
-  // tools) — an entry naming a `capability:` FIELD value would match nothing.
-  'capability:launch-agent',
-  'fleet:launch-on-plan',
-  'fleet:place_batch',
+  'capability:terminal', // capability:launch-agent + fleet:launch-on-plan
+  'work_items:write', // fleet:place_batch
 ];
 
 export interface ConfinedEnvelope {

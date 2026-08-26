@@ -167,7 +167,9 @@ export function evaluateCapabilityEnvelope(args: {
    * TIGHTEN-ONLY additions to the universal never-auto protected floor
    * (`PROTECTED_CAPABILITY_GLOBS`), unioned for THIS evaluation
    * (live-configurability-audit-2026-06-20 P-009 — the runtime `protectedAdditions` from
-   * `capability_envelope:set_protected`). Empty/absent ⇒ exactly the baked floor, byte-identical.
+   * the capability-envelope override record). There is intentionally no
+   * `capability_envelope:set_protected` tool: the protected floor is not mutable through
+   * the role-envelope setter. Empty/absent ⇒ exactly the baked floor, byte-identical.
    * The floor is append-only here: callers can only ADD globs, never remove the baked set (D-002).
    */
   protectedAdditions?: readonly string[];
