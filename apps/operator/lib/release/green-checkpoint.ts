@@ -1025,6 +1025,50 @@ export function buildCrashCheckpointResult(opts: {
 }
 
 /**
+ * WI-41740 — build the terminal result the SELF-WATCHDOG publishes when its deadline fires and
+ * the process group is about to be SIGKILLed.
+ *
+ * Pure, and exported, for the same reason as `buildCrashCheckpointResult` and
+ * `emergencyRedFailingTests`: the entrypoint's `armSelfWatchdog` `onFire` closure sits inside the
+ * `require.main === module` CLI block and is not unit-testable, so the CLASSIFICATION decision
+ * lives here where it can be pinned through the real consumer. The caller still supplies the
+ * candidate, the trigger-specific summary, and the rescued failing-file list (which needs
+ * `readFailingFilesMarker`, i.e. the filesystem).
+ *
+ * `reason` is 'error' — EI-21462211894072863's NO-VERDICT class — UNCONDITIONALLY, and
+ * deliberately NOT conditioned on whether `failingTests` is empty. See the onFire call site for
+ * the full grounds; the short form is that conditioning the reason on the rescued list would make
+ * the durable CLASS depend on a RACE (did the suite finish red before the kill landed?), and
+ * `failingTests` already carries that evidence structurally. `crashed` is deliberately ABSENT: it
+ * is the discriminator release-actions uses to tell a crash from a watchdog kill, so an absent leg
+ * stays absent rather than being written falsey.
+ */
+export function buildSelfWatchdogCheckpointResult(opts: {
+  candidate: string;
+  runId: string;
+  summary: string;
+  failingTests: string[];
+  candidateSource?: CheckpointCandidateSource;
+  diagnostic?: CheckpointDiagnostic;
+}): CheckpointResult {
+  return {
+    advanced: false,
+    candidate: opts.candidate,
+    from: null,
+    ...(opts.candidateSource ? { candidateSource: opts.candidateSource } : {}),
+    ...(opts.diagnostic ? { diagnostic: opts.diagnostic } : {}),
+    // `null`, NOT `false` — same reasoning as buildCrashCheckpointResult. A watchdog kill means
+    // this run never rendered a verdict, so claiming the code is RED is a fabricated measurement;
+    // `green === null` is the ONLY dispatch for `green-checkpoint:inconclusive`.
+    green: null,
+    reason: "error",
+    summary: opts.summary,
+    failingTests: opts.failingTests,
+    runId: opts.runId,
+  };
+}
+
+/**
  * WI-40916 / EI-212278 / WI-41252 — distinguish measured pre-suite
  * infrastructure refusals from an unknown checkpoint crash.
  *
@@ -14611,52 +14655,6 @@ if (require.main === module) {
       // it and hung to its own timeout — in the ONE situation (lost parent, abnormal exit) where
       // that wake matters most. armSelfWatchdog now BOUND-awaits this hook before the kill.
       onFire: async () => {
-        // EI-20702428259478130: this verdict is INCONCLUSIVE, not red — see `green: null` below.
-        const inconclusive: CheckpointResult = {
-          advanced: false,
-          candidate: prewarmedDependencyGeneration.candidate,
-          from: null,
-          candidateSource,
-          ...(diagnostic ? { diagnostic } : {}),
-          // `null`, NOT `false` — same reasoning as buildCrashCheckpointResult. A watchdog kill
-          // means this run never rendered a verdict, so claiming the code is RED is a fabricated
-          // measurement; `green === null` is what routes it to `green-checkpoint:inconclusive`.
-          //
-          // WI-41740: `reason` is 'error' — EI-21462211894072863's NO-VERDICT class — and it is
-          // UNCONDITIONAL, deliberately NOT conditioned on whether `carried` below rescued a real
-          // failing-file list. This path previously held 'not-green' "so the red streak /
-          // held-gate alarm still count it"; that justification had already been falsified on the
-          // sibling crash path by EI-21465187777146773 — 'error' is counted in
-          // gate_health.consecutiveNoVerdict and escalates at the SAME stallReds threshold, so
-          // staying loud never required calling a never-rendered verdict a red. It is
-          // unconditional for three further reasons:
-          //   - the contentless-red HARM is already guarded HERE: shouldDispatchReleaseFixer
-          //     (release-actions.ts) requires failingTests.length > 0, so an empty `carried`
-          //     already cannot dispatch a release-fixer at a phantom file list;
-          //   - conditioning `reason` on `carried` would make the DURABLE CLASS depend on a RACE
-          //     (did the suite finish red before the kill landed?), banking two different statuses
-          //     for two identical watchdog kills. `reason` classifies the EVENT; `failingTests`
-          //     carries the rescued evidence structurally — that is the correct axis split;
-          //   - it ends an internal contradiction: `green: null` already dispatches
-          //     `green-checkpoint:inconclusive` while 'not-green' made classifyQualification bank
-          //     kind:'red'. With 'error' the qualification falls to kind:'code-inconclusive',
-          //     which is terminal exactly like red (isTerminalQualificationOutcome) and equally
-          //     never auto-retried (checkpoint-run.ts) — no guard is weakened; it merely stops
-          //     asserting a measurement that was never taken.
-          //
-          // DISCRIMINATOR (release-actions.ts): a watchdog kill is reason 'error' with `crashed`
-          // ABSENT plus this distinctive summary; a crash is reason 'error' with `crashed: true`.
-          // Do NOT set `crashed` here — an absent leg stays absent rather than written falsey.
-          green: null,
-          reason: "error",
-          summary:
-            selfWatchdog.trigger === "manual-run-deadline"
-              ? `manual checkpoint exceeded its ${formatSelfWatchdogDuration(selfWatchdog.ms)} deadline with no normal exit — ` +
-                `run-lock released and process group is being terminated.`
-              : `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdog.ms)} with no normal exit — ` +
-                `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
-          runId,
-        };
         // EI-20669541349219660: the suite MAY have finished red before this kill — its
         // parsed failing-file list is persisted beside the run-lock the moment it exists
         // (writeFailingFilesMarker, keyed by runId). Carrying it here is what breaks the
@@ -14669,14 +14667,56 @@ if (require.main === module) {
           ),
           runId,
         );
-        if (carried.note)
-          inconclusive.summary = `${inconclusive.summary} ${carried.note}`;
-        // EI-20702428259478130: carry the rescued failing-file list on the RESULT rather than
-        // only in an event payload. This used to ride on the hand-rolled `green-checkpoint:red`
-        // emit below, which is gone (see the block comment there); `failingTests` is a typed
-        // CheckpointResult field that release-actions' buildCheckpointDetail persists, so the
-        // EI-20669541349219660 signal now survives on the durable verdict too, not just a wake.
-        inconclusive.failingTests = carried.failingTests;
+        const watchdogSummary =
+          selfWatchdog.trigger === "manual-run-deadline"
+            ? `manual checkpoint exceeded its ${formatSelfWatchdogDuration(selfWatchdog.ms)} deadline with no normal exit — ` +
+              `run-lock released and process group is being terminated.`
+            : `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdog.ms)} with no normal exit — ` +
+              `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`;
+        // EI-20702428259478130: this verdict is INCONCLUSIVE, not red — see `green: null` in the
+        // builder. A watchdog kill means this run never rendered a verdict, so claiming the code
+        // is RED is a fabricated measurement.
+        //
+        // WI-41740: `reason` is 'error' — EI-21462211894072863's NO-VERDICT class — and it is
+        // UNCONDITIONAL, deliberately NOT conditioned on whether `carried` above rescued a real
+        // failing-file list. This path previously held 'not-green' "so the red streak / held-gate
+        // alarm still count it"; that justification had ALREADY been falsified on the sibling
+        // crash path by EI-21465187777146773 — 'error' is counted in
+        // gate_health.consecutiveNoVerdict and escalates at the SAME stallReds threshold, so
+        // staying loud never required calling a never-rendered verdict a red. It is unconditional
+        // for three further reasons:
+        //   - the contentless-red HARM is already guarded HERE: shouldDispatchReleaseFixer
+        //     (release-actions.ts) requires failingTests.length > 0, so an empty `carried`
+        //     already cannot dispatch a release-fixer at a phantom file list;
+        //   - conditioning `reason` on `carried` would make the DURABLE CLASS depend on a RACE
+        //     (did the suite finish red before the kill landed?), banking two different statuses
+        //     for two identical watchdog kills. `reason` classifies the EVENT; `failingTests`
+        //     carries the rescued evidence structurally — that is the correct axis split;
+        //   - it ends an internal contradiction: `green: null` already dispatches
+        //     `green-checkpoint:inconclusive` while 'not-green' made classifyQualification bank
+        //     kind:'red'. With 'error' the qualification falls to kind:'code-inconclusive', which
+        //     is terminal exactly like red (isTerminalQualificationOutcome) and equally never
+        //     auto-retried (checkpoint-run.ts) — no guard is weakened; it merely stops asserting a
+        //     measurement that was never taken.
+        //
+        // DISCRIMINATOR (release-actions.ts): a watchdog kill is reason 'error' with `crashed`
+        // ABSENT plus this distinctive summary; a crash is reason 'error' with `crashed: true`.
+        // The builder never sets `crashed` — an absent leg stays absent, not written falsey.
+        const inconclusive: CheckpointResult = buildSelfWatchdogCheckpointResult({
+          candidate: prewarmedDependencyGeneration.candidate,
+          runId,
+          summary: carried.note
+            ? `${watchdogSummary} ${carried.note}`
+            : watchdogSummary,
+          // EI-20702428259478130: carry the rescued failing-file list on the RESULT rather than
+          // only in an event payload. This used to ride on the hand-rolled `green-checkpoint:red`
+          // emit below, which is gone (see the block comment there); `failingTests` is a typed
+          // CheckpointResult field that release-actions' buildCheckpointDetail persists, so the
+          // EI-20669541349219660 signal now survives on the durable verdict too, not just a wake.
+          failingTests: carried.failingTests,
+          candidateSource,
+          ...(diagnostic ? { diagnostic } : {}),
+        });
         // Emits the result marker AND — because `green === null` — dispatches
         // `green-checkpoint:inconclusive` (global + pipeline-scoped) via emitInconclusiveVerdict.
         await emitResult(inconclusive);
