@@ -1589,11 +1589,21 @@ export const ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS = 2;
  */
 export const BG_HOST_TICKER_DOWN_CONFIRM_TICKS = 2;
 
+/**
+ * EI-21524175314121282: the embed sidecar's functional probe can exceed its
+ * deliberately tight 1.2s budget during a transient model/transport hiccup.
+ * Keep the bounded probe itself unchanged, but require a second consecutive
+ * bad service-health tick before treating the configured sidecar as DOWN. A
+ * genuinely unavailable sidecar still confirms on the next 60s tick.
+ */
+export const EMBED_SIDECAR_DOWN_CONFIRM_TICKS = 2;
+
 export const DOWN_CONFIRM_TICKS: Readonly<Record<string, number>> = {
   [PORTLESS_PROBE_NAMES.desktop]: DESKTOP_DOWN_CONFIRM_TICKS,
   'staging-api': STAGING_API_DOWN_CONFIRM_TICKS,
   [PORTLESS_PROBE_NAMES.bgHostTicker]: BG_HOST_TICKER_DOWN_CONFIRM_TICKS,
   'oddsmith-sidecar': ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS,
+  [PORTLESS_PROBE_NAMES.embedSidecar]: EMBED_SIDECAR_DOWN_CONFIRM_TICKS,
 };
 
 let downStreaks: Record<string, number> = {};

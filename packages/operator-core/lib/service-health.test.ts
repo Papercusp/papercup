@@ -25,6 +25,7 @@ import {
   PORTLESS_PROBE_NAME_SET,
   STAGING_API_DOWN_CONFIRM_TICKS,
   DESKTOP_DOWN_CONFIRM_TICKS,
+  EMBED_SIDECAR_DOWN_CONFIRM_TICKS,
   classifyListenerWedge,
   localProbePort,
   detectWedgedListener,
@@ -269,6 +270,28 @@ describe('applyDownConfirmDebounce (EI-18144960689849695 — flap damping)', () 
     expect(second.nextStreaks['staging-api']).toBe(STAGING_API_DOWN_CONFIRM_TICKS);
     expect(second.results[0].up).toBe(false); // sustained — a real DOWN still alarms
     expect(second.results[0].note).toBe('connect ECONNREFUSED');
+  });
+
+  it('damps embed-sidecar functional probe blips while confirming a sustained outage', () => {
+    const embedDown: ProbeResult = {
+      name: 'embed-sidecar',
+      up: false,
+      present: true,
+      status: null,
+      latencyMs: 1_201,
+      note: 'functional POST /embed failed within 1200ms: timeout',
+    };
+
+    const first = applyDownConfirmDebounce([embedDown], {});
+    expect(first.nextStreaks['embed-sidecar']).toBe(1);
+    expect(first.nextStreaks['embed-sidecar']).toBeLessThan(EMBED_SIDECAR_DOWN_CONFIRM_TICKS);
+    expect(first.results[0].up).toBe(true); // one functional timeout is a transient blip
+    expect(first.results[0].note).toMatch(/unconfirmed down \(streak 1\/2\)/);
+
+    const second = applyDownConfirmDebounce([embedDown], first.nextStreaks);
+    expect(second.nextStreaks['embed-sidecar']).toBe(EMBED_SIDECAR_DOWN_CONFIRM_TICKS);
+    expect(second.results[0].up).toBe(false); // sustained failure still alarms
+    expect(second.results[0].note).toBe(embedDown.note);
   });
 
   it('an UNDAMPED endpoint keeps single-tick alerting (damping is opt-in)', () => {
