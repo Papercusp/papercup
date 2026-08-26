@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionWarnings, docClaimCutMatches, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readDocClaimPins, readOrder, shortfallsForCutInvariants, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, cascadeDanglingLedes, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionParts, danglingProjectionWarnings, docClaimCutMatches, invariantCutKeys, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readDocClaimPins, readOrder, shortfallsForCutInvariants, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -155,6 +155,110 @@ describe('dangling projection warnings', () => {
       part({ ordinal: 1, target_section: 'Alpha', body: 'Pick the lowest tier that fits:' }),
     ], { ...CLIENT, budget: 100_000 });
     expect(out.warnings).toHaveLength(1);
+  });
+
+  it('reports the orphan PART, so the cut loop can act on it and not just print it', () => {
+    const orphans = danglingProjectionParts([
+      part({ ordinal: 1, target_section: 'Alpha', body: 'Read these first, then act:', part_key: 'lede' }),
+      part({ ordinal: 2, target_section: 'Beta', body: 'next section' }),
+    ]);
+    expect(orphans.map((p: { part_key: string }) => p.part_key)).toEqual(['lede']);
+  });
+});
+
+/**
+ * WI-42240 — a lede must never outlive the list it introduces.
+ *
+ * `cutOrder` breaks a rank tie by body length DESC, so within one rank the SHORT lede
+ * is dropped AFTER the LONG list it introduces, and budget freeing up restores the
+ * lede FIRST — alone. The emitted file then states a requirement and withholds its
+ * content, which is worse than the section being absent. The live instance was
+ * CLAUDE.md ordinals 166 (140-char lede) + 167 (766-char list), both rank 300.
+ *
+ * `danglingProjectionParts` already detected this, but its only consumer was a
+ * console.warn — so the broken file was still written. These tests pin the CASCADE,
+ * i.e. that the projector cannot produce the orphan in the first place.
+ */
+describe('cohesion cascade — a lede never outlives its list', () => {
+  const lede = part({ ordinal: 1, target_section: 'Alpha', body: 'Read these first, then act:', part_key: 'lede' });
+  const list = part({ ordinal: 2, target_section: 'Alpha', body: '- a required doc\n'.repeat(90), part_key: 'list' });
+  const filler = part({ ordinal: 3, target_section: 'Beta', body: 'x'.repeat(500), part_key: 'filler' });
+
+  // Swept rather than tuned: a single hand-picked budget only proves the cascade at one
+  // cut depth, and the pre-fix bug lives in the narrow band where the list has been cut
+  // but the lede has not. `banner: false` keeps the sweep cheap — the banner does I/O.
+  const sweep = [...Array(80).keys()]
+    .map((i) => 300 + i * 40)
+    .flatMap((budget) => {
+      try {
+        const out = projectClient([lede, list, filler], { ...CLIENT, banner: false, budget });
+        return [{ budget, out }];
+      } catch {
+        return []; // budget too small for even the spill pointer; correctly refused
+      }
+    });
+
+  it('enters the band where the list is cut — otherwise the sweep proves nothing', () => {
+    expect(sweep.length).toBeGreaterThan(0);
+    const dangerBand = sweep.filter(({ out }) => {
+      const droppedKeys = out.dropped.map((p: { part_key: string }) => p.part_key);
+      return droppedKeys.includes('list') && !droppedKeys.includes('filler');
+    });
+    expect(dangerBand.length).toBeGreaterThan(0);
+  });
+
+  it('never emits the lede without its list, at ANY budget in the sweep', () => {
+    for (const { budget, out } of sweep) {
+      const keptKeys = out.kept.map((p: { part_key: string }) => p.part_key);
+      if (keptKeys.includes('lede')) expect(keptKeys).toContain('list');
+      expect(out.warnings).toEqual([]);
+      expect(out.text.length).toBeLessThanOrEqual(budget);
+    }
+  });
+
+  it('drops the lede in the SAME pass as its list, and says so in `dropped`', () => {
+    const cut = sweep.find(({ out }) => out.dropped.some((p: { part_key: string }) => p.part_key === 'list'));
+    expect(cut).toBeDefined();
+    const droppedKeys = cut!.out.dropped.map((p: { part_key: string }) => p.part_key);
+    expect(droppedKeys).toContain('lede');
+    expect(droppedKeys).toContain('list');
+    // Only the RULE region may not carry it. The spill footer naming what was cut
+    // quotes each dropped part's lede on purpose — that is the recovery pointer working.
+    const ruleRegion = cut!.out.text.split(SPILL_SECTION)[0];
+    expect(ruleRegion).not.toContain('then act:');
+  });
+
+  it('CONTROL — cutOrder alone DOES strand the lede, which is what the cascade repairs', () => {
+    // Falsifiability control, kept permanently. Without it the tests above would pass
+    // whether or not the cascade exists, because nothing would show the fixture is
+    // actually capable of producing the fault. Mutating the shared tree to prove this
+    // is forbidden here (the git-sync sweep can commit the mutant), and the module is
+    // imported rather than read by path, so the repo's prescribed tier is this: a
+    // deliberately-wrong implementation living in the test file as a control.
+    const mine = [lede, list, filler].sort(readOrder);
+
+    // 1. cutOrder's length-DESC tiebreak picks the LIST as the very first victim...
+    expect([...mine].sort(cutOrder)[0].part_key).toBe('list');
+
+    // 2. ...which, with no cascade, leaves the lede standing alone. This is the exact
+    //    state the pre-fix projector would have emitted had the text then fit.
+    const keptAfterOneDrop = mine.filter((p) => p.part_key !== 'list');
+    expect(danglingProjectionParts(keptAfterOneDrop).map((p: { part_key: string }) => p.part_key)).toEqual(['lede']);
+
+    // 3. The cascade is precisely what turns that one drop into two.
+    expect([...cascadeDanglingLedes(mine, new Set(['list']))].sort()).toEqual(['lede', 'list']);
+  });
+
+  it('iterates to a fixed point — dropping a lede can orphan the lede above it', () => {
+    const a = part({ ordinal: 1, target_section: 'Alpha', body: 'first, read:', part_key: 'a' });
+    const b = part({ ordinal: 2, target_section: 'Alpha', body: 'and then:', part_key: 'b' });
+    const c = part({ ordinal: 3, target_section: 'Alpha', body: 'the actual payload', part_key: 'c' });
+    expect([...cascadeDanglingLedes([a, b, c], new Set(['c']))].sort()).toEqual(['a', 'b', 'c']);
+  });
+
+  it('leaves a section alone when its payload survives', () => {
+    const kept = cascadeDanglingLedes([lede, list, filler], new Set(['filler']));
+    expect([...kept].sort()).toEqual(['filler']);
   });
 });
 
