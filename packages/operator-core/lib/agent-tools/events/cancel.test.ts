@@ -66,14 +66,15 @@ describe('events:cancel dual-path result', () => {
     expect(out).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 }, results: [{ ok: false, delivery_id: 3, acked: false, error: 'not_found_or_not_yours_or_already_settled' }] });
   });
 
-  it('ack-only already-settled delivery → ok:true with an explicit settled result', async () => {
+  it('ack-only already-delivered result says the host handoff is not recallable', async () => {
     vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: true, status: 'delivered' });
     const out = await call({ delivery_id: 3 });
     expect(out).toMatchObject({
       ok: true,
       counts: { ok: 1, failed: 0 },
-      results: [{ ok: true, delivery_id: 3, acked: false, already_settled: true, status: 'delivered' }],
+      results: [{ ok: true, delivery_id: 3, acked: false, already_settled: true, status: 'delivered', recallable: false }],
     });
+    expect(out.results[0].warning).toMatch(/cannot be recalled/);
     expect(out.results[0].error).toBeUndefined();
   });
 

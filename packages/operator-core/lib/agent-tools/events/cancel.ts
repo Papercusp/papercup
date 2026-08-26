@@ -126,6 +126,15 @@ export default defineTool({
           if (ack.alreadySettled) {
             out.already_settled = true;
             out.status = ack.status;
+            // EI-21537729216542022: `delivered` means the host handoff already
+            // crossed the recall boundary. The turn may still arrive after
+            // this tool response, so never let a benign `ok:true` read as
+            // "the wake was suppressed".
+            if (ack.status === 'delivered') {
+              out.recallable = false;
+              out.warning =
+                'This delivery was already handed to the wake host and cannot be recalled. A queued/in-flight wake may still arrive; reconcile it once as stale rather than repeating the handled action.';
+            }
           }
           if (!ack.acked && !ack.alreadySettled && item.await_id == null && item.root_id == null) out.ok = false;
         }
