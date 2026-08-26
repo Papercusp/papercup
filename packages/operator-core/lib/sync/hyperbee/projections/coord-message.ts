@@ -176,7 +176,7 @@ async function writeToPg(
   // or the op is local — today's behavior, byte-identical.
   let authorTier: CommsTier = 'steer';
   let authorUserId: number | null = null;
-  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
+  if (provenance.origin === 'remote' && opts.potHomeSlug) {
     const resolveTier =
       opts.resolveCommsTier ??
       (async (device: string | null) =>
@@ -343,7 +343,7 @@ async function writeToPg(
   }
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? row.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   // WI-3914: see normalizeBodyTsMsgId's doc-comment.

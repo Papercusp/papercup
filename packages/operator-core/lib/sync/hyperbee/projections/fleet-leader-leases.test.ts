@@ -43,7 +43,7 @@ describe('p2p fleet leader lease projection', () => {
   it('demuxes by hive home and writes with the LWW guard', async () => {
     const { sql, calls } = fakeTemplateSql();
     const p = buildFleetLeaderLeaseProjection({ workspaceId: WS, harnessSlug: HIVE, sql });
-    await p.writeToPg({ ...ROW, harness_slug: 'other-hive' }, undefined);
+    await p.writeToPg({ ...ROW, harness_slug: 'other-hive' }, { authorPubkey: '', origin: 'local' });
     expect(calls.length).toBe(0);
 
     await p.writeToPg(ROW, { origin: 'remote', authorPubkey: 'author-pub', ts: 99, fedHlc: 'hlc' });

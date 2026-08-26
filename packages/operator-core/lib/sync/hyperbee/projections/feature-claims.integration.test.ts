@@ -28,6 +28,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const { buildFeatureClaimsProjection, _testing } = await import('./feature-claims');
 
 const WS = 'ws-fc';
+const LOCAL_PROVENANCE = { authorPubkey: '', origin: 'local' as const };
 let rootSql: postgres.Sql;
 const row = (over: Record<string, unknown> = {}) => ({
   harness_slug: 'web', feature_id: 'F-1', seq: 0,
@@ -81,7 +82,7 @@ const proj = () => buildFeatureClaimsProjection({ sql: rootSql, workspaceId: WS,
 
 describe('feature-claims projection writeToPg (PG)', () => {
   it('inserts a claim, converting claimed_at epoch-ms via to_timestamp(ms/1000)', async () => {
-    await proj().writeToPg(row({ claimer_pubkey: 'pk-x', claimer_github_user_id: 999, outcome: 'won' }));
+    await proj().writeToPg(row({ claimer_pubkey: 'pk-x', claimer_github_user_id: 999, outcome: 'won' }), LOCAL_PROVENANCE);
     const r = (await rootSql<{ feature_id: string; seq: string; outcome: string; ms: string; gh: string }[]>`
       SELECT feature_id, seq, outcome, claimer_github_user_id AS gh, (extract(epoch from claimed_at) * 1000)::bigint AS ms
         FROM harness_shared.feature_claims`)[0]!;
@@ -92,20 +93,20 @@ describe('feature-claims projection writeToPg (PG)', () => {
   });
 
   it('is APPEND-ONLY idempotent — a replay of the same (feature, seq) is a no-op', async () => {
-    await proj().writeToPg(row({ seq: 0, claimer_pubkey: 'first' }));
-    await proj().writeToPg(row({ seq: 0, claimer_pubkey: 'second' })); // same PK → DO NOTHING
+    await proj().writeToPg(row({ seq: 0, claimer_pubkey: 'first' }), LOCAL_PROVENANCE);
+    await proj().writeToPg(row({ seq: 0, claimer_pubkey: 'second' }), LOCAL_PROVENANCE); // same PK → DO NOTHING
     const rows = await rootSql<{ claimer_pubkey: string }[]>`SELECT claimer_pubkey FROM harness_shared.feature_claims`;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.claimer_pubkey).toBe('first'); // first record wins
   });
 
   it('HARNESS ISOLATION: drops a row whose harness_slug != the projection harness', async () => {
-    await proj().writeToPg(row({ harness_slug: 'api', feature_id: 'F-OTHER' })); // 'web' projection, 'api' row
+    await proj().writeToPg(row({ harness_slug: 'api', feature_id: 'F-OTHER' }), LOCAL_PROVENANCE); // 'web' projection, 'api' row
     expect(await rootSql`SELECT 1 FROM harness_shared.feature_claims`).toHaveLength(0); // not written
   });
 
   it('deleteFromPg is a no-op (append-only never deletes)', async () => {
-    await proj().writeToPg(row({ seq: 5 }));
+    await proj().writeToPg(row({ seq: 5 }), LOCAL_PROVENANCE);
     await proj().deleteFromPg('F-1/5');
     expect(await rootSql`SELECT 1 FROM harness_shared.feature_claims WHERE seq = 5`).toHaveLength(1); // still there
   });

@@ -133,13 +133,13 @@ describe('D2 — writeToPg stamps the provenance trio into the INSERT', () => {
     expect(calls[0]).toContain(post.created_at); // fed_ts === created_at fallback
   });
 
-  it('defaults origin=local + author_pubkey=null when NO provenance is supplied', async () => {
+  it('persists explicit local origin + a null author when local provenance has no author', async () => {
     const { sql, calls } = makeCapturingSql();
     const p = buildCoordThreadPostProjection({ workspaceId: 'ws-1', harnessSlug: 'papercup', sql });
-    await p.writeToPg(post);
+    await p.writeToPg(post, { authorPubkey: '', origin: 'local' });
     const values = calls[0];
-    expect(values).toContain('local'); // default origin
-    expect(values).toContain(null); // default author_pubkey
+    expect(values).toContain('local');
+    expect(values).toContain(null);
     expect(values).toContain(post.created_at); // fed_ts fallback
   });
 

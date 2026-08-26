@@ -25,6 +25,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const { buildUsageProjection, _testing } = await import('./usage');
 
 const WS = 'ws-us';
+const LOCAL_PROVENANCE = { authorPubkey: '', origin: 'local' as const };
 let rootSql: postgres.Sql;
 const row = (over: Record<string, unknown> = {}) => ({
   harness_slug: 'web', event_id: 'E1', github_user_id: 1, device_pubkey: 'dk1',
@@ -79,7 +80,7 @@ const proj = () => buildUsageProjection({ sql: rootSql, workspaceId: WS, harness
 describe('usage writeToPg (PG)', () => {
   it('inserts an event: jsonb payload, epoch ts, echo-guard origin (remote vs local default)', async () => {
     await proj().writeToPg(row({ event_id: 'E1', payload: { count: 5, action: 'view' } }), { origin: 'remote', authorPubkey: 'pk-a' });
-    await proj().writeToPg(row({ event_id: 'E2' })); // no provenance → origin default 'local'
+    await proj().writeToPg(row({ event_id: 'E2' }), LOCAL_PROVENANCE);
     const r = (await rootSql<{ typ: string; cnt: string; origin: string; ms: string }[]>`
       SELECT jsonb_typeof(payload) AS typ, payload->>'count' AS cnt, origin,
              (extract(epoch from ts)*1000)::bigint AS ms
@@ -92,20 +93,20 @@ describe('usage writeToPg (PG)', () => {
   });
 
   it('APPEND-ONLY: a re-delivery of the same event_id is a no-op (first event immutable)', async () => {
-    await proj().writeToPg(row({ event_id: 'E9', kind: 'view' }));
-    await proj().writeToPg(row({ event_id: 'E9', kind: 'edit' })); // same PK → DO NOTHING
+    await proj().writeToPg(row({ event_id: 'E9', kind: 'view' }), LOCAL_PROVENANCE);
+    await proj().writeToPg(row({ event_id: 'E9', kind: 'edit' }), LOCAL_PROVENANCE); // same PK → DO NOTHING
     const rows = await rootSql<{ kind: string }[]>`SELECT kind FROM harness_shared.contributor_usage_events WHERE event_id='E9'`;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.kind).toBe('view'); // first event wins; NOT overwritten
   });
 
   it('HARNESS ISOLATION: drops an event for a different harness', async () => {
-    await proj().writeToPg(row({ harness_slug: 'api', event_id: 'X' }));
+    await proj().writeToPg(row({ harness_slug: 'api', event_id: 'X' }), LOCAL_PROVENANCE);
     expect(await rootSql`SELECT 1 FROM harness_shared.contributor_usage_events`).toHaveLength(0);
   });
 
   it('deleteFromPg is a no-op (append-only never deletes)', async () => {
-    await proj().writeToPg(row({ event_id: 'keep' }));
+    await proj().writeToPg(row({ event_id: 'keep' }), LOCAL_PROVENANCE);
     await proj().deleteFromPg('1/keep');
     expect(await rootSql`SELECT 1 FROM harness_shared.contributor_usage_events WHERE event_id='keep'`).toHaveLength(1);
   });

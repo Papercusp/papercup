@@ -128,7 +128,7 @@ async function writeToPg(
   // (or a forged revocation-suppressing re-grant) from an unverifiable device
   // never applies.
   let sourceLogDevice: string | null = null;
-  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
+  if (provenance.origin === 'remote' && opts.potHomeSlug) {
     sourceLogDevice = provenance.authorPubkey
       ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
       : null;
@@ -165,7 +165,7 @@ async function writeToPg(
 
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   const upsertResult = await sql`
@@ -234,7 +234,7 @@ async function writeToPg(
     (upsertResult.count ?? 0) > 0 &&
     row.status === 'revoked' &&
     row.grantee_kind === 'fleet' &&
-    provenance?.origin === 'remote' &&
+    provenance.origin === 'remote' &&
     opts.potHomeSlug
   ) {
     try {

@@ -25,6 +25,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const { buildCoordThreadPostProjection, _testing } = await import('./coord-thread-post');
 
 const WS = 'ws-ctp';
+const LOCAL_PROVENANCE = { authorPubkey: '', origin: 'local' as const };
 let rootSql: postgres.Sql;
 const row = (over: Record<string, unknown> = {}) => ({
   harness_slug: 'web', post_msg_id: 'P1', thread_id: 'T1', author_id: 'u1',
@@ -90,9 +91,9 @@ describe('coord-thread-post writeToPg (PG)', () => {
     expect(Number(r.ms)).toBe(1_716_000_000_000);
   });
 
-  it('fed_ts falls back to created_at (no provenance) → an OLDER-created_at replay is dropped (LWW)', async () => {
-    await proj().writeToPg(row({ post_msg_id: 'P1', created_at: 3000, body: 'newer' })); // no provenance → fed_ts=3000
-    await proj().writeToPg(row({ post_msg_id: 'P1', created_at: 1000, body: 'older' })); // fed_ts=1000 < 3000 → dropped
+  it('fed_ts falls back to created_at when explicit local provenance has no ts', async () => {
+    await proj().writeToPg(row({ post_msg_id: 'P1', created_at: 3000, body: 'newer' }), LOCAL_PROVENANCE);
+    await proj().writeToPg(row({ post_msg_id: 'P1', created_at: 1000, body: 'older' }), LOCAL_PROVENANCE);
     const rows = await rootSql<{ body: string; fed_ts: string }[]>`SELECT body, fed_ts FROM harness_shared.coord_thread_posts`;
     expect(rows).toHaveLength(1);
     expect(rows[0]!.body).toBe('newer'); // older op did NOT overwrite

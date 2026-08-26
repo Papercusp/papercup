@@ -31,6 +31,7 @@ const FED_MIGRATION = resolve(SQL_DIR, '438-bee-claim-specs-federation.sql');
 
 const WS = 'ws_bcs';
 const HIVE = 'hive-bcs';
+const LOCAL_PROVENANCE = { authorPubkey: '', origin: 'local' as const };
 
 interface OutboxDbRow {
   table_name: string;
@@ -115,7 +116,7 @@ describe('cup_claim_specs federation (real PG)', () => {
 
   it('writeToPg no-ops when row.harness_slug does not match the projection scope (demux guard)', async () => {
     const proj = buildBeeClaimSpecProjection({ workspaceId: WS, harnessSlug: HIVE, sql: db.sql });
-    await proj.writeToPg(row({ harness_slug: 'other-hive', bee_id: 'su-bee-guard' }));
+    await proj.writeToPg(row({ harness_slug: 'other-hive', bee_id: 'su-bee-guard' }), LOCAL_PROVENANCE);
     expect(await fetchRow('su-bee-guard')).toBeNull();
   });
 
@@ -186,6 +187,7 @@ describe('cup_claim_specs federation (real PG)', () => {
     it('a spec whose view.filter selects on id ALONE → id_only=true', async () => {
       await proj().writeToPg(
         row({ bee_id: 'su-bee-idonly', spec: spec({ view: { filter: { field: 'id', op: 'in', value: ['WI-1', 'WI-2'] } } }) }),
+        LOCAL_PROVENANCE,
       );
       expect((await fetchRow('su-bee-idonly'))?.id_only).toBe(true);
     });
@@ -205,20 +207,21 @@ describe('cup_claim_specs federation (real PG)', () => {
             },
           }),
         }),
+        LOCAL_PROVENANCE,
       );
       expect((await fetchRow('su-bee-broad'))?.id_only).toBe(false);
     });
 
     it('no filter at all → id_only=false (the whole ready frontier)', async () => {
-      await proj().writeToPg(row({ bee_id: 'su-bee-nofilter', spec: spec({ view: { filter: null } }) }));
+      await proj().writeToPg(row({ bee_id: 'su-bee-nofilter', spec: spec({ view: { filter: null } }) }), LOCAL_PROVENANCE);
       expect((await fetchRow('su-bee-nofilter'))?.id_only).toBe(false);
     });
 
     it('re-versioning a bee OFF an id-pin back to the default flips id_only back to false', async () => {
       const beeId = 'su-bee-unpin';
-      await proj().writeToPg(row({ bee_id: beeId, revision: 1, spec: spec({ view: { filter: { field: 'id', op: 'in', value: ['WI-9'] } } }) }));
+      await proj().writeToPg(row({ bee_id: beeId, revision: 1, spec: spec({ view: { filter: { field: 'id', op: 'in', value: ['WI-9'] } } }) }), LOCAL_PROVENANCE);
       expect((await fetchRow(beeId))?.id_only).toBe(true);
-      await proj().writeToPg(row({ bee_id: beeId, revision: 2, spec: spec({ view: { filter: null } }) }));
+      await proj().writeToPg(row({ bee_id: beeId, revision: 2, spec: spec({ view: { filter: null } }) }), LOCAL_PROVENANCE);
       const r = await fetchRow(beeId);
       expect(r?.revision).toBe(2);
       expect(r?.id_only).toBe(false);

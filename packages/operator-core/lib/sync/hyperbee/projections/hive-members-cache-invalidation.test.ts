@@ -63,7 +63,10 @@ describe('WI-259 P-003 — hive_members apply invalidates the P-002 member-set c
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const proj = buildHiveMembersProjection(OPTS);
-      await proj.writeToPg({ ...ROW, pot_home_slug: 'other-hive' }, undefined);
+      await proj.writeToPg(
+        { ...ROW, pot_home_slug: 'other-hive' },
+        { authorPubkey: '', origin: 'local' },
+      );
       expect(invalidateHiveMemberDeviceSet).not.toHaveBeenCalled();
       expect(invalidatePresenceGossipMemberCache).not.toHaveBeenCalled();
       expect(warnSpy).toHaveBeenCalledWith(

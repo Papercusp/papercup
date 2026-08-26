@@ -88,7 +88,7 @@ async function writeToPg(
   // error falls to FALLBACK_COMMS_TIER ('message' < 'steer') ⇒ NOT applied
   // (fail-CLOSED — correct for a high-privilege action). Local/own writes (the
   // queen on this machine) and non-hive topologies stay full-passthrough.
-  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
+  if (provenance.origin === 'remote' && opts.potHomeSlug) {
     const sourceLogDevice = provenance.authorPubkey
       ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
       : null;
@@ -118,7 +118,7 @@ async function writeToPg(
 
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   // id_only (mig 389) is a DENORMALIZED observability tripwire the sender's own

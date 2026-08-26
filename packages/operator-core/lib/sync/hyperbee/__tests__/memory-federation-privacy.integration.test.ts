@@ -35,6 +35,7 @@ import { buildMemoriesProjection } from '../projections/p2p-memories';
 
 const WS = 'ws_mem_fed';
 const SLUG = 'mem-fed-home';
+const LOCAL_PROVENANCE = { authorPubkey: '', origin: 'local' as const };
 
 interface OutboxRow {
   id: string | number;
@@ -340,7 +341,7 @@ describe('mem0 federation privacy + LWW (real PG, mem0-cross-machine-federation-
       await insertMemory(id, { user_id: 'u1', workspace_id: WS, shareable: false, text: 'local private row' }, SLUG);
       await mkProj().writeToPg(
         wire(id, { user_id: 'u1', workspace_id: WS, shareable: false, text: 'local private row' }),
-        undefined,
+        LOCAL_PROVENANCE,
       );
       const rows = await rowsFor(id);
       expect(rows).toHaveLength(1);

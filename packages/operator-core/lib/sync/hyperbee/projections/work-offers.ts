@@ -228,7 +228,7 @@ function dropOffer(
   console.warn(
     `[work-offers] DROPPED inbound offer op (${reason}): publisher=${row.publisher_github_user_id} ` +
       `offer=${row.offer_id} kind=${row.offer_kind} status=${row.status} ` +
-      `hive=${row.harness_slug} origin=${provenance?.origin ?? 'local'} v=${row.record_version}`,
+      `hive=${row.harness_slug} origin=${provenance.origin} v=${row.record_version}`,
   );
   void bumpRefusedOpCounter(
     { workspaceId: opts.workspaceId, potSlug: row.harness_slug, reason: `offer-apply:${reason}` },
@@ -268,7 +268,7 @@ function decodeValue(raw: unknown): WorkOfferWireRow | null {
 async function writeToPg(
   opts: WorkOffersProjectionOpts,
   row: WorkOfferWireRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // Demux: this projection only applies its own Hive's offer ops.
   // EI-18746869686083430: this was a bare `return` — the ONE path on which an inbound
@@ -294,7 +294,7 @@ async function writeToPg(
 
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   const now = Date.now();
@@ -358,7 +358,7 @@ async function writeToPg(
   // the replication apply path must never drag the spawn graph in eagerly nor
   // unwind a landed write on a spawn hiccup (D-004: refusals are still loud —
   // the honor path itself emits the disposition + receipt).
-  if ((upsertResult.count ?? 0) > 0 && row.offer_kind === 'spawn_request' && row.status === 'open' && provenance?.origin === 'remote') {
+  if ((upsertResult.count ?? 0) > 0 && row.offer_kind === 'spawn_request' && row.status === 'open' && provenance.origin === 'remote') {
     try {
       const { honorSpawnRequestFromProjection } = await import('../../../p2p/delegated-spawn-honor');
       const res = await honorSpawnRequestFromProjection({

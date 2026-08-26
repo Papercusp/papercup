@@ -88,9 +88,11 @@ describe('writeToPg — foreign rows only, receiver-stamped partition', () => {
     expect(calls.length).toBe(0);
   });
 
-  it('drops ops with NO provenance (defensive)', async () => {
+  it('rejects ops with NO provenance instead of classifying them as local', async () => {
     const { sql, calls } = fakeSql();
-    await buildGymQdElitesProjection(opts(sql)).writeToPg(row(), undefined);
+    await expect(
+      buildGymQdElitesProjection(opts(sql)).writeToPg(row(), undefined as never),
+    ).rejects.toThrow();
     expect(calls.length).toBe(0);
   });
 

@@ -146,9 +146,9 @@ function classifyEliteRefusal(raw: unknown): RefusedOpReason {
 function onRefusedOp(
   opts: GymQdElitesProjectionOpts,
   raw: unknown,
-  provenance: ProvenanceContext | undefined,
+  provenance: ProvenanceContext,
 ): Promise<void> | void {
-  if (provenance?.origin !== 'remote') return;
+  if (provenance.origin !== 'remote') return;
   return bumpFederationRefusedOp(
     {
       workspaceId: opts.workspaceId,
@@ -171,7 +171,7 @@ async function writeToPg(
   // the NULL partition), the foreign-elites PK requires source_hive NOT NULL — and
   // a local elite's canonical row lives in gym_qd_archive. skipOwnOps already
   // filters own-log replays; this guard is the defensive second layer.
-  if (provenance?.origin !== 'remote') return;
+  if (provenance.origin !== 'remote') return;
   const sql = opts.sql ?? getOrgPg().sql;
   // H6: receiver-stamped source partition — the immutable sourceLogKeyHex.
   const sourceHive = provenance.authorPubkey || 'unknown-remote';

@@ -117,7 +117,7 @@ async function writeToPg(
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
 
-  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
+  if (provenance.origin === 'remote' && opts.potHomeSlug) {
     // (1)+(2): signature + content-address integrity — self-certifying, no state.
     if (!verifyGateVerdictWithId(gateVerdictFromWireRow(row), row.verdict_id)) return;
     // (3): the SIGNER must be an admitted hive member device. Fail-CLOSED: a
@@ -142,7 +142,7 @@ async function writeToPg(
 
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   // Immutable content-addressed fact: first write wins, replays no-op.

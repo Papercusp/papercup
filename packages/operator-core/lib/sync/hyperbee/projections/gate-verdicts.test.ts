@@ -160,7 +160,7 @@ describe('gate-verdicts receive-side verification (remote, hive-bound)', () => {
   it('a LOCAL write applies without the membership gate (CDC-captured own write)', async () => {
     const { sql, calls } = fakeSql();
     const o = opts(sql, { githubUserId: null }); // resolver would DENY — must not be consulted
-    await writeToPg(o, await wireRow(), undefined);
+    await writeToPg(o, await wireRow(), { authorPubkey: '', origin: 'local' });
     expect(calls.length).toBe(1);
   });
 });

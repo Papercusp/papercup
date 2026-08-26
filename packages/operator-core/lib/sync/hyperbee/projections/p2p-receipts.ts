@@ -127,7 +127,7 @@ async function writeToPg(
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
 
-  if (provenance?.origin === 'remote' && opts.potHomeSlug) {
+  if (provenance.origin === 'remote' && opts.potHomeSlug) {
     const sourceLogDevice = provenance.authorPubkey
       ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
       : null;
@@ -164,7 +164,7 @@ async function writeToPg(
 
   const sql = opts.sql ?? getOrgPg().sql;
   const authorPubkey = provenance?.authorPubkey ?? null;
-  const origin = provenance?.origin ?? 'local';
+  const origin = provenance.origin;
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
   // Immutable facts: dedup by (workspace, hive, receipt_id) — no LWW needed.
