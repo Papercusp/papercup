@@ -153,6 +153,7 @@ import {
   carryRowKey,
   coerceCarryRowShape,
   type CarryArgRepair,
+  evidenceFirst,
   normalizeCheckEntries,
   patchExistingCheckEntries,
   sanitizeCarryRowId,
@@ -186,6 +187,48 @@ function appendChecksOverflowCount(
       .map((row) => carryRowKey(row)),
   );
   return Math.max(0, unionKeys.size - CARRY_NOTE_MAX_CHECKS);
+}
+
+/**
+ * How many rows a stored note carries beyond today's row cap — i.e. how much LEGACY
+ * over-cap state it holds, independently of anything the current caller supplied.
+ *
+ * EI-21534719386975911: this is the discriminator that separates the two situations the
+ * additive overflow guard used to conflate. A write can overflow the cap because the
+ * CALLER is adding rows to a note that still fits (the case the guard was built for), or
+ * because the STORED note already exceeded the cap before the call was made — 57 of the
+ * 859 checks-bearing carry-notes in this workspace did, the worst holding 62 rows.
+ * Against such a note EVERY non-empty additive write overflows, so the guard refused
+ * permanently and no caller-side change could clear it. That is a data problem wearing a
+ * validation error's clothes, which is why it was filed repeatedly and "fixed" six times
+ * by rewording the refusal.
+ */
+function priorChecksOverCapCount(priorNote: string | null): number {
+  const priorChecks = splitCarryNoteChecks(priorNote).checks.filter(
+    (row) => (row.claim ?? '').trim().length > 0,
+  );
+  return Math.max(0, priorChecks.length - CARRY_NOTE_MAX_CHECKS);
+}
+
+/**
+ * Order the CARRIED rows of an additive union so that, if the cap bites, it cuts the
+ * cheapest-to-reproduce rows first: a `? PREDICTED` hypothesis yields before a
+ * `✓ VERIFIED` row whose evidence someone paid to obtain.
+ *
+ * Applied ONLY when the union actually overflows. `evidenceFirst` is stable within each
+ * tier, but reordering a note that fits would reshuffle rows for no benefit — the same
+ * fits-vs-overflows split `upsertOntoPrior` already makes on the carry-note write path.
+ * This is the checkpoint-tool half of that established rule, reached now that an
+ * over-cap prior normalizes on write instead of refusing (EI-21534719386975911).
+ */
+function orderCarriedForUnion<T extends { id?: string; claim: string; verified?: string; contested?: string }>(
+  supplied: ReadonlyArray<{ id?: string; claim: string }>,
+  prior: ReadonlyArray<T>,
+): ReadonlyArray<T> {
+  const unionKeys = new Set(
+    [...supplied, ...prior].filter((row) => (row.claim ?? '').trim().length > 0).map((row) => carryRowKey(row)),
+  );
+  return unionKeys.size > CARRY_NOTE_MAX_CHECKS ? evidenceFirst(prior) : prior;
 }
 
 type AppendChecksOverflowRow = {
@@ -1100,6 +1143,10 @@ export default defineTool({
          * retry from evicting the rows the first attempt refused to lose.
          */
         let appendChecksOverflowDiagnostics: AppendChecksOverflowRow[] = [];
+        /** Set by the overflow guard when it absorbs a legacy over-cap prior instead of
+         *  refusing (EI-21534719386975911), so the reply can name the real cause of the
+         *  eviction rather than reporting it as an ordinary caller-caused cap cut. */
+        let legacyOverCapNormalization: { legacyExcess: number } | null = null;
         const overflowGuard: CheckpointGuard | null = !wantsConfirmShrink && suppliedChecks !== undefined
           ? (_priorNote) => {
               // An explicitly empty list is the documented additive no-op for both
@@ -1109,6 +1156,35 @@ export default defineTool({
               if (!(additiveChecks || preservePriorOnShrink)) return null;
               const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
               if (overflowCount === 0) return null;
+              /**
+               * EI-21534719386975911 — NORMALIZE ON WRITE, do not refuse forever.
+               *
+               * The refusal below exists to stop a caller's own rows from evicting
+               * carried ones: it hands back a real remedy ("retire stale rows first,
+               * then append"), which only works while the stored note still FITS. When
+               * the note is ALREADY over cap, that remedy is unreachable — the full set
+               * cannot be re-sent, since `checks` is capped at CARRY_NOTE_MAX_CHECKS and
+               * a larger list is rejected as invalid_input — so the guard turned a
+               * legacy data condition into a permanently unwritable checkpoint. Measured
+               * here: 57 notes in this workspace, every additive write against them
+               * refused, the same bug re-filed each time a different agent inherited one.
+               *
+               * So absorb it: trim to the cap and PROCEED. The transform already unions
+               * supplied-first and normalizes, `orderCarriedForUnion` makes the tail it
+               * cuts the PREDICTED rows, and the eviction is reported through the
+               * ordinary `checksDropped` channel rather than being silent. Each poisoned
+               * note self-heals the next time anyone touches it — no migration, and no
+               * way back to the refuse-forever state.
+               *
+               * The guard keeps its original job intact for a within-cap prior, which is
+               * the whole distinction: refuse CALLER-caused eviction, absorb LEGACY
+               * over-cap state.
+               */
+              const legacyExcess = priorChecksOverCapCount(_priorNote);
+              if (legacyExcess > 0) {
+                legacyOverCapNormalization = { legacyExcess };
+                return null;
+              }
               appendChecksOverflowDiagnostics = appendChecksOverflowRows(_priorNote, suppliedChecks);
               return (
                 `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
