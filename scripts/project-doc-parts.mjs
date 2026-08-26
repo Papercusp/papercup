@@ -486,11 +486,15 @@ export function projectClient(allParts, { client, docId, file, reader, budget, b
   }
 
   const candidates = [...mine].sort(cutOrder);
-  const dropped = [];
+  let droppedKeys = new Set();
   for (const victim of candidates) {
-    dropped.push(victim);
-    const droppedKeys = new Set(dropped.map((d) => d.part_key));
+    // The cascade below can already have taken this part; dropping it again would
+    // spend a loop iteration without shrinking the text.
+    if (droppedKeys.has(victim.part_key)) continue;
+    droppedKeys.add(victim.part_key);
+    droppedKeys = cascadeDanglingLedes(mine, droppedKeys);
     const kept = mine.filter((p) => !droppedKeys.has(p.part_key));
+    const dropped = mine.filter((p) => droppedKeys.has(p.part_key));
     const spill = spillBlock([...dropped].sort(readOrder), { budget, docId, client });
     text = assemble(kept, { banner: head, spill });
     if (text.length <= budget) {
@@ -539,20 +543,53 @@ export function verifyBodiesPresent(text, kept) {
  * not a failed projection: a short section can end in a colon for a legitimate reason, but the
  * shape must be visible at build time instead of silently disappearing.
  */
-export function danglingProjectionWarnings(parts) {
+export function danglingProjectionParts(parts) {
   const ordered = [...parts].sort(readOrder);
-  const warnings = [];
+  const orphans = [];
   for (let i = 0; i < ordered.length; i++) {
     const current = ordered[i];
     if (!current.body.trimEnd().endsWith(':')) continue;
     const next = ordered[i + 1];
     if (next && next.target_section === current.target_section) continue;
-    warnings.push(
-      `${current.part_key}: emitted part ends with ':' with no following emitted part in section ` +
-        `${JSON.stringify(current.target_section)}`,
-    );
+    orphans.push(current);
   }
-  return warnings;
+  return orphans;
+}
+
+export function danglingProjectionWarnings(parts) {
+  return danglingProjectionParts(parts).map(
+    (current) =>
+      `${current.part_key}: emitted part ends with ':' with no following emitted part in section ` +
+      `${JSON.stringify(current.target_section)}`,
+  );
+}
+
+/**
+ * Cohesion cascade — a lede must never outlive the list it introduces.
+ *
+ * `cutOrder` ranks by project_rank DESC, then body length DESC. Within one rank that
+ * tiebreak guarantees a SHORT lede is dropped AFTER the LONG list it introduces, so
+ * when budget frees up the lede is restored FIRST — alone. The emitted file then
+ * carries a requirement whose content is withheld ("…read these first, then act:"
+ * followed by nothing), which is strictly worse than the section being absent,
+ * because it fails loudly at the reader instead of silently at the projector.
+ *
+ * `danglingProjectionParts` already DETECTS that state, but its only consumer prints
+ * a console warning — nothing stops the write. So detection alone leaves the fault in
+ * the file. Cascading the orphan into the drop set stops the projector producing it,
+ * and the detector stays as the backstop that proves the cascade worked.
+ *
+ * Dropping strictly shrinks the emitted text, so the caller's cut loop still
+ * terminates. Iterates to a fixed point: dropping a lede can orphan the lede above it.
+ */
+export function cascadeDanglingLedes(mine, droppedKeys) {
+  const keys = new Set(droppedKeys);
+  for (;;) {
+    const kept = mine.filter((p) => !keys.has(p.part_key));
+    const orphans = danglingProjectionParts(kept);
+    if (orphans.length === 0) return keys;
+    for (const orphan of orphans) keys.add(orphan.part_key);
+  }
 }
 
 /**
