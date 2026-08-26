@@ -21,6 +21,28 @@
  * + 197 fed/trigger, over the archive outbox); does not touch the dev DB. Skips 159/178
  * (the work_items view + rank) — the capture trigger is on the BASE table, and the
  * federated subset deliberately excludes the per-bee rank.
+ *
+ * ⚠ WHAT THIS TEST DOES **NOT** PROVE (read before citing it as federation coverage)
+ * ----------------------------------------------------------------------------------
+ * Its CAPTURE half is now a HISTORICAL-schema test. It applies a hardcoded migration
+ * list that stops at 197, so it reconstructs the world as it stood then — one where
+ * `engineer_issues` is a BASE TABLE carrying the capture triggers. Head has not looked
+ * like that since the work-items unification inverted the topology: `work_items` is the
+ * base table and `engineer_issues` a VIEW over it. Row triggers could not survive that,
+ * and mig-969 has since DROPPED `capture_engineer_issues_outbox` outright as unreachable
+ * dead code (EI-21474657831529811).
+ *
+ * So this file stays GREEN while exercising a function that no longer exists at head,
+ * via a schema shape that no longer exists at head. That is not a bug in the test — the
+ * historical derivation logic is real and was correct — but it means a passing run here
+ * is NOT evidence about how issue rows federate today. The LIVE path is
+ * `capture_work_items_outbox` (mig-965 taught it the nine issue columns); its coverage is
+ * work-items-outbox-canonical-slug / work-items-outbox-operator-gap-signal /
+ * issue-wire-capture-mapper-parity / federation-issues-assignments-matrix.repro.
+ *
+ * The RESHAPE half (`outboxRowToLocalWriteOp`) still exercises a LIVE mapper and is the
+ * reason this file is amended rather than deleted. Retire-or-retarget is tracked
+ * separately; do not read the mig-197 name in the describe block as a claim about head.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
