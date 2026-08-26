@@ -283,6 +283,18 @@ function TaskList({ frames, onTaskAction, busy, error }: TaskListProps) {
                 >
                   Edit
                 </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  aria-label={`Promote task: ${task.content}`}
+                  onClick={() => void dispatch({
+                    action: 'promote',
+                    taskId: task.taskId,
+                    explanation: 'Promoted from the operator Context pane.',
+                  })}
+                >
+                  Promote
+                </button>
                 {task.status !== 'completed' && task.status !== 'dropped' ? (
                   <button
                     type="button"
