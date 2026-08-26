@@ -238,9 +238,13 @@ describe('goalFleetWideFoldSlot — the fleet-wide fold must not broadcast a rol
     const every = (['plan', 'drain'] as const).flatMap((f) =>
       (['single', 'paired'] as const).map((t) => goalFleetWideFoldSlot(f, t)),
     );
-    for (const slot of every) {
-      expect(slot).not.toMatch(/-(director|implementer)$/);
-    }
+    // null (the paired arm) is the SAFE outcome here, so it counts as passing;
+    // what must never appear is a paired slot name.
+    const pairedSlots = every.filter((s) => s !== null && /-(director|implementer)$/.test(s));
+    expect(pairedSlots).toEqual([]);
+    // Calibration: the sweep really did evaluate every combination, so an empty
+    // result means "none were paired slots" and not "nothing was checked".
+    expect(every).toHaveLength(4);
   });
 
   it('binds the right family member slot on a single fleet', () => {
