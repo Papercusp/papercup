@@ -14,7 +14,7 @@ import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveSelfRef, markSelfRows } from '../coordination/self-marker';
-import { selectFleetPopulation, withShownCount } from './fleet-population';
+import { selectFleetPopulation, withShownCount, withLivenessComposition } from './fleet-population';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   fetchWakeability,
@@ -1288,6 +1288,17 @@ export default defineTool({
         degradedLegs.add('dag');
       }
     }
+    // EI-21550192883916303: the stale-idle filter keeps on `alive` — heartbeat
+    // FRESHNESS — so `summary.agents` is a population size, never an activity
+    // measure. `sessionState` is only stamped by the decoration above, so unlike
+    // leader-brief this census learns its composition here rather than in the
+    // same pass as the filter. Derived ONCE, off the FULL decorated set that
+    // `summary` describes, so the two publication sites below cannot disagree.
+    const censusWithLiveness = withLivenessComposition(
+      agentPopulation.census,
+      agents,
+      (a) => a.sessionState ?? null,
+    );
     // Summary is computed over the FULL agent set so the counts stay accurate even
     // when the returned `agents` array is bounded below.
     const summary = {
@@ -1296,7 +1307,7 @@ export default defineTool({
       // `shown` is filled in below once the byte budget is known — the filter's
       // verdict and what survived transport are two different reductions, and a
       // single number cannot honestly stand for both.
-      population: agentPopulation.census,
+      population: censusWithLiveness,
       alive: agents.filter((a) => a.alive).length,
       claims: rows.filter((r) => r.source !== 'presence').length,
       orphaned_claims: orphans.length,
@@ -1374,7 +1385,7 @@ export default defineTool({
     const summaryOut = {
       ...summary,
       population: withShownCount(
-        agentPopulation.census,
+        censusWithLiveness,
         boundedAgents.length,
         'trimmed to the agent result byte budget (22KB, live-first order) — narrow with { agent } / { plan }',
       ),
