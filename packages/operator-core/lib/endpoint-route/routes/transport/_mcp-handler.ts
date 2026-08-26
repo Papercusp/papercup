@@ -1455,6 +1455,9 @@ async function buildMcpToolContext(
   // `_meta.delta` / `?delta=` on the MCP URL. Threaded to ctx.requestedDelta so
   // the result serializer can honor a `not_modified` request on a delta-capable tool.
   requestedDelta?: string,
+  // Validated `_meta.idempotencyKey`, threaded to ctx so tools with durable
+  // side effects can derive stable per-request identifiers across retries.
+  idempotencyKey?: string,
 ): Promise<UnifiedToolContext> {
   // Unscoped context: workspaceId/harnessSlug may be '*' — the superuser door,
   // or a WORKSPACE-LEVEL signed role session (operator/planner launched without
@@ -1720,6 +1723,7 @@ async function buildMcpToolContext(
     requestedFormat,
     requestedStructured,
     requestedDelta,
+    idempotencyKey,
     requestOrigin: spawn.requestOrigin,
     log: (msg) => {
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
@@ -2592,6 +2596,7 @@ const handler = createMcpHandler(
             requestedFormat,
             requestedStructured,
             requestedDelta,
+            idempotencyKey ?? undefined,
           );
           // Replay lookup (P-046 / EI-68) — a call carrying an idempotencyKey whose
           // outcome is already stored is answered from the store WITHOUT re-running

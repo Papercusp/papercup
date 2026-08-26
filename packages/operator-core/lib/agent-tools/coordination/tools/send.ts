@@ -18,6 +18,7 @@
  * endTurn logic runs PER message.
  */
 
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
@@ -115,6 +116,35 @@ import { senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
  *  the wake doesn't race the abort and land woken:0. Env-tunable. */
 const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 1500;
+
+/**
+ * Derive the coord message id for one idempotent coord:send item. MCP
+ * idempotency keys are scoped to the caller's stable session, while coord
+ * message ids are unique within a workspace, so include both the sender and
+ * resolved scope before the bulk index. JSON tuple encoding keeps arbitrary
+ * key text unambiguous without exposing the caller's key in the envelope.
+ */
+function idempotentCoordMsgId(
+  identity: AgentIdentity,
+  harnessSlug: string | null,
+  idempotencyKey: string,
+  index: number,
+): string {
+  const digest = createHash('sha256')
+    .update(
+      JSON.stringify([
+        'coord:send',
+        identity.workspaceId,
+        harnessSlug,
+        identity.ownerId,
+        idempotencyKey,
+        index,
+      ]),
+      'utf8',
+    )
+    .digest('hex');
+  return `coord-send-${digest}`;
+}
 
 /** One distinct message's full arg set (the new `items` axis carries N of these). */
 interface SendMsg {
@@ -569,6 +599,8 @@ async function sendOne(
    * representative — but it is a sample, never a message count.
    */
   observeCensus?: (census: DerivedSignalCensus) => void,
+  idempotencyKey?: string,
+  itemIndex?: number,
 ): Promise<BulkItemResult> {
   // agent-report-cards-2026-07-17 P-001 / D-004: validate a structured report
   // card payload FIRST (pure, cheap) through the ONE canonical validator. A
@@ -1037,6 +1069,9 @@ async function sendOne(
   const bodyDelivery = senderBodyDeliveryDiagnostics(bodyText);
   const env = await sendMessage(identity, {
     to: toSend,
+    ...(idempotencyKey !== undefined && itemIndex !== undefined
+      ? { msgId: idempotentCoordMsgId(identity, harnessSlug, idempotencyKey, itemIndex) }
+      : {}),
     summary: msg.summary,
     // The TEXT projection of the sections. `env.body` stays a plain string so
     // coord:inbox / coord:read / the [coord+N] injection / coord:thread / the
@@ -2196,6 +2231,10 @@ export default defineTool({
   })),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    const idempotencyKey =
+      typeof ctx.idempotencyKey === 'string' && ctx.idempotencyKey.trim().length > 0
+        ? ctx.idempotencyKey.trim()
+        : undefined;
     // P-009: build the dead-signal census sink ONCE per invocation, here, because
     // the handler is the only scope holding the `ctx.metadata` channel it writes
     // through. Threaded into sendOne rather than resolved deeper: `sendOne` has no
@@ -2283,7 +2322,7 @@ export default defineTool({
 
     const env = await runBulk(
       list,
-      async (msg) => {
+      async (msg, itemIndex) => {
         // Capture the ORIGINAL broadcast intent BEFORE scopeBroadcastAudience
         // rewrites `*` → @fleet:<slug>: only a broadcast is stamped (P-003).
         const wasBroadcast = msg.to.includes('*');
@@ -2350,6 +2389,8 @@ export default defineTool({
           { scoped: bcast.scoped, allHive: bcast.allHive, renouncedFleetAuthority },
           wasBroadcast && !renouncedFleetAuthority ? senderCueAuthority : null,
           observeCensus,
+          idempotencyKey,
+          itemIndex,
         );
       },
       {

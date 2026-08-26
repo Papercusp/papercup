@@ -213,7 +213,7 @@ beforeEach(() => {
   // each send mints a fresh msg_id; echo the resolved `to` back on the envelope
   mockImplementationTyped(sendM, async (identity, opts) => ({
     ts: `t${++n}`,
-    msg_id: `m${n}`,
+    msg_id: opts.msgId ?? `m${n}`,
     from: identity.ownerId,
     to: [...opts.to],
     kind: 'message',
@@ -314,6 +314,52 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(sendM).toHaveBeenCalledTimes(2);
     expect(b.results.map((r: { to: string[] }) => r.to)).toEqual([['bee-1'], ['bee-2']]);
     expect(b.results.map((r: { msg_id: string }) => r.msg_id)).toEqual(['m1', 'm2']);
+  });
+
+  it('uses a stable message id for a keyed single send across retries', async () => {
+    const ctx = { idempotencyKey: 'retry-key-1' };
+    const first = await bodyWithCtx({ to: ['bee-1'], summary: 'retry me' }, ctx);
+    const firstOpts = sendM.mock.calls[0][1] as { msgId?: string };
+
+    sendM.mockClear();
+    const second = await bodyWithCtx({ to: ['bee-1'], summary: 'retry me' }, ctx);
+    const secondOpts = sendM.mock.calls[0][1] as { msgId?: string };
+
+    expect(firstOpts.msgId).toMatch(/^coord-send-[0-9a-f]{64}$/);
+    expect(secondOpts.msgId).toBe(firstOpts.msgId);
+    expect(first.results[0].msg_id).toBe(firstOpts.msgId);
+    expect(second.results[0].msg_id).toBe(secondOpts.msgId);
+  });
+
+  it('uses distinct stable message ids for keyed bulk items, including the item index', async () => {
+    const ctx = { idempotencyKey: 'retry-bulk-1' };
+    await bodyWithCtx(
+      {
+        items: [
+          { to: ['bee-1'], summary: 'first' },
+          { to: ['bee-2'], summary: 'second' },
+        ],
+      },
+      ctx,
+    );
+    const firstIds = sendM.mock.calls.map((call) => (call[1] as { msgId?: string }).msgId);
+
+    sendM.mockClear();
+    await bodyWithCtx(
+      {
+        items: [
+          { to: ['bee-1'], summary: 'first' },
+          { to: ['bee-2'], summary: 'second' },
+        ],
+      },
+      ctx,
+    );
+    const secondIds = sendM.mock.calls.map((call) => (call[1] as { msgId?: string }).msgId);
+
+    expect(firstIds).toHaveLength(2);
+    expect(new Set(firstIds).size).toBe(2);
+    expect(firstIds.every((id) => typeof id === 'string' && /^coord-send-[0-9a-f]{64}$/.test(id))).toBe(true);
+    expect(secondIds).toEqual(firstIds);
   });
 
   it('EI-21114932435630969 / EI-21336114345546510: top-level wake defaults items and preserves the legacy queue count', async () => {

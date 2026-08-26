@@ -120,6 +120,20 @@ describe('MCP emit → notifications', () => {
     expect(() => ctx.emit('delta', { text: 'silent' })).not.toThrow();
   });
 
+  it('carries a validated MCP idempotency key into the unified tool context', async () => {
+    const ctx = await __buildMcpToolContext_forTests(
+      fakeSpawn,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      'retry-key-1',
+    );
+    expect(ctx.idempotencyKey).toBe('retry-key-1');
+  });
+
   it('MCP_SERVER_CAPABILITIES declares the Papercusp typed-events extension (P4.8)', () => {
     expect(MCP_SERVER_CAPABILITIES).toMatchObject({
       tools: { listChanged: true },
