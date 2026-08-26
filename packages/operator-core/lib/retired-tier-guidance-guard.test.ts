@@ -7,12 +7,14 @@ import { describe, expect, it } from 'vitest';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 // @ts-expect-error — untyped .mjs guard helper, imported for its pure detector.
-import {
+import * as retiredGuidance from '../../../scripts/lib/retired-tier-guidance.mjs';
+
+const {
   ACTIVE_RETIRED_GUIDANCE_FILES,
   ACTIVE_RETIRED_GUIDANCE_ROOTS,
   collectActiveRetiredGuidance,
   findRetiredGuidanceOffenders,
-} from '../../../scripts/lib/retired-tier-guidance.mjs';
+} = retiredGuidance;
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 

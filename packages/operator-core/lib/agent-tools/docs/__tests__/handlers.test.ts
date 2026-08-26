@@ -690,7 +690,8 @@ describe('docs:search handler', () => {
       const p = payloadOf(res);
 
       expect(searchDocs).toHaveBeenCalledTimes(2);
-      expect(vi.mocked(searchDocs).mock.calls[1][1]).toMatchObject({
+      const calls = vi.mocked(searchDocs).mock.calls as unknown as Array<[unknown, { query: string; limit: number }]>;
+      expect(calls[1][1]).toMatchObject({
         query: 'agent-insights/mug-kettle-cup-tier-is-retired',
         limit: 1,
       });

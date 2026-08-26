@@ -615,7 +615,7 @@ export default defineTool({
     const reportedHits = surfacedAuthority
       ? [surfacedAuthority, ...finalHits.filter((hit) => hit.slug !== surfacedAuthority.slug)].slice(0, limit)
       : finalHits;
-    const reportedSemanticHitCount = reportedHits.filter((hit) => hit.semantic === true).length;
+    const reportedSemanticHitCount = reportedHits.filter((hit) => 'semantic' in hit && hit.semantic === true).length;
     const payload: Record<string, unknown> = {
       ...(lexicalResponse ?? { query: args.query, tokenCount: 0, hitCount: 0 }),
       ...(surfacedAuthority ? { currentAuthority: surfacedAuthority } : {}),
