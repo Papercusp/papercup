@@ -4,15 +4,15 @@ import { createPotAppSeam, type PotAppSeamHost, type IngestEvent } from './index
 function host(): PotAppSeamHost & {
   markers: Map<string, string>;
   pots: string[];
-  work: string[];
+  runs: string[];
 } {
   const markers = new Map<string, string>();
   const pots: string[] = [];
-  const work: string[] = [];
+  const runs: string[] = [];
   return {
     markers,
     pots,
-    work,
+    runs,
     readBootstrapMarker: (marker) => markers.get(marker) ?? null,
     writeBootstrapMarker: (marker, fingerprint) => {
       markers.set(marker, fingerprint);
@@ -21,10 +21,21 @@ function host(): PotAppSeamHost & {
       pots.push(spec.slug);
       return { slug: spec.slug, created: true, ref: `pot:${spec.slug}` };
     },
-    enqueueWorkItem: (draft) => {
-      const id = `WI-${work.length + 1}`;
-      work.push(`${draft.kind}:${draft.title}`);
-      return { id, kind: draft.kind, dedupeKey: draft.dedupeKey };
+    launchPlanRun: (draft) => {
+      const n = runs.length + 1;
+      runs.push(`${draft.templateSlug}:${draft.execution.agentName}`);
+      return {
+        runId: `RUN-${n}`,
+        planSlug: `${draft.templateSlug}-run-${n}`,
+        workItemIds: [`WI-${n}`],
+        assignedAgentName: draft.execution.agentName,
+        dedupeKey: draft.dedupeKey,
+        dispatch: {
+          status: 'delivered',
+          assignedWorkItemIds: [`WI-${n}`],
+          wakeAcknowledged: true,
+        },
+      };
     },
   };
 }
@@ -59,14 +70,26 @@ describe('createPotAppSeam', () => {
     expect(h.pots).toEqual(['shop', 'shop-ops']);
   });
 
-  it('enqueues work item drafts through the host adapter', async () => {
+  it('launches an app-owned plan run through the canonical host adapter', async () => {
     const h = host();
     const seam = createPotAppSeam(h);
-    const out = await seam.enqueueWorkItems([
-      { kind: 'candidate-review', title: 'Judge candidate A', payload: { candidateId: 'a' }, dedupeKey: 'candidate:a' },
+    const out = await seam.launchPlanRuns([
+      {
+        templateSlug: 'candidate-review',
+        input: { candidateId: 'a' },
+        provenance: { eventId: 'evt-a' },
+        execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
+        dedupeKey: 'candidate:a',
+      },
     ]);
-    expect(out).toEqual([{ id: 'WI-1', kind: 'candidate-review', dedupeKey: 'candidate:a' }]);
-    expect(h.work).toEqual(['candidate-review:Judge candidate A']);
+    expect(out[0]).toMatchObject({
+      runId: 'RUN-1',
+      workItemIds: ['WI-1'],
+      assignedAgentName: 'shop-reviewer',
+      dedupeKey: 'candidate:a',
+      dispatch: { status: 'delivered', wakeAcknowledged: true },
+    });
+    expect(h.runs).toEqual(['candidate-review:shop-reviewer']);
   });
 
   it('parses and stores ingest events with resumable cursors', async () => {
@@ -90,6 +113,34 @@ describe('createPotAppSeam', () => {
     const seam = createPotAppSeam(host());
     await expect(seam.bootstrapPots({ pots: [] })).rejects.toThrow(/at least one/);
     await expect(seam.bootstrapPots({ pots: [{ slug: '' }] })).rejects.toThrow(/pot.slug/);
-    await expect(seam.enqueueWorkItems([{ kind: '', title: 'x', payload: {} }])).rejects.toThrow(/kind/);
+    await expect(seam.launchPlanRuns([{
+      templateSlug: '',
+      input: {},
+      provenance: {},
+      execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
+    }])).rejects.toThrow(/plan template slug/);
+  });
+
+  it('fails loudly when the stable execution target was not dispatched and woken', async () => {
+    const h = host();
+    h.launchPlanRun = (draft) => ({
+      runId: 'RUN-1',
+      planSlug: 'candidate-review-run-1',
+      workItemIds: ['WI-1'],
+      assignedAgentName: draft.execution.agentName,
+      dispatch: {
+        status: 'retryable-failure',
+        assignedWorkItemIds: ['WI-1'],
+        wakeAcknowledged: false,
+        reason: 'stable agent is absent',
+      },
+    });
+    const seam = createPotAppSeam(h);
+    await expect(seam.launchPlanRuns([{
+      templateSlug: 'candidate-review',
+      input: {},
+      provenance: { eventId: 'evt-a' },
+      execution: { appHarnessSlug: 'shop', agentName: 'shop-reviewer' },
+    }])).rejects.toThrow(/failed retryably.*stable agent is absent/);
   });
 });

@@ -100,6 +100,41 @@ describe('artifacts:load', () => {
     expect(item.updated_at).toBe(1234567);
   });
 
+  it('EI-21471082146021784: offset/max_chars page large content deterministically', async () => {
+    const big = 'a'.repeat(5000) + 'b'.repeat(5000);
+    sqlImpl.mockResolvedValueOnce([{ content: big, updated_at: '7' }]);
+    const tool = lookupByMcpName('artifacts:load')!;
+    const r = await dispatchProjectedTool(
+      tool,
+      'artifacts:load',
+      { slug: 'test', rel_path: 'big.md', offset: 4000, max_chars: 4000 },
+      MAKE_CTX(),
+      {},
+    );
+    const item = envelopeOf(r).results[0];
+    expect(item.found).toBe(true);
+    expect(item.content).toBe('a'.repeat(1000) + 'b'.repeat(3000));
+    expect(item.content_total_chars).toBe(10_000);
+    expect(item.content_offset).toBe(4000);
+    expect(item.content_truncated).toBe(true);
+  });
+
+  it('EI-21471082146021784: unpaged reads stay field-identical to the legacy shape', async () => {
+    sqlImpl.mockResolvedValueOnce([{ content: 'hello world', updated_at: '9' }]);
+    const tool = lookupByMcpName('artifacts:load')!;
+    const r = await dispatchProjectedTool(
+      tool,
+      'artifacts:load',
+      { slug: 'test', rel_path: 'small.md' },
+      MAKE_CTX(),
+      {},
+    );
+    const item = envelopeOf(r).results[0];
+    expect(Object.keys(item).sort()).toEqual(
+      ['content', 'found', 'ok', 'rel_path', 'slug', 'updated_at'],
+    );
+  });
+
   it('strips a leading .papercusp/ prefix from rel_path', async () => {
     const tool = lookupByMcpName('artifacts:load')!;
     const r = await dispatchProjectedTool(

@@ -7,12 +7,16 @@ The package provides three app-facing operations:
 
 - `bootstrapPots()` ensures the domain pot and ops pot exist once per stable
   fingerprint marker.
-- `enqueueWorkItems()` turns deterministic app requests into host work items.
+- `launchPlanRuns()` turns deterministic app events into canonical app-owned
+  plan runs. The host must promote the plan-item DAG, preserve provenance,
+  assign the actionable frontier, and acknowledge the stable agent wake.
 - `startIngestLoop()` parses judged pot output events and stores accepted
   results through an injected storage port.
 
 It imports no Papercusp operator internals. A host app supplies adapters for
-pot creation, marker storage, work-item enqueue, and ingest storage.
+pot creation, marker storage, canonical plan-run launch, and ingest storage.
+The seam intentionally has no bare work-item enqueue API: agentic app events
+must not bypass plan provenance, dependency edges, assignment, or dispatch.
 
 ## Template Consumption
 
