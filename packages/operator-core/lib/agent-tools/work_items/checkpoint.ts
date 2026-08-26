@@ -408,7 +408,8 @@ const itemSpec = z.object({
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
-      'more than half is preserved by an automatic append. Pass true to confirm a destructive replacement.',
+      'more than half is auto-preserved BENEATH your note (newest-first — your text stays the visible head). ' +
+      'Pass true to confirm a destructive replacement.',
   ),
   rowsMode: rowsModeSpec(),
   dependsOn: dependsOnSpec(),
@@ -807,7 +808,7 @@ export default defineTool({
                 const body = isBodyPreservingPatch
                   ? priorSplit.body
                   : shouldAppendRefresh
-                    ? joinCheckpoint(priorSplit.body, incomingBody)
+                    ? joinCheckpointNewestFirst(incomingBody, priorSplit.body)
                     : incomingBody;
                 if (shouldAppendRefresh) autoAppendedRefresh = true;
                 const patchedExistingChecks =
@@ -875,11 +876,18 @@ export default defineTool({
                 if (merged.length === 0) return body.length > 0 ? body : null;
                 const rendered = withCarryNoteChecks(body, merged);
                 if (rendered.length <= CHECKPOINT_CAP) return rendered;
-                // Over cap: trim the BODY from the front (oldest content) and re-attach,
-                // so the checks — bounded to CARRY_NOTE_MAX_CHECKS rows — are never the
-                // part that gets cut. Mirrors joinCheckpoint's front-trim rationale.
+                // Over cap: trim the BODY and re-attach, so the checks — bounded to
+                // CARRY_NOTE_MAX_CHECKS rows — are never the part that gets cut.
+                // EI-21472322403787688: trim DIRECTION follows the body's ordering.
+                // Old-first bodies (explicit append / historical shape) cut from the
+                // front — the oldest bytes. The newest-first AUTO-preserved refresh
+                // cuts from the END instead: what must never be trimmed is the fresh
+                // authority sitting at the head.
                 const overflow = rendered.length - CHECKPOINT_CAP + TRUNCATION_MARKER.length;
-                const trimmedBody = TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
+                const keepBody = Math.max(body.length - overflow, 0);
+                const trimmedBody = shouldAppendRefresh
+                  ? body.slice(0, keepBody) + TRUNCATION_MARKER
+                  : TRUNCATION_MARKER + body.slice(Math.min(overflow, body.length));
                 return withCarryNoteChecks(trimmedBody, merged);
               }
             : undefined;
@@ -1255,8 +1263,9 @@ export default defineTool({
             ? {
                 autoAppended: true as const,
                 autoAppendedNote:
-                  'the concise replacement would have shrunk a substantial checkpoint, so it was preserved as an additive refresh; ' +
-                  'pass confirmShrink:true only when discarding the prior history is intentional.',
+                  'the concise replacement would have shrunk a substantial checkpoint, so the prior history was preserved ' +
+                  'BENEATH your note (newest-first): your text is the storedHead that cold-wake excerpts surface, and the ' +
+                  'superseded detail sits after the --- separator. Pass confirmShrink:true only when discarding that history is intentional.',
               }
             : {}),
           by: ident.ownerId,
