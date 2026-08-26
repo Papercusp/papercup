@@ -1087,6 +1087,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       originalChars: totalChars,
       targetChars: budgetChars,
       recovery,
+      // The generic payload-tier projection wraps arrays so its `_projection`
+      // metadata can survive JSON serialization. At this model-facing door the
+      // source tool's top-level shape is part of its contract (notably
+      // work_items:list), so keep an array root while retaining the metadata
+      // out-of-band for this process and in `_meta.resultDoor` below.
+      preserveArrayRoot: parsedJsonBody && Array.isArray(bodyShape.json!.parsed),
       // These roots contain model-facing state that cannot be reconstructed
       // from the generic identity fields. Keep them visible even if
       // projection metadata forces the final identity-only fallback;

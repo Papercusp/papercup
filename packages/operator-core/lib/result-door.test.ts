@@ -196,6 +196,45 @@ describe('applyResultDoor', () => {
     expect(readSpill('ws-1', 'work_items:list', RUN_ID).endsWith(original)).toBe(true);
   });
 
+  it('preserves a top-level array root for list-shaped JSON while retaining door recovery metadata', () => {
+    const rows = Array.from({ length: 300 }, (_, i) => ({
+      id: `WI-${i}`,
+      state: 'open',
+      detail: 'x'.repeat(200),
+    }));
+    const original = JSON.stringify(rows);
+    expect(original.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text: original }], structuredContent: rows },
+      { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID },
+    ) as DoorableResult;
+    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{
+      text: string;
+    }>;
+    expect(textItems).toHaveLength(1);
+    expect(textItems[0].text.length).toBeLessThan(BUDGET_CHARS);
+
+    const parsed = JSON.parse(textItems[0].text) as unknown;
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed).not.toHaveProperty('_projection');
+    expect(parsed).not.toHaveProperty('items');
+    expect((parsed as unknown[]).length).toBeLessThan(rows.length);
+    expect((parsed as unknown[]).at(-1)).toEqual(expect.objectContaining({ _truncated: true }));
+
+    const resultDoor = (doored._meta!.resultDoor as {
+      structural: boolean;
+      recoveryCursor: { kind: string; tool: string; args: Record<string, unknown> };
+    });
+    expect(resultDoor.structural).toBe(true);
+    expect(resultDoor.recoveryCursor).toMatchObject({ kind: 'scratch-page', tool: 'capability:read' });
+    expect(resultDoor.recoveryCursor.args.file_path).toBe(
+      (doored._meta!.resultDoor as { spillPath: string }).spillPath,
+    );
+    expect(readSpill('ws-1', 'work_items:list', RUN_ID).endsWith(original)).toBe(true);
+    expect(doored.structuredContent).toBe(rows);
+  });
+
   it('preserves events:status exact-event generation state when waiter history overflows the door', () => {
     const original = JSON.stringify({
       ok: true,
@@ -1028,13 +1067,13 @@ describe('applyResultDoor', () => {
  * classifier passes the first two and fails that one.
  */
 describe('buildProjectionHint — D-012 payload-aware spill footer', () => {
-  /** A COMPACT (single-line) JSON array over `chars` — the shape this door cuts most. */
+  /** A COMPACT (single-line) JSON object over `chars` — the shape this door cuts most. */
   function longJson(chars: number): string {
     const rows: Array<Record<string, string>> = [];
-    while (JSON.stringify(rows).length < chars) {
+    while (JSON.stringify({ items: rows }).length < chars) {
       rows.push({ id: `WI-${rows.length}`, state: 'open', title: 'a work item title with some length to it' });
     }
-    return JSON.stringify(rows);
+    return JSON.stringify({ items: rows });
   }
 
   function footerFor(content: Array<{ type: 'text'; text: string }>, toolName = 'work_items:list'): string {
