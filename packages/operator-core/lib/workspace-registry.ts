@@ -243,6 +243,26 @@ function warnGlobalFallbackInRequest(global: string): void {
   );
 }
 
+/**
+ * EI-21412168682953521 — three work_items partitions were created under workspace ids
+ * that were never real identities: an unexpanded `'${PAPERCUSP_WORKSPACE}'` env template,
+ * a JSON-double-quoted `'"papercusp-workspace"'`, and a filesystem path. All trace to
+ * ambient sources (PAPERCUSP_WORKSPACE_ID / request scope / registry.current) carrying
+ * raw environment strings into this function, which every writer uses to resolve the
+ * tenant it partitions under. Validate at the single chokepoint: a malformed id falls
+ * through to the next precedence level instead of poisoning every write that resolves
+ * through it. Real ids are slug-like (`papercusp-workspace`, `default`), so the shape
+ * test is deliberately narrow: unexpanded `${...}` templates, surrounding quotes, and
+ * anything containing a path separator.
+ */
+function isMalformedWorkspaceId(id: string): boolean {
+  const v = id.trim();
+  if (v !== v.replace(/^["'`]+|["'`]+$/g, '')) return true; // wrapped in quotes
+  if (/\$\{[^}]*\}/.test(v)) return true; // unexpanded ${...} template
+  if (v.includes('/') || v.includes('\\')) return true; // filesystem path
+  return false;
+}
+
 export function activeWorkspaceId(): string {
   // Precedence (per-window-workspace-context-2026-05-31, D-002/D-005):
   // 1. The request-scoped workspace — a browser window stamped its workspace on
@@ -250,16 +270,12 @@ export function activeWorkspaceId(): string {
   //    what makes one shared sidecar serve many windows on different workspaces
   //    without following the process-global `reg.current`.
   const req = currentRequestWorkspaceId();
-  if (req && req.trim()) return req.trim();
-  // 2. Process pin — a dedicated single-workspace process (orchestrator agent,
-  //    durable-pipeline dispatcher) that must not follow the desktop UI's
-  //    volatile switches. Mirrors the orchestrator's `activeWorkspaceId()`.
-  const env = process.env.PAPERCUSP_WORKSPACE_ID;
-  if (env && env.trim()) return env.trim();
+  if (req && req.trim() && !isMalformedWorkspaceId(req)) return req.trim();
   // 3. Global default — the workspace a new window opens into / background work
   //    uses when not told otherwise. No longer authoritative for request work.
   const reg = readRegistry();
   const global = reg.current ?? reg.workspaces[0]?.id ?? DEFAULT_WORKSPACE_ID;
+  if (!global || isMalformedWorkspaceId(global)) return DEFAULT_WORKSPACE_ID;
   // P-021: if we landed here while INSIDE a request/tool scope, the request
   // failed to carry its workspace. Surface it when developing (NODE_ENV
   // 'development', or an explicit opt-in) — never in 'test' (would trip
@@ -295,7 +311,9 @@ export function resolveConcreteWorkspaceId(
   for (const candidate of candidates) {
     if (typeof candidate === 'string') {
       const trimmed = candidate.trim();
-      if (trimmed && trimmed !== '*') return trimmed;
+      // EI-21412168682953521: same malformed-shape rejection as activeWorkspaceId() —
+      // a placeholder/quoted/path candidate is not a workspace identity.
+      if (trimmed && trimmed !== '*' && !isMalformedWorkspaceId(trimmed)) return trimmed;
     }
   }
   return activeWorkspaceId();
