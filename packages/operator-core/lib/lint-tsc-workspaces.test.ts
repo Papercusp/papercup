@@ -42,7 +42,9 @@ import {
   orderPackages,
   ownedBySiblingGate,
   pinDirectTscCommands,
+  parseFilesArgs,
   selectGatedPackages,
+  selectPackagesForFiles,
 } from '../../../scripts/lint-tsc-workspaces.mjs';
 
 const trees: string[] = [];
@@ -129,6 +131,82 @@ describe('discovery — a new gated package must not have to be remembered', () 
       'dist/emitted': { typecheck: true },
     });
     expect(discover(root, 0, root).map((p: { rel: string }) => p.rel)).toEqual(['packages/real']);
+  });
+});
+
+describe('focused --files routing (EI-21491386096171610)', () => {
+  it('parses equals, separated, repeated, comma-separated, and Windows-style file args', () => {
+    expect(
+      parseFilesArgs([
+        '--files=libs/generic/a/src/a.ts,./packages/b/src/b.ts',
+        '--files',
+        'apps\\c\\src\\c.ts',
+        '--files=libs/generic/a/src/a.ts',
+      ]),
+    ).toEqual(['libs/generic/a/src/a.ts', 'packages/b/src/b.ts', 'apps/c/src/c.ts']);
+  });
+
+  it('selects only each named file owner, preferring the deepest nested workspace', () => {
+    const packages = [
+      { rel: 'libs/generic' },
+      { rel: 'libs/generic/template-kit' },
+      { rel: 'packages/other' },
+    ];
+    expect(
+      selectPackagesForFiles(packages, [
+        'libs/generic/template-kit/src/template-manifest.test.ts',
+        'packages/other/src/index.ts',
+      ]),
+    ).toEqual({
+      packages: [{ rel: 'libs/generic/template-kit' }, { rel: 'packages/other' }],
+      unmatched: [],
+    });
+  });
+
+  it('runs only the owning workspace instead of starting the whole fan-out', () => {
+    const root = makeTree({
+      'libs/generic/template-kit': { tsconfig: true },
+      'libs/generic/unrelated-a': { tsconfig: true },
+      'libs/generic/unrelated-b': { tsconfig: true },
+    });
+    const sink = makeSink();
+    const compiled: string[] = [];
+    const code = main({
+      repoRoot: root,
+      roots: ['libs/generic'],
+      exempt: NO_EXEMPT,
+      untypecheckable: {},
+      files: ['libs/generic/template-kit/src/template-manifest.test.ts'],
+      spawn: (pkg: { rel: string }) => {
+        compiled.push(pkg.rel);
+        return PASS;
+      },
+      ...sink.io,
+    });
+    expect(code).toBe(0);
+    expect(compiled).toEqual(['libs/generic/template-kit']);
+    expect(sink.stdout()).toContain('1 file(s) → 1 owning workspace(s)');
+    expect(sink.stdout()).toContain('1 package(s) gated (1 via tsconfig alone)');
+  });
+
+  it('fails an unmatched file without compiling any unrelated workspace', () => {
+    const root = makeTree({ 'packages/real': { typecheck: true } });
+    const sink = makeSink();
+    const compiled: string[] = [];
+    const code = main({
+      repoRoot: root,
+      roots: ['packages'],
+      exempt: NO_EXEMPT,
+      files: ['nowhere/missing.ts'],
+      spawn: (pkg: { rel: string }) => {
+        compiled.push(pkg.rel);
+        return PASS;
+      },
+      ...sink.io,
+    });
+    expect(code).toBe(1);
+    expect(compiled).toEqual([]);
+    expect(sink.stderr()).toContain('Refusing to fall back to the full fan-out');
   });
 });
 
