@@ -13,6 +13,7 @@ const BASE_TASK: SessionTask = {
   position: 0,
   createdAt: '2026-08-26T00:00:00.000Z',
   updatedAt: '2026-08-26T00:00:00.000Z',
+  links: [],
 };
 
 function projection(taskWrite = true): ConversationContextProjection {
@@ -32,7 +33,12 @@ function projection(taskWrite = true): ConversationContextProjection {
 }
 
 function result(op: SessionTaskResult['op'], tasks = [BASE_TASK]): SessionTaskResult {
-  return { op, changedTaskId: tasks[0]?.id ?? null, tasks };
+  return {
+    op,
+    changedTaskId: tasks[0]?.id ?? null,
+    tasks,
+    links: tasks.flatMap((task) => task.links),
+  };
 }
 
 function deps(taskWrite = true) {
@@ -63,6 +69,7 @@ describe('agent-chat user task operations', () => {
     ['check', 'done'],
     ['drop', 'drop'],
     ['clear_blocker', 'unblock'],
+    ['promote', 'promote'],
   ] as const)('maps user action %s to canonical op %s', async (action, canonicalOp) => {
     const d = deps();
     await mutateAgentChatTask({

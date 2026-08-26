@@ -52,6 +52,7 @@ pub enum AgentChatTaskAction {
     Check,
     Drop,
     ClearBlocker,
+    Promote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

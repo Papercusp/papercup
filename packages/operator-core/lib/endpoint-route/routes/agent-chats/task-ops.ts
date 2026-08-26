@@ -20,6 +20,7 @@ export const AGENT_CHAT_TASK_ACTIONS = [
   'check',
   'drop',
   'clear_blocker',
+  'promote',
 ] as const;
 
 export type AgentChatTaskAction = (typeof AGENT_CHAT_TASK_ACTIONS)[number];
@@ -129,6 +130,7 @@ function canonicalOpFor(action: AgentChatTaskAction): SessionTaskOp {
     case 'check': return 'done';
     case 'drop': return 'drop';
     case 'clear_blocker': return 'unblock';
+    case 'promote': return 'promote';
   }
 }
 
