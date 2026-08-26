@@ -61,6 +61,30 @@ describe('detectAbsencePremises', () => {
     expect(p.recheck).toMatch(/scope/i);
   });
 
+  it('keeps flagging temporal absence claims but gives them an observation probe, not a prose grep', () => {
+    const [p] = derive('There WAS no wake between 17:21Z and expiry — this wake was the LAST scheduled chance.');
+    expect(p.kind).toBe('absence');
+    expect(p.recheck).toMatch(/what would falsify/i);
+    expect(p.recheck).toMatch(/observe/i);
+    expect(p.recheck).not.toMatch(/search|grep|whole repo/i);
+  });
+
+  it('does not turn a stopword absence subject into a search term', () => {
+    const [p] = derive('what did not exist was any wake I could RELY on');
+    expect(p.kind).toBe('absence');
+    expect(p.recheck).toMatch(/what would falsify/i);
+    expect(p.recheck).not.toContain('Search for "what"');
+  });
+
+  it('uses observation guidance for a long natural-language absence subject', () => {
+    const [p] = derive(
+      'There is no durable explanation available to future readers of this checkpoint note without additional context.',
+    );
+    expect(p.kind).toBe('absence');
+    expect(p.recheck).toMatch(/what would falsify/i);
+    expect(p.recheck).not.toMatch(/whole repo/i);
+  });
+
   it('does NOT fire on quoted tool output (WI-7132, the measured FP)', () => {
     expect(derive(WI_7132)).toEqual([]);
   });

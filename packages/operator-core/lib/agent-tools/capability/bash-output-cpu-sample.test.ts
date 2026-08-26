@@ -3,8 +3,8 @@ import { sampleJobCpu } from './bash_output';
 import type { BashJob } from './bash-jobs';
 
 /**
- * EI-20051445912325691 — `bash_output` reports whether a background job is WORKING or WEDGED,
- * so no caller has to hand-roll it. The property under test is not the arithmetic (that is
+ * EI-20051445912325691 — `bash_output` reports measured cgroup CPU without pretending that
+ * wrapper CPU proves payload progress. The property under test is not the arithmetic (that is
  * covered in cgroup-cpu.test.ts) but the REFUSALS: every path that cannot measure must return
  * a reason, never a number, and never throw.
  */
@@ -46,8 +46,9 @@ describe('sampleJobCpu — cpu_cores on bash_output (EI-20051445912325691)', () 
     const out = sampleJobCpu(j, { readText: fs(10_000_000), now: () => 10_000 });
     expect(out.cpu_cores).toBe(1);
     expect(out.cpu_basis).toMatch(/one core saturated/);
-    // The basis must warn that ~0 is not "finished" — the misreading that costs the most.
-    expect(out.cpu_basis).toMatch(/ALIVE BUT DOING NOTHING/);
+    expect(out.cpu_basis).toMatch(/CPU use is NOT payload progress/);
+    expect(out.cpu_basis).toMatch(/waiting-for-slot/);
+    expect(out.cpu_basis).toMatch(/payload-emitted/);
   });
 
   it('reports a genuinely idle-but-running job as 0 — distinct from unavailable', () => {

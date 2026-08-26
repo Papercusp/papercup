@@ -343,11 +343,73 @@ function isNonSurfaceAbsenceSubject(subject: string): boolean {
  */
 const DEICTIC = new Set(['it', 'this', 'that', 'they', 'these', 'those', 'one', 'there', 'he', 'she']);
 
+/**
+ * A repository search is the right falsifier for a named symbol, path, or durable
+ * identifier. It is the wrong probe for a sentence about time, scheduling, or live
+ * state: searching the repo for that prose can only return noise (or a guaranteed
+ * zero), and therefore cannot establish anything about the world.
+ */
+const OBSERVATION_RECHECK =
+  'State what would falsify this claim and how you would observe it; name the runtime, temporal, or external-state probe that can answer it.';
+
+/** Words which can be captured as the subject of `X did not exist` without naming a
+ * searchable object. Keep this deliberately small: a single ordinary noun such as
+ * `helper` remains useful as a search term, while a stopword such as `what` does not. */
+const ABSENCE_SUBJECT_STOPWORDS = new Set([
+  'a',
+  'an',
+  'the',
+  'this',
+  'that',
+  'it',
+  'what',
+  'which',
+  'who',
+  'where',
+  'when',
+  'why',
+  'how',
+  'there',
+  'anything',
+  'something',
+  'nothing',
+  'one',
+  'any',
+  'all',
+  'no',
+  'none',
+]);
+
+/** A concrete token shape that can be meaningfully searched in the repository. */
+const CODE_SHAPED_SUBJECT_RE =
+  /(?:\b[A-Za-z_$][\w$]*(?:[._:/]|::|->)[\w$./:-]*\b|\b(?:WI|EI|F|P)-\d+\b|--[\w-]+|\/[\w./-]+|\b[\w./-]+\.(?:ts|tsx|js|mjs|cjs|json|sql|md|yaml|yml)\b|\b[a-z]+[A-Z][A-Za-z0-9]+\b)/;
+
+/**
+ * Temporal/live-state subjects and long natural-language fragments need an
+ * observation recipe rather than a generated repository grep. This classification
+ * only changes the recheck guidance; the absence detector still flags the claim.
+ */
+function needsObservationRecheck(subject: string): boolean {
+  const normalized = subject.replace(/\s+/g, ' ').trim();
+  if (!normalized) return true;
+  if (CODE_SHAPED_SUBJECT_RE.test(normalized)) return false;
+
+  const words = normalized.match(/[A-Za-z0-9_$]+/g) ?? [];
+  if (words.length === 0) return true;
+  if (words.length === 1 && ABSENCE_SUBJECT_STOPWORDS.has(words[0].toLowerCase())) return true;
+  if (words.length > 5) return true;
+
+  return /\b(?:wake|wakes|wakeup|scheduled?|scheduling|schedule|expiry|expires?|expired|ttl|timer|event(?:s)?|occur(?:red|s)?|process|runtime|state|deadline|window|wall[- ]clock|today|yesterday|tomorrow|last|next|instant|moment|chance|rely|reliable)\b/i.test(
+    normalized,
+  );
+}
+
 /** The concrete probe attached to a derived premise. */
 function recheckFor(subject: string): string {
   const scopeRule =
     'across the WHOLE repo (not the one file that suggested it), then state the scope you searched — ' +
     'an absence found in one module is not an absence.';
+  if (needsObservationRecheck(subject)) return OBSERVATION_RECHECK;
   return DEICTIC.has(subject.toLowerCase())
     ? `NAME what this sentence claims is absent (the subject is a pronoun here), then search for it ${scopeRule}`
     : `Search for "${subject.slice(0, 80)}" ${scopeRule}`;

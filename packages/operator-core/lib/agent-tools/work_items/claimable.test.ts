@@ -332,7 +332,7 @@ describe('work_items:claimable handler', () => {
     it('a HEALTHY pool gets NO composition warning — a warning that cries wolf is ignored when it matters', async () => {
       const out = await run({ harness: 'papercup' });
       expect(out.note).not.toMatch(/COMPOSITION WARNING/);
-      expect(out.note).toMatch(/authoritative claimable total/); // the base note still lands
+      expect(out.note).toMatch(/authoritative for THIS CALLER/); // the base, caller-scoped note still lands
     });
 
     it('a DEGENERATE pool appends the warning, naming the share, the burst day and the item id', async () => {

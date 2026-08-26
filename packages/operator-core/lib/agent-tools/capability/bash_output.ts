@@ -794,8 +794,10 @@ export function sampleJobCpu(
       cpu_cores: Math.round(cores * 100) / 100,
       cpu_basis:
         `cores burned by this job's OWN cgroup over the ${windowSec}s since your last bash_output read ` +
-        `(1.0 = one core saturated). ~0 while status=running means ALIVE BUT DOING NOTHING — wedged, blocked on I/O, ` +
-        `or still queued behind pc-heavy's slot clamp; it does NOT mean finished.`,
+        `(1.0 = one core saturated). CPU use is NOT payload progress: wrapper/queue work can burn multiple cores ` +
+        `before the payload starts, so neither a nonzero value nor growing wrapper output distinguishes working from ` +
+        `pc-heavy:waiting-for-slot. ~0 while status=running also does NOT mean finished. Confirm progress from a ` +
+        `payload-emitted phase/test marker, not this number.`,
     };
   } catch {
     return { cpu_unavailable: 'cgroup-unreadable' };

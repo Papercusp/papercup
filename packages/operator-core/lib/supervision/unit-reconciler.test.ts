@@ -393,11 +393,14 @@ describe('decideReconcile', () => {
       now: 1000,
     });
     // WI-35537: no show-probe ⇒ we cannot claim the unit is really gone.
+    // EI-21531785497245954: nor can we claim it is PRESENT — with no probe both confirmations are
+    // false, which is the only case where "state could not be read" is an honest thing to say.
     expect(action).toEqual({
       kind: 'report-only',
       unit: 'mcp-proxy',
       reason: 'unit-not-found',
       confirmedAbsent: false,
+      confirmedLoaded: false,
       notify: true,
     });
   });
@@ -416,6 +419,33 @@ describe('decideReconcile', () => {
       unit: 'mcp-proxy',
       reason: 'unit-not-found',
       confirmedAbsent: true,
+      confirmedLoaded: false,
+      notify: true,
+    });
+  });
+
+  it('EI-21531785497245954: LoadState=loaded CONFIRMS PRESENCE -> confirmedLoaded:true (idle and not resident, NOT unreadable)', () => {
+    const { action } = decideReconcile({
+      entry: AUTORESTART_ENTRY,
+      status: undefined,
+      show: { loadState: 'loaded', unitFileState: 'enabled-runtime', result: 'success' },
+      state: initialFlapState('papercup-mcp-proxy.service'),
+      autoRestartFlagOn: true,
+      now: 1000,
+    });
+    // Measured on papercup-live-federation-gate: `systemctl --user list-units 'papercup*' --all`
+    // omits it entirely, while `show` on the same unit returns LoadState=loaded,
+    // UnitFileState=enabled-runtime, Result=success. systemd simply does not keep an idle
+    // timer-triggered unit resident. The old single boolean could only report "not confirmed
+    // absent", so the notifier fell through to "is not loaded ... and its state could not be
+    // read" — false on BOTH clauses, about a unit it had just successfully read. That false
+    // alarm fired repeatedly for weeks and cost each reader a verification round.
+    expect(action).toEqual({
+      kind: 'report-only',
+      unit: 'mcp-proxy',
+      reason: 'unit-not-found',
+      confirmedAbsent: false,
+      confirmedLoaded: true,
       notify: true,
     });
   });
@@ -477,6 +507,10 @@ describe('decideReconcile', () => {
       unit: 'live-federation-gate-timer',
       reason: 'unit-not-found',
       confirmedAbsent: true,
+      // EI-21531785497245954: LoadState=not-found, so presence is NOT confirmed either. The two
+      // booleans are independent readings of the same probe, not opposites — both are false when
+      // the probe is missing, and exactly one is true when it resolved.
+      confirmedLoaded: false,
       notify: true,
     });
   });
