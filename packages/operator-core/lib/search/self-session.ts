@@ -48,6 +48,11 @@ interface ActiveSessionRow {
 export interface ResolveSelfSessionOptions {
   home?: string;
   loadActiveSessions?: (ownerId: string) => Promise<ActiveSessionRow[]>;
+  /** All recent sessions in this owner's carry/respawn chain. Unlike
+   * loadActiveSessions, this deliberately includes ended predecessor rows so
+   * a durable turn ref can resolve after a fresh successor gets a new
+   * managed CODEX_HOME. */
+  loadOwnerSessions?: (ownerId: string) => Promise<ActiveSessionRow[]>;
   codexHomeForSession?: (id: number) => string;
   /** WI-5681 coord-id-drift bridge: read a live hosted process's environment
    *  (Linux `/proc/<pid>/environ`). Injectable so the drift path is unit-testable
@@ -141,6 +146,21 @@ async function defaultActiveSessions(ownerId: string): Promise<ActiveSessionRow[
   }
 }
 
+async function defaultOwnerSessions(ownerId: string): Promise<ActiveSessionRow[]> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    return await sql<ActiveSessionRow[]>`
+      SELECT id, agent, session_id, omp_thread_id
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${ownerId}
+       ORDER BY started_at DESC
+       LIMIT 50`;
+  } catch {
+    return [];
+  }
+}
+
 /**
  * Resolve a SPECIFIC past session belonging to ownerId's claude isolation
  * directory, identified by a prefix of its native session id — as opposed to
@@ -171,7 +191,10 @@ async function defaultActiveSessions(ownerId: string): Promise<ActiveSessionRow[
 export async function resolveOwnerIsolatedSessionByPrefix(
   ownerId: string,
   sessionPrefix: string,
-  opts: Pick<ResolveSelfSessionOptions, 'home' | 'loadActiveSessions' | 'codexHomeForSession'> = {},
+  opts: Pick<
+    ResolveSelfSessionOptions,
+    'home' | 'loadActiveSessions' | 'loadOwnerSessions' | 'codexHomeForSession'
+  > = {},
 ): Promise<SelfSession | null> {
   if (!ownerId || !sessionPrefix) return null;
   const home = opts.home ?? HOME;
@@ -185,8 +208,10 @@ export async function resolveOwnerIsolatedSessionByPrefix(
   // that mapping here keeps carry-surface [turn:codex-prefix@timestamp]
   // verification aligned with sessions:read instead of falling through a
   // Claude-only owner-chain lookup (EI-21394895717783013).
-  const activeSessions = await (opts.loadActiveSessions ?? defaultActiveSessions)(ownerId);
-  for (const row of activeSessions.filter((candidate) => candidate.agent === 'codex')) {
+  const ownerSessions = await (
+    opts.loadOwnerSessions ?? opts.loadActiveSessions ?? defaultOwnerSessions
+  )(ownerId);
+  for (const row of ownerSessions.filter((candidate) => candidate.agent === 'codex')) {
     const codexHome = opts.codexHomeForSession
       ? opts.codexHomeForSession(row.id)
       : join(home, '.papercusp', 'su-codex-homes', `session-${row.id}`);

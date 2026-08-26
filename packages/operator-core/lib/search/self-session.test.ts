@@ -91,6 +91,34 @@ describe('resolveSelfSession — Codex cold-carry respawn chain', () => {
 
     expect(resolved).toEqual({ sourceKind: 'codex', sessionId: CURRENT, filePath: rolloutPath });
   });
+
+  it('resolves a successor rollout from an ended predecessor adv-session row', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'self-session-'));
+    roots.push(home);
+    const successorHome = join(home, '.papercusp', 'su-codex-homes', 'session-18680');
+    const rolloutDir = join(successorHome, 'sessions', '2026', '08', '26');
+    await mkdir(rolloutDir, { recursive: true });
+    const rolloutPath = join(rolloutDir, `rollout-2026-08-26T09-46-47-${CURRENT}.jsonl`);
+    await writeFile(rolloutPath, '{}\n');
+
+    const resolved = await resolveOwnerIsolatedSessionByPrefix('su-current', CURRENT.slice(0, 8), {
+      home,
+      loadActiveSessions: async () => [{
+        id: 11801,
+        agent: 'codex',
+        session_id: STALE,
+        omp_thread_id: null,
+      }],
+      loadOwnerSessions: async () => [{
+        id: 18680,
+        agent: 'codex',
+        session_id: CURRENT,
+        omp_thread_id: null,
+      }],
+    });
+
+    expect(resolved).toEqual({ sourceKind: 'codex', sessionId: CURRENT, filePath: rolloutPath });
+  });
 });
 
 describe('resolveSelfSession — claude cold-carry respawn chain (WI-5644)', () => {
