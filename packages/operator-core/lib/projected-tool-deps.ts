@@ -38,6 +38,12 @@ import { recordToolAuthzEvent } from './tool-authz-audit';
 import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
 import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
 import { checkSessionConfinement } from './capability-envelope/session-confinement-port';
+// Imported for its INSTALL side effect (D-017 §5): loading the store assigns the session
+// confinement resolver. This gate fails SILENTLY when unresolved — no resolver means every
+// session is unconfined, with nothing thrown and nothing logged — so installation is bound to
+// the module the dispatcher already imports rather than to a boot step that can be skipped.
+// The import itself performs no IO; the store primes lazily on its first consult.
+import './capability-envelope/session-confinement-store';
 // live-configurability-audit-2026-06-20 P-009 — runtime envelope overrides (D-010 sync-cache).
 // Getters return empty when the dark flag is off ⇒ byte-identical envelope resolution.
 import { envelopeRoleOverrides, envelopeProtectedAdditions } from './capability-envelope-overrides';
@@ -707,7 +713,7 @@ async function checkCapabilityEnvelopeImpl(input: {
   // This gate is a self-imposed narrowing declared by the LAUNCHER, not a privilege ceiling,
   // so privilege is irrelevant to it. It is inert (null) for any session with no declared
   // confinement, i.e. every session until a paired fleet launches one.
-  const confined = checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx });
+  const confined = await checkSessionConfinement({ toolName: input.toolName, ctx: input.ctx });
   if (confined) return confined;
 
   // P-009 (D-010): merge the runtime per-role overrides OVER the baked ROLE_ENVELOPES (per-role

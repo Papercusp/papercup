@@ -47,11 +47,23 @@ export type SessionConfinementResolver = (
 
 const state = pinModuleState('@papercusp/operator-core.session-confinement-port', () => ({
   resolver: undefined as SessionConfinementResolver | undefined,
+  ensureReady: undefined as (() => Promise<void>) | undefined,
 }));
 
-/** Install (or clear, with `undefined`) the host resolver. */
-export function setSessionConfinementResolver(fn: SessionConfinementResolver | undefined): void {
+/**
+ * Install (or clear, with `undefined`) the host resolver.
+ *
+ * `ensureReady` is awaited before the FIRST consult and is expected to memoize itself, so the
+ * host can prime a cache without the resolver having to be async. It exists for one case the
+ * launch ordering cannot cover: an operator RESTART with a confined session already live, where
+ * the cache starts empty and a cold miss would read as "unconfined" (D-017 §4).
+ */
+export function setSessionConfinementResolver(
+  fn: SessionConfinementResolver | undefined,
+  opts?: { ensureReady?: () => Promise<void> },
+): void {
   state.resolver = fn;
+  state.ensureReady = opts?.ensureReady;
 }
 
 /** Whether a resolver is installed — for boot assertions and tests. */
@@ -69,12 +81,23 @@ export function hasSessionConfinementResolver(): boolean {
  * confined session is confined at every privilege level — that is the entire point of
  * D-015, and it is what makes this gate bind where `ROLE_ENVELOPES` cannot.
  */
-export function checkSessionConfinement(input: {
+export async function checkSessionConfinement(input: {
   toolName: string;
   ctx: UnifiedToolContext;
-}): CapabilityEnvelopeVerdict | null {
+}): Promise<CapabilityEnvelopeVerdict | null> {
   const resolver = state.resolver;
   if (!resolver) return null;
+
+  const ensureReady = state.ensureReady;
+  if (ensureReady) {
+    try {
+      // Memoized by the host: one await per process, not one per dispatch.
+      await ensureReady();
+    } catch {
+      // A priming failure must not take every dispatch on the box down. The store logs it;
+      // here we simply proceed with whatever the cache holds (empty ⇒ unconfined).
+    }
+  }
 
   let confinement: SessionToolConfinement | null | undefined;
   try {
