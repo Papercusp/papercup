@@ -3264,16 +3264,16 @@ impl App {
     /// (pui-plans-status-board-2026-06-14 P-008). Resolves the harness the same
     /// way `publish_active_plan` does (the plan's own, else the session's).
     pub fn selected_board_plan(&self) -> Option<(String, String)> {
-        let rows = crate::plans_board::board_rows(self);
-        rows.get(self.plans_board_sel.min(rows.len().saturating_sub(1)))
-            .map(|r| {
-                let h = r
-                    .plan
+        let plans = self.visible_plans();
+        plans
+            .get(self.plans_board_sel.min(plans.len().saturating_sub(1)))
+            .map(|plan| {
+                let h = plan
                     .harness
                     .clone()
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| self.harness.clone());
-                (h, r.plan.slug.clone())
+                (h, plan.slug.clone())
             })
     }
 
@@ -3592,12 +3592,6 @@ impl App {
                         .unwrap_or_else(|| self.harness.clone());
                     (h, p.slug.clone())
                 })
-            } else if self.tab == Tab::PlansBoard {
-                // The pinned plans board's right-side work-items detail needs
-                // the SELECTED board plan's item states; the poller keeps it
-                // fresh between the immediate FetchPlanItemStates fetches on j/k
-                // (pui-plans-status-board-2026-06-14 P-008).
-                self.selected_board_plan()
             } else {
                 None
             };
@@ -4319,7 +4313,11 @@ impl App {
     fn plans_board_within_move(&mut self, delta: isize) -> Action {
         match self.plans_focus {
             PlansFocus::List => {
-                let count = crate::plans_board::board_rows(self).len();
+                let count = self
+                    .context_projection
+                    .as_ref()
+                    .map(|projection| projection.tasks().len())
+                    .unwrap_or(0);
                 self.plans_board_sel = step_clamped(self.plans_board_sel, delta, count);
                 self.plan_items_sel = 0; // a new plan → its own items
                 self.fetch_selected_board_item_states()
@@ -7258,10 +7256,13 @@ impl App {
                 self.plan_items_sel = step(self.plan_items_sel, delta, len);
                 return Action::Render;
             }
-            let len = crate::plans_board::board_rows(self).len();
-            self.plans_board_sel = step(self.plans_board_sel, delta, len);
-            self.plan_items_sel = 0;
-            return self.fetch_selected_board_item_states();
+            let len = self
+                .context_projection
+                .as_ref()
+                .map(|projection| projection.tasks().len())
+                .unwrap_or(0);
+            self.context_task_sel = step(self.context_task_sel, delta, len);
+            return Action::Render;
         }
         match self.fleet.fleet_focus {
             Inbox => {
