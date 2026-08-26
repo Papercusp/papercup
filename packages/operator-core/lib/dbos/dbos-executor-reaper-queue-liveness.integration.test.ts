@@ -16,7 +16,7 @@
  * backlog behind live workers is left alone; the reaper's own CANCELLED rows do
  * not count as liveness (they must not self-mask a genuinely wedged queue).
  *
- * Run: npx vitest run --config vitest.integration.config.ts \
+ * Run: cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
  *        lib/dbos/dbos-executor-reaper-queue-liveness.integration.test.ts
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
