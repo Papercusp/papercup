@@ -22,7 +22,7 @@ import {
   type ClaimSpecSubject,
 } from './claim-spec-match';
 import { claimSpecFilterToClaimablePayloadFilter } from './claim-spec-payload-filter';
-import { formatSpecRef, type ClaimSpec } from './claim-spec';
+import { claimSpecReferencesField, formatSpecRef, type ClaimSpec } from './claim-spec';
 
 /**
  * EI-19393442073558754: pull the `kind in [...]` leaf's value out of a claim spec's
@@ -1292,9 +1292,15 @@ export async function diagnoseFleetScopeFeatureFamilyMatch(args: {
     const ws = resolveClaimSpecWorkspace(args.workspaceId);
     if (!ws) return null;
     const spec = args.scope.record.spec;
+    const filterNode = spec.view.filter;
+    if (!filterNode) return null;
     const { sql } = getOrgPg();
     const { claimFloorsWhereSql } = await import('../work-items');
     const { compileFilter } = await import('./get-next');
+    // Keep the diagnostic's shared floors identical to getNextWorkItem's feature claim:
+    // a fleet-stamped plan lane is admissible to its owning fleet, and a spec that
+    // explicitly references `fleet` authorizes the matching stamped lane itself.
+    const claimSpecReferencesFleet = claimSpecReferencesField(spec, 'fleet');
     const cooldownAssignee = args.cooldownAssignee === null
       ? undefined
       : args.cooldownAssignee ?? args.scope.ownerId;
@@ -1304,8 +1310,10 @@ export async function diagnoseFleetScopeFeatureFamilyMatch(args: {
       states: args.states ?? spec.states,
       cooldownAssignee,
       rigAvailable: args.rigAvailable,
+      claimantFleetSlug: args.scope.fleetSlug,
+      claimSpecReferencesFleet,
     });
-    const filter = compileFilter(sql, spec.view.filter);
+    const filter = compileFilter(sql, filterNode);
     const rows = await sql<{ cnt: number }[]>`
       SELECT count(*)::int AS cnt
         FROM harness_shared.harness_features_consolidated

@@ -55,17 +55,19 @@ async function seedItem(
     status?: string;
     takenBy?: string | null;
     sourcePlanSlug?: string | null;
+    payload?: Record<string, unknown> | null;
     harness?: string;
     workspaceId?: string;
   } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, source_plan_slug, created_ts, updated_ts)
+      (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id, source_plan_slug, created_ts, updated_ts, payload)
     VALUES (
       ${opts.harness ?? H}, ${id}, ${opts.itemKind ?? 'feature'}, ${`title ${id}`},
       ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${opts.workspaceId ?? WS},
-      ${opts.sourcePlanSlug ?? null}, 0, 0
+      ${opts.sourcePlanSlug ?? null}, 0, 0,
+      ${opts.payload ? db.sql.json(opts.payload as postgres.JSONValue) : null}
     )`;
 }
 
@@ -116,6 +118,24 @@ describe('diagnoseFleetScopeFeatureFamilyMatch against real Postgres (WI-7151)',
     });
 
     expect(cnt).toBe(2);
+  });
+
+  it('admits a plan-lane row stamped for this fleet, matching getNextWorkItem floor authorization', async () => {
+    await seedItem('WI-fleet-plan', {
+      sourcePlanSlug: PLAN,
+      payload: {
+        plan_item: { plan_slug: PLAN, item_id: 'P-001', harness_slug: H },
+        fleet_slug: 'opencode-omp-research',
+      },
+    });
+
+    const cnt = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: planScopeFor('su-member'),
+      harness: H,
+      workspaceId: WS,
+    });
+
+    expect(cnt).toBe(1);
   });
 
   it('returns 0 (not null) for a plan with no promoted items at all — a genuine drain, not a diagnosis failure', async () => {

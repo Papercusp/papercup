@@ -186,6 +186,38 @@ describe('WI-41163: caller-neutral feature-family population count', () => {
       expect.objectContaining({ cooldownAssignee: undefined }),
     );
   });
+
+  it('passes the scope fleet and structural fleet authorization to the shared floor', async () => {
+    admissionMocks.claimFloorsWhereSql.mockReturnValue('FLOORS_WITH_FLEET_AUTH');
+    admissionMocks.compileFilter.mockReturnValue('FILTER_FRAGMENT');
+    admissionMocks.sql.mockResolvedValue([{ cnt: 1 }]);
+
+    const fleetReferencedScope = {
+      ...populationScope,
+      record: {
+        ...populationScope.record,
+        spec: {
+          ...populationScope.record.spec,
+          view: { filter: { field: 'fleet' as const, op: '=' as const, value: 'fleet-x' } },
+        },
+      },
+    };
+
+    const count = await diagnoseFleetScopeFeatureFamilyMatch({
+      scope: fleetReferencedScope,
+      harness: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+    });
+
+    expect(count).toBe(1);
+    expect(admissionMocks.claimFloorsWhereSql).toHaveBeenCalledWith(
+      admissionMocks.sql,
+      expect.objectContaining({
+        claimantFleetSlug: 'fleet-x',
+        claimSpecReferencesFleet: true,
+      }),
+    );
+  });
 });
 
 const base: ClaimSpecSubject = {
