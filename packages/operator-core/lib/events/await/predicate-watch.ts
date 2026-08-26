@@ -285,6 +285,18 @@ export function extractToolPayload(result: unknown): unknown {
   return r;
 }
 
+/**
+ * Resolver results stay inside the process and are reduced to one registered path
+ * before anything reaches an agent. They therefore need both payload-tier bypasses:
+ * the resolved tier prevents ordinary shaping, while `transportCapExempt` prevents
+ * the 30KB transport ceiling from force-applying a smallest-tier projection first.
+ */
+export const INTERNAL_MACHINE_DISPATCH_PAYLOAD_CONTEXT = {
+  contextTier: 'full',
+  payloadTierOverride: 'full',
+  transportCapExempt: true,
+} as const;
+
 /* ── Store ─────────────────────────────────────────────────────────────────── */
 
 export async function registerPredicateWatch(input: {
@@ -594,8 +606,7 @@ export async function dispatchReadOnlyTool(
       // projection can omit the very path they declared and manufacture an
       // `insufficient-data` result from a healthy resolver. Keep the internal
       // payload lossless; only the cell/watch result reaches the caller.
-      contextTier: 'full',
-      payloadTierOverride: 'full',
+      ...INTERNAL_MACHINE_DISPATCH_PAYLOAD_CONTEXT,
       log: () => {},
       progress: () => {},
       emit: () => {},

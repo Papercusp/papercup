@@ -6,7 +6,22 @@
  * (real PG, fake dispatch via configurePredicateDispatch).
  */
 import { describe, expect, it } from 'vitest';
-import { valueAtPath, comparePredicate, extractToolPayload } from './predicate-watch';
+import {
+  valueAtPath,
+  comparePredicate,
+  extractToolPayload,
+  INTERNAL_MACHINE_DISPATCH_PAYLOAD_CONTEXT,
+} from './predicate-watch';
+
+describe('internal machine-dispatch payload context', () => {
+  it('bypasses both tier shaping and the hard transport ceiling before path projection', () => {
+    expect(INTERNAL_MACHINE_DISPATCH_PAYLOAD_CONTEXT).toEqual({
+      contextTier: 'full',
+      payloadTierOverride: 'full',
+      transportCapExempt: true,
+    });
+  });
+});
 
 describe('valueAtPath', () => {
   it('extracts nested object paths', () => {
