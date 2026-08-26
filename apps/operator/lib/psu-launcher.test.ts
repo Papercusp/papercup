@@ -125,6 +125,7 @@ import {
   pendingSessionEndWitnessPath,
   readPendingSessionEndWitness,
   reportSessionResumed,
+  acquireSessionResumeWithRecovery,
   reportSessionResumeFinalized,
   reportSessionResumeReleased,
   describeResumeClaimRefusal,
@@ -8809,6 +8810,108 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
   });
 });
 
+describe("acquireSessionResumeWithRecovery — truthful reserved wait/retry", () => {
+  it("waits through a held lease and retries with the SAME attempt key", async () => {
+    const keys: string[] = [];
+    const sleeps: number[] = [];
+    const notices: string[] = [];
+    let clock = 0;
+    const reportImpl = vi.fn(async (_id, { resumeClaimKey }) => {
+      keys.push(resumeClaimKey);
+      if (keys.length === 1) {
+        return {
+          claimed: false,
+          reason: "contended",
+          status: "reserved",
+          retryAfterMs: 1_000,
+          leaseExpiresAt: "2026-08-26T16:00:01.000Z",
+          resumeClaimKey,
+        } as const;
+      }
+      return {
+        claimed: true,
+        status: "acquired",
+        resumeClaimKey,
+        replayed: false,
+      } as const;
+    });
+
+    await expect(
+      acquireSessionResumeWithRecovery(42, {
+        resumeClaimKey: "resume-wait-1",
+        reportImpl,
+        now: () => clock,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          clock += ms;
+        },
+        onNotice: (message) => notices.push(message),
+      }),
+    ).resolves.toEqual({
+      claimed: true,
+      status: "acquired",
+      resumeClaimKey: "resume-wait-1",
+      replayed: false,
+    });
+    expect(keys).toEqual(["resume-wait-1", "resume-wait-1"]);
+    expect(sleeps).toEqual([1_050]);
+    expect(notices.join("\n")).toContain("waiting 1050ms");
+    expect(notices.join("\n")).toContain("same attempt key");
+  });
+
+  it("returns the held lease and expiry when it exceeds the bounded auto-wait", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const reportImpl = vi.fn(
+      async (_id, { resumeClaimKey }) =>
+        ({
+          claimed: false,
+          reason: "contended",
+          status: "reserved",
+          retryAfterMs: 80_000,
+          leaseExpiresAt: "2026-08-26T16:01:20.000Z",
+          resumeClaimKey,
+        }) as const,
+    );
+
+    const outcome = await acquireSessionResumeWithRecovery(42, {
+      resumeClaimKey: "resume-wait-budget",
+      reportImpl,
+      now: () => 0,
+      sleep,
+      onNotice: () => {},
+      waitBudgetMs: 75_000,
+    });
+
+    expect(outcome).toMatchObject({
+      claimed: false,
+      status: "reserved",
+      leaseExpiresAt: "2026-08-26T16:01:20.000Z",
+      resumeClaimKey: "resume-wait-budget",
+    });
+    expect(refusalOf(outcome).detail).toContain("automatic wait budget");
+    expect(sleep).not.toHaveBeenCalled();
+    expect(reportImpl).toHaveBeenCalledOnce();
+  });
+
+  it("never waits on live, missing, HTTP, or transport outcomes", async () => {
+    const sleep = vi.fn(async () => undefined);
+    for (const outcome of [
+      { claimed: false, reason: "contended", status: "live" } as const,
+      { claimed: false, reason: "contended", status: "missing" } as const,
+      { claimed: false, reason: "http" } as const,
+      { claimed: false, reason: "transport" } as const,
+    ]) {
+      await expect(
+        acquireSessionResumeWithRecovery(42, {
+          reportImpl: async () => outcome,
+          sleep,
+        }),
+      ).resolves.toEqual(outcome);
+    }
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
 describe("resume reservation finalize/release reporters", () => {
   it("finalizes with the exact acquisition key after spawn evidence", async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
@@ -8895,15 +8998,58 @@ describe("resume reservation finalize/release reporters", () => {
 });
 
 describe("describeResumeClaimRefusal — four causes must not share one sentence", () => {
-  it("only the genuine race mentions another process holding the row", () => {
-    expect(describeResumeClaimRefusal({ claimed: false, reason: "contended" })).toContain(
-      "another process holds the row",
-    );
-    for (const reason of ["http", "transport", "no-session"] as const) {
-      expect(describeResumeClaimRefusal({ claimed: false, reason })).not.toContain(
-        "another process holds the row",
-      );
+  it("never turns a lease/database verdict into an unproven process claim", () => {
+    const outcomes = [
+      {
+        claimed: false,
+        reason: "contended",
+        status: "reserved",
+        leaseExpiresAt: "2026-08-26T16:00:12.000Z",
+      } as const,
+      { claimed: false, reason: "contended", status: "live" } as const,
+      { claimed: false, reason: "contended", status: "missing" } as const,
+      { claimed: false, reason: "http" } as const,
+      { claimed: false, reason: "transport" } as const,
+    ];
+    for (const outcome of outcomes) {
+      const text = describeResumeClaimRefusal(outcome);
+      expect(text).not.toContain("another process holds");
+      expect(text).not.toContain("agent process is live");
     }
+  });
+
+  it("names held reservation expiry and distinguishes unevaluated requests", () => {
+    expect(
+      describeResumeClaimRefusal({
+        claimed: false,
+        reason: "contended",
+        status: "reserved",
+        leaseExpiresAt: "2026-08-26T16:00:12.000Z",
+      }),
+    ).toContain("reservation until 2026-08-26T16:00:12.000Z");
+    expect(
+      describeResumeClaimRefusal({ claimed: false, reason: "http" }),
+    ).toContain("did not return an evaluated");
+    expect(
+      describeResumeClaimRefusal({ claimed: false, reason: "transport" }),
+    ).toContain("could not be evaluated");
+  });
+
+  it("adds backend-specific recovery context only to the database-live state", () => {
+    const live = {
+      claimed: false,
+      reason: "contended",
+      status: "live",
+    } as const;
+    expect(describeResumeClaimRefusal(live, { agent: "codex" })).toContain(
+      "native writer-lock guard",
+    );
+    expect(describeResumeClaimRefusal(live, { agent: "claude" })).toContain(
+      "Claude host/process",
+    );
+    expect(describeResumeClaimRefusal(live, { agent: "omp" })).toContain(
+      "OMP host/process",
+    );
   });
 
   it("renders a DISTINCT sentence per reason, and surfaces the detail", () => {
@@ -8931,7 +9077,9 @@ describe("launchResume wiring — claim before setup or spawn", () => {
   it("reconciles a pending end witness, then acquires before config repair and spawn", () => {
     const pendingEnd = body.indexOf("readPendingSessionEndWitness(session.id)");
     const endReplay = body.indexOf("await reportSessionEnded(", pendingEnd);
-    const claim = body.indexOf("await reportSessionResumed(session.id)");
+    const claim = body.indexOf(
+      "await acquireSessionResumeWithRecovery(session.id)",
+    );
     const configRepair = body.indexOf(
       "await ensureInteractiveConfigViaOperator",
     );
@@ -8969,7 +9117,7 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 
   it("exits immediately when the ended-session resume claim is lost", () => {
     const claim = body.indexOf(
-      "const claim = await reportSessionResumed(session.id);",
+      "const claim = await acquireSessionResumeWithRecovery(session.id);",
     );
     const refusal = body.indexOf("if (!claim.claimed) {", claim);
     const nextClaimState = body.indexOf("resumeClaimed = true;", refusal);
