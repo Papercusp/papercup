@@ -9,9 +9,13 @@
  *   - FAILS OPEN — a detector or a read that THROWS is skipped, never an offender
  *     (a content-check bug must never wedge the whole tree's commit).
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { detectContentOffenders, parseDirtyPaths } from './content-guard';
-import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
+import {
+  DEFAULT_CONTENT_DETECTORS,
+  setContentLintExemptionLoader,
+  type ContentDetector,
+} from '../../content-lint/registry';
 import type { RunGit } from './run-git-sync';
 
 /** A runGit that answers `status --porcelain -z -uall` with the given NUL-joined entries. */
