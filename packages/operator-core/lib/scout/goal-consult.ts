@@ -113,10 +113,16 @@ function resultToConsultation(
       ...(feedback ? { feedback } : { reason: 'archive result carried no extractable critique' }),
     };
   }
+  // Carry the verdict through rather than re-labelling it. `routed` and
+  // `served_from_archive` returned above, so this narrows to the two
+  // unavailable verdicts — and flattening them to `no_qualified_responder`
+  // here would re-introduce EI-21485716602970457 one layer up, where the
+  // typechecker cannot see it: a hardcoded literal is always well-typed.
+  // `status` stays 'unavailable' for both; only the audit label differs.
   return {
     ...base,
     status: 'unavailable',
-    verdict: 'no_qualified_responder',
+    verdict: result.verdict,
     reason: trimText([result.reason, result.hint].filter(Boolean).join(': ')),
   };
 }

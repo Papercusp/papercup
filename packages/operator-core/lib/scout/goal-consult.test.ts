@@ -118,6 +118,26 @@ describe('buildGoalFeedbackConsultPort', () => {
     )({ proposal: proposal() });
     expect(noRoute.consultation).toMatchObject({ status: 'unavailable', verdict: 'no_qualified_responder' });
 
+    // EI-21485716602970457: an embedder outage must NOT be re-labelled as a
+    // measured absence on the way through Scout. Both dispositions are
+    // 'unavailable', which is exactly what made the old hardcoded literal look
+    // harmless — and why the typechecker could never have caught it.
+    const unmeasured = await buildGoalFeedbackConsultPort(opts, async () =>
+      result({
+        verdict: 'relevance_unmeasured',
+        state: 'no_qualified_responder',
+        responder: null,
+        responder_via: null,
+        reason: 'embed_unavailable',
+        wake: { attempted: false, queued: 0, woke: 0, pickupConfirmed: false },
+      }),
+    )({ proposal: proposal() });
+    expect(unmeasured.consultation).toMatchObject({
+      status: 'unavailable',
+      verdict: 'relevance_unmeasured',
+    });
+    expect(unmeasured.consultation?.verdict).not.toBe('no_qualified_responder');
+
     const failed = await buildGoalFeedbackConsultPort(opts, async () => {
       throw new Error('embedder offline');
     })({ proposal: proposal() });
