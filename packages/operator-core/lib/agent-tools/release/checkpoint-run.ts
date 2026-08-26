@@ -31,7 +31,6 @@ import {
   assessPreLaunchExclusion,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   CHECKPOINT_MAX_RUNTIME_SEC,
-  checkActiveCheckpointRun,
   checkpointCandidateContainment,
   checkpointEligibilityCompletionEvents,
   checkpointEligibilityPendingId,
@@ -997,10 +996,7 @@ export default defineTool({
     // detached candidate-migration/dependency/rendezvous stages are explicit
     // `deferred` predicates — resolved to a fail-closed enforcement point, never
     // misreported as already clear.
-    const [activeRun, qualificationAdmission] = await Promise.all([
-      Promise.resolve(checkActiveCheckpointRun(root)),
-      readQualificationAdmission(),
-    ]);
+    const qualificationAdmission = await readQualificationAdmission();
     const completionEvents = checkpointEligibilityCompletionEvents(root);
     const predicates: CheckpointEligibilityPredicate[] = [
       {
@@ -1031,12 +1027,10 @@ export default defineTool({
       },
       {
         code: 'active-run',
-        status: activeRun.active ? 'waiting' : 'clear',
-        detail: activeRun.active
-          ? `${activeRun.unit} already owns the physical run slot`
-          : `${activeRun.unit} is inactive and its run lock is clear`,
-        clearEvents: activeRun.active ? completionEvents : [],
-        evidenceRefs: [`systemd:${activeRun.unit}`],
+        status: 'deferred',
+        detail: 'the detached launch primitive rechecks the systemd unit and shared run lock immediately before spawn',
+        clearEvents: [],
+        evidenceRefs: ['stage:launch-detached-checkpoint:active-run'],
       },
       {
         code: 'frozen-repair-queue',
