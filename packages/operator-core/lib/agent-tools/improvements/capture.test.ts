@@ -751,6 +751,10 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(JSON.stringify(misplaced.success ? [] : misplaced.error!.issues)).toContain('linkTo');
   });
 
+  it('teaches the nested home when top-level linkTo is attempted (EI-21490971340666010)', () => {
+    expect(captureTool.guidance?.argRedirects?.linkTo).toBe('observation.linkTo');
+  });
+
   it('accepts a rubric-graded observation (rubricRef + ratings with evidence)', () => {
     const r = argsSchema.safeParse({
       title: 'scorecard',

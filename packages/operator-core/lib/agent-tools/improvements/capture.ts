@@ -340,6 +340,13 @@ export default defineTool({
       'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:"self" to claim and observation.refs for evidence attribution.',
     chaining:
       'improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them.',
+    // EI-21490971340666010: discovery renders observation's nested fields inline,
+    // and callers repeatedly passed `linkTo` at the TOP level (three filings).
+    // The strict schema correctly rejects it; this redirect turns that rejection
+    // into the correction instead of a dead end.
+    argRedirects: {
+      linkTo: 'observation.linkTo',
+    },
     returns:
       'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, hint, alreadyDecided? }. The check-only `hint` states whether this was title-only or bound to the exact supplied body; changing the body can change semantic matches, so rerun with the final body before treating [] as clean.\n\n' +
       'COALESCE (reason:"coalesced" — an observation matching an open conditionKey): also `coalescedOnto { id, repeatCount, bodyPersisted, bodyDiscarded?, priorAuthor, crossAuthor }`. Read `bodyPersisted` BEFORE asserting the row says what you wrote: on false your title/body was DISCARDED and the row still shows the previous reading. `crossAuthor:true` means you wrote onto a PEER\'s row (expected for a shared conditionKey; occurrences are all retained).\n\n' +
