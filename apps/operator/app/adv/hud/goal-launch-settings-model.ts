@@ -55,7 +55,8 @@ export interface LaunchProfileForm {
   account: string;
   carry: string;
   /**
-   * `''` (unpinned) | `'true'` (headless) | `'false'` (headed).
+   * `''` (unpinned) | `'headless'` | `'headed'` — the members of
+   * LAUNCH_PROFILE_HEADLESS, not stringly booleans.
    *
    * A STRING here even though the document stores a boolean: the form is
    * uniformly string-valued so one loop can render and diff every field, and
@@ -164,10 +165,11 @@ function profileToForm(p: GoalDetailLaunchProfile | null | undefined): LaunchPro
     effort: p?.effort ?? '',
     account: p?.account ?? '',
     carry: p?.carry ?? '',
-    // `== null` and NOT `?? ''`: `false` is a PINNED value the owner chose, and
-    // `p.headless ?? ''` would be correct here only by luck of `false` not being
-    // nullish. Spelled explicitly so the three states stay visibly three.
-    headless: p?.headless == null ? '' : String(p.headless),
+    // `== null` and NOT `?? ''`: `false` is a PINNED value the owner chose
+    // ("headed"), and collapsing it to blank would silently demote a deliberate
+    // setting back to unpinned. Spelled explicitly so the three states stay
+    // visibly three.
+    headless: p?.headless == null ? '' : p.headless ? 'headless' : 'headed',
     contextSize: p?.contextSize ?? '',
   };
 }
@@ -205,10 +207,11 @@ function formToProfile(f: LaunchProfileForm): GoalDetailLaunchProfile | null {
     // back as a pinned value while pinning nothing.
     if (!v) continue;
     // `headless` is the one key stored as a boolean (it matches the fleet
-    // layer's spelling). Emitting the STRING 'false' here would be the worst
-    // outcome available: `.strict()` would reject the save outright, or — if it
-    // ever slipped through — a truthy 'false' would flip the meaning.
-    out[k] = k === 'headless' ? v === 'true' : v;
+    // layer's spelling). Emitting the STRING here would be the worst outcome
+    // available: `.strict()` rejects the save outright, or — if it ever slipped
+    // through — every non-empty string is truthy, so "headed" would read back
+    // as headless and mean the exact opposite of what the owner picked.
+    out[k] = k === 'headless' ? v === 'headless' : v;
   }
   return Object.keys(out).length ? (out as GoalDetailLaunchProfile) : null;
 }

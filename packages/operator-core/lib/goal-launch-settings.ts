@@ -122,8 +122,14 @@ export const LAUNCH_PROFILE_CONTEXT_SIZES = ['full', 'trimmed'] as const;
  * ABSENT is the third state and it is not in this list: an unpinned `headless`
  * resolves to `true` (today's hardcoded behaviour), so blank must stay
  * distinguishable from an explicit `false` exactly as it is for the ceilings.
+ *
+ * The members are the WORDS, not `'true'`/`'false'`, because the editor renders
+ * a closed set by mapping each member straight to its own label. Stringly
+ * booleans would put "true" in a dropdown whose field reads "Window", and would
+ * need a per-field label table to fix — a second declaration of this same set,
+ * which is the drift these constants exist to prevent.
  */
-export const LAUNCH_PROFILE_HEADLESS = ['true', 'false'] as const;
+export const LAUNCH_PROFILE_HEADLESS = ['headless', 'headed'] as const;
 
 /** The option lists an editor must render, in one payload-shaped object. */
 export const LAUNCH_PROFILE_OPTIONS = {

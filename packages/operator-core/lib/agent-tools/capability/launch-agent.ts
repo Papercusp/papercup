@@ -814,7 +814,16 @@ export default defineTool({
       effort: goalLaunch.effective.effort ?? undefined,
       contextSize: goalLaunch.effective.contextSize ?? persistedHeadcountProfile?.config.contextSize ?? undefined,
       compactionLimit: persistedHeadcountProfile?.config.compactionLimit,
-      headless: args.headless || undefined,
+      // P-003: `headless` was the ONE knob in this block that ignored the goal
+      // while every sibling above inherited it, so a goal pinning a headed
+      // launch was silently overridden back to headless here.
+      //
+      // The args leg keeps its `|| undefined` rather than becoming `??`: an
+      // explicit `args.headless === false` has always collapsed to `undefined`,
+      // and both spell "visible", so preserving it keeps this change purely
+      // additive on a launch path the whole fleet shares. A goal that pins
+      // `false` DOES pass `false` through — that is the new capability.
+      headless: goalLaunch.effective.headless ?? (args.headless || undefined),
       role: persistedHeadcountProfile?.config.role,
       launchContext: persistedHeadcountProfile?.config.launchContext,
       extraArgs: args.extraArgs ?? undefined,
