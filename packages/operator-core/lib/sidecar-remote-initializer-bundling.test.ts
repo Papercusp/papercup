@@ -54,6 +54,7 @@ const VM_RELEASE_CONF = join(REPO_ROOT, 'papercusp-desktop', 'src-tauri', 'tauri
 const DRIVER_SRC = join(REPO_ROOT, 'libs', 'generic', 'deployment-driver');
 const MANIFEST_SRC = join(DRIVER_SRC, 'src', 'workspace-host-build-manifest.ts');
 const BOOTSTRAP_SRC = join(DRIVER_SRC, 'src', 'workspace-host-bootstrap.ts');
+const REMOTE_INITIALIZER_SRC = join(DRIVER_SRC, 'src', 'workspace-host-remote-initializer.ts');
 const ENTRYPOINT_TS = join(DRIVER_SRC, 'bin', 'papercusp-remote-initializer.ts');
 const ESBUILD_BIN = join(REPO_ROOT, 'node_modules', 'esbuild', 'bin', 'esbuild');
 
@@ -70,6 +71,16 @@ const ENTRYPOINT_PATH = `bin/${ENTRYPOINT_BASENAME}`;
  */
 const desktopPresent = existsSync(BUILD_SCRIPT);
 const read = (path: string): string => readFileSync(path, 'utf8');
+const remoteInitializerProtocolVersion = (): string => {
+  const source = read(REMOTE_INITIALIZER_SRC);
+  const match = source.match(
+    /WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION\s*=\s*['"]([^'"]+)['"]/,
+  );
+  if (!match?.[1]) {
+    throw new Error('remote initializer protocol version constant is missing or not a string literal');
+  }
+  return match[1];
+};
 
 describe('workspace-host remote initializer — source contract', () => {
   it('the entrypoint source file exists and wires the production deps', () => {
@@ -145,15 +156,22 @@ describe.skipIf(!desktopPresent)(
         const bundle = read(output);
         expect(bundle.match(/^#!\/usr\/bin\/env node$/gm)).toHaveLength(1);
 
+        const protocolVersion = remoteInitializerProtocolVersion();
         const protocol = spawnSync(
           output,
-          ['--protocol-version', 'papercusp-gcp-iap-initialization-v1', '--json-stdin'],
-          { input: '{}\n', encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' },
+          ['--protocol-version', protocolVersion, '--json-stdin'],
+          {
+            input: `${JSON.stringify({ protocolVersion })}\n`,
+            encoding: 'utf8',
+            timeout: 30_000,
+            killSignal: 'SIGKILL',
+          },
         );
         expect(protocol.error).toBeUndefined();
         expect(protocol.status).toBe(1);
         expect(protocol.stdout).toBe('');
         expect(protocol.stderr).toContain('WorkspaceHostRemoteInitializerProtocolError');
+        expect(protocol.stderr).not.toContain('unsupported protocol version');
 
         const argv = spawnSync(output, ['--version'], {
           input: '{}\n',
@@ -218,9 +236,14 @@ describe.skipIf(!desktopPresent)(
 
     it('runs a real protocol cycle against the packaged artifact', () => {
       const script = read(VERIFY_SCRIPT);
+      const protocolVersion = remoteInitializerProtocolVersion();
       // The runtime half of this guard. Presence + executable bit are satisfied by an empty file;
       // only executing the thing distinguishes "a file is there" from "the initializer shipped".
-      expect(script).toContain('papercusp-gcp-iap-initialization-v1');
+      // Derive the expected value from the protocol's source of truth. A coordinated future
+      // version bump stays possible, while a verifier literal that lags it fails immediately.
+      expect(script).toContain(`_ri_ver="${protocolVersion}"`);
+      expect(script).toContain('_ri_invalid_request="{\\"protocolVersion\\":\\"$_ri_ver\\"}"');
+      expect(script).toContain('producer/verifier version skew');
       expect(script).toContain('WorkspaceHostRemoteInitializerProtocolError');
       expect(script).toContain('--json-stdin');
       // And the stdout-purity contract: a diagnostic on stdout is reported at the controller as a
