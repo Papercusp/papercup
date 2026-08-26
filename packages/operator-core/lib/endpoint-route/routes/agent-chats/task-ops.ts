@@ -10,9 +10,11 @@ import {
   applySessionTaskOp,
   SessionTaskValidationError,
   type SessionTask,
+  type SessionTaskBridge,
   type SessionTaskOp,
   type SessionTaskResult,
 } from '../../../session-tasks';
+import { createSessionTaskLedgerBridge } from '../../../agent-tools/tasks/runtime';
 
 export const AGENT_CHAT_TASK_ACTIONS = [
   'add',
@@ -46,6 +48,13 @@ interface AgentChatTaskMutationDeps {
   }) => Promise<ConversationContextProjection | null>;
   withWorkspace: <T>(workspaceId: string, run: (sql: any) => Promise<T>) => Promise<T>;
   applyOp: typeof applySessionTaskOp;
+  createLedgerBridge: (args: {
+    workspaceId: string;
+    sessionId: string;
+    actorId: string;
+    defaultHarness?: string;
+    sql?: any;
+  }) => SessionTaskBridge | Promise<SessionTaskBridge>;
   idFactory: () => string;
 }
 
@@ -53,6 +62,7 @@ const DEFAULT_DEPS: AgentChatTaskMutationDeps = {
   readProjection: readConversationContextProjection,
   withWorkspace,
   applyOp: applySessionTaskOp,
+  createLedgerBridge: createSessionTaskLedgerBridge,
   idFactory: () => `task-${randomUUID()}`,
 };
 
@@ -165,6 +175,13 @@ export async function mutateAgentChatTask(
   }
 
   const result = await deps.withWorkspace(input.workspaceId, async (sql) => {
+    const bridge = await deps.createLedgerBridge({
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      actorId: input.actorId,
+      defaultHarness: input.harness,
+      sql,
+    });
     if (input.action === 'clear_blocker') {
       const current = await deps.applyOp(sql, {
         workspaceId: input.workspaceId,
@@ -193,6 +210,7 @@ export async function mutateAgentChatTask(
       ...(input.content ? { content: input.content } : {}),
       ...(input.activeForm ? { activeForm: input.activeForm } : {}),
       ...(input.explanation ? { explanation: input.explanation } : {}),
+      bridge,
       idFactory: deps.idFactory,
     });
   });
