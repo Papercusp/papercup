@@ -1347,6 +1347,8 @@ export function gateStallEscalationBody(opts: {
           namingTicks: opts.causeDigest.namingTicks,
           silentRedTicks: opts.causeDigest.silentRedTicks,
           spanMs: opts.causeDigest.spanMs,
+          // The counts above are FLOORS when this is set — see StreakCauseDigest.
+          truncatedByLimit: opts.causeDigest.truncatedByLimit,
         }
       : null,
     ownership: opts.ownership
@@ -1396,11 +1398,12 @@ async function readStreakCauseDigest(
     // a blob with no `firstRedAt`/`lastGreenAt`), and a hard row cap so a pathological streak
     // cannot pull an unbounded page into an alarm path.
     const sinceMs = streakStartMs ?? Date.now() - 7 * 24 * 3_600_000;
+    const ROW_CAP = 80;
     const rows = (await sql.unsafe(
       `SELECT status, detail, created_at FROM harness_shared.pipeline_events
         WHERE workspace_id = $1 AND install_slug = $2 AND kind = 'green_checkpoint'
           AND created_at >= $3
-        ORDER BY created_at DESC LIMIT 80`,
+        ORDER BY created_at DESC LIMIT ${ROW_CAP}`,
       [workspaceId, installSlug, new Date(sinceMs).toISOString()],
     )) as Array<{ status: string | null; detail: unknown; created_at: string | Date }>;
     if (!Array.isArray(rows) || rows.length === 0) return null;
@@ -1422,7 +1425,10 @@ async function readStreakCauseDigest(
         failingTests: failing,
       };
     });
-    return summarizeStreakCause(ticks);
+    // A full page means older ticks exist beyond it, so every count the digest renders is a
+    // FLOOR. Saying so on the aggregate is the repo rule: a bounded measurement rendered as a
+    // confident total is indistinguishable from a real one.
+    return summarizeStreakCause(ticks, rows.length >= ROW_CAP);
   } catch {
     return null;
   }

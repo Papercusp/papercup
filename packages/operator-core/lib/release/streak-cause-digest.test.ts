@@ -184,6 +184,35 @@ describe('summarizeStreakCause', () => {
     expect(d.namingTicks).toBe(0);
   });
 
+  /**
+   * Repo rule: a caller's row limit bounds row LISTS only — an aggregate computed over a
+   * capped fetch must say so ON THE AGGREGATE. "ALL 3 red verdicts" asserts something about a
+   * whole set; if the window was truncated, the honest claim is about a sample.
+   */
+  it('renders counts as FLOORS, not totals, when the fetch hit its row cap', () => {
+    const ticks = [red(0, ['lint:tsc']), red(HOUR, ['lint:tsc']), red(2 * HOUR, ['lint:tsc'])];
+    const whole = summarizeStreakCause(ticks, false);
+    const capped = summarizeStreakCause(ticks, true);
+
+    expect(whole.truncatedByLimit).toBe(false);
+    expect(whole.line).toContain('ALL 3 red verdicts');
+    expect(whole.line).not.toContain('floors');
+
+    // Same data, bounded measurement — the sentence must stop claiming a total.
+    expect(capped.truncatedByLimit).toBe(true);
+    expect(capped.line).not.toContain('ALL 3 red verdicts');
+    expect(capped.line).toContain('the most recent 3 red verdicts');
+    expect(capped.line).toContain('counts are floors');
+    // The classification itself is still legitimate — only its scope narrowed.
+    expect(capped.stability).toBe('stable');
+  });
+
+  it('hedges the SILENT verdict too when the window was capped', () => {
+    const capped = summarizeStreakCause([red(0, []), red(HOUR, [])], true);
+    expect(capped.line).toContain('the most recent 2 red verdict(s)');
+    expect(capped.line).not.toContain('all 2 red verdict(s)');
+  });
+
   it('caps the rendered name list rather than pasting an unbounded wall into an alarm', () => {
     const many = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
     const d = summarizeStreakCause([red(0, many), red(HOUR, many)]);
