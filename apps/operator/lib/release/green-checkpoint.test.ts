@@ -109,6 +109,8 @@ import {
   formatSelfWatchdogDuration,
   isNothingToGate,
   realCheckpointDeps,
+  SETUP_TREE_TIMEOUT_MS,
+  SETUP_TREE_HARD_TIMEOUT_MS,
   formatGatePromotionTrailer,
   recordOrchestratorLine,
   resetOrchestratorLog,
@@ -7603,6 +7605,46 @@ describe("realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744
     );
     // The signaled suite must not be followed by post-suite legs or a flake-rescue rerun.
     expect(calls).toEqual(["npm run test:affected"]);
+  });
+});
+
+describe("realCheckpointDeps.setupTree — progress-aware materialization timeout", () => {
+  it("EI-21533144726892345: gives writer wait + copy a renewable idle budget under an independent hard ceiling", async () => {
+    const generation = "v1-test-generation";
+    const token = "1:2:3:4";
+    let setupOpts: Parameters<CheckpointExec>[2];
+    const exec: CheckpointExec = async (cmd, args, opts) => {
+      if (cmd === process.execPath) {
+        return {
+          code: 0,
+          stdout: `DEPENDENCY_GENERATION_RESULT schema=1 identity=${generation} token=${token}\n`,
+          stderr: "",
+        };
+      }
+      if (cmd === "bash" && args.includes("--exclusive-all-slots")) {
+        setupOpts = opts;
+        opts?.onOutput?.(
+          "stderr",
+          "[pc-heavy] exclusive materialization writer acquired\n",
+        );
+        return {
+          code: 0,
+          stdout: `DEPENDENCY_GENERATION_PIN identity=${generation}\n`,
+          stderr: "",
+        };
+      }
+      throw new Error(`unexpected setup command: ${cmd} ${args.join(" ")}`);
+    };
+
+    await realCheckpointDeps(cfg(), exec).setupTree("a".repeat(40), {
+      preparedSource: true,
+    });
+
+    expect(setupOpts?.timeoutMs).toBe(SETUP_TREE_TIMEOUT_MS);
+    expect(setupOpts?.timeoutResetsOnProgress).toBe(true);
+    expect(setupOpts?.hardTimeoutMs).toBe(SETUP_TREE_HARD_TIMEOUT_MS);
+    expect(setupOpts?.killProcessGroupOnTimeout).toBe(true);
+    expect(setupOpts?.onOutput).toBeTypeOf("function");
   });
 });
 

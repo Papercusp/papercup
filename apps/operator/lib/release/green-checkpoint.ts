@@ -1293,6 +1293,15 @@ export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
 export const DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS = SETUP_TREE_TIMEOUT_MS;
 export const DEPENDENCY_GENERATION_HARD_TIMEOUT_MS = 90 * 60_000;
 
+/** EI-21533144726892345: setupTree includes both the pc-heavy exclusive-writer wait and
+ * the dependency-generation copy into the checkpoint tree. A single 30m wall-clock budget
+ * covered both legs, so a healthy 9m writer wait left only 21m for the atomic copy and killed
+ * candidate 10bf66f6 while it was still materializing. Keep 30m as the NO-PROGRESS budget,
+ * but share the publisher's 90m hard ceiling so stage output can renew the idle timer without
+ * allowing an endlessly-chatty child to hold the gate forever. */
+export const SETUP_TREE_HARD_TIMEOUT_MS =
+  DEPENDENCY_GENERATION_HARD_TIMEOUT_MS;
+
 /** WI-21357012876642589: refresh the materialization phase marker while the two
  * timeout-bounded setup legs are quiet. The max is two setup bounds because
  * realCheckpointDeps.setupTree first publishes the dependency generation and
@@ -12570,6 +12579,8 @@ export function realCheckpointDeps(
               ],
               {
                 timeoutMs: SETUP_TREE_TIMEOUT_MS,
+                timeoutResetsOnProgress: true,
+                hardTimeoutMs: SETUP_TREE_HARD_TIMEOUT_MS,
                 killProcessGroupOnTimeout: true,
               },
             );
@@ -13063,6 +13074,8 @@ export function realCheckpointDeps(
           ],
           {
             timeoutMs: SETUP_TREE_TIMEOUT_MS,
+            timeoutResetsOnProgress: true,
+            hardTimeoutMs: SETUP_TREE_HARD_TIMEOUT_MS,
             killProcessGroupOnTimeout: true,
             onOutput: relaySetupOutput,
           },
