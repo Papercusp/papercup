@@ -43,7 +43,11 @@ afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 function fixture(name: string, files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(tmp, `${name}-`));
-  for (const [rel, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, rel), body, 'utf8');
+  for (const [rel, body] of Object.entries(files)) {
+    const target = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, body, 'utf8');
+  }
   return dir;
 }
 
@@ -57,6 +61,26 @@ function scanDir(dir: string, ownerName?: string): number {
   const r = spawnSync('python3', [AUDIT, '--scan-dir', dir], { env, encoding: 'utf8' });
   if (r.error) throw r.error;
   return r.status ?? -1;
+}
+
+/** Exercise phase B without constructing a multi-gigabyte release tarball. */
+function phaseBCredentialFindings(value: string): unknown[] {
+  const source = [
+    'import json, os, runpy, sys',
+    'ns = runpy.run_path(sys.argv[1])',
+    'phase = ns["phase_b_content"]',
+    'class Result:',
+    '    stdout = "1 " + os.environ["PAPERCUSP_TEST_CREDENTIAL_VALUE"] + "\\n"',
+    'phase.__globals__["sh"] = lambda _cmd: Result()',
+    'print(json.dumps(phase("unused.tar.zst", {})))',
+  ].join('\n');
+  const result = spawnSync('python3', ['-c', source, AUDIT], {
+    env: { ...process.env, PAPERCUSP_TEST_CREDENTIAL_VALUE: value },
+    encoding: 'utf8',
+  });
+  if (result.error) throw result.error;
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout) as unknown[];
 }
 
 // A stand-in owner — NEVER the real one. Putting his name in a source file to test for it
@@ -94,5 +118,40 @@ describe('audit-release-bundle.py --scan-dir — the installer backstop must fai
     // the original bug, one layer up.
     const canary = fixture('canary', { 'notes.txt': `built by ${STANDIN_OWNER} on the release box` });
     expect(scanDir(canary)).not.toBe(scanDir(canary, STANDIN_OWNER));
+  });
+});
+
+describe('audit-release-bundle.py release false-positive controls', () => {
+  it('accepts only the two exact gh 2.80 string-table values by SHA-256', () => {
+    // Keep credential-shaped third-party bytes out of source. These code points
+    // reconstruct the two measured public gh binary strings only in test memory;
+    // the production allowlist stores their SHA-256 identities exclusively.
+    const values = [
+      [103, 104, 111, 95, 98, 114, 101, 119, 80, 65, 84, 72, 78, 111, 110, 101, 97, 108, 108, 103, 97, 108, 108, 112, 114, 111, 111, 116, 105, 116, 97, 98, 115, 98, 114, 107, 105, 100, 108, 101, 100, 101, 97, 100, 114, 97, 99, 101, 108, 111, 103, 115],
+      [103, 104, 114, 95, 83, 73, 90, 69, 111, 114, 103, 115, 112, 111, 110, 100, 104, 105, 108, 108, 115, 104, 111, 101, 98, 111, 111, 107, 108, 97, 107, 101, 110, 101, 97, 116, 105, 110, 102, 111],
+    ].map((codePoints) => String.fromCharCode(...codePoints));
+
+    for (const value of values) {
+      expect(phaseBCredentialFindings(value)).toEqual([]);
+      const changed = `${value.slice(0, -1)}${value.endsWith('A') ? 'B' : 'A'}`;
+      expect(phaseBCredentialFindings(changed)).toEqual([
+        ['github-token', 1, changed],
+      ]);
+    }
+  });
+
+  it('prunes Papercusp state directories from every assembled docs tree', () => {
+    const docs = fixture('docs-prune', {
+      '.papercusp/private.json': 'workspace state',
+      'nested/.papercusp-workspaces/private.json': 'workspace state',
+      'nested/guide.html': '<h1>keep me</h1>',
+    });
+    const result = spawnSync('python3', [AUDIT, '--prune-docs', docs], { encoding: 'utf8' });
+    if (result.error) throw result.error;
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(path.join(docs, '.papercusp'))).toBe(false);
+    expect(fs.existsSync(path.join(docs, 'nested/.papercusp-workspaces'))).toBe(false);
+    expect(fs.readFileSync(path.join(docs, 'nested/guide.html'), 'utf8')).toBe('<h1>keep me</h1>');
   });
 });
