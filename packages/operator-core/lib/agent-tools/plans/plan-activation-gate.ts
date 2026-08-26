@@ -3,6 +3,7 @@
 type Tx = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
 
 import { RUBRIC_TEMPLATE_NAME } from './rubric-template';
+import { parsePlan } from './parser';
 
 export const ACTIVATION_PLAN_STATUSES = ['ready', 'active'] as const;
 
@@ -70,14 +71,17 @@ export async function evaluateConversationActivationGate(
   // preceded its transition. Grandfather that EXISTING state only. A fresh
   // draft→ready/active write is evaluated while the stored row is still draft,
   // so it continues to refuse until plans:audit records the activation audit.
-  const planRows = await tx<Array<{ status: string | null }>>`
-    SELECT status
+  const planRows = await tx<Array<{ content: string }>>`
+    SELECT content
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${scope.workspaceId}
        AND harness_slug = ${scope.harnessSlug}
        AND plan_slug = ${scope.planSlug}
      LIMIT 1`;
-  if (isActivationPlanStatus(planRows[0]?.status)) {
+  const storedStatus = planRows[0]?.content
+    ? parsePlan(planRows[0].content, { filePath: `${scope.planSlug}.md` }).frontmatter.status
+    : null;
+  if (isActivationPlanStatus(storedStatus)) {
     return { satisfied: true, grandfathered: true };
   }
   return {
