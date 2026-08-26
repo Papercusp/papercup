@@ -16,6 +16,7 @@ const HEADER_BYTES = HEADER_PREFIX_BYTES + AUTH_TAG_BYTES;
 const NONCE_PREFIX_BYTES = 8;
 const DEFAULT_CHUNK_BYTES = 1024 * 1024;
 const MAX_CHUNK_BYTES = 16 * 1024 * 1024;
+const MANIFEST_NONCE_INDEX = 0xffff_ffff;
 const KDF_LABEL = 'personal-vault-import-archive-v1';
 
 export interface EncryptedPersonalArchiveMetadata {
@@ -105,21 +106,34 @@ function authenticatedHeader(
   const cipher = createCipheriv(
     'aes-256-gcm',
     key,
-    nonce(metadata.noncePrefix, 0xffff_ffff),
+    manifestNonce(metadata.noncePrefix),
   );
   cipher.setAAD(manifestAad(workspaceId, prefix));
   cipher.final();
   return Buffer.concat([prefix, cipher.getAuthTag()]);
 }
 
-function nonce(prefix: Buffer, chunkIndex: number): Buffer {
-  // 0xffffffff is reserved for the authenticated manifest header; data chunks
-  // remain bounded below it by writeChunk's monotonically increasing index.
-  if (chunkIndex > 0xffff_ffff) throw new Error('personal_vault_import_chunk_index_overflow');
+function nonceAt(prefix: Buffer, index: number): Buffer {
   const out = Buffer.alloc(12);
   prefix.copy(out, 0);
-  out.writeUInt32BE(chunkIndex, NONCE_PREFIX_BYTES);
+  out.writeUInt32BE(index, NONCE_PREFIX_BYTES);
   return out;
+}
+
+/** Reject the manifest's reserved nonce domain even if future size bounds grow. */
+export function assertPersonalArchiveDataChunkIndex(chunkIndex: number): void {
+  if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= MANIFEST_NONCE_INDEX) {
+    throw new Error('personal_vault_import_chunk_index_overflow');
+  }
+}
+
+function dataChunkNonce(prefix: Buffer, chunkIndex: number): Buffer {
+  assertPersonalArchiveDataChunkIndex(chunkIndex);
+  return nonceAt(prefix, chunkIndex);
+}
+
+function manifestNonce(prefix: Buffer): Buffer {
+  return nonceAt(prefix, MANIFEST_NONCE_INDEX);
 }
 
 function aad(workspaceId: string, chunkBytes: number, chunkIndex: number, plaintextBytes: number): Buffer {
@@ -200,7 +214,7 @@ export class PersonalArchiveEncryptedWriter {
   }
 
   private async writeChunk(plaintext: Buffer): Promise<void> {
-    const cipher = createCipheriv('aes-256-gcm', this.key, nonce(this.noncePrefix, this.chunkIndex));
+    const cipher = createCipheriv('aes-256-gcm', this.key, dataChunkNonce(this.noncePrefix, this.chunkIndex));
     cipher.setAAD(aad(this.workspaceId, this.chunkBytes, this.chunkIndex, plaintext.length));
     const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const tag = cipher.getAuthTag();
@@ -281,7 +295,7 @@ export async function readEncryptedPersonalArchiveMetadata(
     const decipher = createDecipheriv(
       'aes-256-gcm',
       key,
-      nonce(noncePrefix, 0xffff_ffff),
+      manifestNonce(noncePrefix),
       { authTagLength: AUTH_TAG_BYTES },
     );
     decipher.setAAD(manifestAad(workspaceId, raw.subarray(0, HEADER_PREFIX_BYTES)));
@@ -323,7 +337,7 @@ async function decryptChunk(
   const decipher = createDecipheriv(
     'aes-256-gcm',
     key,
-    nonce(metadata.noncePrefix, chunkIndex),
+    dataChunkNonce(metadata.noncePrefix, chunkIndex),
     { authTagLength: AUTH_TAG_BYTES },
   );
   decipher.setAAD(aad(workspaceId, metadata.chunkBytes, chunkIndex, plaintextBytes));
