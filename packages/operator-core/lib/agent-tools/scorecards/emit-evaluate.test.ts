@@ -27,7 +27,7 @@ import { isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
-  return { ...actual, getRubric: vi.fn() };
+  return { ...actual, getRubric: vi.fn(), getRubricPlanRevision: vi.fn(async () => 7) };
 });
 vi.mock('../../scout/generation-watermark', () => ({ readRunningGeneration: vi.fn(async () => null) }));
 vi.mock('../../harness/improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
@@ -365,6 +365,78 @@ describe('emitScorecard', () => {
       payloadExtra: { observation: { rubricRef: 'acceptance-rubric', ratings: RATINGS } },
     });
     expect(captureM.mock.calls[0][0].payloadExtra?.observation).not.toHaveProperty('acceptance');
+  });
+
+  it('refuses an independent grade from the acceptance rubric sole vetting critic', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-vetting',
+        createdAt: '2026-08-25T21:00:12Z',
+        createdBy: 'su-vetting-author',
+        rubricRef: 'meta-acceptance-rubric',
+        subject: { kind: 'rubric', ref: 'acceptance-rubric' },
+        ratings: RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+        vetting: {
+          consultId: 'conv-vet-1',
+          rubricRevision: 7,
+          critiquePosts: 1,
+          critics: ['su-critic'],
+        },
+      } as unknown as ScorecardRow,
+    ]);
+
+    await expect(
+      emitScorecard(
+        { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+        { createdBy: 'su-critic' },
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      code: 'grader_is_sole_vetting_critic',
+      error: expect.stringContaining('sole recorded vetting critic'),
+    });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('allows one of several vetting critics to grade because another critic preserves independent challenge', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-vetting',
+        createdAt: '2026-08-25T21:00:12Z',
+        createdBy: 'su-vetting-author',
+        rubricRef: 'meta-acceptance-rubric',
+        ratings: RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+        vetting: {
+          consultId: 'conv-vet-1',
+          rubricRevision: 7,
+          critiquePosts: 2,
+          critics: ['su-critic', 'su-other-critic'],
+        },
+      } as unknown as ScorecardRow,
+    ]);
+
+    await expect(
+      emitScorecard(
+        { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+        { createdBy: 'su-critic' },
+      ),
+    ).resolves.toMatchObject({ ok: true, created: true });
   });
 
   it('refuses a verdict from the independent grader', async () => {
