@@ -4803,16 +4803,17 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   // ['todo','open'] union is retired. An explicit opts.states still narrows further.
   //
   // ⚠ This comment used to add "no writer produces 'todo' and no row sits at it". BOTH
-  // halves were false, and the pairing is load-bearing: because this floor matches with a
-  // raw `status = ANY(...)` and does NOT alias-fold at read time, any writer still emitting
-  // 'todo' mints a PERMANENTLY UNCLAIMABLE row. Two raw INSERTs bypassing createWorkItem
+  // halves were false. Two raw INSERTs bypassing createWorkItem
   // were doing exactly that (EI-21460610464031791) — the plan-run minter stranded 15
   // trigger/heartbeat rows between 2026-08-12 and 2026-08-25 before it was rewritten onto
   // canonical promotion (4b0d4cc344), and blueprint-run-action's work-item mode was armed
   // with the same defect. MEASURED 2026-08-26: 28 feature-family rows still sit at 'todo'
   // (the settled 2026-06/07 legacy set FEATURE_NON_REQUEUE_STATES deliberately protects).
-  // So do NOT narrow this floor further, and do NOT drop the 'todo' entry from
-  // FEATURE_NON_REQUEUE_STATES, on the strength of this comment — verify against the table:
+  // Read-fold the retired feature-family alias below so a regressed writer cannot mint a
+  // PERMANENTLY UNCLAIMABLE row. Keep the public caller allowlist canonical (`open`, not
+  // `todo`): the compatibility belongs at this storage boundary, not in every claim spec.
+  // Do NOT drop the 'todo' entry from FEATURE_NON_REQUEUE_STATES on the strength of this
+  // comment — verify against the table:
   //   SELECT status, count(*) FROM harness_shared.work_items
   //    WHERE item_kind IN ('feature','chunk') GROUP BY status;
   const states = opts.states ?? ['open'];
@@ -4840,7 +4841,7 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- P-002 born-pending: pending items stay out of every feature self-select path.
     AND ${admittedWhereSql(sql)}
     AND (taken_by IS NULL OR taken_by = '')
-    AND status = ANY(${states}::text[])
+    AND (CASE WHEN status = 'todo' THEN 'open' ELSE status END) = ANY(${states}::text[])
     -- P-006 (fleet-deltas-leader-primitives): the claim-hold floor, extended to the
     -- FEATURE family. The issue-family claim already honors payload._claimHold
     -- (claimHoldExclusionSql, WI-2797) — but the incident class that motivated
