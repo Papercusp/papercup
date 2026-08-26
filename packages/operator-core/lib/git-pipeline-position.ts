@@ -4189,7 +4189,12 @@ export async function gitPipelinePosition(
     deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }));
 
   const notes: string[] = [];
-  const deploy = await loadDeploy();
+  // EI-21544761852770720: these are independent read-only snapshots, but this hot
+  // path historically awaited them in series.  On a busy host each can take
+  // several seconds, leaving `state:read` with almost no margin under its 10s
+  // totality bound.  Start both together; every downstream consumer still sees
+  // one settled deploy snapshot and one settled pipeline snapshot from this call.
+  const [deploy, snap] = await Promise.all([loadDeploy(), loadSnapshot()]);
   const root = deploy.integrationRoot;
   const deployedSha = deploy.deployed?.sha ?? null;
 
@@ -4623,8 +4628,15 @@ export async function gitPipelinePosition(
     }
   }
 
-  const snap = await loadSnapshot();
-  const checkpointRunCached = await (deps.readCheckpointRunSnapshot ?? realReadCheckpointRunSnapshot)();
+  // These three reads are mutually independent.  Serialising them made the
+  // cell resolver's wall time equal to the sum of a cache read, a live lock
+  // probe, and an indexed ownership lookup.  Keep their individual fail-soft
+  // semantics while paying only the slowest leg's latency.
+  const [checkpointRunCached, checkpointRunLockLive, gateOwnership] = await Promise.all([
+    (deps.readCheckpointRunSnapshot ?? realReadCheckpointRunSnapshot)(),
+    (deps.readCheckpointRunLock ?? realReadCheckpointRunLock)(root),
+    (deps.readGateOwnership ?? readGateOwnership)(),
+  ]);
   // WI-7035: `snap.gate.inFlightRetriage` is already loaded and freshness-checked by
   // git-pipeline-stats (parseInFlightRetriage) — it was simply never consulted here, so the
   // authoritative answer sat one field away from the inferred one. Passing it makes the
@@ -4632,7 +4644,6 @@ export async function gitPipelinePosition(
   // EI-19395922387569240: the LIVE liveness read that keeps `active` from being a claim about
   // a snapshot's past. Fork-free, so it is safe on this hot path; fail-soft to null, which
   // degrades this leg to its previous cache-only behaviour.
-  const checkpointRunLockLive = await (deps.readCheckpointRunLock ?? realReadCheckpointRunLock)(root);
   const checkpointRunInFlight = mapCheckpointRunInFlight(
     checkpointRunCached,
     Date.now(),
@@ -4692,7 +4703,7 @@ export async function gitPipelinePosition(
     // fail-soft to `no-object` — same cost/safety profile as checkpointRunInFlight.
     // ⚠ `no-object` means "nobody owns it", NOT "the gate is fine" — gate health is
     // consecutiveReds/verdictStale; ownership is orthogonal. See CellOwnership.
-    ownership: await (deps.readGateOwnership ?? readGateOwnership)(),
+    ownership: gateOwnership,
   };
   // EI-18793581783459047: surfaced as a NOTE (not folded into the tight one-line
   // `summary`, which is already densely tuned) so a caller about to launch a heavy
