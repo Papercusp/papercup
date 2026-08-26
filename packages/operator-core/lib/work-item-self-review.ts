@@ -419,14 +419,17 @@ export function judgeSelfReview(args: {
           'happened — the gate is blind here and does not refuse on it',
       };
     }
-    const sawAmbiguousOnly = ledger.some((r) => isOk(r) && isAmbiguous(r));
+    // Reachable only with `reviewCalls` empty, so "saw a shell command" and "the ONLY
+    // code-adjacent calls were shell commands" coincide here — named for the latter, which
+    // is what the reason it selects actually asserts.
+    const sawOnlyShellCommands = ledger.some((r) => isOk(r) && isAmbiguous(r));
     return {
       verdict: 'uncorroborated',
       reviewCalls: [],
       rubberStampRisk: false,
       yieldedChange,
       ledgerVisible,
-      reason: sawAmbiguousOnly
+      reason: sawOnlyShellCommands
         ? 'a self-review was claimed and this agent WAS active, but the only code-adjacent ' +
           'calls recorded are shell commands, which cannot be told apart from routine ' +
           'traffic — re-read a changed file with Read or capability:read (D-002)'
