@@ -749,6 +749,29 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
+  it('requires the held work-item checkpoint even when the loop checkpoint is fresh', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      loop: {
+        harness: 'papercusp',
+        active: true,
+        intervalSec: 60,
+        carry: 'cold',
+        carryNote: '## Next\nresume the current unit',
+        carryNoteUpdatedAtMs: Date.now(),
+      },
+      heldItems: [{ id: 'EI-21557508946389368', title: 'held work', body: null, harness: 'papercup', checkpoint: null }],
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b).toMatchObject({ ok: false, error: 'flush-required' });
+    expect(b.tripwires).toEqual([
+      expect.objectContaining({ kind: 'missing-checkpoint', subject: 'EI-21557508946389368' }),
+    ]);
+    expect(b.tripwires).not.toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'armed-loop-no-carry-note' })]));
+    expect(b.note).toContain('work_items:checkpoint');
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
   it('the refusal names ALL un-checkpointed held items', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
