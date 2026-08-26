@@ -159,6 +159,19 @@ export function goalFleetLaunchSlots(
 }
 
 /**
+ * The MEMBER slot for a family, named directly.
+ *
+ * The union above is the right shape for a caller that must handle both arms,
+ * but the fleet-wide goal fold only ever wants the single-fleet member slot (on
+ * a paired fleet it binds NO role layer at all — D-005), and narrowing the union
+ * just to reach one field reads as if the paired case were being handled when it
+ * is deliberately excluded elsewhere.
+ */
+export function goalFleetMemberSlot(family: GoalFleetFamily): GoalLaunchRole {
+  return FAMILY_SLOTS[family].member;
+}
+
+/**
  * What happens to a HOLDER-REQUIRED goal when its holder stops being live
  * (goal-live-holder-guarantee-2026-08-18 P-002, D-001).
  *

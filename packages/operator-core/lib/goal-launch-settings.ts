@@ -507,20 +507,33 @@ export function parseGoalLaunchSettings(
 export async function readGoalLaunchSettings(
   goalId: string,
   sql?: Sql,
-): Promise<{ settings: GoalLaunchSettings | null; budget: GoalBudgetTruth | null; error: string | null }> {
-  if (!goalId) return { settings: null, budget: null, error: null };
+): Promise<{
+  settings: GoalLaunchSettings | null;
+  budget: GoalBudgetTruth | null;
+  /**
+   * P-006: the goal's declared drain fleet, for `goalFleetFamily`. Read from the
+   * SAME row for the same reason the budget is — the launch boundary needs the
+   * family to pick a slot, and a second round-trip per launch to fetch one jsonb
+   * key would be pure overhead.
+   */
+  drainFleetSlug: string | null;
+  error: string | null;
+}> {
+  if (!goalId) return { settings: null, budget: null, drainFleetSlug: null, error: null };
   try {
     const rows = await pg(sql)`
       SELECT launch_settings, budget_cents,
              metadata->'spentCents' AS spent_cents,
-             metadata->>'spentCentsAt' AS spent_cents_at
+             metadata->>'spentCentsAt' AS spent_cents_at,
+             metadata->>'drainFleet' AS drain_fleet
         FROM harness_shared.goals WHERE id = ${goalId} LIMIT 1`;
-    if (!rows.length) return { settings: null, budget: null, error: null };
+    if (!rows.length) return { settings: null, budget: null, drainFleetSlug: null, error: null };
     const row = rows[0] as {
       launch_settings?: unknown;
       budget_cents?: unknown;
       spent_cents?: unknown;
       spent_cents_at?: unknown;
+      drain_fleet?: unknown;
     };
     const parsed = parseGoalLaunchSettings(row.launch_settings, `goal ${goalId} launch_settings`);
     return {
@@ -530,11 +543,83 @@ export async function readGoalLaunchSettings(
         spentCents: asFiniteCents(row.spent_cents),
         spentCentsAt: typeof row.spent_cents_at === 'string' ? row.spent_cents_at : null,
       },
+      drainFleetSlug: typeof row.drain_fleet === 'string' ? row.drain_fleet : null,
       error: parsed.error,
     };
   } catch (e) {
-    return { settings: null, budget: null, error: e instanceof Error ? e.message : String(e) };
+    return {
+      settings: null,
+      budget: null,
+      drainFleetSlug: null,
+      error: e instanceof Error ? e.message : String(e),
+    };
   }
+}
+
+/** What the fleet-launch boundary needs from a goal BEFORE any headcount is known. */
+export interface GoalLaunchSettingsRead {
+  goalId: string | null;
+  settings: GoalLaunchSettings | null;
+  /** The goal's declared drain fleet, for `goalFleetFamily`. */
+  drainFleetSlug: string | null;
+  degraded: boolean;
+  degradedReasons: string[];
+}
+
+/**
+ * The goal's SETTINGS ONLY — no ceilings, no budget gate, no side effects (D-004).
+ *
+ * WHY THIS EXISTS RATHER THAN A SECOND `resolveGoalLaunch` CALL. The fleet-launch
+ * door has to know the goal's `fleetType` and per-role profiles at the OPTION
+ * boundary, which runs before the capacity clamp — so before `openCount`, the
+ * number the D-005 ceilings are checked against, exists at all. `resolveGoalLaunch`
+ * cannot be called there:
+ *
+ *   - it refuses on `count`, so calling it early with a provisional count would
+ *     either double-count the fleet's headcount or refuse a launch that fits;
+ *   - it has a live SIDE EFFECT — `escalateBudgetRefusal` opens an owner
+ *     escalation — so a speculative second call can page the owner about a launch
+ *     that was never actually attempted.
+ *
+ * So the two reads are split by PURPOSE, not duplicated: this one answers "what
+ * shape did the goal ask for", early and freely; `resolveGoalLaunch` still answers
+ * "may this many agents start", once, late, with the true count. Both derive the
+ * goal from the LAUNCHER (D-008/D-009) rather than taking a `goalId` argument a
+ * door could forget to pass.
+ *
+ * Fail-soft like every other read here: a goal that cannot be resolved yields no
+ * settings and a degraded reason, never a thrown launch.
+ */
+export async function readGoalLaunchSettingsForLauncher(args: {
+  workspaceId: string;
+  launcherOwnerId: string;
+  sql?: Sql;
+}): Promise<GoalLaunchSettingsRead> {
+  const degradedReasons: string[] = [];
+  let goalId: string | null = null;
+  try {
+    goalId = await resolveGoalContext(args.workspaceId, args.launcherOwnerId, args.sql);
+  } catch (e) {
+    degradedReasons.push(`goal context unresolved: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (!goalId) {
+    return {
+      goalId: null,
+      settings: null,
+      drainFleetSlug: null,
+      degraded: degradedReasons.length > 0,
+      degradedReasons,
+    };
+  }
+  const { settings, drainFleetSlug, error } = await readGoalLaunchSettings(goalId, args.sql);
+  if (error) degradedReasons.push(`launch settings not applied: ${error}`);
+  return {
+    goalId,
+    settings,
+    drainFleetSlug,
+    degraded: degradedReasons.length > 0,
+    degradedReasons,
+  };
 }
 
 /**

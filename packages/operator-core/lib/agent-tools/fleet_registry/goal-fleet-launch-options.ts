@@ -219,17 +219,31 @@ export function goalFleetLaunchOverlay(args: {
  * Caller-supplied values win knob by knob (D-006), so a goal's standing policy
  * fills the gaps a caller left rather than overriding what they asked for.
  *
- * NOTE WHAT THIS DELIBERATELY DOES NOT DO: it never strips the caller's flat
+ * ⚠ THE SINGLE ARM TAKES ONLY `type`, AND THAT IS NOT AN OVERSIGHT. Verified
+ * against the launch door: `resolveLaunchOptions`'s `flat` is read by NOTHING
+ * (the handler consumes only `.ok`, `.message`, `.type` and `.pairs`), because a
+ * single fleet's goal profile already binds through the goal fold at the launch
+ * door — the `plan-fleet-member` / `drain-fleet-member` slot resolved with the
+ * true post-clamp count. Pushing those same knobs in here would write a SECOND,
+ * inert copy: it would read as configured on this object and reach no member,
+ * which is precisely the class of bug this plan exists to remove. So the single
+ * arm's knobs stay on `overlay.flat` for disclosure, and bind where they already
+ * bound. The PAIRED arm is different and load-bearing: its groups become
+ * `members[]` entries via `expandPairedMembers`, which really do reach seats.
+ *
+ * NOTE WHAT THIS ALSO DELIBERATELY DOES NOT DO: it never strips the caller's flat
  * knobs to make a paired launch legal. `resolveLaunchOptions` refuses flat knobs
  * on a paired fleet on purpose — coercing them would broadcast one value to both
  * roles — and that refusal is preserved here rather than pre-empted. The caller
- * is expected to enrich the refusal with `typeSource` when the goal is what made
- * the launch paired.
+ * is expected to enrich the refusal with `goalPairedTypeNote` when the goal is
+ * what made the launch paired.
  */
 export function applyGoalLaunchOverlay(
   caller: LaunchOptionInput,
   overlay: GoalFleetLaunchOverlay,
 ): LaunchOptionInput {
+  if (overlay.type !== 'paired') return { ...caller, type: overlay.type };
+
   const merge = (
     over: RoleLaunchOptions | undefined,
     under: RoleLaunchOptions,
@@ -242,26 +256,23 @@ export function applyGoalLaunchOverlay(
     return out;
   };
 
-  if (overlay.type === 'paired') {
-    // A group is emitted when EITHER side configured it. `pair-launch-options`
-    // reads PRESENCE, not emptiness — `directors:{}` means "this role runs on the
-    // defaults" — so a goal that pins only implementers still yields a legal
-    // paired launch with an explicitly-defaulted director half.
-    const directors = merge(caller.directors, overlay.directors);
-    const implementers = merge(caller.implementers, overlay.implementers);
-    const emit =
-      caller.directors !== undefined ||
-      caller.implementers !== undefined ||
-      overlay.pinned ||
-      overlay.typeSource === 'goal';
-    return {
-      ...caller,
-      type: overlay.type,
-      ...(emit ? { directors, implementers } : {}),
-    };
-  }
-
-  return { ...caller, type: overlay.type, ...merge(caller, overlay.flat) };
+  // A group is emitted when EITHER side configured it. `pair-launch-options`
+  // reads PRESENCE, not emptiness — `directors:{}` means "this role runs on the
+  // defaults" — so a goal that pins only implementers still yields a legal
+  // paired launch with an explicitly-defaulted director half, rather than the
+  // `no_roles_configured` refusal an omitted pair of groups would earn.
+  const directors = merge(caller.directors, overlay.directors);
+  const implementers = merge(caller.implementers, overlay.implementers);
+  const emit =
+    caller.directors !== undefined ||
+    caller.implementers !== undefined ||
+    overlay.pinned ||
+    overlay.typeSource === 'goal';
+  return {
+    ...caller,
+    type: overlay.type,
+    ...(emit ? { directors, implementers } : {}),
+  };
 }
 
 /**
