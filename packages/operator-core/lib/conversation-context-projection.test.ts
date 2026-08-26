@@ -1,5 +1,5 @@
 import type { Sql } from 'postgres';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CONVERSATION_CONTEXT_PROJECTION_VERSION,
   foreignTaskSnapshot,
@@ -122,7 +122,7 @@ describe('conversation context projection', () => {
       if (text.includes('FROM harness_shared.coord_presence')) {
         return Promise.resolve([{
           owner_id: 'su-foreign', owner_label: 'Foreign SU', intent: 'Ship the adapter',
-          current_plan_slug: 'plan-a', agent_role: 'su',
+          current_plan_slug: 'plan-a', agent_role: 'su', fleet_slug: 'fleet-a', fleet_role: 'member',
         }]);
       }
       if (text.includes('FROM harness_shared.agent_modes')) {
@@ -141,12 +141,19 @@ describe('conversation context projection', () => {
       throw new Error(`unexpected query: ${text}`);
     }) as unknown as Sql;
 
+    const loadFleetContext = vi.fn(async () => ({
+      id: 'context:fleet',
+      kind: 'context' as const,
+      section: 'fleet' as const,
+      title: 'Fleet',
+      entries: [{ label: 'Fleet', value: 'fleet-a' }],
+    }));
     const projected = await readConversationContextProjection({
       workspaceId: 'ws',
       sourceKind: 'codex',
       sessionId: 'session-1',
       harness: 'papercusp',
-    }, { sql });
+    }, { sql, loadFleetContext });
 
     expect(projected?.session).toMatchObject({
       sourceKind: 'codex',
@@ -165,12 +172,22 @@ describe('conversation context projection', () => {
       expect.objectContaining({ kind: 'task', content: 'Ship adapter', status: 'in_progress' }),
       expect.objectContaining({ kind: 'context', section: 'mode' }),
       expect.objectContaining({ kind: 'context', section: 'intent' }),
+      expect.objectContaining({ kind: 'context', section: 'fleet' }),
       expect.objectContaining({ kind: 'context', section: 'plan' }),
       expect.objectContaining({ kind: 'context', section: 'held' }),
     ]));
     expect(projected?.frames.some((frame) => frame.kind === 'reasoning' || frame.kind === 'approval')).toBe(false);
     expect(queries.filter((query) => query.includes('session_turns'))).toHaveLength(1);
     expect(queries.filter((query) => query.includes('tool_invocations'))).toHaveLength(1);
+    expect(loadFleetContext).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      harness: 'papercusp',
+      ownerId: 'su-foreign',
+      fleetSlug: 'fleet-a',
+      planSlug: 'plan-a',
+    });
+    const sections = projected?.frames.flatMap((frame) => frame.kind === 'context' ? [frame.section] : []);
+    expect(sections?.indexOf('fleet')).toBeLessThan(sections?.indexOf('plan') ?? -1);
   });
 
   it('uses a fresh owned-loop ledger and correlates tool calls with results once', () => {

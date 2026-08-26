@@ -658,10 +658,17 @@ export function handshakeTimeoutRetryable(
   maxRetries: number,
   elapsedMs: number,
   windowMs: number,
+  nextAttemptBudgetMs = 0,
 ): boolean {
   if (klass !== 'idempotent') return false;
   if (retriesUsed >= maxRetries) return false;
-  return elapsedMs < windowMs;
+  // EI-21554095087170158: a timer can fire substantially late when the local proxy
+  // process is CPU-starved. Starting another full response-header attempt merely because
+  // `elapsedMs < windowMs` then guarantees that the request overruns its own retry window
+  // (measured: an 8s timer fired at 22.7s, then the handshake surfaced after 37.7s).
+  // Require enough remaining wall-clock budget for the next bounded attempt. The default
+  // preserves the pure helper's historical behavior for callers that have no attempt bound.
+  return elapsedMs + Math.max(0, nextAttemptBudgetMs) < windowMs;
 }
 
 /**
@@ -2024,6 +2031,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   MAX_HANDSHAKE_TIMEOUT_RETRIES,
                   elapsed,
                   retryWindowMs,
+                  (opts.handshakeTimeoutMs ?? HANDSHAKE_UPSTREAM_TIMEOUT_MS) + backoff,
                 ),
             );
             if (outcome.timedOut) {

@@ -21,6 +21,10 @@ import {
   reconcileSessionTaskBlockers,
   type SessionTaskBlockerState,
 } from './session-task-blockers';
+import {
+  loadFleetContextFrame,
+  type LoadFleetContextFrameInput,
+} from './conversation-context-fleet';
 
 export const CONVERSATION_CONTEXT_PROJECTION_VERSION = 'conversation-context-v1' as const;
 
@@ -459,6 +463,8 @@ interface ForeignProjectionPresenceRow {
   intent: string;
   current_plan_slug: string | null;
   agent_role: string | null;
+  fleet_slug: string | null;
+  fleet_role: string | null;
 }
 
 interface ForeignProjectionPlanClaimRow {
@@ -737,6 +743,9 @@ async function readForeignConversationContextProjection(
     harness?: string;
   },
   sql: Sql,
+  loadFleetContext: (
+    input: LoadFleetContextFrameInput,
+  ) => Promise<ConversationContextSectionFrame | null>,
 ): Promise<ConversationContextProjection | null> {
   const [advRows, turnRows, toolRows] = await Promise.all([
     sql<ForeignProjectionAdvRow[]>`
@@ -797,7 +806,8 @@ async function readForeignConversationContextProjection(
   if (ownerId) {
     const [presenceRows, modeRows, claimRows, heldRows] = await Promise.all([
       sql<ForeignProjectionPresenceRow[]>`
-        SELECT owner_id, owner_label, intent, current_plan_slug, agent_role
+        SELECT owner_id, owner_label, intent, current_plan_slug, agent_role,
+               fleet_slug, fleet_role
           FROM harness_shared.coord_presence
          WHERE workspace_id = ${args.workspaceId} AND owner_id = ${ownerId}
          LIMIT 1`.catch(() => [] as ForeignProjectionPresenceRow[]),
@@ -819,6 +829,32 @@ async function readForeignConversationContextProjection(
     workItems = heldRows;
   }
 
+  const context = foreignContextFrames({
+    sourceKind: args.sourceKind,
+    sessionId: args.sessionId,
+    harness,
+    role: adv?.role ?? null,
+    ownerId,
+    linkedWorkItemId,
+    presence,
+    modes,
+    planClaims,
+    workItems,
+  });
+  const fleetContext = ownerId && presence?.fleet_slug
+    ? await loadFleetContext({
+        workspaceId: args.workspaceId,
+        harness,
+        ownerId,
+        fleetSlug: presence.fleet_slug,
+        planSlug: presence.current_plan_slug ?? adv?.plan_slug ?? null,
+      }).catch(() => null)
+    : null;
+  if (fleetContext) {
+    const planIndex = context.findIndex((frame) => frame.section === 'plan');
+    context.splice(planIndex < 0 ? context.length : planIndex, 0, fleetContext);
+  }
+
   return projectConversationContext({
     sourceKind: args.sourceKind,
     sessionId: args.sessionId,
@@ -830,18 +866,7 @@ async function readForeignConversationContextProjection(
     toolFrames: foreignToolFrames(toolRows),
     tasks: foreignTaskSnapshot(toolRows),
     approvals: [],
-    context: foreignContextFrames({
-      sourceKind: args.sourceKind,
-      sessionId: args.sessionId,
-      harness,
-      role: adv?.role ?? null,
-      ownerId,
-      linkedWorkItemId,
-      presence,
-      modes,
-      planClaims,
-      workItems,
-    }),
+    context,
   });
 }
 
@@ -862,10 +887,19 @@ export async function readConversationContextProjection(args: {
   sourceKind: string;
   sessionId: string;
   harness?: string;
-}, deps: { sql?: Sql } = {}): Promise<ConversationContextProjection | null> {
+}, deps: {
+  sql?: Sql;
+  loadFleetContext?: (
+    input: LoadFleetContextFrameInput,
+  ) => Promise<ConversationContextSectionFrame | null>;
+} = {}): Promise<ConversationContextProjection | null> {
   const sql = deps.sql ?? getOrgPg().sql;
   if (FOREIGN_PROJECTION_SOURCE_KINDS.has(args.sourceKind)) {
-    return readForeignConversationContextProjection(args, sql);
+    return readForeignConversationContextProjection(
+      args,
+      sql,
+      deps.loadFleetContext ?? loadFleetContextFrame,
+    );
   }
   if (args.sourceKind !== 'agent_chat') return null;
   const rows = await sql<AgentChatProjectionRow[]>`

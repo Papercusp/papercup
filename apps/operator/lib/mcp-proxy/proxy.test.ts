@@ -1217,6 +1217,12 @@ describe('WI-6740: upstream silence — bounded + replayed for the handshake, ne
     expect(handshakeTimeoutRetryable('readonly', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
     expect(handshakeTimeoutRetryable('idempotent', MAX_HANDSHAKE_TIMEOUT_RETRIES, MAX_HANDSHAKE_TIMEOUT_RETRIES, 0, 5_000)).toBe(false);
     expect(handshakeTimeoutRetryable('idempotent', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 6_000, 5_000)).toBe(false);
+    // EI-21554095087170158: under proxy event-loop pressure the nominal 8s response-header
+    // timer fired after 22.7s. The old elapsed-only check started another 8s attempt because
+    // 22.7s was technically below the 30s retry window, guaranteeing the observed 37.7s
+    // terminal handshake. Do not start an attempt that cannot fit in the remaining window.
+    expect(handshakeTimeoutRetryable('idempotent', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 22_761, 30_000, 8_040)).toBe(false);
+    expect(handshakeTimeoutRetryable('idempotent', 0, MAX_HANDSHAKE_TIMEOUT_RETRIES, 20_000, 30_000, 8_040)).toBe(true);
   });
 });
 
