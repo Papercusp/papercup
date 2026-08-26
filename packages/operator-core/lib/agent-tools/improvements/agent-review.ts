@@ -16,9 +16,9 @@ export default defineTool({
   name: 'improvements:agent-review',
   profile: 'engineer',
   description:
-    'Claim the next peer-review item in one concrete harness, or resubmit your own revision-requested item. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.',
+    'Claim the next peer-review item in one concrete harness, or resubmit a revision-requested item. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.',
   guidance: {
-    when: "Use mode:'claim-next' to take a pending change/feature for peer review, then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item.",
+    when: "Use mode:'claim-next' to take a pending change/feature for peer review, then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item — or to adopt one whose original submitter's session is provably gone, which is otherwise stuck forever.",
     notWhen:
       'Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.',
     chaining:
@@ -47,7 +47,11 @@ export default defineTool({
     }),
     z.object({
       mode: z.literal('resubmit'),
-      id: z.string().min(1).max(80).describe('Your revision-requested work-item id.'),
+      id: z
+        .string()
+        .min(1)
+        .max(80)
+        .describe("The revision-requested work-item id — yours, or an orphan whose submitter is gone."),
     }),
   ]),
   async handler(args, ctx) {

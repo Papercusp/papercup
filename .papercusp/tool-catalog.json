@@ -13840,7 +13840,7 @@
           "POST"
         ]
       },
-      "description": "Claim the next peer-review item in one concrete harness, or resubmit your own revision-requested item. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.",
+      "description": "Claim the next peer-review item in one concrete harness, or resubmit a revision-requested item. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.",
       "capabilities": [
         "work_items:write"
       ],
@@ -13863,7 +13863,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Use mode:'claim-next' to take a pending change/feature for peer review, then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item.",
+        "when": "Use mode:'claim-next' to take a pending change/feature for peer review, then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item — or to adopt one whose original submitter's session is provably gone, which is otherwise stuck forever.",
         "notWhen": "Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.",
         "chaining": "improvements:agent-review { mode:'claim-next', harness? } → inspect the work item → blender:grade-idea { routedRef:'wi:<id>', grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id }."
       }
