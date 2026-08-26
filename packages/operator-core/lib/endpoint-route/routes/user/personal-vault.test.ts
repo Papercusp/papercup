@@ -372,26 +372,45 @@ describe('Personal Vault owner routes', () => {
     );
   });
 
-  it('projects and disconnects Facebook without exposing cursors, credentials, or purging documents', async () => {
+  it('projects multiple Facebook accounts and disconnects only the selected account without purging documents', async () => {
     mocks.getProvider.mockImplementation((id: string) => ({ id }));
+    mocks.tokenRead.mockResolvedValue({
+      'owner-user-1': 'never-serialize-facebook-access-token-1',
+      'owner-user-2': 'never-serialize-facebook-access-token-2',
+    });
     mocks.listSources.mockResolvedValue([
       {
-        id: 'facebook-source',
+        id: 'facebook-source-1',
         workspaceId: 'ws-test',
         kind: 'facebook',
         ownerUserId: 'user-1',
+        providerAccountId: 'facebook-user-1',
         credentialRef: 'facebook-personal-vault:owner-user-1',
         status: 'connected',
-        config: { coverage: ['profile', 'posts', 'photo-metadata'] },
+        config: { coverage: ['profile', 'posts', 'photo-metadata'], displayName: 'Owner One' },
         cursor: { since: 'secret-provider-watermark', lastSyncAt: '2026-08-23T00:15:00.000Z' },
         lastError: null,
         lastConnectedAt: '2026-08-23T00:00:00.000Z',
         updatedAt: '2026-08-23T00:15:00.000Z',
       },
+      {
+        id: 'facebook-source-2',
+        workspaceId: 'ws-test',
+        kind: 'facebook',
+        ownerUserId: 'user-1',
+        providerAccountId: 'facebook-user-2',
+        credentialRef: 'facebook-personal-vault:owner-user-2',
+        status: 'connected',
+        config: { coverage: ['profile', 'posts', 'photo-metadata'], displayName: 'Owner Two' },
+        cursor: { since: 'other-secret-watermark', lastSyncAt: '2026-08-23T00:20:00.000Z' },
+        lastError: null,
+        lastConnectedAt: '2026-08-23T00:05:00.000Z',
+        updatedAt: '2026-08-23T00:20:00.000Z',
+      },
     ]);
     mocks.disconnectSources.mockResolvedValue({
       sources: 1,
-      credentialRefs: ['facebook-personal-vault:owner-user-1'],
+      credentialRefs: ['facebook-personal-vault:owner-user-2'],
     });
 
     const statusResponse = await invoke(
@@ -405,28 +424,85 @@ describe('Personal Vault owner routes', () => {
       configured: true,
       connected: true,
       status: 'connected',
-      sources: [{ kind: 'facebook', lastSyncAt: '2026-08-23T00:15:00.000Z' }],
+      accounts: [
+        expect.objectContaining({
+          providerAccountId: 'facebook-user-1',
+          displayName: 'Owner One',
+          connected: true,
+        }),
+        expect.objectContaining({
+          providerAccountId: 'facebook-user-2',
+          displayName: 'Owner Two',
+          connected: true,
+        }),
+      ],
+      sources: [
+        { kind: 'facebook', providerAccountId: 'facebook-user-1', lastSyncAt: '2026-08-23T00:15:00.000Z' },
+        { kind: 'facebook', providerAccountId: 'facebook-user-2', lastSyncAt: '2026-08-23T00:20:00.000Z' },
+      ],
     });
     expect(JSON.stringify(statusPayload)).not.toContain('secret-provider-watermark');
+    expect(JSON.stringify(statusPayload)).not.toContain('other-secret-watermark');
     expect(JSON.stringify(statusPayload)).not.toContain('credentialRef');
 
     const disconnectResponse = await invoke(
       'DELETE',
       '/user/personal-vault/integrations/facebook',
-      new Request('http://localhost/user/personal-vault/integrations/facebook', { method: 'DELETE' }),
+      new Request('http://localhost/user/personal-vault/integrations/facebook?account=facebook-user-2', {
+        method: 'DELETE',
+      }),
     );
     await expect(disconnectResponse.json()).resolves.toMatchObject({
       provider: 'facebook',
+      providerAccountId: 'facebook-user-2',
       disconnectedSources: 1,
     });
-    expect(mocks.disconnectSources).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', ['facebook']);
+    expect(mocks.disconnectSources).toHaveBeenCalledWith(
+      mocks.sql,
+      'ws-test',
+      'user-1',
+      ['facebook'],
+      'facebook-user-2',
+    );
     expect(mocks.tokenUpdate).toHaveBeenCalledWith('facebook-personal-vault', 'papercusp', {
-      'owner-user-1': null,
-      'owner-user-1_refresh': null,
-      'owner-user-1_expires_at': null,
-      'owner-user-1_expired': true,
+      'owner-user-2': null,
+      'owner-user-2_refresh': null,
+      'owner-user-2_expires_at': null,
+      'owner-user-2_expired': true,
     });
+    expect(mocks.tokenUpdate).not.toHaveBeenCalledWith(
+      'facebook-personal-vault',
+      'papercusp',
+      expect.objectContaining({ 'owner-user-1': null }),
+    );
     expect(mocks.purge).not.toHaveBeenCalled();
+  });
+
+  it('requires a Facebook account selector when multiple owned accounts exist', async () => {
+    mocks.listSources.mockResolvedValue([
+      {
+        kind: 'facebook',
+        providerAccountId: 'facebook-user-1',
+        credentialRef: 'facebook-personal-vault:owner-user-1',
+      },
+      {
+        kind: 'facebook',
+        providerAccountId: 'facebook-user-2',
+        credentialRef: 'facebook-personal-vault:owner-user-2',
+      },
+    ]);
+    const response = await invoke(
+      'DELETE',
+      '/user/personal-vault/integrations/facebook',
+      new Request('http://localhost/user/personal-vault/integrations/facebook', { method: 'DELETE' }),
+    );
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'facebook_personal_vault_account_required',
+    });
+    expect(mocks.disconnectSources).not.toHaveBeenCalled();
+    expect(mocks.tokenUpdate).not.toHaveBeenCalled();
   });
 
   it('requires explicit confirmation before purge', async () => {

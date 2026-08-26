@@ -297,7 +297,7 @@ describe('GET /api/oauth/start', () => {
         provider: 'facebook',
         plugin: 'facebook-personal-vault',
         harness: 'papercusp',
-        field: 'owner-22222222-2222-4222-8222-222222222222',
+        field: expect.stringMatching(/^owner-22222222-2222-4222-8222-222222222222-[a-f0-9]{16}$/),
       }),
       {
         privateContext: {
@@ -312,6 +312,68 @@ describe('GET /api/oauth/start', () => {
       'test-state-token',
       expect.objectContaining({ ownerUserId: '22222222-2222-4222-8222-222222222222' }),
     );
+  });
+
+  it('reuses only the selected owned Facebook account field for reconnect', async () => {
+    sourceMocks.listOwned.mockResolvedValue([
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        workspaceId: 'workspace-1',
+        kind: 'facebook',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        providerAccountId: 'facebook-user-2',
+        credentialRef: 'facebook-personal-vault:existing-facebook-field',
+        status: 'disabled',
+        config: {},
+        cursor: {},
+      },
+    ]);
+    registerProvider({
+      ...stubProvider,
+      id: 'facebook',
+      defaultScopes: ['public_profile', 'user_posts', 'user_photos'],
+      allowedScopes: ['public_profile', 'user_posts', 'user_photos'],
+      buildAuthorizeUrl: () => 'https://www.facebook.com/dialog/oauth',
+    });
+
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner&account=facebook-user-2',
+      ),
+    );
+    expect(response.status).toBe(302);
+    expect(stateMocks.signState).toHaveBeenCalledWith(
+      expect.objectContaining({ field: 'existing-facebook-field' }),
+      {
+        privateContext: expect.objectContaining({
+          reconnectProviderAccountId: 'facebook-user-2',
+          ownerUserId: '22222222-2222-4222-8222-222222222222',
+          workspaceId: 'workspace-1',
+        }),
+      },
+    );
+  });
+
+  it('rejects a Facebook reconnect for an account not owned by the local user', async () => {
+    registerProvider({
+      ...stubProvider,
+      id: 'facebook',
+      defaultScopes: ['public_profile', 'user_posts', 'user_photos'],
+      allowedScopes: ['public_profile', 'user_posts', 'user_photos'],
+      buildAuthorizeUrl: () => 'https://www.facebook.com/dialog/oauth',
+    });
+
+    const response = await GET(
+      new Request(
+        'http://x/api/oauth/start?provider=facebook&plugin=facebook-personal-vault&harness=papercusp&field=owner&account=other-facebook-user',
+      ),
+    );
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: 'facebook_personal_vault_account_not_found',
+    });
+    expect(stateMocks.signState).not.toHaveBeenCalled();
   });
 
   it('rejects a non-Facebook provider under the reserved Facebook Personal Vault plugin id', async () => {
