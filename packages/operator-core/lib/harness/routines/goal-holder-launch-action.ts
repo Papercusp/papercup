@@ -94,7 +94,11 @@ export async function launchGoalHolderSession(
     model,
     account: resolved.effective.account,
     contextSize: resolved.effective.contextSize,
-    headless: true,
+    // D-002: unpinned resolves to headless, which is what this door hardcoded
+    // before the key existed — so every goal that has pinned nothing launches
+    // exactly as it did. Only an explicit `headless:false` on the goal's launch
+    // settings opens the holder on a visible desktop terminal.
+    headless: resolved.effective.headless ?? true,
     mode: 'auto',
     deferSpawn: input.deferSpawn ?? false,
     kickoffPrompt: input.kickoffPrompt ?? null,
