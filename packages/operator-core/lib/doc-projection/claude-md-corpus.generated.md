@@ -1968,7 +1968,7 @@ the expected transition rather than treated as a bare absence.
 process's CGROUP, never a single-shot reading and never a hand-walked tree.** Every
 single-shot probe answers a *different* question and fails toward a false "idle":
 `ps -o %cpu` is a process-LIFETIME average, and a first-iteration sampler has no prior
-sample to difference against. CPU usage *is* a delta; ask for one:
+sample to difference against. CPU usage *is* a delta; ask for one.
 
 
 The runnable recipe, and the two `/proc` methods that each report a confident FALSE IDLE on a
