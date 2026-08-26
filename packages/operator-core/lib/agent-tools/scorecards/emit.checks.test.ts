@@ -276,6 +276,7 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
         rubricRef: 'ar-checked-plan',
         ratings: canonical,
         sourceHive: 'papercusp',
+        rubricRevision: 3,
         evidenceFingerprint: scorecardEvidenceFingerprint({ rubricRef: 'ar-checked-plan', ratings: canonical }),
       },
     ]);
