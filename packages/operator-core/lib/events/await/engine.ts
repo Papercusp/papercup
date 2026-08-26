@@ -80,6 +80,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { classifyVerifiedWaitTimeout } from './verified-wait';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
+import { appendFleetEventActivity } from '../../fleet-event-activity';
 
 function log(msg: string): void {
   console.warn(`[await-event] ${msg}`);
@@ -289,6 +290,18 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
   } catch (e) {
     log(`key-fire latch record failed for ${opts.key}: ${e instanceof Error ? e.message : e}`);
   }
+
+  // pui-agent-context-cockpit P-026: reuse the activity ledger + its existing
+  // SSE transport as the fleet transition tape. This pure-filtered append only
+  // accepts the six tape families and is fail-soft, so observability can never
+  // break event delivery. Await it to preserve causal BIGSERIAL ordering when
+  // related transitions (member-dead + claim-released) fire back-to-back.
+  await appendFleetEventActivity({
+    eventKey: opts.key,
+    payload: opts.payload,
+    summary: opts.summary,
+    workspaceId: ws,
+  });
 
   // 1. One-shot fire the awaits on this key (atomic — D-002). EI-8998: the payload is
   // threaded through so a row carrying a payload_filter is only fired when the
