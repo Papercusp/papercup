@@ -646,10 +646,14 @@ row says so and bash remains correct.
 
 <!-- END GENERATED gen:tool-routing -->
 
-The tool call is also cheaper than the shell round-trip it replaces: a structured
-result, no subprocess, and no output to re-parse. When a row's caveat applies (a
-`tail -f` follow, a non-operator database, a `\du`), the bash form is the right
-answer — the gate will not fight you on those.
+The tool call is also cheaper: a structured result, no subprocess, nothing to
+re-parse. When a row's caveat applies (a `tail -f` follow, a non-operator database,
+a `\du`), the bash form is the right answer — the gate will not fight you on those.
+
+⚠ **No papercusp tools AT ALL?** A respawn can come up toolless — `:9071` starves new
+handshakes under load — unable even to search for the fix. The one door left, and pass
+your OWN `--client` or writes land under an anonymous `mcp-call-*` (EI-8509):
+`node scripts/mcp-call.mjs <server:verb> --json-file <args.json> --client <your-su-id> --port 3170`
 
 ## `cd` outside the repo tree does NOT persist across Bash calls — a failed one silently falls back to the repo ROOT
 
