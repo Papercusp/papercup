@@ -38,6 +38,7 @@ import {
   emitTerminalCheckpointResult,
   GREEN_CHECKPOINT_RESULT_MARKER,
   hasNpmScript,
+  ensureCheckpointDependencyGeneration,
   realCheckpointDeps,
   retireInFlightCandidateAfterResult,
   startMaterializationHeartbeat,
@@ -2200,6 +2201,66 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 
 describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", () => {
   const generationId = FIXTURE_DEPENDENCY_GENERATION_ID;
+
+  it("D-081: the pre-lock exact-candidate producer transports its selector/token into setup without an in-lock reselect", async () => {
+    const candidate = "a".repeat(40);
+    const inputFingerprint = "b".repeat(64);
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    let checkpointLockAcquired = false;
+    const exec: CheckpointExec = async (cmd, args) => {
+      calls.push({ cmd, args });
+      if (args.includes("--ensure-ref")) {
+        expect(checkpointLockAcquired).toBe(false);
+        return {
+          code: 0,
+          stdout:
+            `DEPENDENCY_GENERATION_RESULT schema=1 identity=${generationId} ` +
+            `source=fixture input=${inputFingerprint} scope=full reused=false ` +
+            `token=${FIXTURE_DEPENDENCY_GENERATION_TOKEN} path=/fixture/${generationId}`,
+          stderr: "",
+        };
+      }
+      expect(checkpointLockAcquired).toBe(true);
+      expect(args).not.toContain("--select-inputs-from");
+      return {
+        code: 0,
+        stdout: `[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
+        stderr: "",
+      };
+    };
+
+    const prewarmed = await ensureCheckpointDependencyGeneration(
+      cfg,
+      candidate,
+      exec,
+    );
+    checkpointLockAcquired = true;
+    const setup = await realCheckpointDeps(
+      cfg,
+      exec,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      prewarmed,
+    ).setupTree(candidate, { preparedSource: true });
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0].args).toEqual(
+      expect.arrayContaining(["--ensure-ref", candidate]),
+    );
+    expect(calls[1].args).toEqual(
+      expect.arrayContaining([
+        "--node-modules-generation-id",
+        generationId,
+        "--node-modules-generation-token",
+        FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+      ]),
+    );
+    expect(setup).toMatchObject({
+      identity: `setup-release-checkout:${candidate}:deps=${generationId}`,
+    });
+  });
 
   function expectMutexGuardedGenerationSelector(
     call: { cmd: string; args: string[] },

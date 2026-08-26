@@ -137,6 +137,53 @@ function selectPrewarmed(
   };
 }
 
+function ensureRef(
+  integration: string,
+  ref: string,
+  env: NodeJS.ProcessEnv = {},
+): ShellResult {
+  const result = spawnSync(
+    'bash',
+    [SCRIPT, '--integration', integration, '--ensure-ref', ref],
+    {
+      encoding: 'utf8',
+      env: { ...process.env, ...env },
+    },
+  );
+  return {
+    status: result.status,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
+}
+
+function commitFixture(integration: string, message: string): string {
+  if (!existsSync(join(integration, '.git'))) {
+    execFileSync('git', ['init', '-q', '-b', 'staging'], { cwd: integration });
+    execFileSync('git', ['config', 'user.email', 'fixture@example.invalid'], {
+      cwd: integration,
+    });
+    execFileSync('git', ['config', 'user.name', 'fixture'], {
+      cwd: integration,
+    });
+  }
+  execFileSync(
+    'git',
+    [
+      'add',
+      'package-lock.json',
+      'packages/a/package.json',
+      'packages/b/package.json',
+    ],
+    { cwd: integration },
+  );
+  execFileSync('git', ['commit', '-qm', message], { cwd: integration });
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: integration,
+    encoding: 'utf8',
+  }).trim();
+}
+
 function selectGeneration(
   generationRoot: string,
   identity: string,
@@ -270,6 +317,39 @@ describe('immutable dependency generation', () => {
     expect(publishedIdentity(selected.stdout)).toBe(
       publishedIdentity(rewarmed.stdout),
     );
+  });
+
+  it('D-081: an unseen exact-ref fingerprint is published and selected before checkpoint serialization', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'candidate');
+
+    const first = ensureRef(integration, candidate);
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stderr).toContain('has unseen dependency inputs');
+    expect(first.stderr).toContain('prewarming before checkpoint serialization');
+    expect(first.stdout).toMatch(/\binput=[0-9a-f]{64}\b/);
+    expect(first.stdout).toMatch(/\btoken=\S+/);
+
+    // The second exact-candidate pass is the selector hit: no live generation
+    // manifest walk or publication is allowed back onto the serialized path.
+    const second = ensureRef(integration, candidate);
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stderr).not.toContain('capturing live dependency manifest');
+    expect(publishedIdentity(second.stdout)).toBe(publishedIdentity(first.stdout));
+    expect(publishedToken(second.stdout)).toBe(publishedToken(first.stdout));
+  });
+
+  it('D-081: exact-ref ensure fails closed when live dependency inputs no longer match the candidate', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'candidate');
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/live-only":{}}}\n',
+    );
+
+    const result = ensureRef(integration, candidate);
+    expect(result.status).toBe(74);
+    expect(result.stderr).toContain('no prewarmed dependency generation');
   });
 
   it('WI-41491: refuses a selector whose immutable generation token changed after prewarm', () => {

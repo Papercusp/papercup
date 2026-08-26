@@ -10644,6 +10644,20 @@ describe("quiet-cut — never judge a tip younger than the quiet window (2026-07
     expect(r.candidate).not.toBe(c3);
   });
 
+  it("a pre-lock candidate hint freezes the observed tip without turning it into a quiet-cut-bypassing pin", async () => {
+    const c1 = await datedCommit("a.txt", "c1", 600);
+    await git(repo, ["branch", "ready", c1]);
+    const c2 = await datedCommit("b.txt", "c2", 300);
+    const c3 = await commit("c.txt", "now\n", "c3");
+    const { deps } = stubDeps(true);
+    const r = await runGreenCheckpoint(cfg(), deps, {
+      noPush: true,
+      candidateHint: c3,
+    });
+    expect(r).toMatchObject({ advanced: true, candidate: c2, green: true });
+    expect(r.candidate).not.toBe(c3);
+  });
+
   it("opt-out (PAPERCUSP_QUIET_CUT=0) judges the fresh tip exactly as before", async () => {
     const c1 = await datedCommit("a.txt", "c1", 600);
     await git(repo, ["branch", "ready", c1]);

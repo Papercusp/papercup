@@ -135,6 +135,14 @@ export interface CheckpointSetupIdentity {
   output: string;
 }
 
+/** Immutable dependency selection produced before the checkpoint serializer. */
+export interface PrewarmedCheckpointDependencyGeneration {
+  candidate: string;
+  identity: string;
+  token: string;
+  inputFingerprint: string;
+}
+
 export interface CheckpointMaterializationSelection {
   /** Workspace directories whose tests/guards are actually selected. */
   affectedWorkspaceDirs: string[];
@@ -6080,6 +6088,8 @@ export function summarizeSuiteOutput(fullOutput: string): string {
 export interface CheckpointOpts {
   /** Override the candidate (default: integration-branch HEAD). */
   candidate?: string;
+  /** Internal pre-lock tip snapshot. Unlike candidate, this does not bypass quiet-cut. */
+  candidateHint?: string;
   /** Canonical candidate provenance. Explicit candidates are pinned only when the caller says so. */
   candidateSource?: CheckpointCandidateSource;
   /** Compatibility field for recorders that predate candidateSource. */
@@ -7092,9 +7102,10 @@ async function runGreenCheckpointInner(
       );
     }
   }
-  const transportedCandidate = opts.candidate
-    ? await revParse(cfg.integrationRoot, opts.candidate)
-    : await revParse(cfg.integrationRoot, cfg.integrationBranch);
+  const transportedCandidate = await revParse(
+    cfg.integrationRoot,
+    opts.candidate ?? opts.candidateHint ?? cfg.integrationBranch,
+  );
   let candidate = transportedCandidate;
   const lastReady = (await refExists(cfg.integrationRoot, cfg.releaseRef))
     ? await revParse(cfg.integrationRoot, cfg.releaseRef)
@@ -9877,6 +9888,74 @@ export type CheckpointExec = (
   },
 ) => Promise<CheckpointExecResult>;
 
+/**
+ * WI-41491 / D-081 producer seam. Resolve or publish the exact candidate's
+ * immutable dependency generation before acquireCheckpointRunLock. The shell
+ * helper derives the candidate input key from Git objects, takes the existing
+ * install-safe reader mutex, and performs the expensive live-tree publisher
+ * only when that exact selector is absent.
+ */
+export async function ensureCheckpointDependencyGeneration(
+  cfg: ReleaseConfig,
+  candidate: string,
+  exec: CheckpointExec = runCmd,
+): Promise<PrewarmedCheckpointDependencyGeneration> {
+  const installSafeScript = path.join(
+    toolingRoot(),
+    "scripts/npm-install-safe.mjs",
+  );
+  const generationScript = path.join(
+    toolingRoot(),
+    "apps/operator/bin/release/dependency-generation.sh",
+  );
+  const result = await exec(
+    process.execPath,
+    [
+      installSafeScript,
+      "--repo-root",
+      cfg.integrationRoot,
+      "--exec-under-lock",
+      "--",
+      "bash",
+      generationScript,
+      "--integration",
+      cfg.integrationRoot,
+      "--ensure-ref",
+      candidate,
+    ],
+    {
+      timeoutMs: DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS,
+      timeoutResetsOnProgress: true,
+      hardTimeoutMs: DEPENDENCY_GENERATION_HARD_TIMEOUT_MS,
+      killProcessGroupOnTimeout: true,
+      onOutput: (stream, text) => {
+        for (const line of text.split(/\r?\n/)) {
+          if (line.trim())
+            console.error(
+              `${orchestratorStdoutTag()} dependency-prewarm ${stream}: ${line}`,
+            );
+        }
+      },
+    },
+  );
+  const output = result.stdout + result.stderr;
+  const identity = output.match(
+    /DEPENDENCY_GENERATION_RESULT\s+schema=1\s+identity=([^\s]+)/,
+  )?.[1];
+  const token = output.match(
+    /DEPENDENCY_GENERATION_RESULT[^\n]*\stoken=([^\s]+)/,
+  )?.[1];
+  const inputFingerprint = output.match(
+    /DEPENDENCY_GENERATION_RESULT[^\n]*\sinput=([0-9a-f]{64})\b/,
+  )?.[1];
+  if (!identity || !token || !inputFingerprint) {
+    throw new Error(
+      `dependency-generation prewarm completed without candidate identity, token, and input fingerprint for ${candidate.slice(0, 64)}`,
+    );
+  }
+  return { candidate, identity, token, inputFingerprint };
+}
+
 /** A signaled child is not a successful zero-exit command, even though Node reports
  * `code === null` and the compatibility result maps that null to `code: 0`. */
 function commandCompletedSuccessfully(
@@ -11739,6 +11818,8 @@ export function realCheckpointDeps(
   /** EI-21053570719607951: override the statfs sampler in focused tests. Production
    *  samples the filesystem backing os.tmpdir() before and after the suite. */
   sampleDiskSnapshotsOverride?: () => Promise<CheckpointDiskSnapshot[]>,
+  /** WI-41491 / D-081: exact candidate selector produced before the checkpoint run-lock. */
+  prewarmedDependencyGeneration?: PrewarmedCheckpointDependencyGeneration,
 ): CheckpointDeps {
   const notifyProgress = (detail?: string) => {
     try {
@@ -12002,10 +12083,6 @@ export function realCheckpointDeps(
       return { workspace, passed: false, crashedAgain: true };
     return { workspace, passed: false, realFailure: true };
   };
-  interface PrewarmedDependencyGeneration {
-    identity: string;
-    token: string;
-  }
   // WI-41491 / P-006: install-safe publishes immutable generations when the
   // dependency inputs change. Qualification derives the small input fingerprint
   // from its exact prepared source and opens that prewarmed identity by an
@@ -12015,7 +12092,7 @@ export function realCheckpointDeps(
   const selectPrewarmedDependencyGeneration = async (
     ref: string,
     inputRoot: string,
-  ): Promise<PrewarmedDependencyGeneration> => {
+  ): Promise<Pick<PrewarmedCheckpointDependencyGeneration, "identity" | "token">> => {
     // Keep selector reads behind the existing install-safe boundary. Publication
     // swaps the selector atomically, but the reader lock also ensures an install
     // cannot finish between exact-input derivation and identity selection.
@@ -12792,10 +12869,16 @@ export function realCheckpointDeps(
         }
       };
       if (!options?.preparedSource) await prepareExactSource(ref);
-      const selectedDependencyGeneration = await selectPrewarmedDependencyGeneration(
-        ref,
-        cfg.checkpointRoot,
-      );
+      const selectedDependencyGeneration =
+        prewarmedDependencyGeneration?.candidate === ref
+          ? prewarmedDependencyGeneration
+          : await selectPrewarmedDependencyGeneration(ref, cfg.checkpointRoot);
+      if (prewarmedDependencyGeneration?.candidate === ref) {
+        log(
+          `using pre-lock dependency generation ${selectedDependencyGeneration.identity} ` +
+            `for exact candidate ${ref.slice(0, 12)} input=${prewarmedDependencyGeneration.inputFingerprint}`,
+        );
+      }
       let setup: CheckpointExecResult;
       try {
         setup = await exec(
@@ -14395,6 +14478,7 @@ if (require.main === module) {
   // own event payload independently) — so every event this process could possibly emit
   // carries the SAME run identity.
   const runId = randomUUID();
+  let resolvedCandidateForRun: string | null = null;
 
   /**
    * EI-18850448565330905 — GUARANTEE a marker on every terminal path, including a thrown
@@ -14410,14 +14494,16 @@ if (require.main === module) {
    * (or the integration branch name) rather than emitting nothing.
    */
   const emitCrashResult = async (e: unknown): Promise<void> => {
-    let candidate = candidateArg ?? cfg.integrationBranch;
-    try {
-      candidate = await revParse(
-        cfg.integrationRoot,
-        candidateArg ?? cfg.integrationBranch,
-      );
-    } catch {
-      /* best-effort — keep the fallback candidate above */
+    let candidate = resolvedCandidateForRun ?? candidateArg ?? cfg.integrationBranch;
+    if (!resolvedCandidateForRun) {
+      try {
+        candidate = await revParse(
+          cfg.integrationRoot,
+          candidateArg ?? cfg.integrationBranch,
+        );
+      } catch {
+        /* best-effort — keep the fallback candidate above */
+      }
     }
     await emitResult({
       ...buildTerminalFailureCheckpointResult({ candidate, error: e, runId }),
@@ -14426,15 +14512,32 @@ if (require.main === module) {
     });
   };
 
-  const lock = acquireCheckpointRunLock(
-    checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
-  );
-  if (!lock.acquired) {
-    Promise.all([
-      revParse(
+  const beginCheckpoint = async (): Promise<void> => {
+    let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
+    try {
+      resolvedCandidateForRun = await revParse(
         cfg.integrationRoot,
         candidateArg ?? cfg.integrationBranch,
-      ).catch(() => candidateArg ?? cfg.integrationBranch),
+      );
+      prewarmedDependencyGeneration = await ensureCheckpointDependencyGeneration(
+        cfg,
+        resolvedCandidateForRun,
+      );
+    } catch (e) {
+      console.error(
+        `${orchestratorStdoutTag()} FAILED before checkpoint lock:`,
+        e instanceof Error ? e.message : e,
+      );
+      await emitCrashResult(e);
+      process.exit(1);
+    }
+
+    const lock = acquireCheckpointRunLock(
+      checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+    );
+    if (!lock.acquired) {
+    Promise.all([
+      Promise.resolve(prewarmedDependencyGeneration.candidate),
       refExists(cfg.integrationRoot, cfg.releaseRef)
         .then((ok) =>
           ok ? revParse(cfg.integrationRoot, cfg.releaseRef) : null,
@@ -14467,7 +14570,7 @@ if (require.main === module) {
         await emitCrashResult(e);
         process.exit(1);
       });
-  } else {
+    } else {
     // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
     // canceled on every normal exit path below, so it only ever fires when this run
     // misses its configured deadline (see armSelfWatchdog's doc comment).
@@ -14492,7 +14595,7 @@ if (require.main === module) {
         // EI-20702428259478130: this verdict is INCONCLUSIVE, not red — see `green: null` below.
         const inconclusive: CheckpointResult = {
           advanced: false,
-          candidate: candidateArg ?? cfg.integrationBranch,
+          candidate: prewarmedDependencyGeneration.candidate,
           from: null,
           candidateSource,
           ...(diagnostic ? { diagnostic } : {}),
@@ -14611,15 +14714,7 @@ if (require.main === module) {
       // onto the event loop after this point must not overwrite the cancellation result.
       if (!claimTerminal("signal")) return false;
 
-      let candidate = candidateArg ?? cfg.integrationBranch;
-      try {
-        candidate = await revParse(
-          cfg.integrationRoot,
-          candidateArg ?? cfg.integrationBranch,
-        );
-      } catch {
-        /* best-effort — retain the CLI candidate/branch label for the terminal record */
-      }
+      const candidate = prewarmedDependencyGeneration.candidate;
 
       let from: string | null = null;
       try {
@@ -14692,9 +14787,18 @@ if (require.main === module) {
     process.once("unhandledRejection", handleFatalProcessError);
     runGreenCheckpoint(
       cfg,
-      realCheckpointDeps(cfg, undefined, runId, undefined, watchdog.progress),
+      realCheckpointDeps(
+        cfg,
+        undefined,
+        runId,
+        undefined,
+        watchdog.progress,
+        undefined,
+        prewarmedDependencyGeneration,
+      ),
       {
         candidate: candidateArg,
+        candidateHint: prewarmedDependencyGeneration.candidate,
         candidateSource,
         ...(diagnostic ? { diagnostic } : {}),
         noPush: process.argv.includes("--no-push"),
@@ -14716,5 +14820,14 @@ if (require.main === module) {
         // events, so neither path can drift back to a bare exit without the typed marker.
         if (await finalizeFatalError(e)) process.exit(1);
       });
-  }
+    }
+  };
+  void beginCheckpoint().catch(async (e) => {
+    console.error(
+      `${orchestratorStdoutTag()} FAILED while starting checkpoint:`,
+      e instanceof Error ? e.message : e,
+    );
+    await emitCrashResult(e);
+    process.exit(1);
+  });
 }
