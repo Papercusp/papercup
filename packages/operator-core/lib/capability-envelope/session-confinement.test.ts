@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -158,5 +158,107 @@ describe('session confinement — structural guarantees, pinned to the source', 
     const block = SOURCE.slice(SOURCE.indexOf('DIRECTED_IMPLEMENTER_DENY_TOOLS'));
     expect(block).toContain('D-004 minimum set');
     expect(block).toContain('Self-lift');
+  });
+});
+
+describe('session confinement — the deny list is PINNED to the live tool catalog', () => {
+  /**
+   * Rung 2 of CLAUDE.md's derive/pin/attest ladder, for EI-21475119505876554.
+   *
+   * The deny list is hand-authored tool NAMES — a second copy of a truth the tool
+   * catalog owns. Nothing checked them, and two entries (`capability:set-tier`,
+   * `capability:set_protected`) resolved to NO tool for as long as they existed.
+   *
+   * Why every test ABOVE passes with a wrong name: they exercise the MATCHER against
+   * the list, so `evaluate('capability:set-tier')` is denied precisely BECAUSE the list
+   * contains that string. The list agreeing with itself is not evidence. Only the
+   * catalog can falsify an entry.
+   *
+   * And the failure is silent by construction, which is why it needs a guard rather
+   * than care: denying too MUCH fails loudly the first time an implementer is blocked
+   * from real work; denying too LITTLE produces no error anywhere, and is
+   * indistinguishable from a session with nothing to deny.
+   *
+   * Static discovery (mirroring __tests__/tool-data-shape-ratchet.test.ts, the repo's
+   * established pattern) rather than importing the registry: importing agent-tools/index
+   * pulls ~950 modules with side effects into a unit test.
+   */
+  const REPO = resolve(__dirname, '../../../..');
+
+  function discoverToolNames(): Set<string> {
+    const names = new Set<string>();
+    const walk = (dir: string) => {
+      if (!existsSync(dir)) return;
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!entry.endsWith('.ts') || entry.includes('.test.') || entry.startsWith('index.')) continue;
+        const src = readFileSync(full, 'utf8');
+        if (!src.includes('defineTool(')) continue;
+        // Tool names are `server:verb` — the colon is what separates a tool name from
+        // every other `name:` literal a definition may carry (schemes, fixtures, args).
+        for (const m of src.matchAll(/\bname:\s*'([^']+)'/g)) {
+          if (m[1].includes(':')) names.add(m[1]);
+        }
+      }
+    };
+    walk(join(REPO, 'packages/agent-mcp/src/tools'));
+    walk(join(REPO, 'packages/operator-core/lib/agent-tools'));
+    return names;
+  }
+
+  const CATALOG = discoverToolNames();
+
+  const toGlobRe = (glob: string) =>
+    new RegExp(
+      '^' + glob.split('*').map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$',
+    );
+
+  // Calibration — a broken walk fails every assertion below, and this is what says the
+  // WALK broke rather than the list being wrong. Without it, a red here is unreadable.
+  it('calibration: the static walk finds a real catalog', () => {
+    expect(CATALOG.size).toBeGreaterThan(500);
+    for (const control of [
+      'work_items:complete',
+      'scheduler:get_next',
+      'loop:arm',
+      'capability_tier:set',
+      'capability_envelope:set_role',
+    ]) {
+      expect(CATALOG.has(control), `control tool missing from walk: ${control}`).toBe(true);
+    }
+  });
+
+  it('every exact entry names a tool that actually exists', () => {
+    const dead = DIRECTED_IMPLEMENTER_DENY_TOOLS.filter((e) => !e.includes('*') && !CATALOG.has(e));
+    expect(
+      dead,
+      'these deny entries resolve to NO tool, so they deny nothing while reading exactly ' +
+        'like coverage. Fix the NAME (find the real one with tools:find) — do not delete ' +
+        `the intent: ${dead.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('every glob entry matches at least one real tool', () => {
+    const empty = DIRECTED_IMPLEMENTER_DENY_TOOLS.filter(
+      (e) => e.includes('*') && ![...CATALOG].some((n) => toGlobRe(e).test(n)),
+    );
+    expect(
+      empty,
+      'these deny globs match no tool in the catalog — either the surface was renamed ' +
+        '(re-point the glob) or it was retired (drop the entry deliberately, with a note): ' +
+        `${empty.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  // The specific hole EI-21475119505876554 found, kept as a regression: the runtime
+  // tier-override surface must stay covered under whatever spelling it carries.
+  it('still covers the runtime tier-override surface — the hole this guard was built for', () => {
+    expect(CATALOG.has('capability_tier:set')).toBe(true);
+    expect(evaluate('capability_tier:set').allowed).toBe(false);
+    expect(evaluate('mcp__papercusp-su__capability_tier_set').allowed).toBe(false);
   });
 });
