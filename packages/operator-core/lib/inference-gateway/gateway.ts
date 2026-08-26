@@ -61,8 +61,11 @@ import {
   type CodexCliRunResult,
 } from './codex-cli-bridge';
 import {
+  aggregateCodexNonStreamResponse,
   buildCodexUpstreamHeaders,
   codexBackendUrl,
+  CodexNonStreamAggregateError,
+  makeCodexNonStreamUpstreamBody,
   normalizeCodexChatGptResponsesBody,
   refreshCodexToken,
   resolveCodexAccessToken,
@@ -382,6 +385,15 @@ const DEFAULT_DOWNSTREAM_IDLE_MS = Number(process.env.PAPERCUSP_GATEWAY_DOWNSTRE
  *  traffic. On fire it aborts the in-flight upstream AND destroys the client socket → every await resolves
  *  → the finally releases the slot. Env-tunable. */
 const DEFAULT_REQUEST_CEILING_MS = Number(process.env.PAPERCUSP_GATEWAY_REQUEST_CEILING_MS) || 20 * 60 * 1000;
+/** ChatGPT's OAuth Responses endpoint speaks SSE even for a public `stream:false` request. The gateway
+ * aggregates that boundedly into ordinary Responses JSON so high-volume non-stream callers do not spawn
+ * one `codex exec` subprocess per retry. The env switch is the emergency compatibility fallback to the
+ * old CLI bridge; the transport is enabled by default whenever the OAuth proxy itself is enabled. */
+const DEFAULT_CODEX_OAUTH_NONSTREAM = process.env.PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM !== '0';
+const DEFAULT_CODEX_OAUTH_NONSTREAM_MAX_BYTES =
+  Number(process.env.PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM_MAX_BYTES) || 16 * 1024 * 1024;
+const DEFAULT_CODEX_OAUTH_NONSTREAM_TIMEOUT_MS =
+  Number(process.env.PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM_TIMEOUT_MS) || 5 * 60 * 1000;
 /** A header-PINNED request waits at most this long on its pinned account before failing over to the
  *  pool's active() account (Fault #3): the spawn-side drain selector pins by the cross-process budget
  *  projection, which can't see the gateway's live pacing, so a pinned account may be actively paced —
@@ -697,6 +709,13 @@ export interface GatewayDeps {
    *  STREAMING /v1/responses by OAuth-reverse-proxying to the ChatGPT backend (codex-oauth-proxy.ts)
    *  instead of the one-shot exec bridge. Flag-resolved at the launch layer; default false. */
   codexOAuthProxy?: boolean;
+  /** Non-streaming leg of the ChatGPT OAuth reverse-proxy. Defaults ON; set false (or
+   * `PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM=0`) to retain the one-shot CLI bridge fallback. */
+  codexOAuthNonStream?: boolean;
+  /** Maximum upstream bytes retained while aggregating a ChatGPT OAuth non-stream response. */
+  codexOAuthNonStreamMaxBytes?: number;
+  /** Maximum aggregation wall time; additionally capped by requestCeilingMs. */
+  codexOAuthNonStreamTimeoutMs?: number;
   /** Upstream base URL. Default `https://api.anthropic.com`; a fake in tests. */
   upstreamBase?: string;
   /** OpenAI-compatible upstream base URL. Default `https://api.openai.com`. */
@@ -764,6 +783,15 @@ export interface GatewayDeps {
     /** Role/label → tier map (`x-papercusp-priority` header value → admission band, 1 = highest). */
     map: PriorityTierMap;
     /** Steady-state per-tier caps + reserved tier-1 floor (the un-shed baseline). */
+    config: TierAdmissionConfig;
+  };
+  /** OPTIONAL Codex/OpenAI-compatible priority-tier layer. When omitted, Codex keeps the
+   *  legacy compatibility behavior of reusing `priorityTiers`; the launch layer supplies this
+   *  separately so its reserve/caps are sized to `codexConcurrency`, not Claude's larger queue. */
+  codexPriorityTiers?: {
+    /** Role/label → tier map for Codex requests. */
+    map: PriorityTierMap;
+    /** Codex-sized steady-state per-tier caps + reserved tier-1 floor. */
     config: TierAdmissionConfig;
   };
   /** MAINTENANCE summarize lane (deterministic-context-carry P-002): model / output-cap / deadline
@@ -1491,9 +1519,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // priority+aging gate, byte-identical to before. `tierMap` resolves a request's `x-papercusp-priority`
   // role → its band; `baseTierCaps` is the steady-state ceiling the AIMD shrink sheds from (4→3→2 first).
   const tierLayer = deps.priorityTiers;
+  // Codex has a smaller admission pool. Keep the fallback for direct callers that only know the
+  // original `priorityTiers` option, while allowing launch.ts to provide a separately sized layer.
+  const codexTierLayer = deps.codexPriorityTiers ?? tierLayer;
   const tiered = !!tierLayer;
+  const codexTiered = !!codexTierLayer;
   const tierMap = tierLayer?.map;
+  const codexTierMap = codexTierLayer?.map;
   const baseTierCaps: Record<number, number> = { ...(tierLayer?.config.caps ?? {}) };
+  const codexBaseTierCaps: Record<number, number> = { ...(codexTierLayer?.config.caps ?? {}) };
   const queue = new PriorityAdmissionQueue({
     maxConcurrent: concurrency,
     agingIntervalMs: deps.agingIntervalMs,
@@ -1507,12 +1541,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
   // WI-2198: when ON, a codex-cli account STREAMS /v1/responses via the OAuth reverse-proxy.
   const codexOAuthProxyEnabled = deps.codexOAuthProxy === true;
+  const codexOAuthNonStreamEnabled = deps.codexOAuthNonStream ?? DEFAULT_CODEX_OAUTH_NONSTREAM;
+  const codexOAuthNonStreamMaxBytes = Math.max(
+    1,
+    Math.floor(deps.codexOAuthNonStreamMaxBytes ?? DEFAULT_CODEX_OAUTH_NONSTREAM_MAX_BYTES),
+  );
+  const codexOAuthNonStreamTimeoutMs = Math.max(
+    1,
+    Math.min(
+      requestCeilingMs,
+      Math.floor(deps.codexOAuthNonStreamTimeoutMs ?? DEFAULT_CODEX_OAUTH_NONSTREAM_TIMEOUT_MS),
+    ),
+  );
   const isCodexCliAccountId = (accountId: string) => codexCliAccounts().some((a) => a.accountId === accountId);
   const codexQueue = new PriorityAdmissionQueue({
     maxConcurrent: codexConcurrency,
     agingIntervalMs: deps.agingIntervalMs,
     maxQueued,
-    ...(tierLayer ? { tiers: tierLayer.config } : {}),
+    ...(codexTierLayer ? { tiers: codexTierLayer.config } : {}),
   });
 
   // AIMD adaptive admission concurrency (B-GW-1): the queue's maxConcurrent is the cap; this controller
@@ -1585,8 +1631,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const applyCodexAdmissionCap = (eff: number): void => {
     const capped = Math.max(1, Math.min(codexConcurrency, eff));
     codexQueue.setMaxConcurrent(capped);
-    if (tiered) {
-      const shedCaps = shedTierCaps(baseTierCaps, codexConcurrency - capped);
+    if (codexTiered) {
+      const shedCaps = shedTierCaps(codexBaseTierCaps, codexConcurrency - capped);
       for (const [t, cap] of Object.entries(shedCaps)) codexQueue.setTierCap(Number(t), cap);
     }
   };
@@ -4531,9 +4577,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  ChatGPT-SUBSCRIPTION codex-cli account as a TRANSPARENT STREAMING reverse-proxy to the
    *  ChatGPT backend (codex-oauth-proxy.ts) — the OAuth bearer from ~/.codex/auth.json is
    *  injected, the SSE streams straight back, and the token is refreshed once on a 401.
-   *  A NON-streaming request (the in-process scout/judge callers) is handed to the exec
-   *  bridge unchanged, so only the streaming FLEET path is new. Runs inside the codex
-   *  admission slot (same accounting as the bearer path). */
+   *  A NON-streaming request is sent through the same OAuth transport by default: the
+   *  ChatGPT SSE is aggregated boundedly into ordinary Responses JSON. The old exec bridge
+   *  remains an explicit `PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM=0` fallback. Runs inside
+   *  the codex admission slot (same accounting as the bearer path). */
   async function serveCodexOAuthProxy(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -4559,8 +4606,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       bodyBuf = cached.body;
       if (cached.stats) recordCachePolicy('codex', cached.stats);
     }
-    // Non-streaming (scout/judge) → exec bridge, byte-identical to flag-OFF. Only stream:true
-    // (the fleet CLI agents) takes the OAuth proxy path below.
+    // Non-streaming (scout/judge) uses the bounded OAuth transport by default. Keep the one-shot
+    // CLI bridge as an emergency compatibility fallback: it is deliberately opt-out because every
+    // internal retry otherwise launches another full `codex exec` subprocess.
     let wantStream = false;
     let bodyModel = '';
     if (bodyBuf.length) {
@@ -4570,9 +4618,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (typeof parsed.model === 'string') bodyModel = parsed.model;
       } catch { /* non-JSON — treat as non-stream */ }
     }
-    if (!wantStream) {
+    if (!wantStream && !codexOAuthNonStreamEnabled) {
       await serveCodexCliBridge(req, res, cli, bodyBuf, routing);
       return;
+    }
+    if (!wantStream) {
+      const upstreamBody = makeCodexNonStreamUpstreamBody(bodyBuf);
+      if (!upstreamBody) {
+        sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: codex OAuth non-stream bridge needs a JSON /v1/responses body' }, gateway: true });
+        return;
+      }
+      bodyBuf = upstreamBody;
     }
     totalRequests++;
     codexRequests++;
@@ -4737,6 +4793,77 @@ export function createInferenceGateway(deps: GatewayDeps) {
           outHeaders[PIN_YIELDED_HEADER] = `${routing.pinned.accountId}->${cli.accountId}`;
           recordOwnerOutcome(routing.ownerId, 'pin_yield', { account: cli.accountId, detail: outHeaders[PIN_YIELDED_HEADER] });
         }
+
+        // The ChatGPT backend returns SSE even when the public caller requested a non-streaming
+        // response. Do not expose that transport detail: aggregate only successful responses and
+        // hold downstream headers until the final response.completed object is available. Error
+        // statuses (including a hard-pinned/single-account 429) remain byte-transparent below.
+        if (!wantStream && up.ok) {
+          const nodeStream = up.body
+            ? Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0])
+            : Readable.from([]);
+          observeOpenAiCacheUsage(
+            nodeStream,
+            cli.accountId,
+            attempt > 0 || (!!routing.pinned && routing.pinned.accountId !== cli.accountId),
+          );
+          nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
+          try {
+            const aggregated = await aggregateCodexNonStreamResponse(nodeStream, {
+              contentType: up.headers.get('content-type'),
+              maxBytes: codexOAuthNonStreamMaxBytes,
+              timeoutMs: codexOAuthNonStreamTimeoutMs,
+              signal: reqAbort.signal,
+              onTimeout: () => ac.abort(new Error(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`)),
+            });
+            if (reqAbort.signal.aborted || ac.signal.aborted) {
+              try { nodeStream.destroy(); } catch { /* already torn down */ }
+              return;
+            }
+            outHeaders['content-type'] = 'application/json';
+            recordRoute(routing.ownerId, cli.accountId, 'codex');
+            recordOwnerOutcome(routing.ownerId, 'ok', { account: cli.accountId, status: up.status });
+            res.writeHead(up.status, outHeaders);
+            res.end(aggregated);
+            detach();
+            clearStall();
+            return;
+          } catch (e) {
+            try { nodeStream.destroy(); } catch { /* already torn down */ }
+            detach();
+            clearStall();
+            const aggregateError = e instanceof CodexNonStreamAggregateError
+              ? e
+              : new CodexNonStreamAggregateError('invalid', `codex OAuth non-stream response aggregation failed: ${(e as Error).message}`);
+            // `onTimeout` intentionally aborts this attempt so the fetch/socket is torn down. That
+            // abort is an aggregation timeout, not a downstream cancellation, so only the stable
+            // request signal (or the helper's explicit aborted code) suppresses a gateway response.
+            if (aggregateError.code === 'aborted' || reqAbort.signal.aborted) {
+              if (!res.destroyed && !res.writableEnded) res.destroy();
+              return;
+            }
+            codexUpstreamErrors++;
+            recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: `oauth-nonstream-${aggregateError.code}` });
+            log('error', `inference-gateway: codex OAuth non-stream aggregation failed on '${cli.accountId}': ${aggregateError.message}`);
+            if (!res.headersSent) {
+              sendJson(
+                res,
+                aggregateError.code === 'timeout' ? 504 : 502,
+                {
+                  type: 'error',
+                  error: {
+                    type: aggregateError.code === 'timeout' ? 'timeout_error' : 'api_error',
+                    message: `inference-gateway: codex OAuth non-stream response ${aggregateError.message}`,
+                  },
+                  gateway: true,
+                },
+                { [ROUTED_ACCOUNT_HEADER]: cli.accountId },
+              );
+            }
+            return;
+          }
+        }
+
         recordRoute(routing.ownerId, cli.accountId, 'codex');
         recordOwnerOutcome(
           routing.ownerId,
@@ -5557,12 +5684,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // Tier the request from its `x-papercusp-priority` role (only when the tier layer is on — `tierMap`
     // present). Passed to queue.run as `opts.tier`; it is IGNORED by the queue when the tier layer is off,
     // so this is a safe no-op under flag-OFF.
-    const tier = tierMap ? tierOf(priLabel, tierMap) : undefined;
     // Route OpenAI-compatible Codex traffic to the Codex pool. `/v1/responses`
     // is unambiguously Codex; `/v1/models` is shared, so the request-aware
     // router uses a Codex account pin to keep Codex model discovery off the
     // Anthropic proxy while preserving Claude model probes.
     const providerId = providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id;
+    const requestTierMap = providerId === 'codex' ? codexTierMap : tierMap;
+    const tier = requestTierMap ? tierOf(priLabel, requestTierMap) : undefined;
     const handler = providerId === 'codex' ? proxyOpenAi : proxy;
     const admissionQueue = providerId === 'codex' ? codexQueue : queue;
     // Claude registers itself after parsing its request and acquiring its per-account governor. Codex has

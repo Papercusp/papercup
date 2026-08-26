@@ -496,6 +496,127 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       expect(gw.stats().codex.failovers).toBeGreaterThanOrEqual(1);
     },
   );
+
+  it('aggregates a successful non-stream OAuth response into JSON without invoking the CLI bridge', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    const cliRun = vi.fn(async () => ({ text: 'must not run', inputTokens: 1, outputTokens: 1 }));
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const rawBody = init?.body instanceof Uint8Array ? Buffer.from(init.body).toString('utf8') : String(init?.body ?? '');
+      const forwarded = JSON.parse(rawBody) as Record<string, unknown>;
+      expect(forwarded.stream).toBe(true);
+      expect(forwarded.store).toBe(false);
+      return new Response(
+        `data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_created' } })}\n\n` +
+          `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_nonstream', output: [] } })}\n\n` +
+          'data: [DONE]\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof fetch;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
+      codexCliRun: cliRun,
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'aggregate me', stream: false },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toEqual({ id: 'resp_nonstream', output: [] });
+    expect(cliRun).not.toHaveBeenCalled();
+  });
+
+  it.each([429, 503] as const)('retries a non-stream OAuth %s before aggregating the healthy account response', async (failureStatus) => {
+    const homeA = await makeCodexHome('chatgpt-a');
+    const homeB = await makeCodexHome('chatgpt-b');
+    const cliAccounts = [
+      { accountId: 'chatgpt-a', home: homeA },
+      { accountId: 'chatgpt-b', home: homeB },
+    ];
+    const routed: string[] = [];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
+      routed.push(account);
+      if (account === 'chatgpt-a') {
+        return new Response(JSON.stringify({ error: { message: 'try another account' } }), {
+          status: failureStatus,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(
+        `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_after_retry', output: [] } })}\n\ndata: [DONE]\n\n`,
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof fetch;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'retry then aggregate', stream: false },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: 'resp_after_retry', output: [] });
+    expect(routed).toEqual(['chatgpt-a', 'chatgpt-b']);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
+    expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+  });
+
+  it('aborts the OAuth upstream when a non-stream downstream caller disconnects', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    let upstreamAborted = false;
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      await new Promise<never>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          upstreamAborted = true;
+          reject(new Error('oauth upstream aborted'));
+        }, { once: true });
+      });
+      throw new Error('unreachable');
+    }) as typeof fetch;
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool([{ accountId: 'chatgpt-a', token: async () => '' }]),
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+      requestCeilingMs: 5_000,
+    });
+    port = await gw.listen(0);
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 50);
+    await ask('/v1/responses', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [ACCOUNT_HEADER]: 'chatgpt-a' },
+      body: JSON.stringify({ model: 'gpt-5.5', input: 'disconnect me', stream: false }),
+      signal: controller.signal,
+    }).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(upstreamAborted).toBe(true);
+  });
 });
 
 describe('proxyOpenAi — health and self-heal control-plane parity', () => {
