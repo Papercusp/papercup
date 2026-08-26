@@ -68,6 +68,9 @@ export const RECORDED_INCONCLUSIVE_STATUSES = [
   // test ran. A named, MEASURED prerequisite — distinct from 'error', which is the unknown-cause
   // bucket. Recorded so a reader can be advised about it instead of reading an anonymous crash.
   'dependency-prewarm-missing',
+  // P-006: sibling of the above on the same exit-74 contract — the selected generation exists but
+  // is corrupt, superseded mid-validation, or gone. Also standing: it does not self-repair.
+  'dependency-generation-unusable',
 ] as const;
 
 export type RecordedInconclusiveStatus = (typeof RECORDED_INCONCLUSIVE_STATUSES)[number];
@@ -136,6 +139,13 @@ const KIND_BY_STATUS: Record<RecordedInconclusiveStatus, Exclude<GateAbortKind, 
    * words are actively wrong here; the standing-condition lever's ("clear it first") are right.
    */
   'dependency-prewarm-missing': 'standing-condition',
+  /**
+   * P-006 — 'standing-condition' for the same reason as its sibling above. An unusable generation
+   * (no immutable token, replaced mid-validation, invalid marker, vanished before lease) is not
+   * weather that passes: the selector keeps resolving to the same bad generation until the store
+   * is repaired, so "nothing is blocking a re-fire" would be false here too.
+   */
+  'dependency-generation-unusable': 'standing-condition',
 };
 
 export function classifyGateAbort(status: string): GateAbortKind {

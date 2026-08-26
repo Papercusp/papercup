@@ -776,6 +776,13 @@ export interface CheckpointResult {
      *  it adds over 'error' is a NAME and the missing fingerprint, not a quieter counter.
      *  See {@link buildTerminalFailureCheckpointResult}. */
     | "dependency-prewarm-missing"
+    /** P-006: the generation the selector resolved to EXISTS but is unusable — no immutable
+     *  token, replaced after validation, invalid marker, no source fingerprint, or gone before it
+     *  could be leased. Sibling of 'dependency-prewarm-missing' (both are exit 74, both rendered
+     *  no verdict, both STANDING), separated because the remedy differs: that one needs the
+     *  producer to publish a fingerprint, this one needs the generation store repaired. Failing
+     *  closed is correct — a torn generation must never be judged against. */
+    | "dependency-generation-unusable"
     /** EI-21436432400491183: the candidate was already fossil-old when this red suite result
      *  was ready to publish. No code verdict is rendered; the next run must judge a fresher tip. */
     | "candidate-fossil";
@@ -1044,13 +1051,23 @@ export function buildTerminalFailureCheckpointResult(opts: {
       detail.includes(
         "live node_modules changed while pinning an existing generation",
       ));
-  // P-007: the prewarm PREREQUISITE was absent, so the gate never reached a test. Exit 74 is
-  // dependency_generation_select_inputs' own distinct refusal code (the torn-snapshot cases
-  // above are 75), and the FATAL line is required too so an unrelated 74 from elsewhere in the
-  // script cannot borrow this classification.
+  // P-006: dependency-generation.sh reserves exit 74 for ONE condition — the immutable
+  // dependency generation the gate needs is absent or unusable. All eight `return 74` sites are
+  // that family (missing selector, no immutable token, replaced after validation, invalid marker,
+  // invalid selector, missing/invalid generation, no source fingerprint, disappeared before
+  // lease); the torn-snapshot refusals are 75, and no site exits 74 for anything else.
+  //
+  // Classify on the CODE, not on the eight message strings. Message text is hand-maintained
+  // prose that drifts (derived-truth ladder); the exit code is the script's own contract. A
+  // string-set match would silently drop a newly-added 74 back onto the anonymous-crash path —
+  // which is exactly the defect being fixed here, re-introduced for the next sibling.
+  const dependencyGenerationUnusable =
+    detail.includes("dependency-generation.sh") && detail.includes("exited 74");
+  // The MISSING-prewarm case keeps its own reason because its remedy is specific and different:
+  // the producer must publish that exact fingerprint. The rest are an already-published
+  // generation gone bad, which is a store-repair problem. Checked first — it is the narrower case.
   const dependencyPrewarmMissing =
-    detail.includes("dependency-generation.sh") &&
-    detail.includes("exited 74") &&
+    dependencyGenerationUnusable &&
     detail.includes(
       "no prewarmed dependency generation for input fingerprint",
     );
@@ -1077,6 +1094,27 @@ export function buildTerminalFailureCheckpointResult(opts: {
         "nothing about the candidate, and its files must not be triaged. This does NOT clear on " +
         "its own: it stays broken until the dependency-generation producer publishes that " +
         `fingerprint (WI-41491). ${detail}`,
+    };
+  }
+
+  if (dependencyGenerationUnusable) {
+    // A published generation that is corrupt, superseded mid-validation, or gone. It fails CLOSED
+    // by design (a torn generation must never be tested against) and it does NOT self-heal: the
+    // same selector resolves to the same unusable generation until the store is repaired.
+    return {
+      advanced: false,
+      candidate: opts.candidate,
+      from: null,
+      green: null,
+      reason: "dependency-generation-unusable",
+      runId: opts.runId,
+      summary:
+        "green-checkpoint could not START: the immutable dependency generation it selected is " +
+        "unusable (missing, corrupt, superseded mid-validation, or removed), so the selector " +
+        "refused (exit 74) before any test ran. NO code verdict was rendered — this says nothing " +
+        "about the candidate, and its files must not be triaged. Failing closed is correct here; " +
+        "a torn generation must never be judged against. This does NOT clear on its own: the " +
+        `generation store must be repaired or republished. ${detail}`,
     };
   }
 

@@ -1730,6 +1730,9 @@ export function classifyGateStallStatus(
    * render nothing indefinitely with gate_health untouched.
    */
   if (status === 'dependency-prewarm-missing') return 'no-verdict';
+  // P-006: same class, same reasoning — the sibling exit-74 condition where the selected
+  // generation exists but is unusable. Both must be mapped here or they hit the 'red' default.
+  if (status === 'dependency-generation-unusable') return 'no-verdict';
   // WI-39450: a pass whose own re-triage watched the failing files PASS at tip produced no
   // verdict about the code — see isProvenStaleCandidate. Its diagnostics are still written
   // (EI-13288); only the streak is left alone.
