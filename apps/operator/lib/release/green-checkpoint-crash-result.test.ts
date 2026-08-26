@@ -343,3 +343,123 @@ describe('WI-41252 / D-066: dependency-generation torn snapshots are not code re
     expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
   });
 });
+
+/**
+ * P-007 (green-main-fast-2026-08-25) — a MISSING prewarmed dependency generation.
+ *
+ * Measured live 2026-08-26T00:04Z on papercusp: candidate b3e519a1, runId 231966bc. The gate died
+ * in 90 seconds having executed ZERO tests, because no immutable dependency generation had been
+ * published for the candidate's input fingerprint. It surfaced as `reason:'error', crashed:true`
+ * — an anonymous stack trace — which is the defect this block pins.
+ *
+ * The DETAIL string below is copied verbatim from that run's log (paths shortened only), so the
+ * signature is pinned to a real observed failure rather than to a plausible reconstruction of one.
+ */
+describe('P-007: a missing prewarmed dependency generation is a typed STANDING prerequisite, not an anonymous crash', () => {
+  const REAL_MISSING_PREWARM_DETAIL =
+    'Error: /node /repo/scripts/npm-install-safe.mjs --repo-root /repo --exec-under-lock -- ' +
+    'bash /repo/apps/operator/bin/release/dependency-generation.sh --integration /repo ' +
+    '--select-inputs-from /repo-checkpoint exited 74: NPM_INSTALL_SAFE guarding reader\n' +
+    '[dependency-generation] FATAL: no prewarmed dependency generation for input fingerprint ' +
+    'b0ea5991b1a86415cf8a0a8d807f27433c7e270ce79d567a848f6696a37908b0';
+
+  const classify = () =>
+    buildTerminalFailureCheckpointResult({
+      candidate: 'b3e519a1bfce',
+      error: new Error(REAL_MISSING_PREWARM_DETAIL),
+      runId: '231966bc',
+    });
+
+  it('classifies the exact exit-74 selector refusal as its own typed reason', () => {
+    const r = classify();
+    expect(r).toMatchObject({
+      advanced: false,
+      candidate: 'b3e519a1bfce',
+      from: null,
+      green: null,
+      reason: 'dependency-prewarm-missing',
+      runId: '231966bc',
+    });
+    // Not a crash: the cause is MEASURED, so it must not carry the unknown-crash evidence flag.
+    expect(r.crashed).toBeUndefined();
+  });
+
+  it('names the missing fingerprint and the producer, so the summary alone is actionable', () => {
+    const summary = classify().summary ?? '';
+    // The whole point of the type: the operator learns WHICH fingerprint is unpublished without
+    // going to dig it out of the run log.
+    expect(summary).toContain(
+      'b0ea5991b1a86415cf8a0a8d807f27433c7e270ce79d567a848f6696a37908b0',
+    );
+    expect(summary).toMatch(/no prewarmed immutable dependency generation/i);
+    expect(summary).toMatch(/NO code verdict was rendered/i);
+    // It must say the condition PERSISTS — the advice that a re-fire may finish is what burned a
+    // scarce owner authorization on 2026-08-26.
+    expect(summary).toMatch(/does NOT clear on its own/i);
+    expect(summary).toContain('WI-41491');
+  });
+
+  it('⭐ THE DEFECT: it is advised as a STANDING condition, never as a transient crash', () => {
+    const r = classify();
+    // A reader must be able to see it at all…
+    expect(isRecordedInconclusiveStatus(r.reason)).toBe(true);
+    // …and be told the truth about re-firing. 'transient' promises "a re-fire may well finish";
+    // for an unpublished fingerprint the next run dies on the identical selector miss.
+    expect(classifyGateAbort(r.reason)).toBe('standing-condition');
+    expect(classifyGateAbort(r.reason)).not.toBe('transient');
+    // 'unknown' is the DEFAULTED sentinel — a recorded status landing there means the advice was
+    // inherited rather than decided (EI-21290961259437085).
+    expect(classifyGateAbort(r.reason)).not.toBe('unknown');
+    // ⚠ The lever text CANNOT stand in for the two assertions above: gateAbortLever deliberately
+    // gives 'standing-condition' and 'unknown' the same wording, so it passes either way. What it
+    // does prove is the operator-facing consequence — the advice tells you to clear the condition…
+    expect(gateAbortLever(r.reason)).toMatch(/re-firing aborts the same way/i);
+    // …and, decisively, never carries the transient lever's invitation to just run it again. That
+    // sentence is what a human acts on, and acting on it here costs a whole authorization.
+    expect(gateAbortLever(r.reason)).not.toMatch(/nothing is blocking a re-fire/i);
+  });
+
+  it('⭐ THE COUPLING: the consumer knows the new reason, so it can never fabricate a code red', () => {
+    const r = classify();
+    // classifyGateStallStatus ends in `return 'red'`. An unmapped reason would therefore convert
+    // a prerequisite outage into a fabricated verdict about code no test ever executed — strictly
+    // worse than the untyped crash this replaced. This assertion is the guard on that fallthrough.
+    expect(classifyGateStallStatus(r.reason, false)).toBe('no-verdict');
+    expect(classifyGateStallStatus(r.reason, false)).not.toBe('red');
+    // …and NOT silenced either: unlike the self-clearing infra aborts, this one persists until the
+    // producer publishes, so 'noop' would let the gate render nothing indefinitely, unnoticed.
+    expect(classifyGateStallStatus(r.reason, false)).not.toBe('noop');
+    // A moved pin still wins, exactly as for every other status.
+    expect(classifyGateStallStatus(r.reason, true)).toBe('reset');
+  });
+
+  it.each([
+    // 75 is the TORN-SNAPSHOT code, a different and self-clearing condition.
+    [
+      'wrong exit code',
+      'dependency-generation.sh exited 75: no prewarmed dependency generation for input fingerprint abc123',
+    ],
+    // Some other tool exiting 74 must not borrow this classification.
+    [
+      'missing script identity',
+      'some-other-tool exited 74: no prewarmed dependency generation for input fingerprint abc123',
+    ],
+    // The script has other exit-74 refusals (invalid selector, missing token); only the absent
+    // prewarm is a standing PRODUCER gap, so the marker line is load-bearing.
+    [
+      'a different exit-74 refusal from the same script',
+      'dependency-generation.sh exited 74: [dependency-generation] FATAL: invalid prewarmed dependency selector for abc123',
+    ],
+  ])(
+    'keeps an incomplete signature on the generic crash path: %s',
+    (_label, message) => {
+      const r = buildTerminalFailureCheckpointResult({
+        candidate: 'b3e519a1bfce',
+        error: new Error(message),
+        runId: 'run-generic',
+      });
+      expect(r.reason).not.toBe('dependency-prewarm-missing');
+      expect(r.crashed).toBe(true);
+    },
+  );
+});
