@@ -240,9 +240,24 @@ export function resolveSpecifier({ specifier, fromFile, fileSet, workspaceDirByN
  * that fails to resolve means the resolver is wrong, and a resolver that quietly drops
  * edges under-counts importers in the exact direction that invents dead modules.
  *
- * @param {{files:string[], readFile:(f:string)=>string, workspaceDirByName?:Map<string,string>}} args
+ * PERFORMANCE, and why the prefilter is SOUND rather than a shortcut. Only a POPULATION
+ * module can ever be classified dead, so every edge whose target is not one is computed
+ * and discarded. A file can reach a `lib/release/**` module only by containing the
+ * substring `release/` (in a path mention or a non-sibling specifier) or by sitting
+ * inside a `lib/release/` directory itself, where a sibling import like
+ * `'./prompt-divergence'` legitimately omits the word. Files failing both tests are
+ * skipped before the expensive comment-strip — ~31k reads down to a few hundred parses.
+ * `readFile` therefore returns RAW text and `stripComments` is applied here, by the
+ * graph, which is the only layer that knows what it actually needs to parse.
+ *
+ * @param {{files:string[], readFile:(f:string)=>string, stripComments?:(t:string)=>string, workspaceDirByName?:Map<string,string>}} args
  */
-export function buildImportGraph({ files, readFile, workspaceDirByName = new Map() }) {
+export function buildImportGraph({
+  files,
+  readFile,
+  stripComments = (t) => t,
+  workspaceDirByName = new Map(),
+}) {
   const fileSet = new Set(files);
   const importers = new Map();
   const pathMentions = new Map();
@@ -257,7 +272,13 @@ export function buildImportGraph({ files, readFile, workspaceDirByName = new Map
 
   for (const file of files) {
     if (!SOURCE_RE.test(file) && !/\.(?:json|ya?ml)$/.test(file)) continue;
-    const text = readFile(file);
+    const raw = readFile(file);
+    if (!raw) continue;
+
+    // Sound prefilter — see the header. A sibling inside lib/release/ may import with a
+    // bare './name', so directory membership is checked as well as the substring.
+    if (!raw.includes('release/') && !DETECTOR_DIR_RE.test(file)) continue;
+    const text = stripComments(raw);
     if (!text) continue;
 
     if (SOURCE_RE.test(file)) {
