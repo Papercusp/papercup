@@ -384,7 +384,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'docs:author',
   description:
-    "Create or replace a manual / agent-insights doc the right way, in one call. THE ONLY supported way to author one: Postgres (harness_docs.content) is canonical and the <section>/<slug>.mdx file is a projection of it, so hand-writing that file does not durably create a doc. Stamps the full frontmatter convention (title/description/discovered/tags/status/documents/plans), writes the canonical row, projects the file, and AUTO-anchors + verifies so it ships drift-tracked. Returns { ok, path, slug, section, surface, anchored, status, subjectRef, warnings }.",
+    "Create or replace a manual / agent-insights doc the right way, in one call. THE ONLY supported way to author one: Postgres (harness_docs.content) is canonical and the <section>/<slug>.mdx file is a projection of it, so hand-writing that file does not durably create a doc. Stamps the full frontmatter convention (title/description/discovered/tags/status/documents/plans), writes the canonical row, projects the file, and AUTO-anchors + verifies so it ships drift-tracked. Returns { ok, ref, path, slug, section, harness, storageHarness, surface, read: { slugs, harness }, anchored, status, subjectRef, warnings }; pass `read` directly to docs:get.",
   guidance: {
     when:
       'You have a durable HOW-IT-WORKS runbook / failure-mode / hard-won gotcha to write down (the CLAUDE.md "write it as an anchored agent-insights MDX" rule). Pass `documents` with the files/symbols the doc covers so it ships drift-tracked.',
@@ -429,7 +429,13 @@ export default defineTool({
           `To write the Papercusp engineering reference (agent-insights/…), OMIT \`harness\` entirely ` +
           `or pass 'engineering' — not a concrete slug.`,
       );
-    const docId = `${section}/${slug}.mdx`;
+    // Starlight read surfaces address pages by an extensionless path, while the
+    // canonical row and filesystem projection use the `.mdx` doc id. Keep both
+    // forms explicit so a caller can pass the returned `ref` directly to
+    // docs:get instead of guessing whether `path` is a filesystem id or a read
+    // slug.
+    const ref = `${section}/${slug}`;
+    const docId = `${ref}.mdx`;
     const abs = safeJoinUnderRoot(paths.docsRoot, docId);
     if (!abs) return err('path_traversal — section/slug resolved outside the docs root');
 
@@ -613,6 +619,12 @@ export default defineTool({
     const indexNudge = insightsIndexNudge(section, harnessSlug);
     if (indexNudge) warnings.push(indexNudge);
 
+    // `papercusp` is the storage owner for the shared engineering corpus, but
+    // `engineering` is the per-call scope that docs:get/docs:search accept from
+    // workspace-scoped sessions. Return the read scope, plus the storage owner
+    // for audit/debugging, so the author→read handoff is mechanically usable.
+    const readHarness = harnessRes.engineering ? 'engineering' : harnessSlug;
+    const surface = harnessRes.engineering ? 'engineering' : 'harness';
     ctxAny.metadata?.({ surface: harnessRes.engineering ? 'engineering' : `harness:${harnessSlug}`, docId });
 
     return {
@@ -623,8 +635,12 @@ export default defineTool({
             ok: true,
             path: docId,
             slug,
+            ref,
             section,
-            harness: harnessSlug,
+            harness: readHarness,
+            storageHarness: harnessSlug,
+            surface,
+            read: { slugs: [ref], harness: readHarness },
             absPath: abs,
             anchored,
             status,
