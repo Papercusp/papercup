@@ -16,6 +16,7 @@ import {
   selfReviewLedgerQuery,
   toPersistedSelfReviewJudgement,
   toSelfReviewLedgerRow,
+  type SelfReviewEvidence,
   type SelfReviewLedgerRow,
 } from './work-item-self-review';
 
@@ -417,7 +418,7 @@ describe('native-client review corroboration', () => {
  * measurements reached no store and D-022's comparison had nothing to read.
  */
 describe('toPersistedSelfReviewJudgement — what the pilot can actually read back', () => {
-  const judged = (ledger: SelfReviewLedgerRow[], evidence = REVIEWED) =>
+  const judged = (ledger: SelfReviewLedgerRow[], evidence: SelfReviewEvidence = REVIEWED) =>
     toPersistedSelfReviewJudgement(judgeSelfReview({ evidence, ledger }));
 
   it('carries every measurement D-022 compares arms on', () => {
@@ -471,7 +472,7 @@ describe('toPersistedSelfReviewJudgement — what the pilot can actually read ba
   });
 
   it('does NOT carry the raw ledger rows into every completed row', () => {
-    const p = judged([row('Read', 5)]) as Record<string, unknown>;
+    const p = judged([row('Read', 5)]) as unknown as Record<string, unknown>;
     expect(p.reviewCalls).toBeUndefined();
     expect(Object.keys(p).sort()).toEqual([
       'ledgerVisible',
