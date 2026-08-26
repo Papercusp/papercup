@@ -37,6 +37,9 @@ import { trackDetached } from '../detached-imports';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
+/** Default OpenAI/Codex-compatible admission concurrency. Keep this in sync with gateway.ts so
+ *  launch-time tier sizing matches the queue's default when callers omit an override. */
+const DEFAULT_CODEX_CONCURRENCY = Number(process.env.PAPERCUSP_GATEWAY_CODEX_CONCURRENCY) || 3;
 
 /** Reserved-floor fraction of the admission pool held for tier 1 (gateway-priority-tiers-2026-06-22).
  *  `reserve = max(1, ceil(poolSlots * frac))`. Env-tunable via `GATEWAY_T1_RESERVE_FRAC`. */
@@ -100,6 +103,8 @@ export interface GatewayServiceOptions {
   port?: number;
   workspace?: string;
   concurrency?: number;
+  /** OpenAI/Codex-compatible admission cap; independently sizes the Codex priority-tier reserve. */
+  codexConcurrency?: number;
   upstreamBase?: string;
   /** Proactively refresh the bound token on this interval (ms). 0 = on-demand only. Default 45 min. */
   refreshIntervalMs?: number;
@@ -705,21 +710,26 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   }
   const unobserve = observePool(primary.accountId, opts.workspace, log);
 
-  // Priority-TIER admission config (gateway-priority-tiers-2026-06-22) — flag-gated; null (omitted) under
-  // flag-OFF so the gateway runs its flat priority+aging queue unchanged. Sized to the admission concurrency
-  // (the slot pool the reserved tier-1 floor protects).
+  // Priority-TIER admission configs (gateway-priority-tiers-2026-06-22) — flag-gated; null (omitted) under
+  // flag-OFF so each gateway queue runs its flat priority+aging behavior unchanged. Resolve Claude and Codex
+  // independently: their reserved tier-1 floors protect different admission pools.
   const DEFAULT_CONCURRENCY = 24; // mirrors gateway.ts's default; the reserved floor is sized to this pool
-  const priorityTiers = await resolvePriorityTiers(opts.concurrency ?? DEFAULT_CONCURRENCY).catch((e) => {
-    // Fail-safe: a flag/env read fault must never block the gateway from starting → fall back to the flat
-    // queue (flag-OFF behavior), loudly.
-    log('warn', `inference-gateway: priority-tier config resolve failed (${(e as Error).message}) — running the flat admission queue`);
-    return null;
-  });
+  const claudeConcurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
+  const codexConcurrency = Math.max(1, Math.floor(opts.codexConcurrency ?? DEFAULT_CODEX_CONCURRENCY));
+  const resolveTiers = async (slots: number, lane: 'Claude' | 'Codex') =>
+    resolvePriorityTiers(slots).catch((e) => {
+      // Fail-safe: a flag/env read fault must never block the gateway from starting → fall back to the flat
+      // queue (flag-OFF behavior), loudly.
+      log('warn', `inference-gateway: ${lane} priority-tier config resolve failed (${(e as Error).message}) — running the flat admission queue`);
+      return null;
+    });
+  const priorityTiers = await resolveTiers(claudeConcurrency, 'Claude');
+  const codexPriorityTiers = await resolveTiers(codexConcurrency, 'Codex');
   if (priorityTiers) {
-    log(
-      'info',
-      `inference-gateway: priority-tier admission ON — reserve=${priorityTiers.config.tier1Reserve} caps=${JSON.stringify(priorityTiers.config.caps)}`,
-    );
+    log('info', `inference-gateway: Claude priority-tier admission ON — reserve=${priorityTiers.config.tier1Reserve} caps=${JSON.stringify(priorityTiers.config.caps)}`);
+  }
+  if (codexPriorityTiers) {
+    log('info', `inference-gateway: Codex priority-tier admission ON — reserve=${codexPriorityTiers.config.tier1Reserve} caps=${JSON.stringify(codexPriorityTiers.config.caps)}`);
   }
 
   // codex-gateway-oauth-proxy-2026-07-04 (WI-2198): flag-gated. ON ⇒ a codex-cli
@@ -790,12 +800,14 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     upstreamBase: opts.upstreamBase,
     openaiUpstreamBase: process.env.OPENAI_BASE_URL_UPSTREAM || undefined,
     concurrency: opts.concurrency,
+    codexConcurrency,
     // Smooth each per-account RPM allowance into an even pace so the fleet can't fire a sub-minute BURST
     // that trips Anthropic's burst limit (the bare-burst 429 storm, 2026-06-23). Throughput-neutral (the
     // per-minute count gate still caps the rate). On by default in production; set PAPERCUSP_GATEWAY_RPM_SMOOTH=0
     // to disable (ops kill-switch). Resolved here at the launch layer so unit tests default it off.
     smoothRpm: process.env.PAPERCUSP_GATEWAY_RPM_SMOOTH !== '0',
     ...(priorityTiers ? { priorityTiers } : {}),
+    ...(codexPriorityTiers ? { codexPriorityTiers } : {}),
     ...(maintenanceCarryOn
       ? {
           maintenanceCarry: async (ownerId: string, o: { effectiveWindowTokens?: number; workspaceId?: string }) => {
