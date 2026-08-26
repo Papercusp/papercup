@@ -37,6 +37,33 @@ import { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './poli
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 const SNAPSHOT_HEARTBEAT_INTERVAL_MS = 30_000;
+const SNAPSHOT_ROW_TAG_KEY = 'papercusp-backup-row-id';
+
+export interface SnapshotReceiptReconciliation {
+  snapshotId: number;
+  reconciled: boolean;
+  stillRunning: boolean;
+  status: SnapshotInfo['status'];
+  kopiaSnapshotId: string | null;
+  bytesAdded: number | null;
+  bytesTotal: number | null;
+  durationMs: number | null;
+  note?: string;
+}
+
+interface KopiaSnapshotManifest {
+  id?: string;
+  startTime?: string;
+  endTime?: string;
+  source?: { path?: string };
+  stats?: {
+    addedSize?: number;
+    uploadedBytes?: number;
+    totalSize?: number;
+    totalBytes?: number;
+  };
+  rootEntry?: { summ?: { size?: number } };
+}
 
 interface SnapshotInFlight {
   promise: Promise<SnapshotResult>;
@@ -370,8 +397,22 @@ export class WorkspaceBackup {
           // self-exclude the repo dir. Without this guard the snapshot would
           // recursively include kopia-repo/ and balloon toward 1TB.
           await this.assertSelfExclusionPolicy(env);
-          const out = await this.kopia(['snapshot', 'create', ...sources, '--json'], { env });
+          // WI-42258: the Kopia artifact is durable before the PG receipt UPDATE.
+          // Tag it with the already-durable row id so backup:snapshot_create can
+          // recover the exact receipt if the host dies in that narrow boundary.
+          const out = await this.kopia([
+            'snapshot',
+            'create',
+            `--tags=${SNAPSHOT_ROW_TAG_KEY}:${snapshotRowId}`,
+            ...sources,
+            '--json',
+          ], { env });
           const p = parseKopiaSnapshotJson(out);
+          await this.event(snapshotRowId, 'artifact_created', {
+            kopiaSnapshotId: p.snapshotId,
+            bytesAdded: p.bytesAdded,
+            bytesTotal: p.bytesTotal,
+          });
           return { ...p, durationMs: Date.now() - startedAtMs };
         });
 
@@ -529,6 +570,165 @@ export class WorkspaceBackup {
       sources: (r.sources_json as string[]) ?? [],
       error: r.error_text,
     }));
+  }
+
+  /**
+   * Recover the durable PG receipt for a Kopia artifact that completed after
+   * backup:snapshot_create had already returned its `stillRunning` continuation.
+   *
+   * This is deliberately a WRITE method reached only through the existing
+   * backup:snapshot_create write capability. backup:snapshot_list remains a
+   * side-effect-free read. The row-id tag makes reconciliation exact: no
+   * timestamp guessing and no chance of attaching a sibling snapshot.
+   */
+  async reconcileSnapshotReceipt(snapshotId: number): Promise<SnapshotReceiptReconciliation> {
+    const sql = backupHost().getSql();
+    const rows = await sql<{
+      id: number;
+      status: SnapshotInfo['status'];
+      kopia_snapshot_id: string | null;
+      started_at: string;
+      finished_at: string | null;
+      bytes_added: string | null;
+      bytes_total: string | null;
+      hook_payload: Record<string, unknown> | null;
+    }[]>`
+      SELECT snapshot.id,
+             snapshot.status,
+             snapshot.kopia_snapshot_id,
+             snapshot.started_at,
+             snapshot.finished_at,
+             snapshot.bytes_added,
+             snapshot.bytes_total,
+             (
+               SELECT event.payload_json
+                 FROM harness_shared.backup_events AS event
+                WHERE event.workspace_id = snapshot.workspace_id
+                  AND event.snapshot_id = snapshot.id
+                  AND event.kind = 'hook_pg_dump'
+                ORDER BY event.at DESC
+                LIMIT 1
+             ) AS hook_payload
+        FROM harness_shared.backup_snapshots AS snapshot
+       WHERE snapshot.workspace_id = ${this.workspaceId}
+         AND snapshot.id = ${snapshotId}
+       LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) throw new Error(`backup snapshot row ${snapshotId} was not found in ${this.workspaceId}`);
+
+    if (row.status !== 'running') {
+      return {
+        snapshotId,
+        reconciled: false,
+        stillRunning: false,
+        status: row.status,
+        kopiaSnapshotId: row.kopia_snapshot_id,
+        bytesAdded: row.bytes_added == null ? null : Number(row.bytes_added),
+        bytesTotal: row.bytes_total == null ? null : Number(row.bytes_total),
+        durationMs: durationBetween(row.started_at, row.finished_at),
+        note: 'The receipt was already terminal; no reconciliation write was needed.',
+      };
+    }
+
+    await this.ensureRepo();
+    const password = await deriveRepoPassword(this.workspaceId);
+    const env = this.envWithPassword(password);
+    const raw = await this.kopia([
+      'snapshot',
+      'list',
+      '--all',
+      `--tags=${SNAPSHOT_ROW_TAG_KEY}:${snapshotId}`,
+      '--json',
+    ], { env });
+    const manifests = JSON.parse(raw) as KopiaSnapshotManifest[];
+    if (!Array.isArray(manifests) || manifests.length === 0) {
+      return {
+        snapshotId,
+        reconciled: false,
+        stillRunning: true,
+        status: 'running',
+        kopiaSnapshotId: null,
+        bytesAdded: null,
+        bytesTotal: null,
+        durationMs: null,
+        note: 'No completed Kopia artifact carries this row id yet; keep polling the receipt.',
+      };
+    }
+    if (manifests.length !== 1) {
+      throw new Error(
+        `backup snapshot row ${snapshotId} has ${manifests.length} tagged Kopia artifacts; refusing ambiguous reconciliation`,
+      );
+    }
+
+    const manifest = manifests[0]!;
+    if (!manifest.id || !manifest.endTime) {
+      throw new Error(`tagged Kopia artifact for row ${snapshotId} is missing id/endTime`);
+    }
+    if (manifest.source?.path && manifest.source.path !== this.workspaceRoot) {
+      throw new Error(
+        `tagged Kopia artifact for row ${snapshotId} belongs to ${manifest.source.path}, not ${this.workspaceRoot}`,
+      );
+    }
+    const startedAtMs = new Date(row.started_at).getTime();
+    const artifactEndMs = new Date(manifest.endTime).getTime();
+    if (!Number.isFinite(artifactEndMs) || artifactEndMs < startedAtMs) {
+      throw new Error(`tagged Kopia artifact for row ${snapshotId} predates its durable receipt row`);
+    }
+
+    const bytesAdded = manifest.stats?.addedSize ?? manifest.stats?.uploadedBytes ?? 0;
+    const bytesTotal = manifest.stats?.totalSize
+      ?? manifest.stats?.totalBytes
+      ?? manifest.rootEntry?.summ?.size
+      ?? 0;
+    const dumpDegraded = row.hook_payload?.ok === false;
+    const status: SnapshotInfo['status'] = dumpDegraded ? 'degraded' : 'ok';
+    const errorText = dumpDegraded
+      ? `pre-snapshot db dump did not land: ${String(row.hook_payload?.error ?? 'unknown')}`
+      : null;
+    const updated = await sql<{ id: number }[]>`
+      UPDATE harness_shared.backup_snapshots
+         SET kopia_snapshot_id = ${manifest.id},
+             finished_at       = ${manifest.endTime}::timestamptz,
+             status            = ${status},
+             error_text        = ${errorText},
+             bytes_added       = ${bytesAdded},
+             bytes_total       = ${bytesTotal}
+       WHERE workspace_id = ${this.workspaceId}
+         AND id = ${snapshotId}
+         AND status = 'running'
+         AND kopia_snapshot_id IS NULL
+       RETURNING id
+    `;
+    if (updated.length === 0) {
+      return {
+        snapshotId,
+        reconciled: false,
+        stillRunning: true,
+        status: 'running',
+        kopiaSnapshotId: null,
+        bytesAdded: null,
+        bytesTotal: null,
+        durationMs: null,
+        note: 'The receipt changed concurrently; re-read backup:snapshot_list before deciding whether another reconciliation is needed.',
+      };
+    }
+    await this.event(snapshotId, 'reconciled', {
+      phase: 'record_result_recovered',
+      kopiaSnapshotId: manifest.id,
+      artifactEndTime: manifest.endTime,
+      status,
+    });
+    return {
+      snapshotId,
+      reconciled: true,
+      stillRunning: false,
+      status,
+      kopiaSnapshotId: manifest.id,
+      bytesAdded,
+      bytesTotal,
+      durationMs: Math.max(0, artifactEndMs - startedAtMs),
+    };
   }
 
   async stats(): Promise<RepoStats> {
@@ -1117,6 +1317,14 @@ function tsIso(v: unknown): string | null {
   if (v instanceof Date) return v.toISOString();
   if (typeof v === 'string') return new Date(v).toISOString();
   return null;
+}
+
+function durationBetween(start: unknown, end: unknown): number | null {
+  const startIso = tsIso(start);
+  const endIso = tsIso(end);
+  if (!startIso || !endIso) return null;
+  const durationMs = new Date(endIso).getTime() - new Date(startIso).getTime();
+  return Number.isFinite(durationMs) ? Math.max(0, durationMs) : null;
 }
 
 /**
