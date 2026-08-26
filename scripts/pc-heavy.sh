@@ -2502,7 +2502,59 @@ _pc_heavy_run_with_retries() {
     main "$@"
     return $?
   fi
-  trap 'rm -f "${_pc_heavy_retry_result_file:-}" 2>/dev/null || true' EXIT
+  # ── Per-attempt stdout isolation (WI-42126, green-main-fast-2026-08-25#D-025) ──
+  #
+  # THE INVARIANT: the stdout of one pc-heavy invocation must equal the stdout of
+  # exactly ONE execution of the wrapped command.
+  #
+  # This loop used to violate it. Each attempt ran `bash "$0" "$@"` with stdout
+  # INHERITED, so an attempt that emitted output before being preempted left that
+  # output in the caller's single stdout pipe and the next attempt APPENDED to it.
+  # Nothing was corrupted at the byte level — the caller just silently received the
+  # command's output N times over.
+  #
+  # That is not cosmetic, because the callers PARSE this stream. `lint:tsc` captures
+  # it (tsc-baseline-gate.mjs, execFileSync stdio:['ignore','pipe','inherit']) and
+  # counts diagnostics per file; with N attempts every file carrying any error read
+  # exactly Nx its true count, i.e. a UNIFORM multiplier across the whole project,
+  # which presents as a mass regression nobody caused. Measured live: 104 files at
+  # exactly 2x baseline with every diagnostic line printed twice verbatim, while raw
+  # tsc at the same tip gave 143 located / 143 DISTINCT. It froze the release gate and
+  # very nearly cost a fleet-wide "fix" of 104 files that were never broken.
+  #
+  # Note this also falsifies the premise the retry was introduced under
+  # (EI-21459562605356711): a preempted attempt does NOT reliably yield empty stdout.
+  # It can emit a complete result and still be reported preempted.
+  #
+  # THE FIX: buffer each attempt and emit only the stdout of the attempt whose exit
+  # code is actually returned. Redirecting per attempt truncates the file, so a
+  # discarded attempt's bytes are dropped rather than concatenated.
+  #
+  # Deliberately NOT done: splicing attempts together, or falling back to the last
+  # NON-EMPTY attempt. A preempted attempt's output may be truncated mid-stream, and
+  # partial compiler output UNDER-reports errors — which, under `lint:tsc --update`,
+  # would silently ratchet baselines DOWN and mask real errors. A false red is a bad
+  # day; a false green is a bad month. Emit the returned attempt's output or nothing.
+  #
+  # TTY EXCEPTION: when stdout is a terminal, a human is watching and live progress
+  # matters more than the multiplier (a `test:affected` run would otherwise go silent
+  # for minutes), and they can see the "retrying after preemption" banner on stderr
+  # that explains any repeat. Machine consumers never hold a TTY, so the parsed path
+  # is always the isolated one. Buffering is skipped entirely in that case.
+  #
+  # Fail-open, matching the rest of this wrapper: if the buffer cannot be created we
+  # warn and keep today's inherited-stdout behavior rather than refusing to run.
+  local _retry_stdout_file='' _retry_buffered=0
+  if [ ! -t 1 ]; then
+    _retry_stdout_file="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-attempt-stdout.XXXXXX" 2>/dev/null || true)"
+    if [ -n "$_retry_stdout_file" ]; then
+      _retry_buffered=1
+    else
+      echo "[pc-heavy] attempt-stdout buffer unavailable; a preempted attempt's output may be duplicated into this stream (WI-42126)" >&2
+    fi
+  fi
+
+  trap 'rm -f "${_pc_heavy_retry_result_file:-}" "${_retry_stdout_file:-}" 2>/dev/null || true' EXIT
 
   # A resumable caller needs every fresh attempt in THIS bounded retry series to address the
   # same proof group. Generate it once in the outer wrapper; affected-tests removes the transport
@@ -2527,11 +2579,23 @@ _pc_heavy_run_with_retries() {
     # coalescing on the first attempt as well as subsequent attempts: an older
     # preemption may already be cached before this policy is introduced, and
     # that cache contains no private marker for this outer loop to inspect.
-    PC_HEAVY_RETRY_ACTIVE=1 \
-      PC_HEAVY_PREEMPT_RESULT_FILE="$_pc_heavy_retry_result_file" \
-      PC_HEAVY_COALESCE=0 \
-      bash "$0" "$@"
-    _retry_rc=$?
+    # `> "$_retry_stdout_file"` re-truncates on every iteration: that truncation IS
+    # the discard of a retried attempt's output. Only the surviving attempt's bytes
+    # are still in the file when the loop returns. stderr stays inherited so pc-heavy
+    # chatter and the wrapped command's progress keep streaming live and unbuffered.
+    if [ "$_retry_buffered" = 1 ]; then
+      PC_HEAVY_RETRY_ACTIVE=1 \
+        PC_HEAVY_PREEMPT_RESULT_FILE="$_pc_heavy_retry_result_file" \
+        PC_HEAVY_COALESCE=0 \
+        bash "$0" "$@" > "$_retry_stdout_file"
+      _retry_rc=$?
+    else
+      PC_HEAVY_RETRY_ACTIVE=1 \
+        PC_HEAVY_PREEMPT_RESULT_FILE="$_pc_heavy_retry_result_file" \
+        PC_HEAVY_COALESCE=0 \
+        bash "$0" "$@"
+      _retry_rc=$?
+    fi
 
     _retry_marker=''
     if [ -f "$_pc_heavy_retry_result_file" ]; then
@@ -2547,8 +2611,16 @@ _pc_heavy_run_with_retries() {
       echo "[pc-heavy] exhausted $_retry_limit preemption retry(s); returning the exact exclusive-materializer failure" >&2
     fi
 
+    # Terminal path: this attempt's exit code is the one being returned, so this
+    # attempt's stdout is the one the caller is entitled to — emit exactly it.
+    # Every earlier attempt's output was truncated away at the top of its successor's
+    # iteration and is deliberately unrecoverable here.
+    if [ "$_retry_buffered" = 1 ]; then
+      cat "$_retry_stdout_file" 2>/dev/null || true
+    fi
+
     trap - EXIT
-    rm -f "$_pc_heavy_retry_result_file" 2>/dev/null || true
+    rm -f "$_pc_heavy_retry_result_file" "$_retry_stdout_file" 2>/dev/null || true
     return "$_retry_rc"
   done
 }
