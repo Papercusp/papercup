@@ -172,7 +172,7 @@ function decodeValue(raw: unknown): FleetDirectoryRow | null {
 async function writeToPg(
   opts: FleetDirectoryProjectionOpts,
   row: FleetDirectoryRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // Demux: this projection only applies its own Hive's directory ops.
   if (row.harness_slug !== opts.harnessSlug) return;

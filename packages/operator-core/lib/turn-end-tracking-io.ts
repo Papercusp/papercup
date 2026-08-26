@@ -63,9 +63,7 @@ export async function autoCheckpointStaleHeldItems(input: {
       ]);
     const nowMs = input.nowMs ?? Date.now();
     const held = await readHeldWorkItems(input.ownerId, input.workspaceId);
-    const stale = held
-      .filter((h) => isStaleHeldCheckpoint(h, nowMs))
-      .slice(0, MAX_AUTO_CHECKPOINTS);
+    const stale = held.filter((h) => isStaleHeldCheckpoint(h, nowMs)).slice(0, MAX_AUTO_CHECKPOINTS);
     if (stale.length === 0) return [];
 
     // One tool-log render for the turn window — shared across the stale items
@@ -199,11 +197,7 @@ async function checkpointOnReleaseImpl(input: {
 }): Promise<{ written: boolean }> {
   try {
     const [{ getWorkItemCheckpointWithMeta, setWorkItemCheckpoint }, { toolCallRowsFor }, { renderToolCallLog }] =
-      await Promise.all([
-        import('./work-item-checkpoint'),
-        import('./tool-call-log-store'),
-        import('./tool-call-log'),
-      ]);
+      await Promise.all([import('./work-item-checkpoint'), import('./tool-call-log-store'), import('./tool-call-log')]);
     const ref = { harness: input.harness, workItemId: input.workItemId, workspaceId: input.workspaceId };
     const existing = await getWorkItemCheckpointWithMeta(ref);
     if (existing.checkpoint && existing.checkpoint.trim()) return { written: false };
@@ -253,12 +247,11 @@ export async function sweepUnguardedHalt(input: {
   machineTurn?: boolean;
 }): Promise<UnguardedHaltTripwire | null> {
   try {
-    const [{ getModes }, { getLoopStatus }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }] =
-      await Promise.all([
-        import('./modes/store'),
-        import('./harness/routines/loop'),
-        import('./events/await/store'),
-      ]);
+    const [{ getModes }, { getLoopStatus }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }] = await Promise.all([
+      import('./modes/store'),
+      import('./harness/routines/loop'),
+      import('./events/await/store'),
+    ]);
     const [modes, loop, awaits] = await Promise.all([
       getModes(input.workspaceId, input.ownerId).catch(() => []),
       getLoopStatus(input.ownerId).catch(() => null),
@@ -274,9 +267,7 @@ export async function sweepUnguardedHalt(input: {
     // session reads active:true / parked:true while producing no turns. Counting such an
     // await as a guarantee is precisely how a session goes dark while every surface says
     // "safe to settle" — observed live 2026-07-28, ~26 minutes lost.
-    const activeAwaitCount = awaits.filter((a) =>
-      awaitGuaranteesRewake(a, INBOX_WAKE_KEY_PREFIX),
-    ).length;
+    const activeAwaitCount = awaits.filter((a) => awaitGuaranteesRewake(a, INBOX_WAKE_KEY_PREFIX)).length;
     return detectUnguardedHalt({
       autonomousModeActive,
       machineTurn: input.machineTurn,
@@ -332,16 +323,12 @@ export async function sweepOpenTaskReminder(input: {
       awaitMod.listActiveAwaits(input.ownerId).catch(() => []),
       journalMod.recentTurnJournal({ ownerId: input.ownerId, limit: 1 }).catch(() => []),
     ]);
-    const boundedAwaitActive = awaits.some((entry) =>
-      awaitGuaranteesRewake(entry, awaitMod.INBOX_WAKE_KEY_PREFIX),
-    );
+    const boundedAwaitActive = awaits.some((entry) => awaitGuaranteesRewake(entry, awaitMod.INBOX_WAKE_KEY_PREFIX));
     const prior = priorRows[0]?.tripwire;
-    const priorTripwire: OpenTaskReminderTripwire | null =
-      prior?.kind === 'open-task-reminder' ? prior : null;
+    const priorTripwire: OpenTaskReminderTripwire | null = prior?.kind === 'open-task-reminder' ? prior : null;
     return decideOpenTaskReminder({
       tasks: view.tasks,
-      wakeGuaranteed:
-        Boolean(input.ownerInteractiveTurn) || Boolean(loop?.active) || boundedAwaitActive,
+      wakeGuaranteed: Boolean(input.ownerInteractiveTurn) || Boolean(loop?.active) || boundedAwaitActive,
       priorTripwire,
     });
   } catch {
@@ -380,9 +367,7 @@ export async function wakeOpenTaskReminder(input: {
   }
 }
 
-export async function boundedWakeOpenTaskReminder(
-  input: Parameters<typeof wakeOpenTaskReminder>[0],
-): Promise<boolean> {
+export async function boundedWakeOpenTaskReminder(input: Parameters<typeof wakeOpenTaskReminder>[0]): Promise<boolean> {
   const { value } = await withBoundedTimeout(wakeOpenTaskReminder(input), {
     fallback: false,
     timeoutMs: TURN_END_SWEEP_BUDGET_MS,

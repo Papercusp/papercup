@@ -175,7 +175,23 @@ function ContextSection({ frame }: { frame: ConversationContextSectionFrame }) {
         {frame.entries.map((entry, index) => (
           <div key={`${entry.label}:${index}`}>
             <dt>{entry.label}</dt>
-            <dd data-state={entry.state}>{entry.value}</dd>
+            <dd data-state={entry.state}>
+              <span>{entry.value}</span>
+              {entry.badges?.length ? (
+                <span className="pc-context-projection__badges" aria-label={`${entry.label} status`}>
+                  {entry.badges.map((badge, badgeIndex) => (
+                    <span
+                      key={`${badge.label}:${badgeIndex}`}
+                      className="pc-context-projection__badge"
+                      data-state={badge.state}
+                      title={badge.title}
+                    >
+                      {badge.label}
+                    </span>
+                  ))}
+                </span>
+              ) : null}
+            </dd>
           </div>
         ))}
       </dl>

@@ -21,11 +21,7 @@ import {
   readLastAssistantTurn,
   resolveTranscriptPath,
 } from '../../turn-journal';
-import {
-  latestJournalCreatedAt,
-  ledgerEntriesSince,
-  recordTurnJournal,
-} from '../../turn-journal-store';
+import { latestJournalCreatedAt, ledgerEntriesSince, recordTurnJournal } from '../../turn-journal-store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
 
 /** Without a previous journal row the turn window falls back to this. */
@@ -40,7 +36,10 @@ export default defineTool({
   guidance: {
     when: 'Almost never call this by hand — the per-CLI turn-end hooks (stop-turn-journal.sh / the OMP turn_end port) call it automatically at each turn end.',
     notWhen: 'To READ journal notes use `journal:recent`. To report a tool call use `activity:report`.',
-    seeAlso: ['journal:recent (read the journal stream)', 'activity:report (the tool ledger the tripwire diffs against)'],
+    seeAlso: [
+      'journal:recent (read the journal stream)',
+      'activity:report (the tool ledger the tripwire diffs against)',
+    ],
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
@@ -101,9 +100,7 @@ export default defineTool({
     // the single tripwire slot (dishonesty > untracked output); the sweep is
     // bounded + fail-soft and only runs when the slot is free.
     const ioMod = await import('../../turn-end-tracking-io');
-    const artifactTripwire = claimTripwire
-      ? null
-      : await ioMod.boundedArtifactSweep(args.session_id, sinceIso);
+    const artifactTripwire = claimTripwire ? null : await ioMod.boundedArtifactSweep(args.session_id, sinceIso);
     // P-005 (pui-agent-context-cockpit): pending/in_progress canonical session
     // tasks require a visible, bounded continuation when no loop, bounded await,
     // or owner-answer path already guarantees the next turn. The prior journal
@@ -134,8 +131,7 @@ export default defineTool({
         : null;
     // Claim honesty always wins the single journal slot. A concrete open-task
     // continuation is more actionable than the generic unguarded-halt warning.
-    const tripwire =
-      claimTripwire ?? openTaskReminder?.tripwire ?? unguardedHaltTripwire ?? artifactTripwire;
+    const tripwire = claimTripwire ?? openTaskReminder?.tripwire ?? unguardedHaltTripwire ?? artifactTripwire;
 
     const { id, deduped } = await recordTurnJournal({
       workspaceId: journalWorkspaceId,
@@ -286,10 +282,12 @@ export default defineTool({
         turn_ts: turn.ts ? turn.ts.toISOString() : null,
         ...(autoCheckpointed.length ? { autoCheckpointed } : {}),
         ...(unguardedHaltTripwire ? { unguardedHalt: unguardedHaltTripwire } : {}),
-        ...(openTaskReminder ? {
-          openTaskReminder: openTaskReminder.tripwire,
-          openTaskReminderWoken,
-        } : {}),
+        ...(openTaskReminder
+          ? {
+              openTaskReminder: openTaskReminder.tripwire,
+              openTaskReminderWoken,
+            }
+          : {}),
         ...(cursorPersisted ? { cursorPersisted } : {}),
         ...(coordCursorSettledTo ? { coordCursorSettledTo } : {}),
       },

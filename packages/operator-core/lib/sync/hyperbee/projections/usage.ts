@@ -66,7 +66,7 @@ function decodeValue(raw: unknown): ContributorUsageEventRow | null {
 async function writeToPg(
   opts: UsageProjectionOpts,
   row: ContributorUsageEventRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;

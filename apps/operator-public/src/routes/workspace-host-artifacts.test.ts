@@ -545,6 +545,11 @@ describe('workspace-host artifact publication', () => {
       etag: finalUploadBody.etag,
     };
 
+    // Production R2 can omit durable custom metadata from the immediate
+    // `complete()` return even though a fresh HEAD already carries it. The
+    // completion route must adjudicate the stored object, not that transient
+    // response shape (live D-129 publication incident, 2026-08-26).
+    r2.nextMultipartCompleteReturnOmitsCustomMetadata = true;
     const completed = await completeMultipart(
       env,
       value.bundleSha256,

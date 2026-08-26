@@ -171,7 +171,7 @@ async function readLocalPlanContent(opts: HarnessPlanPartsProjectionOpts, planSl
   return r?.content ?? null;
 }
 
-async function applyPart(opts: HarnessPlanPartsProjectionOpts, row: PlanPartWireRow, provenance?: ProvenanceContext): Promise<void> {
+async function applyPart(opts: HarnessPlanPartsProjectionOpts, row: PlanPartWireRow, provenance: ProvenanceContext): Promise<void> {
   // WI-259 parity (D-027): own-slug applies; a CROSS-member part op applies iff its VERIFIED
   // source-log device ∈ the hive's CURRENT members — the SAME membership guard the 6 content
   // projections use (member-content-guard.ts decideMemberContentOp). Previously a bare

@@ -233,7 +233,7 @@ export function createWorkspaceHostCredentialLifecycleRoute(
       } catch (error) {
         if (!planned) {
           return Response.json(
-            { ok: false, error: 'credential lifecycle request rejected', detail: (error as Error).message },
+            { ok: false, error: 'credential lifecycle request rejected' },
             { status: 422 },
           );
         }

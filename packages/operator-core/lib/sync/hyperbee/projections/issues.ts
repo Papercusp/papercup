@@ -101,7 +101,7 @@ function decodeValue(raw: unknown): HarnessIssueRow | null {
 async function writeToPg(
   opts: IssuesProjectionOpts,
   row: HarnessIssueRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259 P-002: membership-aware guard — apply own-slug, or a cross-member op iff its VERIFIED
   // source-log device pubkey ∈ the hive's CURRENT members. resolveAuthorDevice maps the immutable

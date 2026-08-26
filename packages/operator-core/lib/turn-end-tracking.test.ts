@@ -185,8 +185,7 @@ describe('ephemeral terminal-deliverable reference detection', () => {
 
   it('finds loopback presentation URLs but not lookalike hostnames', () => {
     const refs = detectEphemeralDeliverableReferences(
-      'mockup http://localhost:8765/mockups/; preview http://127.0.0.1:4173/; ' +
-        'desktop http://[::1]:3000/app',
+      'mockup http://localhost:8765/mockups/; preview http://127.0.0.1:4173/; ' + 'desktop http://[::1]:3000/app',
     );
     expect(refs).toEqual([
       { kind: 'loopback-url', reference: 'http://localhost:8765/mockups/' },
@@ -210,8 +209,7 @@ describe('ephemeral terminal-deliverable reference detection', () => {
 
   it('deduplicates and bounds the result while trimming markdown punctuation', () => {
     const refs = detectEphemeralDeliverableReferences(
-      [1, 2, 3, 4, 5, 6].map((n) => `.papercusp/scratch/report-${n}.md,`).join(' ') +
-        ' .papercusp/scratch/report-1.md',
+      [1, 2, 3, 4, 5, 6].map((n) => `.papercusp/scratch/report-${n}.md,`).join(' ') + ' .papercusp/scratch/report-1.md',
     );
     expect(refs).toHaveLength(5);
     expect(refs.every((ref) => !/[.,]$/.test(ref.reference))).toBe(true);
@@ -222,7 +220,7 @@ describe('ephemeral terminal-deliverable reference detection', () => {
     expect(renderEphemeralDeliverableWarning('completion for EI-1', [])).toBeUndefined();
     const refs = detectEphemeralDeliverableReferences('.papercusp/scratch/report.md');
     const warning = renderEphemeralDeliverableWarning('plans:set-now for plan-a', refs);
-    expect(warning).toContain("plans:set-now for plan-a names an ephemeral terminal-deliverable reference");
+    expect(warning).toContain('plans:set-now for plan-a names an ephemeral terminal-deliverable reference');
     expect(warning).toContain('Persist the deliverable first in committed repository, plan, or work-item storage');
     expect(warning).toContain('record its source path alongside any URL');
     expect(warning).toContain('write was recorded');
@@ -252,8 +250,12 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
   });
 
   it('a machine-injected turn remains safe when a concrete wake is active', () => {
-    expect(isRewakeGuaranteed({ ...halt, autonomousModeActive: false, machineTurn: true, loopActive: true })).toBe(true);
-    expect(isRewakeGuaranteed({ ...halt, autonomousModeActive: false, machineTurn: true, activeAwaitCount: 1 })).toBe(true);
+    expect(isRewakeGuaranteed({ ...halt, autonomousModeActive: false, machineTurn: true, loopActive: true })).toBe(
+      true,
+    );
+    expect(isRewakeGuaranteed({ ...halt, autonomousModeActive: false, machineTurn: true, activeAwaitCount: 1 })).toBe(
+      true,
+    );
   });
 
   it('an autonomous session with an armed loop is guaranteed', () => {
@@ -302,15 +304,11 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
     });
 
     it('REFUSES the always-armed inbox-wake keepalive — liveness, not a deliberate wake', () => {
-      expect(
-        awaitGuaranteesRewake({ eventKey: `${PREFIX}su-8d9a671c`, expiresTs: null }, PREFIX),
-      ).toBe(false);
+      expect(awaitGuaranteesRewake({ eventKey: `${PREFIX}su-8d9a671c`, expiresTs: null }, PREFIX)).toBe(false);
       // Even bounded, the keepalive is not this session's pending-work wake.
       // (Spread FIRST — `bounded` carries its own eventKey and would otherwise
       //  overwrite the prefixed one, silently making this case test nothing.)
-      expect(
-        awaitGuaranteesRewake({ ...bounded, eventKey: `${PREFIX}su-8d9a671c` }, PREFIX),
-      ).toBe(false);
+      expect(awaitGuaranteesRewake({ ...bounded, eventKey: `${PREFIX}su-8d9a671c` }, PREFIX)).toBe(false);
     });
   });
 
@@ -324,14 +322,16 @@ describe('isRewakeGuaranteed / detectUnguardedHalt (re-wake guarantee)', () => {
 });
 
 describe('decideOpenTaskReminder (P-005 bounded task continuation)', () => {
-  const task = (overrides: Partial<{
-    id: string;
-    content: string;
-    activeForm: string;
-    status: string;
-    position: number;
-    updatedAt: string;
-  }> = {}) => ({
+  const task = (
+    overrides: Partial<{
+      id: string;
+      content: string;
+      activeForm: string;
+      status: string;
+      position: number;
+      updatedAt: string;
+    }> = {},
+  ) => ({
     id: 'task-a',
     content: 'Finish the focused regression tests',
     activeForm: 'Finishing the focused regression tests',
@@ -360,10 +360,12 @@ describe('decideOpenTaskReminder (P-005 bounded task continuation)', () => {
   });
 
   it('suppresses completed/blocked-only lists and any concrete wake guarantee', () => {
-    expect(decideOpenTaskReminder({
-      tasks: [task({ status: 'completed' }), task({ id: 'task-b', status: 'blocked' })],
-      wakeGuaranteed: false,
-    })).toBeNull();
+    expect(
+      decideOpenTaskReminder({
+        tasks: [task({ status: 'completed' }), task({ id: 'task-b', status: 'blocked' })],
+        wakeGuaranteed: false,
+      }),
+    ).toBeNull();
     expect(decideOpenTaskReminder({ tasks: [task()], wakeGuaranteed: true })).toBeNull();
   });
 
@@ -392,11 +394,13 @@ describe('decideOpenTaskReminder (P-005 bounded task continuation)', () => {
 
     const mutated = [task({ updatedAt: '2026-08-26T20:01:00.000Z' })];
     expect(openTaskReminderSignature(mutated)).not.toBe(openTaskReminderSignature(tasks));
-    expect(decideOpenTaskReminder({
-      tasks: mutated,
-      wakeGuaranteed: false,
-      priorTripwire: third?.tripwire,
-    })?.tripwire.attempt).toBe(1);
+    expect(
+      decideOpenTaskReminder({
+        tasks: mutated,
+        wakeGuaranteed: false,
+        priorTripwire: third?.tripwire,
+      })?.tripwire.attempt,
+    ).toBe(1);
   });
 });
 

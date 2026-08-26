@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, open, realpath, unlink } from 'node:fs/promises';
+import { mkdir, realpath, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type postgres from 'postgres';
 import { papercuspPathForWorkspace } from '../papercusp-root';
@@ -7,6 +7,10 @@ import {
   streamPersonalArchiveFile,
   type PersonalArchiveCheckpoint,
 } from './archive-import';
+import {
+  PersonalArchiveEncryptedWriter,
+  type PersonalArchiveEncryptionOptions,
+} from './archive-encryption';
 import {
   normalizePersonalProviderAccountId,
   normalizePersonalSourceId,
@@ -244,7 +248,7 @@ export function personalVaultImportStorageDir(workspaceId: string): string {
 export async function storePersonalVaultImportArchive(
   workspaceId: string,
   body: AsyncIterable<Uint8Array>,
-  options: { maxBytes?: number } = {},
+  options: { maxBytes?: number } & PersonalArchiveEncryptionOptions = {},
 ): Promise<StoredPersonalVaultImportArchive> {
   const maxBytes = finiteInteger(
     options.maxBytes,
@@ -255,7 +259,7 @@ export async function storePersonalVaultImportArchive(
   const root = personalVaultImportStorageDir(workspaceId);
   await mkdir(root, { recursive: true, mode: 0o700 });
   const storagePath = join(root, `${randomUUID()}.archive`);
-  const handle = await open(storagePath, 'wx', 0o600);
+  const writer = await PersonalArchiveEncryptedWriter.create(workspaceId, storagePath, options);
   const hash = createHash('sha256');
   let sizeBytes = 0;
   let complete = false;
@@ -266,20 +270,17 @@ export async function storePersonalVaultImportArchive(
       sizeBytes += chunk.length;
       if (sizeBytes > maxBytes) throw new Error('personal_archive_too_large');
       hash.update(chunk);
-      let offset = 0;
-      while (offset < chunk.length) {
-        const result = await handle.write(chunk, offset, chunk.length - offset, null);
-        if (result.bytesWritten <= 0) throw new Error('personal_vault_import_write_incomplete');
-        offset += result.bytesWritten;
-      }
+      await writer.write(chunk);
     }
     if (sizeBytes === 0) throw new Error('personal_archive_empty');
-    await handle.sync();
+    await writer.finish();
     complete = true;
     return { storagePath, contentSha256: hash.digest('hex'), sizeBytes };
   } finally {
-    await handle.close();
-    if (!complete) await unlink(storagePath).catch(() => undefined);
+    if (!complete) {
+      await writer.abort();
+      await unlink(storagePath).catch(() => undefined);
+    }
   }
 }
 
@@ -674,7 +675,12 @@ async function processClaimedJob(
   let next = current.checkpoint;
   let bytesProcessed = current.bytesProcessed;
   let exhausted = true;
-  for await (const record of streamArchive(current.filename, current.storagePath, current.checkpoint)) {
+  for await (const record of streamArchive(
+    current.workspaceId,
+    current.filename,
+    current.storagePath,
+    current.checkpoint,
+  )) {
     next = record.checkpoint;
     bytesProcessed = Math.max(bytesProcessed, record.bytesProcessed);
     if (record.warning) warnings.push(record.warning);

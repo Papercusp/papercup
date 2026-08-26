@@ -78,6 +78,7 @@ export interface BespokeActiveSeed {
 }
 
 export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
+  { name: 'acceptance-grading-sweep', seedScript: 'seed-acceptance-grading-sweep-routine.ts' },
   { name: 'cargo-test', seedScript: 'seed-cargo-test-routine.ts' },
   { name: 'claim-discipline-watch', seedScript: 'seed-claim-discipline-routine.ts' },
   { name: 'consult-expiry-sweep', seedScript: 'seed-consult-expiry-routine.ts' },

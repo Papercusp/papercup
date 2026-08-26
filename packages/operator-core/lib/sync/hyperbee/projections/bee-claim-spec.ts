@@ -73,7 +73,7 @@ function decodeValue(raw: unknown): BeeClaimSpecRow | null {
 async function writeToPg(
   opts: BeeClaimSpecProjectionOpts,
   row: BeeClaimSpecRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
 

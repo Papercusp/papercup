@@ -139,7 +139,7 @@ function decodeValue(raw: unknown): CoordConversationRow | null {
 async function writeToPg(
   opts: CoordConversationProjectionOpts,
   row: CoordConversationRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259 parity (shared-hive comms federation): own-slug applies; a CROSS-member conversation
   // applies iff its VERIFIED source-log device ∈ the hive's CURRENT members (the bare slug early-

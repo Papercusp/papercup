@@ -27,6 +27,15 @@ fn task_marker(status: &str) -> (&'static str, ratatui::style::Style) {
     }
 }
 
+fn context_state_style(state: Option<&str>) -> ratatui::style::Style {
+    match state {
+        Some("blocked" | "ended" | "dead" | "critical") => Theme::warn(),
+        Some("live" | "done" | "green") => Theme::success(),
+        Some("parked" | "waiting") => Theme::info(),
+        _ => Theme::dim(),
+    }
+}
+
 fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::styled("Capabilities  ", Theme::dim()),
@@ -67,15 +76,30 @@ fn projection_lines(app: &App, projection: &ConversationContextProjection) -> Ve
                 Theme::title().add_modifier(Modifier::BOLD),
             )));
             for entry in entries {
-                let style = match entry.state.as_deref() {
-                    Some("blocked" | "ended" | "critical") => Theme::warn(),
-                    Some("live" | "done" | "green") => Theme::success(),
-                    _ => Theme::panel(),
-                };
-                lines.push(Line::from(vec![
+                let mut spans = vec![
                     Span::styled(format!("  {:<13}", trunc(&entry.label, 12)), Theme::dim()),
-                    Span::styled(entry.value.clone(), style),
-                ]));
+                    Span::styled(
+                        entry.value.clone(),
+                        entry
+                            .state
+                            .as_deref()
+                            .map(|state| context_state_style(Some(state)))
+                            .unwrap_or_else(Theme::panel),
+                    ),
+                ];
+                if !entry.badges.is_empty() {
+                    spans.push(Span::raw("  "));
+                    for (index, badge) in entry.badges.iter().enumerate() {
+                        if index > 0 {
+                            spans.push(Span::raw(" "));
+                        }
+                        spans.push(Span::styled(
+                            badge.label.clone(),
+                            context_state_style(badge.state.as_deref()),
+                        ));
+                    }
+                }
+                lines.push(Line::from(spans));
             }
         }
     }
@@ -228,7 +252,7 @@ pub fn draw_plans_board(f: &mut Frame, app: &App, body: Rect) {
 mod tests {
     use super::*;
     use crate::models::{
-        ConversationContextCapabilities, ConversationContextEntry,
+        ConversationContextBadge, ConversationContextCapabilities, ConversationContextEntry,
         ConversationContextProjectionTarget, ConversationContextSession,
     };
     use ratatui::{backend::TestBackend, Terminal};
@@ -275,6 +299,29 @@ mod tests {
                         label: "Session".into(),
                         value: "chat-1".into(),
                         state: None,
+                        badges: vec![],
+                    }],
+                },
+                ConversationContextFrame::Context {
+                    id: "context:fleet".into(),
+                    section: "fleet".into(),
+                    title: "Fleet".into(),
+                    entries: vec![ConversationContextEntry {
+                        label: "Roster".into(),
+                        value: "2 members".into(),
+                        state: None,
+                        badges: vec![
+                            ConversationContextBadge {
+                                label: "●".into(),
+                                state: Some("live".into()),
+                                title: Some("su-a · live".into()),
+                            },
+                            ConversationContextBadge {
+                                label: "◐".into(),
+                                state: Some("parked".into()),
+                                title: Some("su-b · parked".into()),
+                            },
+                        ],
                     }],
                 },
                 ConversationContextFrame::Task {
@@ -301,6 +348,8 @@ mod tests {
         assert!(output.contains("Context · owned-loop"));
         assert!(output.contains("Identity"));
         assert!(output.contains("chat-1"));
+        assert!(output.contains("Fleet"));
+        assert!(output.contains("2 members  ● ◐"));
         assert!(output.contains("Shipping the pane"));
         assert!(output.contains("task write"));
     }

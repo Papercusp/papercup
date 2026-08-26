@@ -123,7 +123,7 @@ function refuse(
 async function writeToPg(
   opts: P2pReceiptsProjectionOpts,
   row: P2pReceiptWireRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
 

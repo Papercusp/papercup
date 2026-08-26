@@ -1,11 +1,10 @@
 import AdmZip from 'adm-zip';
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
 import type { Readable } from 'node:stream';
 import { simpleParser } from 'mailparser';
 import * as yauzl from 'yauzl';
 import type { PersonalDocumentInput } from './types';
 import { dedupeKeyFor, normalizeParticipant, normalizePersonalSource } from './store';
+import { openEncryptedPersonalArchive } from './archive-encryption';
 
 const MAX_ARCHIVE_BYTES = 512 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 50_000;
@@ -347,6 +346,7 @@ async function* streamOneEntry(
  * entry/record checkpoint; document upserts remain the final idempotency rail.
  */
 export async function* streamPersonalArchiveFile(
+  workspaceId: string,
   filename: string,
   filePath: string,
   checkpoint: Partial<PersonalArchiveCheckpoint> = {},
@@ -355,8 +355,9 @@ export async function* streamPersonalArchiveFile(
     entryIndex: Math.max(0, Math.floor(checkpoint.entryIndex ?? 0)),
     recordIndex: Math.max(0, Math.floor(checkpoint.recordIndex ?? 0)),
   };
-  const archiveStat = await stat(filePath);
-  if (archiveStat.size > MAX_STREAMED_ARCHIVE_BYTES) throw new Error('personal_archive_too_large');
+  const archive = await openEncryptedPersonalArchive(workspaceId, filePath);
+  const archiveBytes = archive.metadata.plaintextBytes;
+  if (archiveBytes > MAX_STREAMED_ARCHIVE_BYTES) throw new Error('personal_archive_too_large');
 
   if (!filename.toLowerCase().endsWith('.zip')) {
     if (!supportedEntry(filename)) {
@@ -369,16 +370,25 @@ export async function* streamPersonalArchiveFile(
     }
     yield* streamOneEntry(
       filename,
-      createReadStream(filePath),
+      archive.createReadStream(),
       0,
       initial.entryIndex === 0 ? initial.recordIndex : Number.MAX_SAFE_INTEGER,
       0,
-      archiveStat.size,
+      archiveBytes,
     );
     return;
   }
 
-  const zip = await yauzl.openPromise(filePath, { lazyEntries: true, validateEntrySizes: true });
+  class EncryptedArchiveReader extends yauzl.RandomAccessReader {
+    _readStreamForRange(start: number, end: number): Readable {
+      return archive.createReadStream(start, end);
+    }
+  }
+  const zip = await yauzl.fromRandomAccessReaderPromise(
+    new EncryptedArchiveReader(),
+    archiveBytes,
+    { lazyEntries: true, validateEntrySizes: true },
+  );
   let entryIndex = 0;
   let uncompressed = 0;
   try {

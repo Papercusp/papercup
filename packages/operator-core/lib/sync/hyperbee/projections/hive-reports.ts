@@ -67,7 +67,7 @@ function decodeValue(raw: unknown): ReportWireRow | null {
 async function writeToPg(
   opts: HiveReportsProjectionOpts,
   row: ReportWireRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return; // cross-Hive op — drop
   const sql = opts.sql ?? getOrgPg().sql;

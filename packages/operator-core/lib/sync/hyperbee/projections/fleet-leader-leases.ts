@@ -63,7 +63,7 @@ function decodeValue(raw: unknown): FleetLeaderLeaseWireRow | null {
 async function writeToPg(
   opts: FleetLeaderLeaseProjectionOpts,
   row: FleetLeaderLeaseWireRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
 

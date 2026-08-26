@@ -82,7 +82,7 @@ function composeKey(row: CoordThreadRow): string {
 async function writeToPg(
   opts: CoordThreadProjectionOpts,
   row: CoordThreadRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259 parity (shared-hive comms federation): own-slug applies; a CROSS-member coord op
   // applies iff its VERIFIED source-log device ∈ the hive's CURRENT members — the SAME membership

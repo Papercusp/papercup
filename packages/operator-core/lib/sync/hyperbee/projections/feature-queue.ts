@@ -82,7 +82,7 @@ function decodeValue(raw: unknown): FeatureQueueRow | null {
 async function writeToPg(
   opts: FeatureQueueProjectionOpts,
   row: FeatureQueueRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259 P-002 membership guard (see member-content-guard.ts): own-slug applies; a cross-member
   // op applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. resolveAuthorDevice

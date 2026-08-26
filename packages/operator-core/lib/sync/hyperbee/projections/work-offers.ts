@@ -212,7 +212,7 @@ function dropOffer(
   opts: WorkOffersProjectionOpts,
   reason: WorkOfferDropReason,
   row: WorkOfferWireRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): void {
   if (opts.onDroppedOffer) {
     opts.onDroppedOffer(reason, row);

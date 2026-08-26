@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../../define-route';
+import { routeRegistrationOrder } from '../../register';
 import {
   UnsupportedWorkspaceHostInitializationTargetError,
   WorkspaceHostDesiredSpecUnavailableError,
@@ -84,6 +85,13 @@ const bodies = {
 beforeEach(() => vi.clearAllMocks());
 
 describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
+  it('is reachable through the production route registry', () => {
+    expect(routeRegistrationOrder()).toContainEqual({
+      method: 'POST',
+      path: '/workspace-hosts/:hostId/credential-lifecycle',
+    });
+  });
+
   it.each(Object.entries(bodies))('accepts and forwards the %s action', async (action, body) => {
     const { dependencies, execute, runLifecycle } = harness();
     const response = await post(dependencies, body);
@@ -136,6 +144,7 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
     rejected.runLifecycle = vi.fn(async () => { throw new Error('bad generation'); });
     const rejectedResponse = await post(rejected, bodies.rotate);
     expect(rejectedResponse.status).toBe(422);
+    expect(JSON.stringify(await rejectedResponse.json())).not.toContain('bad generation');
 
     const failed = harness().dependencies;
     failed.runLifecycle = vi.fn(async (input) => {

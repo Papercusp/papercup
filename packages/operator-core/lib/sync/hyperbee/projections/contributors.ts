@@ -58,7 +58,7 @@ function decodeValue(raw: unknown): ContributorRow | null {
 async function writeToPg(
   opts: ContributorsProjectionOpts,
   row: ContributorRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) {
     // Cross-harness write — drop silently. The projection is bound

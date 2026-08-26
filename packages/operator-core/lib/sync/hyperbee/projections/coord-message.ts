@@ -158,7 +158,7 @@ function normalizeBodyTsMsgId(row: CoordMessageRow): Record<string, unknown> {
 async function writeToPg(
   opts: CoordMessageProjectionOpts,
   row: CoordMessageRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259 parity (shared-hive comms federation): own-slug applies; a CROSS-member message/handoff/
   // escalation applies iff its VERIFIED source-log device ∈ the hive's CURRENT members (the bare slug

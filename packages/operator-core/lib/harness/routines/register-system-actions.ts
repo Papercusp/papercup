@@ -500,6 +500,18 @@ import './supervision-reconcile-action';
 // timeout. A bespoke ephemeral (tier:'ephemeral', 300s) operator-HOME cadence (one sweep
 // serves every workspace's rows). Seeded ACTIVE by seed-consult-expiry-routine.ts.
 import './consult-expiry-action';
+// acceptance-grading-stall-sweep-2026-08-26 P-002/P-004: `system:acceptance-grading-sweep`
+// — puts a clock on the one leg of plan completion that had none. A plan ships only after an
+// INDEPENDENT grader emits a scorecard, and that grader is recruited lazily by the ship
+// attempt's own refusal, so recovery is PULL-triggered: a dead grader heals on the next ship
+// attempt, but a dead CREATOR means no attempt is ever made again and the plan sits at
+// acceptance_ungraded forever with no timer and no owner. The sweep re-runs the idempotent
+// resolveAcceptanceGrader for such plans and, past a longer threshold, mints exactly one
+// condition-keyed work-item so the stall gets a single owner. It cannot grade, score, record a
+// verdict or alter a refusal code — those capabilities are absent from its dependency
+// interface. A bespoke ephemeral (tier:'ephemeral', 600s) operator-HOME cadence (one sweep
+// serves every workspace's plans). Seeded ACTIVE by seed-acceptance-grading-sweep-routine.ts.
+import './acceptance-grading-sweep-action';
 // deterministic-coverage-census-2026-08-17 P-002: `system:coverage-census` — projects the
 // testable-surface census (harness_shared.testing_surfaces) from the same code registries that
 // serve production traffic, then upserts/retires the diff. A bespoke ephemeral

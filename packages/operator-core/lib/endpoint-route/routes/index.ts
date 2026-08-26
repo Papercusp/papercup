@@ -425,6 +425,7 @@ import workspaceById from './workspaces/by-id';
 import workspaceSwitch from './workspaces/switch';
 import workspaceHostAudit from './workspace-hosts/audit';
 import workspaceHostAction from './workspace-hosts/action';
+import workspaceHostCredentialLifecycle from './workspace-hosts/credential-lifecycle';
 import workspaceHostInitialize from './workspace-hosts/initialize';
 import workspaceHostProvision from './workspace-hosts/provision';
 import userActionsBySlug from './user-actions/by-slug';
@@ -907,6 +908,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(workspaceSwitch as AnyRoute),
   ...flatten(workspaceHostAudit as AnyRoute),
   ...flatten(workspaceHostAction as AnyRoute),
+  ...flatten(workspaceHostCredentialLifecycle as AnyRoute),
   ...flatten(workspaceHostInitialize as AnyRoute),
   ...flatten(workspaceHostProvision as AnyRoute),
   ...flatten(userActionsBySlug as AnyRoute),

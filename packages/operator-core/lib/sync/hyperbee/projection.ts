@@ -115,16 +115,16 @@ export interface TableProjection<Row> {
    * accounting can never break the apply loop. Called only for a `put` whose
    * decode failed (a `del` carries no value to validate).
    */
-  onRefusedOp?: (rawValue: unknown, provenance: ProvenanceContext | undefined) => void | Promise<void>;
+  onRefusedOp?: (rawValue: unknown, provenance: ProvenanceContext) => void | Promise<void>;
   /**
    * Write the row into PG (idempotent — must handle re-application).
    *
-   * G1 Provenance (P-002): the second arg carries `{ authorPubkey, origin }`
-   * so the writer can stamp `author_pubkey` + `origin` on the upserted row.
-   * Optional to preserve backward-compat with writers not yet upgraded (they
-   * silently ignore the context).
+   * G1 Provenance (P-002 / WI-41277): the second arg carries explicit
+   * `{ authorPubkey, origin }` so the writer can stamp `author_pubkey` +
+   * `origin` on the upserted row. It is REQUIRED: treating an omitted context
+   * as local masks remote rows and can make them eligible for re-emission.
    */
-  writeToPg: (row: Row, provenance?: ProvenanceContext) => Promise<void>;
+  writeToPg: (row: Row, provenance: ProvenanceContext) => Promise<void>;
   /**
    * Delete the row from PG (idempotent).
    *
@@ -213,40 +213,27 @@ export interface ApplyOpOpts {
  * of {@link applyOpVia} (P-018/D-012: deletes need the same provenance the puts do, so an
  * author-scoped deleter can authorize a tombstone by row ownership). Pure of the projection.
  */
-function resolveOpProvenance(op: OpEnvelope, applyOpts?: ApplyOpOpts): ProvenanceContext | undefined {
+function resolveOpProvenance(op: OpEnvelope, applyOpts?: ApplyOpOpts): ProvenanceContext {
   // G1 Provenance (P-002): determine origin via log-source when possible. Log-source is the
   // authoritative signal (D-006): an op whose sourceLogKeyHex matches the own log's keyHex was
   // written locally and cannot be forged by a remote peer. Without ownLogKeyHex (legacy /
   // global-registry path) we default to 'local' (safe for single-peer use).
-  if (op.writerPubkey !== undefined || applyOpts?.ownLogKeyHex !== undefined) {
-    let origin: 'local' | 'remote' = 'local';
-    if (applyOpts?.ownLogKeyHex !== undefined) {
-      origin =
-        op.sourceLogKeyHex !== undefined && op.sourceLogKeyHex === applyOpts.ownLogKeyHex
-          ? 'local'
-          : 'remote';
-    }
-    // P-002/D-004 — attribution must be UNFORGEABLE. `writerPubkey` is self-declared (a field in
-    // the op value), so a remote peer can set it to anything. For a REMOTE op attribute by the
-    // receiver-stamped, immutable `sourceLogKeyHex` (the source log core key); `''` when absent
-    // rather than trust the forgeable field. For a LOCAL op `writerPubkey` is the operator's OWN
-    // write — trustworthy. D-001: thread the op's HLC so the writer stamps fed_hlc.
-    const authorPubkey =
-      origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
-    return { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc, sourceLogKeyHex: op.sourceLogKeyHex };
-  }
-  if (typeof op.ts === 'number') {
-    // EI-79 step 2: even a provenance-less op must carry its `ts` so the writer stamps fed_ts and
-    // the PG-level LWW guard works. Default attribution to a local self-write. D-001: carry hlc too.
-    return {
-      authorPubkey: op.writerPubkey ?? '',
-      origin: 'local',
-      ts: op.ts,
-      fedHlc: op.hlc,
-      sourceLogKeyHex: op.sourceLogKeyHex,
-    };
-  }
-  return undefined;
+  const origin: 'local' | 'remote' =
+    applyOpts?.ownLogKeyHex !== undefined
+      ? op.sourceLogKeyHex !== undefined && op.sourceLogKeyHex === applyOpts.ownLogKeyHex
+        ? 'local'
+        : 'remote'
+      : 'local';
+
+  // P-002/D-004 — attribution must be UNFORGEABLE. `writerPubkey` is self-declared (a field in
+  // the op value), so a remote peer can set it to anything. For a REMOTE op attribute by the
+  // receiver-stamped, immutable `sourceLogKeyHex` (the source log core key); `''` when absent
+  // rather than trust the forgeable field. For a LOCAL op `writerPubkey` is the operator's OWN
+  // write — trustworthy. WI-41277: even legacy/synthetic applies now receive this explicit
+  // context; per-table writers never infer local from a missing argument.
+  const authorPubkey =
+    origin === 'remote' ? (op.sourceLogKeyHex ?? '') : (op.writerPubkey ?? '');
+  return { authorPubkey, origin, ts: op.ts, fedHlc: op.hlc, sourceLogKeyHex: op.sourceLogKeyHex };
 }
 
 /**
@@ -321,8 +308,8 @@ function noteUnthreadedSkipOwnOpsApply(op: OpEnvelope): void {
  * G1 Provenance (P-002): when `applyOpts.ownLogKeyHex` is provided, computes
  * `origin` via log-source comparison (`op.sourceLogKeyHex === ownLogKeyHex`
  * → 'local', else 'remote') and passes `ProvenanceContext` to `writeToPg`.
- * Writers that understand provenance stamp `author_pubkey` + `origin` on upsert;
- * legacy writers (no provenance param) continue to work unchanged.
+ * Every writer receives the explicit context and stamps or evaluates it according
+ * to its table contract; no writer may infer local from argument absence.
  */
 export async function applyOpVia(
   lookup: ProjectionLookup,

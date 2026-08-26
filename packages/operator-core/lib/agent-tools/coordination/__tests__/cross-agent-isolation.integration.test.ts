@@ -60,26 +60,22 @@ try {
     max: 4,
   });
   await sql`SELECT 1`;
+  pgOk = true;
+} catch (e) {
+  console.error('[cross-agent-isolation] PG not reachable, skipping:', (e as Error)?.message);
+}
+
+// A reachable PG with a broken schema bootstrap is a TEST FAILURE, not an
+// infrastructure skip. Keeping bootstrap outside the connectivity catch makes
+// the detector fail closed: malformed DDL (including multi-command prepared
+// statements) can no longer turn all isolation assertions into a false green.
+if (pgOk && sql) {
   // coord_event_log via the package's own canonical DDL (idempotent).
   await ensureCoordEventLogTable(sql);
   // coord_presence via the package's own canonical DDL (idempotent + self-healing
   // ALTERs), so the store's schema (incl. the presence-v2 columns agent_role /
   // hive_slug / last_active_at) never drifts from hand-rolled per-test DDL.
   await ensureCoordPresenceTable(sql);
-  // power_user_sessions — the revoked-roster JOIN target (stable schema, no store).
-  await sql.unsafe(`
-    CREATE TABLE IF NOT EXISTS harness_shared.power_user_sessions (
-      auth_session_id TEXT PRIMARY KEY,
-      workspace_id    TEXT NOT NULL,
-      user_id         TEXT NOT NULL,
-      created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-      last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-      revoked_at      TIMESTAMPTZ
-    )`);
-  pgOk = true;
-} catch (e) {
-   
-  console.error('[cross-agent-isolation] PG not reachable, skipping:', (e as Error)?.message);
 }
 
 afterAll(async () => {

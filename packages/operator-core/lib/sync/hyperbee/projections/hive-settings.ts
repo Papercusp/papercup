@@ -61,7 +61,7 @@ function decodeValue(raw: unknown): HiveSettingRow | null {
 async function writeToPg(
   opts: HiveSettingsProjectionOpts,
   row: HiveSettingRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;

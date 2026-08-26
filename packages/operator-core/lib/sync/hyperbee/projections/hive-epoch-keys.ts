@@ -72,7 +72,7 @@ function decodeValue(raw: unknown): HiveEpochKeyRow | null {
 async function writeToPg(
   opts: HiveEpochKeysProjectionOpts,
   row: HiveEpochKeyRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return; // demux: only this Hive home's ops
   const sql = opts.sql ?? getOrgPg().sql;

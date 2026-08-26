@@ -155,6 +155,42 @@
   overflow-wrap: anywhere;
 }
 
+.pc-context-projection__badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.pc-context-projection__badge {
+  min-width: 14px;
+  border: 1px solid color-mix(in srgb, var(--fg-mute, #8190a8) 38%, transparent);
+  border-radius: 999px;
+  padding: 1px 4px;
+  color: var(--fg-mute, #8190a8);
+  font: 600 9px/1.1 ui-monospace, "JetBrains Mono", Menlo, monospace;
+  text-align: center;
+}
+
+.pc-context-projection__badge[data-state="live"] {
+  border-color: color-mix(in srgb, var(--ok, #59d499) 52%, transparent);
+  color: var(--ok, #59d499);
+}
+
+.pc-context-projection__badge[data-state="parked"],
+.pc-context-projection__badge[data-state="waiting"] {
+  border-color: color-mix(in srgb, var(--accent, #6ea8ff) 52%, transparent);
+  color: var(--accent, #6ea8ff);
+}
+
+.pc-context-projection__badge[data-state="ended"],
+.pc-context-projection__badge[data-state="dead"],
+.pc-context-projection__badge[data-state="critical"] {
+  border-color: color-mix(in srgb, var(--warn, #f6c453) 52%, transparent);
+  color: var(--warn, #f6c453);
+}
+
 .pc-context-projection__tasks li,
 .pc-context-projection__approvals li {
   display: grid;

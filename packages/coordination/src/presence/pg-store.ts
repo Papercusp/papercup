@@ -456,13 +456,22 @@ export async function ensureCoordPresenceTable(sql: Sql): Promise<void> {
       ADD COLUMN IF NOT EXISTS context_estimated_at timestamptz,
       ADD COLUMN IF NOT EXISTS intent_declared_at timestamptz
   `;
+  // Keep every COMMENT in its own statement. postgres-js and poolers may use the
+  // extended-query protocol even when a caller asks for prepare:false, and that
+  // protocol rejects a payload containing multiple commands. Combining these
+  // three comments made the canonical bootstrap fail after the table existed,
+  // which in turn caused the real-PG isolation suite to skip as "unreachable".
   await sql`
     COMMENT ON TABLE harness_shared.coord_presence IS
-      'Live coordination state projection. Rows are TTL-reaped; absence means reaped or never-present, not absence at a historical time. Use append-only event/history records for historical claims.';
+      'Live coordination state projection. Rows are TTL-reaped; absence means reaped or never-present, not absence at a historical time. Use append-only event/history records for historical claims.'
+  `;
+  await sql`
     COMMENT ON COLUMN harness_shared.coord_presence.owner_id IS
-      'Current live-state key. A missing owner row is not evidence that the owner was absent at an earlier time; coord_presence is TTL-reaped.';
+      'Current live-state key. A missing owner row is not evidence that the owner was absent at an earlier time; coord_presence is TTL-reaped.'
+  `;
+  await sql`
     COMMENT ON COLUMN harness_shared.coord_presence.heartbeat_at IS
-      'Last observed heartbeat for the current live projection. This is not a historical presence record; rows are TTL-reaped after inactivity.';
+      'Last observed heartbeat for the current live projection. This is not a historical presence record; rows are TTL-reaped after inactivity.'
   `;
   await sql`
     CREATE TABLE IF NOT EXISTS harness_shared.power_user_sessions (

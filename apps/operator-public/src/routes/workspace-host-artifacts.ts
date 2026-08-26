@@ -1119,9 +1119,8 @@ async function completeMultipartArtifact(c: Context<{ Bindings: Env }>): Promise
     return c.json({ error: 'invalid_multipart_completion', detail: completion.error }, 400);
   }
 
-  let completed: R2Object;
   try {
-    completed = await c.env.ARTIFACTS
+    await c.env.ARTIFACTS
       .resumeMultipartUpload(key, state.r2UploadId)
       .complete(completion.parts);
   } catch (error) {
@@ -1142,6 +1141,17 @@ async function completeMultipartArtifact(c: Context<{ Bindings: Env }>): Promise
     return multipartStorageFailure(c, error, 'complete');
   }
 
+  // Production R2 may return an immediate completion object without the custom
+  // metadata that is already durable on the stored object. A fresh HEAD is the
+  // authoritative post-commit view and is also what every replay/finalization
+  // path adjudicates. Validating the transient return object produced a false
+  // `multipart_completed_object_mismatch` after all parts had committed green.
+  let completed: R2Object | null;
+  try {
+    completed = await c.env.ARTIFACTS.head(key);
+  } catch (error) {
+    return multipartStorageFailure(c, error, 'complete');
+  }
   if (!descriptorMatches(completed, 'server.tgz', bundleSha256, expected)) {
     await c.env.ARTIFACTS.delete(multipartStateKey(bundleSha256, uploadId)).catch(() => undefined);
     return c.json({ error: 'multipart_completed_object_mismatch' }, 409);

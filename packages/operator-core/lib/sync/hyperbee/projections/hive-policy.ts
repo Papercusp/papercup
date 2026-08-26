@@ -119,7 +119,7 @@ function decodeValue(raw: unknown): HivePolicyRow | null {
 async function writeToPg(
   opts: HivePolicyProjectionOpts,
   row: HivePolicyRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // Demux: this projection only applies its own Hive's policy ops.
   if (row.harness_slug !== opts.harnessSlug) return;

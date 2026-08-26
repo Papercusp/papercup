@@ -84,7 +84,7 @@ function decodeValue(raw: unknown): PlanItemAssignmentRow | null {
 async function writeToPg(
   opts: PlanItemAssignmentsProjectionOpts,
   row: PlanItemAssignmentRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259/D-027 parity (shared-hive member-content federation): own-slug applies; a CROSS-member
   // assignment applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. The bare slug

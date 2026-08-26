@@ -55,7 +55,10 @@ export function extractJournalFromAssistantText(text: string): ExtractedJournal 
   for (const line of lines) {
     // Strip markdown heading/bullet/quote lead-ins so the fallback reads as a
     // sentence, not markup.
-    const cleaned = line.trim().replace(/^(?:#{1,6}|[-*>]|\d+\.)\s+/, '').trim();
+    const cleaned = line
+      .trim()
+      .replace(/^(?:#{1,6}|[-*>]|\d+\.)\s+/, '')
+      .trim();
     if (!cleaned) continue;
     return { note: cleaned.slice(0, MECHANICAL_NOTE_MAX_CHARS), source: 'mechanical', flagged: true };
   }
@@ -107,8 +110,7 @@ const HONEST_FAILURE_RE =
 /** Ledger-side failure text when `status` wasn't stamped: a non-zero exit or
  *  an explicit test failure. Deliberately narrow — `status === 'error'` is the
  *  primary signal; this regex only catches the canonical Bash shapes. */
-const LEDGER_FAILURE_TEXT_RE =
-  /\bexit(?:ed)?\s*(?:code[:\s]*)?[1-9]\d*\b|\bFAILED\b|\btests?\s+fail(?:ed|ing|s)?\b/i;
+const LEDGER_FAILURE_TEXT_RE = /\bexit(?:ed)?\s*(?:code[:\s]*)?[1-9]\d*\b|\bFAILED\b|\btests?\s+fail(?:ed|ing|s)?\b/i;
 
 /** Tools whose ledger outcome can ATTEST a tests/build claim — command
  *  executions. A Read/Edit succeeding says nothing about the test suite. */
@@ -122,10 +124,7 @@ const DEPLOY_TOOL_RE = /(?:^|[:_.\-])(?:deploy|release)\b/i;
 const GIT_TOOL_RE = /(?:^|[:_.\-])git(?:-sync)?\b/i;
 
 function isFailureEntry(e: LedgerEntry): boolean {
-  return (
-    e.status === 'error' ||
-    (typeof e.summary === 'string' && LEDGER_FAILURE_TEXT_RE.test(e.summary))
-  );
+  return e.status === 'error' || (typeof e.summary === 'string' && LEDGER_FAILURE_TEXT_RE.test(e.summary));
 }
 
 /** Command-shaped summary: the server summariser renders shell calls as
@@ -192,11 +191,7 @@ const HONESTY_CHECKS: HonestyCheck[] = [
  *  claims success trips. Null when the note makes no claim in this domain, when
  *  it honestly discloses failure alongside, or when the window holds no
  *  contradicting operation of THIS domain (cross-domain isolation). */
-function evaluateDomain(
-  check: HonestyCheck,
-  note: string,
-  ledger: LedgerEntry[],
-): ClaimLedgerMismatchTripwire | null {
+function evaluateDomain(check: HonestyCheck, note: string, ledger: LedgerEntry[]): ClaimLedgerMismatchTripwire | null {
   let claim: RegExpMatchArray | null = null;
   for (const re of check.claimRes) {
     claim = note.match(re);
@@ -227,10 +222,7 @@ function evaluateDomain(
  * Journals are never graded — the diff audits honesty (ambient-semantic-push
  * D-008; no fabrication, D-001).
  */
-export function detectClaimLedgerMismatch(
-  note: string,
-  ledger: LedgerEntry[],
-): ClaimLedgerMismatchTripwire | null {
+export function detectClaimLedgerMismatch(note: string, ledger: LedgerEntry[]): ClaimLedgerMismatchTripwire | null {
   for (const check of HONESTY_CHECKS) {
     const trip = evaluateDomain(check, note, ledger);
     if (trip) return trip;

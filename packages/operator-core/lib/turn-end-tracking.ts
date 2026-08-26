@@ -104,9 +104,7 @@ export function mergeMechanicalCheckpoint(existing: string | null | undefined, b
   const prior = (existing ?? '').trimEnd();
   if (!prior) return block;
   const markerAt = prior.indexOf(MECHANICAL_CHECKPOINT_MARKER);
-  const agentPart = (markerAt >= 0 ? prior.slice(0, markerAt) : prior)
-    .replace(/(\n\s*---\s*)+$/, '')
-    .trimEnd();
+  const agentPart = (markerAt >= 0 ? prior.slice(0, markerAt) : prior).replace(/(\n\s*---\s*)+$/, '').trimEnd();
   if (!agentPart) return block;
 
   // Mechanical tool-log lines are ordinary prose, but carry-note parsing treats
@@ -129,7 +127,8 @@ export function mergeMechanicalCheckpoint(existing: string | null | undefined, b
 /** Scratch/temp roots — a deliverable landing here dies with the sandbox
  *  unless registered. Repo-tree writes are NOT artifacts (artifacts:save's own
  *  guidance: source code belongs in the repo, not the artifact store). */
-const SCRATCH_PATH_RE = /^(?:\/tmp\/|~?\/?\.papercusp\/scratch\/(?:)|(?:\.{1,2}\/)?scratch(?:pad)?\/)|\/(?:scratchpad|\.papercusp\/scratch|scratch)\//;
+const SCRATCH_PATH_RE =
+  /^(?:\/tmp\/|~?\/?\.papercusp\/scratch\/(?:)|(?:\.{1,2}\/)?scratch(?:pad)?\/)|\/(?:scratchpad|\.papercusp\/scratch|scratch)\//;
 
 /** Deliverable-shaped extensions: human-readable reports/exports. Code,
  *  JSONL plumbing, logs, and lockfiles are deliberately excluded — the lint
@@ -218,7 +217,7 @@ function shellTokens(command: string): string[] {
       escaped = true;
       continue;
     }
-    if ((ch === "'" || ch === '"' || ch === '`')) {
+    if (ch === "'" || ch === '"' || ch === '`') {
       quote = ch;
       continue;
     }
@@ -378,7 +377,8 @@ function shellWriteTargets(command: string): string[] {
     if (name === 'tee') {
       for (let j = i + 1; j < tokens.length && !isShellControl(tokens[j]!); j += 1) {
         const candidate = tokens[j]!;
-        if (isRedirectOperator(candidate) || /^\d+$/.test(candidate) || candidate === '&' || candidate === '-') continue;
+        if (isRedirectOperator(candidate) || /^\d+$/.test(candidate) || candidate === '&' || candidate === '-')
+          continue;
         if (candidate === '--' || candidate.startsWith('-')) continue;
         add(candidate);
       }
@@ -389,7 +389,14 @@ function shellWriteTargets(command: string): string[] {
       let recursive = false;
       for (let j = i + 1; j < tokens.length && !isShellControl(tokens[j]!); j += 1) {
         const candidate = tokens[j]!;
-        if (candidate === '-r' || candidate === '-R' || candidate === '-a' || candidate === '--recursive' || candidate === '--archive') recursive = true;
+        if (
+          candidate === '-r' ||
+          candidate === '-R' ||
+          candidate === '-a' ||
+          candidate === '--recursive' ||
+          candidate === '--archive'
+        )
+          recursive = true;
         if (isRedirectOperator(candidate) || candidate.startsWith('-')) continue;
         positional.push(candidate);
       }
@@ -406,9 +413,10 @@ function shellWriteTargets(command: string): string[] {
     if (name === 'sed' || name === 'perl' || name === 'ruby' || name === 'awk') {
       const segment: string[] = [];
       for (let j = i + 1; j < tokens.length && !isShellControl(tokens[j]!); j += 1) segment.push(tokens[j]!);
-      const inPlace = name === 'awk'
-        ? segment.some((t, j) => t === 'inplace' && (segment[j - 1] === '-i' || segment[j - 1] === '--include'))
-        : segment.some((t) => t === '-i' || t.startsWith('-i') || t === '--in-place');
+      const inPlace =
+        name === 'awk'
+          ? segment.some((t, j) => t === 'inplace' && (segment[j - 1] === '-i' || segment[j - 1] === '--include'))
+          : segment.some((t) => t === '-i' || t.startsWith('-i') || t === '--in-place');
       if (inPlace) {
         for (const candidate of segment) {
           if (!candidate.startsWith('-') && candidate !== 'inplace') add(candidate);
@@ -419,7 +427,8 @@ function shellWriteTargets(command: string): string[] {
 
   // Literal-path interpreter/file APIs. A read-only `open(...).read()` or
   // `readFileSync(...)` never matches these write-shaped call names/modes.
-  const writeCall = /\b(?:(?:fs|Deno)\.(?:promises\.)?|Bun\.)?(?:writeFile|appendFile)(?:Sync)?\s*\(|\b(?:Deno\.)?write(?:Text|Binary)File\s*\(|\bBun\.write\s*\(|\bcreateWriteStream\s*\(/gi;
+  const writeCall =
+    /\b(?:(?:fs|Deno)\.(?:promises\.)?|Bun\.)?(?:writeFile|appendFile)(?:Sync)?\s*\(|\b(?:Deno\.)?write(?:Text|Binary)File\s*\(|\bBun\.write\s*\(|\bcreateWriteStream\s*\(/gi;
   for (const match of source.matchAll(writeCall)) {
     const open = source.indexOf('(', match.index ?? 0);
     const call = callArguments(source, open);
@@ -432,7 +441,10 @@ function shellWriteTargets(command: string): string[] {
     const call = callArguments(source, open);
     if (!call) continue;
     const args = splitCallArguments(call.args);
-    const mode = args.slice(1).map((arg) => quotedLiteral(arg) ?? arg).join(' ');
+    const mode = args
+      .slice(1)
+      .map((arg) => quotedLiteral(arg) ?? arg)
+      .join(' ');
     if (/[wax+]/i.test(mode)) add(quotedLiteral(args[0] ?? ''));
   }
 
@@ -449,7 +461,9 @@ function shellWriteTargets(command: string): string[] {
     const open = source.indexOf('(', match.index ?? 0);
     const args = callArguments(source, open);
     if (!args) continue;
-    const positional = splitCallArguments(args.args).map((arg) => quotedLiteral(arg)).filter((arg): arg is string => Boolean(arg));
+    const positional = splitCallArguments(args.args)
+      .map((arg) => quotedLiteral(arg))
+      .filter((arg): arg is string => Boolean(arg));
     if (positional.length >= 2) add(positional[1]);
   }
 
@@ -495,10 +509,7 @@ const MAX_UNREGISTERED = 5;
  * path, and a false negative (same basename registered for different content)
  * is fine for a warn-only sweep.
  */
-export function detectUnregisteredArtifacts(
-  writtenFiles: string[],
-  registeredRelPaths: string[],
-): string[] {
+export function detectUnregisteredArtifacts(writtenFiles: string[], registeredRelPaths: string[]): string[] {
   const registered = new Set(registeredRelPaths.map(basenameOf));
   const out: string[] = [];
   const seen = new Set<string>();
@@ -540,11 +551,7 @@ export function unregisteredArtifactTripwire(
 /* ------------------------------------------------------------------ */
 
 /** A textual reference that cannot be the sole durable home of a deliverable. */
-export type EphemeralDeliverableReferenceKind =
-  | 'scratch-path'
-  | 'scratch-uri'
-  | 'artifact-url'
-  | 'loopback-url';
+export type EphemeralDeliverableReferenceKind = 'scratch-path' | 'scratch-uri' | 'artifact-url' | 'loopback-url';
 
 export interface EphemeralDeliverableReference {
   kind: EphemeralDeliverableReferenceKind;
@@ -647,10 +654,12 @@ export function renderEphemeralDeliverableWarning(
   const loopbackNote = hasLoopbackUrl
     ? ' Loopback presentation URLs are transient: re-verify reachability at handoff and keep their serving process managed/alive.'
     : '';
-  return `${surface} names ${references.length === 1 ? 'an' : 'ephemeral'} ephemeral terminal-deliverable ` +
+  return (
+    `${surface} names ${references.length === 1 ? 'an' : 'ephemeral'} ephemeral terminal-deliverable ` +
     `reference${references.length === 1 ? '' : 's'}: ${listed}. ${scopeNote}${loopbackNote} Persist the deliverable first in committed repository, plan, or ` +
     `work-item storage, and record its source path alongside any URL. This warning is advisory; the write ` +
-    `was recorded (deliverable-durability guard).`;
+    `was recorded (deliverable-durability guard).`
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -721,9 +730,7 @@ export function renderOpenTaskReminder(
   const shown = tasks.slice(0, 6);
   const remaining = tasks.length - shown.length;
   const lines = shown.map((task) => {
-    const label = task.status === 'in_progress' && task.activeForm
-      ? task.activeForm
-      : task.content;
+    const label = task.status === 'in_progress' && task.activeForm ? task.activeForm : task.content;
     return `- [${task.status}] ${oneLine(label)}`;
   });
   if (remaining > 0) lines.push(`- …and ${remaining} more open task${remaining === 1 ? '' : 's'}`);
@@ -754,9 +761,7 @@ export function decideOpenTaskReminder(input: {
   const maxAttempts = input.maxAttempts ?? MAX_OPEN_TASK_REMINDER_ATTEMPTS;
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) return null;
   const signature = openTaskReminderSignature(tasks);
-  const priorAttempt = input.priorTripwire?.signature === signature
-    ? input.priorTripwire.attempt
-    : 0;
+  const priorAttempt = input.priorTripwire?.signature === signature ? input.priorTripwire.attempt : 0;
   if (priorAttempt >= maxAttempts) return null;
   const attempt = priorAttempt + 1;
   const prompt = renderOpenTaskReminder(tasks, attempt, maxAttempts);

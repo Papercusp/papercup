@@ -57,11 +57,7 @@ vi.mock('./agent-tools/coordination/inbox-wake', () => ({
   wakeRecipients: (...a: unknown[]) => wakeRecipients(...a),
 }));
 
-const {
-  checkpointOnRelease,
-  sweepOpenTaskReminder,
-  wakeOpenTaskReminder,
-} = await import('./turn-end-tracking-io');
+const { checkpointOnRelease, sweepOpenTaskReminder, wakeOpenTaskReminder } = await import('./turn-end-tracking-io');
 
 const REF = { releasingOwnerId: 'su-holder-1', workspaceId: 'ws-1', harness: 'papercusp', workItemId: 'WI-1' };
 
@@ -71,7 +67,10 @@ afterEach(() => {
 
 describe('checkpointOnRelease (EI-18734870651452334)', () => {
   it('is a no-op when a real agent-written checkpoint already exists — never overwrites it', async () => {
-    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: 'I already wrote real progress here', updatedAtMs: Date.now() });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({
+      checkpoint: 'I already wrote real progress here',
+      updatedAtMs: Date.now(),
+    });
 
     const result = await checkpointOnRelease(REF);
 
@@ -159,31 +158,46 @@ describe('open-task reminder IO (P-005)', () => {
 
   it('reads owner-keyed canonical tasks and the prior journal attempt', async () => {
     applySessionTaskOp.mockResolvedValue({
-      op: 'view', changedTaskId: null, tasks: [activeTask], links: [],
+      op: 'view',
+      changedTaskId: null,
+      tasks: [activeTask],
+      links: [],
     });
     getLoopStatus.mockResolvedValue({ active: false });
     listActiveAwaits.mockResolvedValue([]);
     recentTurnJournal.mockResolvedValue([]);
 
     const first = await sweepOpenTaskReminder({
-      ownerId: 'su-owner-1', workspaceId: 'ws-1', ownerInteractiveTurn: false,
+      ownerId: 'su-owner-1',
+      workspaceId: 'ws-1',
+      ownerInteractiveTurn: false,
     });
 
-    expect(applySessionTaskOp).toHaveBeenCalledWith(sql, expect.objectContaining({
-      op: 'view', workspaceId: 'ws-1', sessionId: 'su-owner-1',
-    }));
+    expect(applySessionTaskOp).toHaveBeenCalledWith(
+      sql,
+      expect.objectContaining({
+        op: 'view',
+        workspaceId: 'ws-1',
+        sessionId: 'su-owner-1',
+      }),
+    );
     expect(first?.tripwire.attempt).toBe(1);
 
     recentTurnJournal.mockResolvedValue([{ tripwire: first?.tripwire }]);
     const second = await sweepOpenTaskReminder({
-      ownerId: 'su-owner-1', workspaceId: 'ws-1', ownerInteractiveTurn: false,
+      ownerId: 'su-owner-1',
+      workspaceId: 'ws-1',
+      ownerInteractiveTurn: false,
     });
     expect(second?.tripwire.attempt).toBe(2);
   });
 
   it('suppresses when a loop, bounded await, or owner answer already guarantees continuation', async () => {
     applySessionTaskOp.mockResolvedValue({
-      op: 'view', changedTaskId: null, tasks: [activeTask], links: [],
+      op: 'view',
+      changedTaskId: null,
+      tasks: [activeTask],
+      links: [],
     });
     recentTurnJournal.mockResolvedValue([]);
     listActiveAwaits.mockResolvedValue([]);
@@ -191,17 +205,23 @@ describe('open-task reminder IO (P-005)', () => {
     expect(await sweepOpenTaskReminder({ ownerId: 'su-1', workspaceId: 'ws-1' })).toBeNull();
 
     getLoopStatus.mockResolvedValue({ active: false });
-    listActiveAwaits.mockResolvedValue([{
-      eventKey: 'work-item:done:WI-1',
-      expiresTs: '2026-08-26T21:00:00.000Z',
-      timeoutBehavior: 'wake',
-    }]);
+    listActiveAwaits.mockResolvedValue([
+      {
+        eventKey: 'work-item:done:WI-1',
+        expiresTs: '2026-08-26T21:00:00.000Z',
+        timeoutBehavior: 'wake',
+      },
+    ]);
     expect(await sweepOpenTaskReminder({ ownerId: 'su-1', workspaceId: 'ws-1' })).toBeNull();
 
     listActiveAwaits.mockResolvedValue([]);
-    expect(await sweepOpenTaskReminder({
-      ownerId: 'su-1', workspaceId: 'ws-1', ownerInteractiveTurn: true,
-    })).toBeNull();
+    expect(
+      await sweepOpenTaskReminder({
+        ownerId: 'su-1',
+        workspaceId: 'ws-1',
+        ownerInteractiveTurn: true,
+      }),
+    ).toBeNull();
   });
 
   it('targets the owner with the persisted decision prompt', async () => {
@@ -220,9 +240,13 @@ describe('open-task reminder IO (P-005)', () => {
       },
     };
 
-    await expect(wakeOpenTaskReminder({
-      ownerId: 'su-owner-1', workspaceId: 'ws-1', decision,
-    })).resolves.toBe(true);
+    await expect(
+      wakeOpenTaskReminder({
+        ownerId: 'su-owner-1',
+        workspaceId: 'ws-1',
+        decision,
+      }),
+    ).resolves.toBe(true);
     expect(wakeRecipients).toHaveBeenCalledWith(['su-owner-1'], {
       summary: decision.prompt,
       payload: decision.tripwire,

@@ -164,7 +164,7 @@ function onRefusedOp(
 async function writeToPg(
   opts: GymQdElitesProjectionOpts,
   row: GymQdEliteWireRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   // FOREIGN rows only. Unlike agent-facts (whose local echo is a no-op refresh of

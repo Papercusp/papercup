@@ -154,7 +154,7 @@ function warnCrossHiveRosterDrop(boundSlug: string, rowHiveHome: string, now: nu
 async function writeToPg(
   opts: HiveMembersProjectionOpts,
   row: HiveMemberRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.pot_home_slug !== opts.harnessSlug) {
     // A→B roster diagnostic (PAPERCUSP_A003_TRACE, off by default/in tests): the owner's

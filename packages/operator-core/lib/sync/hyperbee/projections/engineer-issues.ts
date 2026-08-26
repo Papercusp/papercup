@@ -296,7 +296,7 @@ function decodeValue(raw: unknown): EngineerIssueRow | null {
 async function writeToPg(
   opts: EngineerIssuesProjectionOpts,
   row: EngineerIssueRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259/D-027 parity (shared-hive member-content federation): own-slug applies; a CROSS-member
   // issue/task applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. The bare slug

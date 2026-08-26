@@ -66,7 +66,7 @@ function composeKey(row: CoordThreadPostRow): string {
 async function writeToPg(
   opts: CoordThreadPostProjectionOpts,
   row: CoordThreadPostRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259 parity (shared-hive comms federation): own-slug applies; a CROSS-member post op applies
   // iff its VERIFIED source-log device ∈ the hive's CURRENT members (the bare slug early-return

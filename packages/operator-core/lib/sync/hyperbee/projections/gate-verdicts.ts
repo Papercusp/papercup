@@ -113,7 +113,7 @@ function decodeValue(raw: unknown): GateVerdictWireRow | null {
 async function writeToPg(
   opts: GateVerdictProjectionOpts,
   row: GateVerdictWireRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
 

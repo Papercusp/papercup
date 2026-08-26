@@ -163,7 +163,7 @@ async function recomputeWorkingUsers(
 async function writeToPg(
   opts: FeatureWorkingSetProjectionOpts,
   row: FeatureWorkingSetRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   // WI-259 P-002 membership guard (see member-content-guard.ts): own-slug applies; a cross-member
   // op applies iff its VERIFIED source-log device ∈ the hive's CURRENT members. resolveAuthorDevice

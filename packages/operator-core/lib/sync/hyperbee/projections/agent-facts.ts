@@ -250,7 +250,7 @@ function onRefusedOp(
 async function writeToPg(
   opts: AgentFactsProjectionOpts,
   row: AgentFactWireRow,
-  provenance?: ProvenanceContext,
+  provenance: ProvenanceContext,
 ): Promise<void> {
   if (row.harness_slug !== opts.harnessSlug) return;
   // ── EI-21467654382027859. A SUPERSEDED op is history, and this projection is

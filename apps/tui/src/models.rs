@@ -68,11 +68,22 @@ pub struct ConversationContextSession {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConversationContextBadge {
+    pub label: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct ConversationContextEntry {
     pub label: String,
     pub value: String,
     #[serde(default)]
     pub state: Option<String>,
+    #[serde(default)]
+    pub badges: Vec<ConversationContextBadge>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

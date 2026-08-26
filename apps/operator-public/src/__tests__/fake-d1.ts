@@ -502,6 +502,7 @@ export class FakeR2 {
   etags = new Map<string, string>();
   multipartUploads = new Map<string, FakeMultipartRecord>();
   nextMultipartUploadId: string | null = null;
+  nextMultipartCompleteReturnOmitsCustomMetadata = false;
   private nextMultipartUpload = 1;
 
   private object(key: string, withBody: boolean) {
@@ -647,7 +648,12 @@ export class FakeR2 {
         }
         this.etags.set(key, `fake-multipart-${uploadedParts.length}-${totalBytes}`);
         this.multipartUploads.delete(uploadId);
-        return this.object(key, false)! as unknown as R2Object;
+        const completed = this.object(key, false)!;
+        if (this.nextMultipartCompleteReturnOmitsCustomMetadata) {
+          this.nextMultipartCompleteReturnOmitsCustomMetadata = false;
+          return { ...completed, customMetadata: undefined } as unknown as R2Object;
+        }
+        return completed as unknown as R2Object;
       },
     };
   }

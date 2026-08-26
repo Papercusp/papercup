@@ -59,6 +59,7 @@ import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import type { RuntimeVintageRow } from './runtime-vintage';
 import { projectCheckpointQualificationState } from './release/checkpoint-qualification-transaction';
+import { unownedCell } from './coord/gate-ownership';
 
 /** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
 const HEALTHY_GIT_SYNC = {
@@ -421,15 +422,22 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
   it('starts candidate, lock, ownership, and all local containment reads before consuming containment', async () => {
     const started: string[] = [];
     const containmentResolvers: Array<(value: string | null) => void> = [];
+    let signalContainmentStarted!: () => void;
+    const containmentStarted = new Promise<void>((resolve) => {
+      signalContainmentStarted = resolve;
+    });
     let resolveCandidates!: (value: { judgingSha: null; nextCandidateSha: null }) => void;
     const candidatesPending = new Promise<{ judgingSha: null; nextCandidateSha: null }>((resolve) => {
       resolveCandidates = resolve;
     });
     const inner = fakeGit({ pathCommit: 'abc1234567', subject: 'ordered fan-out' });
     const git: GitRunner = async (repo, args) => {
-      if (args[0] === 'rev-list' && args[1] === '--count') {
+      if (args[0] === 'rev-list' && args[1] === '--count' && containmentResolvers.length < 4) {
         started.push(`contain:${args[2]}`);
-        return new Promise<string | null>((resolve) => containmentResolvers.push(resolve));
+        return new Promise<string | null>((resolve) => {
+          containmentResolvers.push(resolve);
+          if (containmentResolvers.length === 4) signalContainmentStarted();
+        });
       }
       return inner(repo, args);
     };
@@ -450,7 +458,7 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
         },
         readGateOwnership: async () => {
           started.push('ownership');
-          return null;
+          return unownedCell('gate.greenCheckpoint.ownership');
         },
         resolveGateCandidates: () => {
           started.push('candidates');
@@ -459,7 +467,7 @@ describe('gitPipelinePosition diagnostic defaults (EI-21306970701615848)', () =>
       },
     );
 
-    for (let i = 0; i < 12 && containmentResolvers.length < 4; i += 1) await Promise.resolve();
+    await containmentStarted;
     expect(started.slice(0, 4)).toEqual(['checkpoint', 'lock', 'ownership', 'candidates']);
     expect(containmentResolvers).toHaveLength(4);
 
