@@ -113,6 +113,33 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     });
   });
 
+  it('accepts tail as a strict shorthand for a bounded descending read', async () => {
+    const tx = makeTx([
+      { source_kind: 'codex', turn_idx: 8, speaker: 'assistant', owner: null, ts: null, text: 'older' },
+      { source_kind: 'codex', turn_idx: 9, speaker: 'assistant', owner: null, ts: null, text: 'newer' },
+    ]);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'sess-known', tail: 2 },
+      {
+        log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), emit: vi.fn(),
+        workspaceId: 'default', runId: 'read-tail-test', role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp', requestedFormat: 'json', requestedStructured: true, tx,
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(tx.mock.calls[0]?.at(-1)).toBe(2);
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      session_id: 'sess-known',
+      turn_count: 2,
+    });
+  });
+
   it('rejects malformed or conflicting canonical-ref inputs while accepting window controls', () => {
     expect(readArgsSchema.safeParse({ ref: 'not-a-turn-ref' }).success).toBe(false);
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', session: 'sess' }).success).toBe(false);
@@ -121,6 +148,10 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3 }).success).toBe(true);
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3, limit: 4, order: 'asc' }).success).toBe(true);
     expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3, limit: 4, order: 'desc' }).success).toBe(true);
+    expect(readArgsSchema.safeParse({ session: 'sess', tail: 30 }).success).toBe(true);
+    expect(readArgsSchema.safeParse({ ref: 'session_turn:codex:sess:4', context: 3, tail: 4 }).success).toBe(true);
+    expect(readArgsSchema.safeParse({ session: 'sess', tail: 30, limit: 30 }).success).toBe(false);
+    expect(readArgsSchema.safeParse({ session: 'sess', tail: 30, order: 'desc' }).success).toBe(false);
   });
 
   it('rejects stale search-only mode/query arguments instead of silently accepting them', () => {

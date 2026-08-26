@@ -44,6 +44,13 @@ const readArgsSchema = z
       .describe(
         "Which END of the range to return when it has more turns than `limit`: 'desc' (DEFAULT) = the TAIL (newest — where a session left off); 'asc' = the HEAD (from turn 0 — the kickoff prompt / launch context / loop goal, i.e. what the session was FOR). Output is chronological either way.",
       ),
+    tail: z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe("Shorthand for the newest N turns (`order:'desc', limit:N`). Cannot be combined with `order` or `limit`."),
     limit: z.number().int().min(1).max(200).optional().describe('Max turns (default 40 for a session read; exact ref reads default to 1, or 2×context+1).'),
   })
   // `mode` and `query` belong to sessions:search. Keep this navigation tool
@@ -61,7 +68,14 @@ const readArgsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['ref'],
-        message: '`ref` already fixes source/session/turn; combine it only with `context`, `limit`, and/or `order`',
+        message: '`ref` already fixes source/session/turn; combine it only with `context`, `limit`/`order`, or the `tail` shorthand',
+      });
+    }
+    if (args.tail != null && (args.order != null || args.limit != null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tail'],
+        message: "`tail:N` already means `order:'desc', limit:N`; do not combine it with `order` or `limit`",
       });
     }
   });
@@ -73,10 +87,11 @@ export default defineTool({
   capability: 'search:read',
   description:
     "Read a bounded window of turns from one indexed session transcript — pass a canonical `session_turn:…` ref directly, coordinates around a turn, a from/to range, or the tail. session:'self' reads YOUR OWN current session (pre-compaction turns included). Search-only `query` and `mode` arguments belong to sessions:search and are rejected here. " +
+    "Use `tail:N` as the strict shorthand for `order:'desc', limit:N`. " +
     "NOTE ON `turn_count` (EI-9970): this is the number of rows in THIS response's window (bounded by `limit`, default 40) — NOT the session's total turn count. It is a DIFFERENT quantity from sessions:list's `turns` field (that session's full indexed-text-turn total) despite the similar name; do not compare them. For the session total, use sessions:list.",
   guidance: {
     when:
-      "Following a sessions:search hit: pass its `ref` directly (plus optional `context`). Or read where a session left off; use order:'asc' for the opening turns.",
+      "Following a sessions:search hit: pass its `ref` directly (plus optional `context`). To read where a session left off, use `tail:N` (or explicit order:'desc' + limit); use order:'asc' for the opening turns.",
     notWhen:
       'Finding WHERE something was said — sessions:search (which owns `query` and `mode`). Raw un-indexed files — dev:claude_session op=read (being absorbed here).',
     chaining: 'sessions:search result.ref → sessions:read { ref, context?, limit?, order? }.',
@@ -122,7 +137,7 @@ export default defineTool({
       };
     }
     const refContext = parsedRef ? (args.context ?? 0) : null;
-    const limit = args.limit ?? (parsedRef ? refContext! * 2 + 1 : 40);
+    const limit = args.tail ?? args.limit ?? (parsedRef ? refContext! * 2 + 1 : 40);
 
     let sessionId = parsedRef?.sessionId ?? args.session!;
     let sourceKind = parsedRef?.sourceKind ?? args.source_kind;
