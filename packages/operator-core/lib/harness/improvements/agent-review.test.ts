@@ -452,6 +452,10 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     expect(h.state.issue.payload).toEqual({
       agentReview: { status: 'revision-requested', submittedBy: 'su-gone', ledgerIdeaId: 'WI-7', round: 1 },
     });
+    // NON-VACUITY: 'not-submitter' is also what the PRE-WI-41689 code returned here, so
+    // asserting the reason alone would pass with the orphan branch deleted entirely. This
+    // proves the refusal was REACHED THROUGH the liveness guard.
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: false });
   });
 
   /**
@@ -469,6 +473,7 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
       resubmitted: false,
       reason: 'not-submitter',
     });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: false });
   });
 
   it.each(REBIND_BLOCKING_SESSION_STATES)('refuses while the submitter is %s', async (sessionState) => {
@@ -478,6 +483,10 @@ describe('resubmitAgentReview adopts a row whose submitter is provably gone (WI-
     await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-newcomer' }, h.deps)).resolves.toMatchObject({
       resubmitted: false,
       reason: 'not-submitter',
+    });
+    expect(h.resolveSubmitterLiveness).toHaveBeenCalledWith('su-gone', { claimsHeld: false });
+    expect(h.state.issue.payload).toEqual({
+      agentReview: { status: 'revision-requested', submittedBy: 'su-gone', ledgerIdeaId: 'WI-7', round: 1 },
     });
   });
 
