@@ -13,10 +13,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../conversations', () => ({ getConversation: vi.fn() }));
+vi.mock('../conversations', () => ({ getConversation: vi.fn(), getConsultStates: vi.fn() }));
 
-import { getConversation } from '../conversations';
+import { getConversation, getConsultStates } from '../conversations';
 const getM = vi.mocked(getConversation);
+const consultM = vi.mocked(getConsultStates);
 const tool = (await import('./conversations-get')).default;
 
 type Out = { data: any };

@@ -5246,7 +5246,7 @@
           "POST"
         ]
       },
-      "description": "Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest.",
+      "description": "Read one OR many conversations in full: the seed, topic tags, the whole thread (posts oldest-first), the accepted answer if resolved, and follower count. Pass `id` for one or `ids` for several (1–100). Returns { ok, results:[{ ok, id, conversation? + topics/posts/subscriber_count | error }], counts } — correlate each result by its id, not by position; a missing id comes back as that item's { ok:false } without failing the rest. For a CONSULT conversation the result also carries `consult` (state, expires_at, closed_at, responder_id, wakes_used) — read THAT for whether the consult is still live: `conversation.state` stays \"open\" after a consult has expired and closed, and empty `posts` is not evidence of a stall (a cascade advance wakes the next responder instead of posting).",
       "capabilities": [
         "coord:read"
       ],
