@@ -102,6 +102,36 @@ function sseStream(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function taskProjection(
+  status: 'pending' | 'completed' = 'pending',
+): ConversationContextProjection {
+  return {
+    schemaVersion: 'conversation-context-v1',
+    session: {
+      sourceKind: 'agent_chat',
+      sessionId: CHAT,
+      harness: SLUG,
+      role: 'worker',
+      linkedWorkItemId: 'WI-42177',
+      capabilityTier: 'owned-loop',
+    },
+    capabilities: { liveFrames: true, taskWrite: true, approvalWrite: true },
+    frames: [{
+      id: 'task:task-1',
+      kind: 'task',
+      taskId: 'task-1',
+      content: 'Ship projection',
+      activeForm: 'Shipping projection',
+      status,
+      blockerRef: null,
+      blockerState: null,
+      explanation: null,
+      position: 0,
+      updatedAt: '2026-08-26T00:00:01Z',
+    }],
+  };
+}
+
 afterEach(() => {
   cleanup();
   syncRows = [];
@@ -171,6 +201,63 @@ describe('ChatPanel — shared conversation/context projection (P-009)', () => {
         tools: [{ name: 'work_items:complete', input: { id: 'WI-42177' } }],
       }),
     ]));
+  });
+
+  it('posts task controls and paints the response projection before sync advances', async () => {
+    syncRows = [chatRow()];
+    projectionRows = [taskProjection('pending')];
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url.includes('/tasks')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          action: 'check',
+          op: 'done',
+          changedTaskId: 'task-1',
+          tasks: [],
+          projection: taskProjection('completed'),
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check task: Ship projection' }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/harness/${SLUG}/agent-chats/${CHAT}/tasks`,
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    const taskCall = fetchMock.mock.calls.find(([url]) => url.includes('/tasks'));
+    expect(JSON.parse(String(taskCall?.[1]?.body))).toMatchObject({
+      action: 'check',
+      taskId: 'task-1',
+    });
+    expect(await screen.findByText('Completed')).toBeTruthy();
+    expect(projectionRows[0]?.frames.find((frame) => frame.kind === 'task')).toMatchObject({
+      status: 'pending',
+    });
+    expect(invalidateSpy).toHaveBeenCalled();
+  });
+
+  it('surfaces canonical task mutation errors without replacing the projection', async () => {
+    syncRows = [chatRow()];
+    projectionRows = [taskProjection('pending')];
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: { code: 'task_write_unavailable', message: 'Task writes are unavailable.' },
+    }), {
+      status: 409,
+      headers: { 'content-type': 'application/json' },
+    })));
+
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Check task: Ship projection' }));
+
+    expect((await screen.findByRole('alert')).textContent).toContain('Task writes are unavailable.');
+    expect(screen.getByText('Pending')).toBeTruthy();
   });
 });
 
