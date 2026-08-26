@@ -802,6 +802,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // table but was not listed, so a device joining or leaving never pushed to it. Low-churn table,
   // so the added fan-out is negligible. Found by the resolver→table coverage guard.
   'harness_shared.pot_members': ['dev.assignableMembers', 'p2p.devices'],
+  // P-510: the host-local foreign-work registry drives the Settings page's
+  // lifecycle view. Migration 985 attaches the shared change-notify trigger;
+  // full-bust is appropriate because the query is one low-volume workspace fold.
+  'harness_shared.p2p_foreign_workspaces': ['p2p.foreignWorkspaces'],
   // pot_settings backs the owner-steering:* keys (queen-steering-panel B-01/C-1)
   // and per-Pot beacon consent. Steering remains a workspace-wide fold; beacon
   // consent is keyed by the changed row's natural harness_slug so only that pot's

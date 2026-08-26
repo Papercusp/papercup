@@ -5853,7 +5853,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // `p2p.settings` is a workspace-singleton (client subscribes with NO args → the
   // p2p-settings-set write route emits NAME-ONLY notifySyncInvalidate('p2p.settings')).
   // Degrades to the baked (structurally inert) defaults on any read failure — the
-  // settings page renders, never a 500.
+  // settings page renders, never a 500 — but provenance makes the stand-in
+  // distinguishable from an observed CLEAR state.
   'p2p.settings': {
     resolve: async () => {
       const store = await import('../p2p/settings');
@@ -5864,13 +5865,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         const { activeWorkspaceId } = await import('../workspace-registry');
         const baked = store.bakedP2pDefaults();
         return [
-          {
+          degraded({
             workspaceId: activeWorkspaceId(),
             baked,
             defaultLayer: null,
             overrideLayer: null,
             effective: baked,
-          },
+          }, err),
         ];
       }
     },
@@ -5892,7 +5893,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const rows: unknown[] = [];
       try {
         const { resolveUsageActor } = await import('../harness/usage-actor');
-        const actor = await resolveUsageActor().catch(() => null);
+        const actor = await resolveUsageActor();
         rows.push({
           kind: 'identity',
           githubUserId: actor?.githubUserId ?? null,
@@ -5942,8 +5943,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         return rows;
       } catch (err) {
         console.warn('[p2p.devices] read failed:', err instanceof Error ? err.message : String(err));
-        // Degrade to "identity unresolved" (a RED state on the page), never a 500.
-        return rows.length > 0 ? rows : [{ kind: 'identity', githubUserId: null, devicePubkey: null }];
+        // A backend failure is not the same claim as a genuinely unresolved
+        // identity. Emit a non-domain sentinel so the client can say UNKNOWN.
+        return [degraded({ kind: 'unavailable' as const }, err)];
       }
     },
   },
@@ -5967,7 +5969,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         if (code !== '42P01' && code !== '42703' && !/does not exist/i.test(msg)) {
           console.warn('[p2p.grants] read failed:', msg);
         }
-        return []; // pre-migration-463 degrades to the empty matrix, never a 500
+        return [degraded({ kind: 'unavailable' as const }, err)];
       }
     },
   },
@@ -5995,6 +5997,33 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         }
         return []; // pre-migration-473 degrades to the empty board, never a 500
       }
+    },
+  },
+
+  // `p2p.foreignWorkspaces` — the Settings page's host-local lifecycle view
+  // (P-510). The source record deliberately contains filesystem paths and
+  // executor/provisioning internals; this public sync query projects only the
+  // identity and lifecycle fields the owner surface renders. A resolver error
+  // propagates so the client can distinguish unavailable from a genuine empty
+  // registry. Raw writes refresh the open page through the shared table trigger
+  // and TABLE_TO_QUERY_NAMES bridge.
+  'p2p.foreignWorkspaces': {
+    backingTables: ['harness_shared.p2p_foreign_workspaces'],
+    resolve: async () => {
+      const [{ listForeignWorkspaces }, { activeWorkspaceId }] = await Promise.all([
+        import('../p2p/foreign-workspaces'),
+        import('../workspace-registry'),
+      ]);
+      const rows = await listForeignWorkspaces(activeWorkspaceId());
+      return rows.map(({ workspaceId, offerId, fleetSlug, sessionId, state, parkReason, updatedAt }) => ({
+        workspaceId,
+        offerId,
+        fleetSlug,
+        sessionId,
+        state,
+        parkReason,
+        updatedAt,
+      }));
     },
   },
 
@@ -6076,7 +6105,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
            LIMIT ${limit}`) as unknown as unknown[];
       } catch (err) {
         console.warn('[p2p.audit] read failed:', err instanceof Error ? err.message : String(err));
-        return [];
+        return [degraded({ kind: 'unavailable' as const }, err)];
       }
     },
   },

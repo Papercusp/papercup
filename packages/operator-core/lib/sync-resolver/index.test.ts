@@ -536,7 +536,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
   });
 
   it('registers the P2P settings-surface queries in knownQueryNamesV2', () => {
-    for (const expected of ['p2p.settings', 'p2p.devices', 'p2p.grants', 'p2p.audit']) {
+    for (const expected of ['p2p.settings', 'p2p.devices', 'p2p.grants', 'p2p.foreignWorkspaces', 'p2p.audit']) {
       expect(knownQueryNamesV2()).toContain(expected);
     }
   });
@@ -560,7 +560,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doUnmock('../p2p/settings');
   });
 
-  it('p2p.settings degrades to the baked (structurally-inert) defaults on read failure — never a 500', async () => {
+  it('p2p.settings tags baked defaults as unavailable on read failure — never a false CLEAR or a 500', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const baked = { optIn: { mode: 'off', fleets: [], maxConcurrentForeign: 2, windows: [] }, killSwitch: { engaged: false } };
     vi.doMock('../p2p/settings', () => ({
@@ -571,11 +571,23 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     }));
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
-    const out = (await r('p2p.settings', {})) as Array<{ effective: unknown; baked: unknown; workspaceId: string }>;
+    const out = (await r('p2p.settings', {})) as Array<{
+      effective: unknown;
+      baked: unknown;
+      workspaceId: string;
+      unavailable: boolean;
+      unavailableKind: string;
+      unavailableReason: string;
+    }>;
     expect(out).toHaveLength(1);
     expect(out[0].workspaceId).toBe('ws-test');
     expect(out[0].effective).toEqual(baked); // inert defaults → the page renders, opt-in off
     expect(out[0].baked).toEqual(baked);
+    expect(out[0]).toMatchObject({
+      unavailable: true,
+      unavailableKind: 'pre-migration',
+      unavailableReason: 'relation "p2p_settings" does not exist',
+    });
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
     vi.doUnmock('../p2p/settings');
@@ -588,6 +600,26 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
     expect(out).toEqual([{ kind: 'identity', githubUserId: null, devicePubkey: null }]);
+    vi.doUnmock('../harness/usage-actor');
+  });
+
+  it('p2p.devices distinguishes an actor lookup failure from a genuine unresolved identity', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.doMock('../harness/usage-actor', () => ({
+      resolveUsageActor: vi.fn(async () => {
+        throw new Error('credential store unavailable');
+      }),
+    }));
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
+    expect(out).toEqual([
+      {
+        kind: 'unavailable',
+        unavailable: true,
+        unavailableKind: 'read-failed',
+        unavailableReason: 'credential store unavailable',
+      },
+    ]);
     vi.doUnmock('../harness/usage-actor');
   });
 
@@ -640,7 +672,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doUnmock('../workspace-registry');
   });
 
-  it('p2p.devices degrades to identity-unresolved when the membership read throws — never a 500', async () => {
+  it('p2p.devices marks the snapshot unavailable when the membership read throws — never a false empty or a 500', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const actor = { githubUserId: 279242982, devicePubkey: 'DEV-THIS' };
     vi.doMock('../harness/usage-actor', () => ({ resolveUsageActor: vi.fn(async () => actor) }));
@@ -655,8 +687,14 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.devices', {})) as Array<Record<string, unknown>>;
-    // The identity row was already pushed → degrade keeps it (resolved identity, no device rows), never throws.
-    expect(out).toEqual([{ kind: 'identity', githubUserId: 279242982, devicePubkey: 'DEV-THIS' }]);
+    expect(out).toEqual([
+      {
+        kind: 'unavailable',
+        unavailable: true,
+        unavailableKind: 'pre-migration',
+        unavailableReason: 'relation "hive_members" does not exist',
+      },
+    ]);
     warnSpy.mockRestore();
     vi.doUnmock('../harness/usage-actor');
     vi.doUnmock('@papercusp/db-org');
@@ -677,7 +715,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doUnmock('../workspace-registry');
   });
 
-  it('p2p.grants degrades to the empty matrix before migration 463 applies (42P01) — never a 500', async () => {
+  it('p2p.grants marks the matrix unavailable before migration 463 applies — never a false empty or a 500', async () => {
     vi.doMock('../p2p/grant-store', () => ({
       listPeerGrants: vi.fn(async () => {
         throw Object.assign(new Error('relation "peer_grants" does not exist'), { code: '42P01' });
@@ -686,8 +724,65 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.grants', { potSlug: 'papercusp' })) as unknown[];
-    expect(out).toEqual([]);
+    expect(out).toEqual([
+      {
+        kind: 'unavailable',
+        unavailable: true,
+        unavailableKind: 'pre-migration',
+        unavailableReason: 'relation "peer_grants" does not exist',
+      },
+    ]);
     vi.doUnmock('../p2p/grant-store');
+    vi.doUnmock('../workspace-registry');
+  });
+
+  // ── p2p.foreignWorkspaces — public lifecycle projection, no host paths ──
+  it('p2p.foreignWorkspaces returns only owner-visible lifecycle fields and strips host internals', async () => {
+    const listForeignWorkspaces = vi.fn(async () => [
+      {
+        workspaceId: 'ws-test',
+        offerId: 'offer-1',
+        fleetSlug: 'fleet-east',
+        originGithubUserId: 279242982,
+        executorDevice: 'device-secret',
+        rootPath: '/srv/private/foreign/offer-1',
+        clonePath: '/srv/private/foreign/offer-1/repo',
+        sessionId: 'session-7',
+        executionEpoch: 3,
+        state: 'active',
+        parkReason: null,
+        baseSha: '0123456789abcdef',
+        createdAt: 1_699_000_000_000,
+        updatedAt: 1_700_000_000_000,
+      },
+    ]);
+    vi.doMock('../p2p/foreign-workspaces', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../p2p/foreign-workspaces')>()),
+      listForeignWorkspaces,
+    }));
+    vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+
+    const { resolveNamedQueryV2: r } = await import('./index');
+    const out = (await r('p2p.foreignWorkspaces', {})) as Array<Record<string, unknown>>;
+
+    expect(listForeignWorkspaces).toHaveBeenCalledWith('ws-test');
+    expect(out).toEqual([
+      {
+        workspaceId: 'ws-test',
+        offerId: 'offer-1',
+        fleetSlug: 'fleet-east',
+        sessionId: 'session-7',
+        state: 'active',
+        parkReason: null,
+        updatedAt: 1_700_000_000_000,
+      },
+    ]);
+    expect(out[0]).not.toHaveProperty('rootPath');
+    expect(out[0]).not.toHaveProperty('clonePath');
+    expect(out[0]).not.toHaveProperty('executorDevice');
+    expect(out[0]).not.toHaveProperty('baseSha');
+
+    vi.doUnmock('../p2p/foreign-workspaces');
     vi.doUnmock('../workspace-registry');
   });
 
@@ -714,7 +809,7 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doUnmock('../workspace-registry');
   });
 
-  it('p2p.audit degrades to [] when the audit read throws — never a 500', async () => {
+  it('p2p.audit marks the trail unavailable when the read throws — never a false empty or a 500', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.doMock('@papercusp/db-org', async (importOriginal) => ({
       ...(await importOriginal<typeof import('@papercusp/db-org')>()),
@@ -727,7 +822,14 @@ describe('resolveNamedQueryV2 — p2p.* (p2p-work-distribution-2026-07-02 P-002)
     vi.doMock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     const { resolveNamedQueryV2: r } = await import('./index');
     const out = (await r('p2p.audit', { limit: 10 })) as unknown[];
-    expect(out).toEqual([]);
+    expect(out).toEqual([
+      {
+        kind: 'unavailable',
+        unavailable: true,
+        unavailableKind: 'read-failed',
+        unavailableReason: 'audit_log unavailable',
+      },
+    ]);
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
     vi.doUnmock('@papercusp/db-org');

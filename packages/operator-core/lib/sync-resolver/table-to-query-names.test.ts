@@ -64,6 +64,12 @@ describe('queryNamesForTriggerEvent', () => {
     expect(TABLE_TO_QUERY_NAMES['harness_shared.workspace_host_logs']).toBeUndefined();
   });
 
+  it('maps foreign-workspace lifecycle writes to the public host registry query', () => {
+    expect(queryNamesForTriggerEvent('harness_shared.p2p_foreign_workspaces.changed')).toEqual([
+      'p2p.foreignWorkspaces',
+    ]);
+  });
+
   it('handles userActions which contributes three names from one table', () => {
     expect(queryNamesForTriggerEvent('harness_shared.user_actions.changed')).toEqual(
       expect.arrayContaining(['userActions.byHarness', 'userActions.byKind', 'userActions.recent']),
