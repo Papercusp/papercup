@@ -609,12 +609,12 @@ export default defineTool({
     // `loop:arm { carry }` retune works. A FRESH arm missing either still fails,
     // now with an explicit invalid_args response naming the fields instead of an
     // opaque schema rejection.
-    let intervalSecArg = args.intervalSec;
-    let goalArg = args.goal;
+    let intervalSecArg: number | undefined = args.intervalSec;
+    let goalArg: string | undefined = args.goal;
     if (intervalSecArg == null || goalArg == null) {
       if (prior?.active === true) {
-        intervalSecArg = intervalSecArg ?? (prior.intervalSec ?? undefined);
-        goalArg = goalArg ?? prior.goal;
+        intervalSecArg = intervalSecArg ?? prior.intervalSec ?? undefined;
+        goalArg = goalArg ?? prior.goal ?? undefined;
       }
       const goalBlank = goalArg == null || String(goalArg).trim() === '';
       if (intervalSecArg == null || goalBlank) {
