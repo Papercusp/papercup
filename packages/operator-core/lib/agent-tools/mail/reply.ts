@@ -6,6 +6,19 @@ import { authorizePersonalAccess } from '../../personal-vault/authorization';
 import { replyToCanonicalMail } from '../../capability-verbs/mail';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
 
+export function mailPersonalAccessRefusal(reason: unknown) {
+  return {
+    allowed: false,
+    refusal: reason,
+    requiredScope: 'personal:gmail',
+    autoAuthoritySufficient: false,
+    draftAvailable: false,
+    guidance:
+      'Owner-directed AUTO authorizes execution posture but is not a personal-vault grant. ' +
+      'Establish a live principal-bound personal:gmail grant first; both draft and send modes require it.',
+  } as const;
+}
+
 export default defineTool({
   name: 'mail:reply',
   needsWorkspaceTx: true,
@@ -34,7 +47,9 @@ export default defineTool({
     if (!workspaceId || workspaceId === '*') throw new Error('mail_reply_workspace_required');
     const user = await getSessionUserOrDefault();
     const auth = await authorizePersonalAccess(ctx.tx!, ctx, workspaceId, user.id, ['personal:gmail']);
-    if (!auth.allowed) return { data: { allowed: false, refusal: auth.reason } };
+    if (!auth.allowed) {
+      return { data: mailPersonalAccessRefusal(auth.reason) };
+    }
     const result = await replyToCanonicalMail(ctx.tx as unknown as postgres.Sql, {
       workspaceId,
       userId: user.id,
