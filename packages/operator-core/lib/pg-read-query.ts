@@ -436,6 +436,12 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
  */
 const CORPUS_NAMESPACED_TABLES = new Set([
   'tool_usage_rollup',
+  // EI-21477025296868436: this member is deliberately MIXED, not corpus-only.
+  // File-backed claude/omp/codex rows use the host-global 'default' sentinel;
+  // agent_chat rows keep their real workspace because they have no owner stamp
+  // and must remain tenant-isolated. It stays in this set only to suppress the
+  // generic "add workspace_id = <tenant>" advice; buildCorpusNamespaceAdvisory
+  // has the bespoke dual-scope warning and correction below.
   'session_turns',
   // EI-20103748074297088. Added after the per-table verification this doc prescribes:
   // measured 2026-08-10, 603,723 rows, ALL under 'default', 21 distinct owners, current to
@@ -1781,7 +1787,8 @@ function workspaceIdPredicateValues(rawSql: string): string[] {
 
 /**
  * A TENANT predicate written against a CORPUS-namespaced table — the false zero that reads as
- * a real answer (EI-20103748074297088).
+ * a real answer (EI-20103748074297088), or against session_turns — the plausible PARTIAL result
+ * that is even easier to trust (EI-21477025296868436).
  *
  * {@link CORPUS_NAMESPACED_TABLES} already SUPPRESSES the generic "add workspace_id" suggestion
  * for these tables. That is only half the problem, and it is the half that was already solved:
@@ -1806,6 +1813,29 @@ export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
 
   const values = workspaceIdPredicateValues(rawSql);
   if (!values.length) return null; // unscoped: correct for these tables
+
+  const sessionTurnsOnly =
+    corpusHits.some((t) => bareTableName(t) === 'session_turns') &&
+    corpusHits.every((t) => bareTableName(t) === 'session_turns');
+  if (sessionTurnsOnly) {
+    const tenantValues = [...new Set(values.filter((v) => v !== 'default'))];
+    // `default` alone is an intentional host-global slice. A tenant plus
+    // `default` is the production reader's full accessible-corpus predicate.
+    if (!tenantValues.length || values.includes('default')) return null;
+    const tenant = tenantValues[0]!;
+    const wrong = tenantValues.slice(0, 2).map((v) => "'" + v + "'").join(', ');
+    return (
+      '⚠ mixed global/tenant transcript scope: session_turns is NOT a corpus constant. ' +
+      "File-backed claude/omp/codex transcripts use workspace_id = 'default' (the host-global " +
+      'corpus sentinel), while agent_chat transcripts retain their real workspace id because ' +
+      'that source has no owner stamp and must remain tenant-isolated. Filtering only by ' +
+      wrong + ' returns a valid but catastrophically incomplete agent_chat-only slice — a ' +
+      'plausible non-empty result, not zero. To read the full transcript corpus visible to this ' +
+      `workspace, use (workspace_id = '${tenant}' OR workspace_id = 'default'), then narrow with ` +
+      '`source_kind`, `owner`, `harness_slug`, or `session_id` for the question you are asking.'
+    );
+  }
+
   if (values.includes('default')) return null; // caller already knows the namespace
 
   const named = [...new Set(corpusHits)].slice(0, 3).join(', ');

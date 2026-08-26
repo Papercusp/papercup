@@ -1793,6 +1793,7 @@ describe('buildJsonbPathRedirect (P-015)', () => {
  */
 describe('buildCorpusNamespaceAdvisory — a tenant predicate on a corpus table (EI-20103748074297088)', () => {
   const PARTS = 'harness_shared.session_turn_parts';
+  const TURNS = 'harness_shared.session_turns';
 
   it('fires when a corpus table is filtered by a real tenant id', () => {
     const advisory = buildCorpusNamespaceAdvisory(
@@ -1804,6 +1805,26 @@ describe('buildCorpusNamespaceAdvisory — a tenant predicate on a corpus table 
     // It must hand over the fix, not just the diagnosis.
     expect(advisory).toContain("workspace_id = 'default'");
     expect(advisory).toContain('owner');
+  });
+
+  it('EI-21477025296868436: names session_turns as mixed scope and rejects the plausible partial tenant slice', () => {
+    const advisory = buildCorpusNamespaceAdvisory(
+      `SELECT source_kind, count(*) FROM ${TURNS} WHERE workspace_id = 'papercusp-workspace' GROUP BY 1`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('NOT a corpus constant');
+    expect(advisory).toContain('agent_chat');
+    expect(advisory).toContain("workspace_id = 'papercusp-workspace' OR workspace_id = 'default'");
+    expect(advisory).toContain('plausible non-empty result');
+    expect(advisory).not.toContain('matches ZERO rows');
+  });
+
+  it('EI-21477025296868436: is silent for session_turns when the caller uses the production dual-scope predicate', () => {
+    expect(
+      buildCorpusNamespaceAdvisory(
+        `SELECT * FROM ${TURNS} WHERE workspace_id = 'papercusp-workspace' OR workspace_id = 'default'`,
+      ),
+    ).toBeNull();
   });
 
   /**
