@@ -34,6 +34,23 @@ export interface LiveLockHolding {
 }
 
 /**
+ * Read every currently-held file lock without swallowing lock-plane failures.
+ *
+ * Most collision-avoidance callers should use {@link liveLockHoldings}, whose
+ * fail-soft contract preserves their historical best-effort behaviour. Commit
+ * gates are different: treating an unreadable lock plane as an empty set can
+ * stage a peer's in-flight (including temporarily truncated) file. Those
+ * callers use this strict seam and must fail closed when it throws.
+ */
+export async function liveLockHoldingsStrict(): Promise<LiveLockHolding[]> {
+  await ensureBootstrap();
+  // readQueue already filters holders to expires_ts > clock_timestamp(), so the set is
+  // live by construction. No `paths`/`owner` filter ⇒ the whole active set.
+  const queue = await readQueue(getTxPool(), { coordinationDomain: null });
+  return queue.active_locks.map((l) => ({ path: l.path, owner: l.owner, intent: l.intent }));
+}
+
+/**
  * Every path currently held by a live lock, with its holder.
  *
  * `coordinationDomain: null` reads across EVERY domain, matching the audience-host
@@ -50,11 +67,7 @@ export interface LiveLockHolding {
  */
 export async function liveLockHoldings(): Promise<LiveLockHolding[]> {
   try {
-    await ensureBootstrap();
-    // readQueue already filters holders to expires_ts > clock_timestamp(), so the set is
-    // live by construction. No `paths`/`owner` filter ⇒ the whole active set.
-    const queue = await readQueue(getTxPool(), { coordinationDomain: null });
-    return queue.active_locks.map((l) => ({ path: l.path, owner: l.owner, intent: l.intent }));
+    return await liveLockHoldingsStrict();
   } catch {
     return [];
   }

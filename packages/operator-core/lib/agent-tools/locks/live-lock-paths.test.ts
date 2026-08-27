@@ -23,7 +23,7 @@ vi.mock('./su-lock-store', () => ({
   readQueue: (...a: unknown[]) => readQueue(...(a as [never, never])),
 }));
 
-import { liveLockHoldings, liveLockedPaths } from './live-lock-paths';
+import { liveLockHoldings, liveLockHoldingsStrict, liveLockedPaths } from './live-lock-paths';
 
 const holding = (path: string, owner: string, intent = `edit ${path}`) => ({ path, owner, intent });
 
@@ -74,6 +74,16 @@ describe('liveLockHoldings', () => {
   it('fails soft to [] when bootstrap throws', async () => {
     ensureBootstrap.mockRejectedValueOnce(new Error('locks unconfigured'));
     expect(await liveLockHoldings()).toEqual([]);
+  });
+
+  it('strict variant propagates lock-plane failures for commit gates', async () => {
+    readQueue.mockRejectedValueOnce(new Error('side-DB unreachable'));
+    await expect(liveLockHoldingsStrict()).rejects.toThrow('side-DB unreachable');
+  });
+
+  it('strict variant propagates bootstrap failures for commit gates', async () => {
+    ensureBootstrap.mockRejectedValueOnce(new Error('locks unconfigured'));
+    await expect(liveLockHoldingsStrict()).rejects.toThrow('locks unconfigured');
   });
 });
 
