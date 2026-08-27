@@ -268,6 +268,13 @@ export function classifyMcpPressure(f: McpInFlightSnapshot | null): McpPlanePres
   const q = f.criticalContinuationQueue;
   if (q && typeof q.waiting === 'number' && q.waiting > 0) {
     ratios.push(typeof q.max === 'number' && q.max > 0 ? Math.min(1, q.waiting / q.max) : 1);
+    // Depth alone hides the shape that produced this bug: ONE request starving behind
+    // the single slot until the CLIENT's own timer fires. A queue 2-deep reads shallow
+    // while its oldest waiter sits at 29s of a 30s budget, so age-against-budget is the
+    // leg that actually sees the silent-timeout case.
+    if (typeof q.oldestAgeMs === 'number' && typeof q.maxWaitMs === 'number' && q.maxWaitMs > 0) {
+      ratios.push(Math.min(1, q.oldestAgeMs / q.maxWaitMs));
+    }
   }
   if (ratios.length === 0) return 'unknown';
   const peak = Math.max(...ratios);

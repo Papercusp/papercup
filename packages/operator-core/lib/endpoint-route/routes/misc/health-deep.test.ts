@@ -7,11 +7,16 @@
  */
 import { describe, expect, it, afterEach, vi } from 'vitest';
 import { Worker } from 'node:worker_threads';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
+  classifyMcpPressure,
   computeDeepReadiness,
   probeSubsystem,
   readCpuWorker,
   readLoopLag,
+  MCP_PROXY_HEALTH_PATH,
   type ProbeStatus,
 } from './health-deep';
 import route from './health-deep';
@@ -237,6 +242,104 @@ describe('readCpuWorker', () => {
       verdict: expect.stringMatching(
         /^(serving|idle-unproven|silently-falling-back|disabled)$/,
       ),
+    });
+  }, 30000);
+});
+
+/**
+ * EI-21524598788382723 — the MCP plane leg. `/api/health/deep` exercised five
+ * subsystems while omitting the one plane every agent's every tool call traverses,
+ * so a shedding/timing-out proxy sat behind a green deep-health check.
+ */
+describe('classifyMcpPressure', () => {
+  it('is unknown when the proxy could not be read (never a green default)', () => {
+    expect(classifyMcpPressure(null)).toBe('unknown');
+  });
+
+  it('is unknown when a payload carries no ratio we can compute', () => {
+    // A proxy older/newer than this reader must not silently read as healthy.
+    expect(classifyMcpPressure({ total: 4 })).toBe('unknown');
+  });
+
+  it('reads a quiet plane as ok', () => {
+    expect(
+      classifyMcpPressure({ total: 4, ordinary: 3, ordinaryCeiling: 136, maxInFlight: 200 }),
+    ).toBe('ok');
+  });
+
+  it('reads a class at its ceiling as saturated', () => {
+    expect(
+      classifyMcpPressure({ total: 136, ordinary: 136, ordinaryCeiling: 136, maxInFlight: 200 }),
+    ).toBe('saturated');
+  });
+
+  it('reads 75% of a class ceiling as elevated (before the shedding starts)', () => {
+    expect(
+      classifyMcpPressure({ total: 102, ordinary: 102, ordinaryCeiling: 136, maxInFlight: 200 }),
+    ).toBe('elevated');
+  });
+
+  /**
+   * THE REGRESSION CONTROL. critical-continuation is a single-flight bulkhead
+   * (ceiling 1), so 1-of-1 is its normal working state — the live proxy sat at
+   * exactly this while perfectly healthy. Classifying it as saturated would pin
+   * the signal permanently red, and an always-red signal is one readers learn to
+   * ignore, which is the exact failure this probe exists to prevent.
+   */
+  it('does NOT read the single-flight bulkhead at 1-of-1 as saturated', () => {
+    expect(
+      classifyMcpPressure({
+        total: 4,
+        ordinary: 3,
+        ordinaryCeiling: 136,
+        criticalContinuation: 1,
+        maxInFlight: 200,
+      }),
+    ).toBe('ok');
+  });
+
+  it('DOES escalate the bulkhead when work is queued behind its one slot', () => {
+    expect(
+      classifyMcpPressure({
+        total: 4,
+        ordinary: 3,
+        ordinaryCeiling: 136,
+        criticalContinuation: 1,
+        criticalContinuationQueue: { waiting: 8, max: 8 },
+        maxInFlight: 200,
+      }),
+    ).toBe('saturated');
+  });
+});
+
+describe('MCP proxy health path is PINNED to the proxy that serves it', () => {
+  it('matches MCP_PROXY_LOCAL_HEALTH_PATH in apps/operator/lib/mcp-proxy/budgets.mjs', () => {
+    // operator-core must not import from apps/, so the literal is duplicated. This
+    // is the PIN that stops the copy drifting: probing the wrong path would make the
+    // plane read permanently 'down' — a false alarm is as useless as a false green.
+    const budgets = readFileSync(
+      join(
+        dirname(fileURLToPath(import.meta.url)),
+        '../../../../../../apps/operator/lib/mcp-proxy/budgets.mjs',
+      ),
+      'utf8',
+    );
+    const declared = /MCP_PROXY_LOCAL_HEALTH_PATH\s*=\s*'([^']+)'/.exec(budgets)?.[1];
+    // Positive control: a failed regex must not pass as agreement with undefined.
+    expect(declared).toBeTruthy();
+    expect(MCP_PROXY_HEALTH_PATH).toBe(declared);
+  });
+});
+
+describe('deep health payload carries the MCP plane', () => {
+  it('reaches the WIRE, not just the function', async () => {
+    const res = await route.handler({} as never);
+    const body = (await res.json()) as { mcpPlane?: unknown };
+    // Reachable or not, the FIELD must be present: its absence is the original bug.
+    expect(body.mcpPlane).toMatchObject({
+      status: expect.stringMatching(/^(ok|down|disabled)$/),
+      latencyMs: expect.any(Number),
+      pressure: expect.stringMatching(/^(ok|elevated|saturated|unknown)$/),
     });
   }, 30000);
 });
