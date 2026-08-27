@@ -493,6 +493,7 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     expect(u.searchParams.get('tools')).toBe([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
     // …and that round-trips back to the exact list the server allowlist decodes.
     expect(u.searchParams.get('tools')!.split(',')).toEqual([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES]);
+    expect(u.searchParams.get('tools')!.split(',')).toContain('coord:declare-intent');
     expect(u.searchParams.get('tools')!.split(',')).toContain('fleet:launch-on-plan');
     // P-010: every su session is seeded with chat:ask_choice too — unconditionally
     // reachable from a live GUI chat (SessionChatModal), unlike a headless role launch.

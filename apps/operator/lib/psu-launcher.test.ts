@@ -2124,6 +2124,17 @@ describe("OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)", () => {
     expect([...CORE_MCP_TOOL_NAMES]).toContain("fleet:launch-on-plan");
   });
 
+  it("seeds coord:declare-intent immediately after coord:orient for post-bootstrap lane declaration", () => {
+    expect([...OMP_CORE_MCP_TOOL_NAMES]).toContain("coord:declare-intent");
+    expect([...CORE_MCP_TOOL_NAMES]).toContain("coord:declare-intent");
+    expect(OMP_CORE_MCP_TOOL_NAMES.indexOf("coord:declare-intent")).toBe(
+      OMP_CORE_MCP_TOOL_NAMES.indexOf("coord:orient") + 1,
+    );
+    expect(CORE_MCP_TOOL_NAMES.indexOf("coord:declare-intent")).toBe(
+      CORE_MCP_TOOL_NAMES.indexOf("coord:orient") + 1,
+    );
+  });
+
   it("seeds work_items:release for worker handoffs instead of relying on deferred discovery", () => {
     // EI-8588: release existed server-side, but seeded worker/fleet surfaces omitted it,
     // so a member trying to return a misclaimed item could not discover/call the flat
