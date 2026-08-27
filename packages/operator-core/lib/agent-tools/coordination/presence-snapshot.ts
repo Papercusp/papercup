@@ -40,7 +40,11 @@ import { deriveVerdict } from './liveness-oracle';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { deriveContextPressure } from './context-pressure';
 import { writeWatermark } from './watermarks';
-import { getTxPool, readPathInterestsByOwner } from '../locks/su-lock-store';
+import {
+  getTxPool,
+  readPathInterestsByOwner,
+  type PathInterestRow,
+} from '../locks/su-lock-store';
 import { gatherOnDesktopSessions } from '../../desktop-window-liveness';
 import { gatherViewerAttachedOwners } from '../../pty-viewer-heartbeat';
 import type { Watermark } from '@papercusp/coordination/core';
@@ -696,10 +700,21 @@ export async function assemblePresenceSnapshot(
   // escalation detail keeps its dedicated tools (events:* / coord:inbox) rather
   // than being duplicated into this org-PG read.
   if (opts.detail) {
-    const held = await fetchPresenceHeldFiles(localActiveIds, opts.detail.coordinationDomain);
+    const held = await fetchPresenceHeldLocks(localActiveIds, opts.detail.coordinationDomain);
     activeRows = activeRows.map((r) => {
-      const files = held.get(r.ownerId as string);
-      return files && files.length ? { ...r, heldFiles: files } : r;
+      const locks = held.get(r.ownerId as string);
+      if (!locks || locks.length === 0) return r;
+      return {
+        ...r,
+        // Keep the original P-011 path-only field stable for existing readers.
+        heldFiles: locks.map((lock) => lock.path),
+        // Reconciliation detail: the exact release handles and their live
+        // namespace/expiry evidence come from the same authoritative rows as
+        // locks:queue. A holder that lost local lock context can now identify
+        // and release the row that still blocks a peer.
+        heldLocks: locks,
+        heldLockIds: [...new Set(locks.map((lock) => lock.lockId))],
+      };
     });
   }
 
@@ -785,6 +800,66 @@ export function groupHeldFilesByOwner(
   return out;
 }
 
+/** A stable, model-facing description of one live file-lock row. */
+export interface PresenceHeldLock {
+  /** Exact handle accepted by locks:release. */
+  lockId: string;
+  /** Repository-relative path covered by the lock set. */
+  path: string;
+  /** Lock namespace needed to distinguish same-path rows across trees. */
+  coordinationDomain: string;
+  /** Lease expiry read from the authoritative lock row. */
+  expiresAt: string;
+}
+
+function isHeldLockRow(holder: PathInterestRow): holder is PathInterestRow & {
+  lock_id: string;
+  coordination_domain: string;
+  expires_ts: Date;
+} {
+  return (
+    typeof holder.lock_id === 'string' &&
+    holder.lock_id.length > 0 &&
+    typeof holder.coordination_domain === 'string' &&
+    holder.coordination_domain.length > 0 &&
+    holder.expires_ts instanceof Date &&
+    Number.isFinite(holder.expires_ts.getTime())
+  );
+}
+
+/**
+ * Pure: group active lock rows by roster owner while retaining the release
+ * handle and the evidence needed to reconcile it with locks:queue. The same
+ * lock id legitimately appears once per covered path; `heldLockIds` is derived
+ * at the emission site when callers need one release handle per lock set.
+ */
+export function groupHeldLocksByOwner(
+  holders: PathInterestRow[],
+  ownerIds: Set<string>,
+): Map<string, PresenceHeldLock[]> {
+  const out = new Map<string, PresenceHeldLock[]>();
+  for (const holder of holders) {
+    if (!ownerIds.has(holder.owner) || !holder.node || !isHeldLockRow(holder)) continue;
+    const arr = out.get(holder.owner) ?? [];
+    arr.push({
+      lockId: holder.lock_id,
+      path: holder.node,
+      coordinationDomain: holder.coordination_domain,
+      expiresAt: holder.expires_ts.toISOString(),
+    });
+    out.set(holder.owner, arr);
+  }
+  for (const [owner, locks] of out) {
+    locks.sort((a, b) =>
+      a.path.localeCompare(b.path) ||
+      a.lockId.localeCompare(b.lockId) ||
+      a.coordinationDomain.localeCompare(b.coordinationDomain) ||
+      a.expiresAt.localeCompare(b.expiresAt),
+    );
+  }
+  return out;
+}
+
 /**
  * IO seam (P-011 / include_detail): read the live file-lock HOLDS from the SU
  * lock store (the SEPARATE papercusp_su DB) and group them per owner. Fail-soft
@@ -803,13 +878,28 @@ export async function fetchPresenceHeldFiles(
   ownerIds: string[],
   coordinationDomain?: string | null,
 ): Promise<Map<string, string[]>> {
+  const held = await fetchPresenceHeldLocks(ownerIds, coordinationDomain);
+  return new Map([...held].map(([owner, locks]) => [owner, locks.map((lock) => lock.path)]));
+}
+
+/**
+ * IO seam for the include_detail reconciliation lane. It deliberately shares
+ * the existing path-interest query with the coupling reader, but consumes its
+ * holds-only metadata columns so the presence row exposes the authoritative
+ * lock id instead of only the covered path. Fail-soft like the legacy
+ * `fetchPresenceHeldFiles` wrapper.
+ */
+export async function fetchPresenceHeldLocks(
+  ownerIds: string[],
+  coordinationDomain?: string | null,
+): Promise<Map<string, PresenceHeldLock[]>> {
   if (ownerIds.length === 0) return new Map();
   try {
     const holders = await readPathInterestsByOwner(getTxPool(), ownerIds, {
       coordinationDomain: coordinationDomain ?? null,
       includeIntents: false,
     });
-    return groupHeldFilesByOwner(holders, new Set(ownerIds));
+    return groupHeldLocksByOwner(holders, new Set(ownerIds));
   } catch {
     return new Map();
   }
