@@ -83,7 +83,7 @@ export interface WorkItemDependencyBatchResult {
 /** Shared options for the compatibility facades routed through the canonical mutation seam. */
 export interface WorkItemDependencyWriterOptions {
   readonly createdBy?: string;
-  /** Injectable database handle for real-Postgres tests and transaction-owning internal callers. */
+  /** Injectable root database handle for real-Postgres tests and explicitly scoped internal callers. */
   readonly sql?: Sql;
   /** Endpoint-row workspace. Edge rows remain in DEFAULT_COORD_WORKSPACE. */
   readonly itemWorkspaceId?: string;
