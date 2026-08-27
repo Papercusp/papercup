@@ -154,7 +154,7 @@ export type QualificationTransition =
  */
 function isRetryableUnownedWait(
   current: CheckpointQualificationTransaction | null,
-): current is CheckpointQualificationTransaction {
+): boolean {
   return Boolean(
     current &&
       current.phase === 'waiting' &&
