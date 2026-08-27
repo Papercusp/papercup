@@ -118,10 +118,20 @@ const KNOWN_UNCOVERED: Record<string, string> = {
   // through the claim door (the preserved edge still WITHHOLDS after the plan-derived blocker
   // is satisfied), with the replace path run on the same fixture as its negative control.
   //
-  // The set is now EMPTY, which is a claim, not a milestone: it says every registry invariant
-  // has at least one citation in the corpus. It is held honest from both sides — the
-  // exact-set assertion below fails the moment a citation is dropped OR an invariant is
-  // added, so reaching zero cannot be preserved by quietly deleting either.
+  // P-003 intentionally names the next five guarantees BEFORE their implementation lanes.
+  // A registry test validates their data shape, but it is excluded from CORPUS because testing
+  // a proposition's wording does not prove production behavior. Each row stays here until the
+  // named later lane lands a real production-path or concurrency proof and cites the invariant.
+  'INV-16':
+    'P-005/P-007 must prove canonical post-state admission and concurrent write-skew prevention before stranded-set prevention counts as covered.',
+  'INV-17':
+    'P-005/P-009 must prove rejected work-item and plan batches leave edges and every companion side effect unchanged before atomicity counts as covered.',
+  'INV-18':
+    'P-005/P-007 must prove one typed admission graph catches cross-family and cross-harness cycles while refusing inert cross-workspace edges.',
+  'INV-19':
+    'P-011 must exercise blocker add, remove, reopen, claim, wip, terminal, deletion, and re-home transitions through atomic reconciliation or refusal.',
+  'INV-20':
+    'P-013/P-014 must prove lint, monitoring, tools, and the dependency pane consume identical policy rows and preserve healthy-shape noise exclusions.',
 };
 
 const read = (rel: string) => readFileSync(resolve(CORE, rel), 'utf8');

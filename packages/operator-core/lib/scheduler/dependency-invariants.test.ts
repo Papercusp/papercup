@@ -24,7 +24,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DEPENDENCY_INVARIANTS,
   DEPENDENCY_INVARIANT_COUNT,
+  DEPENDENCY_POLICY_RULES,
+  DEPENDENCY_POLICY_RULE_COUNT,
+  DEPENDENCY_POLICY_SURFACES,
   coveredInvariants,
+  dependencyPoliciesByClassification,
+  getDependencyPolicy,
   getInvariant,
   invariantsBindingPath,
   invariantsByArea,
@@ -99,9 +104,121 @@ describe('dependency invariant registry — shape', () => {
     expect(getInvariant('INV-11')!.statement).toMatch(/workspace/i);
   });
 
+  it('names prevention, batch atomicity, global typed scope, transition safety, and alert honesty explicitly', () => {
+    expect(getInvariant('INV-16')!.statement).toMatch(/post-state.*stranded/i);
+    expect(getInvariant('INV-17')!.statement).toMatch(/atomic.*graph or plan/i);
+    expect(getInvariant('INV-18')!.statement).toMatch(/families and harnesses/i);
+    expect(getInvariant('INV-19')!.statement).toMatch(/lifecycle transition.*same transaction/i);
+    expect(getInvariant('INV-20')!.statement).toMatch(/one policy row/i);
+  });
+
+  it('keeps acyclicity and batch atomicity as separate coverage claims', () => {
+    expect(getInvariant('INV-08')!.statement).not.toMatch(/edge granularity/i);
+    expect(getInvariant('INV-08')!.note).toMatch(/INV-17/);
+    expect(getInvariant('INV-17')!.statement).toMatch(/every requested edge.*commits together/i);
+  });
+
   it('exports a count that tracks the array', () => {
     expect(DEPENDENCY_INVARIANT_COUNT).toBe(DEPENDENCY_INVARIANTS.length);
-    expect(DEPENDENCY_INVARIANT_COUNT).toBeGreaterThanOrEqual(15);
+    expect(DEPENDENCY_INVARIANT_COUNT).toBeGreaterThanOrEqual(20);
+  });
+});
+
+describe('dependency policy registry — one classification contract for every surface', () => {
+  it('has unique stable codes and exports a tracking count', () => {
+    const codes = DEPENDENCY_POLICY_RULES.map((rule) => rule.code);
+    expect(new Set(codes).size).toBe(codes.length);
+    for (const code of codes) expect(code).toMatch(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
+    expect(DEPENDENCY_POLICY_RULE_COUNT).toBe(DEPENDENCY_POLICY_RULES.length);
+    expect(DEPENDENCY_POLICY_RULE_COUNT).toBeGreaterThanOrEqual(30);
+  });
+
+  it('declares the shared admission/lint/monitor/tool/UI consumers once', () => {
+    expect(DEPENDENCY_POLICY_SURFACES).toEqual(['admission', 'lint', 'monitor', 'tool', 'ui']);
+  });
+
+  it('makes class behavior structural instead of relying on prose conventions', () => {
+    const invariantIds = new Set(DEPENDENCY_INVARIANTS.map((inv) => inv.id));
+    for (const rule of DEPENDENCY_POLICY_RULES) {
+      expect(rule.summary.length, `${rule.code} summary`).toBeGreaterThan(40);
+      expect(rule.evidence.length, `${rule.code} evidence`).toBeGreaterThan(0);
+      expect(rule.provenance.length, `${rule.code} provenance`).toBeGreaterThan(0);
+      expect(rule.invariantIds.length, `${rule.code} invariantIds`).toBeGreaterThan(0);
+      for (const id of rule.invariantIds) expect(invariantIds.has(id), `${rule.code} → ${id}`).toBe(true);
+
+      if (rule.classification === 'hard-block') {
+        expect(rule.action, rule.code).toBe('reject');
+        expect(rule.confidence, rule.code).toBe('deterministic');
+        expect(rule.suppression, rule.code).toBe('never');
+        expect(rule.suggestedAction?.length ?? 0, rule.code).toBeGreaterThan(20);
+      } else if (rule.classification === 'advisory') {
+        expect(rule.action, rule.code).toBe('alert');
+        expect(rule.suppression, rule.code).toBe('structured-rationale');
+        expect(rule.suggestedAction?.length ?? 0, rule.code).toBeGreaterThan(20);
+      } else {
+        expect(rule.action, rule.code).toBe('suppress');
+        expect(rule.suppression, rule.code).toBe('automatic');
+        expect(rule.suggestedAction, rule.code).toBeNull();
+      }
+    }
+  });
+
+  it('pins the hard-block, advisory, and healthy taxonomy by stable result code', () => {
+    expect(dependencyPoliciesByClassification('hard-block').map((rule) => rule.code)).toEqual([
+      'cycle',
+      'executable-endpoint-missing',
+      'endpoint-identity-mismatch',
+      'cross-workspace-inert-edge',
+      'stranded-set-increase',
+      'dangling-identity-transition',
+      'active-dependant-unreconciled',
+      'reopened-blocker-unreconciled',
+      'partial-dependency-batch',
+      'executable-plan-invalid',
+      'promotion-edge-divergence',
+      'required-outcome-impossible',
+      'typed-blocked-without-resolver',
+    ]);
+    expect(dependencyPoliciesByClassification('advisory').map((rule) => rule.code)).toEqual([
+      'satisfied-edge-retained',
+      'terminal-dependant-live-blocker',
+      'legacy-blocked-without-resolver',
+      'promoted-graph-extra-edge',
+      'phase-inversion',
+      'gate-foundation-inversion',
+      'transitive-redundancy',
+      'narrow-or-deep-topology',
+      'high-degree-node',
+      'cross-harness-without-provenance',
+      'dependency-added-after-wip',
+      'external-condition-uncertain',
+      'duplicate-plan-coverage',
+    ]);
+    expect(dependencyPoliciesByClassification('healthy').map((rule) => rule.code)).toEqual([
+      'isolated-or-wide-roots',
+      'diamond-or-multiple-blockers',
+      'intentional-serialization',
+      'cross-harness-with-provenance',
+      'settled-terminal-blocker',
+      'retained-history-edge',
+    ]);
+  });
+
+  it('looks up the exact row tools and UI will share', () => {
+    expect(getDependencyPolicy('cycle')).toMatchObject({
+      classification: 'hard-block',
+      action: 'reject',
+      suppression: 'never',
+    });
+    expect(getDependencyPolicy('phase-inversion')).toMatchObject({
+      classification: 'advisory',
+      action: 'alert',
+    });
+    expect(getDependencyPolicy('diamond-or-multiple-blockers')).toMatchObject({
+      classification: 'healthy',
+      action: 'suppress',
+    });
+    expect(getDependencyPolicy('not-a-real-policy')).toBeUndefined();
   });
 });
 
