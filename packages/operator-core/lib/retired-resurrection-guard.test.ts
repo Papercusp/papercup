@@ -141,7 +141,9 @@ describe('cell retirement ratchet — scoped identifiers + assessment census', (
 
   it('requires exactly one non-null assessment on every poll/value-bearing built-in', () => {
     const result = assessBuiltinCellDeclarations(`
+      const SHARED_CELL_FIELDS = { nullable: true };
       const GOOD_CELL: CellSpec = {
+        ...SHARED_CELL_FIELDS,
         changeSignal: { kind: 'poll', tool: 'state:read', path: 'value' },
         assessment: assessmentSpec(),
       };

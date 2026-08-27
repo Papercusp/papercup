@@ -106,6 +106,7 @@ export function findRemovedCellIdentifiers(files) {
 
 function propertyName(node) {
   const name = node?.name;
+  if (!name) return null;
   if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
   return null;
 }
