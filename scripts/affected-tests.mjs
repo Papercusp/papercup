@@ -3991,6 +3991,40 @@ function runCapturedTask(
           ),
           identity: cacheIdentity,
         });
+        // EI-21577710345620735 — CROSS-RUN reuse. The lookup above is confined to THIS run's
+        // group, which is why a red gate re-tests the ~100 tasks that already passed: their
+        // proof exists, under last run's group, and is unreachable. On a per-run miss, retry
+        // against the stable cross-run group.
+        //
+        // This does NOT weaken the gate. The cross-run entry is admitted by the SAME
+        // decidePassingTaskVerdict identity check, whose dependencyHash is the content sha256
+        // of the task's whole dependency closure and which fails closed on any enumeration gap.
+        // A hit therefore means "this exact task, same command and config, and not one byte it
+        // reads has changed" — re-running it could not produce different information.
+        if (!cacheDecision.hit) {
+          const { environment: crossRunEnvironment, cacheGroup: crossRunGroup } =
+            passingTaskVerdictCrossRunIdentityEnvironment(childEnv);
+          crossRunCacheIdentity = buildPassingTaskVerdictIdentity({
+            ...cacheIdentitySpec,
+            environment: crossRunEnvironment,
+          });
+          const crossRunDecision = decidePassingTaskVerdict({
+            enabled: true,
+            cacheRead: taskVerdictCacheRead,
+            entry: passingTaskVerdictCacheEntry(
+              taskVerdictCacheRead.cache,
+              crossRunGroup,
+              taskKey(context.t),
+            ),
+            identity: crossRunCacheIdentity,
+          });
+          if (crossRunDecision.hit) {
+            cacheDecision = {
+              ...crossRunDecision,
+              reason: `cross-run:${crossRunDecision.reason ?? "hit"}`,
+            };
+          }
+        }
       }
     } else {
       cacheDecision = {
