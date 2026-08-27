@@ -42,6 +42,7 @@ const session = (over: Partial<FreshLaunchSessionProbe> = {}): FreshLaunchSessio
   const successfulCalls = over.successfulCalls ?? 0;
   return {
     advSessionId: 14842,
+    sessionId: null,
     ownerId,
     successfulCalls,
     msSinceLastSignal: null,
