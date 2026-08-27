@@ -226,7 +226,7 @@ export function createWorkspaceHostActionRoute(
             ...(checkpoint.deletionConfirmation ? { deletionConfirmation: checkpoint.deletionConfirmation } : {}),
           })),
           ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
-          ...(result.evidence ? { evidence: result.evidence } : {}),
+          ...('evidence' in result && result.evidence ? { evidence: result.evidence } : {}),
           message: result.status === 'succeeded'
             ? action === 'destroy'
               ? 'Workspace-host discard teardown completed with terminal evidence'
