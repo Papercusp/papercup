@@ -644,7 +644,7 @@ dependency_generation_acquire_selector_lease() {
     dependency_generation_log "FATAL: dependency generation $identity disappeared before it could be leased"
     return 74
   fi
-  mkdir -p "$generation_root/.leases"
+  dependency_generation_ensure_store_root "$generation_root" "$generation_root/.leases"
   lease="$generation_root/.leases/selector-$$-$(date +%s)-${RANDOM:-0}"
   dependency_generation_write_owner "$lease"
   printf 'identity=%s\n' "$identity" >> "$lease"
@@ -672,7 +672,7 @@ dependency_generation_write_pin_locked() {
   [ -f "$marker" ] || return 1
   [ "$(dependency_generation_read_field "$marker" identity)" = "$identity" ] || return 1
   dependency_generation_marker_matches "$generation_root/$identity" "$identity" || return 1
-  mkdir -p "$generation_root/.pins"
+  dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins"
   pin_key="$(printf '%s' "$checkout" | dependency_generation_sha256)" || return 1
   pin="$generation_root/.pins/checkout-$pin_key"
   tmp="$pin.tmp.$$"
@@ -695,11 +695,40 @@ dependency_generation_register_pin() {
 # Refresh same-host pin/lease truth and import direct sibling checkout markers.
 # This runs only while .publish-lock is held, so pruning cannot race a pin that
 # is being registered or a selector that is being leased.
+# WI-42354 CLASS GUARD: create the generation store ROOT (plus any subdirs asked
+# for) and make it self-ignoring, so a store is born un-committable wherever it is
+# created — including in a pot that does not exist yet.
+#
+# WHY: this store is HOST-LOCAL RUNTIME STATE — selector leases, materialized trees,
+# and pin files whose only mutating field is `updated=<epoch>`. Nothing reads it out
+# of git history (its sole consumer reads the live filesystem). But it lives INSIDE
+# git working trees, so every run rewrote a pin heartbeat, git-sync committed the
+# churn, the pot's tip moved, and the NEXT run saw "changes" and re-materialized from
+# scratch: perpetual motion that kept ~20 hourly gates redoing full setup and starved
+# the box of materialization slots. Untracking it in the 7 repos that exist today was
+# the data fix; this is the guard that stops the class from coming back.
+#
+# A '*' pattern ignores every path under this directory INCLUDING the .gitignore
+# itself. That is deliberate on both counts: nothing here should ever reach git, and
+# a self-ignoring marker needs no cooperation from the enclosing repo's .gitignore —
+# which is precisely what a newly-created pot will not yet have.
+#
+# Best-effort by design: a read-only store, or a peer racing the same create, must
+# never fail a materialization over a hygiene file, so the write is guarded and the
+# helper still returns success. mkdir failure DOES propagate — that one is fatal.
+dependency_generation_ensure_store_root() {
+  local root="$1"
+  shift
+  mkdir -p "$root" "$@" || return $?
+  [ -e "$root/.gitignore" ] || printf '*\n' > "$root/.gitignore" 2>/dev/null || true
+  return 0
+}
+
 dependency_generation_refresh_retention_state_locked() {
   local generation_root="$1" integration_root="$2"
   local host pin pin_host identity checkout marker lease lease_host lease_pid parent sibling
   host="$(dependency_generation_host)"
-  mkdir -p "$generation_root/.pins" "$generation_root/.leases"
+  dependency_generation_ensure_store_root "$generation_root" "$generation_root/.pins" "$generation_root/.leases"
 
   for pin in "$generation_root"/.pins/*; do
     [ -f "$pin" ] || continue
@@ -927,7 +956,7 @@ dependency_generation_ensure() {
   if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
     dependency_generation_configure_workspace_dirs "$integration_root" || return $?
   fi
-  mkdir -p "$generation_root"
+  dependency_generation_ensure_store_root "$generation_root"
   dependency_generation_cleanup_abandoned "$generation_root"
 
   build="$generation_root/.build-pending-$(dependency_generation_host)-$$-$(date +%s)"

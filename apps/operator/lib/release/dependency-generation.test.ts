@@ -968,3 +968,50 @@ describe('immutable dependency generation', () => {
     }
   });
 });
+
+describe('WI-42354: the generation store is born un-committable', () => {
+  // The store is host-local runtime state (leases, materialized trees, and pins whose
+  // only mutating field is `updated=<epoch>`) that happens to live INSIDE a git working
+  // tree. While it was tracked, every run rewrote a pin heartbeat, git-sync committed
+  // the churn, the pot's tip moved, and the NEXT run saw "changes" and re-materialized
+  // from scratch — perpetual motion that kept ~20 hourly gates redoing full setup.
+  // Untracking the 7 existing repos was the data fix; these tests guard the CLASS, so a
+  // store created in a pot that does not exist yet cannot reintroduce it.
+
+  it('writes a self-ignoring .gitignore into the store root on publish', () => {
+    const integration = makeIntegration();
+    expect(publish(integration).status).toBe(0);
+    const ignore = join(integration, '.papercusp/dependency-generations/.gitignore');
+    expect(existsSync(ignore)).toBe(true);
+    // '*' also ignores the .gitignore itself — deliberate: nothing under this root
+    // should ever reach git, and the marker must not depend on the enclosing repo's
+    // .gitignore, which a newly-created pot will not yet have.
+    expect(readFileSync(ignore, 'utf8').trim()).toBe('*');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('git reports NOTHING to commit for a store that has published pins', () => {
+    const integration = makeIntegration();
+    const git = (...args: string[]) =>
+      spawnSync('git', ['-C', integration, ...args], { encoding: 'utf8' });
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'test');
+
+    // CALIBRATION: before the store exists, this fixture is full of untracked files, so
+    // an empty `git status` would mean the probe is broken rather than the guard working.
+    expect(git('status', '--porcelain').stdout.trim()).not.toBe('');
+    git('add', '-A');
+    git('commit', '-qm', 'fixture');
+    expect(git('status', '--porcelain').stdout.trim()).toBe('');
+
+    expect(publish(integration).status).toBe(0);
+    const pins = join(integration, '.papercusp/dependency-generations/.pins');
+    mkdirSync(pins, { recursive: true });
+    writeFileSync(join(pins, 'checkout-deadbeef'), 'schema=1\nupdated=1787000000\n');
+
+    // THE REGRESSION: publishing + a pin heartbeat must leave git with nothing to say.
+    // Without the guard this reports `?? .papercusp/` — the exact churn that moved
+    // dormant pot tips every hour and defeated the gate's up-to-date short-circuit.
+    expect(git('status', '--porcelain').stdout.trim()).toBe('');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+});
