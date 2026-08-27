@@ -244,9 +244,7 @@ describe('Google Workspace owned trigger-source provisioning', () => {
        WHERE workspace_id = ${WS}
          AND owner_user_id = ${userId}::uuid
        ORDER BY provider_account_id, kind`;
-    const firstAfterReconnect = rowsAfterReconnect.filter(
-      (row) => row.providerAccountId === 'first@example.com',
-    );
+    const firstAfterReconnect = rowsAfterReconnect.filter((row) => row.providerAccountId === 'first@example.com');
     expect(firstAfterReconnect.map((row) => row.id).sort()).toEqual(first.map((row) => row.id).sort());
     expect(firstAfterReconnect.every((row) => row.credentialRef === 'google-workspace:first-field')).toBe(true);
     expect(firstAfterReconnect.find((row) => row.id === firstGmail.id)).toMatchObject({
