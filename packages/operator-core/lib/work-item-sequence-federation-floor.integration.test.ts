@@ -25,10 +25,7 @@ function readMigration(): string {
   if (!text.includes('work_items_advance_id_sequence')) {
     throw new Error(`migration 1003 at ${path} does not define the sequence-floor trigger`);
   }
-  // postgres.js rejects explicit transaction control on this pooled fixture.
-  // The multi-statement simple-protocol query is itself atomic, so strip only
-  // the migration's outer wrapper (the same pattern as sibling migration tests).
-  return text.replace(/^\s*(BEGIN|COMMIT)\s*;\s*$/gim, '');
+  return text;
 }
 
 let db: FreshPgDb;
