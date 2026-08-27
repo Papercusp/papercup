@@ -53,6 +53,11 @@ vi.mock('../../events/await/store', () => ({
   // Defaults to "no observed keys" ⇒ no advisory, so every pre-existing pattern
   // test above is unaffected; overridden per-test below to exercise the warning.
   probePatternMatchScope: vi.fn(async () => ({ prefix: '', matchedKeys: [], truncated: false })),
+  hasLiveExactAwaitForSubscriberKey: vi.fn(async () => false),
+}));
+vi.mock('../../harness/routines/monitor-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/routines/monitor-policy')>()),
+  hasActiveMonitorForOwnerPredicate: vi.fn(async () => false),
 }));
 vi.mock('../../events/await/engine', () => ({ startAwaitSweeper: vi.fn() }));
 vi.mock('./producer-health', async (importOriginal) => ({
@@ -147,6 +152,7 @@ import { readIssueClaimability } from '../../scheduler/get-next';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { resolveProducerHealthCertificate, resolveProgressLeaseCertificate } from './producer-health';
 import { resolveAnnouncementOwnership } from './status';
+import { hasActiveMonitorForOwnerPredicate } from '../../harness/routines/monitor-policy';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -154,9 +160,24 @@ const call = async (args: Record<string, unknown>) => {
   return JSON.parse(res.content[0].text);
 };
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(hasActiveMonitorForOwnerPredicate).mockResolvedValue(false);
+});
 
 describe('events:await wrapper defaults', () => {
+  it('refuses an exact await when the owner already has the same active monitor, before mutation', async () => {
+    vi.mocked(hasActiveMonitorForOwnerPredicate).mockResolvedValueOnce(true);
+    const out = await call({ event: 'release:green:papercusp' });
+    expect(out).toMatchObject({
+      ok: false,
+      error: 'monitor_exact_await_duplicate',
+      predicateKey: 'release:green:papercusp',
+      conflictingKind: 'monitor',
+    });
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(cancelAwaitsForSubscribersOnKeys).not.toHaveBeenCalled();
+  });
   it('guidance warns before registration that self-assignee status/done awaits are refused', () => {
     const guidance = awaitTool.guidance;
     expect(guidance).toBeDefined();
