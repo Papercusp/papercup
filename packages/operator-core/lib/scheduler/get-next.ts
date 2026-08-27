@@ -991,7 +991,8 @@ export function issueClaimCandidateSubquery(
           wi.goal_id,
           wi.expected_cost_cents,
           wi.tags,
-          wi.redundancy
+          wi.redundancy,
+          wi.lane
         `
       : sql`wi.*`;
 

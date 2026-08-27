@@ -169,6 +169,10 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     expect(projection).not.toContain('wi.*');
     expect(projection).toContain('wi.feature_id');
     expect(projection).toContain('wi.payload');
+    // The observation-lane floor reads the generated column after the CTE is
+    // re-aliased as `wi`; omitting it makes work_items:claimable fail with
+    // "column wi.lane does not exist" even though the base table has the column.
+    expect(projection).toContain('wi.lane');
     expect(projection).toContain('wi.updated_ts');
     expect(projection).toContain('wi.source_plan_item_ids');
     expect(projection).not.toContain('wi.summary');
