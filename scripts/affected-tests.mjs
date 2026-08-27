@@ -1383,6 +1383,23 @@ const UNENROLLED_MJS_IMPORTS_FILE_ENUMERATOR = "scripts/lib/tracked-files.mjs";
 
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
+    // capless-adaptive-resource-governor P-012 — the replacement for capacity-limit
+    // lint scans every executable source lane in its inventory. A workspace-local
+    // test cannot protect a new start added under apps/, packages/, or scripts/ when
+    // operator-core is otherwise unaffected, so route the exact scan surface here.
+    workspace: "@papercusp/operator-core",
+    script: "lint:resource-governor-enforcement",
+    hostSuiteRatchet:
+      "packages/operator-core/lib/resource-governor/state-snapshot.test.ts",
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f === "scripts/check-resource-governor-enforcement.mjs" ||
+      (/^(?:apps|packages|scripts)\//.test(f) &&
+        /\.(?:[cm]?[jt]sx?)$/.test(f) &&
+        !/(?:^|\/)(?:_retired|dist|node_modules|public)\//.test(f) &&
+        !/(?:\.test|\.spec)\.[cm]?[jt]sx?$/.test(f)),
+  },
+  {
     // EI-15951 — registry visibility is not execution. A canonical test can
     // match .papercusp/testing-domains.json while every real runner excludes
     // it; that exact hole left tools/eslint-rules tests permanently dead while
@@ -4154,7 +4171,7 @@ function runCapturedTask(
               __cacheReason: cacheDecision.reason,
               __cacheIdentity: cacheIdentity,
               __crossRunCacheIdentity: crossRunCacheIdentity,
-        __crossRunCacheIdentity: crossRunCacheIdentity,
+              __crossRunCacheIdentity: crossRunCacheIdentity,
             }
           : {}),
       };
@@ -4307,7 +4324,7 @@ function runCapturedTask(
               __cacheReason: cacheDecision.reason,
               __cacheIdentity: cacheIdentity,
               __crossRunCacheIdentity: crossRunCacheIdentity,
-        __crossRunCacheIdentity: crossRunCacheIdentity,
+              __crossRunCacheIdentity: crossRunCacheIdentity,
             }
           : {}),
       };
