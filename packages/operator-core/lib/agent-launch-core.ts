@@ -1106,6 +1106,158 @@ export const FRESH_VERIFY_TIMEOUT_MS = 25_000;
  */
 export const FRESH_VERIFY_SILENCE_MS = 12_000;
 
+export type FreshLaunchWorkerStageStatus = 'satisfied' | 'missing' | 'failed';
+
+export type FreshLaunchWorkerFailureCode =
+  | 'agent-call-missing'
+  | 'durable-wake-missing'
+  | 'scheduler-pull-missing'
+  | 'scheduler-pull-failed'
+  | 'disposition-missing';
+
+export interface FreshLaunchWorkerFailure {
+  stage: 'agentCall' | 'durableWake' | 'schedulerPull' | 'disposition';
+  code: FreshLaunchWorkerFailureCode;
+  detail: string;
+}
+
+/**
+ * The four durable facts that make a freshly opened fleet member productive.
+ *
+ * This is deliberately separate from `agentStarted`: taking one real turn proves
+ * the CLI reached the agent, but it does not prove the member installed a wake,
+ * pulled its scheduler lane, or left an accountable claim/no-claim disposition.
+ */
+export interface FreshLaunchWorkerAttestation {
+  version: 1;
+  ownerId: string | null;
+  ready: boolean;
+  stages: {
+    agentCall: {
+      status: 'satisfied' | 'missing';
+      successfulCalls: number;
+    };
+    durableWake: {
+      status: 'satisfied' | 'missing';
+      wakeSource: string | null;
+    };
+    schedulerPull: {
+      status: FreshLaunchWorkerStageStatus;
+      calls: number;
+      successfulCalls: number;
+    };
+    disposition:
+      | { status: 'satisfied'; kind: 'claimed'; workItemId: string }
+      | { status: 'satisfied'; kind: 'no-claim'; reason: string }
+      | { status: 'missing'; kind: 'missing' };
+  };
+  failures: FreshLaunchWorkerFailure[];
+}
+
+export interface FreshLaunchWorkerEvidence {
+  ownerId: string | null;
+  successfulCalls: number;
+  wakeSource: unknown;
+  schedulerCalls: number;
+  successfulSchedulerCalls: number;
+  schedulerDisposition: unknown;
+  claimedWorkItemId: string | null;
+}
+
+/** Derive worker readiness only from durable writer-owned evidence. */
+export function deriveFreshLaunchWorkerAttestation(
+  evidence: FreshLaunchWorkerEvidence,
+): FreshLaunchWorkerAttestation {
+  const successfulCalls = Number.isFinite(evidence.successfulCalls)
+    ? Math.max(0, Math.floor(evidence.successfulCalls))
+    : 0;
+  const schedulerCalls = Number.isFinite(evidence.schedulerCalls)
+    ? Math.max(0, Math.floor(evidence.schedulerCalls))
+    : 0;
+  const successfulSchedulerCalls = Number.isFinite(evidence.successfulSchedulerCalls)
+    ? Math.max(0, Math.floor(evidence.successfulSchedulerCalls))
+    : 0;
+  const wakeSource = typeof evidence.wakeSource === 'string' && evidence.wakeSource.trim()
+    ? evidence.wakeSource.trim()
+    : null;
+  const durableWake = wakeSource === 'loop' || wakeSource === 'event';
+  const claimedWorkItemId = evidence.claimedWorkItemId?.trim() || null;
+  const rawDisposition = evidence.schedulerDisposition && typeof evidence.schedulerDisposition === 'object'
+    ? evidence.schedulerDisposition as Record<string, unknown>
+    : null;
+  const noClaimReason = rawDisposition?.kind === 'no-claim' && typeof rawDisposition.reason === 'string'
+    ? rawDisposition.reason.trim()
+    : '';
+  const disposition: FreshLaunchWorkerAttestation['stages']['disposition'] = claimedWorkItemId
+    ? { status: 'satisfied', kind: 'claimed', workItemId: claimedWorkItemId }
+    : noClaimReason
+      ? { status: 'satisfied', kind: 'no-claim', reason: noClaimReason }
+      : { status: 'missing', kind: 'missing' };
+  const schedulerStatus: FreshLaunchWorkerStageStatus = successfulSchedulerCalls > 0
+    ? 'satisfied'
+    : schedulerCalls > 0
+      ? 'failed'
+      : 'missing';
+  const failures: FreshLaunchWorkerFailure[] = [];
+
+  if (successfulCalls === 0) {
+    failures.push({
+      stage: 'agentCall',
+      code: 'agent-call-missing',
+      detail: 'No successful agent-origin call outside launch statuslines was observed.',
+    });
+  }
+  if (!durableWake) {
+    failures.push({
+      stage: 'durableWake',
+      code: 'durable-wake-missing',
+      detail: wakeSource
+        ? `Wake source ${JSON.stringify(wakeSource)} is not a durable loop or exact event wait.`
+        : 'No durable loop or exact event-wait wake source was observed.',
+    });
+  }
+  if (schedulerStatus !== 'satisfied') {
+    failures.push({
+      stage: 'schedulerPull',
+      code: schedulerStatus === 'failed' ? 'scheduler-pull-failed' : 'scheduler-pull-missing',
+      detail: schedulerStatus === 'failed'
+        ? `${schedulerCalls} scheduler:get_next call(s) were observed, but none completed successfully.`
+        : 'No scheduler:get_next call was observed.',
+    });
+  }
+  if (disposition.status !== 'satisfied') {
+    failures.push({
+      stage: 'disposition',
+      code: 'disposition-missing',
+      detail:
+        'No current/terminal/historical claim and no structured scheduler no-claim diagnosis were observed.',
+    });
+  }
+
+  return {
+    version: 1,
+    ownerId: evidence.ownerId,
+    ready: failures.length === 0,
+    stages: {
+      agentCall: {
+        status: successfulCalls > 0 ? 'satisfied' : 'missing',
+        successfulCalls,
+      },
+      durableWake: {
+        status: durableWake ? 'satisfied' : 'missing',
+        wakeSource,
+      },
+      schedulerPull: {
+        status: schedulerStatus,
+        calls: schedulerCalls,
+        successfulCalls: successfulSchedulerCalls,
+      },
+      disposition,
+    },
+    failures,
+  };
+}
+
 export interface FreshLaunchSessionProbe {
   advSessionId: number;
   ownerId: string | null;
@@ -1117,6 +1269,8 @@ export interface FreshLaunchSessionProbe {
   hasPresence: boolean;
   /** Requested-vs-actual differences measured from the persisted launch spec. */
   attestationDiffs: FreshLaunchAttestationDiff[];
+  /** Productive-worker evidence; independent from launch-config attestation. */
+  workerAttestation: FreshLaunchWorkerAttestation;
 }
 
 export interface FreshLaunchAttestationDiff {
@@ -1191,10 +1345,20 @@ export interface FreshLaunchVerdict {
    * is the HONEST answer for most healthy launches inside any bounded window.
    */
   agentStarted: boolean | null;
+  /** Current all-four-stage snapshot; never substitutes for `agentStarted`. */
+  workerReady: boolean;
   waitedMs: number;
   sessions: FreshLaunchSessionProbe[];
   /** Operator-facing sentence for the tool's own output. */
   note: string;
+}
+
+/** Cohort readiness is exact: every expected member must satisfy all four stages. */
+export function freshLaunchWorkerReady(
+  sessions: readonly FreshLaunchSessionProbe[],
+  expected: number,
+): boolean {
+  return sessions.length >= expected && sessions.every((session) => session.workerAttestation.ready);
 }
 
 export interface FreshLaunchProcessEvidence {
@@ -1282,6 +1446,7 @@ export async function verifyFreshLaunchStarted(
       );
       return {
         agentStarted: false,
+        workerReady: freshLaunchWorkerReady(sessions, expected),
         waitedMs: Date.now() - begun,
         sessions,
         note: `✗ ATTESTATION MISMATCH — ${differences.join('; ')}. Stop this launch transaction; do not open a later wave.`,
@@ -1292,6 +1457,7 @@ export async function verifyFreshLaunchStarted(
     if (sessions.length >= expected && sessions.every((s) => s.successfulCalls > 0)) {
       return {
         agentStarted: true,
+        workerReady: freshLaunchWorkerReady(sessions, expected),
         waitedMs: Date.now() - begun,
         sessions,
         note: `✓ ${sessions.length} agent${sessions.length > 1 ? 's' : ''} verified running (took a real turn).`,
@@ -1314,6 +1480,7 @@ export async function verifyFreshLaunchStarted(
     // reserved for OBSERVED silence; an expired window is `null`.
     return {
       agentStarted: null,
+      workerReady: false,
       waitedMs,
       sessions,
       note:
@@ -1337,6 +1504,7 @@ export async function verifyFreshLaunchStarted(
     if (active.length > 0) {
       return {
         agentStarted: null,
+        workerReady: freshLaunchWorkerReady(sessions, expected),
         waitedMs,
         sessions,
         note:
@@ -1349,6 +1517,7 @@ export async function verifyFreshLaunchStarted(
     }
     return {
       agentStarted: false,
+      workerReady: freshLaunchWorkerReady(sessions, expected),
       waitedMs,
       sessions,
       note:
@@ -1365,6 +1534,7 @@ export async function verifyFreshLaunchStarted(
   // as either success or failure.
   return {
     agentStarted: null,
+    workerReady: freshLaunchWorkerReady(sessions, expected),
     waitedMs,
     sessions,
     note:
@@ -1403,8 +1573,13 @@ export async function probeFreshLaunchSessions({
         id: string | number;
         coord_owner_id: string | null;
         successful_calls: string | number;
+        scheduler_calls: string | number;
+        successful_scheduler_calls: string | number;
         ms_since_last_signal: string | number | null;
         has_presence: boolean;
+        wake_source: string | null;
+        scheduler_disposition: unknown;
+        claimed_work_item_id: string | null;
         launch_spec: unknown;
         launch_argv: unknown;
       }>
@@ -1417,6 +1592,19 @@ export async function probeFreshLaunchSessions({
                           AND t.status = 'ok'
                           AND t.call_origin = 'agent'
                           AND NOT (t.tool_name = ANY (${LAUNCH_STATUSLINE_TOOLS as string[]}))), 0) AS successful_calls,
+             COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
+                        WHERE t.workspace_id = ${workspaceId}
+                          AND t.coord_owner_id = s.coord_owner_id
+                          AND t.tool_name = 'scheduler:get_next'
+                          AND t.call_origin = 'agent'
+                          AND t.invoked_at >= to_timestamp(${Math.floor(since / 1000)})), 0) AS scheduler_calls,
+             COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
+                        WHERE t.workspace_id = ${workspaceId}
+                          AND t.coord_owner_id = s.coord_owner_id
+                          AND t.tool_name = 'scheduler:get_next'
+                          AND t.call_origin = 'agent'
+                          AND t.status = 'ok'
+                          AND t.invoked_at >= to_timestamp(${Math.floor(since / 1000)})), 0) AS successful_scheduler_calls,
              (SELECT EXTRACT(EPOCH FROM (now() - max(t.invoked_at))) * 1000
                 FROM harness_shared.tool_invocations t
                WHERE t.workspace_id = ${workspaceId}
@@ -1424,6 +1612,31 @@ export async function probeFreshLaunchSessions({
              EXISTS (SELECT 1 FROM harness_shared.coord_presence p
                       WHERE p.workspace_id = ${workspaceId}
                         AND p.owner_id = s.coord_owner_id) AS has_presence,
+             (SELECT b.control_state->>'wakeSource'
+                FROM harness_shared.session_briefs b
+               WHERE b.workspace_id = ${workspaceId}
+                 AND b.owner_id = s.coord_owner_id
+               LIMIT 1) AS wake_source,
+             (SELECT t.metadata_json->'schedulerDisposition'
+                FROM harness_shared.tool_invocations t
+               WHERE t.workspace_id = ${workspaceId}
+                 AND t.coord_owner_id = s.coord_owner_id
+                 AND t.tool_name = 'scheduler:get_next'
+                 AND t.call_origin = 'agent'
+                 AND t.invoked_at >= to_timestamp(${Math.floor(since / 1000)})
+               ORDER BY t.invoked_at DESC
+               LIMIT 1) AS scheduler_disposition,
+             (SELECT wi.feature_id
+                FROM harness_shared.work_items wi
+               WHERE wi.workspace_id = ${workspaceId}
+                 AND (
+                   wi.taken_by = s.coord_owner_id
+                   OR wi.terminal_owner = s.coord_owner_id
+                   OR wi.worked_by_history @> jsonb_build_array(
+                     jsonb_build_object('owner', s.coord_owner_id)
+                   )
+                 )
+               LIMIT 1) AS claimed_work_item_id,
              s.launch_spec,
              s.launch_argv
         FROM harness_shared.adv_sessions s
@@ -1448,13 +1661,23 @@ export async function probeFreshLaunchSessions({
           }
         }
       }
+      const successfulCalls = Number(r.successful_calls ?? 0);
       return {
-      advSessionId: Number(r.id),
-      ownerId: r.coord_owner_id,
-      successfulCalls: Number(r.successful_calls ?? 0),
-      msSinceLastSignal: r.ms_since_last_signal == null ? null : Number(r.ms_since_last_signal),
-      hasPresence: Boolean(r.has_presence),
-      attestationDiffs,
+        advSessionId: Number(r.id),
+        ownerId: r.coord_owner_id,
+        successfulCalls,
+        msSinceLastSignal: r.ms_since_last_signal == null ? null : Number(r.ms_since_last_signal),
+        hasPresence: Boolean(r.has_presence),
+        attestationDiffs,
+        workerAttestation: deriveFreshLaunchWorkerAttestation({
+          ownerId: r.coord_owner_id,
+          successfulCalls,
+          wakeSource: r.wake_source,
+          schedulerCalls: Number(r.scheduler_calls ?? 0),
+          successfulSchedulerCalls: Number(r.successful_scheduler_calls ?? 0),
+          schedulerDisposition: r.scheduler_disposition,
+          claimedWorkItemId: r.claimed_work_item_id,
+        }),
       };
     });
   } catch (e) {

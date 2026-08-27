@@ -21,6 +21,7 @@ import {
   type ColorScheme,
 } from './console-color-schemes';
 import { trackDetached } from './detached-imports';
+import type { FreshLaunchWorkerAttestation } from './agent-launch-core';
 
 /** Typed fleet control state (coord-authority-hardening-2026-07-11 P-009 / H4). */
 export type FleetControlState = 'active' | 'winding-down';
@@ -76,6 +77,11 @@ export interface FleetLaunchTransaction {
    *  already excludes every opened id from retry, so these can never be
    *  double-spawned. Optional: transactions persisted before this field exist. */
   unconfirmedMemberIds?: string[];
+  /** P-003: current four-stage worker-ready snapshot. Optional for transactions
+   * persisted before the attestation contract existed. */
+  workerReadyMemberIds?: string[];
+  /** Latest typed per-member evidence merged on every verifier pass. */
+  workerAttestations?: FreshLaunchWorkerAttestation[];
   failed: Array<{
     ownerId: string;
     phase: FleetLaunchFailurePhase;

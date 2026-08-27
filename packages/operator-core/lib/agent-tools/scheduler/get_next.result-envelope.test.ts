@@ -108,7 +108,7 @@ vi.mock('../work_items/retraction-advisory', () => ({
   getClaimTimeRetractionAdvisory: vi.fn(async () => null),
 }));
 
-import getNextTool from './get_next';
+import getNextTool, { schedulerDispositionMetadata } from './get_next';
 
 type ToolDef = {
   handler: (
@@ -117,7 +117,8 @@ type ToolDef = {
   ) => Promise<{ content?: Array<{ text: string }>; data?: Record<string, unknown> }>;
 };
 
-const callGetNext = () => (getNextTool as unknown as ToolDef).handler({ harness: 'papercusp' }, {});
+const callGetNext = (ctx: unknown = {}) =>
+  (getNextTool as unknown as ToolDef).handler({ harness: 'papercusp' }, ctx);
 
 /**
  * The predicate under test, factored out so the CONTROL below can prove it is
@@ -156,6 +157,32 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     // claim must never be truncated away.
     expectCommittedClaimEnvelope(out);
     expect(out.data).toMatchObject({ ok: true });
+  });
+
+  it('stamps the committed claim disposition onto the invocation metadata writer', async () => {
+    mocks.getNextForBee.mockResolvedValue({
+      workItem: { id: 'WI-38199', state: 'open' },
+      claimedUnder: { specId: 'envelope-spec', revision: 3 },
+      specSource: 'fleet',
+    });
+    const metadata = vi.fn();
+
+    await callGetNext({ metadata });
+
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata).toHaveBeenCalledWith({
+      schedulerDisposition: { kind: 'claimed', workItemId: 'WI-38199' },
+    });
+  });
+
+  it('builds a structured no-claim diagnosis instead of relying on result text', () => {
+    expect(
+      schedulerDispositionMetadata(null, {
+        ok: false,
+        reason: 'fleet_lane_drained',
+        message: 'nothing matched',
+      }),
+    ).toEqual({ kind: 'no-claim', reason: 'fleet_lane_drained' });
   });
 
   it('passes the claimed id to premise citation hydration and surfaces its advisory', async () => {

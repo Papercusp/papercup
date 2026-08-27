@@ -712,6 +712,33 @@ export function assembleSchedulerClaimResult(legs: {
 // `structuredContent` even when the model-facing text is capped.
 const schedulerResultSchema = z.object({ ok: z.boolean() }).passthrough();
 
+export type SchedulerDispositionMetadata =
+  | { kind: 'claimed'; workItemId: string }
+  | { kind: 'no-claim'; reason: string };
+
+function compactSchedulerNoClaimReason(payload: Record<string, unknown>): string {
+  const diagnosis = payload.diagnosis && typeof payload.diagnosis === 'object'
+    ? payload.diagnosis as Record<string, unknown>
+    : null;
+  const candidate = [payload.reason, payload.error, diagnosis?.reason, diagnosis?.error, payload.message]
+    .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  return (candidate?.trim() || 'no_claimable_work_item').slice(0, 500);
+}
+
+/** One durable outcome vocabulary for the invocation ledger's final branch. */
+export function schedulerDispositionMetadata(
+  workItem: unknown,
+  payload: Record<string, unknown>,
+): SchedulerDispositionMetadata {
+  const workItemRecord = workItem && typeof workItem === 'object'
+    ? workItem as { id?: unknown }
+    : null;
+  const workItemId = typeof workItemRecord?.id === 'string' ? workItemRecord.id.trim() : '';
+  return workItemId
+    ? { kind: 'claimed', workItemId }
+    : { kind: 'no-claim', reason: compactSchedulerNoClaimReason(payload) };
+}
+
 export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
@@ -1740,6 +1767,13 @@ export default defineTool({
               // moment happens, instead of leaving the caller to a 60s re-poll.
               advice: IDLE_PULL_MISS_ADVICE,
             };
+    // P-003: `tool_invocations` has no inline result JSON. Stamp the one fact a
+    // later launch verifier needs — claimed vs diagnosed no-claim — onto the
+    // invocation's existing metadata writer. This is intentionally the only
+    // ctx.metadata call on the final path: metadata is last-write-wins.
+    ctx.metadata?.({
+      schedulerDisposition: schedulerDispositionMetadata(res?.workItem, payload),
+    });
     // The claim committed before this response was rendered. Keep the existing
     // bounded text projection for ordinary model callers, but give programmatic
     // callers the complete object so they can reconcile without blind retry.

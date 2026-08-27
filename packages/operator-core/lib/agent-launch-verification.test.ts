@@ -22,6 +22,7 @@ import {
   FRESH_VERIFY_SILENCE_MS,
   LAUNCH_STATUSLINE_TOOLS,
   classifyAgentLaunchCommand,
+  deriveFreshLaunchWorkerAttestation,
   launchAttestationFromLedger,
   verifyFreshLaunchStarted,
   type FreshLaunchSessionProbe,
@@ -36,15 +37,28 @@ function fixedProbe(sessions: FreshLaunchSessionProbe[]) {
   return async () => sessions;
 }
 
-const session = (over: Partial<FreshLaunchSessionProbe> = {}): FreshLaunchSessionProbe => ({
-  advSessionId: 14842,
-  ownerId: 'su-launched',
-  successfulCalls: 0,
-  msSinceLastSignal: null,
-  hasPresence: false,
-  attestationDiffs: [],
-  ...over,
-});
+const session = (over: Partial<FreshLaunchSessionProbe> = {}): FreshLaunchSessionProbe => {
+  const ownerId = over.ownerId === undefined ? 'su-launched' : over.ownerId;
+  const successfulCalls = over.successfulCalls ?? 0;
+  return {
+    advSessionId: 14842,
+    ownerId,
+    successfulCalls,
+    msSinceLastSignal: null,
+    hasPresence: false,
+    attestationDiffs: [],
+    workerAttestation: over.workerAttestation ?? deriveFreshLaunchWorkerAttestation({
+      ownerId,
+      successfulCalls,
+      wakeSource: null,
+      schedulerCalls: 0,
+      successfulSchedulerCalls: 0,
+      schedulerDisposition: null,
+      claimedWorkItemId: null,
+    }),
+    ...over,
+  };
+};
 
 describe('verifyFreshLaunchStarted — the ACCEPTANCE CASE (adv_session 14842)', () => {
   it('returns agentStarted:FALSE for a session that booted, beat twice, then went silent', async () => {
@@ -62,6 +76,7 @@ describe('verifyFreshLaunchStarted — the ACCEPTANCE CASE (adv_session 14842)',
         'silent is the "reports Launched, never actually starts" failure — it must be reported ' +
         'as a failure, not as success and not as unverified.',
     ).toBe(false);
+    expect(verdict.workerReady).toBe(false);
     expect(verdict.note).toMatch(/DID NOT START/);
     expect(verdict.note).toContain('14842');
   });
@@ -109,6 +124,7 @@ describe('verifyFreshLaunchStarted — must NOT cry wolf on a healthy launch (D-
       probe: fixedProbe([session({ successfulCalls: 0, hasPresence: true, msSinceLastSignal: 500 })]),
     });
     expect(verdict.agentStarted).toBeNull();
+    expect(verdict.workerReady).toBe(false);
     expect(verdict.note).toMatch(/UNVERIFIED/);
   });
 
@@ -224,6 +240,90 @@ describe('verifyFreshLaunchStarted — must NOT cry wolf on a healthy launch (D-
         },
       }),
     ).rejects.toThrow(/pg down/);
+  });
+});
+
+describe('fresh-launch worker attestation — productive capacity is four distinct facts', () => {
+  const evidence = (over: Partial<Parameters<typeof deriveFreshLaunchWorkerAttestation>[0]> = {}) => ({
+    ownerId: 'su-worker',
+    successfulCalls: 2,
+    wakeSource: 'loop',
+    schedulerCalls: 1,
+    successfulSchedulerCalls: 1,
+    schedulerDisposition: { kind: 'claimed', workItemId: 'WI-metadata-only' },
+    claimedWorkItemId: 'WI-42407',
+    ...over,
+  });
+
+  it('is ready when a real call, durable wake, scheduler pull, and canonical claim all exist', () => {
+    const attestation = deriveFreshLaunchWorkerAttestation(evidence());
+    expect(attestation.ready).toBe(true);
+    expect(attestation.failures).toEqual([]);
+    expect(attestation.stages.disposition).toEqual({
+      status: 'satisfied',
+      kind: 'claimed',
+      workItemId: 'WI-42407',
+    });
+  });
+
+  it('accepts a structured healthy no-claim diagnosis as an accountable disposition', () => {
+    const attestation = deriveFreshLaunchWorkerAttestation(evidence({
+      wakeSource: 'event',
+      schedulerDisposition: { kind: 'no-claim', reason: 'fleet_lane_drained' },
+      claimedWorkItemId: null,
+    }));
+    expect(attestation.ready).toBe(true);
+    expect(attestation.stages.durableWake).toMatchObject({ status: 'satisfied', wakeSource: 'event' });
+    expect(attestation.stages.disposition).toEqual({
+      status: 'satisfied',
+      kind: 'no-claim',
+      reason: 'fleet_lane_drained',
+    });
+  });
+
+  it('reports a tool-dark boot without letting presence or configuration substitute for work', () => {
+    const attestation = deriveFreshLaunchWorkerAttestation(evidence({
+      successfulCalls: 0,
+      schedulerCalls: 0,
+      successfulSchedulerCalls: 0,
+      schedulerDisposition: null,
+      claimedWorkItemId: null,
+    }));
+    expect(attestation.ready).toBe(false);
+    expect(attestation.failures.map((failure) => failure.code)).toEqual([
+      'agent-call-missing',
+      'scheduler-pull-missing',
+      'disposition-missing',
+    ]);
+  });
+
+  it('keeps a no-wake worker unready even when every other stage is satisfied', () => {
+    const attestation = deriveFreshLaunchWorkerAttestation(evidence({ wakeSource: 'owner' }));
+    expect(attestation.ready).toBe(false);
+    expect(attestation.failures).toEqual([
+      expect.objectContaining({ stage: 'durableWake', code: 'durable-wake-missing' }),
+    ]);
+  });
+
+  it('distinguishes a scheduler refusal from a scheduler that was never called', () => {
+    const attestation = deriveFreshLaunchWorkerAttestation(evidence({
+      schedulerCalls: 1,
+      successfulSchedulerCalls: 0,
+      schedulerDisposition: null,
+      claimedWorkItemId: null,
+    }));
+    expect(attestation.stages.schedulerPull.status).toBe('failed');
+    expect(attestation.failures.map((failure) => failure.code)).toContain('scheduler-pull-failed');
+    expect(attestation.failures.map((failure) => failure.code)).toContain('disposition-missing');
+  });
+
+  it('surfaces a fully-ready session without redefining agentStarted', async () => {
+    const workerAttestation = deriveFreshLaunchWorkerAttestation(evidence());
+    const verdict = await verifyFreshLaunchStarted(ARGS, {
+      ...FAST,
+      probe: fixedProbe([session({ successfulCalls: 2, workerAttestation })]),
+    });
+    expect(verdict).toMatchObject({ agentStarted: true, workerReady: true });
   });
 });
 
