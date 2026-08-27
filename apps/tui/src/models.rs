@@ -231,6 +231,86 @@ pub struct PlansResponse {
     pub plans: Vec<PlanSummary>,
 }
 
+/// One pot chip on a goal row (`/api/tui/goals` → `goals[].pots[]`) — the
+/// goals→plans join key for the Plans-tab spine (P-032): a plan belongs to a
+/// goal's scope when its `harness` matches a chip's `harness_slug`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalPotChip {
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub harness_slug: String,
+    /// 'owner' | 'contributing' as stored; null tolerated.
+    #[serde(default)]
+    pub role: Option<String>,
+    /// How many live goals this same pot serves (shared-spend visibility).
+    #[serde(default)]
+    pub serves_goals: i64,
+}
+
+/// One goals-column row (`GET /api/tui/goals`, P-032 — the same audited
+/// GOAL-mode read the GUI uses, flattened by the route's shaper). Null-tolerant
+/// on every scalar per the decode discipline above: a legacy/partial row must
+/// never sink the whole goals decode and blank the Plans tab.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalSummary {
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub id: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub title: String,
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub status: String,
+    /// The status a reader should USE (server-derived dormancy fold), or null.
+    #[serde(default)]
+    pub effective_status: Option<String>,
+    #[serde(default)]
+    pub deactivated: bool,
+    /// held | unheld | lost | unknown — the server's holder verdict.
+    #[serde(default, deserialize_with = "null_as_default")]
+    pub holder_liveness: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
+    /// The TRUE pot count — `pots` below is a bounded sample, never a total.
+    #[serde(default)]
+    pub pot_count: i64,
+    #[serde(default)]
+    pub pots: Vec<GoalPotChip>,
+    #[serde(default)]
+    pub open_work_items: i64,
+    #[serde(default)]
+    pub needs_human: i64,
+    #[serde(default)]
+    pub spend_usd: f64,
+    #[serde(default)]
+    pub budget_cents: Option<i64>,
+    #[serde(default)]
+    pub last_activity_at: Option<String>,
+}
+
+impl GoalSummary {
+    /// The status to render: the server-derived effective status when present,
+    /// else the raw declared one.
+    pub fn shown_status(&self) -> &str {
+        self.effective_status
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.status)
+    }
+}
+
+/// `GET /api/tui/goals` → `{ goals, totalGoals, truncatedByLimit }`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalsResponse {
+    #[serde(default)]
+    pub goals: Vec<GoalSummary>,
+    /// The TRUE matching count — never render `goals.len()` as the total.
+    #[serde(default)]
+    pub total_goals: i64,
+    #[serde(default)]
+    pub truncated_by_limit: bool,
+}
+
 /// One row of `/api/adv/roster` → `{ active: [...] }`. Presence (primary) +
 /// adv_sessions enrichment; field set mirrors `adv-roster.ts`'s `RosterEntry`.
 /// The location/handle fields (pid/pidAlive/host/windowId/ompThreadId/cwd/mode/

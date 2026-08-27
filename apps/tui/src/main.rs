@@ -469,7 +469,10 @@ async fn run_chat_dock() -> Result<()> {
     std::process::exit(status.code().unwrap_or(0));
 }
 
-#[expect(clippy::too_many_arguments, reason = "top-level run wiring mirrors independent CLI launch dimensions")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "top-level run wiring mirrors independent CLI launch dimensions"
+)]
 async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
     pinned: Option<app::Tab>,
@@ -888,6 +891,17 @@ async fn run<B: Backend>(
                 tokio::spawn(fetch_session_switcher(query, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::FetchSessionBrowser { query } => {
+                tokio::spawn(fetch_session_browser(query, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::FetchSessionTranscript {
+                session_key,
+                reference,
+            } => {
+                tokio::spawn(fetch_session_transcript(session_key, reference, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::FetchPlanItemStates { harness, plan } => {
                 // pui-plans-status-board P-008: the plans board's selection
                 // moved — fetch the selected plan's per-item states for the
@@ -1069,6 +1083,17 @@ async fn run<B: Backend>(
                 tokio::spawn(execute_workbench_command(
                     cmd,
                     app.launched.clone(),
+                    app.roster.clone(),
+                    tx.clone(),
+                ));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::SaveCrewSelection { name, members } => {
+                // P-030 hands one selected browser row to the existing crew
+                // executor; it does not mutate the launched-pane roster.
+                tokio::spawn(execute_workbench_command(
+                    app::PaletteCommand::SaveCrew(name),
+                    members,
                     app.roster.clone(),
                     tx.clone(),
                 ));
@@ -1318,24 +1343,28 @@ async fn run<B: Backend>(
                             let _ = vs.set_muted(m);
                         }
                     }
-                    VC::MicOn => if let Some(vs) = &voice_chan { match voice_stream::start_mic(vs.clone()) {
-                        Ok(h) => {
-                            // PTT → gate off (the held key IS the gate);
-                            // open-mic manual restart → VAD gate on (P-010).
-                            let open_mic = app
-                                .voice_ui
-                                .prefs
-                                .as_ref()
-                                .map(|p| p.input_mode == "open-mic")
-                                .unwrap_or(false);
-                            vs.set_tx_gate(open_mic);
-                            voice_mic = Some(h);
-                            let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
+                    VC::MicOn => {
+                        if let Some(vs) = &voice_chan {
+                            match voice_stream::start_mic(vs.clone()) {
+                                Ok(h) => {
+                                    // PTT → gate off (the held key IS the gate);
+                                    // open-mic manual restart → VAD gate on (P-010).
+                                    let open_mic = app
+                                        .voice_ui
+                                        .prefs
+                                        .as_ref()
+                                        .map(|p| p.input_mode == "open-mic")
+                                        .unwrap_or(false);
+                                    vs.set_tx_gate(open_mic);
+                                    voice_mic = Some(h);
+                                    let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Event::VoiceUi(VE::Error(format!("mic: {e}"))));
+                                }
+                            }
                         }
-                        Err(e) => {
-                            let _ = tx.send(Event::VoiceUi(VE::Error(format!("mic: {e}"))));
-                        }
-                    } },
+                    }
 
                     VC::MicOff => {
                         voice_mic = None;
@@ -3024,6 +3053,35 @@ async fn fetch_session_switcher(query: String, tx: UnboundedSender<Event>) {
     let _ = tx.send(Event::SessionSwitcher { query, result });
 }
 
+async fn fetch_session_browser(query: String, tx: UnboundedSender<Event>) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .session_switcher_rows(&query)
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::SessionBrowser { query, result });
+}
+
+async fn fetch_session_transcript(
+    session_key: String,
+    reference: String,
+    tx: UnboundedSender<Event>,
+) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .session_transcript(&reference)
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::SessionTranscript {
+        session_key,
+        result,
+    });
+}
+
 /// Fetch one plan's per-item assignment/claim/liveness (pui-plans-status-board
 /// P-008) → `Event::PlanItemStates`, for the plans board's right-side work-items
 /// detail. The reducer guards the render on `plan == selected`, so a stale fetch
@@ -3366,7 +3424,10 @@ async fn agent_chat_load(
 ///
 /// The loop's `LoopEvent` vocabulary is mapped onto the pane's existing
 /// streaming-bubble events, so the reducer and renderer are untouched.
-#[expect(clippy::too_many_arguments, reason = "chat-turn boundary mirrors the explicit launch request fields")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "chat-turn boundary mirrors the explicit launch request fields"
+)]
 async fn stream_agent_chat_turn(
     text: String,
     harness: String,
@@ -4483,6 +4544,12 @@ async fn refetch_all(
             Err(e) => {
                 let _ = tx.send(Event::Error(format!("plans: {e}")));
             }
+        }
+        // P-032: the goals column rides the same plan-reads gate. Quietly
+        // optional — an older host without /api/tui/goals renders an empty
+        // goals column rather than toasting every poll.
+        if let Ok(g) = client.goals_list().await {
+            let _ = tx.send(Event::Goals(g.goals));
         }
     }
     match client.roster_typed().await {

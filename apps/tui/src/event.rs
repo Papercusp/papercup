@@ -9,9 +9,9 @@
 use crate::models::{
     ActivityRow, AttentionItem, BeeAssignment, BeeMailPayload, ChatMessage, ChatToolCall,
     ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
-    FleetLeaderBrief, FleetRateStatus, HarnessFeature, HarnessIssue, HarnessRef,
+    FleetLeaderBrief, FleetRateStatus, GoalSummary, HarnessFeature, HarnessIssue, HarnessRef,
     LexiconPackPayload, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
-    TestingDomain, TuiPaneContribution, ViewState, WorkItem,
+    SessionTranscriptTurn, TestingDomain, TuiPaneContribution, ViewState, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -35,6 +35,8 @@ pub enum Event {
     Tick,
     /// Fresh plans list from the backend poller.
     Plans(Vec<PlanSummary>),
+    /// Fresh goals list from the backend poller (the Plans-tab spine, P-032).
+    Goals(Vec<GoalSummary>),
     /// Fresh agent roster from the backend poller. `active` is the presence-
     /// primary roster (rendered); `pending` is the recorded-but-not-running
     /// workbench-launch tier (pui-reactive-session-panes D-006) the reducer diffs
@@ -48,6 +50,17 @@ pub enum Event {
     SessionSwitcher {
         query: String,
         result: Result<Vec<RosterEntry>, String>,
+    },
+    /// Rows for the full Sessions destination. It shares the switcher's merged
+    /// live + indexed model, but keeps its own stale-query guard and facets.
+    SessionBrowser {
+        query: String,
+        result: Result<Vec<RosterEntry>, String>,
+    },
+    /// Canonical transcript tail for the currently selected browser row.
+    SessionTranscript {
+        session_key: String,
+        result: Result<Vec<SessionTranscriptTurn>, String>,
     },
     /// Fresh inbox (attention) items from the backend poller.
     Inbox(Vec<AttentionItem>),
@@ -246,7 +259,10 @@ pub enum Event {
     /// The operator conversation loaded on open (GET /api/operator/conversations):
     /// the conversation id + recent turns (oldest first) + whether older history
     /// exists. Seeds the transcript.
-    #[expect(dead_code, reason = "operator chat history loading is staged for the native pane")]
+    #[expect(
+        dead_code,
+        reason = "operator chat history loading is staged for the native pane"
+    )]
     ChatHistory {
         conversation_id: String,
         messages: Vec<ChatMessage>,

@@ -1143,6 +1143,8 @@ pub enum TestingFocus {
 /// move within the in-app Plans tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlansFocus {
+    /// The GOALS column of the Plans-tab spine (P-032/D-010).
+    Goals,
     List,
     Items,
 }
@@ -1203,10 +1205,21 @@ pub struct SessionBrowser {
 }
 
 impl PlansFocus {
-    /// The other pane (List ↔ Items) — the ←/→ / browse toggle.
-    pub fn toggle(self) -> PlansFocus {
+    /// The next column rightward (Goals → List → Items → Goals) — the → /
+    /// browse cycle of the three-column spine (P-032).
+    pub fn next(self) -> PlansFocus {
         match self {
+            PlansFocus::Goals => PlansFocus::List,
             PlansFocus::List => PlansFocus::Items,
+            PlansFocus::Items => PlansFocus::Goals,
+        }
+    }
+
+    /// The previous column leftward — the ← cycle (inverse of `next`).
+    pub fn prev(self) -> PlansFocus {
+        match self {
+            PlansFocus::Goals => PlansFocus::Items,
+            PlansFocus::List => PlansFocus::Goals,
             PlansFocus::Items => PlansFocus::List,
         }
     }
@@ -1222,6 +1235,39 @@ fn step_clamped(cur: usize, delta: isize, len: usize) -> usize {
     } else {
         cur.saturating_sub(1)
     }
+}
+
+/// Convert an ISO/PG timestamp's date prefix into days since 1970-01-01.
+fn iso_date_days(value: &str) -> Option<i64> {
+    let mut parts = value.get(..10)?.split('-');
+    let year: i64 = parts.next()?.parse().ok()?;
+    let month: i64 = parts.next()?.parse().ok()?;
+    let day: i64 = parts.next()?.parse().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let year = year - i64::from(month <= 2);
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let shifted_month = month + if month > 2 { -3 } else { 9 };
+    let doy = (153 * shifted_month + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146_097 + doe - 719_468)
+}
+
+fn session_within_days(row: &RosterEntry, days: i64) -> bool {
+    let Some(stamp) = row.transcript_at.as_deref().or(row.heartbeat_at.as_deref()) else {
+        return false;
+    };
+    let Some(then) = iso_date_days(stamp) else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| (duration.as_secs() / 86_400) as i64)
+        .unwrap_or(then);
+    (0..=days).contains(&(now - then))
 }
 
 /// Which sub-view of the Plugins tab has focus (D-007/D-014). `Tab` toggles.
@@ -1259,6 +1305,12 @@ pub struct App {
     pub pinned: Option<Tab>,
     pub plans: Vec<PlanSummary>,
     pub plan_sel: usize,
+    /// Goals for the Plans-tab spine (P-032) + the goals-column cursor.
+    /// `goal_sel` 0 = the "(all)" pseudo-row; i>0 = `goals[i-1]`. Deliberately
+    /// not persisted in view-state and not reset on tab entry (mirrors
+    /// `plan_sel`'s persistence-of-selection without widening ViewState).
+    pub goals: Vec<crate::models::GoalSummary>,
+    pub goal_sel: usize,
     /// The one shared context-projection address and snapshot rendered by the
     /// refitted plans-board pane. An explicit CLI target stays pinned; otherwise
     /// each roster snapshot resolves the live Sentinel's native session id.
@@ -1779,6 +1831,8 @@ impl App {
             pinned: None,
             plans: Vec::new(),
             plan_sel: 0,
+            goals: Vec::new(),
+            goal_sel: 0,
             context_projection_target: None,
             context_projection_target_explicit: false,
             context_projection: None,
@@ -2585,10 +2639,39 @@ impl App {
 
     /// The Plans list under the current pot scope (what the Plans tab renders;
     /// `plan_sel` indexes THIS list).
-    pub fn visible_plans(&self) -> Vec<&PlanSummary> {
+    /// The goal the Plans-tab goals column has selected, or None for the
+    /// "(all)" pseudo-row at index 0 (P-032).
+    pub fn selected_goal(&self) -> Option<&crate::models::GoalSummary> {
+        if self.goal_sel == 0 {
+            None
+        } else {
+            self.goals.get(self.goal_sel - 1)
+        }
+    }
+
+    /// Plans under the current pot scope ONLY — no goal scoping. The base the
+    /// goals column rolls its per-goal counts up over (P-032), so a goal row
+    /// reports its own scope regardless of which goal is selected.
+    pub fn scope_visible_plans(&self) -> Vec<&PlanSummary> {
         self.plans
             .iter()
             .filter(|p| self.in_scope(p.harness.as_deref()))
+            .collect()
+    }
+
+    pub fn visible_plans(&self) -> Vec<&PlanSummary> {
+        self.scope_visible_plans()
+            .into_iter()
+            .filter(|p| match self.selected_goal() {
+                // P-032: a selected goal scopes the plans column to the plans
+                // of its pots (the GoalPotChip.harness_slug join); the "(all)"
+                // pseudo-row leaves every scope-visible plan in place.
+                Some(g) => p
+                    .harness
+                    .as_deref()
+                    .is_some_and(|h| g.pots.iter().any(|c| c.harness_slug == h)),
+                None => true,
+            })
             .collect()
     }
 
@@ -4152,7 +4235,11 @@ impl App {
     }
 
     pub fn session_browser_state(row: &RosterEntry) -> &str {
-        match row.session_state.as_deref().filter(|state| !state.is_empty()) {
+        match row
+            .session_state
+            .as_deref()
+            .filter(|state| !state.is_empty())
+        {
             Some(state) => state,
             None if row.is_live() => "live",
             None if row.transcript_ref.is_some() => "recorded",
@@ -4206,9 +4293,7 @@ impl App {
             .iter()
             .filter(|row| state == "all" || Self::session_browser_state(row) == state)
             .filter(|row| fleet == "any" || row.fleet_slug.as_deref() == Some(fleet))
-            .filter(|row| {
-                agent == "any" || row.agent.as_deref().unwrap_or(&row.source) == agent
-            })
+            .filter(|row| agent == "any" || row.agent.as_deref().unwrap_or(&row.source) == agent)
             .filter(|row| days.is_none_or(|days| session_within_days(row, days)))
             .collect()
     }
@@ -4324,23 +4409,87 @@ impl App {
         };
         let suffix: String = raw_name
             .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch.to_ascii_lowercase() } else { '-' })
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
             .collect::<String>()
             .split('-')
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join("-");
-        let name = format!("session-{}", if suffix.is_empty() { "saved" } else { &suffix });
+        let name = format!(
+            "session-{}",
+            if suffix.is_empty() { "saved" } else { &suffix }
+        );
         Action::SaveCrewSelection {
             name,
             members: vec![CrewMember {
-                agent: row.agent.clone().or_else(|| (!row.source.is_empty()).then(|| row.source.clone())),
+                agent: row
+                    .agent
+                    .clone()
+                    .or_else(|| (!row.source.is_empty()).then(|| row.source.clone())),
                 resume_id: row.adv_session_id.map(|id| id.to_string()),
                 harness: None,
                 plan: row.current_plan_slug.clone(),
                 cwd: row.cwd.clone(),
                 ..CrewMember::default()
             }],
+        }
+    }
+
+    /// Contextual keyboard map for the Sessions destination. Unrecognised keys
+    /// return `None` so the global tab/navigation map can still handle them.
+    fn session_browser_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Option<Action> {
+        if self.session_browser.search_open {
+            return Some(self.session_browser_search_key(code, mods));
+        }
+        if mods.contains(KeyModifiers::CONTROL) {
+            return match code {
+                KeyCode::Char('t') => {
+                    self.session_browser.full_transcript = !self.session_browser.full_transcript;
+                    Some(self.fetch_selected_browser_transcript())
+                }
+                KeyCode::Char('k') => Some(self.save_selected_session_as_crew()),
+                _ => None,
+            };
+        }
+        match code {
+            KeyCode::Char('/') => {
+                self.session_browser.search_open = true;
+                Some(Action::Render)
+            }
+            KeyCode::Char('j') | KeyCode::Down => Some(self.move_session_browser(1)),
+            KeyCode::Char('k') | KeyCode::Up => Some(self.move_session_browser(-1)),
+            KeyCode::Tab => {
+                self.session_browser.facet = self.session_browser.facet.next();
+                Some(Action::Render)
+            }
+            KeyCode::Char('h') | KeyCode::Left => Some(self.cycle_session_browser_facet(-1)),
+            KeyCode::Char('l') | KeyCode::Right => Some(self.cycle_session_browser_facet(1)),
+            KeyCode::Char('r') => Some(self.refetch_session_browser()),
+            KeyCode::Esc if !self.session_browser.query.is_empty() => {
+                self.session_browser.query.clear();
+                self.session_browser.sel = 0;
+                Some(self.refetch_session_browser())
+            }
+            KeyCode::Enter => {
+                let entry = self.selected_browser_session().cloned();
+                Some(match entry {
+                    Some(entry) => {
+                        let key = Self::session_key(&entry);
+                        self.session_mru.retain(|old| old != &key);
+                        self.session_mru.insert(0, key);
+                        self.session_mru.truncate(8);
+                        self.activate_session_entry(entry)
+                    }
+                    None => Action::Render,
+                })
+            }
+            _ => None,
         }
     }
 
@@ -4860,10 +5009,34 @@ impl App {
     /// `plan_items_sel`. Clamped (no fall-through).
     fn plans_tab_arrow(&mut self, delta: isize) -> Action {
         if !self.plans_entered {
-            self.plans_focus = self.plans_focus.toggle();
+            self.plans_focus = self.plans_focus.next();
             return Action::Render;
         }
         match self.plans_focus {
+            PlansFocus::Goals => {
+                // P-032: move the goals cursor (row 0 = "(all)"). Re-scoping
+                // the plans column resets the plan/item cursors and refetches
+                // the newly-selected plan's items.
+                let len = self.goals.len() + 1;
+                self.goal_sel = step_clamped(self.goal_sel, delta, len);
+                self.plan_sel = 0;
+                self.plan_items_sel = 0;
+                self.publish_active_plan();
+                match self.selected_plan() {
+                    Some(p) => {
+                        let harness = p
+                            .harness
+                            .clone()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| self.harness.clone());
+                        Action::FetchPlanItemStates {
+                            harness,
+                            plan: p.slug.clone(),
+                        }
+                    }
+                    None => Action::Render,
+                }
+            }
             PlansFocus::List => {
                 let len = self.visible_plans().len();
                 self.plan_sel = step_clamped(self.plan_sel, delta, len);
@@ -4899,6 +5072,7 @@ impl App {
     /// No-op on an empty list.
     fn plans_open_focused_detail(&mut self) -> Action {
         let has = match self.plans_focus {
+            PlansFocus::Goals => self.selected_goal().is_some(),
             PlansFocus::List => self.selected_plan().is_some(),
             PlansFocus::Items => self.selected_plan_item().is_some(),
         };
@@ -5093,6 +5267,15 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::Goals(g) => {
+                self.goals = g;
+                // Clamp the goals-column cursor (row 0 = the "(all)" row).
+                let len = self.goals.len() + 1;
+                if self.goal_sel >= len {
+                    self.goal_sel = len - 1;
+                }
+                Action::Render
+            }
             Event::Roster { active, pending } => {
                 self.set_roster(active);
                 self.last_error = None;
@@ -5167,6 +5350,47 @@ impl App {
                             }
                             Err(error) => self.last_error = Some(format!("sessions: {error}")),
                         }
+                    }
+                }
+                Action::Render
+            }
+            Event::SessionBrowser { query, result } => {
+                if self.session_browser.query != query {
+                    return Action::Render;
+                }
+                self.session_browser.loading = false;
+                match result {
+                    Ok(rows) => {
+                        self.session_browser.rows = rows;
+                        let len = self.visible_session_browser().len();
+                        self.session_browser.sel =
+                            self.session_browser.sel.min(len.saturating_sub(1));
+                        self.session_browser.transcript_key = None;
+                        self.last_error = None;
+                        self.fetch_selected_browser_transcript()
+                    }
+                    Err(error) => {
+                        self.last_error = Some(format!("sessions: {error}"));
+                        Action::Render
+                    }
+                }
+            }
+            Event::SessionTranscript {
+                session_key,
+                result,
+            } => {
+                if self.session_browser.transcript_key.as_deref() != Some(&session_key) {
+                    return Action::Render;
+                }
+                self.session_browser.transcript_loading = false;
+                match result {
+                    Ok(turns) => {
+                        self.session_browser.transcript = turns;
+                        self.session_browser.transcript_error = None;
+                    }
+                    Err(error) => {
+                        self.session_browser.transcript.clear();
+                        self.session_browser.transcript_error = Some(error);
                     }
                 }
                 Action::Render
@@ -6065,6 +6289,11 @@ impl App {
             return Action::FetchSessionSwitcher {
                 query: String::new(),
             };
+        }
+        if self.tab == Tab::Sessions {
+            if let Some(action) = self.session_browser_key(code, mods) {
+                return action;
+            }
         }
         // Inline card modal (sentinel-tui-shared-backend-and-cards Phase 2a):
         // when an open `chat:ask_choice` card is focused on the operator surface,
@@ -7136,8 +7365,12 @@ impl App {
             }
             // ←/→ switch the focused pane (list ↔ items). Arrow-only here — `h`
             // stays the global "return to Overview" key on the in-app tab strip.
-            KeyCode::Left | KeyCode::Right if self.tab == Tab::Plans => {
-                self.plans_focus = self.plans_focus.toggle();
+            KeyCode::Left if self.tab == Tab::Plans => {
+                self.plans_focus = self.plans_focus.prev();
+                Action::Render
+            }
+            KeyCode::Right if self.tab == Tab::Plans => {
+                self.plans_focus = self.plans_focus.next();
                 Action::Render
             }
             KeyCode::Char('j') | KeyCode::Down if self.tab == Tab::Plans => self.plans_tab_arrow(1),
@@ -7512,6 +7745,12 @@ impl App {
                         && !self.conversations_loading
                     {
                         return self.refetch_conversations();
+                    }
+                    if t == Tab::Sessions {
+                        if self.session_browser.rows.is_empty() {
+                            return self.refetch_session_browser();
+                        }
+                        return self.fetch_selected_browser_transcript();
                     }
                     // Voice tab (holepunch-voice-channels P-008): connect the voice
                     // socket + fetch the channel list on first open.
@@ -7920,6 +8159,11 @@ impl App {
             if self.plans_focus == PlansFocus::Items {
                 let len = self.plans_items().len();
                 self.plan_items_sel = step(self.plan_items_sel, delta, len);
+            } else if self.plans_focus == PlansFocus::Goals {
+                let len = self.goals.len() + 1;
+                self.goal_sel = step(self.goal_sel, delta, len);
+                self.plan_sel = 0;
+                self.plan_items_sel = 0;
             } else {
                 let len = self.visible_plans().len();
                 self.plan_sel = step(self.plan_sel, delta, len);
@@ -8028,6 +8272,7 @@ impl App {
             },
             Tab::Settings => self.flags.len(),
             Tab::Fleet => self.visible_roster().len(),
+            Tab::Sessions => return,
             Tab::Memory => self.visible_memories().len(),
             Tab::Cupboard => self.cupboard.len(),
             Tab::Conversations => self.visible_conversations().len(),
@@ -8066,6 +8311,7 @@ impl App {
             },
             Tab::Settings => &mut self.flag_sel,
             Tab::Fleet => &mut self.fleet.agent_sel,
+            Tab::Sessions => return,
             Tab::Memory => &mut self.memory_sel,
             Tab::Cupboard => &mut self.cupboard_sel,
             Tab::Conversations => &mut self.conversation_sel,
@@ -8221,6 +8467,89 @@ mod tests {
             adv_session_id: Some(id),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn session_browser_filters_shared_rows_and_reuses_crew_action() {
+        let mut app = App::new();
+        app.tab = Tab::Sessions;
+        app.session_browser.when_idx = 2; // all time
+        app.session_browser.rows = vec![
+            RosterEntry {
+                owner_id: "su-live".into(),
+                label: "task engine".into(),
+                source: "codex".into(),
+                agent: Some("codex".into()),
+                fleet_slug: Some("cockpit".into()),
+                session_state: Some("live".into()),
+                adv_session_id: Some(11),
+                ..Default::default()
+            },
+            RosterEntry {
+                owner_id: "su-ended".into(),
+                label: "migration".into(),
+                source: "claude".into(),
+                agent: Some("claude".into()),
+                fleet_slug: Some("other".into()),
+                session_state: Some("ended".into()),
+                adv_session_id: Some(22),
+                ..Default::default()
+            },
+        ];
+        app.session_browser.state_idx = 1; // live
+        assert_eq!(app.visible_session_browser().len(), 1);
+        assert_eq!(app.visible_session_browser()[0].owner_id, "su-live");
+
+        let action = app
+            .session_browser_key(KeyCode::Char('k'), KeyModifiers::CONTROL)
+            .expect("browser owns Ctrl-K");
+        match action {
+            Action::SaveCrewSelection { name, members } => {
+                assert_eq!(name, "session-task-engine");
+                assert_eq!(members.len(), 1);
+                assert_eq!(members[0].resume_id.as_deref(), Some("11"));
+            }
+            other => panic!("expected crew action, got {other:?}"),
+        }
+        assert_eq!(iso_date_days("1970-01-01T00:00:00Z"), Some(0));
+    }
+
+    #[test]
+    fn session_browser_reducer_guards_query_and_transcript_identity() {
+        let mut app = App::new();
+        app.session_browser.query = "migration".into();
+        app.session_browser.when_idx = 2; // all time; fixture intentionally omits a timestamp
+        let mut row = switcher_entry("migration", "recorded", 7);
+        row.transcript_ref = Some("session://seven".into());
+        let action = app.update(Event::SessionBrowser {
+            query: "migration".into(),
+            result: Ok(vec![row]),
+        });
+        assert!(matches!(
+            action,
+            Action::FetchSessionTranscript { ref session_key, ref reference }
+                if session_key == "adv:7" && reference == "session://seven"
+        ));
+        assert!(app.session_browser.transcript_loading);
+
+        app.update(Event::SessionTranscript {
+            session_key: "stale".into(),
+            result: Ok(vec![SessionTranscriptTurn {
+                speaker: "agent".into(),
+                text: "wrong".into(),
+                ..Default::default()
+            }]),
+        });
+        assert!(app.session_browser.transcript.is_empty());
+        app.update(Event::SessionTranscript {
+            session_key: "adv:7".into(),
+            result: Ok(vec![SessionTranscriptTurn {
+                speaker: "agent".into(),
+                text: "right".into(),
+                ..Default::default()
+            }]),
+        });
+        assert_eq!(app.session_browser.transcript[0].text, "right");
     }
 
     #[test]
@@ -10516,11 +10845,7 @@ mod tests {
                 assert_eq!(specs.len(), 1);
                 assert_eq!(
                     specs[0].argv,
-                    vec![
-                        "psu".to_string(),
-                        "--resume".to_string(),
-                        "77".to_string()
-                    ]
+                    vec!["psu".to_string(), "--resume".to_string(), "77".to_string()]
                 );
             }
             _ => panic!("expected LaunchMany"),
@@ -10537,10 +10862,7 @@ mod tests {
             crew: "morning".into(),
             members: vec![crate::models::CrewMember::default()],
         });
-        let act = a.update(Event::Key(KeyEvent::new(
-            KeyCode::Esc,
-            KeyModifiers::NONE,
-        )));
+        let act = a.update(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)));
         assert!(a.crew_restore_prompt.is_none(), "prompt closes on Esc");
         assert!(matches!(act, Action::Render));
     }
@@ -12086,8 +12408,9 @@ mod tests {
         // digit tabs, plus the appended Memory ('m', D-006) + Cupboard ('c',
         // D-011) + Conversations ('d', Brief 25) + Voice ('a', holepunch-voice-
         // channels P-008) + Hives ('i', pui-hives-tab-2026-06-07) letter tabs
-        // + the prepended Overview ('h', Brief 23).
-        assert_eq!(Tab::ALL.len(), 16);
+        // + the prepended Overview ('h', Brief 23) + the Sessions archive
+        // destination (pui-agent-context-cockpit-2026-08-26 P-030).
+        assert_eq!(Tab::ALL.len(), 17);
         assert_eq!(Tab::Memory.switch_key(), 'm');
         assert_eq!(Tab::Cupboard.switch_key(), 'c');
         assert_eq!(Tab::Conversations.switch_key(), 'd');

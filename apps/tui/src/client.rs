@@ -1045,6 +1045,13 @@ impl OperatorClient {
         Ok(plans)
     }
 
+    /// Goals for the Plans-tab spine (`GET /api/tui/goals`, P-032): the same
+    /// audited GOAL-mode read the GUI uses, flattened for the goals column.
+    pub async fn goals_list(&self) -> Result<crate::models::GoalsResponse> {
+        let v = self.get_json("/api/tui/goals").await?;
+        serde_json::from_value(v).context("decode goals")
+    }
+
     /// Deployed cloud frames (`/api/deploy/frames`) — the per-frame-tab roster
     /// (hive-agent-tabs P-013).
     pub async fn deploy_frames(&self) -> Result<Vec<crate::models::DeployFrameRow>> {
