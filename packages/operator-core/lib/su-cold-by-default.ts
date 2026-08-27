@@ -77,6 +77,40 @@ export interface ClassDefaultColdInput {
 export type ClassDefaultColdDecision = { cold: boolean; reason: string };
 
 /**
+ * Is a HUMAN actively in this exchange right now — i.e. did a real keystroke land
+ * on the host's bridged TTY inside {@link ACTIVE_EXCHANGE_WINDOW_MS}?
+ *
+ * THE ONE DEFINITION OF HUMAN PRESENCE, shared by BOTH cold routes (EI-21572316039386007).
+ * It used to be inlined in decideClassDefaultCold, which meant the guard protected the
+ * IMPLICIT cold-by-default route and nothing protected the EXPLICIT `carry:'cold'`
+ * opt-in — so an explicitly cold-armed loop reset a session mid-conversation while its
+ * owner was typing, twice destroying an answer the owner was waiting to read. The rule
+ * "NEVER use 'cold' for an interactive/human-present session (D-005)" was stated in
+ * loop:arm's own description but enforced on only one of the two paths that reach cold.
+ * Extracted so decideColdWake (su-cold-loop.ts) enforces the SAME window from the SAME
+ * source rather than a second hand-maintained copy of it.
+ *
+ * `lastHumanInputAtMs` is human keystrokes ONLY: socket-injected agent wakes bypass
+ * stdin and never bump it (psu-pty-host P-003), so an agent's own loop traffic can
+ * never masquerade as a present human. A headless session has no bridged TTY and
+ * therefore no timestamp — null ⇒ false ⇒ cold proceeds exactly as before. Pure.
+ */
+export function isActiveInteractiveExchange(input: {
+  /** ms epoch of the most recent HUMAN keystroke (null = none recorded). */
+  lastHumanInputAtMs: number | null;
+  nowMs: number;
+  /** Override for tests; defaults to ACTIVE_EXCHANGE_WINDOW_MS (env-tunable). */
+  windowMs?: number;
+}): boolean {
+  const window = input.windowMs ?? activeExchangeWindowMs();
+  return (
+    input.lastHumanInputAtMs != null &&
+    Number.isFinite(input.lastHumanInputAtMs) &&
+    input.nowMs - input.lastHumanInputAtMs < window
+  );
+}
+
+/**
  * The PURE P-021 decision: should this wake go cold WITHOUT the per-loop
  * `carry:'cold'` opt-in? True only when the kill-switch is on, the session's
  * class is drill-proven, and no active interactive exchange is in flight.
@@ -89,11 +123,12 @@ export function decideClassDefaultCold(input: ClassDefaultColdInput): ClassDefau
   if (!input.sufficientClasses.includes(input.sessionClass)) {
     return { cold: false, reason: `class '${input.sessionClass}' not drill-proven` };
   }
-  const window = input.windowMs ?? activeExchangeWindowMs();
   if (
-    input.lastHumanInputAtMs != null &&
-    Number.isFinite(input.lastHumanInputAtMs) &&
-    input.nowMs - input.lastHumanInputAtMs < window
+    isActiveInteractiveExchange({
+      lastHumanInputAtMs: input.lastHumanInputAtMs,
+      nowMs: input.nowMs,
+      windowMs: input.windowMs,
+    })
   ) {
     return { cold: false, reason: 'active interactive exchange (recent human input) — stays warm' };
   }
@@ -155,6 +190,34 @@ export async function classDefaultColdForWake(
       lastHumanInputAtMs: typeof host.lastInputAt === 'number' ? host.lastInputAt : null,
       nowMs: (deps.now ?? Date.now)(),
     }).cold;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The wake-executor's injected `activeInteractiveExchange` dep (engine.ts wires it):
+ * given the live host record of the wake's target session, is a human actively in the
+ * exchange? Applies to BOTH cold routes — unlike {@link classDefaultColdForWake}, which
+ * the explicit `carry:'cold'` opt-in deliberately never consults (EI-21572316039386007).
+ *
+ * FAIL-SOFT FALSE, and the direction is deliberate: false means "no human detected",
+ * which lets cold proceed exactly as it does today. A genuinely headless session has no
+ * bridged TTY and thus no `lastInputAt`, so it must land here — returning true on an
+ * unreadable host would force EVERY headless cold loop warm and silently retire the
+ * cold-loop lifecycle. This guard may only ever DECLINE to cold a session with a
+ * demonstrably present human; it must never cold something, nor warm everything.
+ */
+export function activeInteractiveExchangeForWake(
+  host: ColdByDefaultHostView | null | undefined,
+  deps: { now?: () => number } = {},
+): boolean {
+  try {
+    if (!host) return false; // no live host view ⇒ no keystrokes observable ⇒ no human
+    return isActiveInteractiveExchange({
+      lastHumanInputAtMs: typeof host.lastInputAt === 'number' ? host.lastInputAt : null,
+      nowMs: (deps.now ?? Date.now)(),
+    });
   } catch {
     return false;
   }

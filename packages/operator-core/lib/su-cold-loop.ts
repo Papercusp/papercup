@@ -113,9 +113,19 @@ export function coldWakeMode(
  *           harness-scoped LOOP marker with NO explicit carry (a future
  *           `carry:'warm'` stamp opts a loop out of the default). A non-loop
  *           wake (no marker) is never cold on either route;
- *   (2) cold-auto is enabled at all (`coldEnabled` — the P-007 master gate the
+ *   (2) NO ACTIVE INTERACTIVE EXCHANGE — no human keystroke landed on this session's
+ *       bridged TTY inside the active-exchange window (EI-21572316039386007). This
+ *       applies to BOTH routes. Route (b) already carried it inside its own verdict;
+ *       route (a) — the explicit opt-in — carried NOTHING, so a cold-armed loop reset
+ *       a live session mid-conversation while its owner was typing, destroying an
+ *       answer the owner was waiting to read. loop:arm's own description states the
+ *       rule ("NEVER use 'cold' for an interactive/human-present session (D-005)")
+ *       and, until this guard, no code enforced it on the path most likely to hit it:
+ *       an agent that explicitly asked for cold. A human at the keyboard now outranks
+ *       the opt-in exactly as it already outranked the drill verdict;
+ *   (3) cold-auto is enabled at all (`coldEnabled` — the P-007 master gate the
  *       caller resolves; defence-in-depth over the per-loop opt-in);
- *   (3) a carry-note EXISTS to reconstruct from (P-006) — cold-start loses
+ *   (4) a carry-note EXISTS to reconstruct from (P-006) — cold-start loses
  *       whatever the note fails to capture, so with NO anchor we MUST stay warm.
  * Otherwise WARM, with a reason (the caller injects the normal turn). When cold,
  * the cadence picks RECYCLE every Nth wake, else RESET-CONTEXT. Pure.
@@ -129,6 +139,12 @@ export function decideColdWake(input: {
    *  cold-by-default (flag + sufficientClasses + no active interactive exchange —
    *  see su-cold-by-default.ts). Absent/false ⇒ only the explicit opt-in colds. */
   classDefaultCold?: boolean;
+  /** EI-21572316039386007: caller-resolved "a human typed into this session recently"
+   *  (activeInteractiveExchangeForWake, su-cold-by-default.ts — the SAME window route
+   *  (b) uses, read from the same helper so the two can never drift apart). True ⇒ WARM
+   *  on EVERY route, opt-in included. Absent/false ⇒ unchanged behavior, which is what
+   *  a headless session (no bridged TTY, no keystroke timestamp) always resolves to. */
+  activeInteractiveExchange?: boolean;
 }): ColdWakeDecision {
   const marker = readColdLoopMarker(input.payload);
   const optIn = marker?.carry === 'cold';
@@ -140,6 +156,15 @@ export function decideColdWake(input: {
     typeof marker.harness === 'string';
   if (!optIn && !byVerdict) {
     return { cold: false, reason: 'warm loop (or not a cold loop wake)' };
+  }
+  // A PRESENT HUMAN OUTRANKS THE OPT-IN (D-005). Checked before the master gate so the
+  // reason names the human rather than a downstream precondition, and placed on the
+  // shared path so route (a) cannot bypass it the way it bypasses classDefaultCold.
+  if (input.activeInteractiveExchange === true) {
+    return {
+      cold: false,
+      reason: 'active interactive exchange (recent human input) — stays warm (D-005)',
+    };
   }
   if (!input.coldEnabled) {
     return { cold: false, reason: 'cold-auto disabled (master gate off)' };

@@ -1692,6 +1692,15 @@ export interface ExecuteWakeDeps {
    *  coldAutoEnabled so this module stays flag-system-free. Read ONLY on a loop-
    *  marked wake with no explicit carry, AFTER the master gate passed. */
   classDefaultCold?: (host: { bridgeTty?: boolean | null; lastInputAt?: number | null }) => Promise<boolean>;
+  /** EI-21572316039386007: is a HUMAN actively in this exchange (a keystroke on the
+   *  session's bridged TTY inside the active-exchange window)? Unlike classDefaultCold
+   *  this is read on EVERY cold route including the explicit `carry:'cold'` opt-in —
+   *  the opt-in previously had no human-presence guard at all, so a cold-armed loop
+   *  reset a live session while its owner was mid-conversation. DEFAULT ()=>false ⇒
+   *  byte-identical to today's behavior, and it is also what a genuinely headless
+   *  session resolves to (no bridged TTY ⇒ no keystroke timestamp), so the cold-loop
+   *  lifecycle is untouched. engine.ts wires the real activeInteractiveExchangeForWake. */
+  activeInteractiveExchange?: (host: { bridgeTty?: boolean | null; lastInputAt?: number | null }) => boolean | Promise<boolean>;
   /** Read an su AUTO loop's carry-note — the P-006 cold-start anchor a RESET-CONTEXT /
    *  RECYCLE reconstructs from. Injected for tests; defaults to the real
    *  getLoopCarryNote (carry-note.ts). */
@@ -1841,6 +1850,13 @@ async function injectPsuHostWake(
       // resolver — mirroring coldAutoEnabled.
       const classDefaultCold =
         coldEnabled && marker.carry === undefined ? await (deps.classDefaultCold ?? (async () => false))(host) : false;
+      // EI-21572316039386007: human-presence read, on BOTH routes. Resolved behind the
+      // master gate (like the verdict) but WITHOUT the no-explicit-carry condition —
+      // the opt-in route is precisely the one that was unguarded. Cheap and local: it
+      // reads a timestamp off the host view already in hand, no flag and no DB read.
+      const activeInteractiveExchange = coldEnabled
+        ? await (deps.activeInteractiveExchange ?? (() => false))(host)
+        : false;
       if (marker.carry === 'cold' || classDefaultCold) {
         // Only pay the carry-note read when the master gate is actually on (P-006's
         // anchor is moot if cold-auto is disabled). A test-injected getLoopCarryNoteFn
@@ -1865,7 +1881,13 @@ async function injectPsuHostWake(
             noteUpdatedAtMs = meta.updatedAtMs;
           }
         }
-        decision = decideColdWake({ payload: d.payload, coldEnabled, carryNote, classDefaultCold });
+        decision = decideColdWake({
+          payload: d.payload,
+          coldEnabled,
+          carryNote,
+          classDefaultCold,
+          activeInteractiveExchange,
+        });
       }
     }
   } catch {
@@ -2141,6 +2163,12 @@ async function coldWakeRequiresPsuHost(d: DeliveryWork, deps: ExecuteWakeDeps): 
     return false;
   }
 
+  // NOTE (EI-21572316039386007): deliberately NOT passing activeInteractiveExchange.
+  // This predicate exists for the case where the live psu host is UNAVAILABLE — and the
+  // human-presence signal is read off that very host view (lastInputAt), so in the only
+  // situation this function is consulted, it would resolve fail-soft false and change
+  // nothing. Reaching for a host here to answer "is a human typing" would be asking the
+  // object whose absence is the precondition. The inject path above holds the real guard.
   return decideColdWake({ payload: marker, coldEnabled, carryNote }).cold;
 }
 
