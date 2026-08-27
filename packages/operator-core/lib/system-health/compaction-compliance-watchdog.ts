@@ -824,6 +824,7 @@ async function maybeCarryRespawn(
   ownerLabel: string,
   workspaceId: string,
   effectiveWindowTokens: number,
+  reason: 'soft-threshold' | 'context-death' = 'soft-threshold',
 ): Promise<boolean> {
   try {
     const [{ getFlag }, { FLAGS }] = await Promise.all([
@@ -881,8 +882,9 @@ async function maybeCarryRespawn(
     if (!spec) return false;
     if (spec.openOwnerQuestion.crossesOpenOwnerMessage) {
       console.warn(
-        `[compaction-watchdog] ${ownerLabel} (${ownerId}) reached the deterministic carry threshold ` +
-          `with an unanswered owner message; refusing this deliberate cut once (P-010/P-018).`,
+        `[compaction-watchdog] ${ownerLabel} (${ownerId}) ${
+          reason === 'context-death' ? 'was detected dead and' : 'reached the deterministic carry threshold and'
+        } has an unanswered owner message; refusing this deliberate cut once (P-010/P-018).`,
       );
       return false;
     }
@@ -901,9 +903,9 @@ async function maybeCarryRespawn(
     });
     if (ok) {
       console.warn(
-        `[compaction-watchdog] CARRY-RESPAWN queued for ${ownerLabel} (${ownerId}) at the soft ` +
-          `threshold — fresh ${transcriptSourceKind} successor will inherit the deterministic carry ` +
-          `(P-018/D-011).`,
+        `[compaction-watchdog] CARRY-RESPAWN queued for ${ownerLabel} (${ownerId}) ${
+          reason === 'context-death' ? 'after detecting a Prompt-is-too-long death' : 'at the soft threshold'
+        } — fresh ${transcriptSourceKind} successor will inherit the deterministic carry (P-018/D-011).`,
       );
     }
     return ok;
