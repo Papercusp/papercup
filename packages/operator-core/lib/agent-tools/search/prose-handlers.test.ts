@@ -352,9 +352,17 @@ describe('search:semantic — mode + scope defaulting', () => {
 // of it that can drift.
 describe('search:semantic — leg honesty (P-020)', () => {
   /** Build a real SearchLegs from per-leg facts, via the engine's own rule. */
+  type LegFacts = Partial<{
+    attempted: boolean;
+    candidates: number;
+    floored: number;
+    callsRun: number;
+    callsFailed: number;
+    blocked: string | null;
+  }>;
   const realLegs = async (
-    lex: Partial<{ attempted: boolean; candidates: number; floored: number; callsRun: number }>,
-    sem: Partial<{ attempted: boolean; candidates: number; floored: number; callsRun: number }>,
+    lex: LegFacts,
+    sem: LegFacts,
   ) => {
     const { newLegAccumulator, finaliseLeg, summariseLegs } = await import('@papercusp/search');
     const mk = (o: typeof lex) => Object.assign(newLegAccumulator(), o);
@@ -383,6 +391,31 @@ describe('search:semantic — leg honesty (P-020)', () => {
     expect(p.legs.semantic).toMatchObject({ status: 'ran', candidates: 12 });
     // The degradation must be visible EVEN THOUGH the old signal reads healthy.
     expect(p.embedder_available).toBe(true);
+    expect(p.status).toBe('degraded');
+    expect(p.warning).toMatch(/SEARCH DEGRADED/);
+    expect(p.warning).toMatch(/lexical leg contributed 0 candidates/);
+  });
+
+  it('promotes a blocked semantic leg to the primary verdict even when lexical fallback returns plausible hits', async () => {
+    hybridResult = {
+      results: [
+        { source: 'turns', source_id: 't1', excerpt: 'lexical hit', highlight: 'lexical hit', score: 0.5, rankers: ['lexical'] },
+      ],
+      totalHits: 1,
+      embedderAvailable: false,
+      legs: await realLegs(
+        { attempted: true, callsRun: 4, candidates: 1 },
+        { attempted: true, blocked: 'query embed exceeded 4000ms budget' },
+      ),
+    };
+    const tool = (await import('./semantic')).default;
+    const p = payloadOf((await tool.handler({ query: 'x' } as never, CTX() as never)) as never);
+    expect(p.results).toHaveLength(1);
+    expect(p.total_hits).toBe(1);
+    expect(p.status).toBe('degraded');
+    expect(p.warning).toMatch(/SEARCH DEGRADED/);
+    expect(p.warning).toMatch(/semantic leg blocked/);
+    expect(p.warning).toMatch(/query embed exceeded 4000ms budget/);
   });
 
   it('distinguishes "the floor ate it" from "the query found nothing"', async () => {
@@ -475,6 +508,9 @@ describe('search:semantic — embedder availability', () => {
     expect(p.embedder_available).toBe(false);
     expect(p.total_hits).toBe(1);
     expect(p.zeroHitCaveat).toBeUndefined();
+    expect(p.status).toBe('degraded');
+    expect(p.warning).toMatch(/query embedding unavailable/);
+    expect(p.warning).toMatch(/lexical-only/);
   });
 
   it('embedder builder throwing is NOT caught by the handler (builder is the fail-safe boundary)', async () => {
@@ -546,6 +582,9 @@ describe('search:semantic — coverage honesty (P-009)', () => {
     expect(p.coverage.sources[0]).toMatchObject({ source: 'turns', verdict: 'degraded' });
     expect(p.coverage.sources[0].coverage).toBeCloseTo(0.72, 4);
     expect(p.coverage.warning).toMatch(/DEGRADED/);
+    expect(p.status).toBe('degraded');
+    expect(p.warning).toMatch(/SEARCH DEGRADED/);
+    expect(p.warning).toMatch(/DEGRADED/);
   });
 
   it('stays quiet — and cheap — when the index is healthy', async () => {
@@ -559,6 +598,8 @@ describe('search:semantic — coverage honesty (P-009)', () => {
     expect(p.coverage.warning).toBeNull();
     // A healthy search must not pay a per-source payload tax.
     expect(p.coverage.sources).toEqual([]);
+    expect(p.status).toBe('ok');
+    expect(p.warning).toBeNull();
   });
 
   it("escalates the wording for mode='embeddings', where a missing row is UNREACHABLE", async () => {

@@ -185,6 +185,30 @@ export default defineTool({
     // A degraded index matters more in pure-embeddings mode: with no lexical
     // leg, an unembedded row is not merely ranked lower, it is UNREACHABLE.
     const modeAggravated = mode === 'embeddings' && notable.length > 0;
+    const coverageWarning = coverage.warning
+      ? modeAggravated
+        ? `${coverage.warning}. mode='embeddings' has no lexical fallback, so rows ` +
+          `missing from the index are UNREACHABLE here — re-run with mode='hybrid' ` +
+          `to recover them via BM25.`
+        : coverage.warning
+      : null;
+
+    // EI-21538636815409820: the detailed diagnostics below are necessary, but
+    // they are not a primary verdict. A caller scanning `results` can miss a
+    // nested `legs.degraded` and treat a plausible lexical fallback as full
+    // semantic recall. Put the verdict FIRST in the payload so prefix-bounded
+    // renderers and human readers both see it before the hits.
+    const embedderWarning =
+      !embedderAvailable && !legs.semantic.blocked
+        ? 'query embedding unavailable — semantic recall was not measured; any returned hybrid-mode results are lexical-only'
+        : null;
+    const primaryWarnings = [embedderWarning, legs.warning, coverageWarning].filter(
+      (warning): warning is string => warning !== null,
+    );
+    const searchDegraded = !embedderAvailable || legs.degraded || coverage.degraded;
+    const searchWarning = searchDegraded
+      ? `SEARCH DEGRADED — ${primaryWarnings.join('; ') || 'semantic or corpus retrieval did not run at full strength'}`
+      : null;
 
     // EI-20838436704308881: a FOURTH honesty axis, distinct from all three
     // above — they all describe how well the corpora IN SCOPE were searched,
@@ -209,6 +233,8 @@ export default defineTool({
       content: [{
         type: 'text',
         text: JSON.stringify({
+          status: searchDegraded ? 'degraded' : 'ok',
+          warning: searchWarning,
           query: args.query,
           mode,
           embedder_available: embedderAvailable,
@@ -233,13 +259,7 @@ export default defineTool({
           },
           coverage: {
             degraded: coverage.degraded,
-            warning: coverage.warning
-              ? modeAggravated
-                ? `${coverage.warning}. mode='embeddings' has no lexical fallback, so rows ` +
-                  `missing from the index are UNREACHABLE here — re-run with mode='hybrid' ` +
-                  `to recover them via BM25.`
-                : coverage.warning
-              : null,
+            warning: coverageWarning,
             sources: notable.map((a) => ({
               source: a.source,
               verdict: a.verdict,
