@@ -1460,13 +1460,24 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // mask the real `created_by` error before the INSERT gets a chance to report
   // it (EI-19952118814692217).
   if (capPartition === 'ordinary' && input.createdBy != null) {
-    const protectedVictim = await findCrossAuthorVerifiedCapVictim(input, sql, cap);
+    const protectedVictim = await findCrossAuthorVerifiedCapVictim(input, sql, cap, {
+      confidence,
+      ttlSec: ttl,
+    });
     if (protectedVictim) {
+      // EI-21585375376448939: the refusal now only fires when this write would
+      // NOT outrank the row it displaces, so the remedy that actually works is
+      // the one to name first. "Coordinate with the fact owner" stays last: it
+      // is unreachable on a scope held by 130 authors, and leading with it is
+      // what made this refusal read as a dead end rather than a choice.
       throw new InvalidInputError(
         `facts:assert — REFUSED before write: the ordinary ${FACTS_PER_SCOPE_CAP}-fact cap would evict ` +
-          `another author's verified fact "${protectedVictim.key}" (owner ${protectedVictim.created_by}). ` +
-          'No fact was written. Use dryRun:true to inspect the cap cost, narrow the scope, or coordinate with ' +
-          'the fact owner before retrying.',
+          `another author's verified fact "${protectedVictim.key}" (owner ${protectedVictim.created_by}), ` +
+          `and this write does not outrank it (incoming confidence ${confidence ?? 'unset'}). ` +
+          'No fact was written. Raise this write above the victim by asserting it with ' +
+          "confidence:'verified' when the evidence genuinely supports that, narrow the scope " +
+          '(harness/owner/work_item instead of workspace), use a typed slot (dead-end/wall/guard-rail) ' +
+          'which takes no cap seat, inspect the cost with dryRun:true, or coordinate with the fact owner.',
       );
     }
   }
@@ -2193,15 +2204,27 @@ async function findCrossAuthorVerifiedCapVictim(
   input: AssertFactInput,
   sql: Sql,
   cap: number,
+  incoming: { confidence: FactConfidence | null; ttlSec: number },
 ): Promise<{ key: string; confidence: string | null; created_by: string } | null> {
   if (isFactCapExempt(input)) return null;
   const ws = input.workspaceId ?? activeWorkspaceId();
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
   const key = input.key.trim();
-  const rows = await sql<{ key: string; confidence: string | null; created_by: string }[]>`
-    SELECT doomed.key, doomed.confidence, doomed.created_by
+  const rows = await sql<
+    {
+      id: string | number | null;
+      key: string;
+      confidence: string | null;
+      created_by: string;
+      expires_at: string | Date;
+      created_at: string | Date;
+      updated_at: string | Date;
+    }[]
+  >`
+    SELECT doomed.id, doomed.key, doomed.confidence, doomed.created_by,
+           doomed.expires_at, doomed.created_at, doomed.updated_at
       FROM (
-        SELECT key, confidence, created_by
+        SELECT id, key, confidence, created_by, expires_at, created_at, updated_at
           FROM harness_shared.agent_facts
          WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', 'ordinary')}
            AND key <> ${key}
@@ -2219,7 +2242,62 @@ async function findCrossAuthorVerifiedCapVictim(
      WHERE doomed.confidence = 'verified'
        AND doomed.created_by <> ${input.createdBy}
      LIMIT 1`;
-  return rows[0] ?? null;
+  const victim = rows[0];
+  if (!victim) return null;
+
+  // EI-21585375376448939: the guard must consult the SAME ranking it is
+  // protecting, not just the victim's confidence tier.
+  //
+  // The victim is selected at OFFSET cap-1 — i.e. it is the WORST-ranked row in
+  // the scope, the one the sweep chose precisely because it is closest to
+  // natural death. Refusing on `victim.confidence = 'verified' AND
+  // victim.created_by <> me` alone ignores whether the INCOMING fact is better
+  // than the row it displaces, and that is not a corner case here: once a scope
+  // saturates with a 100%-verified population (the steady state on this fleet —
+  // measured 200/200 verified across 123-130 distinct authors in both the
+  // `workspace` and `harness:papercusp` partitions), the confidence
+  // discriminator is DEGENERATE. Every ordinary assert by every author then
+  // matched, so a rail meant to protect one fact became a scope-wide WRITE
+  // LOCK, and its stated remedy ("coordinate with the fact owner") is not
+  // reachable across 130 authors.
+  //
+  // A fresh write always scores ~1.0 on key 2, so a `verified` incoming fact
+  // ranks FIRST of 200 while the victim ranks LAST — the store's own
+  // `survival.rank` reported exactly that (rank 1, nextVictim false) for a
+  // write this guard nonetheless refused. Destroying a better fact with a worse
+  // one is what the rail exists to stop; refusing a better fact to preserve the
+  // worst one is not that, it is the inverse.
+  //
+  // So: order the incoming row against the victim with the shared comparator
+  // (never a re-derived copy of the ordering — see sweep-ranking.ts's header on
+  // why a drifting mirror is worse than no answer) and refuse ONLY when the
+  // incoming fact does not outrank the victim. Ties keep the refusal: the SQL
+  // ordering is explicitly ambiguous on exact ties, so a tie is "no better
+  // than", and the protective reading is the safe one.
+  const { orderAsSweepWould } = await import('./sweep-ranking');
+  const nowMs = Date.now();
+  const INCOMING_ID = '__incoming__';
+  const ordered = orderAsSweepWould(
+    [
+      {
+        id: victim.id,
+        confidence: victim.confidence,
+        expires_at: victim.expires_at,
+        created_at: victim.created_at,
+        updated_at: victim.updated_at,
+      },
+      {
+        id: INCOMING_ID,
+        confidence: incoming.confidence,
+        expires_at: new Date(nowMs + Math.max(1, incoming.ttlSec) * 1000),
+        created_at: new Date(nowMs),
+        updated_at: new Date(nowMs),
+      },
+    ],
+    nowMs,
+  );
+  if (String(ordered[0]?.id) === INCOMING_ID) return null;
+  return victim;
 }
 
 /**
