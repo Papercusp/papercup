@@ -46,15 +46,30 @@ export function resolveWorkspaceScope({ workspace, env, cwd }?: {
     cwd?: string;
 }): string | null;
 /**
- * Resolve the harness scope for a ptool session. An explicit CLI flag wins;
- * otherwise inherit the harness exported by a tracked su/psu session. A
- * missing harness stays null deliberately — ptool must not guess a project
- * when the caller is not harness-scoped.
- * @param {{harness?: string | null, env?: EnvironmentMap}} [options]
+ * Resolve a harness scope embedded in a parsed ptool payload. Direct calls
+ * carry `harness` at the top level; a `tools:invoke` wrapper carries it in
+ * the nested target `args`. Only the wrapper path is recursive so an
+ * unrelated nested object cannot accidentally become session scope. Pure.
+ * @param {unknown} payload
+ * @param {{toolName?: string | null}} [options]
  * @returns {string | null}
  */
-export function resolveHarnessScope({ harness, env }?: {
+export function resolvePayloadHarnessScope(payload: unknown, { toolName }?: {
+    toolName?: string | null;
+}): string | null;
+/**
+ * Resolve the harness scope for a ptool session. An explicit CLI flag wins;
+ * otherwise use the parsed payload's harness, then inherit the harness
+ * exported by a tracked su/psu session. A missing harness stays null
+ * deliberately — ptool must not guess a project when the caller is not
+ * harness-scoped.
+ * @param {{harness?: string | null, payload?: unknown, toolName?: string | null, env?: EnvironmentMap}} [options]
+ * @returns {string | null}
+ */
+export function resolveHarnessScope({ harness, payload, toolName, env }?: {
     harness?: string | null;
+    payload?: unknown;
+    toolName?: string | null;
     env?: EnvironmentMap;
 }): string | null;
 /**
