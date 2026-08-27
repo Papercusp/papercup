@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 832,
+  "count": 833,
   "tools": [
     {
       "name": "ablation:report",
@@ -11290,6 +11290,37 @@
         "when": "Winding down a fleet member for real (not just ending its turn — that is turn:interrupt), removing a dead member's stale window, or stopping a headless cup. \"Close that agent's terminal\" / \"kill that bee\" both land here.",
         "notWhen": "To END A TURN but keep the agent alive — turn:interrupt. To cancel a whole nursery subtree by spawn id with full bulk semantics — fleet:cancel (fleet:kill delegates to the same machinery for a single headless target).",
         "chaining": "coord:presence / fleet:assignments (find the ownerId) → fleet:kill { owner, reason } . Stale windows: fleet:kill { terminal_pids:[…], reason }."
+      }
+    },
+    {
+      "name": "fleet:launch-on-plan",
+      "http": {
+        "path": "/api/agent-tools/fleet/launch-on-plan",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Launch su member sessions on a plan in one call — visible desktop terminals, or headless background sessions with `headless:true` (same leader-led su fleet either way). Ensures the named fleet exists, opens N members, and each scripted psu launch auto-starts work on the plan. `carry` picks warm/cold auto-mode; `perMemberLaunchContext` gives distinct per-member briefs. `placement:'remote'` places members on the machines that delegated seats.",
+      "capabilities": [
+        "capability:terminal"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "cup"
+      ],
+      "guidance": {
+        "when": "ERGONOMIC N-AGENTS-ON-A-PLAN DOOR: launch a leader-led su fleet whose members auto-join and auto-start the plan. Prefer this over hand-building agent commands with capability:terminal.",
+        "notWhen": "Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for the retired background cup/nursery tier, plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
+        "chaining": "plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED — items become claimable only through it; skipped, the fleet launches onto an empty backlog; backstopped idempotently here) → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor; avoid polling full rosters every wake."
       }
     },
     {

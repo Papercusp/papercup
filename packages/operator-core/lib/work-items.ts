@@ -4965,7 +4965,9 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
               WHERE bf.workspace_id = harness_shared.harness_features_consolidated.workspace_id
                 AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
                 AND (
-                  (d.satisfaction = 'settled' AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped'))
+                  (bf.authority IS NOT NULL AND bf.authority NOT IN ('committed', 'validated')
+                    AND lower(COALESCE(bf.status, '')) NOT IN ('deprecated', 'dropped'))
+                  OR (d.satisfaction = 'settled' AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped'))
                   OR (d.satisfaction = 'success' AND bf.status NOT IN ('passed', 'done'))
                 )
            )
@@ -4974,7 +4976,9 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
               WHERE bi.workspace_id = harness_shared.harness_features_consolidated.workspace_id
                 AND bi.issue_id = d.blocker_ref
                 AND (
-                  (d.satisfaction = 'settled' AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped'))
+                  (bi.authority IS NOT NULL AND bi.authority NOT IN ('committed', 'validated')
+                    AND lower(COALESCE(bi.state, '')) NOT IN ('closed', 'dropped'))
+                  OR (d.satisfaction = 'settled' AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped'))
                   OR (d.satisfaction = 'success' AND bi.state NOT IN ('resolved', 'done'))
                 )
            )
