@@ -330,6 +330,7 @@ _pc_heavy_internal_preempt_run() {
   case "$_preempt_clear_after" in ''|*[!0-9]*) _preempt_clear_after=5 ;; esac
   local _preempt_pid_dir="${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}" 
   local _preempt_pid_file="$_preempt_pid_dir/preemptible.$$.pid"
+  local _preempt_start_file="${PC_HEAVY_PREEMPT_START_FILE:-}"
   local _preempt_notify_fd="${PC_HEAVY_PREEMPT_NOTIFY_FD:-}"
   local _preempt_ready_file="${PC_HEAVY_PREEMPT_READY_FILE:-}"
   local _preempt_ready_max="${PC_HEAVY_PREEMPT_READY_MAX_SEC:-600}"
@@ -354,6 +355,14 @@ _pc_heavy_internal_preempt_run() {
   local _psi_cgroup_path='' _psi_memory_current_mib='' _psi_state='active'
   local _psi_next_sample=0 _psi_last_undetermined=''
   local _psi_selected_id='' _psi_total_mib=0 _psi_record_count=0 _psi_unreadable_count=0
+
+  # The outer wrapper uses this private sentinel to distinguish a supervisor
+  # that never started from a real child exit. Touch it before any setup that
+  # can fail; the outer wrapper emits an undetermined result only when this
+  # signal is absent after `setsid --wait` returns.
+  if [ -n "$_preempt_start_file" ]; then
+    : > "$_preempt_start_file" 2>/dev/null || true
+  fi
 
   # Coalescing leaders route stdout/stderr through FIFOs whose readers belong
   # to the outer wrapper. If that wrapper is hard-killed, a diagnostic write to
@@ -841,6 +850,7 @@ _pc_heavy_internal_preempt_run() {
     esac
     unset PC_HEAVY_PREEMPT_NOTIFY_FD
     unset PC_HEAVY_CALLER_PID PC_HEAVY_CALLER_START_TICKS PC_HEAVY_DURABLE_CALLER
+    unset PC_HEAVY_PREEMPT_START_FILE
     _pid_file="$1"
     shift
     printf "%s\n" "$$" > "$_pid_file"
@@ -2658,6 +2668,39 @@ if [ "$_preemptible" = 1 ]; then
   _runner=(setsid --wait bash "$0" --pc-heavy-internal-preempt-run "$$" "$_exclusive_intent_path" "${_runner[@]}")
 fi
 
+# Handshake for the outer preemption supervisor. A `setsid` process can fail
+# before it starts the internal monitor (for example, fork() -> EAGAIN), which
+# otherwise leaves only its raw exit code and no machine-readable result. The
+# marker is created absent, then touched by the monitor at function entry; a
+# stale marker cannot make a later run look started because every path gets a
+# fresh unique file.
+_preempt_start_file=''
+unset PC_HEAVY_PREEMPT_START_FILE
+if [ "$_preemptible" = 1 ]; then
+  _preempt_start_file="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-start.XXXXXX" 2>/dev/null || true)"
+  if [ -n "$_preempt_start_file" ] && rm -f "$_preempt_start_file" 2>/dev/null; then
+    export PC_HEAVY_PREEMPT_START_FILE="$_preempt_start_file"
+  else
+    _preempt_start_file=''
+  fi
+fi
+
+# Run the selected command and classify a missing monitor handshake without
+# conflating it with the wrapped command's own exit status.
+_pc_heavy_run_runner() {
+  "${_runner[@]}" "$@"
+  local _runner_rc=$?
+  if [ "$_preemptible" = 1 ] && [ -n "${_preempt_start_file:-}" ]; then
+    if [ ! -e "$_preempt_start_file" ]; then
+      echo "[pc-heavy] PC_HEAVY_RESULT status=undetermined reason=outer-child-start-failed exit=$_runner_rc" >&2
+    fi
+    rm -f "$_preempt_start_file" 2>/dev/null || true
+    _preempt_start_file=''
+    unset PC_HEAVY_PREEMPT_START_FILE
+  fi
+  return "$_runner_rc"
+}
+
 # Preserve the caller's original stderr for the detached monitor BEFORE the
 # coalescing leader redirects fd 2 through a FIFO. The capture reader is owned
 # by this outer wrapper and therefore disappears with it on a caller-side
@@ -2757,7 +2800,7 @@ if [ "$_do_cache_write" = 1 ]; then
     _c_out_tee_pid=$!
     _pc_heavy_capture_without_slot_fd "$_c_err_tmp" <"$_c_err_fifo" >&2 &
     _c_err_tee_pid=$!
-    "${_runner[@]}" "$@" >"$_c_out_fifo" 2>"$_c_err_fifo"
+    _pc_heavy_run_runner "$@" >"$_c_out_fifo" 2>"$_c_err_fifo"
     _rc=$?
     # The command has returned; any remaining FIFO writers belong to
     # descendants. They must not decide when this wrapper or its caller sees
@@ -2771,7 +2814,7 @@ if [ "$_do_cache_write" = 1 ]; then
     # run the command normally rather than risking a blocked writer or a
     # cache entry with no complete output pair.
     _do_cache_write=0
-    "${_runner[@]}" "$@"
+    _pc_heavy_run_runner "$@"
     exit $?
   fi
   mv -f "$_c_out_tmp" "$_c_out" 2>/dev/null
@@ -2783,7 +2826,7 @@ if [ "$_do_cache_write" = 1 ]; then
   exit "$_rc"
 fi
 
-"${_runner[@]}" "$@"
+_pc_heavy_run_runner "$@"
 exit $?
 }
 
