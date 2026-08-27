@@ -50,6 +50,7 @@ import * as path from 'node:path';
 // su-context-size-variants: the always-loaded core spine the codex 'trimmed' variant
 // advertises via ?tools= (the only trim lever codex has — it has no native discovery).
 import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
+import { normalizeSuContextSize } from './su-context-size.mjs';
 
 /**
  * gui-chat-session-controls-2026-07-25 P-010: chat:ask_choice UNCONDITIONALLY
@@ -117,7 +118,6 @@ import { composeLaunchContext } from './su-launch-context';
 import { lintInstructionText, type InstructionLintReport } from './instruction-lint';
 import { readSuperuserToken } from './superuser-token';
 import { papercuspPathForWorkspace } from './papercusp-root';
-import { canonicalCoordRole } from './agent-tools/coordination/roles';
 import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
 export interface BuildRoleLaunchSpecInput {
@@ -248,14 +248,12 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     extras = [...(input.extras ?? []), ...(await tierMenuRuntimeLines())];
   }
 
-  // WI-4608: role-based context-size default. Canonicalize first — a caller
-  // may still pass the pre-rename spelling ('queen'/'overwatch'; roles.ts's
-  // POT_RENAME_ROLE_MAP), and the auto-select must match either spelling the
-  // same way canonicalCoordRole is used everywhere else in this launch path.
-  const canonicalRoleForContextSize = canonicalCoordRole(input.role);
-  const contextSize: 'full' | 'trimmed' =
-    input.contextSize ??
-    (canonicalRoleForContextSize === 'mug' || canonicalRoleForContextSize === 'kettle' ? 'trimmed' : 'full');
+  // All roles use the growable trimmed seed. Historical callers may still pass
+  // `full`; normalize it before signing the MCP URL so no role can eagerly load
+  // the catalog or hit a client transport ceiling.
+  const normalizedContextSize = normalizeSuContextSize(input.contextSize);
+  if (!normalizedContextSize.ok) throw new Error(normalizedContextSize.error);
+  const contextSize = normalizedContextSize.contextSize;
 
   // Launch-mechanics identity (P-002): the per-session coord/lock owner +
   // forced native session id. Minted HERE (the one primitive) — not by each
@@ -385,7 +383,7 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
   // safe to set before or after signing; set it here so it rides the same params
   // object the rest of the URL is built from. `getSessionSurface` grows the seed
   // at runtime (tools:find / ctx.activateTools), so this never hard-caps the role.
-  if (contextSize === 'trimmed') params.set('tools', CORE_MCP_TOOL_NAMES.join(','));
+  params.set('tools', CORE_MCP_TOOL_NAMES.join(','));
   await signSpawnParams(params, input.ttlSec ? { ttlSec: input.ttlSec } : {});
   // WI-573: route the spawned agent's MCP through the resilient proxy when the env opts in
   // (PAPERCUSP_MCP_PROXY_BASE), else the operator base unchanged. Survives a :3070 deploy restart.
@@ -777,17 +775,11 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
   // leaves all names+descriptions inline (~165k MEASURED), which DOA'd sonnet-window
   // sessions with "Prompt is too long". So claude is seeded too now.
   //
-  // `contextSize:'full'` is the OPT-OUT escape hatch: eager-load the whole catalog for
-  // a latency-critical broad-tool task, a client that can't do dynamic expansion, or
-  // debugging. Everything else → seed. (URLSearchParams encodes the colon/comma tool
-  // names; parseToolsAllowlist decodes them server-side.)
-  const wantsSeed = input.contextSize !== 'full';
-  if (wantsSeed) {
-    // P-010: su sessions ALWAYS get chat:ask_choice on top of the shared core
-    // spine (see SU_EXTRA_MCP_TOOL_NAMES) — su is unconditionally reachable
-    // from a live GUI chat, unlike a generic headless role launch.
-    mcpUrl.searchParams.set('tools', [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
-  }
+  const normalizedContextSize = normalizeSuContextSize(input.contextSize);
+  if (!normalizedContextSize.ok) throw new Error(normalizedContextSize.error);
+  // P-010: su sessions ALWAYS get chat:ask_choice on top of the shared core
+  // spine. The seed is growable and therefore preserves full reachability.
+  mcpUrl.searchParams.set('tools', [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
   const mcpUrlStr = mcpUrl.toString();
   const mcpJsonContents = JSON.stringify(
     {

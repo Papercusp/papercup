@@ -36,8 +36,12 @@ export function isSuAgent(x: unknown): x is SuAgent {
  */
 export type SuContextSize = 'full' | 'trimmed';
 
-export const SU_CONTEXT_SIZES: readonly SuContextSize[] = ['full', 'trimmed'];
+// Public choices are trimmed-only. The union above remains temporarily tolerant
+// so historical launch rows typed before this migration can still be decoded.
+export const SU_CONTEXT_SIZES: readonly SuContextSize[] = ['trimmed'];
 
 export function isSuContextSize(x: unknown): x is SuContextSize {
   return x === 'full' || x === 'trimmed';
 }
+
+export { SU_CONTEXT_SIZE, LEGACY_SU_CONTEXT_SIZE, normalizeSuContextSize } from './su-context-size.mjs';

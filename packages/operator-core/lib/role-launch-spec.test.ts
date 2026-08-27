@@ -257,18 +257,18 @@ describe('buildRoleLaunchSpec — WI-4608 contextSize role-based default (the mu
     expect(overwatchSpec.contextSize).toBe('trimmed');
   });
 
-  it('role=worker, contextSize omitted ⇒ stays full (byte-identical default for every non-mug/kettle role)', async () => {
+  it('role=worker, contextSize omitted ⇒ uses the growable trimmed seed too', async () => {
     const spec = await buildRoleLaunchSpec({
       role: 'worker',
       workspaceId: 'default',
       harnessSlug: 'papercup',
       operatorBaseUrl: 'http://localhost:3070',
     });
-    expect(spec.contextSize).toBe('full');
-    expect(new URL(spec.mcpUrl).searchParams.has('tools')).toBe(false);
+    expect(spec.contextSize).toBe('trimmed');
+    expect(new URL(spec.mcpUrl).searchParams.has('tools')).toBe(true);
   });
 
-  it('role=mug, explicit contextSize:"full" OVERRIDES the role-based default', async () => {
+  it('legacy explicit contextSize:"full" normalizes to trimmed', async () => {
     const spec = await buildRoleLaunchSpec({
       role: 'mug',
       workspaceId: 'default',
@@ -276,8 +276,8 @@ describe('buildRoleLaunchSpec — WI-4608 contextSize role-based default (the mu
       operatorBaseUrl: 'http://localhost:3070',
       contextSize: 'full',
     });
-    expect(spec.contextSize).toBe('full');
-    expect(new URL(spec.mcpUrl).searchParams.has('tools')).toBe(false);
+    expect(spec.contextSize).toBe('trimmed');
+    expect(new URL(spec.mcpUrl).searchParams.has('tools')).toBe(true);
   });
 
   it('role=worker, explicit contextSize:"trimmed" OVERRIDES the (full) role-based default', async () => {
@@ -508,8 +508,8 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     expect(tools).toContain('locks:release');
   });
 
-  it('codex + full ⇒ NO tools= param (explicit opt-out into the whole catalog)', async () => {
-    expect((await suMcpUrl('codex', { contextSize: 'full' })).searchParams.has('tools')).toBe(false);
+  it('codex + legacy full ⇒ tools= remains present', async () => {
+    expect((await suMcpUrl('codex', { contextSize: 'full' })).searchParams.has('tools')).toBe(true);
   });
 
   // dynamic-tool-surface D-004: codex now SEEDS the core spine BY DEFAULT (any tier)
@@ -543,8 +543,8 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     );
   });
 
-  it('omp + full ⇒ NO tools= param (the escape hatch out of the seed)', async () => {
-    expect((await suMcpUrl('omp', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(false);
+  it('omp + legacy full ⇒ tools= remains present', async () => {
+    expect((await suMcpUrl('omp', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(true);
   });
 
   it('codex + WEAK model ⇒ tools= present (the tier gates it, not just the manual flag)', async () => {
@@ -574,8 +574,8 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     );
   });
 
-  it('claude + full ⇒ NO tools= param (the escape hatch keeps native ToolSearch over the whole catalog)', async () => {
-    expect((await suMcpUrl('claude', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(false);
+  it('claude + legacy full ⇒ tools= remains present', async () => {
+    expect((await suMcpUrl('claude', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(true);
   });
 });
 

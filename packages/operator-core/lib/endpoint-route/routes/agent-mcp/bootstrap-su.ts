@@ -28,6 +28,7 @@ import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 // WI-42439: the single source for which `--account=` spellings bypass the gateway.
 import { isGatewayFreeAccount } from '../../../agent-config-constants';
+import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import {
   NATIVE_SESSION_ID_RE,
   adoptStartingTerminalLaunch,
@@ -1637,17 +1638,13 @@ const post = defineTool({
     }
     const roleAddendum = suRoleRaw ? resolveSuRoleAddendum(suRoleRaw) : null;
 
-    // su-context-size-variants: 'full' loads the whole superuser catalog up-front;
-    // 'trimmed' uses each client's native soft-trim. Omitted ⇒ each client's native
-    // default (no lever applied). Validated here so a typo 400s, never silently falls back.
-    const contextSizeRaw = body.context_size?.trim() || null;
-    if (contextSizeRaw && contextSizeRaw !== 'full' && contextSizeRaw !== 'trimmed') {
-      return jsonRes(
-        { status: 'error', error: `context_size must be full|trimmed (got ${contextSizeRaw.slice(0, 24)})` },
-        400,
-      );
+    // Trimmed is the only effective launch mode. `full` remains a compatibility
+    // alias for historical rows/clients and is normalized before any mutation.
+    const normalizedContextSize = normalizeSuContextSize(body.context_size);
+    if (!normalizedContextSize.ok) {
+      return jsonRes({ status: 'error', error: normalizedContextSize.error }, 400);
     }
-    const contextSize = contextSizeRaw as 'full' | 'trimmed' | null;
+    const contextSize = normalizedContextSize.contextSize;
     // context-trimming-tiers P-017: persona tier (validated; omitted ⇒ model-window auto-select).
     const personaTierRaw = body.persona_tier?.trim() || null;
     if (personaTierRaw && personaTierRaw !== 'full' && personaTierRaw !== 'fleet') {

@@ -591,8 +591,10 @@ export function splitModelSpec(spec?: string | null): { model: string | null; ef
 /** Initial-context size variants — psu `--context-size=`. `null` (Native) means
  *  send no flag at all, byte-identical to a pre-feature launch. Twin of
  *  psu-launcher's SU_CONTEXT_CHOICES. */
-export const SU_CONTEXT_SIZES = ['full', 'trimmed'] as const;
-export type SuContextSizeValue = (typeof SU_CONTEXT_SIZES)[number];
+export type SuContextSizeValue = 'full' | 'trimmed';
+/** User-facing choices are trimmed-only; `full` remains in the legacy input
+ *  type until every persisted launch-profile reader normalizes old rows. */
+export const SU_CONTEXT_SIZES: readonly SuContextSizeValue[] = ['trimmed'];
 
 /** Static measured baseline estimates shown beside each variant. Twin of
  *  psu-launcher's SU_CONTEXT_TOKEN_ESTIMATES. */

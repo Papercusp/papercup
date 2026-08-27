@@ -29,6 +29,7 @@ import { activeWorkspaceId, isKnownWorkspace } from '../../../workspace-registry
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import { recordAdvSession } from '../../../adv-sessions';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
+import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import { roleConsumes } from '../../../role-registry';
 import { buildRoleLaunchSpec } from '../../../role-launch-spec';
 import { papercuspPathForWorkspace } from '../../../papercusp-root';
@@ -244,16 +245,11 @@ const post = defineTool({
     const harnessSlug = body.harness_slug?.trim() || null;
     const feature = body.feature?.trim() || null;
     const plan = body.plan?.trim() || null;
-    // WI-4608: same validation shape as bootstrap-su's context_size — an explicit
-    // bad value 400s loudly rather than silently falling through to the auto-select.
-    const contextSizeRaw = body.context_size?.trim() || null;
-    if (contextSizeRaw && contextSizeRaw !== 'full' && contextSizeRaw !== 'trimmed') {
-      return jsonRes(
-        { status: 'error', error: `context_size must be full|trimmed (got ${contextSizeRaw.slice(0, 24)})` },
-        400,
-      );
+    const normalizedContextSize = normalizeSuContextSize(body.context_size);
+    if (!normalizedContextSize.ok) {
+      return jsonRes({ status: 'error', error: normalizedContextSize.error }, 400);
     }
-    const contextSize = contextSizeRaw as 'full' | 'trimmed' | null;
+    const contextSize = normalizedContextSize.contextSize;
     const accountPin = await resolveAccountPin(workspace, body.account ?? null, agent, undefined, false, body.model);
     if (accountPin.error) {
       return jsonRes({ status: 'error', error: accountPin.error }, 409);
