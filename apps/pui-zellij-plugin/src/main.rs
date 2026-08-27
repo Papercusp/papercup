@@ -49,10 +49,10 @@ fn main() {}
 
 // Data types are pure (no host imports) and used by `build_topology` + tests on
 // every target. The shim functions + event/command enums are wasm-only.
-#[cfg(not(target_arch = "wasm32"))]
-use zellij_tile::prelude::{PaneManifest, TabInfo};
 #[cfg(target_arch = "wasm32")]
 use zellij_tile::prelude::*;
+#[cfg(not(target_arch = "wasm32"))]
+use zellij_tile::prelude::{PaneManifest, TabInfo};
 
 use pui_companion_proto::{PaneNode, TabNode, Topology};
 
@@ -192,6 +192,16 @@ fn build_topology(panes: &PaneManifest, tabs: &[TabInfo]) -> Topology {
     }
 }
 
+/// Build generation embedded by the canonical pui+companion installer. Direct
+/// developer builds remain explicit (`unknown`) instead of pretending to be an
+/// installed generation.
+fn plugin_build_version() -> String {
+    let sha = option_env!("PUI_BUILD_SHA").unwrap_or("unknown");
+    let short_sha: String = sha.chars().take(12).collect();
+    let epoch = option_env!("PUI_BUILD_EPOCH").unwrap_or("unknown");
+    format!("{}+{short_sha}@{epoch}", env!("CARGO_PKG_VERSION"))
+}
+
 // ───────────────────────────── wasm-only plugin ─────────────────────────────
 
 #[cfg(target_arch = "wasm32")]
@@ -276,7 +286,8 @@ impl ZellijPlugin for PuiCompanion {
                 let id = match pane_id {
                     PaneId::Terminal(i) | PaneId::Plugin(i) => i,
                 };
-                self.pending_stack_panes.retain(|(pane_id, _)| *pane_id != id);
+                self.pending_stack_panes
+                    .retain(|(pane_id, _)| *pane_id != id);
                 self.emit(&PluginEvent::PaneClosed { pane_id: id });
             }
             _ => {}
@@ -327,7 +338,7 @@ impl PuiCompanion {
         match cmd {
             Command::Hello => {
                 self.emit(&PluginEvent::Hello {
-                    plugin_version: env!("CARGO_PKG_VERSION").to_string(),
+                    plugin_version: plugin_build_version(),
                 });
                 self.emit_topology();
             }
@@ -382,7 +393,9 @@ impl PuiCompanion {
                     None => {
                         if let Some(n) = name {
                             let n = n.replace('"', "\\\"");
-                            new_tabs_with_layout(&format!("layout {{ tab name=\"{n}\" {{ pane }} }}"));
+                            new_tabs_with_layout(&format!(
+                                "layout {{ tab name=\"{n}\" {{ pane }} }}"
+                            ));
                         }
                     }
                 }
@@ -487,7 +500,10 @@ impl PuiCompanion {
     }
 
     fn emit_topology(&self) {
-        self.emit(&PluginEvent::Topology(build_topology(&self.panes, &self.tabs)));
+        self.emit(&PluginEvent::Topology(build_topology(
+            &self.panes,
+            &self.tabs,
+        )));
     }
 
     /// Emit one event line to `pui` over the captured CLI pipe id. No-op until
@@ -518,18 +534,34 @@ mod tests {
     #[test]
     fn build_topology_flattens_manifest_and_tabs() {
         let mut panes = HashMap::new();
-        panes.insert(0usize, vec![pane(1, "claude · F-12", true), pane(2, "pui", false)]);
+        panes.insert(
+            0usize,
+            vec![pane(1, "claude · F-12", true), pane(2, "pui", false)],
+        );
         panes.insert(1usize, vec![pane(5, "docs", false)]);
         let manifest = PaneManifest { panes };
         let tabs = vec![
-            TabInfo { position: 0, name: "papercup".into(), active: true, ..Default::default() },
-            TabInfo { position: 1, name: "docs".into(), active: false, ..Default::default() },
+            TabInfo {
+                position: 0,
+                name: "papercup".into(),
+                active: true,
+                ..Default::default()
+            },
+            TabInfo {
+                position: 1,
+                name: "docs".into(),
+                active: false,
+                ..Default::default()
+            },
         ];
 
         let topo = build_topology(&manifest, &tabs);
 
         assert_eq!(topo.tabs.len(), 2);
-        assert!(topo.tabs.iter().any(|t| t.pos == 0 && t.name == "papercup" && t.active));
+        assert!(topo
+            .tabs
+            .iter()
+            .any(|t| t.pos == 0 && t.name == "papercup" && t.active));
         assert_eq!(topo.panes.len(), 3);
         let p1 = topo.panes.iter().find(|p| p.id == 1).unwrap();
         assert_eq!(p1.tab, 0);
@@ -670,16 +702,20 @@ mod tests {
         // open_command_pane returned 9, but the first manifest has not caught
         // up yet: stacking now would race and silently miss the new pane.
         assert_eq!(
-            stack_ids_when_ready(&PaneManifest { panes: panes.clone() }, &tabs, &[9]),
+            stack_ids_when_ready(
+                &PaneManifest {
+                    panes: panes.clone()
+                },
+                &tabs,
+                &[9]
+            ),
             None
         );
 
-        panes.get_mut(&0).unwrap().push(cmd_pane(
-            9,
-            "new-agent",
-            Some("psu --agent=codex"),
-            false,
-        ));
+        panes
+            .get_mut(&0)
+            .unwrap()
+            .push(cmd_pane(9, "new-agent", Some("psu --agent=codex"), false));
         assert_eq!(
             stack_ids_when_ready(&PaneManifest { panes }, &tabs, &[9]),
             Some((vec![1, 9], vec![9]))
@@ -712,7 +748,13 @@ mod tests {
             false,
         ));
         assert_eq!(
-            stack_ids_when_ready(&PaneManifest { panes: panes.clone() }, &tabs, &[9, 10]),
+            stack_ids_when_ready(
+                &PaneManifest {
+                    panes: panes.clone()
+                },
+                &tabs,
+                &[9, 10]
+            ),
             Some((vec![1, 9], vec![9]))
         );
 
@@ -745,5 +787,13 @@ mod tests {
             "subsequent PaneUpdates must NOT re-fire hide_self"
         );
         assert!(!c.should_retry_self_hide());
+    }
+
+    #[test]
+    fn plugin_handshake_version_carries_build_generation() {
+        let version = plugin_build_version();
+        assert!(version.starts_with(concat!(env!("CARGO_PKG_VERSION"), "+")));
+        assert!(version.contains('@'));
+        assert_ne!(version, env!("CARGO_PKG_VERSION"));
     }
 }

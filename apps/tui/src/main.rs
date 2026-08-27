@@ -26,6 +26,7 @@ mod glyph;
 mod hives;
 mod http;
 mod identity;
+mod install;
 mod ipc;
 mod layout;
 mod lexicon;
@@ -61,6 +62,7 @@ use crossterm::{
 };
 use ratatui::{backend::Backend, backend::CrosstermBackend, Terminal};
 use std::io::stdout;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -78,7 +80,7 @@ Usage:
 
 Subcommands:
   workbench                  Open the full zellij workbench
-  doctor                     Verify and print the selected operator/store identity
+  doctor                     Verify local artifacts, stale panes, and selected operator identity
   hud                        Open the HUD pane
   chat                       Open the operator chat dock
   brain-view [SCOPE]         View the live Queen/Overwatch transcript
@@ -382,7 +384,50 @@ async fn selected_backend_identity() -> Result<(OperatorClient, client::BackendI
 }
 
 async fn run_doctor() -> Result<()> {
+    let local = install::inspect_local_install();
     let (_client, identity) = selected_backend_identity().await?;
+    let mut failures = 0usize;
+
+    match &local {
+        Ok(check) => {
+            println!(
+                "PUI local install: {}",
+                if check.is_ok() { "OK" } else { "STALE" }
+            );
+            println!(
+                "binary:         v{} source {}{} · {} · {}",
+                install::BUILD_VERSION,
+                install::BUILD_SHA,
+                if install::BUILD_DIRTY == "1" {
+                    " (dirty)"
+                } else {
+                    ""
+                },
+                install::age_label(check.binary_modified_epoch),
+                &check.binary_sha256[..12]
+            );
+            println!(
+                "companion:      {} · {}",
+                install::age_label(check.companion_modified_epoch),
+                &check.companion_sha256[..12]
+            );
+            println!("manifest:       {}", check.manifest_path.display());
+            for warning in &check.warnings {
+                println!("warning:        {warning}");
+            }
+            for problem in &check.problems {
+                failures += 1;
+                println!("problem:        {problem}");
+            }
+        }
+        Err(error) => {
+            failures += 1;
+            println!("PUI local install: ERROR");
+            println!("problem:        {error:#}");
+            println!("repair:         run {}", install::INSTALL_COMMAND);
+        }
+    }
+
     println!("PUI operator identity: OK");
     println!("endpoint:       {}", identity.endpoint);
     println!("selection:      {}", identity.selection_source);
@@ -398,9 +443,33 @@ async fn run_doctor() -> Result<()> {
         identity.build.sha.as_deref().unwrap_or("sha unavailable")
     );
     println!(
+        "source compare: {}",
+        install::operator_source_relation(identity.build.sha.as_deref())
+    );
+    println!(
         "agent chat:     {} via {}",
         identity.agent_chat.scope, identity.agent_chat.route
     );
+
+    if let Ok(check) = &local {
+        let panes = install::stale_zellij_panes(Path::new(&check.manifest.binary_path));
+        if panes.is_empty() {
+            println!("zellij panes:   OK (no stale installed pui process)");
+        } else {
+            failures += panes.len();
+            println!("zellij panes:   STALE ({})", panes.len());
+            for pane in panes {
+                println!("relaunch:       {}", pane.relaunch_guidance());
+            }
+        }
+    }
+
+    if failures > 0 {
+        anyhow::bail!(
+            "pui doctor found {failures} issue(s); repair local artifacts with {} and relaunch only the reported stale pui pane/session",
+            install::INSTALL_COMMAND
+        );
+    }
     Ok(())
 }
 
