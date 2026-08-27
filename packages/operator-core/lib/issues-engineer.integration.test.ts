@@ -799,6 +799,14 @@ describe('engineer issues surface (real PG)', () => {
 
   it('issue_blocks: feature-side projection — a harness-qualified feature block is projected, cleared on close (D-006 #2)', async () => {
     const { id } = await issues.createIssue({ title: 'feat blocker', createdBy: 'agA' }); // open
+    // EI-21586117616853779: dependency admission resolves both endpoints against
+    // the canonical work-items relation. The old fixture invented only the ref,
+    // so it tested a dangling edge that the production writer now correctly rejects.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind)
+      VALUES
+        (${PINNED_WS}, 'sheets', 'F-42', 'canonical feature endpoint', 'todo', 'feature')`;
     const ref = blocks.featureRef('sheets', 'F-42'); // '<harness>#<feature_id>'
     await issues.linkIssue(id, { kind: blocks.FEATURE_KIND, ref }, 'blocks', 'agA');
     let m = await blocks.getBlockedFeatures();
@@ -825,6 +833,11 @@ describe('engineer issues surface (real PG)', () => {
       'blocks',
       'agA',
     );
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, status, item_kind)
+      VALUES
+        (${PINNED_WS}, 'sheets', 'F-1', 'canonical counted endpoint', 'todo', 'feature')`;
     await issues.linkIssue(idA, { kind: blocks.FEATURE_KIND, ref: blocks.featureRef('sheets', 'F-1') }, 'blocks', 'agA');
     // … is referenced by a plan (inbound, counts) and blocked by another issue
     // (inbound `blocks` = upstream dependency, excluded). 'EI-9' below is a bare
