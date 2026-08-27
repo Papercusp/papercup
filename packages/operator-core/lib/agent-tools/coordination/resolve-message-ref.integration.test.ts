@@ -17,6 +17,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_bas
 import type { AgentIdentity } from './identity';
 import { sendMessage, resolveMessageRef, getMessageById } from './messages';
 import { openHandoff } from './handoffs';
+import { openEscalation, resolveEscalation } from './escalations';
 import { coordWorkspaceId } from './log';
 
 let fx: BaselineCoordFixture;
@@ -99,6 +100,35 @@ describe('resolveMessageRef (WI-6725)', () => {
     expect(res.msgId).toBe(fullId);
     expect(res.message.kind).toBe('escalation');
     expect(res.message.summary).toBe('projection-only open escalation');
+  });
+
+  it('EI-21550703014946163: a resolved escalation remains a valid reply target', async () => {
+    const escalation = await openEscalation(ASKER, {
+      severity: 'question',
+      summary: 'resolve before the agent replies',
+    });
+    const resolved = await resolveEscalation({
+      msg_id: escalation.msg_id,
+      choice: 'handled',
+      resolver: READER.ownerId,
+    });
+    expect(resolved).not.toBe('not_found');
+    expect(resolved).not.toBe('already_resolved');
+
+    const workspaceId = coordWorkspaceId();
+    const openRows = await fx.admin`
+      SELECT 1 FROM harness_shared.coord_open_escalations
+       WHERE workspace_id = ${workspaceId} AND msg_id = ${escalation.msg_id}
+    `;
+    expect(openRows).toHaveLength(0);
+
+    const res = await resolveMessageRef(escalation.msg_id);
+    expect(res.status).toBe('found');
+    if (res.status !== 'found') return;
+    expect(res.resolvedFrom).toBe('exact');
+    expect(res.msgId).toBe(escalation.msg_id);
+    expect(res.message.kind).toBe('escalation');
+    expect(res.message.summary).toBe('resolve before the agent replies');
   });
 
   it('EI-21220247792567011: resolves an exact handoff id returned by coord:feed', async () => {

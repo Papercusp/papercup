@@ -1938,8 +1938,17 @@ describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
     expectPipeAdvisory(runGate(bashWithInput({ command: 'ssh host cmd | grep error', run_in_background: true })));
   });
 
-  it('silent when NOT backgrounded (foreground pipe reads the output directly)', () => {
-    expectAllow(runGate(bashWithInput({ command: 'npm run test:affected 2>&1 | tail -100' })));
+  it("hands a foreground verification pipe to the foreground exit-code advisory", () => {
+    const out = runGate(
+      bashWithInput({ command: "npm run test:affected 2>&1 | tail -100" }),
+    );
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.additionalContext).toContain(
+      "foreground verification-pipe exit-code advisory",
+    );
+    expect(hso.additionalContext).not.toContain(
+      "background-pipe exit-code advisory",
+    );
   });
 
   // EI-18686555459167489: the list was tail/head/grep only, so the most natural
@@ -2630,8 +2639,8 @@ describe('background `;`-chain trailing-reporter exit-code advisory (WI-6944)', 
  * EI-18787618439028592 — foreground `| head` SIGPIPE-kill advisory: distinct
  * from the background-pipe exit-code trap above. `head` exits after N lines
  * and SIGPIPEs the upstream writer, killing it mid-run — a hazard that exists
- * in the FOREGROUND too, where the exit-code advisory never looks (it's
- * gated on `run_in_background`).
+ * in the FOREGROUND too. The generic foreground exit-code advisory runs after
+ * this block so the sharper SIGPIPE explanation keeps precedence for `head`.
  */
 describe('foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592)', () => {
   const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
@@ -2652,8 +2661,15 @@ describe('foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592)', () 
     expectHeadAdvisory(runGate(bashWithInput({ command: "node -e \"import('./x.mjs')\" 2>&1 | head -3" })));
   });
 
-  it('does NOT fire on a foreground `cmd | tail -N` (tail is safe — it consumes all input)', () => {
-    expectAllow(runGate(bashWithInput({ command: 'npm run test:affected 2>&1 | tail -100' })));
+  it("hands foreground `cmd | tail -N` to the exit-code advisory, not the SIGPIPE advisory", () => {
+    const out = runGate(
+      bashWithInput({ command: "npm run test:affected 2>&1 | tail -100" }),
+    );
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.additionalContext).toContain(
+      "foreground verification-pipe exit-code advisory",
+    );
+    expect(hso.additionalContext).not.toContain("SIGPIPE-kill");
   });
 
   it('silent when BACKGROUNDED — the exit-code advisory above takes the one slot instead', () => {
@@ -2695,6 +2711,76 @@ describe('foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592)', () 
   it('a deny gate still WINS over the head advisory', () => {
     const out = runGate(
       { tool_name: 'Bash', tool_input: { command: 'crontab -e | head' }, session_id: 's-test' },
+      AGENT,
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
+/**
+ * EI-21551186399462209 — foreground pipelines mask upstream verification
+ * failures exactly like background pipelines. The measured repro was
+ * `cargo test … | tail`: cargo exited 101, while the shell returned tail's 0.
+ * Keep this proportional by limiting it to declared verification/build/test
+ * stages; ordinary exploratory pipes stay silent.
+ */
+describe('foreground verification-pipe exit-code advisory (EI-21551186399462209)', () => {
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectForegroundPipeAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow');
+    expect(hso.additionalContext).toContain('foreground verification-pipe exit-code advisory');
+    expect(hso.additionalContext).toContain("FILTER's exit code");
+    expect(hso.additionalContext).toContain('PIPESTATUS[0]');
+  };
+
+  it('fires on the measured `cargo test | tail` repro', () => {
+    expectForegroundPipeAdvisory(
+      runGate(bashWithInput({ command: 'cd apps/tui && cargo test --lib focused_case 2>&1 | tail -25' })),
+    );
+  });
+
+  it.each([
+    ['grep', 'npm test 2>&1 | grep FAIL'],
+    ['cut', 'go test ./... 2>&1 | cut -d: -f1'],
+    ['sort', 'pytest -q 2>&1 | sort'],
+    ['tee via a path', 'npx tsc --noEmit 2>&1 | /usr/bin/tee /tmp/tsc.log'],
+  ])('fires when a foreground verification pipes into %s', (_label, command) => {
+    expectForegroundPipeAdvisory(runGate(bashWithInput({ command })));
+  });
+
+  it('fires for Codex shell tools too — this is shell pipeline behaviour', () => {
+    for (const tool of ['exec_command', 'local_shell', 'shell']) {
+      expectForegroundPipeAdvisory(
+        runGate(bashWithInput({ command: 'cargo test --lib focused_case 2>&1 | tail -25' }, tool)),
+      );
+    }
+  });
+
+  it.each([
+    ['pipefail', 'set -o pipefail; cargo test --lib focused_case 2>&1 | tail -25'],
+    ['PIPESTATUS', 'cargo test --lib focused_case 2>&1 | tail -25; echo "EXIT=${PIPESTATUS[0]}"'],
+  ])('silent when the caller preserves the upstream status with %s', (_label, command) => {
+    expectAllow(runGate(bashWithInput({ command })));
+  });
+
+  it.each([
+    ['ordinary process inspection', 'ps aux | tail -5'],
+    ['ordinary source filtering', 'git status --short | grep apps'],
+    ['filter name only inside quoted prose', 'echo "cargo test | tail is risky"'],
+  ])('stays silent for %s', (_label, command) => {
+    expectAllow(runGate(bashWithInput({ command })));
+  });
+
+  it('a deny gate still wins over the foreground advisory', () => {
+    const out = runGate(
+      bashWithInput({ command: 'crontab -e; cargo test --lib focused_case 2>&1 | tail -25' }),
       AGENT,
     );
     expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');

@@ -1258,6 +1258,15 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
 // behind a slow upstream, while these writes are the durable boundary that lets a session recover
 // from that exact condition.
 const CRITICAL_CONTINUATION_TOOL_NAMES = [
+  // EI-21549564362601660 — these are the two short writes an agent uses to
+  // report and durably record a control-plane incident. Keeping them in the
+  // ordinary reserved pool made the recovery channel disappear at exactly the
+  // moment that pool saturated: ptool saw repeated upstream 502s followed by
+  // proxy 429s even though the operator hosts were still healthy. Route them
+  // through the existing isolated, bounded FIFO instead of creating another
+  // admission system or allowing unbounded retries.
+  "coord:send",
+  "improvements:capture",
   "loop:checkpoint",
   "loop:end",
   "session:request-compaction",

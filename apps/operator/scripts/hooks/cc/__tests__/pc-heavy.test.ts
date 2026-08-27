@@ -180,6 +180,74 @@ const killGroup = (p: ReturnType<typeof spawn>) => {
 };
 
 /**
+ * Return the size of pc-heavy's first admitted cohort without using elapsed
+ * time as a concurrency proxy. Every admitted child waits behind one shared
+ * release barrier; every non-admitted wrapper therefore reaches pc-heavy's
+ * observable queue marker while all available slots remain held. Once every
+ * wrapper is either ready or queued, the ready-file count is the actual cap.
+ *
+ * This is deliberately shared by every slot-count assertion in this file. The
+ * old probes inferred concurrency from overlapping fixed 400ms sleeps. A loaded
+ * host could delay a later wrapper by >400ms, let an early child finish, and
+ * undercount a healthy semaphore. Making the sleep longer only moves that race.
+ */
+async function admittedCohortSize(jobs: number, env: Record<string, string>): Promise<number> {
+  const cohortDir = mkdtempSync(join(dir, 'admitted-cohort-'));
+  const release = join(cohortDir, 'release');
+  const children: Array<{
+    child: ReturnType<typeof spawn>;
+    ready: string;
+    stderr: ReturnType<typeof createTextCollector>;
+    exited: Promise<number>;
+  }> = [];
+
+  try {
+    for (let i = 0; i < jobs; i += 1) {
+      const ready = join(cohortDir, `ready.${i}`);
+      const child = spawn(
+        'bash',
+        [PC_HEAVY, 'bash', '-c', `touch "${ready}"; while [ ! -f "${release}" ]; do sleep 0.02; done`],
+        {
+          env: baseEnv({
+            PC_HEAVY_COALESCE: '0',
+            PC_HEAVY_GATE_RESERVE: '0',
+            ...env,
+          }),
+          cwd: dir,
+          detached: true,
+        },
+      );
+      children.push({
+        child,
+        ready,
+        stderr: createTextCollector(child.stderr),
+        exited: new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? -1))),
+      });
+    }
+
+    await waitFor('every concurrency probe being admitted or observably queued', () =>
+      children.every(({ child, ready, stderr }) => {
+        if (existsSync(ready)) return true;
+        if (stderr.peek().includes('[pc-heavy] queued for a heavy slot')) return true;
+        if (child.exitCode !== null || child.signalCode !== null) {
+          throw new Error(
+            `concurrency probe exited ${child.exitCode ?? child.signalCode} before admission or queueing`,
+          );
+        }
+        return false;
+      }));
+    const admitted = children.filter(({ ready }) => existsSync(ready)).length;
+    writeFileSync(release, 'go\n');
+    const exitCodes = await Promise.all(children.map(({ exited }) => exited));
+    expect(exitCodes).toEqual(Array(jobs).fill(0));
+    return admitted;
+  } finally {
+    writeFileSync(release, 'go\n');
+    for (const { child } of children) killGroup(child);
+  }
+}
+
+/**
  * How many of `slots` slot-files are currently flocked BY SOMEONE ELSE.
  *
  * Probes the same primitive pc-heavy.sh itself uses (`flock -n` on `$PC_HEAVY_DIR/slot.$i`,
@@ -1602,38 +1670,10 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
   it('caps concurrency at PC_HEAVY_SLOTS (2 slots, 4 jobs → max 2 simultaneous)', async () => {
     const jobs = 4;
     const slots = 2;
-    // Each job records "<startMs> <endMs>"; the semaphore must never let more
-    // than `slots` run at once — asserted from the intervals, which is robust
-    // to host load (intervals dilate under load; the overlap count does not).
-    await Promise.all(
-      Array.from({ length: jobs }, (_, i) =>
-        new Promise<void>((res) => {
-          const f = join(dir, `job.${i}.out`);
-          const p = spawn(
-            'bash',
-            [PC_HEAVY, 'bash', '-c', `s=$(date +%s%3N); sleep 0.4; e=$(date +%s%3N); echo "$s $e" > "${f}"`],
-            { env: baseEnv({ PC_HEAVY_SLOTS: String(slots) }), cwd: dir },
-          );
-          p.on('exit', () => res());
-        }),
-      ),
-    );
-
-    const intervals = Array.from({ length: jobs }, (_, i) => {
-      const [s, e] = readFileSync(join(dir, `job.${i}.out`), 'utf8').trim().split(/\s+/).map(Number);
-      return { s, e };
-    });
-    // Sweep for the maximum simultaneous overlap. Ends (-1) sort before starts
-    // (+1) at a tie so back-to-back intervals don't count as overlapping.
-    const evts: Array<[number, number]> = [];
-    for (const { s, e } of intervals) { evts.push([s, 1]); evts.push([e, -1]); }
-    evts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    let cur = 0;
-    let max = 0;
-    for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
+    const admitted = await admittedCohortSize(jobs, { PC_HEAVY_SLOTS: String(slots) });
     // Exactly the cap: proves it is a COUNTING semaphore (2 run together, not 1
     // like a mutex) AND that it never exceeds the cap (not unbounded).
-    expect(max).toBe(slots);
+    expect(admitted).toBe(slots);
   });
 
   it('frees a slot when the whole holder tree is killed (kernel flock crash-safety)', async () => {

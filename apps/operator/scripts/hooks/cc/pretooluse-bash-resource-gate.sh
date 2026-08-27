@@ -1411,6 +1411,32 @@ def _scannable_quote_stripped():
             _SCANNABLE_CACHE['qs'] = _strip_quotes_and_comments(command)
     return _SCANNABLE_CACHE['qs']
 
+# Shared by the background notification guard and the foreground verification
+# guard below. The filter list is intentionally heuristic: every downstream
+# pipeline stage replaces the upstream status, but these are the common output
+# readers/formatters that make a failed verification look plausibly green.
+_PIPE_TAIL_RE = re.compile(
+    r'(?<!\|)\|(?!\|)\s*(?:\S*/)?'
+    r'(?:tail|head|grep|egrep|fgrep|tee|wc|sed|awk|sort|uniq|cut|tr'
+    r'|jq|column|xargs|cat|tac|nl|less|more)'
+    r'\b[^|;&\n]*$'
+)
+
+# Foreground pipelines are ubiquitous, so warning on EVERY `cmd | filter`
+# would drown useful advisories in ordinary exploration (`ps | grep`,
+# `git status | tail`). Restrict that path to commands whose upstream stage
+# declares build/test/verification intent. Background jobs retain the broader
+# matcher because their completion notification is itself the verdict surface.
+_PIPE_VERIFICATION_RE = re.compile(
+    r'\b(?:cargo\s+(?:test|check|build|clippy)|go\s+test|'
+    r'(?:python\s+-m\s+)?pytest|(?:npm|pnpm|yarn|bun)\s+(?:test|run\s+'
+    r'(?:test(?::[\w:-]+)?|build|check|lint(?::[\w:-]+)?|typecheck))|'
+    r'(?:npx\s+)?(?:vitest|tsc|eslint)\b|deno\s+test|dotnet\s+(?:test|build)|'
+    r'mvn\s+(?:test|verify|package)|gradle\s+(?:test|check|build)|'
+    r'make\s+(?:test|check|build)|cmake\s+--build|mix\s+test|swift\s+test|'
+    r'xcodebuild\b|rspec\b)'
+)
+
 # ── Piped background exit-code trap advisory (EI-8871/EI-14065) ────────────
 # `cmd | tail -N` (or `| head` / `| grep`) run in the background reports the
 # harness's completion notification with the PIPE's LAST STAGE exit code, not
@@ -1447,12 +1473,6 @@ try:
             # cover the common text filters, not just the three first observed.
             # (`grep` is doubly hazardous: it exits 1 on NO MATCH, so it can also
             # INVERT a clean run into an apparent failure.)
-            _PIPE_TAIL_RE = re.compile(
-                r'(?<!\|)\|(?!\|)\s*(?:\S*/)?'
-                r'(?:tail|head|grep|egrep|fgrep|tee|wc|sed|awk|sort|uniq|cut|tr'
-                r'|jq|column|xargs|cat|tac|nl|less|more)'
-                r'\b[^|;&\n]*$'
-            )
             for _pseg in re.split(r'&&|\|\||;|\n', _pipe_cmd):
                 if _PIPE_TAIL_RE.search(_pseg.strip()):
                     ADVISORY = (
@@ -1748,6 +1768,50 @@ try:
                         'Advisory only; this command is proceeding as issued.'
                     )
                     break
+except Exception:
+    pass  # advisory must never wedge a command
+
+# ── Foreground verification-pipe exit-code advisory (EI-21551186399462209) ─
+# The background guard above originally treated the pipe trap as specific to
+# completion notifications. It is not: a foreground shell still returns the
+# LAST pipeline stage's status. Live repro: `cargo test ... 2>&1 | tail -25`
+# returned 0 while cargo exited 101, and that false green was published before
+# the upstream result was checked. Foreground is the higher-traffic path, so
+# cover verification/build/test stages here as well.
+#
+# This block deliberately runs AFTER the two more specific foreground `head`
+# guards. `grep/rg | head` should keep its false-absence explanation, and any
+# other `cmd | head` should keep the SIGPIPE-kill explanation; both are sharper
+# than the generic status-masking lesson. `not ADVISORY` preserves that order.
+# Unlike the background path, this applies to every supported shell tool:
+# pipeline exit semantics are real shell behaviour, not a Claude background
+# notification feature.
+try:
+    if (not tool_input.get('run_in_background')
+            and not ADVISORY
+            and not re.search(r'pipefail|PIPESTATUS', command)):
+        _fg_pipe_cmd = _scannable_quote_stripped()
+        for _fg_pipeline in _scan_pipelines(_fg_pipe_cmd):
+            if len(_fg_pipeline) < 2:
+                continue
+            if not _PIPE_TAIL_RE.search(
+                    '|'.join(_fg_pipeline[-2:]).strip()):
+                continue
+            if not any(_PIPE_VERIFICATION_RE.search(_stage)
+                       for _stage in _fg_pipeline[:-1]):
+                continue
+            ADVISORY = (
+                'foreground verification-pipe exit-code advisory '
+                '(EI-21551186399462209): this build/test/verification command '
+                'pipes into an output filter, so the shell reports the FILTER\'s '
+                'exit code rather than the upstream command\'s. A failed test or '
+                'build can therefore return 0 and look green even though the '
+                'output was read in the foreground. Add `set -o pipefail`, inspect '
+                '`${PIPESTATUS[0]}`, or redirect the full output to a file and read '
+                'it separately before treating the result as verified. Advisory '
+                'only; this command is proceeding as issued.'
+            )
+            break
 except Exception:
     pass  # advisory must never wedge a command
 

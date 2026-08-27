@@ -177,8 +177,10 @@ function coldNoteAge(ms: number): string {
 }
 
 const TRANSIENT_EXEC_TOOL_RE = /\b(?:exec_command|write_stdin|unified[\s_-]+exec)\b/i;
+const TRANSIENT_EXEC_WORKLOAD_RE =
+  /\b(?:type[\s_-]?check|lint(?:ing)?|build|test[\s_-]+(?:run|suite|command)|vitest|jest|pytest|playwright|tsc|shell|command)\b/i;
 const NUMERIC_EXEC_HANDLE_RE =
-  /\b(?:session|process)(?:\s*[/]\s*(?:session|process))?(?:[\s_-]+(?:id|handle))?\s*(?:is|:|=|#)?\s*\d+\b/i;
+  /\b(?:session|process)(?:\s*[/]\s*(?:session|process))?(?:[\s_-]+(?:id|handle))?\s*(?:is|:|=|#)?\s*`?\d+`?(?=\W|$)/i;
 
 /**
  * A numeric exec/write_stdin handle is process-local, unlike a native agent-session id.
@@ -191,10 +193,11 @@ const NUMERIC_EXEC_HANDLE_RE =
  * warm carry-respawns cannot hand a successor a stale write_stdin id silently.
  */
 export function transientExecHandleWarning(note: string): string | null {
-  if (!TRANSIENT_EXEC_TOOL_RE.test(note) || !NUMERIC_EXEC_HANDLE_RE.test(note)) return null;
+  if (!NUMERIC_EXEC_HANDLE_RE.test(note)) return null;
+  if (!TRANSIENT_EXEC_TOOL_RE.test(note) && !TRANSIENT_EXEC_WORKLOAD_RE.test(note)) return null;
   return (
     '⚠ CARRIED TRANSIENT EXEC HANDLE: this note names a numeric session/process handle for ' +
-    '`exec_command`, `write_stdin`, or unified exec. It is process-local and cannot be assumed ' +
+    '`exec_command`, `write_stdin`, unified exec, or a command-like workload. It is process-local and cannot be assumed ' +
     'to survive a cold respawn. DO NOT call `write_stdin` with the carried id; use durable ' +
     'spill/log/work-item evidence or rerun the command with a fresh exec.'
   );

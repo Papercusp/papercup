@@ -271,6 +271,32 @@ export default defineTool({
           };
         }
       }
+      if (loop?.active && loop.carry !== 'cold') {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'cold_loop_retune_required',
+                note:
+                  'This loop-driven session has no live psu-pty host, so an in-place carry-respawn is unavailable. ' +
+                  'Retune the ACTIVE loop to cold carry, write its durable carry-note, then call session:request-compaction again. ' +
+                  'The second call will return respawn:"cold-loop-settle"; end that turn and the next loop wake starts in fresh context.',
+                recovery: {
+                  retune: { tool: 'loop:arm', args: { carry: 'cold' } },
+                  checkpoint: {
+                    tool: 'loop:checkpoint',
+                    requiredFields: ['did', 'left', 'insight', 'next'],
+                  },
+                  retry: { tool: 'session:request-compaction', args: { focus: args.focus } },
+                },
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
       return {
         content: [
           {

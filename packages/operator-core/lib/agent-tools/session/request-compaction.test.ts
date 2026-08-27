@@ -426,6 +426,33 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
+  it('an active warm loop without a host receives the deterministic cold-retune recovery', async () => {
+    findLiveHost.mockReturnValue(null);
+    getLoopStatus.mockResolvedValue({
+      active: true,
+      carry: 'warm',
+      harnessSlug: 'papercusp',
+    });
+
+    const out = await call({ focus: 'continue the fleet lane' });
+    const b = body(out);
+
+    expect(out.isError).toBe(true);
+    expect(b).toMatchObject({
+      ok: false,
+      error: 'cold_loop_retune_required',
+      recovery: {
+        retune: { tool: 'loop:arm', args: { carry: 'cold' } },
+        checkpoint: {
+          tool: 'loop:checkpoint',
+          requiredFields: ['did', 'left', 'insight', 'next'],
+        },
+        retry: { tool: 'session:request-compaction', args: { focus: 'continue the fleet lane' } },
+      },
+    });
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
   it('no focus → the carry-brief/default preserve-set focus still yields a non-empty first prompt', async () => {
     findLiveHost.mockReturnValue(carryHost);
     const b = body(await call({}));

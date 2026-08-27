@@ -246,6 +246,14 @@ describe('renderColdWakeInjection — the cold-wake injected text (P-002 produce
       expect(out).toContain('fresh exec');
     });
 
+    it('warns for a Markdown-wrapped command session even when the checkpoint omits the tool name', () => {
+      const note = '## Next action\npoll the operator-core typecheck session `11400` for the verdict';
+      const out = renderColdWakeInjection(note);
+
+      expect(out).toContain('CARRIED TRANSIENT EXEC HANDLE');
+      expect(out).toContain('DO NOT call `write_stdin` with the carried id');
+    });
+
     it('does not warn for a stable native session identifier', () => {
       const note = '## Next action\nresume the stable native session 64399; no transient exec handle is carried';
       expect(renderColdWakeInjection(note)).not.toContain('CARRIED TRANSIENT EXEC HANDLE');

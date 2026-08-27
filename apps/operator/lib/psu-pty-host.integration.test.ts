@@ -24,6 +24,7 @@ import {
   ptyWriteChunks,
   findNativeTranscriptMarker,
   waitForNativeTranscriptMarker,
+  leadingTurnOriginMarker,
   tagSessionPortTurn,
   startupOutputReady,
   killPtyProcessTree,
@@ -242,7 +243,7 @@ describe('session-port managed seed + native persistence helpers', () => {
     }
   });
 
-  it('accepts only the exact marker in the target Codex/OMP native JSONL roots', async () => {
+  it('accepts only the exact marker in the target Claude/Codex/OMP native JSONL roots', async () => {
     const home = mkdtempSync(join(tmpdir(), 'psu-port-native-'));
     const marker = `[PAPERCUSP SESSION PORT CHECKSUM ${'b'.repeat(64)}]`;
     try {
@@ -264,6 +265,31 @@ describe('session-port managed seed + native persistence helpers', () => {
       expect(proof).toEqual({ persisted: true, nativeRef: ompFile });
       expect(findNativeTranscriptMarker({
         agent: 'omp', env: { PI_CONFIG_DIR: '.omp-target' }, marker: `${marker}-wrong`, sinceMs: Date.now(), home,
+      })).toBeNull();
+
+      const claudeId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      const claudeDir = join(home, 'claude-target', 'projects', '-tmp');
+      mkdirSync(claudeDir, { recursive: true });
+      const claudeFile = join(claudeDir, `${claudeId}.jsonl`);
+      const carryMarker = '⟦turn-origin:self-compaction nonce:0123456789abcdef⟧';
+      writeFileSync(claudeFile, `${JSON.stringify({ type: 'user', message: { content: carryMarker } })}\n`);
+      expect(leadingTurnOriginMarker(`${carryMarker}\nContinue where you left off`)).toBe(carryMarker);
+      expect(leadingTurnOriginMarker(`history before ${carryMarker}`)).toBeNull();
+      expect(findNativeTranscriptMarker({
+        agent: 'claude',
+        env: { CLAUDE_CONFIG_DIR: join(home, 'claude-target') },
+        marker: carryMarker,
+        nativeId: claudeId,
+        sinceMs: Date.now(),
+        home,
+      })).toBe(claudeFile);
+      expect(findNativeTranscriptMarker({
+        agent: 'claude',
+        env: { CLAUDE_CONFIG_DIR: join(home, 'claude-target') },
+        marker: carryMarker,
+        nativeId: 'ffffffff-1111-4222-8333-444444444444',
+        sinceMs: Date.now(),
+        home,
       })).toBeNull();
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -855,6 +881,106 @@ describe('P-020 carry-respawn drill correlation', () => {
       }
     },
     25_000,
+  );
+});
+
+describe('carry-respawn native turn-start proof (EI-21561923024113260)', () => {
+  it(
+    'retries one CR then records turn-start-unverified instead of delivered when PTY output has no fresh native turn',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-carry-turn-proof-'));
+      const claudeConfig = join(root, 'claude');
+      mkdirSync(join(claudeConfig, 'projects', '-tmp'), { recursive: true });
+      const ownerId = `su-carry-proof-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const nativeId = '12345678-1234-4234-8234-123456789abc';
+      const marker = '⟦turn-origin:self-compaction nonce:fedcba9876543210⟧';
+      const { captured, io } = fakeIo();
+      // Every write repaints the PTY, reproducing outputSeen:true, but this fake
+      // backend never persists a native user turn. Generic output verification
+      // therefore passes while the authoritative transcript proof must fail.
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;process.stdout.write('PAINT\\n');if(b.includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),10000);';
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          CLAUDE_CONFIG_DIR: claudeConfig,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '500',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        nativePersistenceTimeoutMs: 200,
+        mintCarryRespawnArgs: (args: string[]) => ({ args, nativeId, launchContextPath: '/tmp/carry.md' }),
+        onExit: () => {},
+      });
+
+      try {
+        const bootDeadline = Date.now() + 2_000;
+        while (!captured().includes('BOOT:') && Date.now() < bootDeadline) await sleep(20);
+        expect(captured()).toContain('BOOT:');
+
+        await envelopeInject(sock, {
+          mode: 'carry-respawn',
+          data: `${marker}\nContinue where you left off`,
+          systemPromptAddendum: 'deterministic carry',
+        });
+
+        const outcomeDeadline = Date.now() + 5_000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < outcomeDeadline) {
+          if (existsSync(eventLog)) {
+            events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+            if (events.some((event) => event.kind === 'turn-start-unverified')) break;
+          }
+          await sleep(20);
+        }
+
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-turn-start-retry',
+          nativeId,
+          reason: 'native-turn-marker-timeout',
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'turn-start-unverified',
+          nativeId,
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-dropped',
+          nativeId,
+          reason: 'turn-start-unverified',
+          outputSeen: true,
+          turnStartVerified: false,
+        }));
+        expect(events.some((event) => event.kind === 'respawn-carry-delivered')).toBe(false);
+
+        await rawInject(sock, 'QUIT\n');
+        expect(await done).toBe(0);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done.catch(() => undefined);
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
   );
 });
 
@@ -1476,6 +1602,83 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       expect(existsSync(meta)).toBe(false);
     },
     30_000,
+  );
+
+  it(
+    'books a verifier-exhausted RECYCLE carry as dropped, cleans up fatally, and never emits delivered (WI-42318)',
+    async () => {
+      const ownerId = `su-recycle-submit-drop-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "process.stdin.setEncoding('utf8');" +
+        "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),15000);';
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '4',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '1',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (code: number) => { exitCode = code; },
+      });
+
+      try {
+        const bootDeadline = Date.now() + 3_000;
+        while (!captured().includes('BOOT:') && Date.now() < bootDeadline) await sleep(20);
+        expect(captured()).toContain('BOOT:');
+
+        await controlInject(sock, 'recycle', 'CARRIED');
+        const outcomeDeadline = Date.now() + 5_000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < outcomeDeadline) {
+          if (existsSync(eventLog)) {
+            events = readFileSync(eventLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+            if (events.some((event) => event.kind === 'respawn-carry-dropped')) break;
+          }
+          await sleep(20);
+        }
+
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(2);
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-dropped',
+          reason: 'submit-verification-exhausted',
+          attempts: 1,
+          outputSeen: true,
+        }));
+        expect(events.some((event) => event.kind === 'respawn-carry-delivered')).toBe(false);
+        expect(await done).toBe(1);
+        expect(exitCode).toBe(1);
+        expect(existsSync(sock)).toBe(false);
+        expect(existsSync(meta)).toBe(false);
+      } finally {
+        if (existsSync(sock)) await rawInject(sock, 'QUIT\n');
+        await done.catch(() => undefined);
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+    },
+    20_000,
   );
 });
 

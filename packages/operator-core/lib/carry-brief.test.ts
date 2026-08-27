@@ -581,6 +581,31 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out.indexOf('CARRIED TRANSIENT EXEC HANDLE')).toBeLessThan(out.indexOf('You HELD'));
   });
 
+  it('warns for the live Markdown-wrapped typecheck-session checkpoint shape', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{
+        id: 'EI-21548341570090165',
+        title: 'interrupted operator-core verification',
+        body: null,
+        harness: 'papercusp',
+        checkpoint: 'poll the operator-core typecheck session `11400` for the verdict',
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out).toContain('CARRIED TRANSIENT EXEC HANDLE(S)');
+    expect(out).toContain('EI-21548341570090165');
+    expect(out).toContain('Do NOT call `write_stdin` with that carried id');
+  });
+
   it('does not warn for a checkpoint that only names a stable native session', () => {
     const brief: CarryBrief = {
       ownerId: 'x',

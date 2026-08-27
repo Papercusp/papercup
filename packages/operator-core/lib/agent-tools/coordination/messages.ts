@@ -1496,23 +1496,42 @@ async function findMessageIdsByPrefix(prefix: string, limit: number): Promise<st
 }
 
 /**
- * Open escalations are a separate coord surface, not messages. The materialized
- * `coord_open_escalations` projection deliberately keeps an unresolved
- * escalation available after its original event-log row has been pruned. A
- * reply to that escalation is still a valid durable response marker, so
- * related-message resolution must consider this live projection as well as the
- * messages surface.
+ * Escalations are a separate coord surface, not messages. Both OPEN and
+ * RESOLVED originals remain valid reply targets: resolving appends a sibling
+ * `escalation_resolved` event, but must not make a subsequent response to the
+ * immutable original look dangling. The event log therefore supplies every
+ * retained original, while `coord_open_escalations` supplements it with open
+ * records whose original event-log row has already been pruned.
  *
- * The projection query is best-effort and fail-soft: older/dev databases may
- * not have migration 355 yet, in which case message-only resolution retains its
- * existing behavior. Non-PG test/dev seams fold their escalation events
- * locally, including the resolved sibling check, so this helper has the same
- * open-only contract on both backends.
+ * Both PG reads are best-effort and independently fail-soft. Older/dev
+ * databases may not have migration 355 yet, while a transient event-log read
+ * must not hide a projection-only open escalation. Non-PG seams read the
+ * original escalation events directly; resolved siblings do not remove them.
  */
-async function findOpenEscalationsByPrefix(prefix: string, limit: number): Promise<CoordEnvelope[]> {
+async function findEscalationsByPrefix(prefix: string, limit: number): Promise<CoordEnvelope[]> {
   if (!prefix || limit <= 0) return [];
 
   if (coordHasPgFastPath()) {
+    const candidates = new Map<string, CoordEnvelope>();
+    try {
+      const sql = coordSql();
+      const rows = await sql<{ body: unknown }[]>`
+        SELECT body
+          FROM harness_shared.coord_event_log
+         WHERE workspace_id = ${coordWorkspaceId()}
+           AND surface = 'escalations'
+           AND starts_with(msg_id, ${prefix})
+           AND body->>'kind' = 'escalation'
+         ORDER BY msg_id
+         LIMIT ${limit}
+      `;
+      for (const row of rows) {
+        const event = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope;
+        if (event?.kind === 'escalation' && typeof event.msg_id === 'string') candidates.set(event.msg_id, event);
+      }
+    } catch {
+      // Fall through to the projection: it may still retain an open original.
+    }
     try {
       const sql = coordSql();
       const rows = await sql<{ body: unknown }[]>`
@@ -1523,30 +1542,24 @@ async function findOpenEscalationsByPrefix(prefix: string, limit: number): Promi
          ORDER BY msg_id
          LIMIT ${limit}
       `;
-      return rows
-        .map((row) => (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope)
-        .filter((row) => row?.kind === 'escalation');
+      for (const row of rows) {
+        const event = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as CoordEnvelope;
+        if (event?.kind === 'escalation' && typeof event.msg_id === 'string') candidates.set(event.msg_id, event);
+      }
     } catch {
-      // Migration 355 may not exist yet; preserve the message-only fallback.
-      return [];
+      // Migration 355 may not exist yet; retained event-log originals still work.
     }
+    return [...candidates.values()].sort((a, b) => a.msg_id.localeCompare(b.msg_id)).slice(0, limit);
   }
 
   try {
     const events = await coordLog.readEvents('escalations');
-    const resolved = new Set(
-      events
-        .filter((event) => event.kind === 'escalation_resolved')
-        .map((event) => event.related_msg_id)
-        .filter((id): id is string => typeof id === 'string'),
-    );
     return events
       .filter(
         (event) =>
           event.kind === 'escalation' &&
           typeof event.msg_id === 'string' &&
-          event.msg_id.startsWith(prefix) &&
-          !resolved.has(event.msg_id),
+          event.msg_id.startsWith(prefix),
       )
       .sort((a, b) => a.msg_id.localeCompare(b.msg_id))
       .slice(0, limit);
@@ -1610,8 +1623,8 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   // `escalations` event in the log while remaining durable in the open-set
   // projection. Treat that live record as a valid exact/prefix target so a
   // driver can acknowledge it through coord:send.
-  const openEscalations = await findOpenEscalationsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
-  const exactEscalation = openEscalations.find((event) => event.msg_id === msgId);
+  const escalations = await findEscalationsByPrefix(msgId, REF_CANDIDATE_CAP + 1);
+  const exactEscalation = escalations.find((event) => event.msg_id === msgId);
   if (exactEscalation) {
     return { status: 'found', msgId, message: exactEscalation, resolvedFrom: 'exact' };
   }
@@ -1632,7 +1645,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   const candidates = [
     ...new Set([
       ...messageCandidates,
-      ...openEscalations.map((event) => event.msg_id),
+      ...escalations.map((event) => event.msg_id),
       ...handoffs.map((event) => event.msg_id),
     ]),
   ];
@@ -1642,7 +1655,7 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
   }
   const resolved = await getMessageById(candidates[0]);
   if (resolved) return { status: 'found', msgId: candidates[0], message: resolved, resolvedFrom: 'prefix' };
-  const escalation = openEscalations.find((event) => event.msg_id === candidates[0]);
+  const escalation = escalations.find((event) => event.msg_id === candidates[0]);
   if (escalation) return { status: 'found', msgId: candidates[0], message: escalation, resolvedFrom: 'prefix' };
   const handoff = handoffs.find((event) => event.msg_id === candidates[0]);
   if (!handoff) return { status: 'not-found', msgId, looksTruncated: true };
