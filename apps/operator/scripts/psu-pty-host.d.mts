@@ -53,22 +53,27 @@ export function tagSessionPortTurn(text: string, sid: string, env?: EnvironmentM
  * units is at most 64 KiB of UTF-8, keeping node-pty writes bounded while the
  * concatenated stream remains byte-identical. */
 export function ptyWriteChunks(value: any, maxCodeUnits?: number): string[];
+/** The carry prompt's unique first line is the strongest cross-backend proof
+ * that the fresh native transcript accepted THIS successor turn. */
+export function leadingTurnOriginMarker(text: any): string | null;
 /** Find the exact port marker in a recently-written target-native JSONL. This
  * is the delivery authority: PTY output/activity is intentionally insufficient.
- * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number, home?: string}} options
+ * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
+ *   home?: string, nativeId?: string | null}} options
  */
-export function findNativeTranscriptMarker({ agent, env, marker, sinceMs, home }: {
+export function findNativeTranscriptMarker({ agent, env, marker, sinceMs, home, nativeId, }: {
     agent: string;
     env?: EnvironmentMap;
     marker: string;
     sinceMs: number;
     home?: string;
+    nativeId?: string | null;
 }): string | null;
 /**
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
- *   home?: string, timeoutMs?: number, pollMs?: number}} options
+ *   home?: string, timeoutMs?: number, pollMs?: number, nativeId?: string | null}} options
  */
-export function waitForNativeTranscriptMarker({ agent, env, marker, sinceMs, home, timeoutMs, pollMs, }: {
+export function waitForNativeTranscriptMarker({ agent, env, marker, sinceMs, home, timeoutMs, pollMs, nativeId, }: {
     agent: string;
     env?: EnvironmentMap;
     marker: string;
@@ -76,6 +81,7 @@ export function waitForNativeTranscriptMarker({ agent, env, marker, sinceMs, hom
     home?: string;
     timeoutMs?: number;
     pollMs?: number;
+    nativeId?: string | null;
 }): Promise<{
     persisted: boolean;
     nativeRef: string;

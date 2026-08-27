@@ -1068,6 +1068,13 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // observes the orient result or its structured fallback instead of an
   // ambiguous client-side -32001 timeout.
   ['coord:orient', PTOOL_COORD_ORIENT_TIMEOUT_MS],
+  // EI-21562940235111441: scheduler:get_next performs fleet-scope
+  // reconciliation before its claim path. The server's shared 30s watchdog
+  // can return its structured retryable timeout just after ptool's flat 30s
+  // client deadline, turning a claim attempt into an outcome-unknown -32001.
+  // Keep the direct and tools:invoke-wrapped call outside the MCP transport
+  // cap so the server's typed result wins the race.
+  ['scheduler:get_next', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // `release:trace` composes candidate, gate, deploy, and await reads. Under
   // operator pressure that read-only bundle can outlive the ordinary 30s
   // client budget even though it is still progressing; keep the typed trace
