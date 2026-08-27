@@ -6313,15 +6313,90 @@ export { quietCutSecFromEnv };
  * looking like a deliberate decision. Holding on unreadable input is the safe direction (the pin
  * survives, a later run re-asks), so the guard makes that explicit rather than incidental.
  */
+/**
+ * How long a pinned repair may show NO progress before its pin is released regardless of the
+ * queue's own budget. One full suite plus 30m of slack: a queue whose writer died mid-suite must
+ * not hold the pin forever, but a queue that is merely SLOW has to survive its own suite — and a
+ * single legitimate suite can run for {@link GREEN_CHECKPOINT_SUITE_TIMEOUT_MS}.
+ */
+export const FROZEN_REPAIR_STALL_MS =
+  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + 30 * 60_000;
+
 export function frozenPinIsFossilized(input: {
   committedAtSec: number | null | undefined;
   nowMs: number;
   fossilAgeMs?: number;
+  /** The pinned queue's own progress state. Passed as scalars, not the queue object, so this
+   *  stays a pure predicate testable without a queue fixture. ABSENT ⇒ no queue ⇒ the historical
+   *  unconditional-release behaviour, unchanged. */
+  repairPhase?: FrozenCandidateRepairQueue["phase"] | null;
+  repairBlockedReason?: FrozenCandidateRepairQueue["blockedReason"] | null;
+  repairUpdatedAtMs?: number | null;
+  stallMs?: number;
 }): boolean {
   const { committedAtSec, nowMs } = input;
   if (committedAtSec == null || !Number.isFinite(committedAtSec)) return false;
   const ageMs = Math.max(0, nowMs - committedAtSec * 1_000);
-  return ageMs > (input.fossilAgeMs ?? CANDIDATE_FOSSIL_AGE_MS);
+  if (ageMs <= (input.fossilAgeMs ?? CANDIDATE_FOSSIL_AGE_MS)) return false;
+
+  // Plan D-004 (frozen-candidate-outlives-its-repair-2026-08-27): past the age threshold, release
+  // the pin ONLY when the repair is not actually progressing.
+  //
+  // Why this guard exists at all — measured 2026-08-27, by CALL-SITE ORDER, not by reading the
+  // constants: this predicate fires ~80 lines BEFORE `decideFrozenCandidateRepairQueue`, and the
+  // caller sets `repairQueue = null` in between. So for any repair that lives past
+  // CANDIDATE_FOSSIL_AGE_MS (2h), the queue's OWN budget —
+  // DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS { maxAttempts: 3, maxAgeMs: 4h } — was UNREACHABLE CODE:
+  // `maxAgeMs` could never fire and `blockedReason: 'wall-clock-exhausted'` was dead in
+  // production. Every frozen candidate died to this 2h wall clock, none to a verdict
+  // (96061f5e@122m, bd653329@147m, bd653329@366m), and one suite alone can consume 115m of the
+  // 2h. Deferring here is what makes the designed 4h/3-attempt budget reachable.
+  //
+  // The release paths kept, in order — each restores the historical behaviour for a case where
+  // there is no progress to protect:
+  //   1. no queue at all            → unchanged, unconditional release;
+  //   2. the queue's own budget is spent (phase 'blocked' / any blockedReason) → release;
+  //   3. the queue is wedged (no `updatedAtMs` movement within FROZEN_REPAIR_STALL_MS) → release,
+  //      which covers a writer that died without ever marking itself blocked;
+  //   4. malformed/missing progress data → release, because inventing an indefinite hold from
+  //      absent data is worse than the behaviour this replaced.
+  // Only a demonstrably PROGRESSING repair now holds its pin, and only until its own budget ends.
+  if (input.repairPhase == null) return true;
+  if (input.repairPhase === "blocked" || input.repairBlockedReason != null) {
+    return true;
+  }
+  const updatedAtMs = input.repairUpdatedAtMs;
+  if (updatedAtMs == null || !Number.isFinite(updatedAtMs)) return true;
+  return nowMs - updatedAtMs > (input.stallMs ?? FROZEN_REPAIR_STALL_MS);
+}
+
+/**
+ * Plan D-004: is the verdict we are about to publish about a candidate that an ACTIVE repair
+ * deliberately pinned?
+ *
+ * Split out as a pure predicate for the same reason {@link frozenPinIsFossilized} is: it is the
+ * risky half of the fossil verdict-withholding decision, and the surrounding code is mechanical.
+ *
+ * The withholding rule exists to stop a fossil red dispatching agents against code the gate never
+ * judged as current. That reasoning INVERTS for a pinned repair: the queue chose that exact
+ * immutable sha on purpose, so the red is not an accident of staleness — it is the failing-test
+ * signature the repair needs in order to advance. Withholding it is precisely what froze `main`
+ * for 6 days with `gate_health.failingTests: []` and no fixer ever dispatched.
+ *
+ * Returns FALSE unless the pin is BOTH the candidate being judged AND still live, so an
+ * accidentally-stale candidate, a mismatched pin, and a repair that has already given up all keep
+ * the historical withholding behaviour untouched.
+ */
+export function isJudgingPinnedActiveRepair(input: {
+  candidate: string;
+  repairCandidate?: string | null;
+  repairPhase?: FrozenCandidateRepairQueue["phase"] | null;
+  repairBlockedReason?: FrozenCandidateRepairQueue["blockedReason"] | null;
+}): boolean {
+  const { candidate, repairCandidate } = input;
+  if (repairCandidate == null || repairCandidate !== candidate) return false;
+  if (input.repairPhase == null || input.repairPhase === "blocked") return false;
+  return input.repairBlockedReason == null;
 }
 
 export function partialGreenGateEnabledFromEnv(
@@ -7654,6 +7729,9 @@ async function runGreenCheckpointInner(
       frozenPinIsFossilized({
         committedAtSec: pinnedCommittedAtSec,
         nowMs: pinAgeNowMs,
+        repairPhase: repairQueue.phase,
+        repairBlockedReason: repairQueue.blockedReason ?? null,
+        repairUpdatedAtMs: repairQueue.updatedAtMs,
       })
     ) {
       // Safe: the predicate only returns true for a FINITE commit time, so this cannot be NaN.
@@ -8639,9 +8717,25 @@ async function runGreenCheckpointInner(
     candidateCommittedAtSecForVerdict == null
       ? null
       : Math.max(0, Date.now() - candidateCommittedAtSecForVerdict * 1_000);
+  // Plan D-004: this withholding rule and the frozen-pin fossil release are a COUPLED PAIR, and
+  // fixing either alone re-creates the livelock. The rule's own rationale — a fossil red "can
+  // dispatch agents against code the gate never judged as current" — INVERTS for a deliberately
+  // pinned repair candidate: the repair is working that exact immutable sha ON PURPOSE, so its
+  // red IS the failing-test signature the queue needs in order to advance. Withholding it is what
+  // produced the measured 6-day freeze (`main` frozen at a2d69cef, 44 consecutive reds,
+  // `gate_health.failingTests: []` throughout — no signature was EVER published, so no fixer
+  // could ever be dispatched). An ACCIDENTALLY stale candidate is untouched by this exemption and
+  // keeps the existing behaviour; so does a pin whose repair has already given up.
+  const judgingPinnedActiveRepair = isJudgingPinnedActiveRepair({
+    candidate,
+    repairCandidate: repairQueue?.candidate ?? null,
+    repairPhase: repairQueue?.phase ?? null,
+    repairBlockedReason: repairQueue?.blockedReason ?? null,
+  });
   if (
     !diagnosticOnly &&
     !green &&
+    !judgingPinnedActiveRepair &&
     candidateAgeAtVerdictMs != null &&
     candidateAgeAtVerdictMs > CANDIDATE_FOSSIL_AGE_MS
   ) {
@@ -9925,64 +10019,36 @@ async function runGreenCheckpointInner(
     }
   }
 
-  // Publish the exact tested candidate before moving the local green pin. The old order
-  // advanced local `main`, swallowed a rejected push, and then emitted a false deployable
-  // verdict; every later tick saw local `main` as up-to-date and never retried origin.
-  // Both legs below re-throw UNCHANGED — the throw is load-bearing (it is what stops a failed
-  // push being reported as a green advance, per the comment above), so these add a record, they
-  // do not swallow. Until now the advance leg was the last window in the run that could throw
-  // without stamping a disposition: the success trailer is written at the END (`reason=advanced`,
-  // below), after BOTH of these, so any throw here left the early `decision-pending` line
-  // standing — which reads as "died in an optional post-verdict leg" and is exactly wrong. The
-  // gate had decided green; it died publishing it.
   if (repairVerification && repairQueue) {
-    // Persist the exact-green transition before ANY ref effect. `ready-to-promote` resumes
-    // publication, release advance, or staging reconciliation without another suite. The
-    // exact tested SHA reaches `main` first; the queue remains until staging contains that
-    // commit in its history and its joined head has been published.
+    // D-001: an isolated repair suite is verification-only. Join it into staging and re-enter
+    // the complete gate at that immutable canonical SHA before any push or release advance.
+    // Persist the isolated-green transition before the staging join. On success the helper
+    // atomically replaces this row with a ready-to-test queue pinned to the joined SHA; on any
+    // failure the ready-to-promote row remains the crash-safe resume journal and `main` stays put.
     repairQueue = markFrozenRepairVerificationGreen(repairQueue, {
       repairHead: candidate,
       nowMs: Date.now(),
     });
-    if (deps.reconcileFrozenRepairIntoStaging) {
-      await deps.writeFrozenRepairQueue?.(repairQueue);
-      const exactPromotion = await advanceExactFrozenRepair(
-        repairQueue,
-        (leg) =>
-          stampPromotion(
-            false,
-            leg === "push" ? "push-failed" : "advance-failed",
-          ),
-      );
-      candidate = exactPromotion.candidate;
-      repairPromotionAdvance = exactPromotion.advance;
-      let reconciledHead: string | null = null;
-      let reconciliationError: unknown = null;
-      try {
-        reconciledHead =
-          await deps.reconcileFrozenRepairIntoStaging(repairQueue);
-      } catch (error) {
-        reconciliationError = error;
-      }
-      if (!reconciledHead) {
-        const detail = reconciliationError
-          ? `: ${reconciliationError instanceof Error ? reconciliationError.message : reconciliationError}`
+    if (deps.reconcileFrozenRepairIntoStaging && deps.writeFrozenRepairQueue) {
+      await deps.writeFrozenRepairQueue(repairQueue);
+      const verifiedRepairHead = candidate;
+      const staged = await stageCanonicalRepairRetest(repairQueue);
+      if (!staged.ok) {
+        const detail = staged.error
+          ? `: ${staged.error instanceof Error ? staged.error.message : staged.error}`
           : "";
         const reconciliationSummary =
-          `exact frozen repair ${candidate.slice(0, 8)} passed and is now the green ` +
-          `${cfg.releaseRef} commit, but its additive ${cfg.integrationBranch} history join ` +
-          `did not complete${detail}; the ready-to-promote queue will resume before any newer tip is selected`;
+          `exact frozen repair ${verifiedRepairHead.slice(0, 8)} passed isolated verification but ` +
+          `remains verification-only; its additive ${cfg.integrationBranch} history join did not ` +
+          `complete${detail}. The ready-to-promote queue will resume, ${cfg.releaseRef} remains ` +
+          `unchanged, and no moving tip may be selected`;
         deps.log(reconciliationSummary);
-        stampPromotion(
-          exactPromotion.advance.advanced,
-          "repair-in-progress",
-          exactPromotion.advance.advanced ? candidate : null,
-        );
+        stampPromotion(false, "repair-in-progress");
         return {
-          advanced: exactPromotion.advance.advanced,
-          candidate,
-          from: exactPromotion.advance.from,
-          green: true,
+          advanced: false,
+          candidate: verifiedRepairHead,
+          from: lastReady,
+          green: null,
           reason: "repair-in-progress",
           summary: reconciliationSummary,
           repairQueue,
@@ -9991,21 +10057,24 @@ async function runGreenCheckpointInner(
           ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
         };
       }
-      const completedQueue = repairQueue;
-      await deps.writeFrozenRepairQueue?.(null);
-      await deps
-        .cleanupFrozenRepairWorktree?.(completedQueue)
-        .catch((e) =>
-          deps.log(
-            `warn: reconciled repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-          ),
-        );
       const reconciliationSummary =
-        `exact frozen repair ${candidate.slice(0, 8)} passed, became the green ` +
-        `${cfg.releaseRef} commit, and was joined additively into ${cfg.integrationBranch} at ` +
-        `${reconciledHead.slice(0, 8)}; the next gate may now select the latest integration tip`;
+        `exact frozen repair ${verifiedRepairHead.slice(0, 8)} passed isolated verification and ` +
+        `stayed off ${cfg.releaseRef}; it was joined into ${cfg.integrationBranch}, and the full ` +
+        `gate is now pinned to immutable canonical candidate ${staged.candidate.slice(0, 8)}`;
       deps.log(reconciliationSummary);
-      repairQueue = null;
+      stampPromotion(false, "repair-in-progress");
+      return {
+        advanced: false,
+        candidate: staged.candidate,
+        from: lastReady,
+        green: null,
+        reason: "repair-in-progress",
+        summary: reconciliationSummary,
+        repairQueue: staged.queue,
+        ...(deps.runId ? { runId: deps.runId } : {}),
+        ...(logPath ? { logPath } : {}),
+        ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+      };
     }
   }
   if (!repairPromotionAdvance) {

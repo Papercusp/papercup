@@ -141,3 +141,240 @@ describe("frozenPinIsFossilized (WI-42207)", () => {
     ).toBe(false);
   });
 });
+
+/**
+ * ── PLAN D-004: the fossil rules are a COUPLED PAIR ──────────────────────────────────────────
+ *
+ * The header above describes the livelock correctly but resolved it in ONE direction: release the
+ * pin so a fresh tip can be judged. Measured 2026-08-27, that resolution has a cost the original
+ * framing missed — by CALL-SITE ORDER, not by reading constants:
+ *
+ *   frozenPinIsFossilized ................ green-checkpoint.ts:~7700  (sets repairQueue = null)
+ *   decideFrozenCandidateRepairQueue ..... green-checkpoint.ts:~7780  (applies the 4h/3 budget)
+ *
+ * The budget evaluation runs ~80 lines LATER, inside `if (repairQueue)`. So for any repair living
+ * past CANDIDATE_FOSSIL_AGE_MS the queue's own budget was UNREACHABLE CODE: `maxAgeMs` could never
+ * fire and `blockedReason: 'wall-clock-exhausted'` was dead in production. Every frozen candidate
+ * died to the 2h wall clock, none to a verdict (96061f5e@122m, bd653329@147m, bd653329@366m).
+ *
+ * The fix is therefore TWO predicates that must agree, and fixing EITHER ALONE re-creates the
+ * freeze:
+ *   • hold a PROGRESSING pin  (frozenPinIsFossilized)   — without the exemption below, its red is
+ *     withheld and the queue resumes the same sha forever: the 6-day freeze, exactly.
+ *   • publish that pin's red  (isJudgingPinnedActiveRepair) — without the hold above, there is no
+ *     pin left to publish about.
+ * `holds a progressing pin AND publishes its red — the livelock, encoded` asserts the pair.
+ */
+describe("frozenPinIsFossilized — progress awareness (plan D-004)", () => {
+  /** A repair that is alive and moving: phase live, nothing blocked, just updated. */
+  const progressing = {
+    repairPhase: "ready-to-test" as const,
+    repairBlockedReason: null,
+    repairUpdatedAtMs: NOW_MS - 60_000,
+  };
+
+  /**
+   * PERMANENT WRONG CONTROL — the pre-fix production predicate, age-only.
+   *
+   * Kept verbatim (not a paraphrase) so a silent revert to age-only reds here instead of passing.
+   * Every assertion below that distinguishes the fix is stated as a DISAGREEMENT with this
+   * control; without it these tests would pass just as happily against the code that froze main.
+   */
+  const ageOnlyFossilCheck = (input: {
+    committedAtSec: number | null | undefined;
+    nowMs: number;
+    fossilAgeMs?: number;
+  }): boolean => {
+    const { committedAtSec, nowMs } = input;
+    if (committedAtSec == null || !Number.isFinite(committedAtSec)) return false;
+    const ageMs = Math.max(0, nowMs - committedAtSec * 1_000);
+    return ageMs > (input.fossilAgeMs ?? CANDIDATE_FOSSIL_AGE_MS);
+  };
+
+  it("HOLDS the pin of a progressing repair past the threshold — and the old code did not", () => {
+    // 143m is the real incident age, the same number the first test in this file uses. Under the
+    // pre-fix predicate this released the pin mid-repair; that is the defect.
+    const args = { committedAtSec: minutesAgoSec(143), nowMs: NOW_MS };
+    expect(frozenPinIsFossilized({ ...args, ...progressing })).toBe(false);
+    // THE DISCRIMINATING ASSERTION: the control and the fix must DISAGREE here. If this stops
+    // failing for the control, the progress guard has become vacuous.
+    expect(ageOnlyFossilCheck(args)).toBe(true);
+  });
+
+  it("releases once the queue's OWN budget is spent — the 4h/3-attempt limits, now reachable", () => {
+    const args = { committedAtSec: minutesAgoSec(143), nowMs: NOW_MS };
+    // phase 'blocked' is how the queue reports its own exhaustion.
+    expect(
+      frozenPinIsFossilized({ ...args, ...progressing, repairPhase: "blocked" }),
+    ).toBe(true);
+    // ...and either blockedReason alone is sufficient, so a phase/reason skew cannot wedge a pin.
+    for (const reason of ["attempts-exhausted", "wall-clock-exhausted"] as const) {
+      expect(
+        frozenPinIsFossilized({
+          ...args,
+          ...progressing,
+          repairBlockedReason: reason,
+        }),
+      ).toBe(true);
+    }
+    // The whole point of deferring: the queue's budget must OUTLAST the fossil threshold, or
+    // deferring to it would change nothing. This is the inequality the fix depends on.
+    expect(DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS.maxAgeMs).toBeGreaterThan(
+      CANDIDATE_FOSSIL_AGE_MS,
+    );
+  });
+
+  it("releases a WEDGED queue whose writer died without ever marking it blocked", () => {
+    const args = { committedAtSec: minutesAgoSec(400), nowMs: NOW_MS };
+    // No progress for longer than a full suite plus slack ⇒ nobody is coming back for this pin.
+    expect(
+      frozenPinIsFossilized({
+        ...args,
+        ...progressing,
+        repairUpdatedAtMs: NOW_MS - (FROZEN_REPAIR_STALL_MS + 60_000),
+      }),
+    ).toBe(true);
+    // Just INSIDE the stall window it must still hold — a slow suite is not a dead one, and this
+    // is the boundary that decides whether a legitimate 115m suite survives.
+    expect(
+      frozenPinIsFossilized({
+        ...args,
+        ...progressing,
+        repairUpdatedAtMs: NOW_MS - (FROZEN_REPAIR_STALL_MS - 60_000),
+      }),
+    ).toBe(false);
+    // Missing/!finite progress data releases, restoring the historical behaviour rather than
+    // inventing an indefinite hold out of absent input.
+    for (const bad of [null, undefined, NaN]) {
+      expect(
+        frozenPinIsFossilized({
+          ...args,
+          ...progressing,
+          repairUpdatedAtMs: bad,
+        }),
+      ).toBe(true);
+    }
+  });
+
+  it("leaves the NO-QUEUE path bit-for-bit identical to the pre-fix predicate", () => {
+    // The authorization for this change (D-001) required no-queue behaviour be preserved, so
+    // assert it against the control across the whole interesting range rather than one point.
+    for (const ageMin of [0, 38, 119, 120, 121, 143, 366]) {
+      const args = { committedAtSec: minutesAgoSec(ageMin), nowMs: NOW_MS };
+      expect(frozenPinIsFossilized(args)).toBe(ageOnlyFossilCheck(args));
+      // An explicit null pin is the same "no queue" statement as omitting it.
+      expect(
+        frozenPinIsFossilized({ ...args, repairPhase: null }),
+      ).toBe(ageOnlyFossilCheck(args));
+    }
+  });
+
+  it("never resurrects a FRESH candidate — the age gate still runs first", () => {
+    // A blocked queue on a 38m candidate must still HOLD: progress state may only ever make the
+    // predicate more conservative, never release a pin the age rule would have kept.
+    expect(
+      frozenPinIsFossilized({
+        committedAtSec: minutesAgoSec(38),
+        nowMs: NOW_MS,
+        repairPhase: "blocked",
+        repairBlockedReason: "attempts-exhausted",
+        repairUpdatedAtMs: 0,
+      }),
+    ).toBe(false);
+  });
+
+  it("derives the stall window from one real suite, so a legitimate suite cannot trip it", () => {
+    expect(FROZEN_REPAIR_STALL_MS).toBe(
+      GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + 30 * 60_000,
+    );
+    // The bug being prevented: a stall window SHORTER than a suite would release the pin of a
+    // repair that is merely running its tests.
+    expect(FROZEN_REPAIR_STALL_MS).toBeGreaterThan(
+      GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+    );
+  });
+});
+
+describe("isJudgingPinnedActiveRepair — the fossil verdict exemption (plan D-004)", () => {
+  const CAND = "ba345f31b1c0ffee";
+
+  it("exempts a live pin on the candidate actually being judged", () => {
+    expect(
+      isJudgingPinnedActiveRepair({
+        candidate: CAND,
+        repairCandidate: CAND,
+        repairPhase: "ready-to-verify",
+        repairBlockedReason: null,
+      }),
+    ).toBe(true);
+  });
+
+  it("does NOT exempt an accidentally-stale candidate — the rule's original job survives", () => {
+    // No queue at all: this is the EI-21436432400491183 case the withholding was written for, and
+    // it must keep behaving exactly as before.
+    expect(isJudgingPinnedActiveRepair({ candidate: CAND })).toBe(false);
+    expect(
+      isJudgingPinnedActiveRepair({ candidate: CAND, repairCandidate: null }),
+    ).toBe(false);
+  });
+
+  it("does NOT exempt when the pin names a DIFFERENT sha than the one being judged", () => {
+    // The dangerous confusion: a queue exists, but this verdict is about some other candidate, so
+    // publishing it would be exactly the mis-dispatch the withholding prevents.
+    expect(
+      isJudgingPinnedActiveRepair({
+        candidate: CAND,
+        repairCandidate: "deadbeefdeadbeef",
+        repairPhase: "ready-to-test",
+        repairBlockedReason: null,
+      }),
+    ).toBe(false);
+  });
+
+  it("does NOT exempt a repair that has already given up", () => {
+    expect(
+      isJudgingPinnedActiveRepair({
+        candidate: CAND,
+        repairCandidate: CAND,
+        repairPhase: "blocked",
+        repairBlockedReason: "attempts-exhausted",
+      }),
+    ).toBe(false);
+    // blockedReason alone is disqualifying, so a phase/reason skew cannot publish a dead repair's
+    // red — the mirror of the same skew guard on the pin-release side.
+    expect(
+      isJudgingPinnedActiveRepair({
+        candidate: CAND,
+        repairCandidate: CAND,
+        repairPhase: "ready-to-test",
+        repairBlockedReason: "wall-clock-exhausted",
+      }),
+    ).toBe(false);
+  });
+
+  it("holds a progressing pin AND publishes its red — the livelock, encoded", () => {
+    // This is D-004's entire argument as one executable assertion, and the reason these two
+    // predicates may never be changed independently.
+    const args = { committedAtSec: minutesAgoSec(143), nowMs: NOW_MS };
+    const pinHeld = !frozenPinIsFossilized({
+      ...args,
+      repairPhase: "ready-to-test",
+      repairBlockedReason: null,
+      repairUpdatedAtMs: NOW_MS - 60_000,
+    });
+    const redPublished = isJudgingPinnedActiveRepair({
+      candidate: CAND,
+      repairCandidate: CAND,
+      repairPhase: "ready-to-test",
+      repairBlockedReason: null,
+    });
+    // BOTH must hold. Either one alone is a freeze:
+    //   pin held + red withheld  → the queue resumes the same sha forever (the measured 6 days,
+    //                              44 reds, failingTests: [] throughout, no fixer ever dispatched)
+    //   pin released + red published → nothing left to repair; the fix is thrown away mid-flight
+    expect({ pinHeld, redPublished }).toEqual({
+      pinHeld: true,
+      redPublished: true,
+    });
+  });
+});
