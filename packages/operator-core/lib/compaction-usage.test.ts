@@ -116,78 +116,38 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     const LIVE_SID = '01a0426c-b998-7e00-96ea-fd711dfcaa19';
     const DEAD_SID = '01a04228-cb53-7af1-ac58-0b3f7a5cf79b';
 
-    it('returns null for a rollout naming a DIFFERENT session that nothing has written for >10min', async () => {
+    it('extracts the native session id from a rollout filename, and returns null when it cannot', () => {
+      expect(codexRolloutSessionId(named(DEAD_SID))).toBe(DEAD_SID);
+      expect(codexRolloutSessionId(named(LIVE_SID))).toBe(LIVE_SID);
+      // "cannot check" — never to be read as "mismatch".
+      expect(codexRolloutSessionId(join(dir, 'rollout.jsonl'))).toBeNull();
+      expect(codexRolloutSessionId(join(dir, 'notes.txt'))).toBeNull();
+    });
+
+    it('does NOT gate the estimate on a session-id mismatch — measured to disarm 15 healthy sessions per 1 fixed', async () => {
+      // The tempting fix is to return null when the resolved rollout names a different
+      // session and is stale. Measured against the live fleet 2026-08-27 (A/B, 134 live
+      // codex sessions): that gate nulls 16, of which only ONE is the actual pathology
+      // (227005/200000, over-limit, 71min stale). The other 15 sit comfortably UNDER
+      // their limit — they are simply IDLE, which produces the same signature, and
+      // nulling them disarms their compaction backstop. Net harm, so it is not wired.
+      //
+      // This test pins that decision so a future reader re-deriving the "obvious" fix
+      // finds the measurement instead of re-shipping it. The correct discriminator
+      // needs the session's own last_active_at, which lives in the watchdog.
       const path = named(DEAD_SID);
       writeFileSync(path, tokenEvent(227_005));
       const stale = Date.now() - 71.5 * 60_000;
       utimesSync(path, stale / 1000, stale / 1000);
 
-      // PERMANENT POSITIVE CONTROL, and the reason this guard is falsifiable rather
-      // than merely green: codexContextSnapshotFromRollout IS the pre-fix code path
-      // (codexSnapshotForRef used to return it unconditionally). Asserting it still
-      // yields 227005 from this exact file means the null below can ONLY come from
-      // the new gate — delete the gate and this pair contradicts itself.
-      expect(codexContextSnapshotFromRollout(path)?.tokens).toBe(227_005);
+      expect(codexRolloutSessionId(path)).not.toBe(LIVE_SID); // mismatched …
       expect(
         await estimateContextTokens(
           { agent: 'codex', sessionId: LIVE_SID, sessionKey: 14795 },
           null,
           { findCodexRollout: async () => path },
         ),
-      ).toBeNull();
-    });
-
-    it('TRUSTS a mismatching rollout that is being actively written — staleness is required, not just a mismatch', async () => {
-      // A resumed session may open a second rollout before the ref catches up. Rejecting
-      // on mismatch alone would disarm the backstop on a HEALTHY session, which is worse
-      // than the bug: this is the case that must keep working.
-      const path = named(DEAD_SID);
-      writeFileSync(path, tokenEvent(120_000));
-      const fresh = Date.now() - 20_000;
-      utimesSync(path, fresh / 1000, fresh / 1000);
-
-      expect(
-        await estimateContextTokens(
-          { agent: 'codex', sessionId: LIVE_SID, sessionKey: 14795 },
-          null,
-          { findCodexRollout: async () => path },
-        ),
-      ).toBe(120_000);
-    });
-
-    it('TRUSTS a stale rollout whose session id MATCHES the ref — an idle session is not a dead one', async () => {
-      const path = named(LIVE_SID);
-      writeFileSync(path, tokenEvent(150_000));
-      const stale = Date.now() - 71.5 * 60_000;
-      utimesSync(path, stale / 1000, stale / 1000);
-
-      expect(
-        await estimateContextTokens(
-          { agent: 'codex', sessionId: LIVE_SID, sessionKey: 14795 },
-          null,
-          { findCodexRollout: async () => path },
-        ),
-      ).toBe(150_000);
-    });
-
-    it('cannot check an unparseable filename, so it must not reject one', async () => {
-      // codexRolloutSessionId returns null for a name that is not rollout-<ts>-<uuid>;
-      // null means "cannot check", never "mismatch".
-      expect(codexRolloutSessionId(join(dir, 'rollout.jsonl'))).toBeNull();
-      expect(codexRolloutSessionId(named(DEAD_SID))).toBe(DEAD_SID);
-
-      const path = join(dir, 'rollout-unparseable.jsonl');
-      writeFileSync(path, tokenEvent(99_000));
-      const stale = Date.now() - 71.5 * 60_000;
-      utimesSync(path, stale / 1000, stale / 1000);
-
-      expect(
-        await estimateContextTokens(
-          { agent: 'codex', sessionId: LIVE_SID, sessionKey: 14795 },
-          null,
-          { findCodexRollout: async () => path },
-        ),
-      ).toBe(99_000);
+      ).toBe(227_005); // … and still reported, deliberately
     });
   });
 
