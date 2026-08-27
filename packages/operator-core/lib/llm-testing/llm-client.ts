@@ -302,6 +302,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
     retryDeadlineMs: opts.retryDeadlineMs,
     onAdmitted: opts.onAdmitted,
     onResponseStart: opts.onResponseStart,
+    ownerId: opts.ownerId,
     // Usage attribution: the priority label already names the caller ('gym',
     // 'scout'); reuse it so this client's header samples stop being anonymous.
     usageAttribution: { role: opts.priority ?? 'llm-testing' },
