@@ -66,9 +66,14 @@ describe('Mug↔Blender feedback-loop prompt guidance (P-005)', () => {
       expect(mug).toMatch(/DISTINCT from the grade/i);
     });
 
-    it('READY is Mug-only via plans:promote (D-003 #3)', () => {
-      expect(mug).toMatch(/plans:promote/);
-      expect(mug).toMatch(/only.*party who can mark a draft ready/i);
+    it('READY is Mug-only through the audited start path, not policy-bound plans:promote (D-003 #3)', () => {
+      expect(mug).toMatch(/only.*party who can approve it/i);
+      expect(mug).toMatch(/plans:audit\s*\{\s*phase: 'activation'/i);
+      expect(mug).toMatch(/policy-free Scout draft.*plans:start/i);
+      expect(mug).toMatch(/plans:set-plan-status.*ready.*ready-plan-autostart/i);
+      expect(mug).toMatch(/`plans:promote` requires a valid `## Promote` policy/i);
+      expect(mug).toMatch(/not the approval route for a policy-free Scout draft/i);
+      expect(mug).not.toMatch(/only.*party who can mark a draft ready, via `plans:promote`/i);
     });
 
     it('feedback is a plan-keyed coord:send with wake required', () => {
