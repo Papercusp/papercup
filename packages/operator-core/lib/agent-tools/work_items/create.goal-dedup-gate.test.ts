@@ -2,8 +2,9 @@
  * create.goal-dedup-gate.test — the P-004 WRAPPER derivation
  * (goal-mode-design-intent-hardening-2026-08-16): work_items:create derives the
  * internal `goalDedupGate` core rail SERVER-SIDE — flag GOAL_CREATE_DEDUP_GATE ∧ the
- * creator's RESOLVED goal context (resolveGoalContext), resolved ONCE per call —
- * and the strict zod schema REJECTS any attempt to smuggle the rail in as a tool
+ * creator's RESOLVED goal context (resolveGoalContext), resolved ONCE per call for
+ * code-work kinds — while the explicitly non-code `task` kind is exempt — and the
+ * strict zod schema REJECTS any attempt to smuggle the rail in as a tool
  * argument (stronger than stripping: unrecognized_keys is a loud error), so a
  * caller can never arm or disarm its own dedup gate. The core's behavior under the
  * rail is pinned separately in _create-core.goal-dedup-gate.test.ts.
@@ -91,12 +92,13 @@ beforeEach(() => {
 });
 
 describe('work_items:create × goal dedup gate derivation (P-004)', () => {
-  it('flag ON + resolved goal → EVERY spec carries goalDedupGate:true, resolver consulted ONCE per call', async () => {
+  it('flag ON + resolved goal → code-work specs carry the rail, task is exempt, resolver consulted ONCE', async () => {
     await body({
       items: [
         { kind: 'bug', title: 'b' },
         { kind: 'change', title: 'c' },
         { kind: 'feature', title: 'f', harness: 'papercup' },
+        { kind: 'task', title: 'record the activation audit' },
       ],
     });
     expect(goalMocks.getFlag).toHaveBeenCalledWith(FLAGS.GOAL_CREATE_DEDUP_GATE, 'system');
@@ -109,6 +111,11 @@ describe('work_items:create × goal dedup gate derivation (P-004)', () => {
         expect.anything(),
       );
     }
+    expect(createM).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({ kind: 'task', goalDedupGate: false }),
+      expect.anything(),
+    );
   });
 
   it('flag OFF → rail stays false and the resolver is never consulted', async () => {

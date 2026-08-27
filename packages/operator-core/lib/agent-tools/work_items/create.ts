@@ -367,7 +367,11 @@ export default defineTool({
       list,
       async (spec) => {
         spec.requireCompleteDedupCoverage = Boolean(drainMode) && spec.kind === 'bug';
-        spec.goalDedupGate = goalDedupGate;
+        // P-004 gates code-work kinds, but `task` is explicitly NON-CODE (WI-2874)
+        // and is also the kind used for plan-audit/ops filings. Keep those filings
+        // available when the semantic probe is unavailable; feature/chunk/bug/change
+        // still inherit the resolved GOAL fail-closed rail.
+        spec.goalDedupGate = goalDedupGate && spec.kind !== 'task';
         // EI-18784357226895330: a claim spec governs what a member may PULL from the
         // shared claimable pool. It must NOT govern what a member may FILE. This block
         // used to refuse the whole create, which meant a member who discovered an

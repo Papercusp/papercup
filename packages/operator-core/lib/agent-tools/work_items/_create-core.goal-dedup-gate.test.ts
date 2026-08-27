@@ -123,6 +123,21 @@ describe('createOneWorkItem × goal dedup gate (P-004)', () => {
     expect(createM).toHaveBeenCalledOnce();
   });
 
+  it('task (non-code) with the wrapper exemption + semantic leg down → proceeds with ordinary issue coverage', async () => {
+    // The wrapper deliberately passes goalDedupGate:false for `task`: plan-audit and
+    // other non-code filings must remain recordable when the semantic probe is down.
+    // As an issue-family kind, task still reports the ordinary degraded coverage marker;
+    // it must not be converted into the GOAL fail-closed refusal.
+    const r = await createOneWorkItem(
+      { kind: 'task', title: 'record the activation audit', goalDedupGate: false },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.dedupCoverage).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+    expect(createM).toHaveBeenCalledOnce();
+  });
+
   it('gate + force + semantic leg down → proceeds, with the degraded coverage recorded on result AND row', async () => {
     const r = await createOneWorkItem(
       { kind: 'bug', title: 'must land now', force: true, goalDedupGate: true },
