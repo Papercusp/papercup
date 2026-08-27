@@ -27,8 +27,10 @@ import {
   decideMonitorAdmission,
   hasActiveMonitorForOwnerPredicate,
   listActiveMonitorOwnersForPredicate,
+  prepareMonitorConfig,
   readMonitorOwnerTurnEvidence,
 } from './monitor-policy';
+import { persistMonitorNoDeltaBudget, standDownMonitorLoop } from './monitor-standdown';
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -577,6 +579,152 @@ describe('loop surface round-trip (real PG)', () => {
     });
     const status = await getLoopStatus(OWNER, { sql });
     expect(status).toMatchObject({ mode: 'monitor', fireCount: 0 });
+  });
+
+  // ── anti-babysitting P-004: runtime monitor standdown, through real PG ──────────────
+  //
+  // The unit suites cover the DECISION (decideMonitorSettlement) and the PARSER
+  // (readMonitorStanddownRecord) with fakes. What only a real database can prove is the
+  // round trip: that the standdown write actually lands on the routine row, and that the
+  // reason survives the trip back out through getLoopStatus' SELECT. That SELECT has to
+  // carry `r.metadata` for any of it to arrive — and a unit fixture cannot pin a column,
+  // because the fake sql hands back its row whatever the query text says. Drop the column
+  // and every assertion below fails; drop it in a unit test and nothing does.
+  async function monitorRoutineId(ownerId: string): Promise<string> {
+    const rows = await sql<Array<{ id: string }>>`
+      SELECT id FROM harness_shared.routines WHERE name = ${loopRoutineName(ownerId)}`;
+    expect(rows).toHaveLength(1);
+    return rows[0]!.id;
+  }
+
+  async function armMonitor(noDeltaBudget: number) {
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'watch the drain',
+      mode: 'monitor',
+      monitor: {
+        predicateKey: 'fleet:alpha',
+        stopCondition: 'fleet alpha is drained or leadership ends',
+        noDeltaBudget,
+        remainingNoDeltaBudget: noDeltaBudget,
+        authority: { kind: 'fleet-leader' as const, fleet: 'alpha' },
+      },
+      sql,
+    });
+    return monitorRoutineId(OWNER);
+  }
+
+  it('P-004: a quiet-wake DECREMENT persists to the real row and is readable back as remaining budget', async () => {
+    const routineId = await armMonitor(3);
+
+    expect(await persistMonitorNoDeltaBudget(sql, routineId, 2, 'fire-1')).toBe(true);
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status).toMatchObject({ active: true, mode: 'monitor' });
+    expect(status!.monitor?.remainingNoDeltaBudget).toBe(2);
+    // Still armed: a monitor with budget left is never stood down by a quiet wake alone.
+    expect(status!.monitorStanddown).toBeNull();
+  });
+
+  it('P-004: the SAME fire token cannot double-decrement the persisted budget', async () => {
+    const routineId = await armMonitor(3);
+
+    expect(await persistMonitorNoDeltaBudget(sql, routineId, 2, 'fire-1')).toBe(true);
+    // A second reconcile pass settling the SAME fire must be idempotent, not a second
+    // decrement — otherwise two overlapping passes silently halve a monitor's life.
+    expect(await persistMonitorNoDeltaBudget(sql, routineId, 1, 'fire-1')).toBe(true);
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status!.monitor?.remainingNoDeltaBudget).toBe(2);
+  });
+
+  it('P-004: an exhausted budget stands the monitor down and its REASON survives back through getLoopStatus', async () => {
+    const routineId = await armMonitor(1);
+
+    const armed = await getLoopStatus(OWNER, { sql });
+    expect(armed).toMatchObject({ active: true, mode: 'monitor' });
+    expect(armed!.monitorStanddown).toBeNull(); // nothing to explain yet
+
+    expect(
+      await standDownMonitorLoop(sql, routineId, {
+        action: 'standdown',
+        code: 'no_delta_budget_exhausted',
+        reason: 'one quiet wake with no delta',
+        remainingNoDeltaBudget: 0,
+      }),
+    ).toBe(true);
+
+    const after = await getLoopStatus(OWNER, { sql });
+    expect(after!.active).toBe(false);
+    expect(after!.monitorStanddown).toMatchObject({
+      code: 'no_delta_budget_exhausted',
+      authorityCode: null,
+      reason: 'one quiet wake with no delta',
+    });
+    // A real timestamp, not the string PG returns for a bigint column.
+    expect(typeof after!.monitorStanddown!.atMs).toBe('number');
+  });
+
+  it('P-004: an authority-loss standdown carries its authorityCode, so it is distinguishable from a spent budget', async () => {
+    const routineId = await armMonitor(5);
+
+    expect(
+      await standDownMonitorLoop(sql, routineId, {
+        action: 'standdown',
+        code: 'authority_lost',
+        authorityCode: 'monitor_fleet_not_led',
+        reason: 'fleet leadership moved to another session',
+        remainingNoDeltaBudget: 5,
+      }),
+    ).toBe(true);
+
+    const after = await getLoopStatus(OWNER, { sql });
+    expect(after!.active).toBe(false);
+    expect(after!.monitorStanddown).toMatchObject({
+      code: 'authority_lost',
+      authorityCode: 'monitor_fleet_not_led',
+    });
+    // Budget to spare — so `active:false` here is explained ONLY by the authority loss.
+    expect(after!.monitor?.remainingNoDeltaBudget).toBe(5);
+  });
+
+  it('P-004: an arm with NO explicit budget persists a ONE-wake budget on the real row and reads back as one', async () => {
+    // ABM-P004-STANDDOWN at the integration layer. The default is installed by the real
+    // normalizer (not hand-written here), then has to survive materialization into the
+    // routine payload and the trip back out — which is where a default silently becoming
+    // "unbounded" would actually bite, since an absent budget reads as "monitor forever".
+    const prepared = prepareMonitorConfig({
+      predicateKey: '  Fleet:ALPHA  ',
+      stopCondition: '  fleet alpha is   drained ',
+      authority: { kind: 'fleet-leader', fleet: 'alpha' },
+    });
+    expect(prepared.allowed).toBe(true);
+    if (!prepared.allowed) throw new Error('unreachable: prepareMonitorConfig refused a valid config');
+
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'watch the drain',
+      mode: 'monitor',
+      monitor: prepared.config,
+      sql,
+    });
+
+    const row = await rawRow(OWNER);
+    expect((row!.payload_template as { monitor: Record<string, unknown> }).monitor).toMatchObject({
+      predicateKey: 'fleet:alpha',
+      noDeltaBudget: 1,
+      remainingNoDeltaBudget: 1,
+    });
+
+    const status = await getLoopStatus(OWNER, { sql });
+    expect(status!.monitor?.noDeltaBudget).toBe(1);
+    expect(status!.monitor?.remainingNoDeltaBudget).toBe(1);
   });
 
   it("getLoopStatus reports parked=true (and nextFireAt=null) when the loop is in-flight ('infinity')", async () => {

@@ -1338,6 +1338,117 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
   });
 });
 
+describe('getLoopStatuses — monitor standdown reason reaches the status surface (P-004, ABM-P004-REASON)', () => {
+  // WHY THIS SUITE EXISTS. `monitorStanddown` is parsed out of `r.metadata`, so the whole
+  // explanation depends on ONE column staying in the SELECT. Drop `r.metadata` and
+  // `readMonitorStanddownRecord(undefined)` returns null — which is indistinguishable from
+  // "this monitor never stood down". The failure is silent and it lands exactly where it hurts:
+  // an `active:false` monitor whose reason has quietly disappeared, so an operator reading
+  // loop:status cannot tell an enforced standdown from a dead loop. Parsing is covered in
+  // monitor-standdown.test.ts; what is pinned HERE is the trip through the status surface.
+  function standdownRowSql(over: Record<string, unknown> = {}) {
+    const row = {
+      install_slug: 'papercusp',
+      name: 'loop-su-x',
+      active: false,
+      reschedule_interval_sec: 60,
+      target_owner_id: 'su-x',
+      payload_template: { carry: 'warm', continuation: 'settle', mode: 'monitor' },
+      fire_count: 3,
+      fire_count_at_arm: 0,
+      last_fired_at: null,
+      armed_at: '2026-08-27T11:00:00.000Z',
+      parked: false,
+      next_fire_at: null,
+      parked_ms: null,
+      last_delivery_outcome: 'queued',
+      consecutive_errors: 0,
+      lifecycle_completed_at: null,
+      last_turn_at: null,
+      last_real_turn_at: null,
+      last_wake_channel: null,
+      last_wake_status: null,
+      last_wake_at: null,
+      last_wake_error: null,
+      presence_last_active_at: null,
+      ...over,
+    };
+    return transactionalSql(() => [row]);
+  }
+
+  it('surfaces a budget-exhaustion standdown with its machine-readable code and reason', async () => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: standdownRowSql({
+        metadata: {
+          monitor_standdown: {
+            code: 'no_delta_budget_exhausted',
+            authorityCode: null,
+            reason: 'one quiet wake',
+            atMs: 1_756_000_000_000,
+          },
+        },
+      }) as unknown as Sql,
+    });
+
+    expect(out.get('su-x')!.monitorStanddown).toEqual({
+      code: 'no_delta_budget_exhausted',
+      authorityCode: null,
+      reason: 'one quiet wake',
+      atMs: 1_756_000_000_000,
+    });
+  });
+
+  it('carries the authority code through, so an authority loss is distinguishable from a spent budget', async () => {
+    const out = await getLoopStatuses(['su-x'], {
+      sql: standdownRowSql({
+        metadata: {
+          monitor_standdown: {
+            code: 'authority_lost',
+            authorityCode: 'monitor_fleet_not_led',
+            reason: 'fleet leadership moved to another session',
+            atMs: 1,
+          },
+        },
+      }) as unknown as Sql,
+    });
+
+    const s = out.get('su-x')!;
+    expect(s.monitorStanddown?.code).toBe('authority_lost');
+    expect(s.monitorStanddown?.authorityCode).toBe('monitor_fleet_not_led');
+  });
+
+  it('CALIBRATION: a monitor that never stood down reports null, so the field explains rather than merely flags', async () => {
+    const out = await getLoopStatuses(['su-x'], { sql: standdownRowSql() as unknown as Sql });
+    expect(out.get('su-x')!.monitorStanddown).toBeNull();
+  });
+
+  it('CAUGHT: the surface DISCRIMINATES a stood-down monitor from one that never stood down', async () => {
+    // This is the negative control for the two cases above, and it is the one that would
+    // actually go red. The regression is silent: if `metadata` stops reaching the mapper,
+    // EVERY reading collapses to null and an enforced standdown becomes indistinguishable
+    // from a loop that merely died. A mapper hard-wired to null still passes the CALIBRATION
+    // case on its own — so only the discriminating comparison catches it.
+    const stoodDown = await getLoopStatuses(['su-x'], {
+      sql: standdownRowSql({
+        metadata: {
+          monitor_standdown: {
+            code: 'authority_lost',
+            authorityCode: 'monitor_fleet_not_led',
+            reason: 'fleet leadership moved',
+            atMs: 1,
+          },
+        },
+      }) as unknown as Sql,
+    });
+    const never = await getLoopStatuses(['su-x'], { sql: standdownRowSql() as unknown as Sql });
+
+    expect(stoodDown.get('su-x')!.monitorStanddown).not.toBeNull();
+    expect(never.get('su-x')!.monitorStanddown).toBeNull();
+    // Equal readings mean the column stopped being read — the exact silent regression.
+    expect(stoodDown.get('su-x')!.monitorStanddown).not.toEqual(never.get('su-x')!.monitorStanddown);
+  });
+});
+
 describe('computeLoopCadence (EI-20217869515819188 — configured vs observed cadence)', () => {
   const armedAtMs = Date.parse('2026-08-11T20:03:22.000Z');
   const nowMs = armedAtMs + (7 * 60 * 60 + 47 * 60) * 1000;
