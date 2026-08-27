@@ -30,6 +30,7 @@ import {
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
+  PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS,
   PTOOL_READ_ONLY_POST_CONNECT_RETRIES,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
@@ -695,6 +696,28 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
       ),
     ).rejects.toThrow(
       /^local operator connection attempt timed out after 20ms \[3 connect attempt\(s\) over \d+s: 1x proxy-shed-429, 2x attempt-timeout\]$/,
+    );
+  });
+
+  it('caps repeated proxy-upstream 502 handshakes after one ptool replay', async () => {
+    const proxyError = Object.assign(new Error('mcp_proxy_upstream_error'), { code: 502 });
+    const connectOnce = vi.fn().mockRejectedValue(proxyError);
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:9071', {}, {
+        maxAttempts: 20,
+        attemptTimeoutMs: 5_000,
+        totalTimeoutMs: 60_000,
+        sleep,
+      }),
+    ).rejects.toBe(proxyError);
+
+    expect(PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS).toBe(2);
+    expect(connectOnce).toHaveBeenCalledTimes(PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(proxyError.message).toMatch(
+      /\[2 connect attempt\(s\) over \d+s: 2x proxy-upstream-502\]$/,
     );
   });
 });
