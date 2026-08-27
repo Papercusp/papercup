@@ -134,6 +134,10 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`TRUNCATE harness_shared.routines`;
+  // This database belongs only to this suite. Clear minted dependency edges before
+  // their endpoint rows: the production delete guard correctly refuses the reverse
+  // order, which would otherwise strand every test after the first successful run.
+  await sql`TRUNCATE harness_shared.work_item_deps`;
   await sql`DELETE FROM harness_shared.plan_runs WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS})`;
   await sql`DELETE FROM harness_shared.harness_plans WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug IN (${HARNESS}, ${APP_HARNESS}) AND workspace_id = ${WS}`;
