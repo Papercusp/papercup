@@ -52,9 +52,9 @@ function gitBlobSha(bytes: Uint8Array, shaLength: number): string {
 
 function headBlobMap(repoRoot: string, headSha: string, paths: readonly string[]): ReadonlyMap<string, string | null> | undefined {
   try {
-    const runLsTree = (root: string, sha: string, selected?: readonly string[]) => execFileSync(
+    const runLsTree = (root: string, sha: string, selected?: readonly string[], recursive = true) => execFileSync(
       'git',
-      ['-C', root, 'ls-tree', '-r', '-z', sha, ...(selected?.length ? ['--', ...selected] : [])],
+      ['-C', root, 'ls-tree', ...(recursive ? ['-r'] : []), '-z', sha, ...(selected?.length ? ['--', ...selected] : [])],
       {
       encoding: 'utf8',
       maxBuffer: 256 * 1024,
@@ -89,7 +89,20 @@ function headBlobMap(repoRoot: string, headSha: string, paths: readonly string[]
       // then resolve each descendant against the exact submodule commit pinned
       // by this HEAD. Grouping keeps the lookup bounded to one recursive call
       // per referenced submodule, and recursion covers nested submodules too.
-      const allGitlinks = parseTree(runLsTree(repoRoot, headSha)).gitlinks;
+      // A full recursive tree can exceed maxBuffer on the production superproject (the
+      // Papercusp tree is several MiB), which used to make every nested-submodule stamp
+      // fail open as "identity unavailable". Query only the ancestor prefixes of the
+      // missing paths; a non-recursive ls-tree returns the exact gitlink records while
+      // keeping the lookup bounded by the declared path set.
+      const gitlinkPrefixes = [
+        ...new Set(
+          missing.flatMap((path) => {
+            const segments = path.split('/');
+            return segments.slice(0, -1).map((_, index) => segments.slice(0, index + 1).join('/'));
+          }),
+        ),
+      ];
+      const allGitlinks = parseTree(runLsTree(repoRoot, headSha, gitlinkPrefixes, false)).gitlinks;
       const grouped = new Map<string, { sha: string; paths: string[] }>();
       for (const path of missing) {
         const prefix = [...allGitlinks.keys()]
