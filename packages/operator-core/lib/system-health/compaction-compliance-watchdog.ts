@@ -299,7 +299,7 @@ export function resetFrozenCodexReadingsForTests(): void {
  * working) satisfies BOTH conjuncts above and would be wrongly silenced if this were
  * evaluated for every session. Do not hoist it to the whole population.
  */
-async function frozenCodexReading(
+export async function frozenCodexReading(
   ownerId: string,
   lastActiveAt: string | Date | null,
 ): Promise<{ lagMs: number; rolloutPath: string } | null> {
@@ -400,7 +400,9 @@ async function escalateContextDeath(ownerId: string, ownerLabel: string): Promis
  * assertion — a too-high compaction_limit seed (compacts too late for its tier), dark
  * context telemetry (the watchdog/gauge/force-compact are BLIND to its usage), or a
  * dark-presence gap (EI-18127246030401689: the session has NO coord_presence row at all,
- * so it is invisible to every layer above, not merely blind on one estimate). All three
+ * so it is invisible to every layer above, not merely blind on one estimate), or a
+ * frozen codex reading (EI-21595542328480968: its estimate is being read out of another
+ * session's dead rollout, so the number is real but belongs to someone else). All
  * defects were latent from boot and survived hours silently; surfacing them (D-008:
  * surface, don't seize) lets a leader/owner fix or relaunch. Advisory band ⇒ self-clears
  * once stale. Deduped + best-effort — never fails the sweep; a failed escalation un-dedups
@@ -409,7 +411,7 @@ async function escalateContextDeath(ownerId: string, ownerLabel: string): Promis
 async function escalateBootConfig(
   ownerId: string,
   ownerLabel: string,
-  kind: 'dark-telemetry' | 'dark-presence',
+  kind: 'dark-telemetry' | 'dark-presence' | 'frozen-codex-reading',
   summary: string,
   body: string,
 ): Promise<void> {
@@ -1560,6 +1562,48 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         continue;
       }
       implausibleWarned.delete(r.owner_id); // plausible again — re-arm the dedup for a future misread
+      // EI-21595542328480968 frozen-reading gate. Deliberately evaluated ONLY for a
+      // reading that is already over its limit — i.e. one about to drive a cut. An
+      // under-limit reading drives nothing irreversible, so there is nothing to
+      // protect it from, and checking it could only ever cost a healthy session its
+      // telemetry: measured 2026-08-27, one live under-limit session satisfies both
+      // conjuncts of `frozenCodexReading` while working perfectly well. Scoping the
+      // gate to this branch is what makes it structurally unable to disarm a healthy
+      // session — not the thresholds inside it. See frozenCodexReading's header.
+      if (est >= r.compaction_limit * OVER_LIMIT_FRACTION) {
+        const frozen = await frozenCodexReading(r.owner_id, r.last_active_at).catch(() => null);
+        if (frozen) {
+          out.frozenCodexReadings.push({ owner: r.owner_id, est, lagMs: frozen.lagMs });
+          // The cached number is this session's ONLY telemetry, and a frozen one is
+          // worse than none: it renders a live session's gauge as over-limit forever
+          // and keeps nudging it to compact. Null is the honest bridge state.
+          await clearContextEstimate(r.owner_id).catch(() => {});
+          if (!frozenCodexWarned.has(r.owner_id)) {
+            frozenCodexWarned.add(r.owner_id);
+            console.warn(
+              `[compaction-watchdog] ${r.owner_label} (${r.owner_id}): IGNORING a frozen ~${est}/${r.compaction_limit}-token ` +
+                `codex reading — it came from ${frozen.rolloutPath}, a rollout belonging to a DIFFERENT session that ` +
+                `stopped moving ${Math.round(frozen.lagMs / 60_000)}min before this session's own last activity. ` +
+                `Acting on it would force-compact/carry-respawn a live session on a dead predecessor's usage, ` +
+                `forever (EI-21595542328480968). No cache write, no over-limit warn, no force-compact.`,
+            );
+            await escalateBootConfig(
+              r.owner_id,
+              r.owner_label,
+              'frozen-codex-reading',
+              `${r.owner_label} has an UNTRUSTWORTHY context estimate — it is being read from another session's frozen rollout`,
+              `The codex rollout resolved for this owner (${frozen.rolloutPath}) belongs to a DIFFERENT native session and last moved ` +
+                `${Math.round(frozen.lagMs / 60_000)}min before this session's own last activity, so the ~${est}-token reading is a dead ` +
+                `predecessor's, not this session's. Codex homes are keyed by the adv_sessions ROW id, so an owner holding more than one ` +
+                `non-ended row can resolve to a predecessor's home. The watchdog is ignoring the reading (no cache, no force-compact) — ` +
+                `which stops the infinite carry-respawn loop, but leaves this session with NO context telemetry until the resolution is ` +
+                `fixed. Check for multiple non-ended adv_sessions rows for this owner. (EI-21595542328480968)`,
+            );
+          }
+          continue;
+        }
+      }
+      frozenCodexWarned.delete(r.owner_id); // trustworthy again — re-arm the dedup
       await setContextEstimate(r.owner_id, est).catch(() => {});
       // P-013/P-015: mirror the fresh estimate into the in-process gauge cache so the
       // result-annotator + native-tool hook render the banded gauge with ZERO per-call
