@@ -1902,39 +1902,66 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
 
 describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
   /**
-   * Run `jobs` concurrent wrapped commands and return the maximum number that
-   * were ever in flight at once, measured from recorded intervals (robust to
-   * host load: intervals dilate under load, the overlap count does not).
+   * Run `jobs` concurrent wrapped commands and return the size of the first
+   * admitted cohort. Every admitted child waits behind one shared release
+   * barrier; every non-admitted wrapper therefore reaches pc-heavy's observable
+   * queue marker while all available slots remain held. Once every wrapper is
+   * either ready or queued, the ready-file count is the actual concurrency cap
+   * without relying on process-start timing.
    *
-   * Each job writes to its OWN file, so the commands differ and pc-heavy's
+   * The old probe inferred concurrency from overlapping fixed 400ms sleeps. A
+   * loaded host could delay the last wrapper by >400ms, let the first finish,
+   * and report 3 instead of 4 even though all four slots were available. Making
+   * the sleep longer only moved that race; this barrier removes it.
+   *
+   * Each job writes its OWN ready file, so the commands differ and pc-heavy's
    * coalescing cannot collapse them into a single leader — the failure that
    * makes this whole measurement read 1 regardless of the slot count. Belt and
    * braces: PC_HEAVY_COALESCE=0.
    */
   async function maxOverlap(jobs: number, env: Record<string, string>): Promise<number> {
-    await Promise.all(
-      Array.from({ length: jobs }, (_, i) =>
-        new Promise<void>((res) => {
-          const f = join(dir, `mem.${i}.out`);
-          const p = spawn(
-            'bash',
-            [PC_HEAVY, 'bash', '-c', `s=$(date +%s%3N); sleep 0.4; e=$(date +%s%3N); echo "$s $e" > "${f}"`],
-            { env: baseEnv({ PC_HEAVY_COALESCE: '0', PC_HEAVY_GATE_RESERVE: '0', ...env }), cwd: dir },
-          );
-          p.on('exit', () => res());
-        }),
-      ),
-    );
-    const evts: Array<[number, number]> = [];
-    for (let i = 0; i < jobs; i += 1) {
-      const [s, e] = readFileSync(join(dir, `mem.${i}.out`), 'utf8').trim().split(/\s+/).map(Number);
-      evts.push([s, 1], [e, -1]);
+    const cohortDir = mkdtempSync(join(dir, 'mem-cohort-'));
+    const release = join(cohortDir, 'release');
+    const children = Array.from({ length: jobs }, (_, i) => {
+      const ready = join(cohortDir, `ready.${i}`);
+      const child = spawn(
+        'bash',
+        [PC_HEAVY, 'bash', '-c', `touch "${ready}"; while [ ! -f "${release}" ]; do sleep 0.02; done`],
+        {
+          env: baseEnv({ PC_HEAVY_COALESCE: '0', PC_HEAVY_GATE_RESERVE: '0', ...env }),
+          cwd: dir,
+          detached: true,
+        },
+      );
+      return {
+        child,
+        ready,
+        stderr: createTextCollector(child.stderr),
+        exited: new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? -1))),
+      };
+    });
+
+    try {
+      await waitFor('every memory-clamp probe being admitted or observably queued', () =>
+        children.every(({ child, ready, stderr }) => {
+          if (existsSync(ready)) return true;
+          if (stderr.peek().includes('[pc-heavy] queued for a heavy slot')) return true;
+          if (child.exitCode !== null || child.signalCode !== null) {
+            throw new Error(
+              `memory-clamp probe exited ${child.exitCode ?? child.signalCode} before admission or queueing`,
+            );
+          }
+          return false;
+        }));
+      const admitted = children.filter(({ ready }) => existsSync(ready)).length;
+      writeFileSync(release, 'go\n');
+      const exitCodes = await Promise.all(children.map(({ exited }) => exited));
+      expect(exitCodes).toEqual(Array(jobs).fill(0));
+      return admitted;
+    } finally {
+      writeFileSync(release, 'go\n');
+      for (const { child } of children) killGroup(child);
     }
-    evts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    let cur = 0;
-    let max = 0;
-    for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
-    return max;
   }
 
   // The bug this guards: _calc_slots admits on load1 alone, and memory pressure
