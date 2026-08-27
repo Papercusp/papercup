@@ -79,16 +79,65 @@ test('startGatewayService sizes Claude and Codex priority tiers from their own c
     const stats = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
       concurrencyCap: number;
       codexAdmission: { maxConcurrent: number; tier1Reserve?: number };
+      codexAimd: { cap: number; floor: number };
     };
     assert.equal(stats.concurrencyCap, 24, 'Claude keeps the larger gateway concurrency cap');
-    assert.equal(stats.codexAdmission.maxConcurrent, 3, 'Codex keeps its independent three-slot admission cap');
-    assert.equal(stats.codexAdmission.tier1Reserve, 1, 'Codex reserve is ceil(3 * 0.15), not Claude\'s reserve');
+    assert.equal(stats.codexAdmission.maxConcurrent, 4, 'one Codex account gets four default admission slots');
+    assert.equal(stats.codexAdmission.tier1Reserve, 1, 'Codex reserve is ceil(4 * 0.15), not Claude\'s reserve');
+    assert.equal(stats.codexAimd.cap, 4, 'Codex AIMD cap follows the account-scaled admission cap');
+    assert.equal(stats.codexAimd.floor, 3, 'Codex AIMD floor remains strictly below a cap greater than one');
     assert.ok(logs.some((message) => message.includes('Claude priority-tier admission ON — reserve=4')), 'launch resolves Claude tiers for 24 slots');
-    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=1')), 'launch resolves Codex tiers for 3 slots');
+    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=1')), 'launch resolves Codex tiers for 4 slots');
   } finally {
     if (previousFlag === undefined) delete process.env[flagEnv];
     else process.env[flagEnv] = previousFlag;
   }
+});
+
+test('startGatewayService caps account-scaled Codex admission at the Claude cap and preserves explicit overrides', async () => {
+  const up = await startUpstream();
+  const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
+  const codexDb = Array.from({ length: 7 }, (_, i) => ({
+    accountId: `codex-${i}`,
+    credentialRef: `token:/codex-${i}`,
+    source: 'pool' as const,
+  }));
+  const resolveAccounts = async (_ws: string | undefined, provider: 'claude' | 'codex') => (provider === 'codex' ? codexDb : claudeDb);
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts,
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  const scaled = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
+    codexAdmission: { maxConcurrent: number };
+    codexAimd: { cap: number; floor: number };
+  };
+  assert.equal(scaled.codexAdmission.maxConcurrent, 24, 'seven accounts scale to 28 slots but remain capped at Claude\'s 24');
+  assert.equal(scaled.codexAimd.cap, 24);
+  assert.equal(scaled.codexAimd.floor, 4, 'the default AIMD floor is already below the 24-slot cap');
+
+  await svc.stop();
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts,
+    codexConcurrency: 2,
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  const overridden = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
+    codexAdmission: { maxConcurrent: number };
+    codexAimd: { cap: number; floor: number };
+  };
+  assert.equal(overridden.codexAdmission.maxConcurrent, 2, 'an explicit Codex cap remains authoritative');
+  assert.equal(overridden.codexAimd.cap, 2);
+  assert.equal(overridden.codexAimd.floor, 1, 'an explicit cap of two still receives an adaptable floor');
 });
 
 test('reloadPool HOT-SWAPS the account pool from the DB source-of-truth, no restart (B-HOT-1)', async () => {

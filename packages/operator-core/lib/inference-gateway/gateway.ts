@@ -347,11 +347,26 @@ const EGRESS_PROBE_DELAY_MS =
 const EGRESS_PROBE_HTTP_TIMEOUT_MS =
   Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_HTTP_MS) || 12_000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
-/** OpenAI/Codex requests ride a much smaller effective subscription lane than the
- *  shared Claude admission queue. Give them their own tiered gate so three long
- *  bee `/v1/responses` calls cannot occupy every Codex slot before a Scout request
- *  gets to the upstream. Env-tunable for account-pool expansion. */
-const DEFAULT_CODEX_CONCURRENCY = Number(process.env.PAPERCUSP_GATEWAY_CODEX_CONCURRENCY) || 3;
+/** Default Codex admission capacity per resolved account. The default is intentionally
+ *  account-scaled so adding healthy Codex accounts adds usable admission capacity. */
+export const CODEX_ADMISSION_SLOTS_PER_ACCOUNT = 4;
+
+/** Compute the default Codex cap from the resolved account pool, bounded by the Claude cap.
+ *  An empty pool still gets one queue slot so the gateway can report a useful state and
+ *  recover when accounts are hot-reloaded. Explicit option/env overrides are applied by
+ *  the callers after this default is computed. */
+export function accountScaledCodexConcurrency(accountCount: number, claudeConcurrency: number): number {
+  const accounts = Number.isFinite(accountCount) ? Math.max(0, Math.floor(accountCount)) : 0;
+  const claudeCap = Number.isFinite(claudeConcurrency) ? Math.max(1, Math.floor(claudeConcurrency)) : DEFAULT_CONCURRENCY;
+  return Math.max(1, Math.min(claudeCap, accounts * CODEX_ADMISSION_SLOTS_PER_ACCOUNT));
+}
+
+/** Read the explicit process-level Codex cap override without confusing an unset/invalid
+ *  value with the account-scaled default. */
+export function readCodexConcurrencyOverride(env: NodeJS.ProcessEnv = process.env): number | undefined {
+  const configured = Number(env.PAPERCUSP_GATEWAY_CODEX_CONCURRENCY);
+  return Number.isFinite(configured) && configured > 0 ? configured : undefined;
+}
 /** AIMD admission-concurrency defaults (inference-gateway-robustness-audit-2026-06-20 P1 / B-GW-1). The
  *  gateway shrinks the admission queue's EFFECTIVE maxConcurrent under sustained upstream 429s (fewer
  *  concurrent upstream calls = lower per-IP RPM = the throttle eases — breaking the retry-storm
@@ -1580,11 +1595,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
     maxQueued,
     ...(tierLayer ? { tiers: tierLayer.config } : {}),
   });
-  const codexConcurrency = Math.max(1, Math.floor(deps.codexConcurrency ?? DEFAULT_CODEX_CONCURRENCY));
   // ChatGPT-subscription bridge (codex-cli-bridge.ts): CLI-served codex accounts + the runner.
   const codexCliAccounts = () => deps.codexCliAccounts?.() ?? [];
   const codexCliPool = deps.codexCliPool;
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
+  const accountPoolSize = (accountPool?: AccountPool): number => {
+    const size = accountPool?.size?.();
+    if (typeof size === 'number' && Number.isFinite(size)) return Math.max(0, Math.floor(size));
+    return accountPool?.entries?.().length ?? 0;
+  };
+  const codexAccountCount =
+    accountPoolSize(deps.codexPool) + (codexCliPool ? accountPoolSize(codexCliPool) : codexCliAccounts().length);
+  const defaultCodexConcurrency = accountScaledCodexConcurrency(codexAccountCount, concurrency);
+  const codexConcurrency = Math.max(
+    1,
+    Math.floor(deps.codexConcurrency ?? readCodexConcurrencyOverride() ?? defaultCodexConcurrency),
+  );
   // WI-2198: when ON, a codex-cli account STREAMS /v1/responses via the OAuth reverse-proxy.
   const codexOAuthProxyEnabled = deps.codexOAuthProxy === true;
   const codexOAuthNonStreamEnabled = deps.codexOAuthNonStream ?? DEFAULT_CODEX_OAUTH_NONSTREAM;
@@ -1685,9 +1711,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // Codex has a separate upstream and a separately-sized queue. Feeding its 429s/successes into the
   // Claude controller used to shrink/recover the WRONG queue, leaving Codex admission unchanged while
   // perturbing Claude traffic. Keep the policy identical but the feedback loops independent.
+  const requestedCodexAimdFloor = deps.aimd?.floor ?? DEFAULT_AIMD_FLOOR;
+  const codexAimdFloor =
+    codexConcurrency > 1 ? Math.max(1, Math.min(codexConcurrency - 1, Math.floor(requestedCodexAimdFloor))) : 1;
   const codexAimd = new AimdConcurrencyController({
     cap: codexConcurrency,
-    floor: Math.min(codexConcurrency, deps.aimd?.floor ?? DEFAULT_AIMD_FLOOR),
+    floor: codexAimdFloor,
     decreaseFactor: deps.aimd?.decreaseFactor,
     decreaseThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
     increaseEvery: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,

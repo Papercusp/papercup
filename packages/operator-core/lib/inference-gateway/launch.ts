@@ -22,7 +22,14 @@ import {
   formatOrphanedClaimsSuffix,
   type OrphanedClaim,
 } from './affected-owners';
-import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type InferenceGateway } from './gateway';
+import {
+  accountScaledCodexConcurrency,
+  createInferenceGateway,
+  parseUnifiedWindow,
+  parseUnified7dWindow,
+  readCodexConcurrencyOverride,
+  type InferenceGateway,
+} from './gateway';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
 import type { LocalBackendRecord } from './local-backend-store';
@@ -38,10 +45,6 @@ import { trackDetached } from '../detached-imports';
 
 /** Default localhost port for the gateway (not one of the dev stack's ports). */
 export const DEFAULT_GATEWAY_PORT = 8788;
-/** Default OpenAI/Codex-compatible admission concurrency. Keep this in sync with gateway.ts so
- *  launch-time tier sizing matches the queue's default when callers omit an override. */
-const DEFAULT_CODEX_CONCURRENCY = Number(process.env.PAPERCUSP_GATEWAY_CODEX_CONCURRENCY) || 3;
-
 /** Reserved-floor fraction of the admission pool held for tier 1 (gateway-priority-tiers-2026-06-22).
  *  `reserve = max(1, ceil(poolSlots * frac))`. Env-tunable via `GATEWAY_T1_RESERVE_FRAC`. */
 export const DEFAULT_T1_RESERVE_FRAC = 0.15;
@@ -716,7 +719,16 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // independently: their reserved tier-1 floors protect different admission pools.
   const DEFAULT_CONCURRENCY = 24; // mirrors gateway.ts's default; the reserved floor is sized to this pool
   const claudeConcurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
-  const codexConcurrency = Math.max(1, Math.floor(opts.codexConcurrency ?? DEFAULT_CODEX_CONCURRENCY));
+  // Scale the default to the resolved Codex account pool. An option or env value is an explicit
+  // operator override and therefore remains authoritative over the account-scaled recommendation.
+  const codexConcurrency = Math.max(
+    1,
+    Math.floor(
+      opts.codexConcurrency ??
+        readCodexConcurrencyOverride() ??
+        accountScaledCodexConcurrency(codexAccounts.length, claudeConcurrency),
+    ),
+  );
   const resolveTiers = async (slots: number, lane: 'Claude' | 'Codex') =>
     resolvePriorityTiers(slots).catch((e) => {
       // Fail-safe: a flag/env read fault must never block the gateway from starting → fall back to the flat
