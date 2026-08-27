@@ -50,7 +50,21 @@ import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './ga
 import { probeEgress } from './egress-probe';
 import { recordGatewayStall } from './gateway-stall-store';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayRequest } from './provider-adapters';
+import {
+  gatewayProviderStatuses,
+  legacyEntryRouteForGatewayLane,
+  legacyExecutorForGatewayTransport,
+  makeGatewayLaneRegistry,
+  makeGatewayProviderAdapters,
+  providerForGatewayRequest,
+  type GatewayLaneDescriptor,
+  type GatewayLegacyEntryExecutorId,
+  type GatewayLegacyExecutorId,
+} from './provider-adapters';
+import {
+  executeGatewayLegacyLane,
+  type GatewayKernelAdmissionController,
+} from './request-kernel';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -1670,7 +1684,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const single: ActiveAccount = { accountId, token, invalidateToken: deps.invalidateToken };
       return { active: () => single, onExhausted: () => null };
     })();
-  const providerAdapters = makeGatewayProviderAdapters({
+  const providerAdapterOptions = {
     claudePool: pool,
     codexPool: deps.codexPool ?? null,
     // Codex CLI-bridge accounts live OUTSIDE the bearer pool; count them toward codex
@@ -1678,7 +1692,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     codexCliAccountCount: () => codexCliAccounts().length,
     anthropicUpstreamBase: upstreamBase,
     openaiUpstreamBase,
-  });
+  };
+  const gatewayLaneRegistry = makeGatewayLaneRegistry(providerAdapterOptions);
+  const providerAdapters = makeGatewayProviderAdapters(providerAdapterOptions);
 
   // Governor is per (model, account). Reading the active account at call time means a failover
   // transparently moves pacing onto the new account's fresh bucket. The QUEUE is the concurrency
@@ -4528,6 +4544,53 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
   }
 
+  type CodexLegacyRouting = {
+    hardPin: boolean;
+    pinned: CodexCliAccount | null;
+    ownerId?: string;
+  };
+
+  interface CodexLegacyTransportExecution {
+    req: http.IncomingMessage;
+    res: http.ServerResponse;
+    cli: CodexCliAccount;
+    url: string;
+    preBody?: Buffer;
+    routing: CodexLegacyRouting;
+  }
+
+  /** Execute a ChatGPT-subscription strategy selected by the static lane
+   * registry. Both handlers remain inside proxyOpenAi's already-admitted task. */
+  async function executeCodexLegacyTransport(
+    executor: GatewayLegacyExecutorId,
+    execution: CodexLegacyTransportExecution,
+  ): Promise<void> {
+    switch (executor) {
+      case 'serveCodexOAuthProxy':
+        await serveCodexOAuthProxy(
+          execution.req,
+          execution.res,
+          execution.cli,
+          execution.url,
+          execution.routing,
+        );
+        return;
+      case 'serveCodexCliBridge':
+        await serveCodexCliBridge(
+          execution.req,
+          execution.res,
+          execution.cli,
+          execution.preBody,
+          execution.routing,
+        );
+        return;
+      default:
+        throw new Error(
+          `inference-gateway: executor '${executor}' is not a ChatGPT-subscription transport`,
+        );
+    }
+  }
+
   /** Serve one `/v1/responses` request by driving the codex CLI on a ChatGPT-subscription
    *  account (codex-cli-bridge.ts). Non-streaming only; runs INSIDE the codex admission
    *  queue (same slot accounting as the bearer path), so concurrent CLI spawns are bounded
@@ -4537,7 +4600,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     res: http.ServerResponse,
     cli: CodexCliAccount,
     preBody?: Buffer,
-    routing: { hardPin: boolean; pinned: CodexCliAccount | null; ownerId?: string } = { hardPin: false, pinned: null },
+    routing: CodexLegacyRouting = { hardPin: false, pinned: null },
   ) {
     const stageSpan = requestSpan(req);
     stageSpan?.setTransport('cli-exec');
@@ -4659,7 +4722,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     res: http.ServerResponse,
     cli: CodexCliAccount,
     url: string,
-    routing: { hardPin: boolean; pinned: CodexCliAccount | null; ownerId?: string },
+    routing: CodexLegacyRouting,
   ) {
     const stageSpan = requestSpan(req);
     stageSpan?.setTransport('oauth-http');
