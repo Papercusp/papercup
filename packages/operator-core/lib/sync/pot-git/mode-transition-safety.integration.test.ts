@@ -150,7 +150,10 @@ describe('pot-git mode-transition safety (legacy → bridged → p2p-only → le
   });
 
   it('bridged: G-8 bootstrap seeds every namespace the peer holds', async () => {
-    const res = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000 });
+    const res = await bootstrapFromPeer(joinerRepo, await dial(), {
+      timeoutMs: 30_000,
+      dial,
+    });
     expect(res.ok, res.stderr).toBe(true);
     const peerNs = await listNamespaces(peerRepo);
     expect(peerNs).toHaveLength(3);
@@ -182,7 +185,10 @@ describe('pot-git mode-transition safety (legacy → bridged → p2p-only → le
     const c1 = await mintCommit(peerRepo, 'C work');
     await writeNamespaceRef(peerRepo, devC, WORK_REF, c1);
 
-    const res2 = await bootstrapFromPeer(joinerRepo, await dial(), { timeoutMs: 30_000 });
+    const res2 = await bootstrapFromPeer(joinerRepo, await dial(), {
+      timeoutMs: 30_000,
+      dial,
+    });
     expect(res2.ok, res2.stderr).toBe(true);
     // The new namespace was seeded...
     expect(res2.namespaces).toContain(deviceNamespaceKey(devC));
