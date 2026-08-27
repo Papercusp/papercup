@@ -23,22 +23,34 @@ import { join } from 'node:path';
 
 // defaultSelfAdmitCanonical lazy-imports these two; override ONLY the verbs it
 // calls (importOriginal keeps the rest real for the module graph).
+type RegistryState = { projects: Array<Record<string, unknown>> };
+let registryState: RegistryState = { projects: [] };
 const mutateMock = vi.fn(
   async (
-    mutator: (cur: { projects: Array<Record<string, unknown>> }) => {
-      projects: Array<Record<string, unknown>>;
-    },
+    mutator: (cur: RegistryState) => RegistryState,
     _ws: string,
-  ) => mutator({ projects: [] }),
+  ) => {
+    registryState = mutator(registryState);
+    return registryState;
+  },
 );
 vi.mock('../harness-registry', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   mutateHarnessRegistry: (...a: unknown[]) => mutateMock(a[0] as never, a[1] as string),
+  loadHarnessRegistry: async () => registryState,
 }));
 const upsertIdentityMock = vi.fn(async () => undefined);
 vi.mock('../hive-store', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   upsertRemoteHiveIdentity: (..._a: unknown[]) => upsertIdentityMock(),
+}));
+vi.mock('../hive-directory-deps', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  getHiveDirectory: () => ({ listDiscoveredHives: () => [] }),
+}));
+vi.mock('../operator-state-pg', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  readOperatorState: async () => null,
 }));
 
 import {
@@ -50,6 +62,7 @@ import {
 } from './bootstrap-papercusp-hive';
 import { PAPERCUSP_HIVE_SLUG } from './ensure-papercusp-hive';
 import { PAPERCUSP_WORKSPACE_ID } from './papercusp-workspace';
+import { loadHiveOwnerDeviceBindings } from '../hive-membership-store';
 import type { seedGitSyncRoutineForMember } from './git-sync/git-sync-routine';
 
 type SeedFn = typeof seedGitSyncRoutineForMember;
@@ -66,13 +79,16 @@ afterAll(() => {
 });
 
 beforeEach(() => {
+  registryState = { projects: [] };
   mutateMock.mockClear();
   upsertIdentityMock.mockClear();
 });
 
+const HIVE_PUBKEY = Buffer.alloc(32, 0x22).toString('base64');
+const OWNER_DEVICE_PUBKEY = Buffer.alloc(32, 0x11).toString('base64');
 const invite = {
-  pubkeyBase64: 'pk-canonical',
-  ownerDevicePubkey: 'owner-device-canonical',
+  pubkeyBase64: HIVE_PUBKEY,
+  ownerDevicePubkey: OWNER_DEVICE_PUBKEY,
 } as Parameters<typeof defaultSelfAdmitCanonical>[0];
 
 describe('defaultSelfAdmitCanonical — the registry entry is git-syncable (EI-8793)', () => {
@@ -92,10 +108,33 @@ describe('defaultSelfAdmitCanonical — the registry entry is git-syncable (EI-8
       // THE flag: without it, git-sync eligibility calls this entry a repo-less
       // remote_hive_view and the reconcile never visits it — the loop is dead.
       self_repo: true,
-      hive_pubkey: 'pk-canonical',
-      owner_device_pubkey: 'owner-device-canonical',
+      hive_pubkey: HIVE_PUBKEY,
+      owner_device_pubkey: OWNER_DEVICE_PUBKEY,
       path: seedTargetDirs().targetRepoDir,
     });
+  });
+
+  it('D-006: a pristine remote_hive cold boot resolves the owner binding from the self-admit stamp alone', async () => {
+    expect(await loadHiveOwnerDeviceBindings(PAPERCUSP_WORKSPACE_ID)).toEqual([]);
+
+    await defaultSelfAdmitCanonical(invite);
+
+    expect(await loadHiveOwnerDeviceBindings(PAPERCUSP_WORKSPACE_ID)).toEqual([
+      { hivePubkey: HIVE_PUBKEY, ownerDevicePubkey: OWNER_DEVICE_PUBKEY },
+    ]);
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['non-base64', 'not-a-key'],
+    ['wrong byte length', Buffer.alloc(31, 0x11).toString('base64')],
+  ])('fails closed before mutation when the baked owner-device key is %s', async (_name, ownerDevicePubkey) => {
+    await expect(defaultSelfAdmitCanonical({ ...invite, ownerDevicePubkey })).rejects.toThrow(
+      /owner device public key/,
+    );
+    expect(mutateMock).not.toHaveBeenCalled();
+    expect(upsertIdentityMock).not.toHaveBeenCalled();
+    expect(registryState.projects).toEqual([]);
   });
 
   it('upserts over an existing entry without dropping the flags (idempotent re-admit)', async () => {

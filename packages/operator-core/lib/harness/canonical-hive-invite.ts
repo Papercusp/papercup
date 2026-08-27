@@ -45,7 +45,7 @@ export interface CanonicalHiveInviteConst {
    * log before the pot_members row inside that log can be read. Public identity,
    * never a private signing key.
    */
-  ownerDevicePubkey?: string;
+  ownerDevicePubkey: string;
 }
 
 // VERIFIED 2026-06-29 from the LIVE operator Postgres (harness_shared.pots +

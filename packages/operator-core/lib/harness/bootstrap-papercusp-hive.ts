@@ -364,10 +364,30 @@ async function bestEffortBootActiveWorkspace(
   }
 }
 
+/**
+ * D-006 cold-boot trust anchor. A self-admitted install has no directory
+ * descriptor or admitted owner log to fall back to, so accepting a missing or
+ * malformed key here would deterministically recreate the membership_miss
+ * deadlock this stamp exists to break. Validate before any registry/filesystem
+ * mutation so a bad baked invite fails closed without leaving a partial view.
+ */
+function requireCanonicalOwnerDevicePubkey(invite: CanonicalHiveInvite): string {
+  const ownerDevicePubkey = invite.ownerDevicePubkey?.trim();
+  if (!ownerDevicePubkey) {
+    throw new Error('canonical self-admit requires a verified owner device public key');
+  }
+  const raw = Buffer.from(ownerDevicePubkey, 'base64');
+  if (raw.length !== 32 || raw.toString('base64') !== ownerDevicePubkey) {
+    throw new Error('canonical self-admit owner device public key must be raw-32 base64 Ed25519');
+  }
+  return ownerDevicePubkey;
+}
+
 export async function defaultSelfAdmitCanonical(
   invite: CanonicalHiveInvite,
   record?: BootstrapPapercuspHiveDeps['recordProgress'],
 ): Promise<SelfAdmitCanonicalResult> {
+  const ownerDevicePubkey = requireCanonicalOwnerDevicePubkey(invite);
   const { mutateHarnessRegistry } = await import('../harness-registry');
   const { upsertRemoteHiveIdentity } = await import('../hive-store');
   const { targetRepoDir } = seedTargetDirs();
@@ -398,9 +418,7 @@ export async function defaultSelfAdmitCanonical(
         // admission prerequisite across a cold boundary. Stamp the verified
         // PUBLIC owner-device binding from the canonical invite so boot can
         // admit that log and only then ingest the full membership row.
-        ...(invite.ownerDevicePubkey
-          ? { owner_device_pubkey: invite.ownerDevicePubkey }
-          : {}),
+        owner_device_pubkey: ownerDevicePubkey,
       };
       const projects = cur.projects.some((p) => p.slug === PAPERCUSP_HIVE_SLUG)
         ? cur.projects.map((p) => (p.slug === PAPERCUSP_HIVE_SLUG ? { ...p, ...nextEntry } : p))
