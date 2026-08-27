@@ -1763,6 +1763,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         !waiter.granted &&
         waiter.tools.includes("session:request-compaction"),
     );
+  // EI-21567991637671620 — a loop:checkpoint is itself the recovery record needed when the
+  // current turn is about to disappear. Keep one checkpoint waiter in a bounded priority slot
+  // independently of the compaction slot, so a full ordinary FIFO cannot make that record's
+  // mutation outcome unknown. `work_items:checkpoint` has the same successor-state guarantee.
+  const checkpointContinuationTools = new Set([
+    "loop:checkpoint",
+    "work_items:checkpoint",
+  ]);
+  const hasQueuedCheckpoint = (): boolean =>
+    criticalContinuationQueue.some(
+      (waiter) =>
+        !waiter.cancelled &&
+        !waiter.granted &&
+        waiter.tools.some((tool) => checkpointContinuationTools.has(tool)),
+    );
 
   const canGrantHandshake = (): boolean => {
     if (
@@ -2233,9 +2248,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const compactionPriority =
             criticalContinuationTools.includes("session:request-compaction") &&
             !hasQueuedCompaction();
+          // EI-21567991637671620 — preserve one bounded priority slot for the checkpoint itself.
+          // This is separate from compaction: a compaction request may already be queued when the
+          // loop needs to persist its carry-note, and vice versa.
+          const checkpointPriority =
+            criticalContinuationTools.some((tool) =>
+              checkpointContinuationTools.has(tool),
+            ) && !hasQueuedCheckpoint();
           if (
             maxCriticalContinuationQueue <= criticalContinuationQueueLength() &&
-            !compactionPriority
+            !compactionPriority &&
+            !checkpointPriority
           ) {
             const retryAfterSec = retryAfterSecForDrainRate(
               criticalContinuationInFlight,
@@ -2287,7 +2310,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               traceId: requestTraceId,
               tools: criticalContinuationTools,
             };
-            if (compactionPriority) {
+            if (compactionPriority || checkpointPriority) {
               criticalContinuationQueue.unshift(queuedCriticalContinuation);
             } else {
               criticalContinuationQueue.push(queuedCriticalContinuation);

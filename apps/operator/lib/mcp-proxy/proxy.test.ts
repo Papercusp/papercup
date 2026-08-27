@@ -3788,6 +3788,125 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ]);
   });
 
+  it("EI-21567991637671620: reserves one priority waiter for loop:checkpoint when the continuation FIFO is full", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const forwardedBodies = new Map<string, string>();
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk: Buffer) => chunks.push(chunk));
+        req.on("end", () => {
+          forwardedBodies.set(client, Buffer.concat(chunks).toString("utf8"));
+          hits.push(client);
+          if (client === "held-completion") {
+            noteFirstStarted();
+            void firstGate.then(() => res.end('{"result":{"held":true}}'));
+            return;
+          }
+          res.end('{"result":{"queued":true}}');
+        });
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 1_000,
+        criticalContinuationQueueWaitLogMs: 20,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string, idempotencyKey?: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: {
+          name,
+          arguments: {},
+          ...(idempotencyKey
+            ? { _meta: { idempotencyKey } }
+            : {}),
+        },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=held-completion",
+    );
+    await firstStarted;
+
+    const ordinary = request(
+      port(proxy),
+      body(2, "loop:end"),
+      "/api/mcp?client=queued-ordinary",
+    );
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued critical-continuation request")),
+    );
+
+    let checkpointSettled = false;
+    const checkpoint = request(
+      port(proxy),
+      body(3, "loop:checkpoint", "original-checkpoint-key"),
+      "/api/mcp?client=priority-checkpoint",
+    ).then((result) => {
+      checkpointSettled = true;
+      return result;
+    });
+    await waitFor(() =>
+      logs.filter((line) => line.includes("queued critical-continuation request"))
+        .length >= 2,
+    );
+    expect(checkpointSettled).toBe(false);
+    expect(hits).toEqual(["held-completion"]);
+
+    const secondCheckpoint = await request(
+      port(proxy),
+      body(4, "loop:checkpoint", "second-checkpoint-key"),
+      "/api/mcp?client=second-checkpoint",
+    );
+    expect(secondCheckpoint.status).toBe(429);
+    expect(JSON.parse(secondCheckpoint.body).error).toBe(
+      "mcp_proxy_critical_continuation_queue_full",
+    );
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await checkpoint).status).toBe(200);
+    expect((await ordinary).status).toBe(200);
+    expect(hits).toEqual([
+      "held-completion",
+      "priority-checkpoint",
+      "queued-ordinary",
+    ]);
+    expect(
+      JSON.parse(forwardedBodies.get("priority-checkpoint") ?? "{}").params
+        ._meta.idempotencyKey,
+    ).toBe("original-checkpoint-key");
+  });
+
   it("EI-21565454839253843: does not expire a checkpoint behind a long completion by default", async () => {
     // A real work_items:complete held the single critical slot for 61.8s while the old
     // 30s dwell shed a queued checkpoint. The queue itself is hard-bounded, so a client
