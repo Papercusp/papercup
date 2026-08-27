@@ -15,6 +15,7 @@ import {
   releaseFleetLaunchSlot,
   setFleetLaunchTransaction,
   type FleetHeadcountConfig,
+  type FleetLaunchCapacitySnapshot,
   type FleetLaunchGovernorAction,
   type FleetLaunchGovernorState,
   type FleetLaunchGovernorVerdict,
@@ -338,6 +339,13 @@ function recordGovernorVerdict(
   transaction.updatedAt = verdict.decidedAt;
 }
 
+function recordCapacitySnapshot(
+  transaction: FleetLaunchTransaction,
+  snapshot: FleetLaunchCapacitySnapshot,
+): void {
+  ensureGovernorState(transaction).capacity = snapshot;
+}
+
 async function refreshGovernorWorkerAttestation(
   transaction: FleetLaunchTransaction,
   workspaceId: string,
@@ -516,6 +524,128 @@ async function resolveFleetHeadcountLaunchRoleForFleet(
 // PAPERCUSP_OPERATOR_URL — see resolveSpawnHostOperatorBaseUrl's doc for why.
 const operatorBaseUrl = resolveSpawnHostOperatorBaseUrl;
 
+const FLEET_HEADCOUNT_EVENT_PREFIX = 'fleet:headcount';
+
+interface FleetRefillCapacityDecision {
+  /** Number of fresh members the measured provider can admit this wave. */
+  allowance: number;
+  /** Whether the allowance came from a live, fleet-scoped capacity read. */
+  measured: boolean;
+  provider: string | null;
+  reason: string;
+}
+
+/**
+ * Read the same fleet-scoped capacity surface used by the Queen. Keeping this
+ * behind the existing `fleet:capacity` handler is important: WI-41067 fixed
+ * provider resolution there, and duplicating a config/model fallback here would
+ * silently re-introduce the wrong-pool refill bug.
+ */
+async function measureFleetRefillCapacity(args: {
+  workspaceId: string;
+  fleetSlug: string;
+  harness: string;
+  requested: number;
+}): Promise<FleetRefillCapacityDecision> {
+  const requested = Math.max(0, Math.floor(args.requested));
+  try {
+    const { default: capacityTool } = await import('../../agent-tools/fleet/capacity');
+    const result = await capacityTool.handler(
+      { fleet: args.fleetSlug, headroom: requested },
+      {
+        workspaceId: args.workspaceId,
+        harnessSlug: args.harness,
+        principal: {
+          slug: 'system:fleet-headcount-governor',
+          kind: 'system',
+          workspaceId: args.workspaceId,
+        },
+      } as never,
+    );
+    const text = (result as { content?: Array<{ type?: string; text?: string }> })
+      .content?.find((entry) => entry.type === 'text')?.text;
+    const payload = text ? JSON.parse(text) as Record<string, unknown> : null;
+    if (!payload || payload.ok !== true) {
+      return {
+        allowance: 0,
+        measured: false,
+        provider: null,
+        reason: 'fleet capacity read returned no usable report',
+      };
+    }
+    const provider = typeof payload.provider === 'string' ? payload.provider : null;
+    const verdict = payload.verdict;
+    // An unreachable gateway is explicitly fail-safe in fleet:capacity: do not
+    // strand a fleet because an optional diagnostic is down. Unknown/mixed
+    // provider scope is different — spawning would guess at the wrong pool, so
+    // hold the refill and leave a durable wall for the next governor tick.
+    if (payload.reachable !== true) {
+      return {
+        allowance: requested,
+        measured: false,
+        provider,
+        reason: typeof payload.advice === 'string'
+          ? `capacity read unavailable (fail-safe): ${payload.advice}`
+          : 'capacity gateway unavailable (fail-safe no clamp)',
+      };
+    }
+    if (verdict !== 'measured' || provider == null) {
+      return {
+        allowance: 0,
+        measured: false,
+        provider,
+        reason: typeof payload.reason === 'string'
+          ? payload.reason
+          : 'fleet provider capacity is unknown; refusing an unmeasured refill',
+      };
+    }
+    const recommended = Number(payload.recommendedHeadroom);
+    if (!Number.isFinite(recommended)) {
+      return {
+        allowance: 0,
+        measured: false,
+        provider,
+        reason: 'fleet provider capacity report omitted measured headroom',
+      };
+    }
+    return {
+      allowance: Math.min(requested, Math.max(0, Math.floor(recommended))),
+      measured: true,
+      provider,
+      reason: typeof payload.advice === 'string' ? payload.advice : 'fleet provider capacity measured',
+    };
+  } catch (error) {
+    return {
+      allowance: 0,
+      measured: false,
+      provider: null,
+      reason: `fleet provider capacity read failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
+async function emitFleetHeadcountEvent(args: {
+  workspaceId: string;
+  fleetSlug: string;
+  kind: 'refill' | 'refill-clamped' | 'refusal';
+  summary: string;
+  payload: Record<string, unknown>;
+}): Promise<void> {
+  try {
+    const { emitAwaitedEvent } = await import('../../events/await/engine');
+    await emitAwaitedEvent({
+      key: `${FLEET_HEADCOUNT_EVENT_PREFIX}:${args.fleetSlug}`,
+      summary: args.summary,
+      payload: { kind: args.kind, fleetSlug: args.fleetSlug, ...args.payload },
+      source: 'system:fleet-headcount-governor',
+      workspaceId: args.workspaceId,
+    });
+  } catch {
+    // Event delivery is observability. Never turn a successful refill into a
+    // failed attempt because a transient await-store write was unavailable.
+  }
+}
+
 function transactionForGovernorVerdict(args: {
   transaction: FleetLaunchTransaction | null;
   liveMemberIds: readonly string[];
@@ -629,6 +759,9 @@ export function supersedeLegacyHeadcountTransaction(args: {
       retiredMemberIds: [...new Set(args.transaction.governor?.retiredMemberIds ?? [])],
       history,
       terminalVerdict: null,
+      ...(args.transaction.governor?.capacity
+        ? { capacity: args.transaction.governor.capacity }
+        : {}),
     },
   };
 }
@@ -710,6 +843,9 @@ function governorLaunchTransaction(args: {
       retiredMemberIds: [...new Set(args.prior?.governor?.retiredMemberIds ?? [])],
       history: history.slice(-FLEET_HEADCOUNT_HISTORY_LIMIT),
       terminalVerdict: null,
+      ...(args.prior?.governor?.capacity
+        ? { capacity: args.prior.governor.capacity }
+        : {}),
     },
   };
   return transaction;
@@ -857,8 +993,86 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
 
     const pruneOwnerId = assessment.action === 'prune' ? assessment.actionOwnerId : null;
     const action: 'spawn' | 'respawn' = pruneOwnerId ? 'respawn' : 'spawn';
-    const waveCount = pruneOwnerId ? 1 : assessment.spawnCount;
+    const requestedWaveCount = pruneOwnerId ? 1 : assessment.spawnCount;
+    let waveCount = requestedWaveCount;
 
+    // Capacity is measured before claiming the launch slot or pruning a member.
+    // A respawn with no provider headroom must leave the existing member alive;
+    // a bulk refill is reduced to the measured allowance rather than consuming
+    // a slot and then discovering that the provider is exhausted.
+    const capacityDecision = await measureFleetRefillCapacity({
+      workspaceId,
+      fleetSlug,
+      harness: config.harness,
+      requested: requestedWaveCount,
+    });
+    const residualShortfall = Math.max(0, requestedWaveCount - capacityDecision.allowance);
+    const capacitySnapshot: FleetLaunchCapacitySnapshot = {
+      measuredAt: Date.now(),
+      provider: capacityDecision.provider,
+      requested: requestedWaveCount,
+      allowance: capacityDecision.allowance,
+      residualShortfall,
+      measured: capacityDecision.measured,
+      wall: residualShortfall > 0 || !capacityDecision.measured
+        ? capacityDecision.reason
+        : null,
+    };
+    transaction = transactionForGovernorVerdict({
+      transaction,
+      liveMemberIds,
+      launcherOwnerId,
+      now,
+    });
+    recordCapacitySnapshot(transaction, capacitySnapshot);
+
+    if (capacityDecision.allowance <= 0) {
+      const reason =
+        `fleet provider capacity refused ${requestedWaveCount} requested member(s): ` +
+        capacityDecision.reason;
+      const verdict = governorVerdictForAssessment(assessment, capacitySnapshot.measuredAt, {
+        action: 'wait',
+        outcome: 'failed',
+        reason,
+      });
+      recordGovernorVerdict(transaction, verdict);
+      transaction.recovery.nextAction = reason;
+      await persistTransaction(transaction);
+      await emitFleetHeadcountEvent({
+        workspaceId,
+        fleetSlug,
+        kind: 'refusal',
+        summary: reason,
+        payload: {
+          action,
+          requested: requestedWaveCount,
+          allowance: 0,
+          residualShortfall,
+          provider: capacityDecision.provider,
+          measured: capacityDecision.measured,
+          reason: capacityDecision.reason,
+        },
+      });
+      await recordFleetHeadcountAttempt({
+        workspaceId,
+        fleetSlug,
+        succeeded: false,
+        error: reason,
+      });
+      return;
+    }
+
+    if (capacityDecision.allowance < waveCount) {
+      waveCount = capacityDecision.allowance;
+      appendGovernorHistory(transaction.governor!, {
+        at: capacitySnapshot.measuredAt,
+        action: 'observe',
+        transactionId: transaction.transactionId,
+        reason:
+          `capacity-clamped ${requestedWaveCount}→${waveCount} member(s) for ` +
+          `${capacityDecision.provider ?? 'unknown'}: ${capacityDecision.reason}`,
+      });
+    }
     // ── The goal ceilings bind the GOVERNOR too (P-004/D-009) ─────────────────
     // This is the path that most needs them. Every other launch door is driven by
     // an agent or a human who would at least see a refusal; this one tops a fleet
@@ -1005,6 +1219,11 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       return;
     }
     claimedLaunchSlotAt = slot.at;
+
+    // Persist the measurement before any prune or terminal spawn side effect.
+    // The next transaction wave carries this snapshot forward for durable
+    // inspection; a failed CAS still releases the launch slot in the catch path.
+    await persistTransaction(transaction);
 
     if (pruneOwnerId) {
       const killed = killOutcome(await killTool.handler(
@@ -1180,6 +1399,29 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     recordGovernorVerdict(launchTransaction, terminalVerdict);
     launchTransaction.recovery.nextAction = terminalVerdict.reason;
     await persistTransaction(launchTransaction);
+    const refillEventKind = capacitySnapshot.residualShortfall > 0
+      ? 'refill-clamped'
+      : 'refill';
+    await emitFleetHeadcountEvent({
+      workspaceId,
+      fleetSlug,
+      kind: refillEventKind,
+      summary:
+        `${action} opened ${openedMemberIds.length}/${waveCount} member(s) ` +
+        `with ${capacitySnapshot.provider ?? 'unknown'} provider allowance ` +
+        `${capacitySnapshot.allowance}/${capacitySnapshot.requested}`,
+      payload: {
+        action,
+        requested: capacitySnapshot.requested,
+        allowance: capacitySnapshot.allowance,
+        residualShortfall: capacitySnapshot.residualShortfall,
+        provider: capacitySnapshot.provider,
+        measured: capacitySnapshot.measured,
+        opened: openedMemberIds.length,
+        spawnFailures,
+        reason: capacitySnapshot.wall,
+      },
+    });
     await recordFleetHeadcountAttempt({
       workspaceId,
       fleetSlug,
