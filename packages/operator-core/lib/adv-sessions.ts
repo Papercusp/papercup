@@ -1098,6 +1098,34 @@ const RESUME_CLAIM_WINDOW_SEC = 300;
  * an intentionally ended session. Callers may pass a measured override. */
 export const RESUME_RESERVATION_LEASE_SEC = 60;
 
+/**
+ * Positive local evidence that an exact Codex resume has no competing writer.
+ *
+ * This is intentionally a closed discriminant rather than a boolean. A missing
+ * or malformed probe result is unknown and must not weaken the recent-row race
+ * guard. The launcher is the only producer today; the server validates it again
+ * because this endpoint is a trust boundary.
+ */
+export type AdvSessionLocalLivenessEvidence = {
+  version: 1;
+  kind: 'no-live-codex-writer';
+};
+
+/** Strict runtime validation for the local-liveness trust-boundary payload. */
+export function isAdvSessionLocalLivenessEvidence(
+  value: unknown,
+): value is AdvSessionLocalLivenessEvidence {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  return (
+    keys.length === 2 &&
+    keys.every((key) => key === 'version' || key === 'kind') &&
+    record.version === 1 &&
+    record.kind === 'no-live-codex-writer'
+  );
+}
+
 export type AdvSessionResumeReservation =
   | {
       status: 'acquired';
@@ -1129,6 +1157,7 @@ export async function acquireAdvSessionResume(
   resumeClaimKey: string,
   leaseSec: number = RESUME_RESERVATION_LEASE_SEC,
   staleActiveSec: number = RESUME_CLAIM_WINDOW_SEC,
+  localLivenessEvidence?: unknown,
 ): Promise<AdvSessionResumeReservation> {
   const key = resumeClaimKey.trim();
   if (!key) throw new Error('resumeClaimKey must be non-empty');
@@ -1138,13 +1167,14 @@ export async function acquireAdvSessionResume(
 
   return sql.begin(async (tx) => {
     const [row] = await tx<Array<{
+      agent: string | null;
       ended_at: Date | string | null;
       ended_by: string | null;
       started_at: Date | string;
       resume_claim_key: string | null;
       resume_claimed_at: Date | string | null;
     }>>`
-      SELECT ended_at, ended_by, started_at, resume_claim_key, resume_claimed_at
+      SELECT agent, ended_at, ended_by, started_at, resume_claim_key, resume_claimed_at
         FROM harness_shared.adv_sessions
        WHERE id = ${id}
        FOR UPDATE
@@ -1172,7 +1202,12 @@ export async function acquireAdvSessionResume(
     const terminal = row.ended_at != null || row.ended_by != null;
     const staleActive = new Date(row.started_at).getTime() <= nowMs - boundedStaleSec * 1_000;
     const expiredReservation = row.resume_claim_key != null && !leaseLive;
-    if (!replayed && !terminal && !staleActive && !expiredReservation) {
+    // A recent unended row normally wins the fail-closed liveness decision.
+    // Only the launcher-produced, strictly validated Codex absence witness may
+    // reconcile that one case; it never relaxes the lease or row lock.
+    const canReconcileRecentActive =
+      row.agent === 'codex' && isAdvSessionLocalLivenessEvidence(localLivenessEvidence);
+    if (!replayed && !terminal && !staleActive && !canReconcileRecentActive && !expiredReservation) {
       return { status: 'live', acquired: false } as const;
     }
 
