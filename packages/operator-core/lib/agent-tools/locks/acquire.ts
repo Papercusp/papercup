@@ -105,7 +105,7 @@ const PROGRESS_TICK_MS = 10_000;
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim repository files and/or authorized home-directory configuration files for exclusive editing. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp; this is internal telemetry, not a caller override.',
+    'Claim repository files and/or authorized home-directory configuration files for exclusive editing. This is a workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp; this is internal telemetry, not a caller override.',
   guidance: {
     // P-011: response documentation lives in `returns`, which promptWeight() does not
     // sum (description + when + notWhen + chaining + byRole only) — the WI-9334 pattern.

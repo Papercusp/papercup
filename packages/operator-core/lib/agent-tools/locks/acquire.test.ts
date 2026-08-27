@@ -133,6 +133,14 @@ describe('locks:acquire — outcome branches', () => {
     expect(tool.args.shape).not.toHaveProperty('goal_ref');
   });
 
+  it('documents that harness/workspace slugs are not acquire arguments', () => {
+    expect(tool.description).toMatch(/workspace-global file-lock surface/);
+    expect(tool.description).toMatch(/omit `harness` and `workspace`/);
+    expect(tool.description).toMatch(/use `coordination_domain` only when the physical checkout differs/);
+    expect(tool.args.shape).not.toHaveProperty('harness');
+    expect(tool.args.shape).not.toHaveProperty('workspace');
+  });
+
   it('guidance omits published_sha for uncommitted edits and reserves it for a published SHA', () => {
     expect(tool.guidance?.chaining).toMatch(/still uncommitted, omit published_sha/);
     expect(tool.guidance?.chaining).toMatch(/actually published a lowercase 40–64-character hexadecimal commit SHA/);
