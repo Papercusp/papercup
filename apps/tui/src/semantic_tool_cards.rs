@@ -661,9 +661,15 @@ mod tests {
             (
                 "locks:acquire",
                 json!({"paths":["a.rs"]}),
-                Some(json!({"busy":[{"path":"a.rs","holder":"su-1","intent":"editing"}],"queuePosition":2})),
+                Some(
+                    json!({"busy":[{"path":"a.rs","holder":"su-1","intent":"editing"}],"queuePosition":2}),
+                ),
             ),
-            ("coord:send", json!({"to":["su-1"]}), Some(json!({"woken":1}))),
+            (
+                "coord:send",
+                json!({"to":["su-1"]}),
+                Some(json!({"woken":1})),
+            ),
             (
                 "plans:set-status",
                 json!({"slug":"cockpit","item":"P-007","status":"done"}),
@@ -694,11 +700,16 @@ mod tests {
             for alias in aliases {
                 let card = card_for_tool(&call(&alias, input.clone(), result.clone()))
                     .unwrap_or_else(|| panic!("alias {alias} produced no card for {verb}"));
-                assert_eq!(card.title, canonical.title, "alias {alias} diverged from {verb}");
+                assert_eq!(
+                    card.title, canonical.title,
+                    "alias {alias} diverged from {verb}"
+                );
             }
         }
         // A non-card tool stays cardless under the same manglings.
-        assert!(card_for_tool(&call("mcp__papercusp-su__capability_read", json!({}), None)).is_none());
+        assert!(
+            card_for_tool(&call("mcp__papercusp-su__capability_read", json!({}), None)).is_none()
+        );
     }
 
     #[test]
