@@ -614,6 +614,40 @@ export function agentProductivitySweepDeps(
 }
 
 /**
+ * What one sweep measured.
+ *
+ * The ideate counters are reported separately from `wedged` on purpose: they
+ * answer a different question over the same population, and `ideateSilent`
+ * INCLUDES the sessions suppressed as wedge-explained, so
+ * `ideateSilent - ideateSuppressedAsWedged` is the escalated set.
+ */
+export interface AgentProductivitySweepResult {
+  scanned: number;
+  present: number;
+  wedged: number;
+  unmeasured: number;
+  wavesEscalated: number;
+  /** Ideate-registered, past grace, no pass since registration — total. */
+  ideateSilent: number;
+  /** Of those, the ones whose silence the wedge already explains. */
+  ideateSuppressedAsWedged: number;
+  ideateWavesEscalated: number;
+}
+
+function emptySweepResult(): AgentProductivitySweepResult {
+  return {
+    scanned: 0,
+    present: 0,
+    wedged: 0,
+    unmeasured: 0,
+    wavesEscalated: 0,
+    ideateSilent: 0,
+    ideateSuppressedAsWedged: 0,
+    ideateWavesEscalated: 0,
+  };
+}
+
+/**
  * One sweep: read candidates, resolve presence, measure productivity, group the
  * wedged into correlated waves, escalate one report per wave.
  *

@@ -21,6 +21,7 @@ import { z } from 'zod';
 import type { Sql } from 'postgres';
 import type { SearchFilters } from '@papercusp/search';
 import { parseSessionSelector } from '../sessions/_shared';
+import type { SelfSession } from '../../search/self-session';
 
 /** Shared zod arg fragments for search:fulltext / search:semantic / sessions:search. */
 export const searchFilterArgs = {
@@ -108,7 +109,7 @@ export interface ResolvedSearchFilters {
   /** undefined when no filter arg was passed — the no-narrowing fast path. */
   filters?: SearchFilters;
   /** Set when session:'self' resolved to a live transcript (for live-tail + read-back). */
-  selfSession?: { sourceKind: string; sessionId: string; filePath: string } | null;
+  selfSession?: SelfSession | null;
 }
 
 function isoOrUndefined(v: string | undefined): string | undefined {
