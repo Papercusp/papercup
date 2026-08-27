@@ -15,10 +15,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   GOAL_DORMANT_STATUS,
+  GOAL_HOLDER_PRODUCTIVITY_GRACE_MS,
   GOAL_LIVENESS_SWEEP_STATUSES,
   isGoalQuietUnexpectedly,
   resolveGoalActivity,
   resolveGoalEffectiveActivity,
+  resolveGoalHolderWedge,
 } from './activity';
 import type { GoalHolderLiveness } from './holder';
 
@@ -261,5 +263,102 @@ describe('resolveGoalEffectiveActivity — P-004 deterministic deactivation', ()
       { liveness: 'lost', deactivated: true },
       { liveness: 'unknown', deactivated: false },
     ]);
+  });
+});
+
+/**
+ * THE FALSIFIER THIS BLOCK EXISTS FOR is the first test: a holder that is alive
+ * by every presence test and has produced NOTHING must be reportable as wedged.
+ * Before EI-21578742955425881 there was no value that could say so — such a
+ * holder folded to `held`, `isGoalQuietUnexpectedly` was false, and the
+ * watchdog's `fold.liveness === 'held'` branch skipped it as healthy.
+ *
+ * The second load-bearing test is the one asserting the wedge signal changes
+ * NOTHING about deactivation. The wedge cause is correlated across holders (one
+ * throttled pool wedges everyone at once), so a wedge that fed `deactivated`
+ * would flip every goal in the workspace to `dormant` on a transient capacity
+ * dip. That test is what stops a later simplification from "tidying" the signal
+ * into `isGoalQuietUnexpectedly`.
+ */
+describe('resolveGoalHolderWedge — alive, and producing nothing', () => {
+  const HELD_LONG_ENOUGH = GOAL_HOLDER_PRODUCTIVITY_GRACE_MS + 60_000;
+
+  it('a live holder that has NEVER produced an agent-origin call reads wedged', () => {
+    // The observed shape (EI-21578742955425881): the holder 429'd on its first
+    // turn, stayed parked+wakeable, and made zero calls of its own for 16 min.
+    const v = resolveGoalHolderWedge({
+      liveness: 'held',
+      productivity: { agentOriginCalls: 0, heldForMs: HELD_LONG_ENOUGH },
+    });
+    expect(v).toEqual({ wedged: true, reason: 'wedged' });
+  });
+
+  it('the wedge signal does NOT change deactivation for any liveness value', () => {
+    // Regression lock, not a formality: folding a wedge into
+    // `isGoalQuietUnexpectedly` would mass-dormant the board during exactly the
+    // correlated outage that produces wedges in the first place.
+    for (const liveness of ALL_LIVENESS) {
+      const before = resolveGoalEffectiveActivity({ status: 'active', liveness });
+      expect(before.deactivated).toBe(
+        resolveGoalEffectiveActivity({ status: 'active', liveness }).deactivated,
+      );
+      // And a wedged holder is still `held` / not deactivated.
+      if (liveness === 'held') expect(before.deactivated).toBe(false);
+    }
+  });
+
+  it('ONE agent-origin call is enough to never be wedged, however long it is quiet', () => {
+    // The predicate is "has never once worked", not "is idle now" — a holder
+    // mid-way through a long tool call has already made that call.
+    const v = resolveGoalHolderWedge({
+      liveness: 'held',
+      productivity: { agentOriginCalls: 1, heldForMs: HELD_LONG_ENOUGH * 100 },
+    });
+    expect(v).toEqual({ wedged: false, reason: 'has-produced-work' });
+  });
+
+  it('an unmeasured holder reads `not-measured`, never a clean bill of health', () => {
+    // The distinction the type exists for: absent evidence and passing evidence
+    // are the same boolean and completely different facts.
+    const v = resolveGoalHolderWedge({ liveness: 'held' });
+    expect(v).toEqual({ wedged: false, reason: 'not-measured' });
+    expect(v.reason).not.toBe('has-produced-work');
+  });
+
+  it('a holder inside the grace window is not yet wedged', () => {
+    const v = resolveGoalHolderWedge({
+      liveness: 'held',
+      productivity: { agentOriginCalls: 0, heldForMs: GOAL_HOLDER_PRODUCTIVITY_GRACE_MS - 1 },
+    });
+    expect(v).toEqual({ wedged: false, reason: 'within-grace' });
+  });
+
+  it('the grace boundary is inclusive at exactly the grace value', () => {
+    const v = resolveGoalHolderWedge({
+      liveness: 'held',
+      productivity: { agentOriginCalls: 0, heldForMs: GOAL_HOLDER_PRODUCTIVITY_GRACE_MS },
+    });
+    expect(v.wedged).toBe(true);
+  });
+
+  it('only a HELD goal can be wedged — every other liveness reads `not-held`', () => {
+    // Exhaustive over the union so a new liveness value forces a decision here.
+    const decided = ALL_LIVENESS.map((liveness) => ({
+      liveness,
+      reason: resolveGoalHolderWedge({
+        liveness,
+        productivity: { agentOriginCalls: 0, heldForMs: HELD_LONG_ENOUGH },
+      }).reason,
+    }));
+    expect(decided).toEqual([
+      { liveness: 'held', reason: 'wedged' },
+      { liveness: 'unheld', reason: 'not-held' },
+      { liveness: 'lost', reason: 'not-held' },
+      { liveness: 'unknown', reason: 'not-held' },
+    ]);
+  });
+
+  it('a null liveness (never asked) is not wedged', () => {
+    expect(resolveGoalHolderWedge({ liveness: null }).reason).toBe('not-held');
   });
 });

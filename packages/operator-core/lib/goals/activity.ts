@@ -263,3 +263,138 @@ export function resolveGoalEffectiveActivity(input: {
     effectiveStatus: deactivated ? GOAL_DORMANT_STATUS : rawStatus,
   };
 }
+
+/* ────────────────────────────────────────────────────────────────────────────
+ * WEDGED HOLDERS — alive, and producing nothing
+ *
+ * Everything above answers "is anybody there?". Nothing above answers "is that
+ * somebody DOING anything", and the two are not the same question.
+ *
+ * `holderCountsAsAlive` (holder.ts) is a presence test: not `ended`, and not
+ * `parked` with no self-wake. A holder that boots, gets an inference 429 on its
+ * very first turn, and never obtains a single completion passes that test — it
+ * is parked and wakeable, which is exactly what a healthy holder between turns
+ * looks like. So liveness folds to `held`, `isGoalQuietUnexpectedly` is false,
+ * and the respawn path (`goal-liveness-watchdog.ts`, at the `fold.liveness ===
+ * 'held'` continue) never runs. The goal reads `active`, presence reads
+ * `parked`, budget reads in-budget, and nothing anywhere says the goal has not
+ * moved.
+ *
+ * Observed 2026-08-27 (EI-21578742955425881): goal `work-on-everything-070565`
+ * held that state for 16 minutes with ZERO agent-origin tool calls, during a
+ * workspace-wide 429 outage that put 26 distinct agents in the same condition.
+ * This is the dual of the warning the su playbook already carries about
+ * `heartbeatFresh: true` coexisting with a dead session — here the process is
+ * genuinely alive and still not working.
+ *
+ * ── WHY THIS IS A SEPARATE SIGNAL AND *NOT* FOLDED INTO DEACTIVATION ────────
+ *
+ * The obvious move is to add `wedged` to `isGoalQuietUnexpectedly` so the
+ * existing machinery picks it up for free. That is wrong, twice over:
+ *
+ *   1. `isGoalQuietUnexpectedly` drives `deactivated`, which drives
+ *      `effectiveStatus → dormant` on every read-side surface. The cause of a
+ *      wedge is overwhelmingly CORRELATED across holders (one throttled account
+ *      pool wedges everyone at once), so folding it in would flip every goal in
+ *      the workspace to `dormant` simultaneously on a transient capacity dip —
+ *      a board-emptying event triggered by something that resolves itself.
+ *      `unknown`'s exclusion from that predicate exists for the same reason,
+ *      and the reasoning transfers directly.
+ *   2. Deactivation's consumers ask "should this read as active?". A wedged
+ *      goal genuinely IS active and held — the honest report is that it is
+ *      stuck, not that nobody has it. Rendering a stuck goal as unheld would
+ *      lose the distinction that makes it diagnosable.
+ *
+ * So: additive, reportable, and deliberately inert for the existing gates. A
+ * caller that never supplies `productivity` gets precisely today's behaviour.
+ *
+ * ── AND WHY DETECTION IS NOT AUTOMATICALLY A RESPAWN ────────────────────────
+ *
+ * Respawning a wedged holder is the right repair when the wedge is local (that
+ * one session is broken) and the WRONG one when the wedge is systemic (the
+ * account pool is walled): killing and relaunching 26 holders into an exhausted
+ * pool spends the little capacity left on relaunches that will wedge again.
+ * This module therefore reports the condition and says nothing about the cure;
+ * the decision to respawn belongs to a caller that can also see whether
+ * capacity exists.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * How long a live holder may produce NOTHING before it counts as wedged.
+ *
+ * Generous on purpose. The predicate below only fires on holders that have
+ * NEVER produced an agent-origin call, so this is not "idle for 15 minutes" —
+ * it is "has never once worked, and has now had a quarter of an hour to". A
+ * holder mid-way through one long tool call has already made that call and can
+ * never trip this.
+ */
+export const GOAL_HOLDER_PRODUCTIVITY_GRACE_MS = 15 * 60_000;
+
+/**
+ * Evidence that a held goal's holder has actually DONE something.
+ *
+ * `agentOriginCalls` must exclude hook-origin invocations. That exclusion is
+ * the entire signal: a session that boots and immediately fails still emits
+ * hook-fired calls (`coord:glance`, `activity:report` on the session-start
+ * hook), so a raw invocation count is non-zero for a holder that never ran a
+ * single instruction of its own. In the observed case the raw count was 3 and
+ * the agent-origin count was 0.
+ */
+export interface GoalHolderProductivity {
+  /**
+   * Agent-origin tool calls made by this goal's holder(s) since they picked the
+   * goal up. Hook-origin calls MUST NOT be counted.
+   */
+  agentOriginCalls: number;
+  /** How long the goal has been held, in ms — the clock the grace runs against. */
+  heldForMs: number;
+}
+
+export interface GoalWedgeVerdict {
+  /** The holder is alive and has never produced work past the grace window. */
+  wedged: boolean;
+  /**
+   * Why not, when `wedged` is false — so a caller rendering "healthy" can say
+   * whether that was measured or merely unmeasured. `not-measured` is the one
+   * that must never be read as a clean bill of health.
+   */
+  reason:
+    | 'wedged'
+    | 'not-held'
+    | 'not-measured'
+    | 'has-produced-work'
+    | 'within-grace';
+}
+
+/**
+ * PURE: is this goal's holder alive-but-not-working?
+ *
+ * Only ever asked of a `held` goal — every other liveness verdict is already
+ * described correctly by the folds above, and a wedge is by definition a thing
+ * that happens to somebody who IS there.
+ *
+ * Returns `not-measured` when no productivity evidence was supplied, rather
+ * than `false` with no explanation. That distinction is the point: an absent
+ * measurement and a passing measurement are the same boolean and completely
+ * different facts, and collapsing them is how "nothing reported a problem"
+ * comes to be read as "there is no problem".
+ */
+export function resolveGoalHolderWedge(input: {
+  liveness: GoalHolderLiveness | null;
+  productivity?: GoalHolderProductivity | null;
+  graceMs?: number;
+}): GoalWedgeVerdict {
+  if (input.liveness !== 'held') return { wedged: false, reason: 'not-held' };
+
+  const productivity = input.productivity ?? null;
+  if (!productivity) return { wedged: false, reason: 'not-measured' };
+
+  if (productivity.agentOriginCalls > 0) {
+    return { wedged: false, reason: 'has-produced-work' };
+  }
+
+  const graceMs = input.graceMs ?? GOAL_HOLDER_PRODUCTIVITY_GRACE_MS;
+  if (productivity.heldForMs < graceMs) return { wedged: false, reason: 'within-grace' };
+
+  return { wedged: true, reason: 'wedged' };
+}
