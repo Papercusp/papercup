@@ -3907,6 +3907,52 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const mergePollMs = Number.isFinite(opts.mergePollMs as number)
     ? (opts.mergePollMs as number)
     : MERGE_POLL_MS;
+  /**
+   * WI-6324: liveness sampling must not depend on the serialized merge pass
+   * completing. A genuinely dead remote can hold that pass inside
+   * `core.update()` / bounded per-op reads for longer than the zombie grace;
+   * when sampling lived only inside `mergeOnePass`, the first sample opened the
+   * connected-never-replicated window and the blocked pass prevented every
+   * subsequent sample, so the detector could never mature and fire the repair
+   * that would unblock it.
+   *
+   * Reuse the existing merge cadence and the same replication-liveness registry
+   * + repair handler. This is deliberately a cheap, synchronous observation of
+   * already-open logs (no update/get/network I/O) and does not touch the merge
+   * cursor or apply path. The in-pass sample remains richer (queue position and
+   * post-update lengths); this independent sample is the dead-man path that
+   * keeps the detector alive while that pass is wedged.
+   */
+  const sampleAdmittedLivenessOutsideMerge = (): void => {
+    if (stopped) return;
+    for (const log of admitted.values()) {
+      if (log.keyHex === ownLog.keyHex) continue;
+      try {
+        const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
+        const peersCount =
+          typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
+        sampleReplicationLiveness(
+          opts.workspaceId,
+          opts.harnessSlug,
+          {
+            keyHex: log.keyHex,
+            knownLength: livenessKnownLength(log),
+            localLength: log.length,
+            mergedPosition: mergeCursor.positions.get(log.keyHex) ?? 0,
+            peersCount,
+            swarmConnections: swarmHandle?.liveConnectionCount,
+          },
+          {
+            graceMs: REPLICATION_STALL_GRACE_MS,
+            connectedNeverReplicatedGraceMs: CONNECTED_NEVER_REPLICATED_GRACE_MS,
+            frozenGraceMs: FROZEN_GRACE_MS,
+          },
+        );
+      } catch {
+        // Diagnostic/repair sampling must never interrupt the booted handle.
+      }
+    }
+  };
   // Poll-driven merge cadence. The revocation refresh now runs INSIDE mergeNow
   // under the merging lock (see above), so the poll-timer callback only needs
   // to call mergeNow() — no separate out-of-lock refresh here.
@@ -3915,6 +3961,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       ? managedSetInterval('hyperbee-merge-poll', mergePollMs, async () => {
           await mergeNow();
         }, { category: 'lifecycle', instanced: true })
+      : null;
+  const livenessTimer =
+    mergePollMs > 0
+      ? managedSetInterval(
+          'hyperbee-replication-liveness-poll',
+          mergePollMs,
+          sampleAdmittedLivenessOutsideMerge,
+          { category: 'lifecycle', instanced: true },
+        )
       : null;
 
   // ── Read-admission decider (4c) ── the D-004 + D-002 sig+binding decision
@@ -5548,6 +5603,13 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (mergeTimer) {
         try {
           mergeTimer.stop();
+        } catch {
+          // no-op
+        }
+      }
+      if (livenessTimer) {
+        try {
+          livenessTimer.stop();
         } catch {
           // no-op
         }
