@@ -13,6 +13,16 @@ export interface PersonalVaultImportActionDeps {
   runBatch?: typeof runPersonalVaultImportBatch;
 }
 
+// The durable routine engine already collapses overlapping fires under the
+// stable `routine:<id>` DBOS deduplication id. Keep the action itself safe too:
+// direct/manual callers and alternate executors can invoke this exported seam
+// without passing through that queue, and the stable lease owner deliberately
+// allows a later cadence tick to resume the same running job. Without this
+// process-local boundary, two such calls could therefore work the same
+// checkpoint concurrently. Workspace + install slug is the owner identity;
+// unrelated workspaces remain parallel.
+const activeOwners = new Set<string>();
+
 function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
@@ -22,6 +32,19 @@ export async function runPersonalVaultImportAction(
   ctx: SystemActionCtx,
   provided: PersonalVaultImportActionDeps = {},
 ): Promise<PersonalVaultImportBatchResult> {
+  const ownerKey = `${ctx.workspaceId}\u001f${ctx.installSlug}`;
+  if (activeOwners.has(ownerKey)) {
+    return {
+      claimed: false,
+      jobId: null,
+      status: 'idle',
+      documentsSeen: 0,
+      documentsImported: 0,
+      warnings: 0,
+      error: null,
+    };
+  }
+  activeOwners.add(ownerKey);
   const sql = provided.sql ?? getOrgPg().sql;
   const runBatch = provided.runBatch ?? runPersonalVaultImportBatch;
   const options: PersonalVaultImportBatchOptions = {
@@ -29,7 +52,11 @@ export async function runPersonalVaultImportAction(
     leaseSeconds: boundedInteger(ctx.triggerConfig.lease_seconds, 600, 30, 3_600),
     leaseOwner: `system:personal-vault-import:${ctx.installSlug}`,
   };
-  return runBatch(sql, ctx.workspaceId, options);
+  try {
+    return await runBatch(sql, ctx.workspaceId, options);
+  } finally {
+    activeOwners.delete(ownerKey);
+  }
 }
 
 registerSystemAction('personal-vault-import', async (ctx) => {

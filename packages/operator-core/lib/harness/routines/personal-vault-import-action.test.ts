@@ -60,6 +60,45 @@ describe('personal-vault-import system action', () => {
     });
   });
 
+  it('collapses overlapping calls for the same workspace owner while keeping the first call live', async () => {
+    let finish!: (result: Awaited<ReturnType<typeof runPersonalVaultImportAction>>) => void;
+    const pending = new Promise<Awaited<ReturnType<typeof runPersonalVaultImportAction>>>((resolve) => {
+      finish = resolve;
+    });
+    const runBatch = vi.fn(() => pending);
+    const ctx = {
+      workspaceId: 'papercusp-workspace',
+      installSlug: 'papercusp',
+      triggerConfig: { batch_size: 25, lease_seconds: 90 },
+      payloadTemplate: null,
+    };
+
+    const first = runPersonalVaultImportAction(ctx, { sql: {} as never, runBatch });
+    await expect(
+      runPersonalVaultImportAction(ctx, { sql: {} as never, runBatch }),
+    ).resolves.toEqual({
+      claimed: false,
+      jobId: null,
+      status: 'idle',
+      documentsSeen: 0,
+      documentsImported: 0,
+      warnings: 0,
+      error: null,
+    });
+    expect(runBatch).toHaveBeenCalledTimes(1);
+
+    finish({
+      claimed: true,
+      jobId: '11111111-1111-4111-8111-111111111111',
+      status: 'queued',
+      documentsSeen: 25,
+      documentsImported: 25,
+      warnings: 0,
+      error: null,
+    });
+    await expect(first).resolves.toMatchObject({ claimed: true, jobId: expect.any(String) });
+  });
+
   it('registers the durable handler', () => {
     expect(getSystemAction('personal-vault-import')).toBeTypeOf('function');
   });
