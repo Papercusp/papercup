@@ -349,6 +349,25 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe("PersonalVaultSettingsPage", () => {
+  it("keeps account controls usable when an older status response omits import storage", async () => {
+    const { importStorage: _importStorage, ...olderStatus } = status;
+    fetchMock.mockImplementationOnce(async () => Response.json(olderStatus));
+
+    render(<PersonalVaultSettingsPage />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Live integrations" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("Archive storage forecast").textContent,
+    ).toContain(
+      "Storage forecast unavailable until the operator sidecar finishes updating.",
+    );
+    expect(
+      screen.getByRole("button", { name: "Add Google account" }),
+    ).toBeTruthy();
+  });
+
   it("subscribes to owner import jobs and renders account-scoped progress actions", async () => {
     sync.jobs = [
       importJob(),
@@ -672,7 +691,9 @@ describe("PersonalVaultSettingsPage", () => {
     ).toContain("Purge remains a separate, explicit action");
 
     fireEvent.click(
-      within(accountCard!).getByRole("button", { name: "Disconnect Owner Two" }),
+      within(accountCard!).getByRole("button", {
+        name: "Disconnect Owner Two",
+      }),
     );
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(

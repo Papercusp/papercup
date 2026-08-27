@@ -87,7 +87,8 @@ interface VaultStatus {
   grants: PersonalGrant[];
   supportedSources: string[];
   embedding: { mode: "gemma"; localOnly: true };
-  importStorage: { owner: ImportStorageScope; workspace: ImportStorageScope };
+  /** Additive status field: an older sidecar may omit it during a rolling dev update. */
+  importStorage?: { owner: ImportStorageScope; workspace: ImportStorageScope };
   integrations?: { google: IntegrationStatus; facebook?: IntegrationStatus };
 }
 
@@ -499,12 +500,12 @@ export default function PersonalVaultSettingsPage() {
                     }).toString()}`
                   : ""),
               {
-              method: "POST",
-              headers: {
-                "content-type": file.type || "application/octet-stream",
-                "x-papercusp-filename": encodeURIComponent(file.name),
-              },
-              body: file,
+                method: "POST",
+                headers: {
+                  "content-type": file.type || "application/octet-stream",
+                  "x-papercusp-filename": encodeURIComponent(file.name),
+                },
+                body: file,
               },
             ),
           );
@@ -523,7 +524,12 @@ export default function PersonalVaultSettingsPage() {
         if (fileInput.current) fileInput.current.value = "";
       }
     },
-    [importJobsQuery.invalidate, importProviderAccountId, load, status?.enabled],
+    [
+      importJobsQuery.invalidate,
+      importProviderAccountId,
+      load,
+      status?.enabled,
+    ],
   );
 
   const cancelImport = useCallback(
@@ -540,7 +546,9 @@ export default function PersonalVaultSettingsPage() {
         toast.success(`Cancellation requested for ${job.filename}.`);
         importJobsQuery.invalidate?.();
       } catch (err) {
-        toast.error(`Couldn’t cancel ${job.filename}: ${(err as Error).message}`);
+        toast.error(
+          `Couldn’t cancel ${job.filename}: ${(err as Error).message}`,
+        );
       } finally {
         setBusy(null);
       }
@@ -563,7 +571,9 @@ export default function PersonalVaultSettingsPage() {
         toast.success(`Retry queued for ${job.filename}.`);
         importJobsQuery.invalidate?.();
       } catch (err) {
-        toast.error(`Couldn’t retry ${job.filename}: ${(err as Error).message}`);
+        toast.error(
+          `Couldn’t retry ${job.filename}: ${(err as Error).message}`,
+        );
       } finally {
         setBusy(null);
       }
@@ -1328,7 +1338,10 @@ export default function PersonalVaultSettingsPage() {
                           </div>
                         ))}
                       </dl>
-                      <div className="pc-settings-actions" style={{ marginTop: 12 }}>
+                      <div
+                        className="pc-settings-actions"
+                        style={{ marginTop: 12 }}
+                      >
                         <Button
                           disabled={!facebook.configured || busy !== null}
                           onClick={() =>
@@ -1380,7 +1393,9 @@ export default function PersonalVaultSettingsPage() {
                     window.location.assign(facebookPersonalVaultConnectHref())
                   }
                 >
-                  {accounts.length ? "Add Facebook Account" : "Connect Facebook"}
+                  {accounts.length
+                    ? "Add Facebook Account"
+                    : "Connect Facebook"}
                 </Button>
               </div>
               <p className="pc-settings-note">
@@ -1415,9 +1430,7 @@ export default function PersonalVaultSettingsPage() {
           <select
             aria-label="Archive account"
             value={importProviderAccountId}
-            onChange={(event) =>
-              setImportProviderAccountId(event.target.value)
-            }
+            onChange={(event) => setImportProviderAccountId(event.target.value)}
             disabled={busy === "import"}
           >
             <option value="">Offline archive · leave unattributed</option>
@@ -1441,14 +1454,20 @@ export default function PersonalVaultSettingsPage() {
           style={{ marginTop: 12 }}
         >
           <strong>Encrypted archive storage:</strong>{" "}
-          {formatBytes(status.importStorage.owner.usedBytes)} of{" "}
-          {formatBytes(status.importStorage.owner.maxBytes)} owner capacity ·{" "}
-          {status.importStorage.owner.jobs.toLocaleString()} of{" "}
-          {status.importStorage.owner.maxJobs.toLocaleString()} retained or
-          reserved jobs. Current usage is{" "}
-          {formatBytes(status.importStorage.owner.retainedBytes)} retained +{" "}
-          {formatBytes(status.importStorage.owner.reservedBytes)} reserved while
-          uploads are in flight.
+          {status.importStorage ? (
+            <>
+              {formatBytes(status.importStorage.owner.usedBytes)} of{" "}
+              {formatBytes(status.importStorage.owner.maxBytes)} owner capacity
+              · {status.importStorage.owner.jobs.toLocaleString()} of{" "}
+              {status.importStorage.owner.maxJobs.toLocaleString()} retained or
+              reserved jobs. Current usage is{" "}
+              {formatBytes(status.importStorage.owner.retainedBytes)} retained +{" "}
+              {formatBytes(status.importStorage.owner.reservedBytes)} reserved
+              while uploads are in flight.
+            </>
+          ) : (
+            "Storage forecast unavailable until the operator sidecar finishes updating."
+          )}
         </p>
         <div
           className="pc-settings-note"

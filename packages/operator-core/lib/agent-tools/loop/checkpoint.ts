@@ -115,6 +115,20 @@ class MergeWouldEvictError extends Error {
 }
 
 /**
+ * Count check rows that were already beyond today's durable cap before this
+ * write. Legacy notes can predate the cap (or have been written by an older
+ * normalizer), so an additive write against one of them must be allowed to
+ * normalize the stored set instead of refusing forever: the caller cannot
+ * re-send the full over-cap set through the current input schema.
+ */
+function priorChecksOverCapCount(priorNote: string | null | undefined): number {
+  const priorChecks = splitCarryNoteChecks(priorNote ?? null).checks.filter(
+    (row) => (row.claim ?? '').trim().length > 0,
+  );
+  return Math.max(0, priorChecks.length - CARRY_NOTE_MAX_CHECKS);
+}
+
+/**
  * Can the CURRENT loop row actually deliver one more wake if this turn settles now?
  *
  * `active` alone is insufficient. The dead-man guard runs immediately before delivery
@@ -836,6 +850,11 @@ export default defineTool({
     // lint and the reported counts then describe EXACTLY what was stored, instead of
     // a second merge against a staler prior that could disagree with it.
     const captured: { merged?: ReturnType<typeof mergeCarryRows> } = {};
+    // A legacy note may already carry more checks than today's cap. The
+    // transform records that fact from its authoritative locked prior so the
+    // response can explain why the normalization was allowed, rather than
+    // blaming the current caller for a pre-existing condition.
+    const legacyOverCapNormalization = { checks: 0 };
     let stored: string | null;
     try {
       const writeResult = await setLoopCarryNoteWithPrior(
@@ -858,6 +877,7 @@ export default defineTool({
               mode: rowsMode,
             });
             captured.merged = merged;
+            const legacyChecksOverCap = priorChecksOverCapCount(priorNote);
             // EI-21503907176334936: under replace, retirement must be CONFIRMED, not
             // merely reported afterwards. A monitor loop that re-sends its whole note
             // each wake from a stale view was silently retiring carried walls/checks
@@ -871,7 +891,19 @@ export default defineTool({
               throw new ReplaceWouldDropError(merged.droppedWalls, merged.droppedChecks);
             }
             if (rowsMode === 'merge' && (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0)) {
-              throw new MergeWouldEvictError(merged.droppedWalls, merged.droppedChecks);
+              // EI-21579012309480346: a pre-existing over-cap check set cannot
+              // be repaired by the caller's advertised "re-send the full set"
+              // remedy — the current schema rejects that set before it reaches
+              // this transform. Let mergeCarryRows normalize that legacy state
+              // once, retaining supplied rows first and evidence-bearing carried
+              // rows before predicted ones. Keep the ordinary within-cap refusal
+              // (and all wall refusals) intact so a caller cannot use this escape
+              // to silently evict a healthy carried set.
+              const normalizingLegacyChecks = legacyChecksOverCap > 0 && merged.droppedChecks.length > 0;
+              if (normalizingLegacyChecks) legacyOverCapNormalization.checks = legacyChecksOverCap;
+              if (merged.droppedWalls.length > 0 || !normalizingLegacyChecks) {
+                throw new MergeWouldEvictError(merged.droppedWalls, merged.droppedChecks);
+              }
             }
             return merged.note;
           },
@@ -1407,13 +1439,20 @@ export default defineTool({
                   checksDropped: droppedChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   checksDroppedNote:
                     rowsMode === 'merge'
-                      ? `CAP EVICTION, not a replace: rowsMode:'merge' UNIONED your ${effectiveChecks?.length ?? 0} ` +
-                        `row(s) onto the carried set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
-                        `${droppedChecks.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
-                        `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
-                        `rejected as invalid_input. To keep them: RETIRE rows you no longer need in a separate ` +
-                        `plain write (rowsMode:'replace'), then merge; or pass no \`checks\` at all to ` +
-                        `leave the stored rows untouched.`
+                      ? legacyOverCapNormalization.checks > 0
+                        ? `LEGACY CAP NORMALIZATION, not a caller-caused overflow: the carried note already held ` +
+                          `${legacyOverCapNormalization.checks} row(s) MORE than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
+                          `before this merge. The write normalized that legacy state to the cap, keeping supplied ` +
+                          `rows first and evidence-bearing carried rows before predicted rows. This was legacy state, ` +
+                          `not your mistake. Future additive writes that would exceed the cap are refused; retire ` +
+                          `stale rows explicitly with rowsMode:'replace' and confirmRetire:true.`
+                        : `CAP EVICTION, not a replace: rowsMode:'merge' UNIONED your ${effectiveChecks?.length ?? 0} ` +
+                          `row(s) onto the carried set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
+                          `${droppedChecks.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
+                          `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
+                          `rejected as invalid_input. To keep them: RETIRE rows you no longer need in a separate ` +
+                          `plain write (rowsMode:'replace'), then merge; or pass no \`checks\` at all to ` +
+                          `leave the stored rows untouched.`
                       : `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
                         `claim(s) were not in this write and are now gone. To restore: re-send them (a re-sent claim ` +
                         `inherits its prior recheck/verified). To AVOID this next time, pass rowsMode:'merge' — ` +

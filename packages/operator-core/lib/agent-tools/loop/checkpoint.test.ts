@@ -206,6 +206,8 @@ const {
   CARRY_ROW_SOFT_CAPS,
   CARRY_ROW_ID_MAX,
   shortCarryHash,
+  splitCarryNoteChecks,
+  withCarryNoteChecks,
 } = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
@@ -2021,6 +2023,77 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.error).toBe('checkpoint_merge_would_evict_rows');
     expect(b.wallsDropped).toEqual([`carried wall ${CARRY_NOTE_MAX_WALLS}`]);
     expect(b.message).toContain('confirmRetire:true');
+  });
+
+  it('normalizes a legacy over-cap carried check set once instead of refusing every additive write', async () => {
+    const verifiedRows = Array.from({ length: 8 }, (_, i) => ({
+      claim: `VERIFIED-${String(i + 1).padStart(2, '0')} holds`,
+      recheck: `probe verified ${i + 1}`,
+      verified: `measured on current HEAD ${i + 1}`,
+    }));
+    const predictedRows = Array.from({ length: 12 }, (_, i) => ({
+      claim: `PREDICTED-${String(i + 1).padStart(2, '0')} holds`,
+      recheck: `probe predicted ${i + 1}`,
+    }));
+    const prior = withCarryNoteChecks('legacy checkpoint body', [...verifiedRows, ...predictedRows]);
+    expect(splitCarryNoteChecks(prior).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS + 8);
+    getLoopCarryNote.mockResolvedValue(prior);
+
+    const b = body(
+      await call({
+        did: 'the finding I just made',
+        checks: [{ claim: 'BRAND-NEW holds', recheck: 'probe new', verified: 'measured just now' }],
+        rowsMode: 'merge',
+      }),
+    );
+    const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+    const storedChecks = splitCarryNoteChecks(written).checks;
+    const storedClaims = storedChecks.map((row) => row.claim);
+
+    expect(b).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS });
+    expect(storedChecks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+    expect(storedClaims).toContain('BRAND-NEW holds');
+    for (const row of verifiedRows) expect(storedClaims).toContain(row.claim);
+    expect(storedClaims.filter((claim) => claim.startsWith('PREDICTED-'))).toHaveLength(3);
+    expect(b.checksDropped).toHaveLength(9);
+    expect(b.checksDropped.every((claim: string) => claim.startsWith('PREDICTED-'))).toBe(true);
+    expect(b.checksDroppedNote).toMatch(/LEGACY CAP NORMALIZATION/);
+    expect(b.checksDroppedNote).toContain('not your mistake');
+  });
+
+  it('keeps the normal within-cap refusal after a legacy note has self-healed', async () => {
+    const prior = withCarryNoteChecks(
+      'legacy checkpoint body',
+      Array.from({ length: CARRY_NOTE_MAX_CHECKS + 8 }, (_, i) => ({
+        claim: `LEGACY-${String(i + 1).padStart(2, '0')} holds`,
+      })),
+    );
+    getLoopCarryNote.mockResolvedValue(prior);
+
+    const first = body(
+      await call({
+        did: 'first touch',
+        checks: [{ claim: 'FIRST holds', verified: 'measured' }],
+        rowsMode: 'merge',
+      }),
+    );
+    expect(first.ok).toBe(true);
+    expect(first.checksDropped.length).toBeGreaterThan(0);
+    const normalized = setLoopCarryNote.mock.calls[0]?.[1] as string;
+    expect(splitCarryNoteChecks(normalized).checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
+
+    setLoopCarryNote.mockClear();
+    getLoopCarryNote.mockResolvedValue(normalized);
+    const second = body(
+      await call({
+        did: 'second touch',
+        checks: [{ claim: 'SECOND holds', verified: 'measured' }],
+        rowsMode: 'merge',
+      }),
+    );
+
+    expect(second).toMatchObject({ ok: false, error: 'checkpoint_merge_would_evict_rows' });
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
   });
 
   it('says nothing about overflow on an ordinary write', async () => {

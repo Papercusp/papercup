@@ -15,8 +15,8 @@
  * Drives the REAL handler against a mocked source layer (same seam as
  * list.cache.test.ts) so no PG is required.
  */
-import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
-import { setFlagOverridesForTest } from "@papercusp/flags/test";
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
+import { setFlagOverridesForTest } from '@papercusp/flags/test';
 
 const M = vi.hoisted(() => ({
   // vitest 4 infers a vi.fn mock's Parameters from its initial implementation
@@ -30,11 +30,11 @@ const M = vi.hoisted(() => ({
   resolveHarnessPlansDir: vi.fn(async (slug: string) => ({
     harnessSlug: slug,
   })),
-  ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
+  ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: 'papercup' })),
 }));
 
-vi.mock("./source", async (orig) => {
-  const actual = await orig<typeof import("./source")>();
+vi.mock('./source', async (orig) => {
+  const actual = await orig<typeof import('./source')>();
   return {
     ...actual,
     listPlanIndexRows: M.listPlanIndexRows,
@@ -43,37 +43,38 @@ vi.mock("./source", async (orig) => {
     resolveHarnessPlansDir: M.resolveHarnessPlansDir,
   };
 });
-vi.mock("./_ctx-opts", () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
-vi.mock("../../issue-blocks-merge", async (orig) => {
-  const actual = await orig<typeof import("../../issue-blocks-merge")>();
+vi.mock('./_ctx-opts', () => ({ ctxToPlanSourceOpts: M.ctxToPlanSourceOpts }));
+vi.mock('../../issue-blocks-merge', async (orig) => {
+  const actual = await orig<typeof import('../../issue-blocks-merge')>();
   return {
     ...actual,
     getAllBlockedPlanItems: vi.fn(async () => new Map<string, string[]>()),
   };
 });
-vi.mock("../../scout/routed-ledger", () => ({
+vi.mock('../../scout/routed-ledger', () => ({
   readScoutPlanRefs: vi.fn(async () => new Set<string>()),
   readRoutedIdeas: vi.fn(async () => []),
 }));
 
-import tool, { derivePlanTriggerSources } from "./list";
+import tool, { derivePlanTriggerSources } from './list';
 import {
   resetOperatorCacheForTests,
   resetCachedReadStatsForTests,
   __setCachedReadEnabledForTests,
-} from "../../cache";
-import { _refreshCacheLayerForTests } from "../../cache/instance";
+  setL2EnabledForTests,
+} from '../../cache';
+import { _refreshCacheLayerForTests } from '../../cache/instance';
 
-const CACHE_LAYER = "papercusp-cache-layer";
+const CACHE_LAYER = 'papercusp-cache-layer';
 
 /** A minimal index row — only the columns plans:list projects. */
 const row = (over: Record<string, unknown>): unknown => ({
-  planSlug: "p",
-  title: "P",
-  status: "active",
-  created: "2026-07-01",
-  updated: "2026-07-01T00:00:00.000Z",
-  updatedAt: "2026-07-01T00:00:00.000Z",
+  planSlug: 'p',
+  title: 'P',
+  status: 'active',
+  created: '2026-07-01',
+  updated: '2026-07-01T00:00:00.000Z',
+  updatedAt: '2026-07-01T00:00:00.000Z',
   owner: null,
   initiative: null,
   template: null,
@@ -91,17 +92,16 @@ const row = (over: Record<string, unknown>): unknown => ({
   hasInputSchema: false,
   hasExternalTrigger: false,
   isBlenderOrigin: false,
-  harnessSlug: "papercup",
+  harnessSlug: 'papercup',
   ...over,
 });
 
-const triggerRow = (over: Record<string, unknown> = {}) =>
-  row(over) as Parameters<typeof derivePlanTriggerSources>[0];
+const triggerRow = (over: Record<string, unknown> = {}) => row(over) as Parameters<typeof derivePlanTriggerSources>[0];
 
-const ctx = (workspaceId = "ws-groupby"): never =>
+const ctx = (workspaceId = 'ws-groupby'): never =>
   ({
     workspaceId,
-    harnessSlug: "papercup",
+    harnessSlug: 'papercup',
     metadata: vi.fn(),
     log: vi.fn(),
     progress: vi.fn(),
@@ -111,7 +111,7 @@ type ListResult = {
   data: { plans: unknown[]; groups?: Array<{ key: string | null; count: number }> };
 };
 
-const run = async (args: Record<string, unknown>): Promise<ListResult["data"]> => {
+const run = async (args: Record<string, unknown>): Promise<ListResult['data']> => {
   const res = (await tool.handler(args as never, ctx())) as ListResult;
   return res.data;
 };
@@ -120,6 +120,12 @@ beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(false);
+  // This suite exercises L1 cache-key separation. plans:list also opts into
+  // durable L2, whose rows intentionally survive both process restarts and
+  // resetOperatorCacheForTests(); leaving it enabled lets an earlier test run's
+  // ws-groupby fixture bypass today's source mock and makes this suite depend on
+  // execution history instead of the key dimensions under test.
+  setL2EnabledForTests(false);
   M.listPlanIndexRows.mockReset();
   M.listPlanIndexRows.mockResolvedValue([]);
   setFlagOverridesForTest({ [CACHE_LAYER]: false });
@@ -131,21 +137,22 @@ afterEach(async () => {
   await _refreshCacheLayerForTests();
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
+  setL2EnabledForTests(true);
 });
 
-describe("plans:list — groupBy aggregates", () => {
-  it("derives one-time vs triggered from schedule, external binding, or either plan-input schema source", async () => {
+describe('plans:list — groupBy aggregates', () => {
+  it('derives one-time vs triggered from schedule, external binding, or either plan-input schema source', async () => {
     expect(derivePlanTriggerSources(triggerRow())).toEqual([]);
-    expect(derivePlanTriggerSources(triggerRow({ schedule: { cron: "0 9 * * *" } }))).toEqual(["schedule"]);
-    expect(derivePlanTriggerSources(triggerRow({ hasExternalTrigger: true }))).toEqual(["external"]);
-    expect(derivePlanTriggerSources(triggerRow({ hasInputSchema: true }))).toEqual(["manual"]);
-    expect(derivePlanTriggerSources(triggerRow({ template: "rubric" }))).toEqual(["manual"]);
+    expect(derivePlanTriggerSources(triggerRow({ schedule: { cron: '0 9 * * *' } }))).toEqual(['schedule']);
+    expect(derivePlanTriggerSources(triggerRow({ hasExternalTrigger: true }))).toEqual(['external']);
+    expect(derivePlanTriggerSources(triggerRow({ hasInputSchema: true }))).toEqual(['manual']);
+    expect(derivePlanTriggerSources(triggerRow({ template: 'rubric' }))).toEqual(['manual']);
 
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "one-time" }),
+      row({ planSlug: 'one-time' }),
       row({
-        planSlug: "all-three",
-        schedule: { cron: "0 9 * * *" },
+        planSlug: 'all-three',
+        schedule: { cron: '0 9 * * *' },
         hasExternalTrigger: true,
         hasInputSchema: true,
       }),
@@ -153,27 +160,27 @@ describe("plans:list — groupBy aggregates", () => {
     const { plans } = await run({});
     expect(plans).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ slug: "one-time", triggered: false, triggerSources: [] }),
+        expect.objectContaining({ slug: 'one-time', triggered: false, triggerSources: [] }),
         expect.objectContaining({
-          slug: "all-three",
+          slug: 'all-three',
           triggered: true,
-          triggerSources: ["schedule", "external", "manual"],
+          triggerSources: ['schedule', 'external', 'manual'],
         }),
       ]),
     );
   });
 
-  it("surfaces the permanent forced-past marker on each plan row", async () => {
+  it('surfaces the permanent forced-past marker on each plan row', async () => {
     M.listPlanIndexRows.mockResolvedValue([
       row({
-        planSlug: "forced",
+        planSlug: 'forced',
         forcedPast: {
           count: 1,
           latest: {
-            reason: "explicit exception",
-            checks: ["audit_coverage_stale"],
-            forcedAt: "2026-08-20T22:30:00.000Z",
-            forcedBy: { ownerId: "su-forcer", ownerLabel: "Forcing agent" },
+            reason: 'explicit exception',
+            checks: ['audit_coverage_stale'],
+            forcedAt: '2026-08-20T22:30:00.000Z',
+            forcedBy: { ownerId: 'su-forcer', ownerLabel: 'Forcing agent' },
             legacy: false,
           },
         },
@@ -182,166 +189,166 @@ describe("plans:list — groupBy aggregates", () => {
 
     const { plans } = await run({});
     expect(plans[0]).toMatchObject({
-      slug: "forced",
+      slug: 'forced',
       forcedPast: {
         count: 1,
-        latest: { reason: "explicit exception", checks: ["audit_coverage_stale"] },
+        latest: { reason: 'explicit exception', checks: ['audit_coverage_stale'] },
       },
     });
   });
 
-  it("counts every matched row per dimension value", async () => {
+  it('counts every matched row per dimension value', async () => {
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "a", status: "active" }),
-      row({ planSlug: "b", status: "active" }),
-      row({ planSlug: "c", status: "shipped" }),
+      row({ planSlug: 'a', status: 'active' }),
+      row({ planSlug: 'b', status: 'active' }),
+      row({ planSlug: 'c', status: 'shipped' }),
     ]);
-    const { groups } = await run({ groupBy: "status" });
+    const { groups } = await run({ groupBy: 'status' });
     expect(groups).toEqual([
-      { key: "active", count: 2 },
-      { key: "shipped", count: 1 },
+      { key: 'active', count: 2 },
+      { key: 'shipped', count: 1 },
     ]);
   });
 
-  it("`limit` bounds the returned ROWS but never the aggregate", async () => {
+  it('`limit` bounds the returned ROWS but never the aggregate', async () => {
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "a", status: "active" }),
-      row({ planSlug: "b", status: "active" }),
-      row({ planSlug: "c", status: "shipped" }),
+      row({ planSlug: 'a', status: 'active' }),
+      row({ planSlug: 'b', status: 'active' }),
+      row({ planSlug: 'c', status: 'shipped' }),
     ]);
-    const { plans, groups } = await run({ groupBy: "status", limit: 1 });
+    const { plans, groups } = await run({ groupBy: 'status', limit: 1 });
     expect(plans).toHaveLength(1);
     // The counts still cover all three — a limited aggregate would be wrong.
     expect(groups).toEqual([
-      { key: "active", count: 2 },
-      { key: "shipped", count: 1 },
+      { key: 'active', count: 2 },
+      { key: 'shipped', count: 1 },
     ]);
     // ...and the limit was NOT pushed into the SQL fetch (which would have
     // truncated the set the aggregate sees).
-    expect(M.listPlanIndexRows.mock.calls[0]?.[0]).not.toHaveProperty("limit");
+    expect(M.listPlanIndexRows.mock.calls[0]?.[0]).not.toHaveProperty('limit');
   });
 
-  it("aggregateOnly returns the groups with no rows", async () => {
+  it('aggregateOnly returns the groups with no rows', async () => {
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "a", status: "active" }),
-      row({ planSlug: "b", status: "draft" }),
+      row({ planSlug: 'a', status: 'active' }),
+      row({ planSlug: 'b', status: 'draft' }),
     ]);
     const { plans, groups } = await run({
-      groupBy: "status",
+      groupBy: 'status',
       aggregateOnly: true,
     });
     expect(plans).toEqual([]);
     expect(groups).toEqual([
-      { key: "active", count: 1 },
-      { key: "draft", count: 1 },
+      { key: 'active', count: 1 },
+      { key: 'draft', count: 1 },
     ]);
   });
 
-  it("aggregateOnly is ignored without groupBy (rows still come back)", async () => {
-    M.listPlanIndexRows.mockResolvedValue([row({ planSlug: "a" })]);
+  it('aggregateOnly is ignored without groupBy (rows still come back)', async () => {
+    M.listPlanIndexRows.mockResolvedValue([row({ planSlug: 'a' })]);
     const { plans, groups } = await run({ aggregateOnly: true });
     expect(plans).toHaveLength(1);
     expect(groups).toBeUndefined();
   });
 
-  it("no groupBy ⇒ no `groups` key at all (unchanged shape)", async () => {
-    M.listPlanIndexRows.mockResolvedValue([row({ planSlug: "a" })]);
+  it('no groupBy ⇒ no `groups` key at all (unchanged shape)', async () => {
+    M.listPlanIndexRows.mockResolvedValue([row({ planSlug: 'a' })]);
     const data = await run({});
-    expect(data).not.toHaveProperty("groups");
+    expect(data).not.toHaveProperty('groups');
   });
 
-  it("buckets createdDay by UTC day, null bucket last", async () => {
+  it('buckets createdDay by UTC day, null bucket last', async () => {
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "a", created: "2026-07-01" }),
-      row({ planSlug: "b", created: "2026-07-01" }),
-      row({ planSlug: "c", created: "2026-07-02" }),
-      row({ planSlug: "d", created: null }),
+      row({ planSlug: 'a', created: '2026-07-01' }),
+      row({ planSlug: 'b', created: '2026-07-01' }),
+      row({ planSlug: 'c', created: '2026-07-02' }),
+      row({ planSlug: 'd', created: null }),
     ]);
-    const { groups } = await run({ groupBy: "createdDay" });
+    const { groups } = await run({ groupBy: 'createdDay' });
     expect(groups).toEqual([
-      { key: "2026-07-01", count: 2 },
-      { key: "2026-07-02", count: 1 },
+      { key: '2026-07-01', count: 2 },
+      { key: '2026-07-02', count: 1 },
       { key: null, count: 1 },
     ]);
   });
 
-  it("ties sort alphabetically, and the null bucket sorts last on a tie", async () => {
+  it('ties sort alphabetically, and the null bucket sorts last on a tie', async () => {
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "a", owner: "zoe" }),
-      row({ planSlug: "b", owner: "avi" }),
-      row({ planSlug: "c", owner: null }),
+      row({ planSlug: 'a', owner: 'zoe' }),
+      row({ planSlug: 'b', owner: 'avi' }),
+      row({ planSlug: 'c', owner: null }),
     ]);
-    const { groups } = await run({ groupBy: "owner" });
+    const { groups } = await run({ groupBy: 'owner' });
     expect(groups).toEqual([
-      { key: "avi", count: 1 },
-      { key: "zoe", count: 1 },
+      { key: 'avi', count: 1 },
+      { key: 'zoe', count: 1 },
       { key: null, count: 1 },
     ]);
   });
 
-  it("groups a boolean dimension into true/false buckets", async () => {
+  it('groups a boolean dimension into true/false buckets', async () => {
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "a", schedule: "0 * * * *" }),
-      row({ planSlug: "b" }),
-      row({ planSlug: "c" }),
+      row({ planSlug: 'a', schedule: '0 * * * *' }),
+      row({ planSlug: 'b' }),
+      row({ planSlug: 'c' }),
     ]);
-    const { groups } = await run({ groupBy: "scheduled" });
+    const { groups } = await run({ groupBy: 'scheduled' });
     expect(groups).toEqual([
-      { key: "false", count: 2 },
-      { key: "true", count: 1 },
+      { key: 'false', count: 2 },
+      { key: 'true', count: 1 },
     ]);
   });
 
-  it("groups origin from the canonical plan-content projection", async () => {
+  it('groups origin from the canonical plan-content projection', async () => {
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "a", isBlenderOrigin: true }),
-      row({ planSlug: "b", isBlenderOrigin: false }),
-      row({ planSlug: "c" }),
+      row({ planSlug: 'a', isBlenderOrigin: true }),
+      row({ planSlug: 'b', isBlenderOrigin: false }),
+      row({ planSlug: 'c' }),
     ]);
-    const { groups, plans } = await run({ groupBy: "origin" });
+    const { groups, plans } = await run({ groupBy: 'origin' });
     expect(groups).toEqual([
       { key: null, count: 2 },
-      { key: "scout", count: 1 },
+      { key: 'scout', count: 1 },
     ]);
     expect(plans).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ slug: "a", origin: "scout" }),
-        expect.objectContaining({ slug: "b", origin: null }),
+        expect.objectContaining({ slug: 'a', origin: 'scout' }),
+        expect.objectContaining({ slug: 'b', origin: null }),
       ]),
     );
   });
 
-  it("an item-derived dimension (importance) still resolves items under aggregateOnly", async () => {
+  it('an item-derived dimension (importance) still resolves items under aggregateOnly', async () => {
     M.listPlanIndexRows.mockResolvedValue([
       row({
-        planSlug: "a",
+        planSlug: 'a',
         items: [
           {
-            id: "P-001",
-            text: "x",
-            status: "todo",
-            importance: "high",
+            id: 'P-001',
+            text: 'x',
+            status: 'todo',
+            importance: 'high',
             blockedBy: [],
             decisionRefs: [],
             phase: null,
           },
         ],
       }),
-      row({ planSlug: "b", items: [] }),
+      row({ planSlug: 'b', items: [] }),
     ]);
     const { groups } = await run({
-      groupBy: "importance",
+      groupBy: 'importance',
       aggregateOnly: true,
     });
     // 'a' has an open high item; 'b' has no open items ⇒ null bucket.
     expect(groups).toEqual([
-      { key: "high", count: 1 },
+      { key: 'high', count: 1 },
       { key: null, count: 1 },
     ]);
   });
 });
 
-describe("plans:list — groupBy cache isolation", () => {
+describe('plans:list — groupBy cache isolation', () => {
   beforeEach(async () => {
     __setCachedReadEnabledForTests(true);
     setFlagOverridesForTest({ [CACHE_LAYER]: true });
@@ -352,18 +359,18 @@ describe("plans:list — groupBy cache isolation", () => {
     __setCachedReadEnabledForTests(false);
   });
 
-  it("an aggregate call does NOT reuse the row-mode cache entry", async () => {
+  it('an aggregate call does NOT reuse the row-mode cache entry', async () => {
     M.listPlanIndexRows.mockResolvedValue([
-      row({ planSlug: "a", status: "active" }),
-      row({ planSlug: "b", status: "shipped" }),
+      row({ planSlug: 'a', status: 'active' }),
+      row({ planSlug: 'b', status: 'shipped' }),
     ]);
     const plain = await run({});
-    expect(plain).not.toHaveProperty("groups");
+    expect(plain).not.toHaveProperty('groups');
 
-    const agg = await run({ groupBy: "status" });
+    const agg = await run({ groupBy: 'status' });
     expect(agg.groups).toEqual([
-      { key: "active", count: 1 },
-      { key: "shipped", count: 1 },
+      { key: 'active', count: 1 },
+      { key: 'shipped', count: 1 },
     ]);
 
     // Distinct cache keys ⇒ the source was fetched once per mode.
@@ -371,14 +378,14 @@ describe("plans:list — groupBy cache isolation", () => {
 
     // ...and each mode is independently cached on repeat.
     await run({});
-    await run({ groupBy: "status" });
+    await run({ groupBy: 'status' });
     expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);
   });
 
-  it("aggregateOnly gets its own entry (rows vs no-rows never collide)", async () => {
-    M.listPlanIndexRows.mockResolvedValue([row({ planSlug: "a" })]);
-    const withRows = await run({ groupBy: "status" });
-    const noRows = await run({ groupBy: "status", aggregateOnly: true });
+  it('aggregateOnly gets its own entry (rows vs no-rows never collide)', async () => {
+    M.listPlanIndexRows.mockResolvedValue([row({ planSlug: 'a' })]);
+    const withRows = await run({ groupBy: 'status' });
+    const noRows = await run({ groupBy: 'status', aggregateOnly: true });
     expect(withRows.plans).toHaveLength(1);
     expect(noRows.plans).toEqual([]);
     expect(M.listPlanIndexRows).toHaveBeenCalledTimes(2);

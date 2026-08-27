@@ -19,8 +19,10 @@ import type { AgentIdentity } from './identity';
 import { sendMessage } from './messages';
 import { fetchUnansweredDirected } from './unanswered-directed';
 import { fetchDirectiveActuationSummaries } from './directive-effect-read';
+import { coordWorkspaceId } from './log';
 
 let fx: BaselineCoordFixture;
+let effectWorkspace: string;
 
 function ident(ownerId: string): AgentIdentity {
   return { ownerId, ownerLabel: ownerId, source: 'static-client', workspaceId: 'default', userId: null } as AgentIdentity;
@@ -34,17 +36,21 @@ const EFFECT_SCOPE = `workitem:papercusp:${EFFECT_ITEM}`;
 
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
+  // The coord log is per-workspace in the production path. Resolve the same
+  // concrete partition used by fetchDirectiveActuationSummaries rather than
+  // assuming the legacy `default` partition used by older fixtures.
+  effectWorkspace = coordWorkspaceId();
 });
 afterAll(async () => {
-  await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = 'default' AND scope = ${EFFECT_SCOPE}`.catch(() => {});
-  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = 'default' AND harness_slug = 'papercusp' AND feature_id = ${EFFECT_ITEM}`.catch(() => {});
+  await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${effectWorkspace} AND scope = ${EFFECT_SCOPE}`.catch(() => {});
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${effectWorkspace} AND harness_slug = 'papercusp' AND feature_id = ${EFFECT_ITEM}`.catch(() => {});
   await fx.admin`TRUNCATE harness_shared.coord_event_log`.catch(() => {});
   await fx.dispose();
 });
 beforeEach(async () => {
   await fx.admin`TRUNCATE harness_shared.coord_event_log`;
-  await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = 'default' AND scope = ${EFFECT_SCOPE}`;
-  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = 'default' AND harness_slug = 'papercusp' AND feature_id = ${EFFECT_ITEM}`;
+  await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${effectWorkspace} AND scope = ${EFFECT_SCOPE}`;
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = ${effectWorkspace} AND harness_slug = 'papercusp' AND feature_id = ${EFFECT_ITEM}`;
 });
 
 describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
@@ -251,7 +257,7 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
       INSERT INTO harness_shared.work_items
         (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts)
       VALUES
-        ('default', 'papercusp', ${EFFECT_ITEM}, 'bug', ${`checkpoint fixture ${EFFECT_ITEM}`}, 'open', 0, 0)
+        (${effectWorkspace}, 'papercusp', ${EFFECT_ITEM}, 'bug', ${`checkpoint fixture ${EFFECT_ITEM}`}, 'open', 0, 0)
     `;
 
     const directive = await sendMessage(LEADER, {
@@ -268,7 +274,7 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
 
     await fx.admin`
       INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, updated_ts)
-      VALUES ('default', ${EFFECT_SCOPE}, 'checkpoint written after directive', ${sentAtMs + 1})
+      VALUES (${effectWorkspace}, ${EFFECT_SCOPE}, 'checkpoint written after directive', ${sentAtMs + 1})
     `;
 
     const actuation = await fetchDirectiveActuationSummaries([MEMBER.ownerId], {
