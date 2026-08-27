@@ -3046,10 +3046,10 @@ export async function unsubscribeIssue(subscriberId: string, id: string): Promis
 }
 
 /** Linkable.link — an issue→target edge (rel 'blocks' | 'relates' | 'duplicates' | …). Phase 2. */
-export async function linkIssue(id: string, dst: ObjectRef, rel: string, by?: string): Promise<void> {
+export async function linkIssue(id: string, dst: ObjectRef, rel: string, by?: string, satisfaction?: 'settled' | 'success'): Promise<void> {
   const src = issueRef(id);
   if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
-    await mirrorWorkItemBlockingEdge(src, dst, { createdBy: by });
+    await mirrorWorkItemBlockingEdge(src, dst, { createdBy: by, satisfaction });
   } else {
     // Non-work blocks (plan items/events) and every other relation remain on the
     // polymorphic coord_links substrate.

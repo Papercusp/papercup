@@ -120,7 +120,7 @@ export interface CreateOneWorkItemArgs {
    *  turns a successful create into an error (the manual work_items:link path stays
    *  available to retry). The tool layer (work_items:create) pins `rel` to the LINK_RELS
    *  vocabulary; the core stays permissive (rel: string), mirroring linkWorkItem. */
-  links?: Array<{ rel: string; target_id?: string; target_kind?: string; target_ref?: string; target_harness?: string }>;
+  links?: Array<{ rel: string; target_id?: string; target_kind?: string; target_ref?: string; target_harness?: string; satisfaction?: 'settled' | 'success' }>;
   /** WI-39604: recurring-detector filing identity. When set, the create routes
    *  through the WI-39594 condition upsert: an OPEN item already holding this key
    *  is refreshed (title/summary → this reading, occurrence bump) and returned
@@ -1139,7 +1139,13 @@ export async function createOneWorkItem(
           : l.target_kind && l.target_ref
             ? { kind: l.target_kind, ref: l.target_ref }
             : null;
-        if (dst) await linkWorkItem(workItem.id, dst, l.rel, { harness: harnessForItem, by: ctx.ownerId });
+        if (dst && (!l.satisfaction || (l.rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')))) {
+          await linkWorkItem(workItem.id, dst, l.rel, {
+            harness: harnessForItem,
+            by: ctx.ownerId,
+            satisfaction: l.satisfaction,
+          });
+        }
       } catch {
         // Non-fatal — an inline edge is best-effort, like the coverage edge.
       }
