@@ -1,0 +1,270 @@
+import { describe, expect, it } from 'vitest';
+import {
+  AdmissionIdempotencyConflictError,
+  AdmissionPersistenceError,
+  Governor,
+  type AdmissionContext,
+} from './admission';
+import {
+  WorkItemAdmissionQueueDriver,
+  type DurableAdmissionQueueStore,
+  type DurableAdmissionRecord,
+  type QueueMutationResult,
+  type StoredAdmissionRecord,
+} from './queue';
+
+class MemoryQueueStore implements DurableAdmissionQueueStore {
+  private seq = 0;
+  private readonly rows = new Map<string, StoredAdmissionRecord>();
+  failEnqueue = false;
+
+  get size(): number {
+    return this.rows.size;
+  }
+
+  private key(namespace: string, idempotencyKey: string): string {
+    return `${namespace}\u0000${idempotencyKey}`;
+  }
+
+  private byReceipt(receiptId: string): StoredAdmissionRecord | null {
+    return [...this.rows.values()].find((row) => row.receiptId === receiptId) ?? null;
+  }
+
+  private replace(stored: StoredAdmissionRecord, record: DurableAdmissionRecord): StoredAdmissionRecord {
+    const next = { receiptId: stored.receiptId, record };
+    this.rows.set(this.key(record.namespace, record.idempotencyKey), next);
+    return next;
+  }
+
+  async enqueue(record: DurableAdmissionRecord) {
+    if (this.failEnqueue) throw new Error('database unavailable');
+    const key = this.key(record.namespace, record.idempotencyKey);
+    const existing = this.rows.get(key);
+    if (existing) return { ...existing, created: false };
+    if (record.coalesceKey) {
+      for (const row of this.rows.values()) {
+        if (
+          row.record.namespace === record.namespace &&
+          row.record.coalesceKey === record.coalesceKey &&
+          ['queued', 'eligible', 'leased', 'running'].includes(row.record.state)
+        ) {
+          this.replace(row, {
+            ...row.record,
+            state: 'superseded',
+            updatedAtMs: record.enqueuedAtMs,
+            decision: {
+              generation: row.record.decision.generation + 1,
+              atMs: record.enqueuedAtMs,
+              reason: 'coalesced-by-newer-request',
+              evidence: { idempotencyKey: record.idempotencyKey },
+            },
+            lease: undefined,
+          });
+        }
+      }
+    }
+    const stored = { receiptId: `WI-${++this.seq}`, record };
+    this.rows.set(key, stored);
+    return { ...stored, created: true };
+  }
+
+  async find(namespace: string, idempotencyKey: string) {
+    return this.rows.get(this.key(namespace, idempotencyKey)) ?? null;
+  }
+
+  async cancel(namespace: string, idempotencyKey: string, reason: string | undefined, nowMs: number) {
+    const stored = await this.find(namespace, idempotencyKey);
+    if (!stored) return null;
+    if (!['queued', 'eligible', 'leased', 'running'].includes(stored.record.state)) {
+      return { ...stored, changed: false };
+    }
+    const next = this.replace(stored, {
+      ...stored.record,
+      state: 'cancelled',
+      updatedAtMs: nowMs,
+      decision: {
+        generation: stored.record.decision.generation + 1,
+        atMs: nowMs,
+        reason: 'cancelled',
+        evidence: reason ? { reason } : {},
+      },
+      lease: undefined,
+      ...(reason ? { cancellationReason: reason } : {}),
+    });
+    return { ...next, changed: true };
+  }
+
+  async leaseNext(namespace: string, owner: string, leaseId: string, ttlMs: number, nowMs: number) {
+    const stored = [...this.rows.values()]
+      .filter((row) => row.record.namespace === namespace && ['queued', 'eligible'].includes(row.record.state))
+      .sort((a, b) => b.record.priority - a.record.priority || a.record.enqueuedAtMs - b.record.enqueuedAtMs)[0];
+    if (!stored) return null;
+    const generation = stored.record.decision.generation + 1;
+    const next = this.replace(stored, {
+      ...stored.record,
+      state: 'leased',
+      updatedAtMs: nowMs,
+      decision: { generation, atMs: nowMs, reason: 'leased', evidence: { owner } },
+      lease: { leaseId, owner, generation, expiresAtMs: nowMs + ttlMs },
+    });
+    return { ...next, changed: true };
+  }
+
+  private leaseMutation(
+    receiptId: string,
+    leaseId: string,
+    mutate: (record: DurableAdmissionRecord) => DurableAdmissionRecord,
+  ): QueueMutationResult | null {
+    const stored = this.byReceipt(receiptId);
+    if (!stored) return null;
+    if (stored.record.lease?.leaseId !== leaseId) return { ...stored, changed: false };
+    return { ...this.replace(stored, mutate(stored.record)), changed: true };
+  }
+
+  async markRunning(receiptId: string, leaseId: string, nowMs: number) {
+    return this.leaseMutation(receiptId, leaseId, (record) => ({
+      ...record,
+      state: 'running',
+      updatedAtMs: nowMs,
+      decision: {
+        generation: record.decision.generation + 1,
+        atMs: nowMs,
+        reason: 'execution-started',
+        evidence: {},
+      },
+    }));
+  }
+
+  async complete(receiptId: string, leaseId: string, resultRef: string | undefined, nowMs: number) {
+    const evidence: Readonly<Record<string, string>> = resultRef ? { resultRef } : {};
+    return this.leaseMutation(receiptId, leaseId, (record) => ({
+      ...record,
+      state: 'completed',
+      updatedAtMs: nowMs,
+      decision: {
+        generation: record.decision.generation + 1,
+        atMs: nowMs,
+        reason: 'execution-completed',
+        evidence,
+      },
+      lease: undefined,
+      ...(resultRef ? { resultRef } : {}),
+    }));
+  }
+
+  async releaseLease(receiptId: string, leaseId: string, nowMs: number) {
+    return this.leaseMutation(receiptId, leaseId, (record) => ({
+      ...record,
+      state: 'queued',
+      updatedAtMs: nowMs,
+      decision: {
+        generation: record.decision.generation + 1,
+        atMs: nowMs,
+        reason: 'lease-released',
+        evidence: {},
+      },
+      lease: undefined,
+    }));
+  }
+
+  async supersede(receiptId: string, replacementReceiptId: string, nowMs: number) {
+    const stored = this.byReceipt(receiptId);
+    if (!stored) return null;
+    if (!['queued', 'eligible', 'leased', 'running'].includes(stored.record.state)) {
+      return { ...stored, changed: false };
+    }
+    const next = this.replace(stored, {
+      ...stored.record,
+      state: 'superseded',
+      updatedAtMs: nowMs,
+      decision: {
+        generation: stored.record.decision.generation + 1,
+        atMs: nowMs,
+        reason: 'superseded',
+        evidence: { replacementReceiptId },
+      },
+      lease: undefined,
+      supersededByReceiptId: replacementReceiptId,
+    });
+    return { ...next, changed: true };
+  }
+}
+
+function governor(store: DurableAdmissionQueueStore, now = () => 1_000) {
+  let request = 0;
+  let lease = 0;
+  const driver = new WorkItemAdmissionQueueDriver(store, {
+    namespace: 'test',
+    now,
+    leaseIdFactory: () => `lease-${++lease}`,
+  });
+  return {
+    driver,
+    governor: new Governor(driver, { now, idFactory: () => `request-${++request}` }),
+  };
+}
+
+describe('WorkItemAdmissionQueueDriver', () => {
+  it('returns one stable durable receipt across process restart and rejects conflicting replay', async () => {
+    const store = new MemoryQueueStore();
+    const first = governor(store).governor;
+    const restarted = governor(store).governor;
+    const request = {
+      idempotencyKey: 'same',
+      admissionClass: 'build',
+      demand: { memoryBytes: 4_096 },
+      payloadRef: 'work-item:WI-source',
+    } as const;
+
+    const a = await first.admit(request);
+    const b = await restarted.admit(request);
+    expect(a).toMatchObject({ kind: 'queued', receipt: { receiptId: 'WI-1', state: 'queued' } });
+    expect(b).toMatchObject({ kind: 'queued', receipt: { receiptId: 'WI-1', state: 'queued' } });
+    expect(store.size).toBe(1);
+
+    await expect(restarted.admit({ ...request, priority: 9 })).rejects.toBeInstanceOf(
+      AdmissionIdempotencyConflictError,
+    );
+  });
+
+  it('never returns a receipt when durable persistence fails', async () => {
+    const store = new MemoryQueueStore();
+    store.failEnqueue = true;
+    await expect(
+      governor(store).governor.admit({ idempotencyKey: 'lost', admissionClass: 'mcp' }),
+    ).rejects.toBeInstanceOf(AdmissionPersistenceError);
+    expect(store.size).toBe(0);
+  });
+
+  it('leases once, rejects a stale lease, and exposes the durable result', async () => {
+    const clock = { now: 10_000 };
+    const store = new MemoryQueueStore();
+    const { governor: api, driver } = governor(store, () => clock.now);
+    await api.admit({ idempotencyKey: 'run', admissionClass: 'process', priority: 2 });
+
+    const [won, lost] = await Promise.all([
+      driver.leaseNext({ owner: 'worker-a', ttlMs: 1_000 }),
+      driver.leaseNext({ owner: 'worker-b', ttlMs: 1_000 }),
+    ]);
+    expect([won, lost].filter(Boolean)).toHaveLength(1);
+    const claim = won ?? lost;
+    if (!claim) throw new Error('expected a lease');
+    expect(claim.lease.owner).toMatch(/^worker-/);
+
+    expect((await driver.markRunning(claim.receiptId, 'stale'))?.changed).toBe(false);
+    expect((await driver.markRunning(claim.receiptId, claim.lease.leaseId))?.record.state).toBe('running');
+    expect((await driver.complete(claim.receiptId, claim.lease.leaseId, 'result:42'))?.record.state).toBe('completed');
+    await expect(api.status('run')).resolves.toMatchObject({ state: 'completed', resultRef: 'result:42' });
+  });
+
+  it('cancels idempotently and coalesces an older active receipt', async () => {
+    const store = new MemoryQueueStore();
+    const { governor: api } = governor(store);
+    const old = await api.admit({ idempotencyKey: 'old', admissionClass: 'indexing', coalesceKey: 'index:main' });
+    await api.admit({ idempotencyKey: 'new', admissionClass: 'indexing', coalesceKey: 'index:main' });
+    expect(await api.status('old')).toMatchObject({ state: 'superseded' });
+    expect(await api.cancel('new', 'operator stopped it')).toMatchObject({ cancelled: true, state: 'cancelled' });
+    expect(await api.cancel('new')).toMatchObject({ cancelled: false, state: 'cancelled' });
+    expect((old as { context: AdmissionContext }).context.rootRequestId).toBeTruthy();
+  });
+});

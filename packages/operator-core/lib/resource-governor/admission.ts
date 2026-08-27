@@ -10,6 +10,8 @@ import { randomUUID } from 'node:crypto';
 
 export const ADMISSION_CONTRACT_VERSION = 1 as const;
 export const ADMISSION_IDEMPOTENCY_KEY_MAX_CHARS = 200;
+export const ADMISSION_COALESCE_KEY_MAX_CHARS = 200;
+export const ADMISSION_PAYLOAD_REF_MAX_CHARS = 2_000;
 
 export type KnownAdmissionClass =
   | 'agent'
@@ -64,6 +66,10 @@ export interface AdmissionRequest {
   readonly deadlineAtMs?: number;
   /** Incremental demand introduced by this request. */
   readonly demand?: ResourceDemand;
+  /** Durable content-addressed or canonical work reference; never the payload itself. */
+  readonly payloadRef?: string;
+  /** Optional latest-wins lane. A newer accepted request supersedes older queued work in the same lane. */
+  readonly coalesceKey?: string;
   readonly parent?: AdmissionContext;
   /** Must be authorized by the governor's registry; callers cannot self-exempt. */
   readonly bypassKey?: string;
@@ -76,6 +82,8 @@ export interface NormalizedAdmissionRequest {
   readonly priority: number;
   readonly deadlineAtMs: number | null;
   readonly demand: Readonly<ResourceDemand>;
+  readonly payloadRef: string | null;
+  readonly coalesceKey: string | null;
   readonly parent: AdmissionContext | null;
   readonly bypassKey: string | null;
   readonly metadata: Readonly<Record<string, AdmissionMetadataValue>>;
@@ -92,6 +100,7 @@ export type QueueReceiptState =
   | 'expired';
 
 export interface QueueReceipt {
+  /** Canonical durable work-item id. */
   readonly receiptId: string;
   readonly idempotencyKey: string;
   readonly state: QueueReceiptState;
@@ -127,6 +136,7 @@ export interface AdmissionStatus {
   readonly idempotencyKey: string;
   readonly state: QueueReceiptState | 'admitted' | 'bypass' | 'unknown';
   readonly receipt?: QueueReceipt;
+  readonly resultRef?: string;
 }
 
 export interface AdmissionCancellation {
@@ -241,6 +251,16 @@ export function normalizeAdmissionRequest(input: AdmissionRequest): NormalizedAd
   if (input.deadlineAtMs !== undefined && (!Number.isFinite(input.deadlineAtMs) || input.deadlineAtMs < 0)) {
     throw new AdmissionValidationError('deadlineAtMs must be a finite non-negative timestamp');
   }
+  const payloadRef = input.payloadRef?.trim() || null;
+  if (payloadRef && payloadRef.length > ADMISSION_PAYLOAD_REF_MAX_CHARS) {
+    throw new AdmissionValidationError(`payloadRef must contain at most ${ADMISSION_PAYLOAD_REF_MAX_CHARS} characters`);
+  }
+  const coalesceKey = input.coalesceKey?.trim() || null;
+  if (coalesceKey && coalesceKey.length > ADMISSION_COALESCE_KEY_MAX_CHARS) {
+    throw new AdmissionValidationError(
+      `coalesceKey must contain at most ${ADMISSION_COALESCE_KEY_MAX_CHARS} characters`,
+    );
+  }
   const metadata = Object.freeze(
     Object.fromEntries(Object.entries(input.metadata ?? {}).sort(([a], [b]) => a.localeCompare(b))),
   );
@@ -250,19 +270,24 @@ export function normalizeAdmissionRequest(input: AdmissionRequest): NormalizedAd
     priority,
     deadlineAtMs: input.deadlineAtMs ?? null,
     demand: normalizeResourceDemand(input.demand),
+    payloadRef,
+    coalesceKey,
     parent: input.parent ?? null,
     bypassKey: input.bypassKey?.trim() || null,
     metadata,
   });
 }
 
-function requestFingerprint(request: NormalizedAdmissionRequest): string {
+/** Stable serialized identity used by durable drivers to reject conflicting replay. */
+export function admissionRequestFingerprint(request: NormalizedAdmissionRequest): string {
   return JSON.stringify({
     idempotencyKey: request.idempotencyKey,
     admissionClass: request.admissionClass,
     priority: request.priority,
     deadlineAtMs: request.deadlineAtMs,
     demand: request.demand,
+    payloadRef: request.payloadRef,
+    coalesceKey: request.coalesceKey,
     parentRequestId: request.parent?.requestId ?? null,
     bypassKey: request.bypassKey,
     metadata: request.metadata,
@@ -290,7 +315,7 @@ export class Governor {
 
   admit(input: AdmissionRequest): Promise<AdmissionOutcome> {
     const request = normalizeAdmissionRequest(input);
-    const fingerprint = requestFingerprint(request);
+    const fingerprint = admissionRequestFingerprint(request);
     const existing = this.inFlight.get(request.idempotencyKey);
     if (existing) {
       if (existing.fingerprint !== fingerprint) {
