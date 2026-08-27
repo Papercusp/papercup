@@ -777,8 +777,10 @@ def _scan_strip_nonexecuted_heredocs(cmd):
 
 # Shell metacharacters neutralized when a MULTI-WORD quoted span is unwrapped.
 # Blanking them keeps the span's words visible to a guard while guaranteeing the
-# unwrap can never manufacture a separator/redirect that wasn't there.
-_SCAN_INERT_METACHARS = re.compile(r'[;&|<>()`{}\n]')
+# unwrap can never manufacture a separator/redirect that wasn't there. Both
+# redirect directions matter: a quoted ASCII arrow such as `=>` must not expose
+# its `>` when the span is made scannable (EI-21540753943219201).
+_SCAN_INERT_METACHARS = re.compile(r'[;&|<>()`{}>\n]')
 
 
 def _scan_unquote_span(inner):

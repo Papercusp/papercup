@@ -3262,6 +3262,12 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     );
   });
 
+  it('allows a quoted ASCII arrow instead of treating its `>` as a redirect', () => {
+    expectAllow(
+      runGate(bashCmd('echo "=> x"', { cwd: CANON }), CANON_ENV),
+    );
+  });
+
   /**
    * EI-19301210652900510 — a quoted expansion with a path suffix is still an
    * unresolved redirect operand, not an empty span. If quote normalization

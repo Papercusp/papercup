@@ -94,11 +94,20 @@ export async function markRespawnExpected(
   try {
     const sql = opts.sql ?? getOrgPg().sql;
     await sql`
-      INSERT INTO harness_shared.session_respawn_expected (owner_id, expires_at, reason)
-      VALUES (${ownerId}, now() + make_interval(secs => ${ttlSec}), 'carry-respawn')
-      ON CONFLICT (owner_id) DO UPDATE
-        SET expires_at = EXCLUDED.expires_at,
-            created_at = now()`;
+      WITH marked AS (
+        INSERT INTO harness_shared.session_respawn_expected (owner_id, expires_at, reason)
+        VALUES (${ownerId}, now() + make_interval(secs => ${ttlSec}), 'carry-respawn')
+        ON CONFLICT (owner_id) DO UPDATE
+          SET expires_at = EXCLUDED.expires_at,
+              created_at = now()
+        RETURNING owner_id
+      )
+      UPDATE harness_shared.coord_presence AS presence
+         SET host = '',
+             pid = NULL,
+             tty = NULL
+        FROM marked
+       WHERE presence.owner_id = marked.owner_id`;
   } catch (e) {
     console.warn(
       `[carry-respawn-marker] could not mark respawn-expected for ${ownerId} — its SessionEnd will be read as a death and its claims freed by the P-001 backstop: ${

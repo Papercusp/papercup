@@ -855,6 +855,68 @@ export function makeHeadlessClaudeOnboardingStateMachine({ enabled, startupMs, n
         bufferedChars: number;
     };
 };
+/** Session-env tunable detection window for the scripted Claude resume menu. */
+export function claudeResumeCompactionStartupMs(env?: NodeJS.ProcessEnv): any;
+/** Session-env tunable bounded recovery window after the menu is selected. */
+export function claudeResumeCompactionRecoveryMs(env?: NodeJS.ProcessEnv): any;
+/**
+ * @param {{enabled?: boolean, startupMs?: number, recoveryMs?: number, now?: () => number}} [options]
+ */
+export function makeClaudeResumeCompactionRecoveryStateMachine({ enabled, startupMs, recoveryMs, now, }?: {
+    enabled?: boolean;
+    startupMs?: number;
+    recoveryMs?: number;
+    now?: () => number;
+}): {
+    observe: (chunk: any, at?: number) => {
+        action: string;
+        phase: string;
+        recoveryStarted: boolean;
+        selectedSummary: boolean;
+        awaitingPrompt: boolean;
+        ready: boolean;
+        timedOut: boolean;
+        active: boolean;
+    };
+    expire: (at?: number) => {
+        action: string;
+        phase: string;
+        recoveryStarted: boolean;
+        selectedSummary: boolean;
+        awaitingPrompt: boolean;
+        ready: boolean;
+        timedOut: boolean;
+        active: boolean;
+    };
+    tick: (at?: number) => {
+        action: string;
+        phase: string;
+        recoveryStarted: boolean;
+        selectedSummary: boolean;
+        awaitingPrompt: boolean;
+        ready: boolean;
+        timedOut: boolean;
+        active: boolean;
+    };
+    isReady: () => boolean;
+    isAwaitingPrompt: () => boolean;
+    isTimedOut: () => boolean;
+    recoveryStarted: () => boolean;
+    status: () => {
+        startedAt: number;
+        detectionExpiresAt: any;
+        recoveryExpiresAt: any;
+        bufferedChars: number;
+        action: string;
+        phase: string;
+        recoveryStarted: boolean;
+        selectedSummary: boolean;
+        awaitingPrompt: boolean;
+        ready: boolean;
+        timedOut: boolean;
+        active: boolean;
+    };
+};
 export function makeScrollbackGuard(): {
     /** @param {string} chunk @returns {string} bytes safe to write to the terminal */
     filter(chunk: string): string;
@@ -1414,6 +1476,23 @@ export const ACTIVITY_PERSIST_MS: 15000;
  * window.
  */
 export const HEADLESS_CLAUDE_ONBOARDING_STARTUP_MS: 30000;
+/**
+ * Scripted Claude resumes can open an interactive recovery choice instead of
+ * the composer when the saved transcript is too large for the current context:
+ *
+ *   Autocompact is thrashing
+ *   1. Resume from summary (recommended)
+ *   2. Resume full session as-is
+ *   3. Don't ask again
+ *
+ * A quiet TUI is not a prompt in this state. Keep the recovery separate from
+ * the ordinary startup/readiness heuristic so the kickoff cannot be pasted
+ * into the menu, and accept the safe default exactly once. The raw output is
+ * accumulated before ANSI stripping because pty chunks may split both an ANSI
+ * sequence and the menu text itself. Pure and exported for tests.
+ */
+export const CLAUDE_RESUME_COMPACTION_STARTUP_MS: 30000;
+export const CLAUDE_RESUME_COMPACTION_RECOVERY_MS: 30000;
 /** WI-41386 — the SCROLLBACK GUARD on the child → terminal bridge.
  *
  *  `ESC[3J` (ED param 3, "erase saved lines") deletes the TERMINAL'S SCROLLBACK

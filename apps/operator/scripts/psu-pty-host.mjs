@@ -1709,13 +1709,15 @@ export function makeSubmitVerifier({
   const getIn = typeof lastInputAt === 'function' ? lastInputAt : () => 0;
   return {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
-     *  Returns { polls, resubmits, aborted } (aborted = 'human-input' | null). */
+     *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | null;
+     *  exhausted = no output was observed after the maximum resubmits). */
     async verify() {
       const inputAtStart = getIn() || 0;
       let resubmits = 0;
       let outputObservedAfterResubmit = false;
       let outputAtLastResubmit = null;
       let exhaustionNotified = false;
+      let exhausted = false;
       let i = 0;
       const notifyExhausted = () => {
         // A resubmit can legitimately wake a previously silent turn. Once any
@@ -1729,6 +1731,7 @@ export function makeSubmitVerifier({
           return;
         }
         exhaustionNotified = true;
+        exhausted = true;
         try {
           onExhausted({
             polls: i,
@@ -1773,7 +1776,7 @@ export function makeSubmitVerifier({
       // following iteration to observe a quiet poll. Treat the window itself as
       // exhausted, but keep the same output-after-resubmit suppression rule.
       if (i >= polls) notifyExhausted();
-      return { polls: i, resubmits, aborted: null };
+      return { polls: i, resubmits, aborted: null, exhausted };
     },
   };
 }
@@ -2115,6 +2118,173 @@ export function makeHeadlessClaudeOnboardingStateMachine({
       expired: phase === 'expired',
       startedAt,
       expiresAt: startedAt + windowMs,
+      bufferedChars: observed.length,
+    }),
+  };
+}
+
+/**
+ * Scripted Claude resumes can open an interactive recovery choice instead of
+ * the composer when the saved transcript is too large for the current context:
+ *
+ *   Autocompact is thrashing
+ *   1. Resume from summary (recommended)
+ *   2. Resume full session as-is
+ *   3. Don't ask again
+ *
+ * A quiet TUI is not a prompt in this state. Keep the recovery separate from
+ * the ordinary startup/readiness heuristic so the kickoff cannot be pasted
+ * into the menu, and accept the safe default exactly once. The raw output is
+ * accumulated before ANSI stripping because pty chunks may split both an ANSI
+ * sequence and the menu text itself. Pure and exported for tests.
+ */
+export const CLAUDE_RESUME_COMPACTION_STARTUP_MS = 30_000;
+export const CLAUDE_RESUME_COMPACTION_RECOVERY_MS = 30_000;
+const CLAUDE_RESUME_COMPACTION_BUFFER_CHARS = 32_768;
+const CLAUDE_RESUME_COMPACTION_MENU_RE =
+  /autocompact\s+is\s+thrashing/i;
+const CLAUDE_RESUME_COMPACTION_SUMMARY_RE =
+  /resume\s+from\s+summary\b/i;
+const CLAUDE_RESUME_COMPACTION_FULL_RE =
+  /resume\s+full\s+session\s+as[\s-]*is\b/i;
+const CLAUDE_RESUME_COMPACTION_DONT_ASK_RE =
+  /don['’]t\s+ask\s+again\b/i;
+
+function claudeStandaloneComposerPromptVisible(visible) {
+  return String(visible ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .some((line) => /^(?:❯|>|╰─>)\s*$/u.test(line));
+}
+
+function claudeResumeCompactionMenuVisible(visible) {
+  const text = String(visible ?? '');
+  return (
+    CLAUDE_RESUME_COMPACTION_MENU_RE.test(text) &&
+    CLAUDE_RESUME_COMPACTION_SUMMARY_RE.test(text) &&
+    CLAUDE_RESUME_COMPACTION_FULL_RE.test(text) &&
+    CLAUDE_RESUME_COMPACTION_DONT_ASK_RE.test(text)
+  );
+}
+
+/** Session-env tunable detection window for the scripted Claude resume menu. */
+export function claudeResumeCompactionStartupMs(env = process.env) {
+  return positiveNumber(
+    env.PAPERCUSP_PSU_PTY_RESUME_COMPACTION_STARTUP_MS,
+    CLAUDE_RESUME_COMPACTION_STARTUP_MS,
+  );
+}
+
+/** Session-env tunable bounded recovery window after the menu is selected. */
+export function claudeResumeCompactionRecoveryMs(env = process.env) {
+  return positiveNumber(
+    env.PAPERCUSP_PSU_PTY_RESUME_COMPACTION_RECOVERY_MS,
+    CLAUDE_RESUME_COMPACTION_RECOVERY_MS,
+  );
+}
+
+/**
+ * @param {{enabled?: boolean, startupMs?: number, recoveryMs?: number, now?: () => number}} [options]
+ */
+export function makeClaudeResumeCompactionRecoveryStateMachine({
+  enabled = true,
+  startupMs = CLAUDE_RESUME_COMPACTION_STARTUP_MS,
+  recoveryMs = CLAUDE_RESUME_COMPACTION_RECOVERY_MS,
+  now = () => Date.now(),
+} = {}) {
+  const clock = typeof now === 'function' ? now : () => Date.now();
+  const detectionWindowMs = positiveNumber(startupMs, CLAUDE_RESUME_COMPACTION_STARTUP_MS);
+  const recoveryWindowMs = positiveNumber(recoveryMs, CLAUDE_RESUME_COMPACTION_RECOVERY_MS);
+  const startedAt = clock();
+  let phase = enabled ? 'watching' : 'disabled';
+  let recoveryStartedAt = 0;
+  let observed = '';
+
+  const snapshot = (action = 'none') => ({
+    action,
+    phase,
+    recoveryStarted: recoveryStartedAt > 0,
+    selectedSummary: recoveryStartedAt > 0,
+    awaitingPrompt: phase === 'awaiting-prompt',
+    ready:
+      phase === 'disabled' ||
+      phase === 'watching' ||
+      phase === 'watch-expired' ||
+      phase === 'ready',
+    timedOut: phase === 'timed-out',
+    active: phase === 'watching' || phase === 'awaiting-prompt',
+  });
+
+  const expireIfNeeded = (at = clock()) => {
+    if (phase === 'watching' && at - startedAt >= detectionWindowMs) {
+      phase = 'watch-expired';
+      observed = '';
+      return snapshot('expired');
+    }
+    if (phase === 'awaiting-prompt' && at - recoveryStartedAt >= recoveryWindowMs) {
+      phase = 'timed-out';
+      observed = '';
+      return snapshot('expired');
+    }
+    return snapshot();
+  };
+
+  const observe = (chunk, at = clock()) => {
+    const expiration = expireIfNeeded(at);
+    if (expiration.action === 'expired') return expiration;
+    if (phase === 'disabled' || phase === 'watch-expired' || phase === 'ready' || phase === 'timed-out') {
+      return snapshot();
+    }
+
+    observed = `${observed}${String(chunk ?? '')}`;
+    if (observed.length > CLAUDE_RESUME_COMPACTION_BUFFER_CHARS) {
+      observed = observed.slice(-CLAUDE_RESUME_COMPACTION_BUFFER_CHARS);
+    }
+    const visible = stripAnsi(observed);
+
+    if (phase === 'watching' && claudeResumeCompactionMenuVisible(visible)) {
+      // Clear the menu paint before waiting for a post-selection repaint. This
+      // prevents its selected-row `❯` from being mistaken for the composer.
+      phase = 'awaiting-prompt';
+      recoveryStartedAt = at;
+      observed = '';
+      return snapshot('select-summary');
+    }
+    if (phase === 'awaiting-prompt' && claudeStandaloneComposerPromptVisible(visible)) {
+      phase = 'ready';
+      observed = '';
+      return snapshot('ready');
+    }
+    return snapshot();
+  };
+
+  const expire = (at = clock()) => {
+    if (phase === 'watching') {
+      phase = 'watch-expired';
+      observed = '';
+      return snapshot('expired');
+    }
+    if (phase === 'awaiting-prompt') {
+      phase = 'timed-out';
+      observed = '';
+      return snapshot('expired');
+    }
+    return snapshot();
+  };
+
+  return {
+    observe,
+    expire,
+    tick: expireIfNeeded,
+    isReady: () => snapshot().ready,
+    isAwaitingPrompt: () => phase === 'awaiting-prompt',
+    isTimedOut: () => phase === 'timed-out',
+    recoveryStarted: () => recoveryStartedAt > 0,
+    status: () => ({
+      ...snapshot(),
+      startedAt,
+      detectionExpiresAt: startedAt + detectionWindowMs,
+      recoveryExpiresAt: recoveryStartedAt ? recoveryStartedAt + recoveryWindowMs : null,
       bufferedChars: observed.length,
     }),
   };

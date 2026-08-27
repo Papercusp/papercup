@@ -25,11 +25,18 @@ import {
  * loudly instead of silently returning "no mark" (which would make a broken
  * implementation look like a correctly-empty one).
  */
-function makeFakeSql(): { sql: Sql; store: Map<string, Date>; fail: (on: RegExp) => void } {
+function makeFakeSql(): {
+  sql: Sql;
+  store: Map<string, Date>;
+  statements: string[];
+  fail: (on: RegExp) => void;
+} {
   const store = new Map<string, Date>();
+  const statements: string[] = [];
   let failOn: RegExp | null = null;
   const fn = (strings: TemplateStringsArray, ...vals: unknown[]): Promise<unknown[]> => {
     const text = strings.join(' ? ');
+    statements.push(text);
     if (failOn?.test(text)) return Promise.reject(new Error('simulated PG failure'));
     if (/INSERT INTO harness_shared\.session_respawn_expected/.test(text)) {
       const [owner, ttlSec] = vals as [string, number];
@@ -51,6 +58,7 @@ function makeFakeSql(): { sql: Sql; store: Map<string, Date>; fail: (on: RegExp)
   return {
     sql: fn as unknown as Sql,
     store,
+    statements,
     fail: (on: RegExp) => {
       failOn = on;
     },
@@ -67,6 +75,16 @@ describe('carry-respawn-marker', () => {
     const { sql } = makeFakeSql();
     await markRespawnExpected('su-a', RESPAWN_EXPECTED_TTL_MS, { sql });
     expect(await consumeRespawnExpected('su-a', { sql })).toBe(true);
+  });
+
+  it('atomically invalidates the predecessor process identity when marking a respawn', async () => {
+    const { sql, statements } = makeFakeSql();
+    await markRespawnExpected('su-respawn', RESPAWN_EXPECTED_TTL_MS, { sql });
+
+    expect(statements[0]).toMatch(/WITH marked AS/);
+    expect(statements[0]).toMatch(/UPDATE harness_shared\.coord_presence/);
+    expect(statements[0]).toMatch(/SET host = ''[\s\S]*pid = NULL[\s\S]*tty = NULL/);
+    expect(statements[0]).toMatch(/presence\.owner_id = marked\.owner_id/);
   });
 
   it('consuming is SINGLE-USE — a second check for the same owner is false', async () => {

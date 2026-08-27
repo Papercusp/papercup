@@ -103,6 +103,52 @@ beforeEach(() => {
   ];
 });
 
+/* ── the repair door for an unlaunchable install_slug (EI-21563406996333542)
+   ─────────────────────────────────────────────────────────────────────────────
+   A goal created from a workspace-global session was written with
+   `install_slug = '*'`, which reads healthy everywhere and is refused by
+   `adv/launch-su` at every holder spawn — so the goal could never start and
+   there was no way to fix the row in place. This door is that way.
+
+   The subtle failure mode is the SECOND one below: a repair door that admits a
+   value the LAUNCH door refuses just moves the bug rather than fixing it. That
+   is why the validation and the launch door share HARNESS_SLUG_RE instead of
+   each carrying a copy — the assertion here is against the same constant
+   `adv/launch-su` applies, so a drift between them fails HERE rather than at a
+   holder launch weeks later. ── */
+describe('goals:update — install_slug repair cannot write an unlaunchable value', () => {
+  const INSTALL_SLUG_PARAM = 8;
+  const writtenInstallSlug = (): unknown => updateCall().params[INSTALL_SLUG_PARAM];
+
+  it('REFUSES the wildcard "*" — the exact value that produced the unlaunchable goal', () => {
+    expect(tool.args.safeParse({ id: 'g1', installSlug: '*' }).success).toBe(false);
+  });
+
+  it('refuses every other value the launch door would reject', () => {
+    for (const bad of ['all', 'a/b', 'a b', 'a:b', '', 'x'.repeat(121)]) {
+      expect(tool.args.safeParse({ id: 'g1', installSlug: bad }).success).toBe(false);
+      // Cross-check against the launch door's own predicate: anything this
+      // schema accepts must be launchable, and vice versa.
+      expect(HARNESS_SLUG_RE.test(bad) && bad.length <= 120).toBe(false);
+    }
+  });
+
+  it('accepts a concrete Pot slug and WRITES it', async () => {
+    expect(tool.args.safeParse({ id: 'g1', installSlug: PLATFORM_POT_SLUG }).success).toBe(true);
+    await tool.handler(
+      tool.args.parse({ id: 'g1', installSlug: PLATFORM_POT_SLUG }) as never,
+      CTX() as never,
+    );
+    expect(writtenInstallSlug()).toBe(PLATFORM_POT_SLUG);
+  });
+
+  it('preserves the existing install_slug when the arg is omitted', async () => {
+    existingRow = { ...(existingRow as Record<string, unknown>), install_slug: 'some-other-pot' };
+    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
+    expect(writtenInstallSlug()).toBe('some-other-pot');
+  });
+});
+
 describe('goals:update — partial writes preserve untouched state', () => {
   it('reporting spend does NOT clear the kill criterion', async () => {
     await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);

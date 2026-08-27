@@ -36,9 +36,13 @@ import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 import { isLaunchAccountValue } from '../../../agent-config-constants';
 import { isLaunchableMode, LAUNCHABLE_MODE_IDS } from '../../../modes/registry';
 import { activeWorkspaceId } from '../../../workspace-registry';
+import { HARNESS_SLUG_RE } from '../../../harness-slug';
 
 const JSON_HEADERS = { 'content-type': 'application/json' } as const;
-const SLUG_RE = /^[A-Za-z0-9._-]+$/;
+// EI-21563406996333542: shared with the WRITE doors (goals:update) so a slug can
+// never be stored that this launch door will later refuse. Same value as the
+// private const it replaces.
+const SLUG_RE = HARNESS_SLUG_RE;
 // model fuzzy-match (e.g. `anthropic/claude-opus-4-7`, `gpt-5.5`) + recorded
 // session ids — broader than SLUG_RE (slash/colon allowed), still no shell
 // metacharacters (shellEscape is the real guard; this rejects the absurd).

@@ -13,6 +13,8 @@
 
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import tool, { goalId, GOAL_STATUSES } from './create';
+import { PLATFORM_POT_SLUG } from '@papercusp/operator-core/lib/platform-pot-slug';
+import { HARNESS_SLUG_RE } from '@papercusp/operator-core/lib/harness-slug';
 
 // ── P-010 (consult-min-max-and-rubric-vetting-2026-08-17): the goal-kickoff
 // consult's wiring is dynamically imported by the handler; mock every leg so
@@ -139,6 +141,63 @@ describe('goals:create — workspace resolution', () => {
     expect(res.data).toBeNull();
     expect(res.degradedReasons?.join(' ')).toMatch(/harness/i);
     expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(false);
+  });
+});
+
+/* ── the wildcard install_slug that produced an unlaunchable goal
+   (EI-21563406996333542) ──────────────────────────────────────────────────────
+   `install_slug` used to be `ctx.harnessSlug` RAW, so a workspace-global session
+   stored the wildcard `'*'`. Nothing complained: it satisfies the NOT NULL, reads
+   healthy on every surface, and the goal sat `active` looking perfectly ordinary.
+   It was PERMANENTLY UNLAUNCHABLE — `adv/launch-su` refuses a slug failing
+   HARNESS_SLUG_RE, so the holder spawn died with a bare "invalid harness slug"
+   that pointed nowhere near creation.
+
+   The reason this stayed invisible is worth stating, because it is what makes a
+   regression here expensive rather than merely wrong: the `launchSettings.autoStart`
+   leg is itself unreachable (EI-21562402496780915), so NOTHING ever attempted to
+   launch such a goal. A write bug whose only detector is a code path that never
+   runs is discovered by a human wondering why a goal never started.
+
+   So these assert the STORED value, not just the returned one — the bug was
+   entirely about what landed in the column. ── */
+describe('goals:create — a wildcard scope resolves to a LAUNCHABLE install_slug', () => {
+  /** `install_slug` is the 2nd bound param of the goals INSERT (id, install_slug, …). */
+  const writtenInstallSlug = (): unknown =>
+    calls.find((c) => /INSERT INTO\s+harness_shared\.goals/.test(c.sql))?.params[1];
+
+  for (const wildcard of ['*', 'all']) {
+    it(`resolves the workspace-global scope ${JSON.stringify(wildcard)} to the platform Pot`, async () => {
+      const res = await call(ARGS(), CTX({ harnessSlug: wildcard }));
+      // What actually reached the column — the bug was a stored value, so the
+      // returned field alone would not have caught it.
+      expect(writtenInstallSlug()).toBe(PLATFORM_POT_SLUG);
+      expect((res.data as { install_slug: string }).install_slug).toBe(PLATFORM_POT_SLUG);
+    });
+
+    it(`never stores ${JSON.stringify(wildcard)} raw — the stored slug must satisfy the LAUNCH door`, async () => {
+      await call(ARGS(), CTX({ harnessSlug: wildcard }));
+      const stored = writtenInstallSlug();
+      expect(stored).not.toBe(wildcard);
+      // The invariant that actually matters, asserted against the same constant
+      // `adv/launch-su` applies — not a copy of the pattern, which is free to drift.
+      expect(HARNESS_SLUG_RE.test(String(stored))).toBe(true);
+    });
+  }
+
+  it('leaves a concrete harness slug alone — resolution is scoped to the wildcards', async () => {
+    await call(ARGS(), CTX({ harnessSlug: 'some-other-pot' }));
+    expect(writtenInstallSlug()).toBe('some-other-pot');
+  });
+
+  /* The calibration case. Without it, every assertion above also passes when the
+     wildcard is simply never reached — e.g. if a refusal moved ahead of the
+     resolution and no INSERT ran at all, `writtenInstallSlug()` is `undefined`
+     and `.not.toBe('*')` is trivially true. This pins that the fixture really
+     does drive an insert. */
+  it('CONTROL: the fixture reaches the insert at all', async () => {
+    await call(ARGS(), CTX());
+    expect(writtenInstallSlug()).toBe('papercusp');
   });
 });
 
