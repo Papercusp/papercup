@@ -20,7 +20,6 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { computeVerdict } from './contract';
-import { SEPARATION_FLOOR } from './corpus/harness';
 import {
   CALIBRATION,
   CURRENT_POLICY_VERSION,
@@ -31,7 +30,7 @@ import {
   explainPolicy,
   resolvePolicy,
 } from './policy';
-import type { ClassCalibration } from './policy-shape';
+import { SEPARATION_FLOOR, type ClassCalibration } from './policy-shape';
 
 /** The legacy build-regression threshold D-005 forbids inheriting. */
 const FORBIDDEN_LEGACY_THRESHOLD = 0.05;

@@ -15,6 +15,17 @@ import type { CaptureEnvironment, ReferenceClass } from './contract';
 /** Bump when a field's meaning changes such that an older artifact cannot be read. */
 export const CALIBRATION_SCHEMA_VERSION = 1 as const;
 
+/**
+ * Minimum regression/noise separation required before a class may gate.
+ *
+ * This lives beside the shared calibration artifact shape, not in the
+ * test-only corpus harness. `policy.ts` is production code bundled into the
+ * desktop sidecar; importing this constant through corpus/harness pulled its
+ * CommonJS `pngjs` devDependency into the runtime graph and made a packaged VM
+ * fail at boot when that test dependency was absent.
+ */
+export const SEPARATION_FLOOR = 3;
+
 /** One measured comparison. */
 export interface CalibrationSample {
   readonly caseId: string;

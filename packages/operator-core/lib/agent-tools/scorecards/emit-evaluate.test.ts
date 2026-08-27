@@ -137,6 +137,24 @@ describe('emitScorecard', () => {
     expect(captureM).not.toHaveBeenCalled();
   });
 
+  it('refuses a retired acceptance rubric before any revision read, deduplication, or ledger write', async () => {
+    getRubricM.mockResolvedValue({ ...ACCEPTANCE_RUBRIC, status: 'retired' } as Rubric);
+
+    const r = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-grader' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'retired_acceptance_rubric',
+      error: expect.stringContaining('terminal subject plan'),
+    });
+    expect(getRubricPlanRevisionM).not.toHaveBeenCalled();
+    expect(listM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
   it('empty ratings → ok:false with missing criteria, never files an incomplete card', async () => {
     const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: {} }, { createdBy: 'su-1' });
     expect(r).toMatchObject({

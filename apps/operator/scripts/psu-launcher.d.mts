@@ -1208,12 +1208,13 @@ export function stripCodexGatewayConfig(configText: any): string;
  *
  * @param {string} configText  the existing config.toml text ('' when absent)
  * @param {string | null} [account]  the account id to PIN to, or null for the unpinned/default route
- * @param {{ gatewayOn?: boolean, ownerId?: string | null, keepExistingWhenUnrouted?: boolean }} [opts]
+ * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepExistingWhenUnrouted?: boolean }} [opts]
  * @returns {string}
  */
-export function codexGatewayConfigPatch(configText: string, account?: string | null, { gatewayOn, ownerId, keepExistingWhenUnrouted }?: {
+export function codexGatewayConfigPatch(configText: string, account?: string | null, { gatewayOn, ownerId, priority, keepExistingWhenUnrouted }?: {
     gatewayOn?: boolean;
     ownerId?: string | null;
+    priority?: string | null;
     keepExistingWhenUnrouted?: boolean;
 }): string;
 /** The provider id a codex rollout is BOUND to (`session_meta.model_provider`

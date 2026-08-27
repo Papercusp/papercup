@@ -34,8 +34,13 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
+import { SEPARATION_FLOOR } from '../policy-shape';
 import { CORPUS_IMAGES, imageByKey } from './cases';
 import { decodePngDimensions, encodePng, sha256 } from './synthesize';
+
+// Compatibility export for calibration callers; the authority lives in the
+// production-safe policy-shape module so policy.ts never imports test corpus.
+export { SEPARATION_FLOOR };
 
 const requireCjs = createRequire(import.meta.url);
 
@@ -212,8 +217,6 @@ export async function compareWithEngine(
  * than infinitely good, so it is reported as `Infinity` separation only when the
  * regression is itself non-zero, and as `NaN` when neither differs at all.
  */
-export const SEPARATION_FLOOR = 3;
-
 export interface ClassCalibration {
   readonly referenceClass: string;
   readonly engine: EngineId;

@@ -51,6 +51,7 @@
  */
 import { afterEach, describe, it, expect } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -243,6 +244,44 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
       expect(reads).toEqual(['/repo/.git', '/repo/.git/HEAD', '/repo/.git/refs/heads/staging']);
       expect(reads.length).toBeLessThanOrEqual(3);
     });
+  });
+});
+
+describe('completionTreeStamp — committed submodule content identity', () => {
+  it('resolves a declared descendant through the superproject gitlink', () => {
+    const root = mkdtempSync(join(tmpdir(), 'completion-submodule-'));
+    TEMP_ROOTS.push(root);
+    const submodule = join(root, 'libs', 'nested');
+    const changed = join(submodule, 'src', 'fix.ts');
+    mkdirSync(join(submodule, 'src'), { recursive: true });
+
+    const git = (cwd: string, args: string[]) =>
+      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    git(root, ['init', '-q']);
+    git(root, ['config', 'user.email', 'completion-test@example.invalid']);
+    git(root, ['config', 'user.name', 'Completion Test']);
+    git(submodule, ['init', '-q']);
+    git(submodule, ['config', 'user.email', 'completion-test@example.invalid']);
+    git(submodule, ['config', 'user.name', 'Completion Test']);
+    writeFileSync(changed, 'export const fixed = true;\n');
+    git(submodule, ['add', 'src/fix.ts']);
+    git(submodule, ['commit', '-qm', 'nested fix']);
+    const submoduleHead = git(submodule, ['rev-parse', 'HEAD']);
+
+    writeFileSync(join(root, 'README.md'), 'parent\n');
+    git(root, ['add', 'README.md']);
+    git(root, ['update-index', '--add', '--cacheinfo', `160000,${submoduleHead},libs/nested`]);
+    git(root, ['commit', '-qm', 'pin nested repo']);
+
+    const stamp = completionTreeStamp({ repoRoot: root, filesChanged: ['libs/nested/src/fix.ts'] });
+    expect(stamp?.contentIdentity).toEqual([
+      expect.objectContaining({
+        path: 'libs/nested/src/fix.ts',
+        workingTreeBlobSha: expect.any(String),
+        headBlobSha: expect.any(String),
+      }),
+    ]);
+    expect(stamp?.contentIdentity?.[0]?.workingTreeBlobSha).toBe(stamp?.contentIdentity?.[0]?.headBlobSha);
   });
 });
 

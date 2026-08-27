@@ -673,7 +673,7 @@ describe('consequence 6: meta.json is reconciled, never iterated as the populati
 describe('D-002: the adapter implements no image comparison', () => {
   const sourceDir = path.dirname(fileURLToPath(import.meta.url));
 
-  for (const file of ['provider.ts', 'png-header.ts']) {
+  for (const file of ['provider.ts', 'png-header.ts', 'policy.ts']) {
     it(`${file} imports no image library`, () => {
       const source = readFileSync(path.join(sourceDir, file), 'utf8');
       // pngjs and pixelmatch are operator-core devDependencies for the P-002

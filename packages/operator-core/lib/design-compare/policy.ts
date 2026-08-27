@@ -51,8 +51,11 @@
 import calibrationJson from './policy-calibration.json';
 
 import type { GateEligibility, ReferenceClass, ThresholdPolicy } from './contract';
-import { SEPARATION_FLOOR } from './corpus/harness';
-import type { CalibrationArtifact, ClassCalibration } from './policy-shape';
+import {
+  SEPARATION_FLOOR,
+  type CalibrationArtifact,
+  type ClassCalibration,
+} from './policy-shape';
 
 /**
  * The calibration this build's policy is derived from.

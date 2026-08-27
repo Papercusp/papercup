@@ -4448,16 +4448,16 @@ export function stripCodexGatewayConfig(configText) {
  *
  * @param {string} configText  the existing config.toml text ('' when absent)
  * @param {string | null} [account]  the account id to PIN to, or null for the unpinned/default route
- * @param {{ gatewayOn?: boolean, ownerId?: string | null, keepExistingWhenUnrouted?: boolean }} [opts]
+ * @param {{ gatewayOn?: boolean, ownerId?: string | null, priority?: string | null, keepExistingWhenUnrouted?: boolean }} [opts]
  * @returns {string}
  */
 export function codexGatewayConfigPatch(
   configText,
   account = null,
-  { gatewayOn = false, ownerId = null, keepExistingWhenUnrouted = false } = {},
+  { gatewayOn = false, ownerId = null, priority = null, keepExistingWhenUnrouted = false } = {},
 ) {
   const stripped = stripCodexGatewayConfig(configText).trimEnd();
-  const patch = codexGatewayConfigToml(account, { gatewayOn, ownerId });
+  const patch = codexGatewayConfigToml(account, { gatewayOn, ownerId, priority });
   if (!patch.root.length && !patch.tables.length) {
     // WI-38706: "no gateway route for THIS launch" must not mean "delete the
     // provider table this thread is already bound to". codex stamps the
@@ -4577,6 +4577,7 @@ function applyCodexGatewayRoute(
     mode = "default",
     id = null,
     ownerId = null,
+    priority = null,
     keepExistingWhenUnrouted = false,
   } = {},
 ) {
@@ -4589,6 +4590,7 @@ function applyCodexGatewayRoute(
     codexGatewayConfigPatch(current, mode === "pin" ? id : null, {
       gatewayOn: mode === "auto",
       ownerId,
+      priority,
       keepExistingWhenUnrouted,
     }),
     { mode: 0o600 },
@@ -9397,6 +9399,7 @@ async function launchResume(
         mode: accountEnv?.mode ?? "default",
         id: accountEnv?.id ?? null,
         ownerId: session.coordOwnerId ?? null,
+        priority: session.role || "su",
         keepExistingWhenUnrouted: boundProvider === CODEX_GATEWAY_PROVIDER_ID,
       });
       // AFTER the gateway patch, which re-orders the file around its own markers —

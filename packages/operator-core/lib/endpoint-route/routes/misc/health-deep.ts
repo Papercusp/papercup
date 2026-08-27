@@ -232,7 +232,13 @@ export interface McpInFlightSnapshot {
   reservedControlPlane?: number;
   reservedControlPlaneCeiling?: number;
   criticalContinuation?: number;
-  criticalContinuationQueue?: { waiting?: number; max?: number; oldestAgeMs?: number | null };
+  criticalContinuationQueue?: {
+    waiting?: number;
+    max?: number;
+    oldestAgeMs?: number | null;
+    /** The queue's own wait budget; a waiter past it is dropped. */
+    maxWaitMs?: number;
+  };
   maxInFlight?: number;
   oldestAgeMs?: Record<string, number | null>;
 }

@@ -348,7 +348,7 @@ describe('bootstrap-role', () => {
     expect(json.accountNotice).toMatch(/pinned to Codex account codex-main/i);
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('codex-main');
     expect(writeRoleCodexHomeMock).toHaveBeenCalledWith(
-      expect.objectContaining({ codexGatewayAccountId: 'codex-main' }),
+      expect.objectContaining({ codexGatewayAccountId: 'codex-main', codexGatewayPriority: 'worker' }),
     );
   });
 

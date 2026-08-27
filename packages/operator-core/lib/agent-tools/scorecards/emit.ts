@@ -311,6 +311,22 @@ export async function emitScorecard(
 ) {
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
+  // EI-21542997259558722: an acceptance rubric retires with its shipped or
+  // superseded subject plan. A queued/carry-resumed grader can wake much later
+  // with a valid rubric id and otherwise append a redundant verdict after the
+  // plan is already terminal. Refuse at the write facade's entry, before
+  // revision reads, deduplication, deterministic checks, or the ledger write.
+  // Historical cards remain readable through scorecards:list.
+  if (rubric.kind === 'acceptance' && rubric.status === 'retired') {
+    return {
+      ok: false as const,
+      code: 'retired_acceptance_rubric' as const,
+      error:
+        `acceptance rubric '${args.rubricRef}' is retired with its terminal subject plan — ` +
+        'no new grading or acceptance verdict may be emitted. Read the existing scorecards; ' +
+        're-propose a new active rubric revision if genuinely new review work is required.',
+    };
+  }
   try {
     // Bind every scorecard to the exact rubric plan-row revision used for grading.
     // A failed read remains unrecorded; historical cards must not be back-filled

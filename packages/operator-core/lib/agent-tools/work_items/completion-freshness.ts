@@ -52,20 +52,62 @@ function gitBlobSha(bytes: Uint8Array, shaLength: number): string {
 
 function headBlobMap(repoRoot: string, headSha: string, paths: readonly string[]): ReadonlyMap<string, string | null> | undefined {
   try {
-    const output = execFileSync('git', ['-C', repoRoot, 'ls-tree', '-r', '-z', headSha, '--', ...paths], {
+    const runLsTree = (root: string, sha: string, selected?: readonly string[]) => execFileSync(
+      'git',
+      ['-C', root, 'ls-tree', '-r', '-z', sha, ...(selected?.length ? ['--', ...selected] : [])],
+      {
       encoding: 'utf8',
       maxBuffer: 256 * 1024,
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
-    });
+      },
+    );
+    const parseTree = (output: string) => {
+      const blobs = new Map<string, string>();
+      const gitlinks = new Map<string, string>();
+      for (const record of output.split('\0')) {
+        if (!record) continue;
+        const tab = record.indexOf('\t');
+        if (tab < 0) continue;
+        const [mode, type, sha] = record.slice(0, tab).split(/\s+/);
+        const path = record.slice(tab + 1);
+        if (!sha || !OBJECT_SHA_RE.test(sha)) continue;
+        if (type === 'blob' && mode) blobs.set(path, sha);
+        if (type === 'commit' && mode === '160000') gitlinks.set(path, sha);
+      }
+      return { blobs, gitlinks };
+    };
+
+    const direct = parseTree(runLsTree(repoRoot, headSha, paths));
     const result = new Map<string, string | null>();
-    for (const record of output.split('\0')) {
-      if (!record) continue;
-      const tab = record.indexOf('\t');
-      if (tab < 0) continue;
-      const [mode, type, sha] = record.slice(0, tab).split(/\s+/);
-      const path = record.slice(tab + 1);
-      if (type === 'blob' && mode && sha && OBJECT_SHA_RE.test(sha)) result.set(path, sha);
+    for (const [path, sha] of direct.blobs) result.set(path, sha);
+
+    const missing = paths.filter((path) => !result.has(path));
+    if (missing.length > 0) {
+      // A path below a submodule is absent from the superproject's recursive
+      // tree: Git stores only the 160000 gitlink. Read the committed gitlinks,
+      // then resolve each descendant against the exact submodule commit pinned
+      // by this HEAD. Grouping keeps the lookup bounded to one recursive call
+      // per referenced submodule, and recursion covers nested submodules too.
+      const allGitlinks = parseTree(runLsTree(repoRoot, headSha)).gitlinks;
+      const grouped = new Map<string, { sha: string; paths: string[] }>();
+      for (const path of missing) {
+        const prefix = [...allGitlinks.keys()]
+          .filter((candidate) => path.startsWith(candidate + '/'))
+          .sort((a, b) => b.length - a.length)[0];
+        if (!prefix) continue;
+        const group = grouped.get(prefix) ?? { sha: allGitlinks.get(prefix)!, paths: [] };
+        group.paths.push(path.slice(prefix.length + 1));
+        grouped.set(prefix, group);
+      }
+      for (const [prefix, group] of grouped) {
+        const nested = headBlobMap(nodePath.join(repoRoot, prefix), group.sha, group.paths);
+        if (!nested) continue;
+        for (const path of group.paths) {
+          const sha = nested.get(path);
+          if (sha) result.set(`${prefix}/${path}`, sha);
+        }
+      }
     }
     return result;
   } catch {

@@ -298,6 +298,56 @@ describe('classifyMcpPressure', () => {
     ).toBe('ok');
   });
 
+  /**
+   * The silent-timeout shape from the filed symptom: ONE waiter starving behind the
+   * single slot until the CLIENT's own timer fires. Depth alone cannot see it — a
+   * 2-of-16 queue reads shallow while its oldest waiter is at 29s of a 30s budget.
+   */
+  it('escalates on wait-age against the budget even when the queue is shallow', () => {
+    // 29s of a 30s budget = 97% — off 'ok' (the point of this leg) but not yet
+    // 'saturated': nothing has been dropped. Depth alone would have read this 'ok'.
+    expect(
+      classifyMcpPressure({
+        total: 4,
+        ordinary: 3,
+        ordinaryCeiling: 136,
+        criticalContinuation: 1,
+        criticalContinuationQueue: { waiting: 2, max: 16, oldestAgeMs: 29_000, maxWaitMs: 30_000 },
+        maxInFlight: 200,
+      }),
+    ).toBe('elevated');
+  });
+
+  it('reads an EXHAUSTED wait budget as saturated (the waiter is being dropped)', () => {
+    expect(
+      classifyMcpPressure({
+        total: 4,
+        ordinary: 3,
+        ordinaryCeiling: 136,
+        criticalContinuation: 1,
+        criticalContinuationQueue: { waiting: 2, max: 16, oldestAgeMs: 30_000, maxWaitMs: 30_000 },
+        maxInFlight: 200,
+      }),
+    ).toBe('saturated');
+  });
+
+  it('leaves a shallow, YOUNG queue at ok (the measured live-proxy reading)', () => {
+    // Verbatim from 127.0.0.1:9071 on 2026-08-27: 2 waiting of 16, oldest 2865ms of
+    // a 30s budget. This is normal working contention and must not read as an alarm.
+    expect(
+      classifyMcpPressure({
+        total: 7,
+        ordinary: 3,
+        ordinaryCeiling: 136,
+        reservedControlPlane: 3,
+        reservedControlPlaneCeiling: 136,
+        criticalContinuation: 1,
+        criticalContinuationQueue: { waiting: 2, max: 16, oldestAgeMs: 2865, maxWaitMs: 30_000 },
+        maxInFlight: 200,
+      }),
+    ).toBe('ok');
+  });
+
   it('DOES escalate the bulkhead when work is queued behind its one slot', () => {
     expect(
       classifyMcpPressure({
@@ -333,7 +383,7 @@ describe('MCP proxy health path is PINNED to the proxy that serves it', () => {
 
 describe('deep health payload carries the MCP plane', () => {
   it('reaches the WIRE, not just the function', async () => {
-    const res = await route.handler({} as never);
+    const res = await route.handler({} as never, {} as never);
     const body = (await res.json()) as { mcpPlane?: unknown };
     // Reachable or not, the FIELD must be present: its absence is the original bug.
     expect(body.mcpPlane).toMatchObject({

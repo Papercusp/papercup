@@ -1421,6 +1421,7 @@ const ensureCodexHome = defineTool({
       model: record.model,
       token: readSuperuserToken(),
       codexGatewayAuto: body.requireGatewayProvider === true,
+      codexGatewayPriority: body.requireGatewayProvider === true ? 'su' : null,
       trustDir: null, // the home's inherited trust tables already cover the cwd
     });
     return new Response(
