@@ -27,7 +27,8 @@ describe('capability:bash — repository search scope guidance', () => {
     expect(guidance).toContain('client-private binaries may not be inherited');
     expect(guidance).toContain('prefer ripgrep (`rg`)');
     expect(guidance).toContain('`grep`/`grep -E`');
-    expect(guidance).toContain('fall back to `grep -F`');
+    expect(guidance).toContain('else `grep -F`');
+    expect(guidance).toContain('compile first with `jq -n` against no input before reading exports');
     expect(guidance).toContain('apps/operator/lib');
     expect(guidance).toContain('packages/operator-core/lib');
     expect(guidance).toContain('.papercusp');
