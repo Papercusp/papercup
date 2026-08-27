@@ -615,6 +615,44 @@ export const SU_CONTEXT_DEFAULT: SuContextSizeValue = 'trimmed';
 export const LAUNCH_ACCOUNT_MODES = ['default', 'auto'] as const;
 export type LaunchAccountMode = (typeof LAUNCH_ACCOUNT_MODES)[number];
 
+/**
+ * The `--account=` spellings that make a session BYPASS the inference gateway entirely
+ * (WI-42439). `default` is the one psu's own grammar documents, but the resolver accepts
+ * three more names for the same route, and they are NOT interchangeable at the type level
+ * — they are four literal strings that happen to mean one thing.
+ *
+ * ⚠ THIS IS THE SET, AND IT MUST HAVE EXACTLY ONE COPY. It is duplicated the moment a
+ * reader writes `x === 'default'`: that test is right about the documented spelling and
+ * silently wrong about the other three, and NOTHING FAILS when it is — the session simply
+ * keeps bypassing the gateway while a control reports it re-routed. That is how WI-42439
+ * shipped: `resolveAccountPin` (bootstrap-su.ts) tested all of them, the ACCOUNT chat pill
+ * tested only `'default'`, and 25 live `--account=system` sessions rendered every pool
+ * account as a clickable pin target whose click writes a durable pin, returns ok, and
+ * changes no routing at all.
+ *
+ * A gateway-free session cannot be re-pinned LIVE by anything — `accounts:pin` writes the
+ * pin durably and the gateway never sees the traffic — so it must be RESPAWNED to change
+ * accounts. Any surface offering a live re-pin has to ask this question, not its own.
+ */
+export const GATEWAY_FREE_ACCOUNT_SPELLINGS = ['default', 'none', 'system'] as const;
+
+/**
+ * True when an `--account=` value routes AROUND the inference gateway (the system / CLI
+ * login) rather than through it.
+ *
+ * `null`/`undefined`/`''` — no `--account` recorded — is deliberately NOT gateway-free
+ * here. The implied-default case resolves to whatever account the workspace has nominated
+ * and is only the local login while none is set (see `resolveAccountPin`), so a caller
+ * that cannot read that nomination must not guess; and an EMPTY launch argv means UNKNOWN,
+ * which is a third answer again. Callers that genuinely need "unspecified" folded in must
+ * say so at their own call site rather than widening this predicate.
+ */
+export function isGatewayFreeAccount(value: string | null | undefined): boolean {
+  if (typeof value !== 'string') return false;
+  const lower = value.trim().toLowerCase();
+  return (GATEWAY_FREE_ACCOUNT_SPELLINGS as readonly string[]).includes(lower);
+}
+
 /** Shape of an `--account=` value: a mode above, or a pool account id. Mirrors the
  *  value guard in agent-launch-core's injectAccountArg so the GUI cannot compose a
  *  value the scripted path would refuse. */
