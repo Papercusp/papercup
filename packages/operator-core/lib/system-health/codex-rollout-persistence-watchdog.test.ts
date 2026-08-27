@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const lifecycleMocks = vi.hoisted(() => ({
   endSession: vi.fn(async () => undefined),
@@ -141,9 +141,16 @@ describe('readCodexRolloutTail', () => {
 });
 
 describe('checkCodexRolloutPersistence provider cleanup', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.clearAllMocks();
     lifecycleMocks.endSession.mockResolvedValue(undefined);
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
   });
 
   it('deduplicates the provider escalation, ends the session, then cleans every owner surface', async () => {
@@ -188,6 +195,7 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
       expect(lifecycleMocks.retireLifecycleWatches).toHaveBeenCalledWith(['owner-42']);
       expect(lifecycleMocks.releaseWorkItems).toHaveBeenCalledWith('owner-42');
       expect(lifecycleMocks.notifyAttention).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith('[codex-rollout-watchdog] PROVIDER ALARM: owner-42 (session 42)');
       expect(lifecycleMocks.endSession.mock.invocationCallOrder[0]).toBeLessThan(
         lifecycleMocks.cancelInboxWake.mock.invocationCallOrder[0],
       );
@@ -227,6 +235,9 @@ describe('checkCodexRolloutPersistence provider cleanup', () => {
       expect(result.providerFailureSessionIds).toEqual(['43']);
       expect(result.providerEndedSessionIds).toEqual([]);
       expect(lifecycleMocks.endSession).toHaveBeenCalledWith(43, null, 'reconciler', { throwOnError: true });
+      expect(warnSpy).toHaveBeenCalledWith(
+        '[codex-rollout-watchdog] provider session 43 end write failed: database unavailable',
+      );
       expect(lifecycleMocks.cancelInboxWake).not.toHaveBeenCalled();
       expect(lifecycleMocks.cancelClaimable).not.toHaveBeenCalled();
       expect(lifecycleMocks.retireLifecycleWatches).not.toHaveBeenCalled();
