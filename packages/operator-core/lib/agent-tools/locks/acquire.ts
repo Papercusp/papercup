@@ -102,7 +102,7 @@ const PROGRESS_TICK_MS = 10_000;
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim repository files and/or authorized home-directory configuration files for exclusive editing. Returns ok+lock_id, or busy+contention details. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). On contention prefer wake_on_grant:true — queue a waiter + one-shot wake, return immediately; END YOUR TURN, re-invoked on grant (no polling, no held turn).',
+    'Claim repository files and/or authorized home-directory configuration files for exclusive editing. Returns ok+lock_id, or busy+contention details. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp; this is internal telemetry, not a caller override. On contention prefer wake_on_grant:true — queue a waiter + one-shot wake, return immediately; END YOUR TURN, re-invoked on grant (no polling, no held turn).',
   guidance: {
     when: 'For a DELIBERATE multi-file claim held across several edits AND the commit — acquire once, release after committing. Before individual Codex writes only when that session lacks lock hooks; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.',
     notWhen:

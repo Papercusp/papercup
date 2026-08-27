@@ -117,6 +117,12 @@ describe('locks:acquire — outcome branches', () => {
     expect(guidance).not.toMatch(/single incidental edit needs no manual call/);
   });
 
+  it('documents that goal_ref is server-derived rather than a caller argument', () => {
+    expect(tool.description).toMatch(/Do not pass a top-level `goal_ref`/);
+    expect(tool.description).toMatch(/server derives lock attribution from the caller's current agent-state stamp/);
+    expect(tool.args.shape).not.toHaveProperty('goal_ref');
+  });
+
   it('guidance omits published_sha for uncommitted edits and reserves it for a published SHA', () => {
     expect(tool.guidance?.chaining).toMatch(/still uncommitted, omit published_sha/);
     expect(tool.guidance?.chaining).toMatch(/actually published a lowercase 40–64-character hexadecimal commit SHA/);
