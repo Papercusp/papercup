@@ -7,19 +7,33 @@
  * future edit from re-forking the derivation. A re-fork would not fail here or in typecheck; it
  * would fail against real cloud, at runtime, as an SSH to a nonexistent instance.
  */
+import { generateKeyPairSync } from 'node:crypto';
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { WorkspaceHostDesiredSpec } from '@papercusp/deployment-driver';
-import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
+import {
+  DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
+  DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+  WORKSPACE_HOST_RUNTIME_ROOT,
+  assertWorkspaceHostSecretIsolation,
+  type WorkspaceHostDesiredSpec,
+} from '@papercusp/deployment-driver';
 import {
   UnsupportedWorkspaceHostInitializationTargetError,
   WorkspaceHostDesiredSpecUnavailableError,
   WorkspaceHostInitializationControllerProfileError,
+  WorkspaceHostInitializationHostKeyError,
+  enrollGcpIapHostKeys,
   resolveWorkspaceHostInitializationControllerProfile,
   resolveWorkspaceHostInitializationOperations,
   resolveWorkspaceHostInitializationOperationsForHost,
   type WorkspaceHostInitializationControllerProfile,
 } from './initialization-operations-resolver';
-import { resolveGcpWorkspaceHostInstanceIdentity } from './gcp-provider';
+import {
+  resolveGcpWorkspaceHostInstanceIdentity,
+  type GcpInstanceGuestAttribute,
+} from './gcp-provider';
 import { buildGcpIapWorkspaceHostInitializationCommand } from './gcp-iap-initialization-operations';
 
 const controller: WorkspaceHostInitializationControllerProfile = {
@@ -27,6 +41,67 @@ const controller: WorkspaceHostInitializationControllerProfile = {
   knownHostsFile: '/etc/papercusp/known_hosts',
   remoteEntrypoint: '/opt/papercusp/bin/workspace-host-initializer',
 };
+
+type TestHostKeyAlgorithm = 'ecdsa-sha2-nistp256' | 'ssh-ed25519' | 'ssh-rsa';
+
+function sshString(value: string | Buffer): Buffer {
+  const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : value;
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes.length);
+  return Buffer.concat([length, bytes]);
+}
+
+function sshMpint(value: Buffer): Buffer {
+  const positive = (value[0]! & 0x80) === 0 ? value : Buffer.concat([Buffer.from([0]), value]);
+  return sshString(positive);
+}
+
+const generatedHostKeys = new Map<string, string>();
+
+function publicKey(algorithm: TestHostKeyAlgorithm, marker: string = algorithm): string {
+  const cacheKey = `${algorithm}:${marker}`;
+  const cached = generatedHostKeys.get(cacheKey);
+  if (cached) return cached;
+
+  let blob: Buffer;
+  if (algorithm === 'ssh-ed25519') {
+    const generated = generateKeyPairSync('ed25519');
+    const jwk = generated.publicKey.export({ format: 'jwk' });
+    blob = Buffer.concat([sshString(algorithm), sshString(Buffer.from(jwk.x!, 'base64url'))]);
+  } else if (algorithm === 'ecdsa-sha2-nistp256') {
+    const generated = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+    const jwk = generated.publicKey.export({ format: 'jwk' });
+    const point = Buffer.concat([
+      Buffer.from([0x04]),
+      Buffer.from(jwk.x!, 'base64url'),
+      Buffer.from(jwk.y!, 'base64url'),
+    ]);
+    blob = Buffer.concat([sshString(algorithm), sshString('nistp256'), sshString(point)]);
+  } else {
+    const generated = generateKeyPairSync('rsa', { modulusLength: 2_048, publicExponent: 0x10001 });
+    const jwk = generated.publicKey.export({ format: 'jwk' });
+    blob = Buffer.concat([
+      sshString(algorithm),
+      sshMpint(Buffer.from(jwk.e!, 'base64url')),
+      sshMpint(Buffer.from(jwk.n!, 'base64url')),
+    ]);
+  }
+  const line = `${algorithm} ${blob.toString('base64')} generated-on-host`;
+  generatedHostKeys.set(cacheKey, line);
+  return line;
+}
+
+function guestHostKeys(marker = 'first'): readonly GcpInstanceGuestAttribute[] {
+  return [
+    {
+      namespace: 'hostkeys',
+      key: 'ecdsa-sha2-nistp256',
+      value: publicKey('ecdsa-sha2-nistp256', marker),
+    },
+    { namespace: 'hostkeys', key: 'ssh-ed25519', value: publicKey('ssh-ed25519', marker) },
+    { namespace: 'hostkeys', key: 'ssh-rsa', value: publicKey('ssh-rsa', marker) },
+  ];
+}
 
 function desired(overrides: Partial<WorkspaceHostDesiredSpec> = {}): WorkspaceHostDesiredSpec {
   return {
@@ -133,6 +208,19 @@ describe('resolveWorkspaceHostInitializationControllerProfile', () => {
     });
   });
 
+  it('derives packaged defaults from the deployment-driver contract and systemd state directory', () => {
+    const stateDirectory = '/home/papercusp/.local/state/papercusp/controller';
+    expect(resolveWorkspaceHostInitializationControllerProfile({ STATE_DIRECTORY: stateDirectory })).toEqual({
+      sshUser: DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
+      knownHostsFile: join(stateDirectory, 'known_hosts'),
+      remoteEntrypoint: join(
+        WORKSPACE_HOST_RUNTIME_ROOT,
+        'current',
+        DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS.remoteInitializer,
+      ),
+    });
+  });
+
   it('carries optional overrides through and omits absent ones entirely', () => {
     const profile = resolveWorkspaceHostInitializationControllerProfile({
       ...complete,
@@ -169,21 +257,48 @@ describe('resolveWorkspaceHostInitializationControllerProfile', () => {
       expect.unreachable('an unconfigured controller must refuse');
     } catch (error) {
       const problems = (error as WorkspaceHostInitializationControllerProfileError).problems;
-      expect(problems).toHaveLength(3);
-      expect(problems.join(' ')).toContain('PAPERCUSP_WORKSPACE_HOST_SSH_USER');
+      expect(problems).toHaveLength(1);
       expect(problems.join(' ')).toContain('PAPERCUSP_WORKSPACE_HOST_KNOWN_HOSTS');
-      expect(problems.join(' ')).toContain('PAPERCUSP_WORKSPACE_HOST_REMOTE_ENTRYPOINT');
+      expect(problems.join(' ')).toContain('STATE_DIRECTORY');
     }
   });
 
   it('treats whitespace-only configuration as unset', () => {
     expect(() =>
       resolveWorkspaceHostInitializationControllerProfile({ ...complete, PAPERCUSP_WORKSPACE_HOST_SSH_USER: '   ' }),
-    ).toThrow(/PAPERCUSP_WORKSPACE_HOST_SSH_USER is unset/);
+    ).toThrow(/PAPERCUSP_WORKSPACE_HOST_SSH_USER must not be empty/);
+  });
+
+  it('refuses an unavailable or non-single systemd state directory', () => {
+    expect(() => resolveWorkspaceHostInitializationControllerProfile({ STATE_DIRECTORY: 'relative/state' })).toThrow(
+      /STATE_DIRECTORY must name one absolute directory/,
+    );
+    expect(() =>
+      resolveWorkspaceHostInitializationControllerProfile({ STATE_DIRECTORY: '/one:/two' }),
+    ).toThrow(/STATE_DIRECTORY must name one absolute directory/);
   });
 });
 
 describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
+  it('rejects an unsupported target before attempting GCP guest-attribute access', async () => {
+    let guestAttributeRead = false;
+    await expect(
+      resolveWorkspaceHostInitializationOperationsForHost({
+        workspaceId: 'ws-1',
+        hostId: 'host-alpha',
+        controller,
+        readDesiredSpec: async () => ({ desired: desired({ target: 'azure' } as never) }),
+        gcpClient: {
+          async getInstanceGuestAttributes() {
+            guestAttributeRead = true;
+            return guestHostKeys();
+          },
+        },
+      }),
+    ).rejects.toThrow(/No workspace-host initialization adapter for target 'azure'/);
+    expect(guestAttributeRead).toBe(false);
+  });
+
   it('resolves the adapter from the RECORDED provisioning intent', async () => {
     const spec = desired();
     const resolved = await resolveWorkspaceHostInitializationOperationsForHost({
@@ -191,9 +306,38 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
       hostId: 'host-alpha',
       controller,
       readDesiredSpec: async () => ({ desired: spec }),
+      gcpClient: { getInstanceGuestAttributes: async () => guestHostKeys() },
+      enrollHostKeys: async () => undefined,
     });
 
     expect(resolved.desired).toBe(spec);
+    expect(resolved.operations.supportedStepKinds).toContain('create-workspace');
+  });
+
+  it('fetches authenticated guest host keys and enrolls them before returning the adapter', async () => {
+    const calls: string[] = [];
+    const spec = desired();
+    const identity = resolveGcpWorkspaceHostInstanceIdentity(spec);
+    const resolved = await resolveWorkspaceHostInitializationOperationsForHost({
+      workspaceId: 'ws-1',
+      hostId: spec.hostId,
+      controller,
+      readDesiredSpec: async () => ({ desired: spec }),
+      gcpClient: {
+        async getInstanceGuestAttributes(projectId, zone, instanceName, queryPath) {
+          calls.push(`read:${projectId}:${zone}:${instanceName}:${queryPath}`);
+          return guestHostKeys();
+        },
+      },
+      async enrollHostKeys(input) {
+        calls.push(`enroll:${input.identity.instanceName}:${input.knownHostsFile}:${input.attributes.length}`);
+      },
+    });
+
+    expect(calls).toEqual([
+      `read:${identity.projectId}:${identity.zone}:${identity.instanceName}:hostkeys/`,
+      `enroll:${identity.instanceName}:${controller.knownHostsFile}:3`,
+    ]);
     expect(resolved.operations.supportedStepKinds).toContain('create-workspace');
   });
 
@@ -230,6 +374,116 @@ describe('resolveWorkspaceHostInitializationOperationsForHost', () => {
         readDesiredSpec: async () => ({ desired: null, miss: 'no-recorded-spec' }),
       }),
     ).rejects.toThrow(/cannot be identified/);
+  });
+});
+
+describe('GCP IAP controller known_hosts enrollment', () => {
+  it('atomically enrolls the exact command alias while preserving unrelated entries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-'));
+    const knownHostsFile = join(root, 'known_hosts');
+    const unrelated = `example.test ${publicKey('ssh-ed25519').split(' ').slice(0, 2).join(' ')}`;
+    await chmod(root, 0o755);
+    await writeFile(knownHostsFile, `${unrelated}\n`, { mode: 0o644 });
+    try {
+      const spec = desired();
+      const identity = resolveGcpWorkspaceHostInstanceIdentity(spec);
+      await enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: guestHostKeys() });
+      const written = await readFile(knownHostsFile, 'utf8');
+      const alias = buildGcpIapWorkspaceHostInitializationCommand(
+        { ...identity, ...controller, knownHostsFile },
+        {
+          id: 'workspace',
+          kind: 'create-workspace',
+          dependsOn: [],
+          idempotencyKey: 'workspace-init:op-1:workspace',
+          input: {},
+        },
+      ).args.find((arg) => arg.startsWith('HostKeyAlias='))!.slice('HostKeyAlias='.length);
+
+      expect(written).toContain(`${unrelated}\n`);
+      expect(written.match(new RegExp(`^${alias} `, 'gm'))).toHaveLength(3);
+      expect(written).not.toContain('generated-on-host');
+      expect((await stat(root)).mode & 0o777).toBe(0o700);
+      expect((await stat(knownHostsFile)).mode & 0o777).toBe(0o600);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on missing, malformed, or changed host-key material without rewriting trust', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-'));
+    const knownHostsFile = join(root, 'known_hosts');
+    const identity = resolveGcpWorkspaceHostInstanceIdentity(desired());
+    try {
+      await expect(
+        enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: [] }),
+      ).rejects.toBeInstanceOf(WorkspaceHostInitializationHostKeyError);
+      await expect(
+        enrollGcpIapHostKeys({
+          identity,
+          knownHostsFile,
+          attributes: [{ namespace: 'hostkeys', key: 'ssh-ed25519', value: 'ssh-ed25519 not-base64' }],
+        }),
+      ).rejects.toThrow(/malformed/);
+
+      const validEd25519 = publicKey('ssh-ed25519').split(' ')[1]!;
+      const truncatedEd25519 = Buffer.from(validEd25519, 'base64').subarray(0, -1).toString('base64');
+      await expect(
+        enrollGcpIapHostKeys({
+          identity,
+          knownHostsFile,
+          attributes: [
+            { namespace: 'hostkeys', key: 'ssh-ed25519', value: `ssh-ed25519 ${truncatedEd25519}` },
+          ],
+        }),
+      ).rejects.toThrow(/truncated|missing/);
+
+      await enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: guestHostKeys('trusted') });
+      const trusted = await readFile(knownHostsFile, 'utf8');
+      await chmod(knownHostsFile, 0o644);
+      await enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: guestHostKeys('trusted') });
+      expect((await stat(knownHostsFile)).mode & 0o777).toBe(0o600);
+      await expect(
+        enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: guestHostKeys('changed') }),
+      ).rejects.toThrow(/changed/);
+      await expect(readFile(knownHostsFile, 'utf8')).resolves.toBe(trusted);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('serializes concurrent enrollments so atomic rewrites preserve every host alias', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-'));
+    const knownHostsFile = join(root, 'known_hosts');
+    const first = resolveGcpWorkspaceHostInstanceIdentity(desired());
+    const second = resolveGcpWorkspaceHostInstanceIdentity(
+      desired({
+        hostId: 'host-beta',
+        provider: { instanceName: 'host-beta', projectId: 'active-alcove-504205-q3' },
+      }),
+    );
+    try {
+      await Promise.all([
+        enrollGcpIapHostKeys({ identity: first, knownHostsFile, attributes: guestHostKeys('concurrent-first') }),
+        enrollGcpIapHostKeys({ identity: second, knownHostsFile, attributes: guestHostKeys('concurrent-second') }),
+      ]);
+      const written = await readFile(knownHostsFile, 'utf8');
+      const aliases = [first, second].map((identity) =>
+        buildGcpIapWorkspaceHostInitializationCommand(
+          { ...identity, ...controller, knownHostsFile },
+          {
+            id: 'workspace',
+            kind: 'create-workspace',
+            dependsOn: [],
+            idempotencyKey: 'workspace-init:op-concurrent:workspace',
+            input: {},
+          },
+        ).args.find((arg) => arg.startsWith('HostKeyAlias='))!.slice('HostKeyAlias='.length),
+      );
+      for (const alias of aliases) expect(written.match(new RegExp(`^${alias} `, 'gm'))).toHaveLength(3);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

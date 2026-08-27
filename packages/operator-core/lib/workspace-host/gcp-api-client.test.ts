@@ -263,6 +263,43 @@ describe('ADC-backed GCP workspace-host API client', () => {
     expect(JSON.stringify(instance)).not.toContain(TOKEN);
   });
 
+  it('reads the hostkeys guest-attribute namespace through the authenticated Compute endpoint', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe(
+        `/compute/v1/projects/${PROJECT}/zones/${ZONE}/instances/pc-host-vm/getGuestAttributes`,
+      );
+      expect(url.searchParams.get('queryPath')).toBe('hostkeys/');
+      expect(new Headers(init?.headers).get('authorization')).toBe(`Bearer ${TOKEN}`);
+      return json({
+        queryPath: 'hostkeys/',
+        queryValue: {
+          items: [
+            { namespace: 'hostkeys', key: 'ecdsa-sha2-nistp256', value: 'ecdsa-sha2-nistp256 AAAA' },
+            { namespace: 'hostkeys', key: 'ssh-ed25519', value: 'ssh-ed25519 AAAA' },
+          ],
+        },
+      });
+    }) as typeof fetch;
+
+    await expect(
+      makeClient(fetchImpl).getInstanceGuestAttributes(PROJECT, ZONE, 'pc-host-vm', 'hostkeys/'),
+    ).resolves.toEqual([
+      { namespace: 'hostkeys', key: 'ecdsa-sha2-nistp256', value: 'ecdsa-sha2-nistp256 AAAA' },
+      { namespace: 'hostkeys', key: 'ssh-ed25519', value: 'ssh-ed25519 AAAA' },
+    ]);
+  });
+
+  it('fails closed when Compute returns a malformed guest-attribute item', async () => {
+    const fetchImpl = vi.fn(async () =>
+      json({ queryValue: { items: [{ namespace: 'hostkeys', key: 'ssh-ed25519' }] } }),
+    ) as typeof fetch;
+
+    await expect(
+      makeClient(fetchImpl).getInstanceGuestAttributes(PROJECT, ZONE, 'pc-host-vm', 'hostkeys/'),
+    ).rejects.toThrow(/guest attribute value/);
+  });
+
   it('uses scoped Compute endpoints, normalizes resource references, and retains durable operation coordinates', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
