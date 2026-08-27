@@ -612,9 +612,13 @@ export default defineTool({
   description:
     "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
       COORD_KIND_FILTER_DESCRIPTION +
-      " Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      " Free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for either. This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
-    when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you. Bound a direct read with `limit` — `inboxLimit` belongs to the `coord:orient` wrapper, not this tool.",
+    // WI-71582: trimmed to clear the 1500-char prompt-weight HARD CAP (was 1706 —
+    // a gate RED). Both cut sentences were redundant, not lost: the `limit` vs
+    // `coord:orient.inboxLimit` mapping is already stated in the description above,
+    // and the "OMP hook will do this once it ships" aside described unshipped work.
+    when: "At turn start; whenever you suspect another agent contacted you.",
     notWhen:
       'For agent-presence ("who is active?") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a poll.',
     // EI-21349112990078630: `since` on an inbox read is the measured recurrence —
