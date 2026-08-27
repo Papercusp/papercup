@@ -94,9 +94,11 @@ function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
 } {
   const launch = vi.fn().mockResolvedValue({ ownerId: 'su-new-holder', warnings: ['w1'] });
   const attach = vi.fn().mockResolvedValue({ ok: true, error: null });
+  const stampAgentOwner = vi.fn().mockResolvedValue(undefined);
   const deps: StartGoalByIdDeps = {
     launch,
     attach,
+    stampAgentOwner,
     resolveHolders: vi.fn().mockResolvedValue(holdersFixture('unheld')),
     readReadiness: vi.fn().mockResolvedValue(READY),
     // A recognisable stub rather than the real builder: these tests assert that
@@ -256,6 +258,7 @@ describe('startGoalById — launch then attach', () => {
     (deps.launch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('budget refused'));
     await expect(run(deps)).rejects.toThrow('budget refused');
     expect(attach).not.toHaveBeenCalled();
+    expect(deps.stampAgentOwner).not.toHaveBeenCalled();
   });
 
   it('an attach failure throws, NAMING the orphan identity', async () => {
@@ -263,6 +266,43 @@ describe('startGoalById — launch then attach', () => {
       attach: vi.fn().mockResolvedValue({ ok: false, error: 'mode store down' }),
     });
     await expect(run(deps)).rejects.toThrow(/su-new-holder.*mode store down/s);
+    expect(deps.stampAgentOwner).not.toHaveBeenCalled();
+  });
+
+  it('stamps metadata only after a successful attach and preserves launch warnings', async () => {
+    const order: string[] = [];
+    const { deps } = makeDeps({
+      attach: vi.fn(async () => {
+        order.push('attach');
+        return { ok: true, error: null };
+      }),
+      stampAgentOwner: vi.fn(async () => {
+        order.push('stamp');
+      }),
+    });
+
+    const res = await run(deps);
+
+    expect(res).toMatchObject({ ok: true, warnings: ['w1'] });
+    expect(order).toEqual(['attach', 'stamp']);
+    expect(deps.stampAgentOwner).toHaveBeenCalledWith(
+      expect.anything(),
+      { workspaceId: WS, goalId: GOAL, ownerId: 'su-new-holder' },
+    );
+  });
+
+  it('keeps a successful start when the metadata stamp fails, exposing the failure as a warning', async () => {
+    const { deps } = makeDeps({
+      stampAgentOwner: vi.fn().mockRejectedValue(new Error('metadata db down')),
+    });
+
+    const res = await run(deps);
+
+    expect(res).toMatchObject({
+      ok: true,
+      ownerId: 'su-new-holder',
+      warnings: ['w1', 'agentOwnerId stamp failed: metadata db down'],
+    });
   });
 });
 

@@ -140,6 +140,7 @@ export default defineTool({
     const limit = args.tail ?? args.limit ?? (parsedRef ? refContext! * 2 + 1 : 40);
 
     let sessionId = parsedRef?.sessionId ?? args.session!;
+    let querySessionId: string | undefined = sessionId;
     let sourceKind = parsedRef?.sourceKind ?? args.source_kind;
     if (!parsedRef) {
       const selector = parseSessionSelector(sessionId, sourceKind);
@@ -148,21 +149,32 @@ export default defineTool({
     }
     let selfNote: string | undefined;
     const selfSession = sessionId === 'self';
+    let ownerIds: string[] | undefined;
     if (selfSession) {
-      const { resolveSelfSession } = await import('../../search/self-session');
-      const self = await resolveSelfSession(resolveAgentIdentity(ctx).ownerId ?? '');
+      // Keep `session:'self'` aligned with sessions:search: a cold carry-respawn
+      // leaves the caller's turns across multiple native sessions, so the
+      // current session id is only a response anchor, never the read filter.
+      // resolveSearchFilters owns the caller/isolation-owner chain expansion
+      // (including coord-id drift) and the current-transcript freshness tail.
+      const callerOwnerId = resolveAgentIdentity(ctx).ownerId ?? '';
+      const { resolveSearchFilters } = await import('../search/filters');
+      const resolved = await resolveSearchFilters(
+        ctx.tx,
+        { session: 'self' },
+        callerOwnerId,
+        { workspaceId },
+      );
+      const self = resolved.selfSession;
       if (!self) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: 'self_session_unresolved', note: 'Could not pin your live transcript; use sessions:list { owner:"self" } to find your sessions.' }) }],
           isError: true,
         };
       }
+      ownerIds = resolved.filters?.owners ?? [callerOwnerId];
+      querySessionId = undefined;
       sessionId = self.sessionId;
       sourceKind = self.sourceKind;
-      try {
-        const { ingestFileNow } = await import('../../search/session-ingest');
-        await ingestFileNow(self.filePath); // read-time freshness (D-002)
-      } catch { /* the 2-min tick covers it */ }
       selfNote = `resolved self → ${self.sourceKind}:${self.sessionId}`;
     } else {
       // Keep the historical/indexed read and archive fall-through unchanged;
@@ -197,11 +209,12 @@ export default defineTool({
     // ALWAYS re-normalised to chronological below, so `order` never changes the
     // shape the caller reads — only which slice of a too-large range they get.
     const asc = args.order === 'asc';
-    const rows = await ctx.tx<Array<{ source_kind: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }>>`
-      SELECT source_kind, turn_idx, speaker, owner, ts::text AS ts, left(text, 1500) AS text
+    const rows = await ctx.tx<Array<{ source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }>>`
+      SELECT source_kind, session_id, turn_idx, speaker, owner, ts::text AS ts, left(text, 1500) AS text
         FROM harness_shared.session_turns
        WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
-         AND session_id = ${sessionId}
+         AND (${querySessionId ?? null}::text IS NULL OR session_id = ${querySessionId ?? null})
+         AND (${ownerIds ?? null}::text[] IS NULL OR owner = ANY(${ownerIds ?? null}::text[]))
          AND (${sourceKind ?? null}::text IS NULL OR source_kind = ${sourceKind ?? null})
          AND (${lo}::int IS NULL OR turn_idx >= ${lo})
          AND (${hi}::int IS NULL OR turn_idx <= ${hi})
@@ -245,6 +258,7 @@ export default defineTool({
           rows.push(
             ...t.map((x) => ({
               source_kind: x.source_kind,
+              session_id: sessionId,
               turn_idx: x.turn_idx,
               speaker: x.speaker,
               owner: x.owner,
@@ -271,8 +285,8 @@ export default defineTool({
           // `limit`), NOT the session's total turn count — see the tool
           // description. sessions:list's `turns` is the total; do not conflate.
           turn_count: rows.length,
-          turns: rows.map((r: { source_kind: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
-            ref: formatSessionTurnRef(r.source_kind, sessionId, r.turn_idx),
+          turns: rows.map((r: { source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
+            ref: formatSessionTurnRef(r.source_kind, r.session_id, r.turn_idx),
             turn_idx: r.turn_idx, speaker: r.speaker,
             ...(r.owner ? { owner: r.owner } : {}), ...(r.ts ? { ts: r.ts } : {}),
             text: r.text,

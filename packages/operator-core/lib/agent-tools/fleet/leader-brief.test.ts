@@ -929,7 +929,9 @@ describe('selectLeaderBriefMembers (EI-11840)', () => {
     expect(census.counted).toBe(rows.length);
     expect(census.candidates).toBe(4);
     expect(census.withheld).toBe(2);
-    expect(census.reveal).toBe('include_stale: true');
+    expect(census.reveal).toBe(
+      'coord:presence { owner: "<agentId>" } (targeted stale-row lookup; broad stale-roster reads are unsupported)',
+    );
     // The operative warning: this default hides members exactly when they die.
     expect(census.withheldReason).toContain('stale-idle');
 

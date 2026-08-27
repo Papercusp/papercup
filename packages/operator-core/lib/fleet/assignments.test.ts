@@ -21,6 +21,7 @@ vi.mock('../scheduler/plan-item-lane-guard', () => ({
 
 import {
   ACTIVE_TOOL_CALL_WINDOW_MS,
+  deriveClaimHealth,
   deriveActivity,
   downgradeEndedHolders,
   groupByAgent,
@@ -314,6 +315,90 @@ describe('summarizeOrphan — WI-5975', () => {
     expect(s.action).toBe('ask');
     expect(isReclaimCandidate(s)).toBe(false);
     expect(s.holder_last_tool_call_at).toBe('2026-07-26T06:29:58.000Z');
+  });
+
+  it('P-005 exposes progress-derived claim health separately from liveness/activity', () => {
+    const now = Date.parse('2026-07-26T06:30:00.000Z');
+    const quietLive = summarizeOrphan(
+      {
+        ...heldByLive,
+        holderAlive: true,
+        lastProgressAt: null,
+      },
+      { sessionState: 'live' },
+      now,
+    );
+    expect(quietLive.verdict).toBe('held-by-live-agent');
+    expect(quietLive.claim_health.status).toBe('suspect');
+    expect(quietLive.claim_health.evidence.map((e) => e.writer)).toContain('coord_presence');
+
+    const productive = summarizeOrphan(
+      { ...heldByLive, stalled: false },
+      {
+        sessionState: 'parked',
+        productiveToolCallAt: '2026-07-26T06:29:30.000Z',
+        checkpointKind: 'mechanical',
+      },
+      now,
+    );
+    expect(productive.verdict).toBe('held-by-live-agent');
+    expect(productive.claim_health.status).toBe('healthy');
+    expect(productive.claim_health.reasons.join(' ')).toContain('non-housekeeping tool progress');
+  });
+
+  it('P-005 mechanical-only checkpoints and heartbeat-only liveness do not keep a claim healthy', () => {
+    const now = Date.parse('2026-07-26T06:30:00.000Z');
+    const mechanicalOnly = deriveClaimHealth(
+      {
+        ...heldByLive,
+        holderAlive: true,
+        lastProgressAt: '2026-07-26T06:29:30.000Z',
+      },
+      { sessionState: 'live', checkpointKind: 'mechanical' },
+      now,
+    );
+    expect(mechanicalOnly.status).toBe('suspect');
+    expect(mechanicalOnly.reasons.join(' ')).toContain('mechanical-only checkpoint');
+  });
+
+  it('P-005 names waiting/recoverable/contested health with writer evidence', () => {
+    const now = Date.parse('2026-07-26T06:30:00.000Z');
+    const waiting = deriveClaimHealth(
+      heldByLive,
+      { sessionState: 'parked', parkedOn: ['fleet:x:critical-path-open'] },
+      now,
+    );
+    expect(waiting.status).toBe('waiting');
+    expect(waiting.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ writer: 'events_await', signal: 'exact_dependency_waits' }),
+      ]),
+    );
+
+    const recoverable = deriveClaimHealth(
+      heldByLive,
+      { sessionState: 'suspect', wakeable: true },
+      now,
+    );
+    expect(recoverable.status).toBe('recoverable');
+    expect(recoverable.evidence).toEqual(
+      expect.arrayContaining([expect.objectContaining({ writer: 'coord_presence', signal: 'wakeable', value: true })]),
+    );
+
+    const contested = deriveClaimHealth(
+      {
+        ...heldByLive,
+        orphaned: true,
+      },
+      { sessionState: 'live', contextGeneration: 3 },
+      now,
+    );
+    expect(contested.status).toBe('contested');
+    expect(contested.evidence).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ writer: 'memory_session_epochs', signal: 'context_generation', value: 3 }),
+      ]),
+    );
   });
 
   it('the oracle OUTRANKS the row heartbeat in both directions', () => {

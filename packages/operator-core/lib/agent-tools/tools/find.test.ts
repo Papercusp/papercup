@@ -261,6 +261,10 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain('assumptions?');
     expect(compact).toContain('one-of:items');
     expect(compact).toContain('assumptions?');
+    // EI-21563626901112953: the recursive verification shape is larger than
+    // the nested segment budget, but its field name/type must remain visible;
+    // otherwise discovery advertises only the legacy top-level coverage alias.
+    expect(compact).toContain('verification?:object');
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 

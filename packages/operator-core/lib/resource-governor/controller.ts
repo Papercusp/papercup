@@ -107,6 +107,12 @@ function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
+function floorNearInteger(value: number): number {
+  const nearest = Math.round(value);
+  const tolerance = Number.EPSILON * Math.max(1, Math.abs(value)) * 4;
+  return Math.abs(value - nearest) <= tolerance ? nearest : Math.floor(value);
+}
+
 function demandWeight(resource: HealthResource, demand: ResourceDemand | undefined): number {
   const explicit = finiteNonNegative(demand?.custom?.[`resource:${resource}`] ?? demand?.custom?.[resource]);
   if (explicit > 0) return explicit;
@@ -263,7 +269,7 @@ export class CaplessAdaptiveController {
         if (!insideCooldown && reductionFraction > 0) {
           state.desiredWindow = Math.max(
             this.minimumWindow,
-            Math.floor(state.desiredWindow * (1 - reductionFraction)),
+            floorNearInteger(state.desiredWindow * (1 - reductionFraction)),
           );
           state.lastContractionAtMs.set(resource, atMs);
         }

@@ -147,6 +147,15 @@ export interface StartGoalByIdDeps {
     setBy: string;
   }) => Promise<{ ok: boolean; error?: string | null }>;
   /**
+   * Stamps the denormalized owner identity after the GOAL-mode row attaches.
+   * This is deliberately a separate, fail-soft post-start step: attachment is
+   * the holder guarantee, while metadata is a convenience read projection.
+   */
+  stampAgentOwner: (
+    sql: Sql,
+    opts: { workspaceId: string; goalId: string; ownerId: string },
+  ) => Promise<void>;
+  /**
    * Builds the DEFAULT first-turn brief when the caller passes no
    * `kickoffPrompt` (EI-21566842357792802). Injectable for the same reason the
    * package-start door injects it: a brief is a string, and asserting on a stub
@@ -180,6 +189,13 @@ const DEFAULT_DEPS: StartGoalByIdDeps = {
       ok: result.ok,
       error: !result.ok && 'error' in result ? (result.error ?? null) : null,
     };
+  },
+  stampAgentOwner: async (sql, { workspaceId, goalId, ownerId }) => {
+    await sql`
+      UPDATE harness_shared.goals
+         SET metadata = COALESCE(metadata, '{}'::jsonb)
+                        || jsonb_build_object('agentOwnerId', ${ownerId}::text)
+       WHERE id = ${goalId} AND workspace_id = ${workspaceId}`;
   },
 };
 
@@ -342,11 +358,20 @@ export async function startGoalById(
     );
   }
 
+  // The GOAL-mode row is the source-of-truth holder attachment. Keep the
+  // convenience metadata projection in sync after that durable write, but do
+  // not turn a successful launch into a refusal if this best-effort stamp is
+  // temporarily unavailable (the watchdog can repair/report the divergence).
+  const warnings = [...launched.warnings];
+  await deps
+    .stampAgentOwner(sql, { workspaceId, goalId, ownerId: launched.ownerId })
+    .catch((e) => warnings.push(`agentOwnerId stamp failed: ${(e as Error)?.message ?? e}`));
+
   return {
     ok: true,
     goalId,
     ownerId: launched.ownerId,
-    warnings: launched.warnings,
+    warnings,
     startBlockedOverride,
   };
 }

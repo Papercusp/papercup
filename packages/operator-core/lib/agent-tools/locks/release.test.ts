@@ -27,6 +27,7 @@ vi.mock('./in-workspace-txn', () => ({
 }));
 vi.mock('./su-lock-store', () => ({
   tryRelease: vi.fn(),
+  readResourceLockStatus: vi.fn(),
   releaseGranular: vi.fn(),
   releaseAllGranularForOwner: vi.fn(),
   releaseAllResourcesForOwner: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import {
+  readResourceLockStatus,
   releaseAllGranularForOwner,
   releaseAllResourcesForOwner,
   releaseGranular,
@@ -61,6 +63,7 @@ import { resolveExplicitFileLockDomain } from './coordination-domain';
 
 const routeM = vi.mocked(routeFileLockOp);
 const releaseGranularM = vi.mocked(releaseGranular);
+const readResourceStatusM = vi.mocked(readResourceLockStatus);
 const releaseAllGranularM = vi.mocked(releaseAllGranularForOwner);
 const releaseResourcesM = vi.mocked(releaseAllResourcesForOwner);
 const readQueueM = vi.mocked(readQueue);
@@ -80,6 +83,7 @@ beforeEach(() => {
   releaseGranularM.mockResolvedValue({ released: 0 });
   releaseAllGranularM.mockResolvedValue({ released: 0 });
   releaseResourcesM.mockResolvedValue({ released: 0, exclusiveResources: [], waiters: {} } as never);
+  readResourceStatusM.mockResolvedValue({ status: 'missing' });
   mockResolvedTyped(readQueueM, { active_locks: [], waiting: [] });
 });
 
@@ -300,6 +304,36 @@ describe('locks:release handler', () => {
         { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: ['released:11111111-1111-1111-1111-111111111111'] },
       ],
     });
+  });
+
+  it('rejects a named-resource UUID with an explicit wrong-plane diagnostic', async () => {
+    const lockId = '66666666-6666-4666-8666-666666666666';
+    routeM.mockResolvedValue({
+      value: { released: [], heldBefore: 0 },
+      via: 'local-authority',
+    } as never);
+    readResourceStatusM.mockResolvedValue({
+      status: 'held',
+      mode: 'shared',
+      resource: 'db-schema',
+    });
+
+    const b = body(await call({ lock_id: lockId }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 0, failed: 1 },
+      results: [{
+        ok: false,
+        lock_id: lockId,
+        error: 'lock_id_belongs_to_named_resource_plane',
+        note: 'Use locks:release_resource { lock_id } to release a named-resource lock.',
+        resource: 'db-schema',
+        mode: 'shared',
+        status: 'held',
+      }],
+    });
+    expect(readResourceStatusM).toHaveBeenCalledWith({}, lockId);
   });
 
   it('uses the domain carried by the matching edit-hook acquire', async () => {

@@ -71,9 +71,9 @@ export default defineTool({
   // to 1774 chars and breached the 1600 HARD CAP, reddening the fleet gate. It
   // is documentation of the RESPONSE, so `returns` is also where it belongs.
   description:
-    'Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window; `detail:true` remains the full coord-substrate read. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.',
+    'Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window; `threadLimit:0` explicitly suppresses thread work; `detail:true` remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.',
   guidance: {
-    when: 'You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (1–10) to get a bounded recent window with a same-snapshot total; this avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
+    when: 'You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (1–10) for a bounded recent window with a same-snapshot total, or `0` to explicitly suppress thread work; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.',
     returns:
       "\`checkpointUpdatedAtMs\` is the CANONICAL checkpoint-change marker; do not infer checkpoint authorship from \`workItem.updatedAt\`, which also moves for state, assignment, dependency, payload, and other item writes.\\n\\n" +
       "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointChecks?, checkpointAgeMs?, checkpointUpdatedAtMs?, checkpointContentHash?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `planItemTextDrift` — the linked plan item has been REWRITTEN (or removed) since this work-item was minted from it ({ status, reason, planSlug, itemId, currentText?, itemMissing? }). This item's title/summary/brief are a mint-time snapshot that nothing refreshes, so read `currentText` before building. `status:'unknown'` means the record predates the text stamp and drift COULD NOT be checked — that is not a clean bill of health. Absent means no plan linkage, or checked-and-matching.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loudest when NO checkpoint exists — that row is otherwise indistinguishable from never-started. Read the source before building.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less) and `checkpointContentHash` the digest of the STORED note (absent when none is stored). Compare that hash against the `contentHash` the write returned to verify a handoff; do NOT hash the returned `checkpoint` string yourself — it is clipped per shape tier, so it will not match.\n• `checkpointChecks` — check-row capacity in the checkpoint ({ count, cap, remaining }); `null` means the checkpoint read failed, while count 0 means the read succeeded and no check rows are stored.\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.\n• `priorAttempts` (with `detail:true`) — the bounded prior-attempt brief: what was ALREADY TRIED on this item's plan lane, previously obtainable only by CLAIMING the item. `omission.omittedRefs` names what the budget could only count, and a clipped record carries `textTruncated` — pass either ref back via `priorAttemptRefs` for the full text. Fail-soft: absent means no plan pointer OR the read failed, never \"nothing was tried\".\n• `priorAttemptRefResolution` (with `priorAttemptRefs`) — those refs' full untruncated records, plus `unresolved[]` (the source moved on) and the `fingerprint` to compare against the brief's.",
@@ -119,11 +119,11 @@ export default defineTool({
       threadLimit: z
         .number()
         .int()
-        .min(1)
+        .min(0)
         .max(10)
         .optional()
         .describe(
-          'return a bounded oldest-first recent-comment window instead of loading the full thread; max 10 posts, with a same-snapshot total',
+          'return a bounded oldest-first recent-comment window instead of loading the full thread; 0 explicitly suppresses thread work, positive values return up to 10 posts with a same-snapshot total',
         ),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
@@ -168,12 +168,20 @@ export default defineTool({
         // (precise once the trigger emits this table's row PK — see the note above; inert
         // but harmless until then). NOT the compat VIEW name (WI-4491 — a view emits no
         // .changed, so tagging it left the entry TTL-only-invalidated → read-your-writes
-        // staleness). Not-found is NOT cached (cacheEmpty default false) — a just-created
-        // item must surface immediately, and a miss is cheap to recompute.
-        const boundedThread = args.threadLimit !== undefined;
-        // A bounded thread request wins over detail:true so the diagnostic path
-        // never pays the unbounded full-render read.
-        const readDetail = args.detail === true && !boundedThread;
+        // staleness). Detail reads also fold in the coordination substrate
+        // (topics/links, thread headers, and posts), so carry those BASE TABLE tags only
+        // for the detail variant. A feature comment updates coord_threads/posts without
+        // touching work_items; omitting these dependencies leaves a primed detail read
+        // stale until TTL (EI-21582143589662594). Not-found is NOT cached (cacheEmpty
+        // default false) — a just-created item must surface immediately, and a miss is
+        // cheap to recompute.
+        const hasThreadLimit = args.threadLimit !== undefined;
+        const boundedThread = args.threadLimit !== undefined && args.threadLimit > 0;
+        // Any explicit threadLimit wins over detail:true so the diagnostic path
+        // never pays the unbounded full-render read. Zero is the explicit
+        // projection-only form: do not call the low-level window reader, whose
+        // COUNT(*) OVER query must clamp LIMIT 0 to one row to retain its total.
+        const readDetail = args.detail === true && !hasThreadLimit;
         const workItem = await cachedRead(
           ctx as CachedReadCtx,
           {
@@ -183,7 +191,11 @@ export default defineTool({
               harness: args.harness ?? null,
               detail: readDetail,
             },
-            tags: ['work_items', `work_items:${id}`],
+            tags: [
+              'work_items',
+              `work_items:${id}`,
+              ...(readDetail ? ['coord_links', 'coord_threads', 'coord_thread_posts'] : []),
+            ],
             softTtlMs: WORK_ITEMS_GET_SOFT_TTL_MS,
           },
           () => (readDetail ? getWorkItemDetail(id, args.harness) : getWorkItem(id, args.harness)),

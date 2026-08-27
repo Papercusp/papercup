@@ -15741,7 +15741,7 @@
           "POST"
         ]
       },
-      "description": "Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. Fires the classic file-lock grant cascade for waiting agents.",
+      "description": "Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. A named-resource UUID is rejected with guidance to use locks:release_resource. Fires the classic file-lock grant cascade for waiting agents.",
       "capabilities": [
         "locks:write"
       ],
@@ -29758,7 +29758,7 @@
           "POST"
         ]
       },
-      "description": "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window; `detail:true` remains the full coord-substrate read. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
+      "description": "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window; `threadLimit:0` explicitly suppresses thread work; `detail:true` remains the full coord-substrate read otherwise. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
       "capabilities": [
         "work_items:read"
       ],
@@ -29781,7 +29781,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (1–10) to get a bounded recent window with a same-snapshot total; this avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.",
+        "when": "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id. The returned row is nested at `results[].workItem`, and its prose field is `workItem.summary` (not `body` or `description`). For comments, pass `threadLimit` (1–10) for a bounded recent window with a same-snapshot total, or `0` to explicitly suppress thread work; either avoids loading the full thread behind `detail:true`. When monitoring across hives, `harness` is the caller scope, not necessarily the returned row’s canonical harness; pass your session harness rather than echoing that row field.",
         "notWhen": "Browsing or filtering the queue → work_items:list / work_items:search (they already return many rows).",
         "chaining": "work_items:list → work_items:get { ids:[…] } for detail on the ones you care about."
       }

@@ -27,7 +27,12 @@ export default defineTool({
     sourceIds: z.array(z.string().uuid()).max(20).optional(),
     providerAccountIds: z.array(z.string().min(1).max(512)).max(20).optional(),
     participants: z.array(z.string().min(1).max(320)).max(50).optional(),
-    timeRange: z.object({ from: z.string().datetime().optional(), to: z.string().datetime().optional() }).optional(),
+    timeRange: z
+      .object({
+        from: z.string().datetime({ offset: true }).optional(),
+        to: z.string().datetime({ offset: true }).optional(),
+      })
+      .optional(),
     limit: z.number().int().min(1).max(50).optional(),
   }),
   async handler(args, ctx: PapercuspUnifiedToolContext) {

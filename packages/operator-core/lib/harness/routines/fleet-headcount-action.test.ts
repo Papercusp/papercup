@@ -1,10 +1,60 @@
 import { describe, expect, it } from 'vitest';
+import type { FleetLaunchTransaction } from '../../agent-fleets-store';
 import {
+  assessFleetHeadcountGovernor,
   computeHeadcountDeficit,
+  FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT,
+  governorVerdictForAssessment,
   nextHeadcountBackoff,
+  resolveProductiveCapacityFloor,
   resolveFleetHeadcountLaunchRole,
   resolveFleetHeadcountProfile,
 } from './fleet-headcount-action';
+
+const workerAttestation = (ownerId: string, ready: boolean) => ({
+  version: 1 as const,
+  ownerId,
+  ready,
+  stages: {
+    agentCall: { status: 'satisfied' as const, successfulCalls: 1 },
+    durableWake: ready
+      ? { status: 'satisfied' as const, wakeSource: 'loop' }
+      : { status: 'missing' as const, wakeSource: null },
+    schedulerPull: ready
+      ? { status: 'satisfied' as const, calls: 1, successfulCalls: 1 }
+      : { status: 'missing' as const, calls: 0, successfulCalls: 0 },
+    disposition: ready
+      ? { status: 'satisfied' as const, kind: 'no-claim' as const, reason: 'lane_drained' }
+      : { status: 'missing' as const, kind: 'missing' as const },
+  },
+  failures: ready
+    ? []
+    : [{
+        stage: 'durableWake' as const,
+        code: 'durable-wake-missing' as const,
+        detail: 'No durable wake.',
+      }],
+});
+
+const transaction = (
+  owners: string[],
+  overrides: Partial<FleetLaunchTransaction> = {},
+): FleetLaunchTransaction => ({
+  version: 1,
+  transactionId: 'tx-1',
+  launcherOwnerId: 'su-leader',
+  state: 'partial',
+  requestedAt: 1_000,
+  updatedAt: 1_000,
+  requestedMemberIds: owners,
+  openedMemberIds: owners,
+  verifiedMemberIds: [],
+  unconfirmedMemberIds: owners,
+  failed: [],
+  waves: [{ index: 0, ownerIds: owners, state: 'partial', openedOwnerIds: owners }],
+  recovery: { retryOwnerIds: owners, nextAction: 'observe' },
+  ...overrides,
+});
 
 describe('fleet headcount governor guards (WI-2479)', () => {
   it('opens only the missing member deficit and never a negative wave', () => {
@@ -65,6 +115,163 @@ describe('fleet headcount governor guards (WI-2479)', () => {
         fleetSlug: 'standalone-fleet',
         drainFleetSlug: null,
       })).toBeNull();
+    });
+  });
+});
+
+describe('fleet headcount governor typed attestation policy (P-004)', () => {
+  it('opens one canary below the productive floor and a bounded wave after the floor is evidenced', () => {
+    expect(resolveProductiveCapacityFloor(5, 2)).toBe(2);
+    const canary = assessFleetHeadcountGovernor({
+      target: 5,
+      productiveCapacityFloor: 2,
+      liveMemberIds: [],
+      transaction: null,
+      now: 10_000,
+    });
+    expect(canary).toMatchObject({ action: 'spawn', spawnCount: 1, workerReadyMemberIds: [] });
+
+    const ready = transaction(['su-a', 'su-b'], {
+      state: 'verified',
+      verifiedMemberIds: ['su-a', 'su-b'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-a', 'su-b'],
+      workerAttestations: [workerAttestation('su-a', true), workerAttestation('su-b', true)],
+    });
+    const bulk = assessFleetHeadcountGovernor({
+      target: 5,
+      productiveCapacityFloor: 2,
+      liveMemberIds: ['su-a', 'su-b'],
+      transaction: ready,
+      now: 10_000,
+    });
+    expect(bulk).toMatchObject({ action: 'spawn', spawnCount: 3, workerReadyMemberIds: ['su-a', 'su-b'] });
+  });
+
+  it('waits on an unverified late boot, then cancels replay when that exact member proves ready', () => {
+    const slow = transaction(['su-slow']);
+    const before = assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: [],
+      transaction: slow,
+      now: 2_000,
+    });
+    expect(before).toMatchObject({
+      action: 'wait',
+      spawnCount: 0,
+      pendingOpenedMemberIds: ['su-slow'],
+    });
+
+    slow.verifiedMemberIds = ['su-slow'];
+    slow.unconfirmedMemberIds = [];
+    slow.workerReadyMemberIds = ['su-slow'];
+    slow.workerAttestations = [workerAttestation('su-slow', true)];
+    const after = assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-slow'],
+      transaction: slow,
+      now: 3_000,
+    });
+    expect(after).toMatchObject({ action: 'none', spawnCount: 0, workerReadyMemberIds: ['su-slow'] });
+  });
+
+  it('never prunes a live member whose typed readiness is absent', () => {
+    const legacy = transaction(['su-legacy'], {
+      openedMemberIds: [],
+      unconfirmedMemberIds: [],
+      workerAttestations: undefined,
+      workerReadyMemberIds: undefined,
+    });
+    const result = assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-legacy'],
+      transaction: legacy,
+      now: 20_000,
+    });
+    expect(result).toMatchObject({
+      action: 'wait',
+      pruneCandidateIds: [],
+      unverifiedMemberIds: ['su-legacy'],
+    });
+  });
+
+  it('prunes only after bounded repeated non-ready evidence plus verified agent start', () => {
+    const member = transaction(['su-dark'], {
+      verifiedMemberIds: ['su-dark'],
+      unconfirmedMemberIds: [],
+      workerAttestations: [workerAttestation('su-dark', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-dark'],
+        attestationAttempts: { 'su-dark': FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT - 1 },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const retry = assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-dark'],
+      transaction: member,
+      now: 20_000,
+    });
+    expect(retry).toMatchObject({ action: 'retry', pruneCandidateIds: [] });
+
+    member.governor!.attestationAttempts['su-dark'] = FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT;
+    const prune = assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-dark'],
+      transaction: member,
+      now: 20_000,
+    });
+    expect(prune).toMatchObject({
+      action: 'prune',
+      actionOwnerId: 'su-dark',
+      pruneCandidateIds: ['su-dark'],
+    });
+  });
+
+  it('refuses a prune even at the retry cap when start/failure proof is still unknown', () => {
+    const member = transaction(['su-unknown'], {
+      workerAttestations: [workerAttestation('su-unknown', false)],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-unknown'],
+        attestationAttempts: { 'su-unknown': FLEET_HEADCOUNT_ATTESTATION_RETRY_LIMIT },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+    const result = assessFleetHeadcountGovernor({
+      target: 1,
+      liveMemberIds: ['su-unknown'],
+      transaction: member,
+      now: 20_000,
+    });
+    expect(result).toMatchObject({ action: 'wait', pruneCandidateIds: [] });
+  });
+
+  it('emits a distinct accountable terminal verdict without rewriting liveness or progress', () => {
+    const assessment = assessFleetHeadcountGovernor({
+      target: 2,
+      productiveCapacityFloor: 1,
+      liveMemberIds: [],
+      transaction: null,
+      now: 20_000,
+    });
+    expect(governorVerdictForAssessment(assessment, 20_000)).toEqual({
+      version: 1,
+      outcome: 'repairing',
+      decidedAt: 20_000,
+      target: 2,
+      productiveCapacityFloor: 1,
+      liveMemberIds: [],
+      workerReadyMemberIds: [],
+      unreadyMemberIds: [],
+      unverifiedMemberIds: [],
+      action: 'spawn',
+      reason: 'productive-capacity floor is not yet evidenced; open one canary only',
     });
   });
 });

@@ -49,7 +49,7 @@ function binding(over: Partial<PilotCollectionBindingReceipt> = {}): PilotCollec
     ownerId: 'su-worker',
     sessionId: 'session-1',
     role: 'solo',
-    claimVersion: 4,
+    claimVersion: '2026-08-27T00:59:55.000Z',
     bindingIssuedAtMs: CLOSED - 5_000,
     ...over,
   };
@@ -251,5 +251,17 @@ describe('pilot receipt-derived cost windows', () => {
     });
     expect(result.windows).toEqual([]);
     expect(result.gaps).toContainEqual(expect.objectContaining({ code }));
+  });
+
+  it('rejects a binding whose claimVersion is not the exact WorkItem.takenAt ISO instant', () => {
+    const result = derivePilotReceiptCostWindows({
+      itemId: 'WI-1',
+      arm: 'A',
+      closedAtMs: CLOSED,
+      bindings: [binding({ claimVersion: 'not-a-canonical-takenAt' })],
+      dispatches: [dispatch()],
+    });
+    expect(result.windows).toEqual([]);
+    expect(result.gaps).toContainEqual(expect.objectContaining({ code: 'invalid-binding-receipt' }));
   });
 });

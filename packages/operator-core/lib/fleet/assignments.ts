@@ -378,6 +378,8 @@ export interface AgentClaim {
   lastProgressAt: string | null;
   /** The single derived truth: free|reserved|alive|progressing|stalled|dead (P-005). */
   activity: ItemActivity;
+  /** P-005: claim-progress health, separate from holder liveness/activity. */
+  claimHealth?: ClaimHealth;
   /** Position in the holder's ordered work-list (work-item claims only; null otherwise). */
   rank: number | null;
   /** Who set the rank — 'cup' | 'mug' (D-008). */
@@ -455,6 +457,7 @@ function toClaim(r: FleetAssignmentRow): AgentClaim {
     stalled: r.stalled,
     lastProgressAt: r.lastProgressAt,
     activity: deriveActivity(r),
+    claimHealth: deriveClaimHealth(r),
     rank: r.assigneeRank,
     rankWriter: r.rankWriter,
   };
@@ -906,6 +909,20 @@ export interface HolderActivity {
   sessionState?: 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded' | null;
   /** Last recorded tool invocation — GENUINE work, not a keepalive beat. */
   lastToolCallAt?: string | null;
+  /** Last recorded non-housekeeping tool invocation — stronger work evidence. */
+  productiveToolCallAt?: string | null;
+  /** Whether the holder currently has an inbox wake delivery path. */
+  wakeable?: boolean | null;
+  /** Healthy loop lifecycle state, when fleet:assignments has decorated it. */
+  monitorState?: 'monitoring' | 'waiting' | 'parked-awaiting-capability' | null;
+  /** Exact non-inbox event keys the holder is deliberately parked on. */
+  parkedOn?: readonly string[] | null;
+  /** Expected progress cadence for this claim, when a caller knows it. */
+  expectedCadenceMs?: number | null;
+  /** Classification of the checkpoint writer, when known. */
+  checkpointKind?: 'authored' | 'mechanical' | null;
+  /** Context generation/epoch evidence, when the caller has it. */
+  contextGeneration?: string | number | null;
 }
 
 /**
@@ -960,6 +977,8 @@ export interface OrphanedClaimSummary {
    *  item + its terminal status, i.e. WHY this claim is stale residue rather
    *  than abandoned/quiet-but-live work. */
   residue?: { planSlug: string; itemId: string; effectiveStatus: string };
+  /** P-005: progress-derived claim health, separate from liveness/activity. */
+  claim_health: ClaimHealth;
 }
 
 /**
@@ -996,6 +1015,132 @@ function isWithinClaimGrace(r: FleetAssignmentRow, nowMs: number): boolean {
   // Match the existing recent-activity skew tolerance while keeping an
   // obviously-future timestamp from manufacturing an indefinitely fresh claim.
   return ageMs <= STALE_CLAIM_GRACE_MS && anchorMs <= nowMs + STALE_CLAIM_GRACE_MS;
+}
+
+export type ClaimHealthStatus = 'healthy' | 'waiting' | 'suspect' | 'recoverable' | 'contested';
+
+export interface ClaimHealthEvidence {
+  writer: string;
+  signal: string;
+  value: string | number | boolean | null | string[];
+  at?: string | null;
+}
+
+export interface ClaimHealth {
+  status: ClaimHealthStatus;
+  reasons: string[];
+  expected_cadence_ms: number;
+  evidence: ClaimHealthEvidence[];
+}
+
+function isoAgeMs(value: string | null | undefined, nowMs: number): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) return null;
+  return nowMs - parsed;
+}
+
+function isFreshIso(value: string | null | undefined, nowMs: number, windowMs: number): boolean {
+  const age = isoAgeMs(value, nowMs);
+  return age != null && age >= -windowMs && age <= windowMs;
+}
+
+/**
+ * P-005: the progress-derived health of a HELD CLAIM, deliberately separate
+ * from session liveness (`holderAlive`/`sessionState`) and item activity
+ * (`deriveActivity`). This is the writer-evidence surface a leader can inspect
+ * before deciding whether a quiet claim is healthy, merely waiting, recoverable,
+ * suspect, or internally contested.
+ *
+ * Key safety rule: heartbeat-only liveness and mechanical-only checkpoints can
+ * never keep a claim `healthy` indefinitely. `healthy` needs fresh authored or
+ * productive evidence (fresh non-housekeeping tool work, or a checkpoint known
+ * to be authored). A live-but-quiet holder is at most `waiting`/`suspect`, never
+ * silently healthy.
+ */
+export function deriveClaimHealth(
+  r: FleetAssignmentRow,
+  holder?: HolderActivity | null,
+  nowMs: number = Date.now(),
+): ClaimHealth {
+  const expectedCadenceMs =
+    holder?.expectedCadenceMs && Number.isFinite(holder.expectedCadenceMs) && holder.expectedCadenceMs > 0
+      ? holder.expectedCadenceMs
+      : STALE_CLAIM_GRACE_MS;
+  const evidence: ClaimHealthEvidence[] = [
+    { writer: 'fleet_assignment', signal: 'holder_alive', value: r.holderAlive, at: r.holderHeartbeatAt },
+    { writer: 'fleet_assignment', signal: 'last_progress_at', value: r.lastProgressAt, at: r.lastProgressAt },
+    { writer: 'fleet_assignment', signal: 'claim_acquired_at', value: r.claimAcquiredTs, at: r.claimAcquiredTs },
+  ];
+  if (holder?.sessionState !== undefined) {
+    evidence.push({ writer: 'coord_presence', signal: 'session_state', value: holder.sessionState ?? null });
+  }
+  if (holder?.wakeable !== undefined) {
+    evidence.push({ writer: 'coord_presence', signal: 'wakeable', value: holder.wakeable ?? null });
+  }
+  if (holder?.lastToolCallAt !== undefined) {
+    evidence.push({ writer: 'tool_invocations', signal: 'last_tool_call_at', value: holder.lastToolCallAt ?? null, at: holder.lastToolCallAt ?? null });
+  }
+  if (holder?.productiveToolCallAt !== undefined) {
+    evidence.push({
+      writer: 'tool_invocations',
+      signal: 'last_productive_tool_call_at',
+      value: holder.productiveToolCallAt ?? null,
+      at: holder.productiveToolCallAt ?? null,
+    });
+  }
+  if (holder?.monitorState !== undefined) {
+    evidence.push({ writer: 'loop_status', signal: 'monitor_state', value: holder.monitorState ?? null });
+  }
+  if (holder?.parkedOn?.length) {
+    evidence.push({ writer: 'events_await', signal: 'exact_dependency_waits', value: [...holder.parkedOn] });
+  }
+  if (holder?.checkpointKind !== undefined) {
+    evidence.push({ writer: 'work_items_checkpoint', signal: 'checkpoint_kind', value: holder.checkpointKind ?? null });
+  }
+  if (holder?.contextGeneration !== undefined) {
+    evidence.push({ writer: 'memory_session_epochs', signal: 'context_generation', value: holder.contextGeneration ?? null });
+  }
+
+  const reasons: string[] = [];
+  const freshProductive = isFreshIso(holder?.productiveToolCallAt, nowMs, expectedCadenceMs);
+  const freshTool = isFreshIso(holder?.lastToolCallAt, nowMs, ACTIVE_TOOL_CALL_WINDOW_MS);
+  const freshAuthoredCheckpoint =
+    holder?.checkpointKind === 'authored' && isFreshIso(r.lastProgressAt, nowMs, expectedCadenceMs);
+  const mechanicalOnly =
+    holder?.checkpointKind === 'mechanical' && !freshProductive && !freshTool;
+  const dependencyWait = (holder?.parkedOn?.length ?? 0) > 0 || holder?.monitorState === 'parked-awaiting-capability';
+  const scheduledWait = holder?.monitorState === 'waiting' || holder?.monitorState === 'monitoring';
+  const recoverable = holder?.sessionState === 'suspect' && holder.wakeable === true;
+  const contradicted =
+    (r.orphaned && (holder?.sessionState === 'live' || holder?.sessionState === 'parked' || holder?.sessionState === 'recorded')) ||
+    (r.stalled === true && (freshProductive || freshTool)) ||
+    r.declaredPlanMatches === false;
+
+  if (contradicted) {
+    reasons.push('claim progress/liveness writers disagree; inspect before acting');
+    return { status: 'contested', reasons, expected_cadence_ms: expectedCadenceMs, evidence };
+  }
+  if (recoverable) {
+    reasons.push('holder is suspect but wakeable, so wake/recover before takeover');
+    return { status: 'recoverable', reasons, expected_cadence_ms: expectedCadenceMs, evidence };
+  }
+  if (freshProductive || freshTool || freshAuthoredCheckpoint) {
+    if (freshProductive) reasons.push('fresh non-housekeeping tool progress within expected cadence');
+    else if (freshTool) reasons.push('fresh tool progress within active work window');
+    else reasons.push('fresh authored checkpoint progress within expected cadence');
+    return { status: 'healthy', reasons, expected_cadence_ms: expectedCadenceMs, evidence };
+  }
+  if (dependencyWait || scheduledWait) {
+    if (dependencyWait) reasons.push('holder is parked on exact dependency wait(s)');
+    else reasons.push('holder has a healthy loop monitor state but no fresh progress evidence');
+    if (mechanicalOnly) reasons.push('mechanical checkpoint alone is not healthy progress');
+    return { status: 'waiting', reasons, expected_cadence_ms: expectedCadenceMs, evidence };
+  }
+  if (mechanicalOnly) reasons.push('mechanical-only checkpoint cannot keep claim healthy');
+  else if (r.holderAlive) reasons.push('heartbeat/liveness exists but no fresh authored or productive progress');
+  else reasons.push('no fresh authored/productive progress evidence');
+  return { status: 'suspect', reasons, expected_cadence_ms: expectedCadenceMs, evidence };
 }
 
 /**
@@ -1050,6 +1195,7 @@ export function summarizeOrphan(
     ...(holder?.lastToolCallAt !== undefined
       ? { holder_last_tool_call_at: holder.lastToolCallAt }
       : {}),
+    claim_health: deriveClaimHealth(r, holder, nowMs),
   };
   if (residue) {
     return {

@@ -29,12 +29,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import runTool, {
+  buildDetachedTestRunRequest,
   detachedTestTimeoutHint,
   discoverKnownHiveCheckoutRoots,
   groupDirectVitestRoutes,
   normalizeTestFilePaths,
   selectTestFileRoot,
 } from '../run';
+import { cancelRun, getRun } from '../../../testing-run-store';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -60,6 +62,7 @@ interface RunResult {
   root?: string;
   rootSource?: string;
   error?: string;
+  detachedRunId?: string;
   hint?: string;
   routerOutput?: string;
   passed?: number;
@@ -460,6 +463,28 @@ describe('testing:run (integration)', () => {
     expect(detachedTestTimeoutHint(['packages/operator-core/lib/example.test.ts'])).toContain('capability:inspect');
   });
 
+  it('builds a fresh store-backed router request without the foreground report path', () => {
+    const request = buildDetachedTestRunRequest({
+      root: '/repo',
+      files: ['packages/example.test.ts'],
+      testNamePattern: 'suite > --focused test',
+    });
+
+    expect(request).toMatchObject({
+      kind: 'vitest',
+      command: process.execPath,
+      cwd: '/repo',
+      filePath: 'packages/example.test.ts',
+    });
+    expect(request.args).toEqual([
+      '/repo/scripts/test-files.mjs',
+      'packages/example.test.ts',
+      '--',
+      '--testNamePattern=suite > --focused test',
+    ]);
+    expect(request.args.some((arg) => arg.includes('papercusp-testing-run-'))).toBe(false);
+  });
+
   // EI-19324351741370770: the foreground timeout used to kill only the router
   // process (`scripts/test-files.mjs`'s own pid) — but the router launches the REAL
   // vitest run via a synchronous `spawnSync`, WITHOUT its own `detached: true`, so
@@ -484,8 +509,18 @@ describe('testing:run (integration)', () => {
     expect(out.ok).toBe(false);
     expect(out.error).toBe('timeout');
     expect(typeof out.runId).toBe('string');
+    expect(typeof out.detachedRunId).toBe('string');
     expect(out.hint).toContain('one detached call per file');
     expect(out.hint).toContain('onlyPaths (that field is typecheck-only)');
+
+    // The fallback is deliberately a real store run. Stop it here so this
+    // integration test never leaves a detached Vitest tree behind for the
+    // remainder of the suite.
+    if (typeof out.detachedRunId === 'string') {
+      const detached = getRun(out.detachedRunId);
+      expect(detached).not.toBeNull();
+      if (detached?.status === 'running') expect(cancelRun(out.detachedRunId)).toBe(true);
+    }
 
     // Give the SIGTERM → (5s) → SIGKILL fallback (run.ts's own `killGroup` retry)
     // time to land before asserting on the absence of survivors.

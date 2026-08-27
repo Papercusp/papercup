@@ -227,6 +227,25 @@ describe("work_items:get — per-item cache wiring", () => {
     expect(M.getWorkItemDetail).toHaveBeenCalledTimes(1);
   });
 
+  it("detail reads are invalidated by every coordination table they fold in", async () => {
+    const dependencies = ["coord_links", "coord_threads", "coord_thread_posts"];
+
+    for (const [index, table] of dependencies.entries()) {
+      const id = `WI-detail-${index}`;
+      await get({ id, detail: true });
+      await get({ id, detail: true }); // warm the detail entry
+      expect(M.getWorkItemDetail).toHaveBeenCalledTimes(index * 2 + 1);
+
+      // Simulate the cache-ECA output for a real <table>.changed event. The table tag
+      // is the dependency; the row tag is included to keep this coupled to the ECA's
+      // canonical tag shape rather than a hand-written cache string.
+      getOperatorCache().invalidateByTags("ws-wi", tagsForTableChange(table, `row-${index}`));
+      await get({ id, detail: true });
+    }
+
+    expect(M.getWorkItemDetail).toHaveBeenCalledTimes(dependencies.length * 2);
+  });
+
   it("CACHE_LAYER OFF ⇒ bypass", async () => {
     setFlagOverridesForTest({ [CACHE_LAYER]: false });
     await _refreshCacheLayerForTests();

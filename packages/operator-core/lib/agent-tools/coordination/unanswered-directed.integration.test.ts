@@ -18,6 +18,7 @@ import { setupBaselineCoordFixture, type BaselineCoordFixture } from '../../_bas
 import type { AgentIdentity } from './identity';
 import { sendMessage } from './messages';
 import { fetchUnansweredDirected } from './unanswered-directed';
+import { fetchDirectiveActuationSummaries } from './directive-effect-read';
 
 let fx: BaselineCoordFixture;
 
@@ -28,16 +29,22 @@ function ident(ownerId: string): AgentIdentity {
 const LEADER = ident('unans-leader');
 const MEMBER = ident('unans-member');
 const OTHER = ident('unans-other');
+const EFFECT_ITEM = 'EI-unanswered-expect-effect-checkpoint';
+const EFFECT_SCOPE = `workitem:papercusp:${EFFECT_ITEM}`;
 
 beforeAll(async () => {
   fx = await setupBaselineCoordFixture();
 });
 afterAll(async () => {
+  await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = 'default' AND scope = ${EFFECT_SCOPE}`.catch(() => {});
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = 'default' AND harness_slug = 'papercusp' AND feature_id = ${EFFECT_ITEM}`.catch(() => {});
   await fx.admin`TRUNCATE harness_shared.coord_event_log`.catch(() => {});
   await fx.dispose();
 });
 beforeEach(async () => {
   await fx.admin`TRUNCATE harness_shared.coord_event_log`;
+  await fx.admin`DELETE FROM harness_shared.carry_notes WHERE workspace_id = 'default' AND scope = ${EFFECT_SCOPE}`;
+  await fx.admin`DELETE FROM harness_shared.work_items WHERE workspace_id = 'default' AND harness_slug = 'papercusp' AND feature_id = ${EFFECT_ITEM}`;
 });
 
 describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
@@ -237,5 +244,39 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
 
     const map = await fetchUnansweredDirected([MEMBER.ownerId]);
     expect(map.get(MEMBER.ownerId)?.count).toBe(1);
+  });
+
+  it('EI-21547691921890849: a satisfied expectEffect checkpoint clears the same directed action from unanswered_directed', async () => {
+    await fx.admin`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts)
+      VALUES
+        ('default', 'papercusp', ${EFFECT_ITEM}, 'bug', ${`checkpoint fixture ${EFFECT_ITEM}`}, 'open', 0, 0)
+    `;
+
+    const directive = await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: `checkpoint ${EFFECT_ITEM} before compact`,
+      expectsReply: true,
+      extra: {
+        expects: 'action',
+        expectEffect: { kind: 'checkpoint', itemId: EFFECT_ITEM, harness: 'papercusp' },
+      },
+    });
+    const sentAtMs = Date.parse(directive.ts);
+    expect(Number.isFinite(sentAtMs)).toBe(true);
+
+    await fx.admin`
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, updated_ts)
+      VALUES ('default', ${EFFECT_SCOPE}, 'checkpoint written after directive', ${sentAtMs + 1})
+    `;
+
+    const actuation = await fetchDirectiveActuationSummaries([MEMBER.ownerId], {
+      fromId: LEADER.ownerId,
+    });
+    expect(actuation.get(MEMBER.ownerId)).toMatchObject({ total: 1, satisfied: 1, notYet: 0 });
+
+    const unanswered = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(unanswered.get(MEMBER.ownerId)).toBeUndefined();
   });
 });

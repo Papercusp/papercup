@@ -19,7 +19,8 @@ const META = {
   population: 'member(s)',
   basis: 'shown if it holds a claim or is alive',
   withheldReason: 'idle AND not heartbeat-fresh (stale-idle)',
-  reveal: 'include_stale: true',
+  reveal:
+    'coord:presence { owner: "<agentId>" } (targeted stale-row lookup; broad stale-roster reads are unsupported)',
 };
 
 const rows = [
@@ -37,7 +38,7 @@ describe('selectFleetPopulation', () => {
     expect(census.candidates).toBe(4);
     expect(census.withheld).toBe(2);
     expect(census.withheldReason).toContain('stale-idle');
-    expect(census.reveal).toBe('include_stale: true');
+    expect(census.reveal).toBe(META.reveal);
   });
 
   it('reports withheld:0 with NO reason attached when the filter hid nothing', () => {
@@ -109,7 +110,7 @@ describe('renderPopulationCensus', () => {
     const line = renderPopulationCensus(census);
     expect(line).toContain('2 member(s) (of 4 on the roster)');
     expect(line).toContain('2 withheld');
-    expect(line).toContain('include_stale: true');
+    expect(line).toContain('coord:presence { owner: "<agentId>" }');
     expect(line).toContain('only 1 shown');
   });
 

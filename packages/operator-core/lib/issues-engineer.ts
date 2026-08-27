@@ -2727,7 +2727,12 @@ export async function setIssueState(
                            ELSE (
                              CASE WHEN ${evidencePayloadJson}::text::jsonb IS NULL
                                   THEN COALESCE(payload, '{}'::jsonb)
-                                  ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
+                                  -- WI-42437: sanitize only the INCOMING completion
+                                  -- patch. jsonb_strip_nulls is recursive, so applying it
+                                  -- after the merge deletes explicit null-valued fields from
+                                  -- unrelated existing metadata (for example
+                                  -- payload.triage.{judge,judgedAt,mergeInto}).
+                                  ELSE COALESCE(payload, '{}'::jsonb) || jsonb_strip_nulls(${evidencePayloadJson}::text::jsonb)
                              END
                            ) - '_claimHold' - 'held_open_by' - 'held_open_reason' - 'held_open_at'
                              - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'

@@ -19,7 +19,7 @@ export function applyPrettierRangeWrites(source: any, lineRanges: any, formatRan
 export function normalizeScopedPaths(args: any): any;
 export function buildPrettierCheckArgs(cli: any, repoPath: any, range: any): any[];
 export function buildPrettierArgs(cli: any, repoPath: any, range: any, mode?: string): any[];
-/** Build a whole-file Prettier invocation for an explicitly task-created file. */
+/** Build a whole-file Prettier invocation for an explicitly classified file. */
 export function buildPrettierWholeFileArgs(cli: any, repoPath: any): any[];
 export function buildPrettierStdinArgs(cli: any, repoPath: any, range: any): any[];
 /**
@@ -29,9 +29,19 @@ export function buildPrettierStdinArgs(cli: any, repoPath: any, range: any): any
  * Compare only the requested source span so the scoped check remains scoped.
  */
 export function rangeFormattingDiffers(source: any, formatted: any, range: any): boolean;
+/**
+ * @returns {{
+ *   mode: "check" | "write" | "help";
+ *   paths: string[];
+ *   newFilePaths?: string[];
+ *   wholeFilePaths?: string[];
+ * }}
+ */
 export function parseFormatCliArgs(args: any): {
-    mode: string;
-    paths: any;
+    mode: "check" | "write" | "help";
+    paths: string[];
+    newFilePaths?: string[];
+    wholeFilePaths?: string[];
 };
 export const REPO_ROOT: string;
-export const FORMAT_USAGE: "Usage:\n  npm run format:check:scoped -- [--new-file <file>] <file...>\n  npm run format:write:scoped -- [--new-file <file>] <file...>\n\nCheck or write only the changed ranges of explicit files in the repository. Repeat\n--new-file for files created by the current task; those files are checked or written\nas complete files even if git-sync has already committed them.\n";
+export const FORMAT_USAGE: "Usage:\n  npm run format:check:scoped -- [--whole-file <file>] [--new-file <file>] <file...>\n  npm run format:write:scoped -- [--whole-file <file>] [--new-file <file>] <file...>\n\nCheck or write only the changed ranges of explicit files in the repository. Repeat\n--whole-file for existing files that should be checked or written in full. Repeat\n--new-file for files created by the current task; those files are also checked or\nwritten as complete files even if git-sync has already committed them. Both flags\naccept an equals form, such as --whole-file=path/to/file.ts.\n";

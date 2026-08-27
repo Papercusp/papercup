@@ -197,6 +197,13 @@ function startDeps(capture: { launched: string[] }): StartGoalByIdDeps {
       });
       return { ok: res.ok, error: res.ok ? null : 'mode store refused' };
     },
+    stampAgentOwner: async (sql, { workspaceId, goalId, ownerId }) => {
+      await sql`
+        UPDATE harness_shared.goals
+           SET metadata = COALESCE(metadata, '{}'::jsonb)
+                          || jsonb_build_object('agentOwnerId', ${ownerId}::text)
+         WHERE id = ${goalId} AND workspace_id = ${workspaceId}`;
+    },
   };
 }
 
@@ -254,6 +261,11 @@ describe('a KILLED goal holder (pid gone, adv_sessions.ended_at never written)',
       SELECT owner_id FROM harness_shared.agent_modes
        WHERE workspace_id = ${WS} AND mode = ${GOAL_MODE} AND subject = ${GOAL}`;
     expect(rows.map((r) => r.owner_id).sort()).toEqual([HOLDER, REPLACEMENT].sort());
+
+    const [goal] = await admin<{ metadata: Record<string, unknown> | null }[]>`
+      SELECT metadata FROM harness_shared.goals
+       WHERE workspace_id = ${WS} AND id = ${GOAL}`;
+    expect(goal.metadata).toMatchObject({ agentOwnerId: REPLACEMENT });
 
     // ── half 2: the onLoss='deactivate' disposition, derived at read ────────
     const activity = resolveGoalEffectiveActivity({

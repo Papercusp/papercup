@@ -202,6 +202,31 @@ export interface SpawnRequest {
   cwd?: string;
 }
 
+/**
+ * Signal a run's process group when the child was started detached. A detached
+ * runner can synchronously spawn a router, which can synchronously spawn
+ * Vitest and its workers; signalling only the direct child leaves that tree
+ * running after the caller thinks cancellation succeeded. Keep the direct
+ * child fallback for platforms without POSIX process-group signalling and for
+ * children that do not expose a pid (the latter is also how lightweight test
+ * doubles model a process).
+ */
+function signalRunProcess(proc: ChildProcess, signal: NodeJS.Signals): void {
+  if (proc.pid) {
+    try {
+      process.kill(-proc.pid, signal);
+      return;
+    } catch {
+      // Negative-pid signalling is unavailable or the group has already exited.
+    }
+  }
+  try {
+    proc.kill(signal);
+  } catch {
+    /* already gone */
+  }
+}
+
 export function startRun(req: SpawnRequest): RunSnapshot {
   evictOldRuns();
   const runId = randomUUID();
@@ -242,6 +267,10 @@ export function startRun(req: SpawnRequest): RunSnapshot {
         PAPERCUSP_TEST_RUN_SOURCE: 'admin-ui',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Detached runs are process-group leaders. This is required both for
+      // admin cancellation and for timeout recovery launched by testing:run:
+      // the router may own a nested Vitest process tree.
+      detached: true,
     });
   } catch (e) {
     snapshot.status = 'error';
@@ -358,14 +387,10 @@ export function cancelRun(runId: string): boolean {
   if (s.snapshot.status !== 'running') return false;
   s.snapshot.status = 'cancelled';
   s.snapshot.finishedAt = Date.now();
-  try {
-    s.proc.kill('SIGTERM');
-    setTimeout(() => {
-      if (s.proc && !s.proc.killed) s.proc.kill('SIGKILL');
-    }, 5000).unref();
-  } catch {
-    /* swallow */
-  }
+  signalRunProcess(s.proc, 'SIGTERM');
+  setTimeout(() => {
+    if (s.proc && s.proc.exitCode == null && !s.proc.killed) signalRunProcess(s.proc, 'SIGKILL');
+  }, 5000).unref();
   return true;
 }
 

@@ -491,6 +491,52 @@ describe('engineer issues surface (real PG)', () => {
     expect(row?.payload).not.toHaveProperty('claim_hold_reason');
   });
 
+  it('WI-42437: terminal evidence preserves explicit nulls in unrelated nested payload', async () => {
+    const { id } = await issues.createIssue({ title: 'preserve nested null metadata on close', createdBy: 'agA' });
+    const triage = {
+      disposition: 'deferred',
+      judge: null,
+      judgedAt: null,
+      mergeInto: null,
+    };
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) || ${db.sql.json({
+           _claimHold: true,
+           held_open_by: 'old-holder',
+           held_open_at: new Date(Date.now() - 60_000).toISOString(),
+           held_open_reason: 'compatibility hold',
+           claim_hold_by: 'park-owner',
+           claim_hold_at: new Date(Date.now() - 60_000).toISOString(),
+           claim_hold_reason: 'deliberate park',
+           triage,
+           unrelated: 'preserve me',
+         })}::jsonb
+       WHERE feature_id = ${id}`;
+
+    const completionEvidence = {
+      verifiedHow: 'integration',
+      testResult: 'focused regression green',
+    };
+    const resolved = await issues.setIssueState(id, 'resolved', 'agA', 'integration-test completion', {
+      completionEvidence,
+    });
+    expect(resolved?.state).toBe('resolved');
+
+    const [row] = await db.sql<{ payload: Record<string, unknown> | null }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(row?.payload?.triage).toEqual(triage);
+    expect(row?.payload?._completionEvidence).toMatchObject(completionEvidence);
+    expect(row?.payload).toMatchObject({ unrelated: 'preserve me' });
+    expect(row?.payload).not.toHaveProperty('_claimHold');
+    expect(row?.payload).not.toHaveProperty('held_open_by');
+    expect(row?.payload).not.toHaveProperty('held_open_at');
+    expect(row?.payload).not.toHaveProperty('held_open_reason');
+    expect(row?.payload).not.toHaveProperty('claim_hold_by');
+    expect(row?.payload).not.toHaveProperty('claim_hold_at');
+    expect(row?.payload).not.toHaveProperty('claim_hold_reason');
+  });
+
   it('EI-20202629116790410: stale compatibility-view terminal writes are actionable, while the base writer closes', async () => {
     const { id } = await issues.createIssue({ title: 'stale writer diagnostic', createdBy: 'agA' });
 

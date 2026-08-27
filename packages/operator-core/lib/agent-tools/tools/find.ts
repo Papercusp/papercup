@@ -204,21 +204,40 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
   if (depth >= MAX_NESTED_SCHEMA_DEPTH) return '';
   const nested = nestedObjectProperties(node);
   if (!nested) return '';
-  const renderEntry = (name: string, raw: unknown, withDescription: boolean): string => {
+  const renderEntry = (
+    name: string,
+    raw: unknown,
+    withDescription: boolean,
+    includeNestedFields = true,
+  ): string => {
     const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as JsonSchemaNode) : {};
-    const shape = schemaShape(child, depth, withDescription);
+    const shape = schemaShape(child, depth, withDescription, includeNestedFields);
     const description = withDescription ? nestedDescription(child, depth) : '';
     return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}${description}`;
   };
-  let entries = Object.entries(nested.properties).map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
+  const properties = Object.entries(nested.properties);
+  let entries = properties.map(([name, raw]) => renderEntry(name, raw, includeDescriptions));
   if (includeDescriptions && entries.join(',').length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
-    entries = Object.entries(nested.properties).map(([name, raw]) => renderEntry(name, raw, false));
+    entries = properties.map(([name, raw]) => renderEntry(name, raw, false));
   }
   let body = '';
   let dropped = 0;
-  for (const entry of entries) {
+  for (const [index, entry] of entries.entries()) {
     const candidate = body ? `${body},${entry}` : entry;
     if (body && candidate.length > NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+      // Keep the child name/type discoverable even when its recursive shape is
+      // larger than the remaining segment budget. Dropping the whole entry
+      // made large contracts (notably completion.verification) disappear,
+      // leaving callers to infer the legacy alias was canonical. The shallow
+      // fallback preserves the callable field without changing aggregate
+      // width or the explicit tail-elision marker.
+      const [name, raw] = properties[index];
+      const fallback = renderEntry(name, raw, false, false);
+      const fallbackCandidate = `${body},${fallback}`;
+      if (fallback.length < entry.length && fallbackCandidate.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+        body = fallbackCandidate;
+        continue;
+      }
       dropped += 1;
       continue;
     }
@@ -246,7 +265,12 @@ function nestedDescription(node: JsonSchemaNode, depth: number): string {
   return ` ${bounded}`;
 }
 
-function schemaShape(node: JsonSchemaNode, depth: number, includeNestedDescriptions = true): string {
+function schemaShape(
+  node: JsonSchemaNode,
+  depth: number,
+  includeNestedDescriptions = true,
+  includeNestedFields = true,
+): string {
   const type = schemaType(node);
   const bound = schemaBound(node);
   // Keep regex constraints in the returned schema just as bounds and array
@@ -258,7 +282,7 @@ function schemaShape(node: JsonSchemaNode, depth: number, includeNestedDescripti
     [node, ...schemaNodes(node)]
       .map((candidate) => arrayItemConstraintText(candidate))
       .find((text): text is string => text.length > 0) ?? '';
-  const nested = nestedFieldNames(node, depth + 1, includeNestedDescriptions);
+  const nested = includeNestedFields ? nestedFieldNames(node, depth + 1, includeNestedDescriptions) : '';
   return `${type}${bound}${pattern}${itemConstraint}${nested}`;
 }
 

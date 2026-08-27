@@ -31,6 +31,7 @@ import { deriveVerdict } from '../coordination/liveness-oracle';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../../adv-sessions';
 import {
   groupByAgent,
+  deriveClaimHealth,
   lastProductiveToolCallAtByOwner,
   lastToolCallAtByOwner,
   listFleetAssignments,
@@ -1022,6 +1023,7 @@ export default defineTool({
       /** Stamped by decorateMemberVerdicts — the holder's last GENUINE work signal
        *  (WI-5975 reads it to tell a quiet-but-working holder from an absent one). */
       lastToolCallAt?: string | null;
+      productiveToolCallAt?: string | null;
       contextPressure?: ContextPressureBucket | null;
       unanswered?: UnansweredDirectedSummary;
       parkedOn?: string[];
@@ -1175,7 +1177,8 @@ export default defineTool({
           'is shown if it holds a claim, is alive (heartbeat-fresh), has an abandoned nonterminal ' +
           'unassigned WI-/EI- named in its dead member intent, or unconditionally under include_stale.',
         withheldReason: 'idle AND not heartbeat-fresh (stale-idle) with no abandoned intent item',
-        reveal: 'include_stale: true',
+        reveal:
+          'coord:presence { owner: "<agentId>" } (targeted stale-row lookup; broad stale-roster reads are unsupported)',
       },
     );
     agents = agentPopulation.rows;
@@ -1211,9 +1214,30 @@ export default defineTool({
     const holderActivity = new Map<string, HolderActivity>(
       agents.map((a) => [
         a.agentId,
-        { sessionState: a.sessionState ?? null, lastToolCallAt: a.lastToolCallAt ?? null },
+        {
+          sessionState: a.sessionState ?? null,
+          lastToolCallAt: a.lastToolCallAt ?? null,
+          productiveToolCallAt: a.productiveToolCallAt ?? null,
+          wakeable: a.wakeable ?? null,
+          monitorState: a.monitorState ?? null,
+          parkedOn: a.parkedOn ?? null,
+        },
       ]),
     );
+    const rowByAgentAndId = new Map<string, FleetAssignmentRow>();
+    for (const row of reconciledRows) {
+      if (!row.agentId) continue;
+      const id = row.itemId ?? row.workItemId;
+      if (!id) continue;
+      rowByAgentAndId.set(`${row.agentId}\0${id}`, row);
+    }
+    for (const agent of agents) {
+      const holder = holderActivity.get(agent.agentId) ?? null;
+      for (const claim of agent.claims) {
+        const row = claim.id ? rowByAgentAndId.get(`${agent.agentId}\0${claim.id}`) : null;
+        if (row) claim.claimHealth = deriveClaimHealth(row, holder);
+      }
+    }
     // EI-18763117665515043: a claim's liveness verdict is meaningless when the
     // claim's OWN linked plan item is already terminal (done/dropped) — the claim
     // is stale residue of finished work, not abandoned or quiet-but-live work.

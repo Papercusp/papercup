@@ -13,7 +13,7 @@ import { readFileLockIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
-import { releaseGranular, tryRelease } from './su-lock-store';
+import { readResourceLockStatus, releaseGranular, tryRelease } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import {
@@ -45,7 +45,7 @@ const lockIdSchema = z.string().uuid({
 export default defineTool({
   name: 'locks:release',
   description:
-    'Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. Fires the classic file-lock grant cascade for waiting agents.',
+    'Release one or many held lock sets, including classic file-lock and granular intention-lock UUIDs. Single: pass lock_id (with optional paths filter for classic file locks), paths to select your active locks across every coordination domain (classic file-lock rows only), or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. A named-resource UUID is rejected with guidance to use locks:release_resource. Fires the classic file-lock grant cascade for waiting agents.',
   guidance: {
     when: 'Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id.',
     notWhen: 'Mid-edit. The lock should outlive the edit by enough that no other agent races between release and PR merge.',
@@ -178,6 +178,11 @@ export default defineTool({
       released: string[];
       heldBefore: number | null;
       granularReleased?: number;
+      wrongPlane?: {
+        resource?: string;
+        mode?: string;
+        status?: string;
+      };
     };
 
     /**
@@ -351,10 +356,40 @@ export default defineTool({
         if (heldBefore !== null) heldBefore += granularReleased;
       }
 
+      // EI-21584799597256192: classic and granular lock IDs are both UUIDs,
+      // but named-resource locks use the same shape in a separate table. A
+      // resource UUID cannot be released by this file-lock surface; without
+      // this probe the caller receives ok:true, released:[], held_before:0 and
+      // can falsely conclude that its resource hold is gone. Only pay for the
+      // diagnostic after both path-lock planes proved they released nothing.
+      let wrongPlane: ReleaseOutcome['wrongPlane'];
+      if (released.length === 0 && granularReleased === 0 && lockId && (paths?.length ?? 0) === 0) {
+        try {
+          const resourceStatus = await acquireWithContentionRetry(() =>
+            // readResourceLockStatus keys by globally unique lock_id, so the
+            // transaction's coordination domain need not match the resource's
+            // domain (host-global/workspace-scoped resources are valid here).
+            inWorkspaceTxn(coordinationDomain, ownerId, (tx) => readResourceLockStatus(tx, lockId)),
+          );
+          if (resourceStatus.status !== 'missing') {
+            wrongPlane = {
+              resource: resourceStatus.resource,
+              mode: resourceStatus.mode,
+              status: resourceStatus.status,
+            };
+          }
+        } catch {
+          // This is an additive diagnostic. If the read cannot complete, retain
+          // the existing honest file-lock result instead of failing a release
+          // that may simply refer to an unknown/expired UUID.
+        }
+      }
+
       return {
         released,
         heldBefore,
         ...(granularReleased > 0 ? { granularReleased } : {}),
+        ...(wrongPlane ? { wrongPlane } : {}),
       };
     }
 
@@ -405,6 +440,17 @@ export default defineTool({
           // Attribute only the entries THIS lock_id produced — the array is
           // shared across the bulk loop.
           const crossed = crossDomainReleases.slice(before);
+          if (result.wrongPlane) {
+            return {
+              ok: false as const,
+              lock_id: lockId,
+              error: 'lock_id_belongs_to_named_resource_plane',
+              note: 'Use locks:release_resource { lock_id } to release a named-resource lock.',
+              ...(result.wrongPlane.resource ? { resource: result.wrongPlane.resource } : {}),
+              ...(result.wrongPlane.mode ? { mode: result.wrongPlane.mode } : {}),
+              ...(result.wrongPlane.status ? { status: result.wrongPlane.status } : {}),
+            };
+          }
           return {
             ok: true as const,
             lock_id: lockId,

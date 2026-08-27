@@ -90,4 +90,16 @@ describe('Personal Vault defineTool response contract', () => {
       data: { allowed: false, refusal: 'grant_required', results: [], grantedScopes: [] },
     });
   });
+
+  it('personal:search accepts offset-aware RFC3339 time ranges', () => {
+    const parsed = searchTool.args.safeParse({
+      query: 'meeting',
+      timeRange: {
+        from: '2025-08-26T00:00:00-04:00',
+        to: '2025-08-27T00:00:00-04:00',
+      },
+    });
+
+    expect(parsed.success).toBe(true);
+  });
 });

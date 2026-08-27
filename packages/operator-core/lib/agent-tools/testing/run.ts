@@ -55,6 +55,8 @@ import {
   distillVitestRun,
   mergeDistilledRuns,
   TESTING_RUN_MAX_PAYLOAD_BYTES,
+  startRun,
+  type SpawnRequest,
   type DistilledTestRun,
 } from '../../testing-run-store';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
@@ -90,6 +92,30 @@ const DETACHED_ROUTER_TEST_HINT =
 export function detachedTestTimeoutHint(files: string[]): string {
   const hasIntegrationFile = files.some((file) => /\.integration\.test\.[cm]?[jt]sx?$/i.test(file));
   return hasIntegrationFile ? DETACHED_ROUTER_TEST_HINT : DETACHED_INSPECT_TEST_HINT;
+}
+
+/**
+ * Build the store-backed recovery command for a Papercusp checkout. The
+ * foreground run's JSON report lives in a private temporary directory that is
+ * removed as soon as the bounded call returns; a detached run therefore gets
+ * no report path from that run. Its store snapshot is the durable/pollable
+ * result surface, while the router remains the source of truth for owning
+ * config discovery and zero-match refusal.
+ */
+export function buildDetachedTestRunRequest(opts: {
+  root: string;
+  files: string[];
+  testNamePattern?: string;
+}): SpawnRequest {
+  const vitestArgs = opts.testNamePattern ? [`--testNamePattern=${opts.testNamePattern}`] : [];
+  return {
+    kind: 'vitest',
+    label: `testing:run timeout recovery (${opts.files.join(', ')})`,
+    filePath: opts.files.length === 1 ? opts.files[0] : undefined,
+    command: process.execPath,
+    args: [join(opts.root, 'scripts', 'test-files.mjs'), ...opts.files, '--', ...vitestArgs],
+    cwd: opts.root,
+  };
 }
 
 type TestFilePathResolution = { ok: true; files: string[] } | { ok: false; path: string; matches: string[] };
@@ -336,7 +362,8 @@ export type TestFilesCoreResult =
       skipped?: number;
       files?: number;
       routerOutput?: string;
-    };
+      detachedRunId?: string;
+  };
 
 interface RouterOutcome {
   code: number | null;
@@ -697,14 +724,35 @@ export async function runTestFilesCore(opts: {
       };
     }
     if (outcome.timedOut) {
+      // The foreground process group has already been terminated by
+      // runTestProcess. Start a NEW, independently pollable store run for the
+      // same router request rather than asking the caller to reconstruct it via
+      // a second orchestration surface. `startRun` owns a distinct run id and
+      // creates a detached process group of its own. External generic Vitest
+      // checkouts have no scripts/test-files.mjs route, so they retain the
+      // existing explicit recovery hint until that route can be represented as
+      // one store run.
+      const detachedRunId = hasRouter
+        ? startRun(
+            buildDetachedTestRunRequest({
+              root,
+              files: pathResolution.files,
+              ...(opts.testNamePattern !== undefined ? { testNamePattern: opts.testNamePattern } : {}),
+            }),
+          ).runId
+        : undefined;
       return {
         ok: false,
         runId,
         root,
         error: 'timeout',
         timeoutMs,
-        hint: `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` + detachedTestTimeoutHint(opts.files),
+        hint:
+          `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
+          (detachedRunId ? `started detached recovery run ${detachedRunId}; poll its snapshot. ` : '') +
+          detachedTestTimeoutHint(opts.files),
         routerOutput: outcome.output.slice(-2000),
+        ...(detachedRunId ? { detachedRunId } : {}),
       };
     }
     // A route/launch error never produced a report — surface the router's own
@@ -793,7 +841,7 @@ export async function runTestFilesCore(opts: {
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
+    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery and returns `detachedRunId`. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen:
@@ -881,6 +929,7 @@ export default defineTool({
           ...surfacedResult,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
+            (result.detachedRunId ? `started detached recovery run ${result.detachedRunId}; poll its snapshot. ` : '') +
             detachedTestTimeoutHint(args.files),
         },
       };

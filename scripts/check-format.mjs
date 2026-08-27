@@ -221,12 +221,14 @@ const RANGE_CHECK_EXTENSIONS = new Set([
 ]);
 
 export const FORMAT_USAGE = `Usage:
-  npm run format:check:scoped -- [--new-file <file>] <file...>
-  npm run format:write:scoped -- [--new-file <file>] <file...>
+  npm run format:check:scoped -- [--whole-file <file>] [--new-file <file>] <file...>
+  npm run format:write:scoped -- [--whole-file <file>] [--new-file <file>] <file...>
 
 Check or write only the changed ranges of explicit files in the repository. Repeat
---new-file for files created by the current task; those files are checked or written
-as complete files even if git-sync has already committed them.
+--whole-file for existing files that should be checked or written in full. Repeat
+--new-file for files created by the current task; those files are also checked or
+written as complete files even if git-sync has already committed them. Both flags
+accept an equals form, such as --whole-file=path/to/file.ts.
 `;
 
 /** Validate and normalize explicit in-repository file paths. */
@@ -296,7 +298,7 @@ export function buildPrettierArgs(cli, repoPath, range, mode = "check") {
   ];
 }
 
-/** Build a whole-file Prettier invocation for an explicitly task-created file. */
+/** Build a whole-file Prettier invocation for an explicitly classified file. */
 export function buildPrettierWholeFileArgs(cli, repoPath) {
   return [cli, "--ignore-unknown", "--stdin-filepath", repoPath];
 }
@@ -367,74 +369,127 @@ export function rangeFormattingDiffers(source, formatted, range) {
   );
 }
 
-function splitNewFileArgs(raw) {
+function splitFileArgs(raw) {
   const paths = [];
   const newFilePaths = [];
+  const wholeFilePaths = [];
 
   for (let index = 0; index < raw.length; index += 1) {
     const argument = raw[index];
-    if (argument === "--new-file") {
+    if (argument === "--new-file" || argument === "--whole-file") {
       const value = raw[index + 1];
       if (!value || value.startsWith("-")) {
-        throw new Error("`--new-file` requires an explicit file path");
+        throw new Error(`\`${argument}\` requires an explicit file path`);
       }
-      newFilePaths.push(value);
+      if (argument === "--new-file") {
+        newFilePaths.push(value);
+      } else {
+        wholeFilePaths.push(value);
+      }
       index += 1;
       continue;
     }
-    if (argument.startsWith("--new-file=")) {
-      const value = argument.slice("--new-file=".length);
+    if (
+      argument.startsWith("--new-file=") ||
+      argument.startsWith("--whole-file=")
+    ) {
+      const flag = argument.startsWith("--new-file=")
+        ? "--new-file"
+        : "--whole-file";
+      const value = argument.slice(`${flag}=`.length);
       if (!value) {
-        throw new Error("`--new-file` requires an explicit file path");
+        throw new Error(`\`${flag}\` requires an explicit file path`);
       }
-      newFilePaths.push(value);
+      if (flag === "--new-file") {
+        newFilePaths.push(value);
+      } else {
+        wholeFilePaths.push(value);
+      }
       continue;
     }
     paths.push(argument);
   }
 
-  return { paths, newFilePaths };
+  return { paths, newFilePaths, wholeFilePaths };
 }
 
+function rejectDuplicateClassifications(classifications) {
+  const seen = new Map();
+  for (const [classification, paths] of classifications) {
+    for (const path of paths) {
+      const previousClassification = seen.get(path);
+      if (previousClassification) {
+        if (previousClassification === classification) {
+          throw new Error(
+            `file cannot be listed more than once as ${classification}: ${path}`,
+          );
+        }
+        throw new Error(
+          `file cannot be both ${previousClassification} and ${classification}: ${path}`,
+        );
+      }
+      seen.set(path, classification);
+    }
+  }
+}
+
+/**
+ * @returns {{
+ *   mode: "check" | "write" | "help";
+ *   paths: string[];
+ *   newFilePaths?: string[];
+ *   wholeFilePaths?: string[];
+ * }}
+ */
 export function parseFormatCliArgs(args) {
   const raw = args[0] === "--" ? args.slice(1) : [...args];
   if (raw.includes("--help") || raw.includes("-h")) {
     return { mode: "help", paths: [] };
   }
   const write = raw[0] === "--write";
-  const { paths: rawPaths, newFilePaths: rawNewFilePaths } = splitNewFileArgs(
-    write ? raw.slice(1) : raw,
-  );
-  if (rawPaths.length === 0 && rawNewFilePaths.length === 0) {
+  const {
+    paths: rawPaths,
+    newFilePaths: rawNewFilePaths,
+    wholeFilePaths: rawWholeFilePaths,
+  } = splitFileArgs(write ? raw.slice(1) : raw);
+  if (
+    rawPaths.length === 0 &&
+    rawNewFilePaths.length === 0 &&
+    rawWholeFilePaths.length === 0
+  ) {
     throw new Error(
       "provide one or more explicit file paths after `npm run format:check:scoped --`",
     );
   }
   const paths = rawPaths.length === 0 ? [] : normalizeScopedPaths(rawPaths);
   const newFilePaths =
-    rawNewFilePaths.length === 0
+    rawNewFilePaths.length === 0 ? [] : normalizeScopedPaths(rawNewFilePaths);
+  const wholeFilePaths =
+    rawWholeFilePaths.length === 0
       ? []
-      : normalizeScopedPaths(rawNewFilePaths);
-  const pathSet = new Set(paths);
-  const duplicate = newFilePaths.find((path) => pathSet.has(path));
-  if (duplicate) {
-    throw new Error(
-      `file cannot be both range-scoped and --new-file: ${duplicate}`,
-    );
-  }
+      : normalizeScopedPaths(rawWholeFilePaths);
+  rejectDuplicateClassifications([
+    ["range-scoped", paths],
+    ["--new-file", newFilePaths],
+    ["--whole-file", wholeFilePaths],
+  ]);
 
   const parsed = {
     mode: write ? "write" : "check",
     paths,
   };
   if (newFilePaths.length > 0) parsed.newFilePaths = newFilePaths;
+  if (wholeFilePaths.length > 0) parsed.wholeFilePaths = wholeFilePaths;
   return parsed;
 }
 
 function main() {
-  const { mode, paths, newFilePaths = [] } = parseFormatCliArgs(
-    process.argv.slice(2),
-  );
+  const {
+    mode,
+    paths,
+    newFilePaths = [],
+    wholeFilePaths = [],
+  } = parseFormatCliArgs(process.argv.slice(2));
   if (mode === "help") {
     console.log(FORMAT_USAGE);
     return;
@@ -501,7 +556,7 @@ function main() {
     }
   }
 
-  for (const repoPath of newFilePaths) {
+  for (const repoPath of [...wholeFilePaths, ...newFilePaths]) {
     const source = readFileSync(resolve(REPO_ROOT, repoPath), "utf8");
     if (!RANGE_CHECK_EXTENSIONS.has(extname(repoPath))) {
       console.log(`${label}: skipped non-code path ${repoPath}`);
@@ -528,9 +583,14 @@ function main() {
     }
   }
 
-  if (paths.length > 0 && zeroRangePaths === paths.length && newFilePaths.length === 0) {
+  if (
+    paths.length > 0 &&
+    zeroRangePaths === paths.length &&
+    newFilePaths.length === 0 &&
+    wholeFilePaths.length === 0
+  ) {
     console.warn(
-      `${label}: warning: every requested path has no added lines; if these files were authored by this task, rerun with --new-file <path> so git-sync cannot hide their formatting ranges`,
+      `${label}: warning: every requested path has no added lines; if these files need a full-file check, rerun with --whole-file <path> (or --new-file <path> for task-created files)`,
     );
   }
 

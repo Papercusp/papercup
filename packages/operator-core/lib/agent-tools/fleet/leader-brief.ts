@@ -2611,7 +2611,8 @@ export function selectLeaderBriefMembers(
       withheldReason:
         'idle AND not heartbeat-fresh (stale-idle) — note this hides members precisely when they ' +
         'are dying, which is when the count matters most',
-      reveal: 'include_stale: true',
+      reveal:
+        'coord:presence { owner: "<agentId>" } (targeted stale-row lookup; broad stale-roster reads are unsupported)',
     },
     // EI-21550192883916303: the filter above keeps on `alive` (heartbeat
     // FRESHNESS), so the resulting total says nothing about how many members are

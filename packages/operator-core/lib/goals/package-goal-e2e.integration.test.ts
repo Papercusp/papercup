@@ -121,6 +121,13 @@ function e2eDeps(capture: { kickoffPrompt: string | null; launched: string[] }):
           });
           return { ok: res.ok, error: res.ok ? null : 'mode store refused' };
         },
+        stampAgentOwner: async (sql, { workspaceId, goalId, ownerId }) => {
+          await sql`
+            UPDATE harness_shared.goals
+               SET metadata = COALESCE(metadata, '{}'::jsonb)
+                              || jsonb_build_object('agentOwnerId', ${ownerId}::text)
+             WHERE id = ${goalId} AND workspace_id = ${workspaceId}`;
+        },
       }),
     drainEnabled: async () => false,
   };
