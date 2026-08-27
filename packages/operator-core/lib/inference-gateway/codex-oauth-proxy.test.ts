@@ -147,10 +147,48 @@ describe('makeCodexNonStreamUpstreamBody / aggregateCodexNonStreamResponse', () 
     expect(JSON.parse(result.toString('utf8'))).toEqual(completed);
   });
 
+  it('sniffs headerless ChatGPT SSE and preserves frames split across opening chunks (WI-284159)', async () => {
+    const reasoning = { id: 'rs_headerless', type: 'reasoning', content: [] };
+    const message = {
+      id: 'msg_headerless',
+      type: 'message',
+      status: 'completed',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: '{"ok":true}' }],
+    };
+    const completed = { id: 'resp_headerless', model: 'gpt-5.5', status: 'completed', output: [] };
+    const wire =
+      `event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { status: 'in_progress' } })}\n\n` +
+      `event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', output_index: 0, item: reasoning })}\n\n` +
+      `event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', output_index: 1, item: message })}\n\n` +
+      `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: completed })}\n\n` +
+      'data: [DONE]\n\n';
+    const result = await aggregateCodexNonStreamResponse(chunks('ev', 'ent: response.created\n', wire.slice('event: response.created\n'.length)), {
+      contentType: null,
+      maxBytes: 16 * 1024,
+      timeoutMs: 1_000,
+    });
+    expect(JSON.parse(result.toString('utf8'))).toEqual({
+      ...completed,
+      output: [reasoning, message],
+      output_text: '{"ok":true}',
+    });
+  });
+
   it('accepts a bounded JSON response when the backend ignores stream:true', async () => {
     const body = JSON.stringify({ id: 'resp_json', output: [] });
     const result = await aggregateCodexNonStreamResponse(chunks(body), {
       contentType: 'application/json',
+      maxBytes: 1_024,
+      timeoutMs: 1_000,
+    });
+    expect(result.toString('utf8')).toBe(body);
+  });
+
+  it('keeps a headerless JSON fallback as JSON rather than misclassifying it as SSE', async () => {
+    const body = JSON.stringify({ id: 'resp_headerless_json', output: [] });
+    const result = await aggregateCodexNonStreamResponse(chunks(body.slice(0, 2), body.slice(2)), {
+      contentType: null,
       maxBytes: 1_024,
       timeoutMs: 1_000,
     });

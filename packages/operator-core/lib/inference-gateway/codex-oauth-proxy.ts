@@ -248,8 +248,11 @@ export interface CodexNonStreamAggregateOpts {
  *
  * The OAuth backend speaks SSE even when the caller asked for `stream:false`.
  * We retain only the final `response.completed` object, return it as ordinary
- * Responses JSON, and reject malformed/incomplete streams. A JSON response is
- * accepted too so a backend rollout that ignores `stream:true` remains compatible.
+ * Responses JSON, and reject malformed/incomplete streams. The production ChatGPT
+ * endpoint has also been observed returning this SSE with NO Content-Type header
+ * (WI-284159), so the parser sniffs the bounded opening bytes for `event:`/`data:`
+ * instead of trusting the header alone. A JSON response is accepted too so a
+ * backend rollout that ignores `stream:true` remains compatible.
  * The iterator is raced against both cancellation and a wall-clock deadline;
  * callers should use `onTimeout` to abort the underlying fetch as well.
  */
@@ -306,12 +309,21 @@ export async function aggregateCodexNonStreamResponse(
     else opts.signal.addEventListener('abort', abortListener, { once: true });
   }
 
-  const isSse = (opts.contentType ?? '').toLowerCase().includes('text/event-stream');
+  const contentType = (opts.contentType ?? '').toLowerCase();
+  let responseKind: 'sse' | 'json' | 'unknown' = contentType.includes('text/event-stream')
+    ? 'sse'
+    : contentType.includes('application/json')
+      ? 'json'
+      : 'unknown';
   const decoder = new StringDecoder('utf8');
   let text = '';
   const sseData: string[] = [];
   let completed: Record<string, unknown> | undefined;
+  const completedOutputItems = new Map<number, Record<string, unknown>>();
   let jsonChunks: Buffer[] = [];
+  const sniffChunks: Buffer[] = [];
+  let sniffBytes = 0;
+  const SNIFF_LIMIT = 256;
 
   const consumeSseFrame = (data: string) => {
     const payload = data.trim();
@@ -323,9 +335,47 @@ export async function aggregateCodexNonStreamResponse(
       fail('invalid', 'codex OAuth non-stream response contained malformed SSE JSON');
     }
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return;
-    const event = parsed as { type?: unknown; response?: unknown };
+    const event = parsed as { type?: unknown; response?: unknown; output_index?: unknown; item?: unknown };
+    if (
+      event.type === 'response.output_item.done' &&
+      typeof event.output_index === 'number' &&
+      Number.isInteger(event.output_index) &&
+      event.output_index >= 0 &&
+      event.item &&
+      typeof event.item === 'object' &&
+      !Array.isArray(event.item)
+    ) {
+      completedOutputItems.set(event.output_index, event.item as Record<string, unknown>);
+    }
     if (event.type === 'response.completed' && event.response && typeof event.response === 'object' && !Array.isArray(event.response)) {
-      completed = event.response as Record<string, unknown>;
+      const response = event.response as Record<string, unknown>;
+      const responseOutput = Array.isArray(response.output) ? response.output : [];
+      // The live ChatGPT backend sends each completed output item in its own SSE
+      // event, then terminates with `response.completed.response.output: []`.
+      // A streaming Codex client reconstructs that state itself; this non-stream
+      // compatibility endpoint must do the same or it returns HTTP 200 with no
+      // assistant text (the second half of WI-284159).
+      const reconstructedOutput = [...completedOutputItems.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, item]) => item);
+      const output = responseOutput.length > 0 ? responseOutput : reconstructedOutput;
+      const outputText = output
+        .flatMap((item) => {
+          if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+          const content = (item as { content?: unknown }).content;
+          if (!Array.isArray(content)) return [];
+          return content.flatMap((part) => {
+            if (!part || typeof part !== 'object' || Array.isArray(part)) return [];
+            const typed = part as { type?: unknown; text?: unknown };
+            return typed.type === 'output_text' && typeof typed.text === 'string' ? [typed.text] : [];
+          });
+        })
+        .join('');
+      completed = {
+        ...response,
+        output,
+        ...(typeof response.output_text === 'string' || !outputText ? {} : { output_text: outputText }),
+      };
     }
   };
   const consumeSseText = (chunk: string) => {
@@ -352,10 +402,33 @@ export async function aggregateCodexNonStreamResponse(
       const bytes = chunk instanceof Uint8Array ? chunk.byteLength : 0;
       totalBytes += bytes;
       if (totalBytes > maxBytes) fail('size', `codex OAuth non-stream response exceeded ${maxBytes}-byte limit`);
-      if (isSse) consumeSseText(decoder.write(Buffer.from(chunk)));
-      else jsonChunks.push(Buffer.from(chunk));
+      const chunkBuffer = Buffer.from(chunk);
+      if (responseKind === 'sse') {
+        consumeSseText(decoder.write(chunkBuffer));
+      } else {
+        jsonChunks.push(chunkBuffer);
+        // ChatGPT's live Responses endpoint can omit Content-Type entirely while
+        // still sending canonical SSE beginning with `event:`. Retain at most a
+        // tiny bounded prefix for detection; once promoted, replay every buffered
+        // byte through the SSE decoder so a frame split across chunks is lossless.
+        if (responseKind === 'unknown' && sniffBytes < SNIFF_LIMIT) {
+          const remaining = SNIFF_LIMIT - sniffBytes;
+          const prefixChunk = chunkBuffer.subarray(0, remaining);
+          sniffChunks.push(prefixChunk);
+          sniffBytes += prefixChunk.byteLength;
+          const prefix = Buffer.concat(sniffChunks, sniffBytes).toString('utf8').trimStart();
+          if (/^(?:event|data):/.test(prefix)) {
+            responseKind = 'sse';
+            const buffered = Buffer.concat(jsonChunks);
+            jsonChunks = [];
+            consumeSseText(decoder.write(buffered));
+          } else if (prefix.startsWith('{') || prefix.startsWith('[')) {
+            responseKind = 'json';
+          }
+        }
+      }
     }
-    if (isSse) {
+    if (responseKind === 'sse') {
       consumeSseText(decoder.end());
       if (sseData.length) consumeSseFrame(sseData.join('\n'));
       if (!completed) fail('invalid', 'codex OAuth non-stream SSE ended without response.completed');
