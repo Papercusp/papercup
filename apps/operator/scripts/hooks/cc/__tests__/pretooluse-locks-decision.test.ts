@@ -421,6 +421,49 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     }
   });
 
+  it('PostToolUse falls back to the stable operator when the staging authority times out', async () => {
+    const toolUseId = 'tu-staging-timeout-fallback';
+    const lockId = 'staging-timeout-lock';
+    const paths = ['sub/staging-timeout.ts'];
+    fs.writeFileSync(join(cache, `${toolUseId}.lock`), lockId);
+    fs.writeFileSync(join(cache, `${toolUseId}.paths`), JSON.stringify(paths));
+    fs.writeFileSync(join(cache, `${toolUseId}.domain`), fs.realpathSync(repo));
+    recoveryReleaseInner = { ok: true, released: paths, held_before: 1 };
+
+    // Accept the request but never answer it: urllib reaches its 10-second
+    // read timeout, matching the production failure that stranded an
+    // apply_patch lock even though the stable operator was healthy.
+    const stalled = createServer(() => {});
+    await new Promise<void>((resolve) => stalled.listen(0, '127.0.0.1', () => resolve()));
+    const stalledPort = (stalled.address() as { port: number }).port;
+    try {
+      const startedAt = Date.now();
+      const post = await runPost(
+        { tool_name: 'apply_patch', tool_input: '', tool_use_id: toolUseId, session_id: 's' },
+        {
+          PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${stalledPort}`,
+          PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: `http://127.0.0.1:${port}`,
+        },
+      );
+
+      expect(post.status).toBe(0);
+      expect(Date.now() - startedAt).toBeGreaterThanOrEqual(9_000);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].body.params.name).toBe('locks:release');
+      expect(requests[0].body.params.arguments).toMatchObject({
+        lock_id: lockId,
+        paths,
+        coordination_domain: fs.realpathSync(repo),
+      });
+      for (const suffix of ['lock', 'paths', 'domain']) {
+        expect(fs.existsSync(join(cache, `${toolUseId}.${suffix}`))).toBe(false);
+      }
+    } finally {
+      stalled.closeAllConnections();
+      await new Promise<void>((resolve) => stalled.close(() => resolve()));
+    }
+  }, 20_000);
+
   it.each(["exec", "functions.exec"])(
     "failed nested apply_patch is recovered when its %s parent completes",
     async (parentToolName) => {
