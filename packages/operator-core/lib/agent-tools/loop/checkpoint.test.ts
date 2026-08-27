@@ -414,6 +414,22 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  it('accepts the workItem compatibility key without changing loop-note scope', async () => {
+    const b = body(
+      await call({
+        workItem: 'EI-21600742704531274',
+        did: 'accepted the shared loop/work-item payload shape',
+        next: 'run the focused regression',
+      }),
+    );
+
+    expect(b).toMatchObject({ ok: true, harness: 'papercusp', ownerId: 'su-caller', cleared: false });
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      { harness: 'papercusp', ownerId: 'su-caller', workspaceId: 'ws-1' },
+      expect.stringContaining('accepted the shared loop/work-item payload shape'),
+    );
+  });
+
   it('accepts the generic checkpoint field as a lossless compatibility alias for raw note', async () => {
     const b = body(await call({ checkpoint: 'legacy generic carry note' }));
 
