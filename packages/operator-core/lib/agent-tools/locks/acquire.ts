@@ -75,10 +75,18 @@ import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
- *  SLEEPING waiter's ticket stays grant-eligible. Much longer than the 300s
- *  blocking cap — the agent isn't holding a turn. A grant to an agent that
- *  never wakes is bounded by the lock TTL (the lease backstop, D-004 #3). */
-const WAKE_QUEUE_WINDOW_SEC = Number(process.env.PAPERCUSP_LOCK_WAKE_QUEUE_SEC ?? 1800);
+ *  SLEEPING waiter's ticket stays grant-eligible. It must cover the longest
+ *  legal holder lease; otherwise a waiter can expire before a valid 1h holder
+ *  is even grantable. A larger deployment override remains honored. */
+const configuredWakeQueueWindowSec = Number(
+  process.env.PAPERCUSP_LOCK_WAKE_QUEUE_SEC ?? 1800,
+);
+const WAKE_QUEUE_WINDOW_SEC = Math.max(
+  MAX_TTL_SEC,
+  Number.isFinite(configuredWakeQueueWindowSec) && configuredWakeQueueWindowSec > 0
+    ? Math.floor(configuredWakeQueueWindowSec)
+    : MAX_TTL_SEC,
+);
 
 /** Silent-drop ceiling: every iteration of the await wakes after at
  *  most this many ms so we can re-check waiter status if the LISTEN

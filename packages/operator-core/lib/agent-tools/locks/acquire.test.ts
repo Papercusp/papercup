@@ -76,6 +76,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { readAgentStateStamp } from '../../agent-state-stamp';
 import { recordEditAttribution } from '../../edit-attribution';
+import { MAX_LOCK_TTL_SEC } from './lock-config';
 const normM = vi.mocked(normalizePaths);
 const insertM = vi.mocked(tryInsertWaiter);
 const routeM = vi.mocked(routeFileLockOp);
@@ -272,11 +273,21 @@ describe('locks:acquire — outcome branches', () => {
     }
   });
 
-  it('wake_on_grant queues a waiter + await and returns immediately', async () => {
+  it('wake_on_grant queues a waiter for at least the maximum legal holder TTL', async () => {
     routeM.mockResolvedValue({ value: { ok: false, busy: [{ path: 'a.ts', owner: 'o2' }] }, via: 'local-authority' });
     insertM.mockResolvedValue({ ok: true, ticket_id: 'T1', wait_until: new Date(Date.now() - 1000) });
     const b = body(await call({ wake_on_grant: true }));
-    expect(b).toMatchObject({ ok: false, queued_for_wake: true, ticket_id: 'T1', await_id: 'A1' });
+    expect(insertM).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ maxWaitSec: MAX_LOCK_TTL_SEC }),
+    );
+    expect(b).toMatchObject({
+      ok: false,
+      queued_for_wake: true,
+      ticket_id: 'T1',
+      await_id: 'A1',
+      queue_window_sec: MAX_LOCK_TTL_SEC,
+    });
   });
 
   it('wake_on_grant self-grant (path freed during insert) → ok', async () => {
