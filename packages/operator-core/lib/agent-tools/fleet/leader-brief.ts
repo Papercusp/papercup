@@ -73,7 +73,7 @@ import { resolveSelfRef, markSelfRows, type SelfRef } from '../coordination/self
 import { selectFleetPopulation, type FleetPopulationCensus } from './fleet-population';
 import { COORD_ROLES } from '../coordination/roles';
 import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
-import type { AgentAssignment } from '../../fleet/assignments';
+import { shouldRecoverClaimFromHealth, type AgentAssignment, type ClaimHealth } from '../../fleet/assignments';
 import { listPresence } from '../coordination/presence';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
@@ -351,6 +351,8 @@ export interface LeaderBriefMember {
   doing: unknown;
   /** Every currently-held work-item id (bounded by the member's actual claim list). */
   workItemIds: string[];
+  /** P-006: per-held-work-item claim-progress health. Present only when at least one held work-item has a derived verdict. */
+  claimHealth?: Record<string, ClaimHealth>;
   queuedCount: number;
   load: number;
   /** A held claim has no last_progress_at/taken_at progress in >10min (claim-progress
@@ -793,6 +795,8 @@ export function computeBenchSuggestion(
     // exactly that window. Optional (same convention); absent reads as "not observed",
     // never as a false suppression.
     longCallInFlight?: { tool: string; ageSec: number } | null;
+    /** P-006: progress-derived claim health for held work-items, separate from liveness/activity. */
+    claimHealth?: readonly ClaimHealth[];
   },
   /**
    * EI-18681259560385029: the fleet's LIVE authoritative claimable count (the same
@@ -884,6 +888,8 @@ export function computeBenchSuggestion(
   // mid-call sleeps it on top of live work.
   if (a.longCallInFlight) return undefined;
   if ((a.parkedOn?.length ?? 0) > 0) return undefined;
+  const protectiveClaimHealth = a.claimHealth?.find((h) => !shouldRecoverClaimFromHealth(h));
+  if (protectiveClaimHealth) return undefined;
   if (a.verdict === 'speaking' || a.verdict === 'first-turn-done') {
     if (a.stalled) {
       // EI-18679536216711688: `stalled` is derived purely from MCP tool-call
@@ -1153,6 +1159,8 @@ export function computeDormantAlert(
      *  (same convention as the fields above) so pre-existing call sites keep compiling;
      *  absent reads as "not observed", never as a false suppression. */
     longCallInFlight?: { tool: string; ageSec: number } | null;
+    /** P-006: progress-derived claim health for held work-items, separate from liveness/activity. */
+    claimHealth?: readonly ClaimHealth[];
   },
   fleetPaused?: boolean | null,
 ): boolean {
@@ -2722,6 +2730,11 @@ export function projectMember(
   // with a committed evidenced fix, 8 minutes later.
   const speakingNow = lastToolCallAgeMs != null && lastToolCallAgeMs <= VERDICT_SPEAKING_FRESH_MS;
   const intentAttention = computeIntentAttention(a);
+  const claimHealth = Object.fromEntries(
+    a.claims
+      .filter((claim) => claim.type === 'work-item' && claim.id && claim.claimHealth)
+      .map((claim) => [claim.id as string, claim.claimHealth as ClaimHealth]),
+  );
   return {
     agentId: a.agentId,
     label: a.label,
@@ -2742,6 +2755,7 @@ export function projectMember(
     productiveToolCallAgeMs,
     doing: a.doing,
     workItemIds: a.claims.filter((claim) => claim.type === 'work-item' && claim.id).map((claim) => claim.id as string),
+    ...(Object.keys(claimHealth).length > 0 ? { claimHealth } : {}),
     queuedCount: a.queued.length,
     load: a.load,
     stalled: a.stalled === true && !speakingNow,
@@ -2761,7 +2775,12 @@ export function projectMember(
       : {}),
     ...(() => {
       const suggestion = computeBenchSuggestion(
-        { ...a, lastToolCallAgeMs, longCallInFlight },
+        {
+          ...a,
+          lastToolCallAgeMs,
+          longCallInFlight,
+          claimHealth: Object.values(claimHealth),
+        },
         claimableCount,
         laneGating,
         fleetPaused,

@@ -631,6 +631,9 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
   if (!attempt) return;
   const fleet = await getFleet(workspaceId, fleetSlug);
   if (!fleet) return;
+  let transaction = fleet.lastLaunchTransaction;
+  let liveMemberIds: string[] = [];
+  let assessment: FleetHeadcountGovernorAssessment | null = null;
   try {
     const config = resolveFleetHeadcountProfile(attempt.config);
     const productiveCapacityFloor = resolveProductiveCapacityFloor(
@@ -638,9 +641,8 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       config.productiveCapacityFloor,
     );
     const now = Date.now();
-    let liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
+    liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
       .filter((id) => id !== fleet.leaderOwnerId);
-    let transaction = fleet.lastLaunchTransaction;
 
     if (transaction) {
       const refreshed = await refreshGovernorWorkerAttestation(transaction, workspaceId, now);
@@ -670,7 +672,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       }
     }
 
-    let assessment = assessFleetHeadcountGovernor({
+    assessment = assessFleetHeadcountGovernor({
       target: attempt.target,
       productiveCapacityFloor,
       liveMemberIds,
@@ -945,6 +947,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       account: effectiveAccount,
       action,
     });
+    transaction = launchTransaction;
     if (pruneOwnerId) {
       appendGovernorHistory(launchTransaction.governor!, {
         at: now,
@@ -1049,11 +1052,22 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       ...(terminalVerdict.outcome === 'productive' ? {} : { error: terminalVerdict.reason }),
     });
   } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    if (transaction && assessment) {
+      const verdict = governorVerdictForAssessment(assessment, Date.now(), {
+        action: 'wait',
+        outcome: 'failed',
+        reason,
+      });
+      recordGovernorVerdict(transaction, verdict);
+      transaction.recovery.nextAction = verdict.reason;
+      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction }).catch(() => {});
+    }
     await recordFleetHeadcountAttempt({
       workspaceId,
       fleetSlug,
       succeeded: false,
-      error: error instanceof Error ? error.message : String(error),
+      error: reason,
     });
   }
 }

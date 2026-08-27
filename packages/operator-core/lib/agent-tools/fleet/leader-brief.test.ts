@@ -1343,6 +1343,45 @@ describe('computeBenchSuggestion (pure, EI-9943)', () => {
     expect(s).toBeDefined();
   });
 
+
+  it('surfaces per-work-item claimHealth so a leader sees the recovery verdict', () => {
+    const health = {
+      status: 'waiting' as const,
+      reasons: ['holder is parked on exact dependency wait(s)'],
+      expected_cadence_ms: 600_000,
+      evidence: [{ writer: 'events_await', signal: 'exact_dependency_waits', value: ['gate:ready'] }],
+    };
+    const m = projectMember(baseAgent({
+      claims: [{ type: 'work-item', id: 'WI-claim', claimHealth: health }] as never,
+    }), NOW);
+    expect(m.workItemIds).toEqual(['WI-claim']);
+    expect(m.claimHealth?.['WI-claim']).toEqual(health);
+  });
+
+  it('does not produce a reclaim/bench suggestion when claimHealth says the holder is waiting/recoverable/contested/healthy', () => {
+    for (const status of ['healthy', 'waiting', 'recoverable', 'contested'] as const) {
+      const s = computeBenchSuggestion({
+        stalled: true,
+        verdict: 'speaking',
+        parkedOn: [],
+        doing,
+        claimHealth: [{ status, reasons: [status], expected_cadence_ms: 600_000, evidence: [] }],
+      });
+      expect(s).toBeUndefined();
+    }
+  });
+
+  it('still produces the stalled recovery suggestion for suspect claimHealth', () => {
+    const s = computeBenchSuggestion({
+      stalled: true,
+      verdict: 'speaking',
+      parkedOn: [],
+      doing,
+      claimHealth: [{ status: 'suspect', reasons: ['no progress'], expected_cadence_ms: 600_000, evidence: [] }],
+    });
+    expect(s?.kind).toBe('stalled-no-mcp');
+  });
+
   it('does NOT flag an already-benched member (parkedOn non-empty) — avoid re-nudging', () => {
     const s = computeBenchSuggestion({ stalled: true, verdict: 'speaking', parkedOn: ['some:event'], doing });
     expect(s).toBeUndefined();
