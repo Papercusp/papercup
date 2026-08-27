@@ -111,6 +111,25 @@ const EXPLICIT_STAGING_ONLY_COMMIT_AFTER =
   /^\s+(?:was\s+)?committed\s+(?:locally\s*\/\s*on\s+staging|on\s+staging)\b/i;
 
 /**
+ * Lock and lease ids are hex-shaped by design, but they are not Git state. Keep
+ * this exclusion anchored to the value so an unrelated lock mention elsewhere in
+ * a message cannot suppress a real deployment claim. The qualifier list covers the
+ * labels used by the coordination/resource-lock surfaces (including the
+ * backtick-quoted id in `desktop-sidecar lock `cac76150``).
+ */
+const LOCK_OR_LEASE_VALUE_PREFIX =
+  /\b(?:lock|lease)(?:[-\s]+(?:id|identifier|token|key|prefix|handle|value|uuid)){0,2}\s*(?:[:=#]\s*|["'`]\s*)?$/i;
+const LOCK_OR_LEASE_VALUE_SUFFIX =
+  /^\s*["'`]?\s*(?:(?:is|was)\s+)?(?:an?\s+)?(?:lock|lease)(?:[-\s]+(?:id|identifier|token|key|prefix|handle|value|uuid)){0,2}\b/i;
+
+function isExplicitLockOrLeaseIdentifier(haystack: string, valueStart: number, valueLength: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  return LOCK_OR_LEASE_VALUE_PREFIX.test(before) || LOCK_OR_LEASE_VALUE_SUFFIX.test(after);
+}
+
+/**
  * A work-item checkpoint's contentHash is an artifact fingerprint, not a Git or
  * deployment SHA. The label is often immediately adjacent to the value (for
  * example, `checkpoint 721...` or `(contentHash 562...)`), while an unrelated
@@ -259,11 +278,12 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
       // "release"/"staging" sentence. Only an explicit state phrase attached to
       // that HEAD value keeps it classified as a deployment claim.
       if (
-        p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
-        (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
-          isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||
-          isStagingOnlyCommitCitation(haystack, m.index, m[0].length) ||
-          isCheckpointMetadataValue(haystack, m.index))
+        isExplicitLockOrLeaseIdentifier(haystack, m.index, m[0].length) ||
+        (p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
+          (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
+            isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length) ||
+            isStagingOnlyCommitCitation(haystack, m.index, m[0].length) ||
+            isCheckpointMetadataValue(haystack, m.index)))
       ) {
         continue;
       }

@@ -85,6 +85,12 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     ['a bare uuid (leading segment, no prefix)', '8d9a671c-ccda-4aa9-b4f4-8f0d1c7a4804 is running'],
     ['an id in a deploy sentence', 'agent su-2846407f-4f4c-4313-8db8-dce7592e269d deployed the change'],
     ['a hyphenated identifier', 'the branch deadbeef-fix is now on staging'],
+    [
+      'an explicit lock id in coordination prose',
+      'please release the desktop-sidecar lock `cac76150`',
+    ],
+    ['an explicit lease token', 'the lease token cac76150 is live'],
+    ['a lock-id prefix label', 'the lock-id prefix `cac76150` is live'],
     // A source checkout's HEAD is not the deployed pipeline position. The nearby
     // release/staging words belong to separate facts in the same report.
     ['a current source HEAD beside unrelated pipeline prose', 'current HEAD 2b95ba4eb7; release status remains red'],
@@ -136,6 +142,12 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     const hits = detectCellTranscriptions('validate target commit abc1234 is deployed to :3070');
     expect(hits).toHaveLength(1);
     expect(hits[0]!.value).toBe('abc1234');
+  });
+
+  it('still detects a release commit when it is not labeled as a lock or lease id', () => {
+    const hits = detectCellTranscriptions('release commit cac76150 is live on :3070');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.value).toBe('cac76150');
   });
 
   it('does not classify a commit explicitly described as committed locally/on staging as deployed', () => {
