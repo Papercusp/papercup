@@ -33,10 +33,12 @@ import {
 } from './release-deploy-terminal';
 import { isRecordedInconclusiveStatus } from './release/gate-abort-status';
 import { isRecordableVerdict } from './release/gate-verdict-target';
+import { resolveManualRunAuthority } from './release/manual-run-authority';
 import {
   readLiveReleaseCertification,
   type LiveReleaseCertification,
 } from './release/live-release-certification';
+import type { ReleaseTraceManualRunAuthority } from './release-trace';
 import { SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
 
 /**
@@ -282,6 +284,8 @@ export interface DeployStatus {
      *  captured but previously stranded in the snapshot with no consumer. Empty on a green
      *  gate; never trust it when `verdictStale`. */
     failingTests: string[];
+    /** True only when the sibling failingTests list is a real verdict measurement. */
+    failingTestsMeasured?: boolean | null;
     /** Normalized persisted frozen-repair queue; null/absent means no readable queue. */
     repairQueue?: GitPipelineSnapshot['gate']['repairQueue'];
     /** EI-10902: the most recent green-checkpoint TICK, from the append-only pipeline-events
@@ -336,6 +340,9 @@ export interface DeployStatus {
    * idle probe from an externally-held run, names the current phase/blocker, and never
    * upgrades "running" or "re-armed" into a green/red verdict. */
   checkpoint: CheckpointExecutionStatus;
+  /** The same live authority predicate used by release:trace and release:checkpoint-run.
+   * When withheld, status must not recommend a manual checkpoint that the executor refuses. */
+  manualRunAuthority: ReleaseTraceManualRunAuthority | null;
   /** The SAME control row that gates the scheduled release-trigger. Ordinary manual triggers
    *  must not route around it; force remains the explicit override. */
   releaseTrigger: {
@@ -370,6 +377,7 @@ export function computeDeployStatus(
   snap: GitPipelineSnapshot,
   inFlight: DeployInFlight | null = null,
   liveCertification?: LiveReleaseCertification | null,
+  manualRunAuthority: ReleaseTraceManualRunAuthority | null = null,
 ): DeployStatus {
   const g = snap.gate;
   const d = snap.deploy;
@@ -406,18 +414,30 @@ export function computeDeployStatus(
   // pipeline history, but remove it from this CURRENT projection.
   const latestCheckpointIsStaleRepairHold =
     lastCheckpointEvent !== undefined &&
-    (lastCheckpointEvent.status === 'repair-in-progress' ||
-      lastCheckpointEvent.status === 'repair-staging-mismatch') &&
+    (lastCheckpointEvent.status === 'repair-in-progress' || lastCheckpointEvent.status === 'repair-staging-mismatch') &&
     g.inconclusive == null &&
     checkpointRunInFlight?.active === false;
-  const lastVerdict = lastCheckpointEvent && !latestCheckpointIsStaleRepairHold
-    ? {
-        tickAtMs: lastCheckpointEvent.createdAtMs,
-        candidate: typeof lastCheckpointEvent.detail?.candidate === 'string' ? lastCheckpointEvent.detail.candidate : null,
-        from: typeof lastCheckpointEvent.detail?.from === 'string' ? lastCheckpointEvent.detail.from : null,
-        status: lastCheckpointEvent.status,
-        logPath: typeof lastCheckpointEvent.detail?.logPath === 'string' ? lastCheckpointEvent.detail.logPath : null,
-      }
+  const lastVerdict =
+    lastCheckpointEvent && !latestCheckpointIsStaleRepairHold
+      ? {
+          tickAtMs: lastCheckpointEvent.createdAtMs,
+          candidate:
+            typeof lastCheckpointEvent.detail?.candidate === 'string' ? lastCheckpointEvent.detail.candidate : null,
+          from: typeof lastCheckpointEvent.detail?.from === 'string' ? lastCheckpointEvent.detail.from : null,
+          status: lastCheckpointEvent.status,
+          logPath: typeof lastCheckpointEvent.detail?.logPath === 'string' ? lastCheckpointEvent.detail.logPath : null,
+        }
+      : null;
+  const candidateFossil = g.verdictStaleReasonCode === 'candidate-fossil' || lastVerdict?.status === 'candidate-fossil';
+  const candidateFossilAuthority =
+    candidateFossil && manualRunAuthority?.withheld === true && manualRunAuthority.governingRef.trim() !== ''
+      ? manualRunAuthority
+      : null;
+  const candidateFossilAuthorityRecommendation = candidateFossilAuthority
+    ? `Candidate selection is already owned by ${candidateFossilAuthority.governingRef}: ` +
+      `${candidateFossilAuthority.reason} Do NOT launch \`release:checkpoint-run\` or add another ` +
+      `exclusive materializer; the recorded authority holder and the scheduled green-checkpoint ` +
+      `routine are the sole paths that should produce the next fresh candidate verdict.`
     : null;
   // A green_checkpoint event is not necessarily a verdict: skipped-* means the suite never
   // judged the candidate (for example, skipped-locked means another run held the lock). Keep
@@ -428,14 +448,14 @@ export function computeDeployStatus(
   const latestCheckpointIsNonVerdict =
     lastCheckpointEvent !== undefined &&
     !latestCheckpointIsStaleRepairHold &&
-    (!isRecordableVerdict(lastCheckpointEvent.status) ||
-      isRecordedInconclusiveStatus(lastCheckpointEvent.status));
+    (!isRecordableVerdict(lastCheckpointEvent.status) || isRecordedInconclusiveStatus(lastCheckpointEvent.status));
   const checkpointRoutine = snap.routines.greenCheckpoint;
-  const checkpointProbe = checkpointRunInFlight == null
-    ? { status: 'unmeasured' as const, detail: null }
-    : checkpointRunInFlight.probeFailed
-      ? { status: 'failed' as const, detail: checkpointRunInFlight.probeDetail ?? null }
-      : { status: 'ok' as const, detail: null };
+  const checkpointProbe =
+    checkpointRunInFlight == null
+      ? { status: 'unmeasured' as const, detail: null }
+      : checkpointRunInFlight.probeFailed
+        ? { status: 'failed' as const, detail: checkpointRunInFlight.probeDetail ?? null }
+        : { status: 'ok' as const, detail: null };
   const measuredRunActive =
     checkpointRunInFlight?.active === true &&
     (checkpointRunInFlight.probeFailed !== true ||
@@ -553,6 +573,7 @@ export function computeDeployStatus(
   const suppressHistoricalFailingTests =
     verdictStale || checkpoint.state === 'running' || checkpoint.state === 'paused' || checkpoint.state === 'blocked';
   const failingTests = suppressHistoricalFailingTests ? [] : (g.failingTests ?? []);
+  const failingTestsMeasured = suppressHistoricalFailingTests ? false : (g.failingTestsMeasured ?? null);
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
   const releaseTriggerRow = snap.routines.releaseTrigger;
@@ -576,8 +597,7 @@ export function computeDeployStatus(
   // Undefined preserves the pure function's historical fixture/caller contract. The
   // production read path always supplies a measured certificate when a green pin exists.
   const certificationAllowsDeploy = liveCertification === undefined || liveCertification?.certified === true;
-  const canTriggerGreen =
-    hasGreenAhead && !inFlight?.active && !releaseTriggerBlocked && certificationAllowsDeploy;
+  const canTriggerGreen = hasGreenAhead && !inFlight?.active && !releaseTriggerBlocked && certificationAllowsDeploy;
 
   // WI-4489: a RED is only authoritative if its verdict is CURRENT. `gate_health` is a cache that a
   // starved writer freezes: a `skipped-locked` fire is a no-op that leaves the blob untouched while
@@ -620,9 +640,7 @@ export function computeDeployStatus(
         'Do NOT resume the routine or run release:deploy trigger until the recorded hold condition is satisfied. Force remains the explicit audited override.'
       : `${releaseTriggerBlockReason}. Refusing an ordinary deploy while its control state is unavailable; restore/verify the routine control before retrying. Force remains the explicit audited override.`;
   } else if (hasGreenAhead && liveCertification !== undefined && liveCertification?.certified !== true) {
-    state = liveCertification?.status === 'failed'
-      ? 'live-certification-failed'
-      : 'live-certification-required';
+    state = liveCertification?.status === 'failed' ? 'live-certification-failed' : 'live-certification-required';
     recommendation =
       `Green main is ahead, but ordinary deployment is fail-closed on exact-SHA live certification: ` +
       `${liveCertification?.reason ?? 'no certification reading is available'}. ` +
@@ -664,9 +682,9 @@ export function computeDeployStatus(
       (checkpointRunActive
         ? `${activeCheckpointRecommendation} Cached failing-test names belong to the prior verdict and are suppressed while this fresh verdict is pending.`
         : failingTests.length === 0
-        ? `This verdict names no failing tests — do NOT go hunting for tests. Inspect the checkpoint run log${lastVerdict?.logPath ? ` at ${lastVerdict.logPath}` : ''} or ask the verdict owner for the non-test failure before taking action.`
-        : `Your change can't reach the green pin until the reds are fixed. ` +
-          `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`);
+          ? `This verdict names no failing tests — do NOT go hunting for tests. Inspect the checkpoint run log${lastVerdict?.logPath ? ` at ${lastVerdict.logPath}` : ''} or ask the verdict owner for the non-test failure before taking action.`
+          : `Your change can't reach the green pin until the reds are fixed. ` +
+            `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`);
   } else if (g.consecutiveReds > 0 && verdictStale) {
     // The blob says red, but that red is provably superseded or simply unverified. Do NOT dress it
     // up as green either — the honest state is "we don't know", with the one action that resolves it.
@@ -676,11 +694,11 @@ export function computeDeployStatus(
       `Do NOT chase the failing tests it names; they may already be green (verify by running them before you touch anything). ` +
       (activeCheckpointRecommendation
         ? `${activeCheckpointRecommendation} If the gate keeps reporting 'skipped-locked' after it finishes, let one routine fire through.`
-        : `Let the scheduled routine fire through for a FRESH verdict. Do not substitute a manual checkpoint when plan or control authority requires ordinary scheduled proof. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`);
+        : (candidateFossilAuthorityRecommendation ??
+          `Let the scheduled routine fire through for a FRESH verdict. Do not substitute a manual checkpoint when plan or control authority requires ordinary scheduled proof. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`));
   } else if (fireStale) {
     state = 'gate-wedged';
-    recommendation =
-      `The green-checkpoint is WEDGED — not firing (${fireStaleReason ?? 'stale'}). It produces 0 reds because it never ran, so the gate can't advance. Surface this to an operator; the pipeline can't self-heal a non-firing checkpoint.`;
+    recommendation = `The green-checkpoint is WEDGED — not firing (${fireStaleReason ?? 'stale'}). It produces 0 reds because it never ran, so the gate can't advance. Surface this to an operator; the pipeline can't self-heal a non-firing checkpoint.`;
   } else if (typeof greenPinBehindStaging === 'number' && greenPinBehindStaging > 0) {
     state = 'staging-buffered';
     recommendation =
@@ -710,6 +728,7 @@ export function computeDeployStatus(
       lastFixerCandidate: g.lastFixerCandidate,
       flakyWorkspaces: g.flakyWorkspaces,
       failingTests,
+      failingTestsMeasured,
       repairQueue: g.repairQueue ?? null,
       lastVerdict,
     },
@@ -727,6 +746,7 @@ export function computeDeployStatus(
     deployTerminal: inFlight?.terminal ?? null,
     checkpointRunInFlight,
     checkpoint,
+    manualRunAuthority,
     releaseTrigger: {
       active: releaseTriggerRow?.active ?? null,
       pause: releaseTriggerRow?.pause ?? null,
@@ -749,6 +769,11 @@ export interface ReadDeployStatusDeps {
   loadInFlight?: () => Promise<DeployInFlight>;
   /** Injectable P-010 exact-SHA live-certification reader. */
   loadLiveCertification?: (targetSha: string) => Promise<LiveReleaseCertification>;
+  /** Reader identity matters for the serializer fence: its holder remains authorized. */
+  readerOwnerId?: string | null;
+  /** Injectable live manual-run authority reader. Omitted without readerOwnerId preserves
+   * legacy/pure callers and avoids an ambient database read in watchdogs/tests. */
+  loadManualRunAuthority?: () => Promise<ReleaseTraceManualRunAuthority | null>;
 }
 
 /** Read the current deploy status (the snapshot + the in-flight probe + the pure computation).
@@ -767,9 +792,15 @@ export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise
     deps.loadSnapshot ??
     (() => gitPipelineSnapshot(undefined, { includeActiveRun: true, useSpawnerSidecar: false }));
   const loadInFlight = deps.loadInFlight ?? (() => readDeployInFlight());
-  const [snap, inFlight] = await Promise.all([
+  const loadManualRunAuthority =
+    deps.loadManualRunAuthority ??
+    (deps.readerOwnerId !== undefined
+      ? () => resolveManualRunAuthority({ readerOwnerId: deps.readerOwnerId })
+      : async () => null);
+  const [snap, inFlight, manualRunAuthority] = await Promise.all([
     load(),
     loadInFlight().catch(() => null),
+    loadManualRunAuthority().catch(() => null),
   ]);
   const targetSha = snap.deploy.greenPin?.sha ?? null;
   const loadCertification = deps.loadLiveCertification ?? ((sha: string) => readLiveReleaseCertification(sha));
@@ -784,7 +815,7 @@ export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise
         invalidLines: 0,
       }))
     : undefined;
-  return computeDeployStatus(snap, inFlight, certification);
+  return computeDeployStatus(snap, inFlight, certification, manualRunAuthority);
 }
 
 // ─── Detached deploy launch ───────────────────────────────────────────────────

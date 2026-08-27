@@ -187,6 +187,7 @@ function statusBrief(s: DeployStatus) {
     // P-009: the compact, current execution truth. This is intentionally separate from
     // gate.green/red because running, paused, blocked, and idle are not code verdicts.
     checkpoint: s.checkpoint,
+    manualRunAuthority: s.manualRunAuthority,
     // EI-20512352412751871: every refusal/dry-run reply must carry the exact
     // release-trigger control that made an ordinary deploy safe or blocked.
     releaseTrigger: s.releaseTrigger,
@@ -199,8 +200,8 @@ function statusBrief(s: DeployStatus) {
   };
 }
 
-async function readStatusBounded(): Promise<BoundedTimeoutResult<DeployStatus | null>> {
-  return withBoundedTimeout(() => readDeployStatus(), {
+async function readStatusBounded(readerOwnerId: string | null): Promise<BoundedTimeoutResult<DeployStatus | null>> {
+  return withBoundedTimeout(() => readDeployStatus({ readerOwnerId }), {
     fallback: null,
     timeoutMs: RELEASE_STATUS_READ_TIMEOUT_MS,
     label: 'release:deploy:status',
@@ -350,10 +351,11 @@ export default defineTool({
     const stamp = releaseSubjectStamp(ctx as { harnessSlug?: string | null });
     const wrongHarness = harnessAssertionRefusal(args.op, args.harness, stamp);
     if (wrongHarness) return wrongHarness;
+    const identity = readIdentity(ctx);
     // ── status: read-only, always allowed ──
     // EI-20262656218311418: readDeployStatus fans out to PG/systemd and can outlive the MCP
     // transport. Return a structured, retryable envelope instead of allowing an empty response.
-    const statusRead = await readStatusBounded();
+    const statusRead = await readStatusBounded(identity.ownerId);
     if (statusRead.degraded || !statusRead.value) {
       return statusUnavailable(args.op, statusRead, stamp);
     }
@@ -373,8 +375,7 @@ export default defineTool({
       return json({ ...payload, ...(plane ? { plane } : {}) });
     }
 
-    const { ownerLabel } = readIdentity(ctx);
-    const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
+    const actor = `${identity.ownerLabel} (role:${ctx.role ?? 'unknown'})`;
     // Step 0 (WI-1320): a REAL (confirmed) deploy commits the latest staging FIRST via git-sync,
     // so it ships CURRENT work — not a stale tree when git-sync is lagging/wedged (the
     // force-deploy-ships-stale-staging asymmetry). Best-effort (never block the deploy on it),
@@ -394,7 +395,7 @@ export default defineTool({
       // Wrap the WHOLE step (slug resolution + fire + re-read) — it must NEVER fail the deploy.
       try {
         await fireGitSyncNow(operatorHomeHarnessSlug(), activeWorkspaceId());
-        const refreshed = await readStatusBounded();
+        const refreshed = await readStatusBounded(identity.ownerId);
         if (!refreshed.degraded && refreshed.value) status = refreshed.value;
       } catch (e) {
 

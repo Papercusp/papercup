@@ -78,6 +78,7 @@ function mkSnap(
       lastFixerCandidate: null,
       flakyWorkspaces: [],
       failingTests: [],
+      failingTestsMeasured: null,
       ...gate,
     },
     deploy: {
@@ -601,6 +602,62 @@ describe('WI-4489: gate verdict staleness', () => {
     expect(s.recommendation).toMatch(/FIX the reds/);
   });
 
+  it('EI-21547567568436120: candidate-fossil names the sole authority instead of adding to the materializer convoy', () => {
+    const fossilEvent: PipelineEventRow = {
+      id: 'candidate-fossil-1',
+      kind: 'green_checkpoint',
+      status: 'candidate-fossil',
+      detail: { candidate: 'fossil123456' },
+      createdAtMs: 2,
+    };
+    const authority = {
+      withheld: true as const,
+      governingRef: 'WI-40086',
+      source: 'serializer-fence' as const,
+      reason: 'WI-40086 owns the exclusive checkpoint serializer fence.',
+    };
+    const s = computeDeployStatus(
+      mkSnap(
+        {
+          consecutiveReds: 44,
+          verdictStale: true,
+          verdictStaleReason: 'candidate-fossil',
+          verdictStaleReasonCode: 'candidate-fossil',
+        },
+        { deployedBehindGreenPin: 0 },
+        [fossilEvent],
+      ),
+      null,
+      undefined,
+      authority,
+    );
+
+    expect(s.state).toBe('gate-verdict-stale');
+    expect(s.manualRunAuthority).toEqual(authority);
+    expect(s.recommendation).toMatch(/Candidate selection is already owned by WI-40086/);
+    expect(s.recommendation).toMatch(/exclusive materializer/);
+    expect(s.recommendation).toMatch(/scheduled green-checkpoint routine/);
+    expect(s.recommendation).not.toMatch(/Run release:checkpoint-run for a FRESH verdict/);
+  });
+
+  it('CONTROL: candidate-fossil without withheld authority preserves the ordinary scheduled-routine guidance', () => {
+    const s = computeDeployStatus(
+      mkSnap(
+        {
+          consecutiveReds: 44,
+          verdictStale: true,
+          verdictStaleReason: 'candidate-fossil',
+          verdictStaleReasonCode: 'candidate-fossil',
+        },
+        { deployedBehindGreenPin: 0 },
+      ),
+    );
+
+    expect(s.manualRunAuthority).toBeNull();
+    expect(s.recommendation).toMatch(/scheduled routine.*FRESH verdict/i);
+    expect(s.recommendation).not.toMatch(/exclusive materializer/);
+  });
+
   it('a stale red never strands a deployable green pin — green-deployable still wins', () => {
     const s = computeDeployStatus(
       mkSnap({ consecutiveReds: 4, verdictStale: true }, { deployedBehindGreenPin: 146 }),
@@ -753,8 +810,17 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
   });
 
   it('gate_health.failingTests (WI-4533) is threaded through unchanged', () => {
-    const s = computeDeployStatus(mkSnap({ failingTests: ['lib/a.test.ts', 'lib/b.test.ts'] }, {}, []));
+    const s = computeDeployStatus(
+      mkSnap({ failingTests: ['lib/a.test.ts', 'lib/b.test.ts'], failingTestsMeasured: true }, {}, []),
+    );
     expect(s.gate.failingTests).toEqual(['lib/a.test.ts', 'lib/b.test.ts']);
+    expect(s.gate.failingTestsMeasured).toBe(true);
+  });
+
+  it('keeps a no-verdict empty list explicitly unmeasured', () => {
+    const s = computeDeployStatus(mkSnap({ failingTests: [], failingTestsMeasured: false }, {}, []));
+    expect(s.gate.failingTests).toEqual([]);
+    expect(s.gate.failingTestsMeasured).toBe(false);
   });
 
   it('P-009 suppresses a stale historical failing-test list at the shared status writer', () => {
@@ -768,6 +834,7 @@ describe('EI-10902: lastVerdict + failingTests surfaced on DeployStatus.gate', (
     );
     expect(s.state).toBe('gate-verdict-stale');
     expect(s.gate.failingTests).toEqual([]);
+    expect(s.gate.failingTestsMeasured).toBe(false);
   });
 
   it('P-009 distinguishes an externally-held run, preserves phase, and reports verdict pending', () => {
@@ -1217,6 +1284,25 @@ describe('readDeployStatus wiring', () => {
     expect(loadLiveCertification).toHaveBeenCalledWith(greenPin.sha);
     expect(s.liveCertification).toMatchObject({ status: 'certified', targetSha: greenPin.sha });
     expect(s.state).toBe('green-deployable');
+  });
+
+  it('threads the reader-aware manual-run authority into status', async () => {
+    const authority = {
+      withheld: true as const,
+      governingRef: 'WI-40086',
+      source: 'serializer-fence' as const,
+      reason: 'sole serializer owns candidate selection',
+    };
+    const loadManualRunAuthority = vi.fn(async () => authority);
+    const s = await readDeployStatus({
+      readerOwnerId: 'su-reader',
+      loadSnapshot: async () => mkSnap({}, {}),
+      loadInFlight: async () => computeDeployInFlight({ props: null, logPath: '/l', logMtimeMs: null }),
+      loadManualRunAuthority,
+    });
+
+    expect(loadManualRunAuthority).toHaveBeenCalledTimes(1);
+    expect(s.manualRunAuthority).toEqual(authority);
   });
 
   it('keeps the live diagnostic git reads off the spawner sidecar', async () => {

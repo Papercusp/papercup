@@ -103,6 +103,7 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
       verdictPending: false,
       probe: { status: 'ok', detail: null },
     },
+    manualRunAuthority: null,
     releaseTrigger: {
       active: true,
       pause: null,
@@ -184,6 +185,7 @@ describe('release:deploy — status', () => {
       greenPinSha: 'greenpin0',
     });
     expect(b.diagnosticVintage.warning).toContain('Verify any nextVerb');
+    expect(statusM).toHaveBeenCalledWith({ readerOwnerId: 'o' });
     expect(launchM).not.toHaveBeenCalled();
   });
 
