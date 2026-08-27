@@ -18,6 +18,8 @@ import { resolvePhasedProject, safeRead } from '../../../harness-core';
 import { type ProjectEntry } from '../../../harness-registry';
 import { type Phase, phasePhaseLabel, phasePath } from '../../../harness-phases';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 export interface TestItem {
   id: string;
@@ -115,16 +117,29 @@ const runTest = defineTool({
 
     const wtPath = phasePath(project, phase);
     const started = Date.now();
-    let ok = false;
-    let output = '';
-    try {
-      const { bin, args, cwd } = buildRunCommand(t, wtPath);
-      output = execFileSync(bin, args, { cwd, encoding: 'utf8', timeout: 120_000, stdio: ['ignore', 'pipe', 'pipe'] });
-      ok = true;
-    } catch (e: any) {
-      output = String(e?.stdout ?? '') + String(e?.stderr ?? '');
-      ok = false;
-    }
+    const { bin, args, cwd } = buildRunCommand(t, wtPath);
+    const executionResult = await runGovernedOperation(
+      {
+        workspaceId: activeWorkspaceId(),
+        namespace: 'harness-test-run',
+        owner: `harness:${project.slug}:test`,
+        admissionClass: 'process',
+        demand: { cpuWeight: 1, memoryBytes: 512 * 1024 * 1024, fileDescriptors: 3 },
+        payloadRef: `harness:${project.slug}:test:${id}`,
+        metadata: { harness: project.slug, testId: id },
+      },
+      async () => {
+        try {
+          return {
+            ok: true,
+            output: execFileSync(bin, args, { cwd, encoding: 'utf8', timeout: 120_000, stdio: ['ignore', 'pipe', 'pipe'] }),
+          };
+        } catch (e: any) {
+          return { ok: false, output: String(e?.stdout ?? '') + String(e?.stderr ?? '') };
+        }
+      },
+    );
+    const { ok, output } = executionResult;
     const durationMs = Date.now() - started;
     t.status = ok ? 'passing' : 'failing';
     t.lastRunTs = Math.floor(Date.now() / 1000);

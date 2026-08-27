@@ -29,6 +29,7 @@ import { activeWorkspaceId } from '../../../workspace-registry';
 import { readEffectiveHarnessConfig } from '../../../harness-effective-config';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { defineTool } from '@papercusp/agent-mcp';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 const PHASE_ORDER: Phase[] = [...ALL_PHASES];
 
@@ -167,14 +168,27 @@ const confirmPromotion = defineTool({
     const fromBranch = from === 'staging' ? 'main' : from;
 
     try {
-      execFileSync('git', ['-C', toPath, 'fetch', project.path, fromBranch], { encoding: 'utf8' });
-      execFileSync('git', ['-C', toPath, 'merge', '--ff-only', `FETCH_HEAD`], { encoding: 'utf8' });
-    } catch (e: any) {
-      try {
-        execFileSync('git', ['-C', toPath, 'merge', '--no-edit', fromBranch], { encoding: 'utf8' });
-      } catch (e2: any) {
-        return Response.json({ error: `merge failed: ${String(e2?.stderr ?? e2?.message ?? e2)}` }, { status: 500 });
-      }
+      await runGovernedOperation(
+        {
+          workspaceId: activeWorkspaceId(),
+          namespace: 'harness-promotion',
+          owner: `harness:${project.slug}:promotion`,
+          admissionClass: 'process',
+          demand: { cpuWeight: 1, memoryBytes: 256 * 1024 * 1024, fileDescriptors: 3 },
+          payloadRef: `harness:${project.slug}:promotion:${id}`,
+          metadata: { harness: project.slug, from, to },
+        },
+        async () => {
+          try {
+            execFileSync('git', ['-C', toPath, 'fetch', project.path, fromBranch], { encoding: 'utf8' });
+            execFileSync('git', ['-C', toPath, 'merge', '--ff-only', `FETCH_HEAD`], { encoding: 'utf8' });
+          } catch {
+            execFileSync('git', ['-C', toPath, 'merge', '--no-edit', fromBranch], { encoding: 'utf8' });
+          }
+        },
+      );
+    } catch (error: any) {
+      return Response.json({ error: `merge failed: ${String(error?.stderr ?? error?.message ?? error)}` }, { status: 500 });
     }
 
     // Layer 3 — pre-handoff smoke-build (opt-in by infra-contract.json or

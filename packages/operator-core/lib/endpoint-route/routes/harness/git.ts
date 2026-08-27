@@ -16,8 +16,30 @@ import { resolvePhasedProject } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { NotGitRepositoryError, readGitStats } from '../../../harness/git-stats';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 const execFileP = promisify(execFile);
+
+function runGitProcess(
+  projectPath: string,
+  args: string[],
+  options: { maxBuffer: number; timeout: number },
+  purpose: string,
+) {
+  return runGovernedOperation(
+    {
+      workspaceId: activeWorkspaceId(),
+      namespace: 'harness-git-view',
+      owner: `harness-git:${purpose}`,
+      admissionClass: 'process',
+      demand: { cpuWeight: 0.25, memoryBytes: 64 * 1024 * 1024, fileDescriptors: 3 },
+      payloadRef: `harness-git:${purpose}:${projectPath}`,
+      metadata: { purpose },
+    },
+    async () => execFileP('git', args, options),
+  );
+}
 
 function phaseFromReq(req: Request) {
   return phasePhaseLabel(new URL(req.url).searchParams.get('phase') ?? undefined);
@@ -63,8 +85,8 @@ async function cachedGitLog(
   const SEP = '\x1f';
   // ref === null means "all worktrees" → --all
   const refArgs = ref ? [ref] : ['--all'];
-  const { stdout } = await execFileP(
-    'git',
+  const { stdout } = await runGitProcess(
+    projectPath,
     [
       '-C', projectPath,
       'log', ...refArgs, '--date-order',
@@ -72,6 +94,7 @@ async function cachedGitLog(
       '-n', String(limit),
     ],
     { maxBuffer: 16 * 1024 * 1024, timeout: 15_000 },
+    'log',
   );
   const commits: GitCommit[] = stdout
     .split('\n')
@@ -113,7 +136,15 @@ function streamGitPatch(
   byteLimit: number,
   excludePathspecs: string[] = [],
 ): Promise<{ patch: string; truncated: boolean; totalBytes: number }> {
-  return new Promise((resolve, reject) => {
+  return runGovernedOperation({
+    workspaceId: activeWorkspaceId(),
+    namespace: 'harness-git-patch',
+    owner: 'harness-git:show-patch',
+    admissionClass: 'process',
+    demand: { cpuWeight: 0.5, memoryBytes: byteLimit, fileDescriptors: 3 },
+    payloadRef: `harness-git:show:${sha}`,
+    metadata: { purpose: 'show-patch' },
+  }, async () => new Promise((resolve, reject) => {
     const args = ['-C', cwd, 'show', '--format=', '--patch', '--stat', '-M', sha];
     if (excludePathspecs.length > 0) args.push('--', '.', ...excludePathspecs);
     const child = spawn('git', args, { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -164,7 +195,7 @@ function streamGitPatch(
         : patch;
       resolve({ patch: display, truncated, totalBytes: truncated ? -1 : totalBytes });
     });
-  });
+  }));
 }
 
 /* ─── git worktrees ─────────────────────────────────────────────────── */
@@ -234,10 +265,11 @@ const gitShow = defineTool({
       const PATCH_LIMIT = 8 * 1024 * 1024; // 8 MB — bounded so multi-GB diffs don't OOM the operator.
       const excludes = includeAll ? [] : PATCH_DEFAULT_EXCLUDES;
       const [meta, { patch, truncated, totalBytes }] = await Promise.all([
-        execFileP(
-          'git',
+        runGitProcess(
+          project.path,
           ['-C', project.path, 'show', '--no-patch', '--format=%H%n%an%n%ae%n%at%n%P%n%s%n%n%b', sha],
           { maxBuffer: 4 * 1024 * 1024, timeout: 10_000 },
+          'show-metadata',
         ).then((r) => r.stdout),
         streamGitPatch(project.path, sha, PATCH_LIMIT, excludes),
       ]);
@@ -271,20 +303,22 @@ const gitWorktrees = defineTool({
       return Response.json({ worktrees: [], notAGitRepo: true });
     }
     try {
-      const { stdout } = await execFileP(
-        'git',
+      const { stdout } = await runGitProcess(
+        project.path,
         ['-C', project.path, 'worktree', 'list', '--porcelain'],
         { maxBuffer: 1024 * 1024, timeout: 10_000 },
+        'worktree-list',
       );
       const worktrees = parseWorktreePorcelain(stdout);
       await Promise.all(
         worktrees.map(async (wt) => {
           if (!existsSync(wt.path)) return;
           try {
-            const { stdout: ts } = await execFileP(
-              'git',
+            const { stdout: ts } = await runGitProcess(
+              wt.path,
               ['-C', wt.path, 'log', '-1', '--format=%ct', 'HEAD'],
               { maxBuffer: 4096, timeout: 5_000 },
+              'worktree-last-commit',
             );
             const n = Number(ts.trim());
             if (Number.isFinite(n) && n > 0) wt.lastCommitTs = n * 1000;

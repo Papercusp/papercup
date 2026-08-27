@@ -43,6 +43,9 @@ vi.mock('../../harness-phases', () => ({
   phasePhaseLabel: (s?: string) => s ?? 'staging',
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../../resource-governor/execution', () => ({
+  runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
+}));
 vi.mock('../../harness-effective-config', () => ({
   readEffectiveHarnessConfig: vi.fn(async () => ({})),
 }));
