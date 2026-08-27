@@ -27,7 +27,12 @@ import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../release/green-checkpoint-s
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
-const GREEN_CHECKPOINT = join(ROOT, 'apps/operator/lib/release/green-checkpoint.ts');
+// Overridable so a mutation probe can point these doc-claims at a COPY of the source
+// outside the tree — mutating the tracked file in place would race git-sync's whole-tree
+// sweep and can commit the mutant (the same seam dependency-generation.test.ts uses).
+const GREEN_CHECKPOINT =
+  process.env.DOC_CLAIM_GREEN_CHECKPOINT_SOURCE ??
+  join(ROOT, 'apps/operator/lib/release/green-checkpoint.ts');
 const GREEN_CHECKPOINT_SCHEDULE = join(ROOT, 'packages/operator-core/lib/release/green-checkpoint-schedule.ts');
 
 /**
@@ -139,5 +144,65 @@ describe('verdict-less-death grace is pinned to the gate’s own self-watchdog d
         `timeout ${minutes(suiteTimeout)}m < self-watchdog ${minutes(selfWatchdog)}m < stale-reclaim ${minutes(staleReclaim)}m`,
       );
     });
+  });
+});
+
+/**
+ * EVERY prose statement of the suite timeout tracks the constant — not just the two
+ * phrasings pinned above.
+ *
+ * Measured 2026-08-27: FIVE comments in green-checkpoint.ts still read "120m" long after
+ * GREEN_CHECKPOINT_SUITE_TIMEOUT_MS was deliberately lowered to 115m (the largest value
+ * that still clears the hourly fire boundary). The pin above did not catch them because it
+ * asserts two EXACT sentences; every other way of saying the same number was unguarded and
+ * drifted. That is the derived-truth ladder's own lesson applied to itself: a pin that
+ * covers one phrasing of a claim leaves every other phrasing hand-maintained.
+ *
+ * Why it is worth guarding rather than tolerating: this number is read during gate triage,
+ * under time pressure, to decide whether a run "should have finished by now". A comment
+ * claiming 120m when the kill lands at 115m sends the reader looking for a 5-minute
+ * anomaly that does not exist — and the reader most likely to hit it is one debugging a
+ * run that just died verdict-less, which is precisely the confusing case.
+ */
+describe('every prose mention of the suite timeout in green-checkpoint.ts tracks the constant', () => {
+  const PATTERNS: { label: string; re: RegExp }[] = [
+    { label: 'GREEN_CHECKPOINT_SUITE_TIMEOUT_MS=<N>m', re: /GREEN_CHECKPOINT_SUITE_TIMEOUT_MS=(\d+)m/g },
+    { label: '<N>m suite timeout', re: /(\d+)m suite timeout/g },
+    { label: 'gate-wide <N>m parent budget', re: /gate-wide (\d+)m parent budget/g },
+    { label: "parent's full kill window (<N>m", re: /parent[’']s full kill window \((\d+)m/g },
+    { label: 'parent-side <N>m timeout', re: /parent-side (\d+)m timeout/g },
+  ];
+
+  it('states the CURRENT value everywhere it is stated at all', () => {
+    const source = readFileSync(GREEN_CHECKPOINT, 'utf-8');
+    const expected = Math.round(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS / 60_000);
+    const found: { label: string; value: number }[] = [];
+
+    for (const { label, re } of PATTERNS) {
+      for (const m of source.matchAll(re)) found.push({ label, value: Number(m[1]) });
+    }
+
+    // CALIBRATION: if a refactor rewords every one of these, the loop above finds nothing
+    // and the assertion below passes VACUOUSLY — a guard that silently stops guarding. Fail
+    // loudly instead, so the patterns get re-anchored rather than quietly retired.
+    expect(
+      found.length,
+      'no suite-timeout prose matched any known phrasing — re-anchor PATTERNS, do not delete this test',
+    ).toBeGreaterThanOrEqual(PATTERNS.length);
+
+    const stale = found.filter((f) => f.value !== expected);
+    expect(
+      stale,
+      `these comments state a suite timeout that is not ${expected}m: ${JSON.stringify(stale)}`,
+    ).toEqual([]);
+  });
+
+  it('control: the detector catches a planted stale value', () => {
+    // Proves the assertion can FAIL. Without this, a broken regex and a clean file are
+    // indistinguishable — both report success.
+    const planted = 'gate-wide 999m parent budget.';
+    const hits = [...planted.matchAll(/gate-wide (\d+)m parent budget/g)].map((m) => Number(m[1]));
+    expect(hits).toEqual([999]);
+    expect(hits[0]).not.toBe(Math.round(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS / 60_000));
   });
 });
