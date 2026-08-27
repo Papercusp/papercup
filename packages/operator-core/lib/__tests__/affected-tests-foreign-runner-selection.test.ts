@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   playwrightOwnedTest,
   selectRelatedTests,
+  unitExcludedVitestTest,
 } from '../../../../scripts/lib/related-tests.mjs';
 
 /**
@@ -25,8 +26,11 @@ import {
  * `@papercusp/web :: test` selection that way red-pinned green-checkpoint and froze `main` for
  * the whole fleet — surviving seven unrelated test fixes, because no test was ever broken.
  *
- * Two rails below, because the predicate and its WIRING fail independently: a correct
- * predicate nobody calls restores the bug in full.
+ * EI-21576035258955946 exposed the same routing failure for the other universally excluded
+ * unit-layer paths: `*.integration.test.*` and `*.browser.test.*`. The selector handed an
+ * explicit integration test to the unit lane, whose config correctly refused it before any
+ * test could run. The rails below cover both predicates and their WIRING: a correct predicate
+ * nobody calls restores either bug in full.
  */
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -34,28 +38,31 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..'
 // (`scripts/mutation-probe.sh --file scripts/affected-tests.mjs`). Mutating the real file to
 // prove the guard bites is unsafe here: git-sync sweeps the whole working tree on a schedule
 // and can COMMIT the mutant even when nothing goes wrong and no restore handler fails.
-const AFFECTED_TESTS_PATH = resolve(
-  REPO_ROOT,
-  process.env.PROBE_AFFECTED_TESTS ?? 'scripts/affected-tests.mjs',
-);
+const AFFECTED_TESTS_PATH = resolve(REPO_ROOT, process.env.PROBE_AFFECTED_TESTS ?? 'scripts/affected-tests.mjs');
 const AFFECTED_TESTS_SRC = readFileSync(AFFECTED_TESTS_PATH, 'utf8').replaceAll('"', "'");
 
 describe('wiring: affected-tests.mjs drops foreign-runner tests before narrowing a vitest lane', () => {
   it('imports the ownership predicate from the related-tests selector', () => {
     expect(AFFECTED_TESTS_SRC).toMatch(/playwrightOwnedTest/);
+    expect(AFFECTED_TESTS_SRC).toMatch(/unitExcludedVitestTest/);
     expect(AFFECTED_TESTS_SRC).toMatch(
       /import\s*\{[^}]*playwrightOwnedTest[^}]*\}\s*from\s*'\.\/lib\/related-tests\.mjs'/s,
     );
+    expect(AFFECTED_TESTS_SRC).toMatch(
+      /import\s*\{[^}]*unitExcludedVitestTest[^}]*\}\s*from\s*'\.\/lib\/related-tests\.mjs'/s,
+    );
   });
 
-  it('filters the related selection through it', () => {
-    // The call must be APPLIED to the selection, not merely imported.
-    expect(AFFECTED_TESTS_SRC).toMatch(
-      /const\s+ownedByPlaywright\s*=\s*playwrightOwnedTest\(\s*wsRoot\s*\)/,
-    );
-    expect(AFFECTED_TESTS_SRC).toMatch(
-      /result\.selected\.filter\(\s*\(f\)\s*=>\s*!ownedByPlaywright\(f\)\s*\)/,
-    );
+  it('filters the related selection through both unit-lane exclusion predicates', () => {
+    // The calls must be APPLIED to the selection, not merely imported.
+    const selectionAt = AFFECTED_TESTS_SRC.indexOf('result.selected.filter((f) => {');
+    const playwrightAt = AFFECTED_TESTS_SRC.indexOf('ownedByPlaywright(f)', selectionAt);
+    const layeredAt = AFFECTED_TESTS_SRC.indexOf('unitExcludedVitestTest(f)', selectionAt);
+
+    expect(AFFECTED_TESTS_SRC).toMatch(/const\s+ownedByPlaywright\s*=\s*playwrightOwnedTest\(\s*wsRoot\s*\)/);
+    expect(selectionAt).toBeGreaterThan(-1);
+    expect(playwrightAt).toBeGreaterThan(selectionAt);
+    expect(layeredAt).toBeGreaterThan(selectionAt);
   });
 
   it('drops them BEFORE the rails that publish and widen the selection', () => {
@@ -63,20 +70,51 @@ describe('wiring: affected-tests.mjs drops foreign-runner tests before narrowing
     // unfiltered set anyway. Before the `< 1` rail, or a selection emptied by filtering is
     // narrowed to nothing and passes vacuously under --passWithNoTests — a false green, the
     // exact outcome the whole selector is written to avoid.
-    const filterAt = AFFECTED_TESTS_SRC.indexOf('!ownedByPlaywright(f)');
+    const playwrightFilterAt = AFFECTED_TESTS_SRC.indexOf('ownedByPlaywright(f)');
+    const layeredFilterAt = AFFECTED_TESTS_SRC.indexOf('unitExcludedVitestTest(f)');
     const publishAt = AFFECTED_TESTS_SRC.indexOf('byWorkspace.set(t.ws.name');
     const widenAt = AFFECTED_TESTS_SRC.indexOf('result.selected.length < 1');
 
-    expect(filterAt).toBeGreaterThan(-1);
+    expect(playwrightFilterAt).toBeGreaterThan(-1);
+    expect(layeredFilterAt).toBeGreaterThan(-1);
     expect(publishAt).toBeGreaterThan(-1);
     expect(widenAt).toBeGreaterThan(-1);
-    expect(filterAt).toBeLessThan(publishAt);
-    expect(filterAt).toBeLessThan(widenAt);
+    expect(playwrightFilterAt).toBeLessThan(publishAt);
+    expect(playwrightFilterAt).toBeLessThan(widenAt);
+    expect(layeredFilterAt).toBeLessThan(publishAt);
+    expect(layeredFilterAt).toBeLessThan(widenAt);
   });
 
   it('announces the drop instead of shrinking the run silently', () => {
     // A selection that quietly loses files is indistinguishable from one that never had them.
     expect(AFFECTED_TESTS_SRC).toMatch(/RELATED_SELECTION_FOREIGN_RUNNER/);
+    expect(AFFECTED_TESTS_SRC).toMatch(/RELATED_SELECTION_UNIT_EXCLUDED/);
+  });
+});
+
+describe('unitExcludedVitestTest', () => {
+  it.each([
+    'lib/a.integration.test.ts',
+    'lib/a.integration.test.mts',
+    'lib/a.browser.test.tsx',
+    'C:\\repo\\lib\\a.browser.test.jsx',
+  ])('recognizes a layered test excluded by the shared unit config: %s', (file) => {
+    expect(unitExcludedVitestTest(file)).toBe(true);
+  });
+
+  it.each(['lib/a.test.ts', 'lib/a.integration.spec.ts', 'lib/a.browser-test.ts', 'lib/a.integration.test.ts.snap'])(
+    'does not over-classify a unit/custom-config path: %s',
+    (file) => {
+      expect(unitExcludedVitestTest(file)).toBe(false);
+    },
+  );
+
+  it('recognizes the exact P-004 integration test that poisoned test:related', () => {
+    expect(
+      unitExcludedVitestTest(
+        join(REPO_ROOT, 'packages/operator-core/lib/resource-governor/live-health-monitor.integration.test.ts'),
+      ),
+    ).toBe(true);
   });
 });
 

@@ -51,6 +51,7 @@ import {
 import {
   selectRelatedTests,
   playwrightOwnedTest,
+  unitExcludedVitestTest,
 } from "./lib/related-tests.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
@@ -3275,23 +3276,44 @@ if (relatedOnly) {
           reason: `selection-error(${(err && err.message) || err})`,
         };
       }
-      // Only VITEST lanes are narrowable (see `narrowable` above), so a test another
-      // RUNNER owns can never execute here: it reaches vitest as a positional filter that
-      // matches nothing, and the router refuses the entire partial-match run rather than
-      // false-greening it (`TEST_FILE_ROUTE_ERROR requested=342 matched=340`). The task
-      // then reds with ZERO attributable test files — invisible to the test_runs ledger
-      // and to the isolation re-run, so no amount of test triage can clear it. That is
-      // EI-21440128879545486, which froze `main` for the whole fleet. Drop foreign-runner
-      // files here, where "this selection feeds a vitest lane" is actually known.
+      // Only UNIT VITEST lanes are narrowable (see `narrowable` above), so a test another
+      // runner owns OR the shared unit config excludes can never execute here. It reaches
+      // vitest as a positional filter that matches nothing, and the router refuses the
+      // entire partial-match run rather than false-greening it. The task then reds with ZERO
+      // attributable test files — invisible to the test_runs ledger and isolation re-run.
+      // EI-21440128879545486 was the Playwright form; EI-21576035258955946 was the same
+      // failure with an explicit `*.integration.test.ts` path. Drop both classes here,
+      // where "this selection feeds a unit vitest lane" is actually known.
       if (result.mode === "related" && result.selected.length > 0) {
         const ownedByPlaywright = playwrightOwnedTest(wsRoot);
-        const runnable = result.selected.filter((f) => !ownedByPlaywright(f));
-        if (runnable.length !== result.selected.length) {
+        let droppedPlaywright = 0;
+        let droppedUnitExcluded = 0;
+        const runnable = result.selected.filter((f) => {
+          if (ownedByPlaywright(f)) {
+            droppedPlaywright += 1;
+            return false;
+          }
+          if (unitExcludedVitestTest(f)) {
+            droppedUnitExcluded += 1;
+            return false;
+          }
+          return true;
+        });
+        if (droppedPlaywright > 0) {
           outSync(
             `RELATED_SELECTION_FOREIGN_RUNNER ws=${t.ws.name} runner=playwright dropped=${
-              result.selected.length - runnable.length
+              droppedPlaywright
             }`,
           );
+        }
+        if (droppedUnitExcluded > 0) {
+          outSync(
+            `RELATED_SELECTION_UNIT_EXCLUDED ws=${t.ws.name} layers=integration,browser dropped=${
+              droppedUnitExcluded
+            }`,
+          );
+        }
+        if (runnable.length !== result.selected.length) {
           // An emptied selection is NOT narrowed to nothing: the `< 1` rail below turns it
           // into a full run, because "no vitest test is related" is a graph gap, not proof.
           result = { ...result, selected: runnable };
