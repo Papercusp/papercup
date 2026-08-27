@@ -5,7 +5,8 @@
 // the group checkbox is tri-state (checked / indeterminate / unchecked) and
 // toggles its pending rows as a block, applied rows render as done and are
 // never selectable, Apply-selected emits the sorted selected ids, and busy
-// freezes the whole surface.
+// freezes the whole surface. Row hover/focus-within owns the one active detail
+// region; no explicit detail control or summary rail is rendered.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -38,6 +39,11 @@ function groupsFixture(): ReviewReportGroup[] {
             "plan item linked by coverage",
           ],
           confidence: "provable",
+          detail: (
+            <button type="button" data-testid="consumer-detail-f1">
+              Open plan
+            </button>
+          ),
         },
         {
           id: "f2",
@@ -107,7 +113,7 @@ describe("rendering", () => {
     const report = screen.getByTestId("review-report");
     const responsiveRow = screen.getByTestId("review-row-f1");
     expect(screen.getByText("Plan clean-up report")).toBeTruthy();
-    expect(screen.getByText("Resolution review")).toBeTruthy();
+    expect(screen.queryByText("Resolution review")).toBeNull();
     const titleId = report.getAttribute("aria-labelledby");
     expect(titleId).toBeTruthy();
     expect(document.getElementById(titleId!)?.textContent).toBe(
@@ -116,9 +122,7 @@ describe("rendering", () => {
     expect(screen.getByTestId("review-report-icon")).toBeTruthy();
     expect(screen.getByText("run #7")).toBeTruthy();
     expect(screen.getByText("Flip to done")).toBeTruthy();
-    expect(
-      screen.getByText("WI-100 done; completion recorded"),
-    ).toBeTruthy();
+    expect(screen.getByText("WI-100 done; completion recorded")).toBeTruthy();
     expect(screen.getByText("my-plan")).toBeTruthy();
     expect(screen.getByText("P-001")).toBeTruthy();
     expect(
@@ -155,54 +159,70 @@ describe("rendering", () => {
     ).toBeNull();
   });
 
-  it("summarizes the run and exposes live group selection progress", () => {
+  it("omits the later summary, eyebrow, selection pill, and detail toggles", () => {
     renderShell();
-    expect(screen.getByTestId("review-report-summary")).toBeTruthy();
-    expect(screen.getByTestId("review-report-selected-count").textContent).toBe(
-      "3",
-    );
-    expect(screen.getByTestId("review-report-total-count").textContent).toBe(
-      "4",
-    );
-    expect(screen.getByTestId("review-report-handled-count").textContent).toBe(
-      "1",
-    );
-    expect(screen.getByTestId("review-report-manual-count").textContent).toBe(
-      "0",
-    );
-    const groupProgress = screen.getByTestId(
-      "review-group-selection-flip-to-done",
-    );
-    expect(groupProgress.textContent).toBe("2/2 selected");
+    const report = screen.getByTestId("review-report");
+    expect(screen.queryByTestId("review-report-summary")).toBeNull();
+    expect(report.querySelector(".review-report__eyebrow")).toBeNull();
+    expect(
+      screen.queryByTestId("review-group-selection-flip-to-done"),
+    ).toBeNull();
+    expect(screen.queryByTestId("review-row-reason-f1")).toBeNull();
+    expect(screen.queryByText("plan item linked by coverage")).toBeNull();
     fireEvent.click(rowCheck("f2"));
-    expect(groupProgress.textContent).toBe("1/2 selected");
+    expect(screen.getByTestId("review-report-status").textContent).toBe(
+      "2 of 3 selectable recommendations selected.",
+    );
   });
 
-  it("exposes every row's complete reason through an explicit disclosure, including auto-applied rows", () => {
+  it("shows complete evidence plus consumer detail for only the hovered row", () => {
     renderShell();
-    const toggle = screen.getByTestId("review-row-reason-f1");
-    expect(toggle.textContent).toContain("Why");
-    expect(toggle.textContent).toContain("WI-100 done; completion recorded");
-    expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(toggle.getAttribute("aria-controls")).toBeTruthy();
     expect(screen.queryByText("plan item linked by coverage")).toBeNull();
+    expect(screen.queryByTestId("consumer-detail-f1")).toBeNull();
 
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute("aria-expanded")).toBe("true");
-    const detail = screen.getByTestId("review-row-reason-detail-f1");
+    const rowF1 = screen.getByTestId("review-row-f1");
+    fireEvent.pointerEnter(rowF1);
+    const detail = screen.getByTestId("review-row-detail-f1");
     expect(detail.getAttribute("role")).toBe("region");
+    expect(rowF1.getAttribute("aria-describedby")).toBe(detail.id);
     expect(detail.textContent).toContain("WI-100 done; completion recorded");
     expect(detail.textContent).toContain("plan item linked by coverage");
+    expect(screen.getByTestId("consumer-detail-f1")).toBeTruthy();
 
-    const appliedToggle = screen.getByTestId("review-row-reason-o1");
-    expect(screen.queryByTestId("review-row-check-o1")).toBeNull();
-    fireEvent.click(appliedToggle);
-    expect(
-      screen.getByTestId("review-row-reason-detail-o1").textContent,
-    ).toContain("lease lapsed 42min ago; holder dead");
+    fireEvent.pointerEnter(screen.getByTestId("review-row-f2"));
+    expect(screen.queryByTestId("review-row-detail-f1")).toBeNull();
+    expect(screen.getByTestId("review-row-detail-f2")).toBeTruthy();
+    fireEvent.pointerLeave(screen.getByTestId("review-row-f2"));
+    expect(screen.queryByTestId("review-row-detail-f2")).toBeNull();
   });
 
-  it("does not resurrect an expanded reason after a live row leaves and returns", () => {
+  it("keeps detail open while hover or focus remains, including focusable applied rows", () => {
+    renderShell();
+    const rowF1 = screen.getByTestId("review-row-f1");
+    const checkF1 = rowCheck("f1");
+
+    fireEvent.pointerEnter(rowF1);
+    fireEvent.focus(checkF1);
+    fireEvent.pointerLeave(rowF1);
+    expect(screen.getByTestId("review-row-detail-f1")).toBeTruthy();
+
+    const apply = applyBtn();
+    fireEvent.blur(checkF1, { relatedTarget: apply });
+    fireEvent.focus(apply, { relatedTarget: checkF1 });
+    expect(screen.queryByTestId("review-row-detail-f1")).toBeNull();
+
+    const appliedRow = screen.getByTestId("review-row-o1");
+    expect(screen.queryByTestId("review-row-check-o1")).toBeNull();
+    expect(appliedRow.getAttribute("tabindex")).toBe("0");
+    fireEvent.focus(appliedRow);
+    expect(screen.getByTestId("review-row-detail-o1").textContent).toContain(
+      "lease lapsed 42min ago; holder dead",
+    );
+    fireEvent.blur(appliedRow, { relatedTarget: apply });
+    expect(screen.queryByTestId("review-row-detail-o1")).toBeNull();
+  });
+
+  it("does not resurrect active detail after a live row leaves and returns", () => {
     const props = {
       title: "Live report",
       onApply: vi.fn(),
@@ -212,21 +232,21 @@ describe("rendering", () => {
     const { rerender } = render(
       <ReviewReportShell {...props} groups={original} />,
     );
-    fireEvent.click(screen.getByTestId("review-row-reason-f1"));
-    expect(screen.getByTestId("review-row-reason-detail-f1")).toBeTruthy();
+    fireEvent.pointerEnter(screen.getByTestId("review-row-f1"));
+    expect(screen.getByTestId("review-row-detail-f1")).toBeTruthy();
 
     const withoutF1 = original.map((group) => ({
       ...group,
       rows: group.rows.filter((row) => row.id !== "f1"),
     }));
     rerender(<ReviewReportShell {...props} groups={withoutF1} />);
-    expect(screen.queryByTestId("review-row-reason-f1")).toBeNull();
+    expect(screen.queryByTestId("review-row-f1")).toBeNull();
 
     rerender(<ReviewReportShell {...props} groups={original} />);
     expect(
-      screen.getByTestId("review-row-reason-f1").getAttribute("aria-expanded"),
-    ).toBe("false");
-    expect(screen.queryByTestId("review-row-reason-detail-f1")).toBeNull();
+      screen.getByTestId("review-row-f1").getAttribute("aria-describedby"),
+    ).toBeNull();
+    expect(screen.queryByTestId("review-row-detail-f1")).toBeNull();
   });
 
   it("gives both programmatic focus fallbacks an explicit visible ring", () => {
@@ -283,7 +303,7 @@ describe("rendering", () => {
     ).toBeTruthy();
   });
 
-  it("renders a dynamic row failure as a visible atomic alert without replacing detail", () => {
+  it("keeps a dynamic row failure visible while detail remains hover-only", () => {
     renderShell({
       groups: [
         {
@@ -304,13 +324,18 @@ describe("rendering", () => {
     });
 
     expect(
-      screen.getByText("Keep these decision controls available."),
-    ).toBeTruthy();
+      screen.queryByText("Keep these decision controls available."),
+    ).toBeNull();
     const alert = screen.getByTestId("review-row-error-failed-row");
     expect(alert.getAttribute("role")).toBe("alert");
     expect(alert.getAttribute("aria-atomic")).toBe("true");
     expect(alert.textContent).toContain("write was rejected");
     expect(rowCheck("failed-row")).toBeTruthy();
+    fireEvent.pointerEnter(screen.getByTestId("review-row-failed-row"));
+    expect(
+      screen.getByText("Keep these decision controls available."),
+    ).toBeTruthy();
+    expect(screen.getByTestId("review-row-error-failed-row")).toBe(alert);
   });
 });
 
@@ -369,14 +394,13 @@ describe("selection + apply", () => {
     ).toBe(true);
     expect(rowCheck("f1").disabled).toBe(true);
     expect(
-      (screen.getByTestId(
-        "review-group-toggle-flip-to-done",
-      ) as HTMLButtonElement).disabled,
+      (
+        screen.getByTestId(
+          "review-group-toggle-flip-to-done",
+        ) as HTMLButtonElement
+      ).disabled,
     ).toBe(true);
-    expect(
-      (screen.getByTestId("review-row-reason-f1") as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
+    expect(screen.queryByTestId("review-row-reason-f1")).toBeNull();
   });
 
   it("restores focus to Apply after busy settles with retryable selections", () => {
