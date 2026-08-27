@@ -19,6 +19,7 @@ import {
   defaultCompactionLimitForTier,
   modelWindowForTier,
 } from '../../agent-config-constants';
+import { classifyLoopModelSpec } from '../../agent-loop/model-selection';
 
 const withoutEffort = (spec: string): string =>
   spec.replace(/:(?:minimal|low|medium|high|xhigh|max|ultra)$/i, '');
@@ -76,6 +77,7 @@ export default defineTool({
       ...t,
       modelWindow: modelWindowForTier(t),
       effectiveCompactionLimit: t.compactionLimit ?? defaultCompactionLimitForTier(t),
+      loopCapability: classifyLoopModelSpec(t.spec),
     }));
     return {
       data: {
