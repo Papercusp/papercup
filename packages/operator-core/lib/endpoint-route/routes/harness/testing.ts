@@ -44,6 +44,7 @@ import { type TestDomain, type ChipStatus, type FileStatusEntry } from '../../..
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { computePlanItemTestStatus } from '../../../harness-test-rollup';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 interface HarnessTestRow {
   id: string;
@@ -300,24 +301,41 @@ const run = defineTool({
     const started = Date.now();
     const runId = `h-${started}`;
     const jsonOut = join(tmpdir(), `psu-harness-vitest-${started}-${Math.random().toString(36).slice(2)}.json`);
-    let exitCode = 0;
-    let output = '';
-    try {
-      output = execFileSync(
-        'npx',
-        ['vitest', 'run', '--reporter=default', '--reporter=json', `--outputFile.json=${jsonOut}`, ...files],
-        {
-          cwd: root,
-          encoding: 'utf8',
-          timeout: 120_000,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        },
-      );
-    } catch (e) {
-      const err = e as { stdout?: string; stderr?: string; status?: number };
-      output = String(err.stdout ?? '') + String(err.stderr ?? '');
-      exitCode = err.status ?? 1;
-    }
+    const executionResult = await runGovernedOperation(
+      {
+        workspaceId: activeWorkspaceId(),
+        namespace: 'harness-testing-run',
+        owner: `harness:${project.slug}:testing`,
+        admissionClass: 'process',
+        demand: { cpuWeight: 1, memoryBytes: 512 * 1024 * 1024, fileDescriptors: 3 },
+        payloadRef: `harness:${project.slug}:testing:${runId}`,
+        metadata: { harness: project.slug, files: files.length },
+      },
+      async () => {
+        try {
+          return {
+            exitCode: 0,
+            output: execFileSync(
+              'npx',
+              ['vitest', 'run', '--reporter=default', '--reporter=json', `--outputFile.json=${jsonOut}`, ...files],
+              {
+                cwd: root,
+                encoding: 'utf8',
+                timeout: 120_000,
+                stdio: ['ignore', 'pipe', 'pipe'],
+              },
+            ),
+          };
+        } catch (e) {
+          const err = e as { stdout?: string; stderr?: string; status?: number };
+          return {
+            exitCode: err.status ?? 1,
+            output: String(err.stdout ?? '') + String(err.stderr ?? ''),
+          };
+        }
+      },
+    );
+    const { exitCode, output } = executionResult;
     const gitAfter = gitSnapshot();
     const worktreeDirty = computeWorktreeDirty(gitBefore, gitAfter);
 
