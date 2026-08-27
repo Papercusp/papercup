@@ -285,19 +285,35 @@ export async function resolveResumeTarget(ref: {
     return { ok: false, error: 'not_found', detail: 'pass resume.agentId or resume.sessionId' };
   }
   const { sql } = getOrgPg();
-  // Exact-pin by native session id wins; else newest row for the agent id.
+  // Exact-pin by native session id wins; otherwise start with the newest row for
+  // the requested agent id. A carry-respawn can rotate the coord owner while
+  // retaining the transcript's native session id, so agent-id lookup must follow
+  // that candidate session through the latest session_turns.owner and prefer the
+  // current adv_sessions row. Without that bridge, a stale historical owner is
+  // handed to the reviver even though its live successor is already running.
   // An agentId may be a PREFIX (the short `su-b0fbf` handle agents actually say
   // out loud) — match by prefix, newest first. adv_sessions is deliberately NOT
   // workspace-scoped here: coord_owner_id and session_id are globally unique
   // (see advSessionsByCoordOwner's note), so a workspace predicate could only
   // drop valid rows.
   const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
-    WITH indexed_owner AS (
-      SELECT owner
-        FROM harness_shared.session_turns
-       WHERE ${sessionId ? sql`session_id = ${sessionId}` : sql`FALSE`}
-         AND owner IS NOT NULL
-       ORDER BY ingested_at DESC
+    WITH candidate AS (
+      SELECT s.session_id AS candidate_session_id
+        FROM harness_shared.adv_sessions s
+       WHERE ${
+         sessionId
+           ? sql`s.session_id = ${sessionId}`
+           : sql`s.coord_owner_id LIKE ${agentId + '%'}`
+       }
+       ORDER BY ${sessionId ? sql`(s.session_id = ${sessionId}) DESC,` : sql``} s.started_at DESC
+       LIMIT 1
+    ),
+    indexed_owner AS (
+      SELECT t.owner
+        FROM harness_shared.session_turns t
+       WHERE t.session_id = (SELECT candidate_session_id FROM candidate)
+         AND t.owner IS NOT NULL
+       ORDER BY t.ingested_at DESC
        LIMIT 1
     )
     SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
@@ -308,9 +324,14 @@ export async function resolveResumeTarget(ref: {
        sessionId
          ? sql`session_id = ${sessionId}
                  OR coord_owner_id = (SELECT owner FROM indexed_owner)`
-         : sql`coord_owner_id LIKE ${agentId + '%'}`
+         : sql`coord_owner_id LIKE ${agentId + '%'}
+                 OR coord_owner_id = (SELECT owner FROM indexed_owner)`
      }
-     ORDER BY ${sessionId ? sql`(session_id = ${sessionId}) DESC,` : sql``} started_at DESC
+     ORDER BY ${
+       sessionId
+         ? sql`(session_id = ${sessionId}) DESC,`
+         : sql`(coord_owner_id = (SELECT owner FROM indexed_owner)) DESC,`
+     } started_at DESC
      LIMIT 1
   `;
   if (!rows.length) {
@@ -1260,6 +1281,8 @@ export function deriveFreshLaunchWorkerAttestation(
 
 export interface FreshLaunchSessionProbe {
   advSessionId: number;
+  /** Native session id recorded for this launch, when bootstrap had one. */
+  sessionId: string | null;
   ownerId: string | null;
   /** Successful, agent-chosen calls other than launch statuslines. */
   successfulCalls: number;
@@ -1571,6 +1594,7 @@ export async function probeFreshLaunchSessions({
     const rows = await sql<
       Array<{
         id: string | number;
+        session_id: string | null;
         coord_owner_id: string | null;
         successful_calls: string | number;
         scheduler_calls: string | number;
@@ -1585,6 +1609,7 @@ export async function probeFreshLaunchSessions({
       }>
     >`
       SELECT s.id,
+             s.session_id,
              s.coord_owner_id,
              COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
                         WHERE t.workspace_id = ${workspaceId}
@@ -1664,6 +1689,7 @@ export async function probeFreshLaunchSessions({
       const successfulCalls = Number(r.successful_calls ?? 0);
       return {
         advSessionId: Number(r.id),
+        sessionId: r.session_id ?? null,
         ownerId: r.coord_owner_id,
         successfulCalls,
         msSinceLastSignal: r.ms_since_last_signal == null ? null : Number(r.ms_since_last_signal),
