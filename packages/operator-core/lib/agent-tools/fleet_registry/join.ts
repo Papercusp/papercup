@@ -47,10 +47,10 @@ export default defineTool({
         "P-009 (only with as:'leader'): explicit soft compaction limit (tokens) for you as the new leader, clamped to the leader ceiling. OMIT to auto-lift a stuck 300k member-cap seed to the leader default (400k on [1m]).",
       ),
     contextSize: z
-      .enum(['full', 'trimmed'])
+      .literal('trimmed')
       .optional()
       .describe(
-        "P-009 (only with as:'leader'): pass to signal you are shaping this leader session yourself — SUPPRESSES the auto-lift of the compaction cap.",
+        "P-009 (only with as:'leader'): pass 'trimmed' to signal you are shaping this leader session yourself — SUPPRESSES the auto-lift of the compaction cap.",
       ),
   }),
   async handler(args, ctx) {

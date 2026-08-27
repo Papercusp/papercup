@@ -68,6 +68,11 @@ beforeEach(() => {
 });
 
 describe('fleet:join P-016 suggested watches', () => {
+  it('advertises only the growable trimmed context for leader joins', () => {
+    expect(tool.args.safeParse({ fleet: 'alpha', as: 'leader', contextSize: 'trimmed' }).success).toBe(true);
+    expect(tool.args.safeParse({ fleet: 'alpha', as: 'leader', contextSize: 'full' }).success).toBe(false);
+  });
+
   it('returns an explicit empty suggestion list for a member without arming anything', async () => {
     const out = parse(await invoke({ fleet: 'alpha', as: 'member' }));
 
