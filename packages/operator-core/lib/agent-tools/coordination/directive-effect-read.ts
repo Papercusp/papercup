@@ -39,6 +39,13 @@ export interface DirectiveEffectEnvelopeRow {
   effect: unknown;
 }
 
+interface DirectiveEffectEnvelopeEntry {
+  recipient: string;
+  fromId: string;
+  msgId: string;
+  spec: DirectiveEffectSpec & { sentAtMs: number; msgId: string };
+}
+
 /**
  * PURE: parse an envelope's stamped `expectEffect` back into a spec.
  *
@@ -63,33 +70,42 @@ export function parseEffectStamp(raw: unknown): DirectiveEffectSpec | null {
 export function envelopeRowsToSpecs(
   rows: readonly DirectiveEffectEnvelopeRow[],
 ): Map<string, Array<DirectiveEffectSpec & { sentAtMs: number; msgId: string }>> {
+  const entries = envelopeRowsToEntries(rows);
   const out = new Map<string, Array<DirectiveEffectSpec & { sentAtMs: number; msgId: string }>>();
+  for (const entry of entries) {
+    const list = out.get(entry.recipient) ?? [];
+    list.push(entry.spec);
+    out.set(entry.recipient, list);
+  }
+  return out;
+}
+
+function envelopeRowsToEntries(rows: readonly DirectiveEffectEnvelopeRow[]): DirectiveEffectEnvelopeEntry[] {
+  const out: DirectiveEffectEnvelopeEntry[] = [];
   for (const r of rows) {
     const spec = parseEffectStamp(r.effect);
     if (!spec) continue;
     const sentAtMs = Number(r.ts_ms);
     if (!Number.isFinite(sentAtMs) || sentAtMs <= 0) continue;
-    const list = out.get(r.recipient) ?? [];
-    list.push({ ...spec, sentAtMs, msgId: r.msg_id });
-    out.set(r.recipient, list);
+    out.push({
+      recipient: r.recipient,
+      fromId: r.from_id,
+      msgId: r.msg_id,
+      spec: { ...spec, sentAtMs, msgId: r.msg_id },
+    });
   }
   return out;
 }
 
-/**
- * The fleet-health read: per recipient, how many of the directives sent to them were
- * actually ACTED ON. `fromId` narrows to one sender's directives — a leader asks about
- * ITS OWN instructions, not every message anyone ever sent that member.
- *
- * Best-effort like its siblings (fetchUnansweredDirected / decorateContextPressure):
- * gated on the coord PG fast path, empty map on any failure. A decoration must never
- * be able to fail the brief it decorates.
- */
-export async function fetchDirectiveActuationSummaries(
+interface DirectiveActuationEnvelopeEntry extends DirectiveEffectEnvelopeEntry {
+  actuation: DirectiveActuation;
+}
+
+async function fetchDirectiveActuationEntries(
   recipientIds: string[],
-  opts: { fromId?: string; nowMs?: number; lookbackMs?: number; workspaceId?: string } = {},
-): Promise<Map<string, DirectiveActuationSummary>> {
-  if (recipientIds.length === 0 || !coordHasPgFastPath()) return new Map();
+  opts: { fromId?: string; nowMs?: number; lookbackMs?: number } = {},
+): Promise<DirectiveActuationEnvelopeEntry[]> {
+  if (recipientIds.length === 0 || !coordHasPgFastPath()) return [];
   try {
     const nowMs = opts.nowMs ?? Date.now();
     const sinceMs = nowMs - (opts.lookbackMs ?? DIRECTIVE_EFFECT_LOOKBACK_MS);
@@ -114,32 +130,54 @@ export async function fetchDirectiveActuationSummaries(
          AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
        ORDER BY (e.body->>'ts')::timestamptz DESC
        LIMIT ${DIRECTIVE_EFFECT_SCAN_CAP}`;
-    const byRecipient = envelopeRowsToSpecs(rows);
-    if (byRecipient.size === 0) return new Map();
+    const entries = envelopeRowsToEntries(rows);
+    if (entries.length === 0) return [];
 
-    // ONE probe for every recipient's expectations together (the batched-decoration
-    // contract: enriching N members costs one read, not N).
-    const flat = [...byRecipient.entries()].flatMap(([recipient, specs]) =>
-      specs.map((spec) => ({ recipient, spec })),
-    );
     const actuations = await fetchDirectiveActuations(
-      flat.map((f) => f.spec),
-      // The envelope query and the ledger probe must use the SAME resolved
-      // workspace. Dropping `ws` here makes the probe fall back to the ambient
-      // workspace, so a row found in the coord partition is reported as
-      // unprovable when the org ledger is on a different workspace partition.
+      entries.map((entry) => entry.spec),
       { workspaceId: ws },
     );
-    const grouped = new Map<string, DirectiveActuation[]>();
-    flat.forEach((f, i) => {
-      const a = actuations[i];
-      if (!a) return;
-      const list = grouped.get(f.recipient) ?? [];
-      list.push(a);
-      grouped.set(f.recipient, list);
+    return entries.flatMap((entry, index) => {
+      const actuation = actuations[index];
+      return actuation ? [{ ...entry, actuation }] : [];
     });
-    return new Map([...grouped].map(([k, v]) => [k, summarizeActuations(v)]));
   } catch {
-    return new Map();
+    return [];
   }
+}
+
+/** Message ids whose explicitly declared effect is proven to have happened. */
+export async function fetchSatisfiedDirectiveMessageIds(
+  recipientIds: string[],
+  opts: { nowMs?: number; lookbackMs?: number } = {},
+): Promise<Set<string>> {
+  const entries = await fetchDirectiveActuationEntries(recipientIds, opts);
+  return new Set(
+    entries
+      .filter((entry) => entry.actuation.verdict === 'satisfied')
+      .map((entry) => entry.msgId),
+  );
+}
+
+/**
+ * The fleet-health read: per recipient, how many of the directives sent to them were
+ * actually ACTED ON. `fromId` narrows to one sender's directives — a leader asks about
+ * ITS OWN instructions, not every message anyone ever sent that member.
+ *
+ * Best-effort like its siblings (fetchUnansweredDirected / decorateContextPressure):
+ * gated on the coord PG fast path, empty map on any failure. A decoration must never
+ * be able to fail the brief it decorates.
+ */
+export async function fetchDirectiveActuationSummaries(
+  recipientIds: string[],
+  opts: { fromId?: string; nowMs?: number; lookbackMs?: number; workspaceId?: string } = {},
+): Promise<Map<string, DirectiveActuationSummary>> {
+  const entries = await fetchDirectiveActuationEntries(recipientIds, opts);
+  const grouped = new Map<string, DirectiveActuation[]>();
+  for (const entry of entries) {
+    const list = grouped.get(entry.recipient) ?? [];
+    list.push(entry.actuation);
+    grouped.set(entry.recipient, list);
+  }
+  return new Map([...grouped].map(([k, v]) => [k, summarizeActuations(v)]));
 }

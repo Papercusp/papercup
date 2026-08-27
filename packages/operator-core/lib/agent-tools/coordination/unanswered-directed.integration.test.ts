@@ -285,4 +285,26 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     const unanswered = await fetchUnansweredDirected([MEMBER.ownerId]);
     expect(unanswered.get(MEMBER.ownerId)).toBeUndefined();
   });
+
+  it('keeps an expectEffect directive unanswered until its named effect is proven', async () => {
+    await fx.admin`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, title, status, created_ts, updated_ts)
+      VALUES
+        (${effectWorkspace}, 'papercusp', ${EFFECT_ITEM}, 'bug', ${`checkpoint fixture ${EFFECT_ITEM}`}, 'open', 0, 0)
+    `;
+
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: `checkpoint ${EFFECT_ITEM} before compact`,
+      expectsReply: true,
+      extra: {
+        expects: 'action',
+        expectEffect: { kind: 'checkpoint', itemId: EFFECT_ITEM, harness: 'papercusp' },
+      },
+    });
+
+    const unanswered = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(unanswered.get(MEMBER.ownerId)?.count).toBe(1);
+  });
 });

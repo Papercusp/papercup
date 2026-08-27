@@ -101,6 +101,7 @@
  */
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { MACHINE_SENDER_PATTERN } from './machine-authored';
+import { fetchSatisfiedDirectiveMessageIds } from './directive-effect-read';
 
 export interface UnansweredDirectedEntry {
   msgId: string;
@@ -207,6 +208,14 @@ export async function fetchUnansweredDirected(
   const cap = opts.perRecipientCap ?? UNANSWERED_NEWEST_CAP;
   const sql = coordSql();
   const workspaceId = coordWorkspaceId();
+  // P-013: an expectEffect directive is answered by the named side effect itself,
+  // even when the recipient never sends a reply. Resolve these through the same
+  // actuation reader used by fleet:leader-brief, then exclude only proven-satisfied
+  // envelope ids below. Unknown/not-yet/pre-existing effects remain unanswered.
+  const satisfiedEffectMsgIds = await fetchSatisfiedDirectiveMessageIds(recipientIds, {
+    nowMs,
+    lookbackMs: opts.lookbackMs,
+  });
   const rows = await sql<UnansweredDirectedRow[]>`
     -- WI-6853 / P-017 + WI-6875 — ONE scan of coord_event_log feeds every correlated lookup
     -- this statement used to re-scan the table for.
@@ -309,6 +318,7 @@ export async function fetchUnansweredDirected(
          AND jsonb_typeof(e.body->'to') = 'array'
          AND r = ANY(${recipientIds}::text[])
          AND e.body->>'from' IS DISTINCT FROM r
+         AND (e.body->>'msg_id' IS NULL OR NOT (e.body->>'msg_id' = ANY(${[...satisfiedEffectMsgIds]}::text[])))
          AND (e.body->>'ts')::timestamptz >= to_timestamp(${sinceMs}::double precision / 1000)
          -- WI-4553: only the SENDER can distinguish a question from an FYI.
          -- Missing/false is the backwards-compatible non-obligation default.
