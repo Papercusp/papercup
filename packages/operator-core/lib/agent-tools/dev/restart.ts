@@ -672,7 +672,18 @@ export default defineTool({
             : null,
         });
         // Detached + delayed so this response returns before the service dies.
-        const child = spawn('sh', ['-c', `sleep 1; ${restartCmd}`], {
+        // systemd latches a unit after it exceeds StartLimitBurst. A plain
+        // `restart` is then rejected with "Start request repeated too quickly"
+        // until `reset-failed` clears that manager state. We already have the
+        // service probe in hand, so recover this specific state in the same
+        // detached shell immediately before restarting. Keep the reset
+        // conditional: reset-failed clears useful failure metadata and should
+        // not be part of ordinary restarts.
+        const resetFailedBeforeRestart = before.ok && before.result === 'start-limit-hit';
+        const scheduledRestartCmd = resetFailedBeforeRestart
+          ? `systemctl --user reset-failed ${cfg.unit} && ${restartCmd}`
+          : restartCmd;
+        const child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {
           detached: true,
           stdio: 'ignore',
         });
@@ -687,11 +698,16 @@ export default defineTool({
           enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
           audited: true,
           ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
+          ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
           ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
           verifyWith: `systemctl --user show ${cfg.unit} -p MainPID --value  (expect a NEW pid${
             before.mainPid ? ` ≠ ${before.mainPid}` : ''
           } within ~3s)`,
           note: `Restart scheduled (~1s)${
+            resetFailedBeforeRestart
+              ? ` — systemd reported start-limit-hit; reset-failed will clear the latched failure before restart.`
+              : ''
+          }${
             phantomCoalesceBroken
               ? ' — this BROKE a phantom coalesce marker (the service had NOT actually restarted despite the marker being held)'
               : ''

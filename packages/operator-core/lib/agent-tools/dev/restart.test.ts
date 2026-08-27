@@ -440,12 +440,34 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(b.verifyWith).toMatch(/MainPID/);
     expect(b).not.toHaveProperty('phantomCoalesceBroken');
     expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-staging-api.service')], expect.anything());
+    expect(spawnM.mock.calls[0]?.[1]?.[1] as string).not.toContain('reset-failed');
     // Left to expire, not released — the debounce depends on this.
     expect(releaseM).not.toHaveBeenCalled();
     // EI-18198340374286980: a real restart is ALWAYS audited, even via the env route.
     expect(auditUnsafeM).toHaveBeenCalledTimes(1);
     const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
     expect(details).toMatchObject({ target: 'staging', viaEnv: true, viaAuthorizeArg: false, reason: null });
+  });
+
+  it('clears a latched start-limit before scheduling the restart and reports the recovery', async () => {
+    acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL-LATCH', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
+    guardM.mockImplementation(runGuard(fenceOk(10)) as never);
+    probeM.mockResolvedValue({ ok: true, mainPid: 0, result: 'start-limit-hit' } as never);
+
+    const b = body(await call({ confirm: true, target: 'staging' }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'staging',
+      restarted: true,
+      resetFailedBeforeRestart: true,
+    });
+    const shell = spawnM.mock.calls[0]?.[1]?.[1] as string;
+    const reset = `systemctl --user reset-failed papercup-staging-api.service`;
+    const restart = `systemctl --user restart papercup-staging-api.service`;
+    expect(shell).toContain(`${reset} && ${restart}`);
+    expect(shell.indexOf(reset)).toBeLessThan(shell.indexOf(restart));
+    expect(b.note).toMatch(/start-limit|reset-failed/i);
   });
 
   it('coalesces when the marker is held AND systemd confirms a genuine recent restart — no drain, no restart, no spawn', async () => {
