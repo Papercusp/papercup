@@ -2297,6 +2297,67 @@ describe('unified work_items surface (real PG)', () => {
     expect(warm.legs.semantic.blocked).toBeNull();
   });
 
+  it('keeps the retry receipt on the mandatory delayed retry while warmup remains in flight', async () => {
+    await wi.createWorkItem({
+      kind: 'bug',
+      title: 'warmup delayed retry work item',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+
+    let releaseResolver!: () => void;
+    let resolverStartedResolve!: () => void;
+    const resolverGate = new Promise<void>((resolve) => {
+      releaseResolver = resolve;
+    });
+    const resolverStarted = new Promise<void>((resolve) => {
+      resolverStartedResolve = resolve;
+    });
+    let warmupEmbedFinishedResolve!: () => void;
+    const warmupEmbedFinished = new Promise<void>((resolve) => {
+      warmupEmbedFinishedResolve = resolve;
+    });
+    const vector = Array.from({ length: 768 }, () => 0.01);
+    const embed = vi.fn(async (text: string) => {
+      if (text === 'work-items search embedder warmup') warmupEmbedFinishedResolve();
+      return vector;
+    });
+    const resolver = vi.fn(async () => {
+      resolverStartedResolve();
+      await resolverGate;
+      return { mode: 'gemma', dims: 768, embed };
+    });
+
+    const first = await wi.searchWorkItems('warmup delayed retry', {
+      semantic: true,
+      embedderResolver: resolver,
+    });
+    await resolverStarted;
+
+    expect(first.items.some((w) => w.title === 'warmup delayed retry work item')).toBe(true);
+    expect(first.legs.degraded).toBe(true);
+    expect(first.retry).toMatchObject({ afterMs: 1_000, reason: 'query_embedder_warming' });
+    expect(embed).not.toHaveBeenCalled();
+
+    // The caller follows the mandatory delay, but the resolver is still held.
+    // The retry must remain retryable, preserve its token, and never launch a
+    // second warmup while the original single-flight is still in progress.
+    await new Promise<void>((resolve) => setTimeout(resolve, first.retry!.afterMs + 25));
+    const delayed = await wi.searchWorkItems('warmup delayed retry', {
+      semantic: true,
+      embedderResolver: resolver,
+    });
+    expect(delayed.items.some((w) => w.title === 'warmup delayed retry work item')).toBe(true);
+    expect(delayed.legs.semantic.blocked).toMatch(/warming up/);
+    expect(delayed.legs.degraded).toBe(true);
+    expect(delayed.retry).toEqual(first.retry);
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(embed).not.toHaveBeenCalled();
+
+    releaseResolver();
+    await warmupEmbedFinished;
+  });
+
   // EI-21490058173504687: once a warm-up attempt has SETTLED with a failure,
   // later cold-path searches must report THAT failure instead of re-masking
   // it as an endless "warming up" cold start, and must not re-advertise the
