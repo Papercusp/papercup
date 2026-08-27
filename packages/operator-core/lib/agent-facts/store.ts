@@ -2268,35 +2268,22 @@ async function findCrossAuthorVerifiedCapVictim(
   // one is what the rail exists to stop; refusing a better fact to preserve the
   // worst one is not that, it is the inverse.
   //
-  // So: order the incoming row against the victim with the shared comparator
+  // So: compare the incoming row against the victim with the SHARED comparator
   // (never a re-derived copy of the ordering — see sweep-ranking.ts's header on
   // why a drifting mirror is worse than no answer) and refuse ONLY when the
-  // incoming fact does not outrank the victim. Ties keep the refusal: the SQL
-  // ordering is explicitly ambiguous on exact ties, so a tie is "no better
-  // than", and the protective reading is the safe one.
-  const { orderAsSweepWould } = await import('./sweep-ranking');
+  // incoming fact does not outrank the victim. `outranksForSweep` is STRICT, so
+  // a tie keeps the refusal: the SQL ordering is explicitly ambiguous on exact
+  // ties, and the protective reading is the safe one for a guard.
+  const { outranksForSweep } = await import('./sweep-ranking');
   const nowMs = Date.now();
-  const INCOMING_ID = '__incoming__';
-  const ordered = orderAsSweepWould(
-    [
-      {
-        id: victim.id,
-        confidence: victim.confidence,
-        expires_at: victim.expires_at,
-        created_at: victim.created_at,
-        updated_at: victim.updated_at,
-      },
-      {
-        id: INCOMING_ID,
-        confidence: incoming.confidence,
-        expires_at: new Date(nowMs + Math.max(1, incoming.ttlSec) * 1000),
-        created_at: new Date(nowMs),
-        updated_at: new Date(nowMs),
-      },
-    ],
-    nowMs,
-  );
-  if (String(ordered[0]?.id) === INCOMING_ID) return null;
+  const incomingRow = {
+    id: null,
+    confidence: incoming.confidence,
+    expires_at: new Date(nowMs + Math.max(1, incoming.ttlSec) * 1000),
+    created_at: new Date(nowMs),
+    updated_at: new Date(nowMs),
+  };
+  if (outranksForSweep(incomingRow, victim, nowMs)) return null;
   return victim;
 }
 
