@@ -102,6 +102,7 @@ describe('PRE_PROMPT_REGISTRY', () => {
     const claimAdvertised = advertisedArgsSchema('work_items:claim', claim!.inputSchema as Record<string, unknown>);
     const claimOneOf = (claimAdvertised as { oneOf?: unknown[] }).oneOf;
     expect(claimOneOf).toHaveLength(2);
+    expect(JSON.stringify(claimAdvertised)).not.toContain('ownerOverride');
     const row = claimOneOf![0] as { properties?: Record<string, { description?: string }> };
     expect(row.properties?.row?.description).toContain('id, assignee?, harness?, force?, reason?');
 
