@@ -56,7 +56,8 @@
 #   PC_HEAVY_PSI_ADMISSION "1"(default)/"0" — after admission, keep sampling
 #                         memory PSI and cooperatively freeze the deterministic
 #                         lowest-priority/newest heavy root instead of killing
-#                         it. The release gate never enters this candidate set.
+#                         it. At most one root is frozen per pressure episode;
+#                         the release gate never enters this candidate set.
 #   PC_HEAVY_MEM_PSI_RECOVER / PC_HEAVY_MEM_PSI_RECOVERY_SEC
 #                         recovery watermark + sustained quiet window before
 #                         one frozen root is thawed (defaults 2 / 30s). A thaw
@@ -645,19 +646,29 @@ _pc_heavy_internal_preempt_run() {
     _now=$(date +%s)
     if [ "$_sample" -ge "$_psi_high" ]; then
       rm -f "$_psi_recovery_file" 2>/dev/null || true
-      _psi_scan_records active
-      if [ "$_psi_unreadable_count" -gt 0 ]; then
-        if [ "$_psi_last_undetermined" != cgroup-memory-unreadable ]; then
-          _psi_emit undetermined cgroup-memory-unreadable "$_sample" "$_psi_total_mib"
-          _psi_last_undetermined=cgroup-memory-unreadable
+      # One pressure episode yields ONE root. Re-scanning active records after
+      # every freeze cascaded through the whole fleet in seconds: each newly
+      # frozen record exposed the next candidate, so ten focused verifiers were
+      # stopped during a single high-PSI interval. A live frozen record is the
+      # episode latch; high pressure merely keeps it frozen until hysteresis
+      # thaws it. Stale identities are purged by this scan, so they cannot pin
+      # the latch forever.
+      _psi_scan_records frozen
+      if [ -z "$_psi_selected_id" ]; then
+        _psi_scan_records active
+        if [ "$_psi_unreadable_count" -gt 0 ]; then
+          if [ "$_psi_last_undetermined" != cgroup-memory-unreadable ]; then
+            _psi_emit undetermined cgroup-memory-unreadable "$_sample" "$_psi_total_mib"
+            _psi_last_undetermined=cgroup-memory-unreadable
+          fi
+        else
+          [ "$_psi_last_undetermined" = cgroup-memory-unreadable ] && _psi_last_undetermined=''
         fi
-      else
-        [ "$_psi_last_undetermined" = cgroup-memory-unreadable ] && _psi_last_undetermined=''
-      fi
-      if [ "$_psi_unreadable_count" -eq 0 ] && [ "$_psi_selected_id" = "$_psi_admission_id" ] && [ "$_psi_state" = active ]; then
-        if kill -STOP -- "-${_preempt_child_pid:-}" 2>/dev/null; then
-          _psi_write_record frozen || true
-          _psi_emit frozen memory-psi-high "$_sample" "$_psi_total_mib"
+        if [ "$_psi_unreadable_count" -eq 0 ] && [ "$_psi_selected_id" = "$_psi_admission_id" ] && [ "$_psi_state" = active ]; then
+          if kill -STOP -- "-${_preempt_child_pid:-}" 2>/dev/null; then
+            _psi_write_record frozen || true
+            _psi_emit frozen memory-psi-high "$_sample" "$_psi_total_mib"
+          fi
         fi
       fi
     elif [ "$_sample" -le "$_psi_recover" ]; then
