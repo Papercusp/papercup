@@ -119,6 +119,45 @@ describe('PgWorkItemAdmissionQueueStore', () => {
     });
   });
 
+  it('leases only the targeted durable receipt before execution starts', async () => {
+    const producer = instance('producer');
+    const first = await producer.governor.admit({
+      idempotencyKey: 'target-first',
+      admissionClass: 'agent',
+    });
+    const second = await producer.governor.admit({
+      idempotencyKey: 'target-second',
+      admissionClass: 'agent',
+    });
+    if (first.kind !== 'queued' || second.kind !== 'queued') throw new Error('expected durable queued receipts');
+
+    const restarted = instance('targeted-worker');
+    const claim = await restarted.driver.leaseReceipt({
+      receiptId: second.receipt.receiptId,
+      owner: 'targeted-worker',
+      ttlMs: 5_000,
+    });
+    expect(claim).toMatchObject({
+      receiptId: second.receipt.receiptId,
+      record: { idempotencyKey: 'target-second', state: 'leased' },
+      lease: { owner: 'targeted-worker' },
+    });
+
+    const rows = await db.sql<Array<{ feature_id: string; state: string; taken_by: string | null }>>`
+      SELECT feature_id, payload->'resource_governor'->>'state' AS state, taken_by
+        FROM harness_shared.work_items
+       ORDER BY feature_id`;
+    expect(rows).toEqual([
+      { feature_id: first.receipt.receiptId, state: 'queued', taken_by: null },
+      { feature_id: second.receipt.receiptId, state: 'leased', taken_by: 'targeted-worker' },
+    ]);
+    expect(await restarted.driver.leaseReceipt({
+      receiptId: second.receipt.receiptId,
+      owner: 'other-worker',
+      ttlMs: 5_000,
+    })).toBeNull();
+  });
+
   it('persists cancellation and latest-wins coalescing across driver restart', async () => {
     const first = instance('first');
     await first.governor.admit({
