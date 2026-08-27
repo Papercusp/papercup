@@ -81,6 +81,7 @@ import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { isPidInLiveWindowScope } from '../../task-manager/terminal-residue-census';
 import { PSU_LAUNCH_LOG_TAIL_CHARS, readPsuLaunchLogTail } from '../../psu-launch-log.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
+import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import {
   resolveSavedFleetLaunchSpec,
   type SavedFleetLaunchConfig,
@@ -1062,34 +1063,54 @@ export default defineTool({
           : ((memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined);
         const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
         const memberLabel = memberLabels[i];
-        return foldedConfigs[i].headless
-          ? spawnHeadless({
-              envelope: { ...base, env, greetingCmd: cmd, cwd },
-              label: memberLabel,
-              logDir: headlessLogDir,
-              launchedBy: callerOwnerId ?? undefined,
+        const targetOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
+        return spawnGovernedAgentProcess(
+          {
+            workspaceId,
+            idempotencyKey: `agent-spawn:${callerOwnerId ?? 'operator'}:${spawnStartedAt}:${i}`,
+            owner: targetOwnerId ?? `launcher:${callerOwnerId ?? 'operator'}`,
+            payloadRef: `capability:launch-agent:${fleetSlug ?? args.plan ?? 'ad-hoc'}:${i}`,
+            metadata: {
+              launchedBy: callerOwnerId ?? 'operator',
+              targetOwnerId,
               fleetSlug,
-              // A successor is explicitly pre-pinned to the source owner; an
-              // in-place resume re-attaches that owner. A fork deliberately gets
-              // no stamp because it mints a distinct identity at boot.
-              coordOwnerId:
-                isSuccessor || (isResume && !fork) ? resumeOwnerId : null,
-            })
-          : spawnConsole({
-              envelope: { ...base, env, greetingCmd: cmd, cwd },
-              label: memberLabel,
-              writeMcpJson: false,
-              scheme,
-              allowDesktopBridge: true,
-              displayOverride: memberSpecs[i]?.display ?? args.display,
-              // EI-21010422711013687: the server-side gnome-terminal factory can
-              // open the requested window but silently drop the `-- CMD`
-              // handoff. That strands BOTH fresh launches (no psu child ever
-              // exists) and resume/fork launches (EI-11578). Every visible agent
-              // launch is command-bearing, so reliability outranks the owner's
-              // normal client-server terminal preference here.
-              preferProcessPerWindow: true,
-            });
+              headless: !!foldedConfigs[i].headless,
+            },
+          },
+          (admissionContext) => {
+            const governedEnv = {
+              ...env,
+              PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext),
+            };
+            return foldedConfigs[i].headless
+              ? spawnHeadless({
+                  envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
+                  label: memberLabel,
+                  logDir: headlessLogDir,
+                  launchedBy: callerOwnerId ?? undefined,
+                  fleetSlug,
+                  // A successor is explicitly pre-pinned to the source owner; an
+                  // in-place resume re-attaches that owner. A fork deliberately gets
+                  // no stamp because it mints a distinct identity at boot.
+                  coordOwnerId: targetOwnerId,
+                })
+              : spawnConsole({
+                  envelope: { ...base, env: governedEnv, greetingCmd: cmd, cwd },
+                  label: memberLabel,
+                  writeMcpJson: false,
+                  scheme,
+                  allowDesktopBridge: true,
+                  displayOverride: memberSpecs[i]?.display ?? args.display,
+                  // EI-21010422711013687: the server-side gnome-terminal factory can
+                  // open the requested window but silently drop the `-- CMD`
+                  // handoff. That strands BOTH fresh launches (no psu child ever
+                  // exists) and resume/fork launches (EI-11578). Every visible agent
+                  // launch is command-bearing, so reliability outranks the owner's
+                  // normal client-server terminal preference here.
+                  preferProcessPerWindow: true,
+                });
+          },
+        );
       }),
     );
 
