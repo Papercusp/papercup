@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import {
-  makeGatewayLaneRegistry,
-  type GatewayLaneDescriptor,
-} from './provider-adapters';
+import { makeGatewayLaneRegistry, type GatewayLaneDescriptor } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
   executeGatewayRequestKernel,
@@ -58,12 +55,7 @@ interface PreparedAttempt {
 }
 
 type KernelResponse = GatewayKernelUpstreamResponse<Uint8Array, ResponseMetadata>;
-type KernelOptions = ExecuteGatewayRequestKernelOptions<
-  RouteValue,
-  PreparedAttempt,
-  Uint8Array,
-  ResponseMetadata
->;
+type KernelOptions = ExecuteGatewayRequestKernelOptions<RouteValue, PreparedAttempt, Uint8Array, ResponseMetadata>;
 
 const DEFAULT_POLICY: GatewayKernelPolicy = {
   maxBodyBytes: 1024,
@@ -109,8 +101,7 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
   const written: Uint8Array[] = [];
   const started: Array<{ status: number; metadata: ResponseMetadata }> = [];
   const telemetry = new GatewayRequestTelemetry();
-  const transport = lane.transports.find((candidate) => !candidate.degraded)?.id
-    ?? lane.transports[0]!.id;
+  const transport = lane.transports.find((candidate) => !candidate.degraded)?.id ?? lane.transports[0]!.id;
   const accountBacked = lane.capabilities.accountPinning !== 'none';
   const routeA: GatewayKernelRoute<RouteValue> = {
     key: `${lane.id}:a`,
@@ -141,9 +132,8 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
       body: overrides.body ?? defaultBody(),
       ownerId: 'su-contract',
       correlationId: `${lane.id}-correlation`,
-      pin: overrides.pin === undefined
-        ? accountBacked ? { accountId: 'account-a', mode: 'soft' } : null
-        : overrides.pin,
+      pin:
+        overrides.pin === undefined ? (accountBacked ? { accountId: 'account-a', mode: 'soft' } : null) : overrides.pin,
       signal: overrides.signal,
     },
     policy: { ...DEFAULT_POLICY, ...overrides.policy },
@@ -159,9 +149,7 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
         };
       },
       observeAttempt({ context, response, error }) {
-        events.push(
-          `observe:${context.route.value.name}:${response?.status ?? error?.code ?? 'unknown'}`,
-        );
+        events.push(`observe:${context.route.value.name}:${response?.status ?? error?.code ?? 'unknown'}`);
       },
     },
     adapter: {
@@ -258,11 +246,7 @@ async function caughtKernelError(promise: Promise<unknown>): Promise<GatewayRequ
 
 describe('gateway request kernel lane coverage', () => {
   it('enumerates every static lane descriptor exactly once', () => {
-    expect(laneCases.map(({ id }) => id)).toEqual([
-      'anthropic-messages',
-      'openai-responses',
-      'local-openai-chat',
-    ]);
+    expect(laneCases.map(({ id }) => id)).toEqual(['anthropic-messages', 'openai-responses', 'local-openai-chat']);
   });
 });
 
@@ -294,13 +278,13 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
     const expectedProvider: GatewayTelemetryProvider =
       lane.observability.provider === 'anthropic'
         ? 'claude'
-        : lane.observability.provider === 'openai' ? 'codex' : 'local';
+        : lane.observability.provider === 'openai'
+          ? 'codex'
+          : 'local';
     expect(result.timeline.provider).toBe(expectedProvider);
     assertCompleteGatewayRequestTimeline(result.timeline);
     expect(Buffer.concat(f.written.map((chunk) => Buffer.from(chunk))).toString()).toBe('firstsecond');
-    expect(f.started).toEqual([
-      { status: 200, metadata: { contentType: 'text/event-stream' } },
-    ]);
+    expect(f.started).toEqual([{ status: 200, metadata: { contentType: 'text/event-stream' } }]);
     expect(f.counts()).toEqual({
       releaseCount: 1,
       unregisterCount: 1,
@@ -308,26 +292,28 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
       discardCount: 1,
     });
     expect(f.inFlight()?.isStreaming()).toBe(true);
-    expect(f.events).toEqual(expect.arrayContaining([
-      'select:initial',
-      'admit:a',
-      'inflight:register',
-      'body',
-      'prepare:a',
-      'execute:a',
-      'observe:a:503',
-      'select:failover',
-      'discard',
-      'prepare:b',
-      'execute:b',
-      'observe:b:200',
-      'downstream:start:200',
-      'downstream:write:first',
-      'downstream:write:second',
-      'downstream:end',
-      'inflight:unregister:ok:200',
-      'release:ok:200',
-    ]));
+    expect(f.events).toEqual(
+      expect.arrayContaining([
+        'select:initial',
+        'admit:a',
+        'inflight:register',
+        'body',
+        'prepare:a',
+        'execute:a',
+        'observe:a:503',
+        'select:failover',
+        'discard',
+        'prepare:b',
+        'execute:b',
+        'observe:b:200',
+        'downstream:start:200',
+        'downstream:write:first',
+        'downstream:write:second',
+        'downstream:end',
+        'inflight:unregister:ok:200',
+        'release:ok:200',
+      ]),
+    );
     expect(f.telemetry.snapshot().requests).toMatchObject({
       started: 1,
       finalized: 1,
@@ -367,7 +353,9 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
   it('propagates caller cancellation through the current attempt and cleans up exactly once', async () => {
     const controller = new AbortController();
     let attemptStarted!: () => void;
-    const started = new Promise<void>((resolve) => { attemptStarted = resolve; });
+    const started = new Promise<void>((resolve) => {
+      attemptStarted = resolve;
+    });
     const f = fixture(lane, {
       signal: controller.signal,
       executeAttempt: async (_prepared, context) => {
@@ -437,7 +425,39 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
     expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1, failoverCalls: 0 });
   });
 
+  it('closes a failed TTFB stage before selecting the failover route', async () => {
+    const f = fixture(lane, {
+      executeAttempt: async (_prepared, context) => {
+        if (context.attempt === 1) {
+          throw new GatewayRequestKernelError('retry this route', {
+            code: 'upstream-error',
+            outcome: 'upstream-error',
+            status: 502,
+            retryable: true,
+          });
+        }
+        return {
+          status: 200,
+          streaming: true,
+          transport: context.route.transport,
+          metadata: { contentType: 'text/event-stream' },
+          body: chunks('recovered'),
+        };
+      },
+    });
+    const result = await executeGatewayRequestKernel(f.options);
+    const stages = result.timeline.events.map(({ stage, phase }) => `${stage}:${phase}`);
+    const failedTtfbEnd = stages.indexOf('upstreamTtfb:end');
+    const failoverSelectionStart = stages.indexOf('routeSelection:start', failedTtfbEnd + 1);
+
+    expect(result).toMatchObject({ status: 200, outcome: 'ok', attempts: 2, failovers: 1 });
+    expect(failedTtfbEnd).toBeGreaterThan(-1);
+    expect(failoverSelectionStart).toBeGreaterThan(failedTtfbEnd);
+    assertCompleteGatewayRequestTimeline(result.timeline);
+  });
+
   it('enforces upstream body-idle and downstream backpressure deadlines', async () => {
+    const bodyDiscard = vi.fn();
     const bodyIdle = fixture(lane, {
       executeAttempt: async (_prepared, context) => ({
         status: 200,
@@ -445,6 +465,7 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
         transport: context.route.transport,
         metadata: { contentType: 'text/event-stream' },
         body: neverBody(),
+        discard: bodyDiscard,
       }),
       policy: { bodyIdleTimeoutMs: 5 },
     });
@@ -455,8 +476,10 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
       status: 504,
     });
     assertCompleteGatewayRequestTimeline(bodyError.timeline!);
+    expect(bodyDiscard).toHaveBeenCalledTimes(1);
     expect(bodyIdle.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
 
+    const downstreamDiscard = vi.fn();
     const downstreamIdle = fixture(lane, {
       executeAttempt: async (_prepared, context) => ({
         status: 200,
@@ -464,19 +487,19 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
         transport: context.route.transport,
         metadata: { contentType: 'text/event-stream' },
         body: chunks('blocked'),
+        discard: downstreamDiscard,
       }),
       downstreamWrite: async () => new Promise<void>(() => undefined),
       policy: { downstreamIdleTimeoutMs: 5 },
     });
-    const downstreamError = await caughtKernelError(
-      executeGatewayRequestKernel(downstreamIdle.options),
-    );
+    const downstreamError = await caughtKernelError(executeGatewayRequestKernel(downstreamIdle.options));
     expect(downstreamError).toMatchObject({
       code: 'downstream-idle',
       outcome: 'cancelled',
       status: null,
     });
     assertCompleteGatewayRequestTimeline(downstreamError.timeline!);
+    expect(downstreamDiscard).toHaveBeenCalledTimes(1);
     expect(downstreamIdle.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
   });
 
@@ -521,6 +544,11 @@ describe('gateway request kernel contract guards', () => {
     f.options.adapter.selectFailover = vi.fn(async () => f.routeA);
     const error = await caughtKernelError(executeGatewayRequestKernel(f.options));
     expect(error).toMatchObject({ code: 'route-cycle', outcome: 'gateway-error', status: 500 });
-    expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
+    assertCompleteGatewayRequestTimeline(error.timeline!);
+    expect(f.counts()).toMatchObject({
+      releaseCount: 1,
+      unregisterCount: 1,
+      discardCount: 1,
+    });
   });
 });

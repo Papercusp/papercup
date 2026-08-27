@@ -1,7 +1,4 @@
-import type {
-  GatewayLaneDescriptor,
-  GatewayTransportId,
-} from './provider-adapters';
+import type { GatewayLaneDescriptor, GatewayTransportId } from './provider-adapters';
 import {
   GatewayRequestTelemetry,
   classifyGatewayTelemetryOutcome,
@@ -58,8 +55,7 @@ export interface GatewayKernelContext {
   startedAt: number;
 }
 
-export interface GatewayKernelRouteContext<T, TChunk = unknown, TMetadata = unknown>
-  extends GatewayKernelContext {
+export interface GatewayKernelRouteContext<T, TChunk = unknown, TMetadata = unknown> extends GatewayKernelContext {
   currentRoute: GatewayKernelRoute<T> | null;
   triedRouteKeys: readonly string[];
   attempt: number;
@@ -96,10 +92,7 @@ export interface GatewayKernelAttemptFeedback<TRoute, TChunk, TMetadata> {
 }
 
 export interface GatewayKernelAdmissionLease {
-  release(result: {
-    outcome: GatewayRequestOutcome;
-    status: number | null;
-  }): MaybePromise<void>;
+  release(result: { outcome: GatewayRequestOutcome; status: number | null }): MaybePromise<void>;
 }
 
 export interface GatewayKernelAdmissionController<TRoute, TChunk, TMetadata> {
@@ -150,10 +143,7 @@ export interface GatewayKernelInFlightEntry {
 }
 
 export interface GatewayKernelInFlightHandle {
-  unregister(result: {
-    outcome: GatewayRequestOutcome;
-    status: number | null;
-  }): MaybePromise<void>;
+  unregister(result: { outcome: GatewayRequestOutcome; status: number | null }): MaybePromise<void>;
 }
 
 export interface GatewayKernelInFlightRegistry {
@@ -326,10 +316,12 @@ export async function readBoundedGatewayRequestBody(opts: {
   return withDeadline({
     parent: opts.signal,
     timeoutMs: opts.timeoutMs,
-    error: () => new GatewayRequestKernelError(
-      `gateway request body read exceeded ${opts.timeoutMs}ms`,
-      { code: 'body-read-timeout', outcome: 'client-error', status: 408 },
-    ),
+    error: () =>
+      new GatewayRequestKernelError(`gateway request body read exceeded ${opts.timeoutMs}ms`, {
+        code: 'body-read-timeout',
+        outcome: 'client-error',
+        status: 408,
+      }),
     run: async (signal) => {
       const iterator = opts.source[Symbol.asyncIterator]();
       const chunks: Buffer[] = [];
@@ -342,15 +334,14 @@ export async function readBoundedGatewayRequestBody(opts: {
             completed = true;
             return Buffer.concat(chunks, total);
           }
-          const chunk = typeof next.value === 'string'
-            ? Buffer.from(next.value)
-            : Buffer.from(next.value);
+          const chunk = typeof next.value === 'string' ? Buffer.from(next.value) : Buffer.from(next.value);
           total += chunk.byteLength;
           if (total > opts.maxBytes) {
-            throw new GatewayRequestKernelError(
-              `gateway request body exceeded ${opts.maxBytes} bytes`,
-              { code: 'body-too-large', outcome: 'client-error', status: 413 },
-            );
+            throw new GatewayRequestKernelError(`gateway request body exceeded ${opts.maxBytes} bytes`, {
+              code: 'body-too-large',
+              outcome: 'client-error',
+              status: 413,
+            });
           }
           chunks.push(chunk);
         }
@@ -364,15 +355,12 @@ export async function readBoundedGatewayRequestBody(opts: {
 function normalizeError(error: unknown, signal: AbortSignal): GatewayRequestKernelError {
   if (error instanceof GatewayRequestKernelError) return error;
   if (signal.aborted) return abortReason(signal);
-  return new GatewayRequestKernelError(
-    error instanceof Error ? error.message : String(error),
-    {
-      code: 'gateway-error',
-      outcome: 'gateway-error',
-      status: 500,
-      cause: error,
-    },
-  );
+  return new GatewayRequestKernelError(error instanceof Error ? error.message : String(error), {
+    code: 'gateway-error',
+    outcome: 'gateway-error',
+    status: 500,
+    cause: error,
+  });
 }
 
 function validateRoute<TRoute>(
@@ -389,10 +377,11 @@ function validateRoute<TRoute>(
     });
   }
   if (!lane.transports.some((transport) => transport.id === route.transport)) {
-    throw new GatewayRequestKernelError(
-      `gateway lane ${lane.id} does not support transport ${route.transport}`,
-      { code: 'invalid-route', outcome: 'gateway-error', status: 500 },
-    );
+    throw new GatewayRequestKernelError(`gateway lane ${lane.id} does not support transport ${route.transport}`, {
+      code: 'invalid-route',
+      outcome: 'gateway-error',
+      status: 500,
+    });
   }
   if (lane.capabilities.accountPinning === 'none' && pin) {
     throw new GatewayRequestKernelError(`gateway lane ${lane.id} does not support account pinning`, {
@@ -421,14 +410,16 @@ async function selectFailover<TRoute, TPrepared, TChunk, TMetadata>(opts: {
 }): Promise<GatewayKernelRoute<TRoute> | null> {
   if (opts.pin?.mode === 'hard') return null;
   const next = await abortable(
-    Promise.resolve(opts.adapter.selectFailover({
-      ...opts.base,
-      currentRoute: opts.currentRoute,
-      triedRouteKeys: [...opts.triedRouteKeys],
-      attempt: opts.attempt,
-      lastResponse: opts.lastResponse,
-      lastError: opts.lastError,
-    })),
+    Promise.resolve(
+      opts.adapter.selectFailover({
+        ...opts.base,
+        currentRoute: opts.currentRoute,
+        triedRouteKeys: [...opts.triedRouteKeys],
+        attempt: opts.attempt,
+        lastResponse: opts.lastResponse,
+        lastError: opts.lastError,
+      }),
+    ),
     opts.base.signal,
   );
   if (!next) return null;
@@ -456,28 +447,36 @@ async function pumpResponse<TChunk, TMetadata>(opts: {
     await withDeadline({
       parent: opts.signal,
       timeoutMs: opts.downstreamIdleTimeoutMs,
-      error: () => new GatewayRequestKernelError(
-        `gateway downstream start exceeded ${opts.downstreamIdleTimeoutMs}ms`,
-        { code: 'downstream-idle', outcome: 'cancelled', status: null },
-      ),
-      run: () => Promise.resolve(opts.downstream.start({
-        status: opts.response.status,
-        streaming: opts.response.streaming,
-        transport: opts.response.transport,
-        metadata: opts.response.metadata,
-      })),
+      error: () =>
+        new GatewayRequestKernelError(`gateway downstream start exceeded ${opts.downstreamIdleTimeoutMs}ms`, {
+          code: 'downstream-idle',
+          outcome: 'cancelled',
+          status: null,
+        }),
+      run: () =>
+        Promise.resolve(
+          opts.downstream.start({
+            status: opts.response.status,
+            streaming: opts.response.streaming,
+            transport: opts.response.transport,
+            metadata: opts.response.metadata,
+          }),
+        ),
     });
     iterator = opts.response.body?.[Symbol.asyncIterator]();
     bodyCompleted = !iterator;
     while (iterator) {
+      const activeIterator = iterator;
       const next = await withDeadline({
         parent: opts.signal,
         timeoutMs: opts.bodyIdleTimeoutMs,
-        error: () => new GatewayRequestKernelError(
-          `gateway upstream body idle exceeded ${opts.bodyIdleTimeoutMs}ms`,
-          { code: 'upstream-body-idle', outcome: 'upstream-error', status: 504 },
-        ),
-        run: (signal) => abortable(Promise.resolve(iterator.next()), signal),
+        error: () =>
+          new GatewayRequestKernelError(`gateway upstream body idle exceeded ${opts.bodyIdleTimeoutMs}ms`, {
+            code: 'upstream-body-idle',
+            outcome: 'upstream-error',
+            status: 504,
+          }),
+        run: (signal) => abortable(Promise.resolve(activeIterator.next()), signal),
       });
       if (next.done) {
         bodyCompleted = true;
@@ -486,20 +485,24 @@ async function pumpResponse<TChunk, TMetadata>(opts: {
       await withDeadline({
         parent: opts.signal,
         timeoutMs: opts.downstreamIdleTimeoutMs,
-        error: () => new GatewayRequestKernelError(
-          `gateway downstream write exceeded ${opts.downstreamIdleTimeoutMs}ms`,
-          { code: 'downstream-idle', outcome: 'cancelled', status: null },
-        ),
+        error: () =>
+          new GatewayRequestKernelError(`gateway downstream write exceeded ${opts.downstreamIdleTimeoutMs}ms`, {
+            code: 'downstream-idle',
+            outcome: 'cancelled',
+            status: null,
+          }),
         run: () => Promise.resolve(opts.downstream.write(next.value)),
       });
     }
     await withDeadline({
       parent: opts.signal,
       timeoutMs: opts.downstreamIdleTimeoutMs,
-      error: () => new GatewayRequestKernelError(
-        `gateway downstream end exceeded ${opts.downstreamIdleTimeoutMs}ms`,
-        { code: 'downstream-idle', outcome: 'cancelled', status: null },
-      ),
+      error: () =>
+        new GatewayRequestKernelError(`gateway downstream end exceeded ${opts.downstreamIdleTimeoutMs}ms`, {
+          code: 'downstream-idle',
+          outcome: 'cancelled',
+          status: null,
+        }),
       run: () => Promise.resolve(opts.downstream.end()),
     });
   } catch (error) {
@@ -517,10 +520,7 @@ async function pumpResponse<TChunk, TMetadata>(opts: {
       cleanupErrors.push(cleanupError);
     }
     if (cleanupErrors.length) {
-      throw new AggregateError(
-        [error, ...cleanupErrors],
-        'gateway response forwarding and cleanup both failed',
-      );
+      throw new AggregateError([error, ...cleanupErrors], 'gateway response forwarding and cleanup both failed');
     }
     throw error;
   }
@@ -536,29 +536,32 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     provider,
     protocol: opts.request.lane.protocol,
   });
-  const correlationId = boundedCorrelationId(
-    opts.request.correlationId,
-    `gateway-${span.requestId}`,
-  );
+  const correlationId = boundedCorrelationId(opts.request.correlationId, `gateway-${span.requestId}`);
   const pin = opts.request.pin ?? null;
   const requestController = new AbortController();
-  const cancel = (source: AbortSignal) => requestController.abort(
-    source.reason instanceof GatewayRequestKernelError
-      ? source.reason
-      : cancellationError(source.reason instanceof Error ? source.reason.message : undefined),
-  );
+  const cancel = (source: AbortSignal) =>
+    requestController.abort(
+      source.reason instanceof GatewayRequestKernelError
+        ? source.reason
+        : cancellationError(source.reason instanceof Error ? source.reason.message : undefined),
+    );
   const onCallerAbort = () => cancel(opts.request.signal!);
   const onDownstreamAbort = () => cancel(opts.downstream.signal!);
   if (opts.request.signal?.aborted) onCallerAbort();
   else opts.request.signal?.addEventListener('abort', onCallerAbort, { once: true });
   if (opts.downstream.signal?.aborted) onDownstreamAbort();
   else opts.downstream.signal?.addEventListener('abort', onDownstreamAbort, { once: true });
-  const ceilingTimer = setTimeout(() => requestController.abort(
-    new GatewayRequestKernelError(
-      `gateway request exceeded ${opts.policy.requestCeilingMs}ms ceiling`,
-      { code: 'request-ceiling', outcome: 'gateway-error', status: 504 },
-    ),
-  ), opts.policy.requestCeilingMs);
+  const ceilingTimer = setTimeout(
+    () =>
+      requestController.abort(
+        new GatewayRequestKernelError(`gateway request exceeded ${opts.policy.requestCeilingMs}ms ceiling`, {
+          code: 'request-ceiling',
+          outcome: 'gateway-error',
+          status: 504,
+        }),
+      ),
+    opts.policy.requestCeilingMs,
+  );
   ceilingTimer.unref?.();
 
   const base: GatewayKernelContext = {
@@ -606,14 +609,19 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
   let timeline: GatewayRequestTimeline | null = null;
 
   try {
-    route = await abortable(Promise.resolve(opts.adapter.selectInitial({
-      ...base,
-      currentRoute: null,
-      triedRouteKeys: [],
-      attempt: 0,
-      lastResponse: null,
-      lastError: null,
-    })), requestController.signal);
+    route = await abortable(
+      Promise.resolve(
+        opts.adapter.selectInitial({
+          ...base,
+          currentRoute: null,
+          triedRouteKeys: [],
+          attempt: 0,
+          lastResponse: null,
+          lastError: null,
+        }),
+      ),
+      requestController.signal,
+    );
     validateRoute(opts.request.lane, route, pin, true);
     triedRouteKeys.add(route.key);
     span.setTransport(route.transport);
@@ -625,15 +633,20 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
       requestController.signal,
     );
     span.admitted();
-    inFlight = await abortable(Promise.resolve(opts.inFlight.register({
-      requestId: base.requestId,
-      correlationId,
-      laneId: opts.request.lane.id,
-      provider,
-      startedAt: base.startedAt,
-      isStreaming: () => streaming,
-      abort: (reason) => requestController.abort(cancellationError(reason)),
-    })), requestController.signal);
+    inFlight = await abortable(
+      Promise.resolve(
+        opts.inFlight.register({
+          requestId: base.requestId,
+          correlationId,
+          laneId: opts.request.lane.id,
+          provider,
+          startedAt: base.startedAt,
+          isStreaming: () => streaming,
+          abort: (reason) => requestController.abort(cancellationError(reason)),
+        }),
+      ),
+      requestController.signal,
+    );
 
     span.beginStage('bodyRead');
     let body: Buffer;
@@ -705,10 +718,13 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         response = await withDeadline({
           parent: requestController.signal,
           timeoutMs: opts.policy.ttfbTimeoutMs,
-          error: () => new GatewayRequestKernelError(
-            `gateway upstream TTFB exceeded ${opts.policy.ttfbTimeoutMs}ms`,
-            { code: 'ttfb-timeout', outcome: 'upstream-error', status: 504, retryable: true },
-          ),
+          error: () =>
+            new GatewayRequestKernelError(`gateway upstream TTFB exceeded ${opts.policy.ttfbTimeoutMs}ms`, {
+              code: 'ttfb-timeout',
+              outcome: 'upstream-error',
+              status: 504,
+              retryable: true,
+            }),
           run: (signal) => opts.adapter.executeAttempt(prepared, { ...attemptContext, signal }),
         });
       } catch (error) {
@@ -740,12 +756,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         throw attemptFailure;
       }
 
-      validateRoute(
-        opts.request.lane,
-        { ...currentRoute, transport: response.transport },
-        pin,
-        false,
-      );
+      validateRoute(opts.request.lane, { ...currentRoute, transport: response.transport }, pin, false);
       span.setTransport(response.transport);
       try {
         await opts.admission.observeAttempt?.({ context: attemptContext, response, error: null });
@@ -828,9 +839,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
       inFlight?.unregister({ outcome: finalOutcome, status: finalStatus }),
       lease?.release({ outcome: finalOutcome, status: finalStatus }),
     ]);
-    const rejected = cleanup.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
-    );
+    const rejected = cleanup.find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (rejected) {
       cleanupFailure = normalizeError(rejected.reason, requestController.signal);
       if (!failure) {
