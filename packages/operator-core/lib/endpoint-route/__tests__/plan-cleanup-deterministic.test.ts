@@ -9,7 +9,7 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock('../../require-flag', () => ({ gateApiRoute: vi.fn(async () => null) }));
-vi.mock('../../cors', () => ({ requireAllowedOriginOr403: vi.fn(() => null) }));
+vi.mock('../cors', () => ({ requireAllowedOriginOr403: vi.fn(() => null) }));
 vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
 vi.mock('../../attention/bulk-run-sync', () => ({
   notifyPlanCleanupRunChanged: () => H.invalidate(),
