@@ -114,7 +114,7 @@ describe('work_items:links handler', () => {
 
   it('applies the limit independently to every requested id', async () => {
     getM.mockImplementation(async (id: string) => ({ family: 'issue', harness: 'papercusp', id }) as never);
-    refM.mockImplementation((item: never) => ({ kind: 'issue', ref: item.id }) as never);
+    refM.mockImplementation((item) => ({ kind: 'issue', ref: item.id }) as never);
     issueOutM.mockResolvedValue([
       row({ id: 1 }),
       row({ id: 2, dst: { kind: 'issue', ref: 'EI-3' } }),
