@@ -91,11 +91,8 @@ export async function withPlanDependencyAdmissionTransaction<T>(
     return { admitted: true, verdict, value: await write(tx) };
   };
 
-  const begin = (args.sql as Sql & {
-    begin?: <R>(fn: (tx: TransactionSql) => Promise<R>) => Promise<R>;
-  }).begin;
-  if (typeof begin === 'function') {
-    return begin.call(args.sql, (tx) => run(tx));
+  if ('begin' in args.sql && typeof args.sql.begin === 'function') {
+    return args.sql.begin((tx) => run(tx));
   }
   return run(args.sql);
 }
