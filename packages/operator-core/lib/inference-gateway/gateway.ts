@@ -77,6 +77,7 @@ import {
   type GatewayTelemetryTransport,
 } from './request-stage-telemetry';
 import {
+  codexCliResponsesCompletionSse,
   codexCliResponsesBody,
   extractResponsesInputText,
   isCodexAuthFailure,
@@ -4764,12 +4765,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // implementation detail: the completed result is adapted back onto the streaming
             // wire contract instead of rejecting every gateway-routed agent. The stream is
             // already open by here — this call only covers a run that somehow finished before
-            // the opener ran. One completed event carries the whole response; [DONE] closes it.
+            // the opener ran. Output-item/content events are required for Codex to materialize
+            // an agent_message; response.completed alone records usage but drops the text.
             openSse();
             stopKeepalive();
-            res.end(
-              `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\ndata: [DONE]\n\n`,
-            );
+            res.end(codexCliResponsesCompletionSse(response));
             stageSpan?.endStage('stream');
           } else if (!res.headersSent) {
             sendJson(res, 200, response, headers);

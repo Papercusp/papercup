@@ -10,6 +10,7 @@ import {
   CODEX_CLI_REF_PREFIX,
   codexCliFailureDetail,
   isCodexAuthFailure,
+  codexCliResponsesCompletionSse,
   codexCliResponsesBody,
   extractResponsesInputText,
   parseBridgeModel,
@@ -101,16 +102,40 @@ describe('codexCliResponsesBody', () => {
       object: string;
       status: string;
       output_text: string;
-      output: Array<{ type: string; content: Array<{ type: string; text: string }> }>;
+      output: Array<{ id: string; type: string; status: string; content: Array<{ type: string; text: string; annotations: unknown[] }> }>;
       usage: { input_tokens: number; output_tokens: number; total_tokens: number };
       gateway_codex_cli: boolean;
     };
     expect(b.object).toBe('response');
     expect(b.status).toBe('completed');
     expect(b.output_text).toBe('hi');
-    expect(b.output[0].content[0]).toEqual({ type: 'output_text', text: 'hi' });
-    expect(b.usage).toEqual({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
+    expect(b.output[0]).toMatchObject({ id: expect.stringMatching(/^msg_codexcli_/), status: 'completed' });
+    expect(b.output[0].content[0]).toMatchObject({ type: 'output_text', text: 'hi', annotations: [] });
+    expect(b.usage).toMatchObject({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
     expect(b.gateway_codex_cli).toBe(true);
+  });
+
+  it('emits the output-item/content event progression a Codex client uses to materialize text', () => {
+    const body = codexCliResponsesBody({ model: 'gpt-5.6-sol', text: 'GATEWAY_AUTO_OK', inputTokens: 8, outputTokens: 2 });
+    const wire = codexCliResponsesCompletionSse(body);
+    const events = wire
+      .split('\n\n')
+      .map((frame) => frame.split('\n').find((line) => line.startsWith('data: '))?.slice(6))
+      .filter((data): data is string => Boolean(data && data !== '[DONE]'))
+      .map((data) => JSON.parse(data) as { type: string; item?: { id?: string }; response?: { id?: string }; delta?: string });
+    expect(events.map((event) => event.type)).toEqual([
+      'response.output_item.added',
+      'response.content_part.added',
+      'response.output_text.delta',
+      'response.output_text.done',
+      'response.content_part.done',
+      'response.output_item.done',
+      'response.completed',
+    ]);
+    expect(events.find((event) => event.type === 'response.output_text.delta')?.delta).toBe('GATEWAY_AUTO_OK');
+    expect(events.find((event) => event.type === 'response.output_item.done')?.item?.id).toBe(body.output[0].id);
+    expect(events.at(-1)?.response?.id).toBe(body.id);
+    expect(wire).toMatch(/data: \[DONE\]\n\n$/);
   });
 });
 

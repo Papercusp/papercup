@@ -3359,6 +3359,9 @@ test('[codex-cli] stream:true adapts the buffered CLI result to Responses SSE', 
   assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/);
   assert.equal(res.headers.get('x-papercusp-routed-account'), 'chatgpt-sub');
   const wire = await res.text();
+  assert.match(wire, /event: response\.output_item\.added\n/);
+  assert.match(wire, /event: response\.output_text\.delta\n/);
+  assert.match(wire, /event: response\.output_item\.done\n/);
   assert.match(wire, /"total_tokens":10/, 'response.completed is parseable by the Codex client');
   assert.match(wire, /^event: response\.created\n/, 'the stream opens before the payload exists');
   assert.match(wire, /event: response\.completed\n/);

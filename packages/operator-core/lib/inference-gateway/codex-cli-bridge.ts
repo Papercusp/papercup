@@ -348,39 +348,130 @@ export function runCodexCliCompletion(opts: CodexCliRunOpts): Promise<CodexCliRu
   });
 }
 
-/** Synthesize the `/v1/responses`-shaped reply body clients expect (the shapes
- *  `extractResponsesText` in llm-client.ts walks: top-level `output_text` +
- *  `output[].content[].{type:'output_text',text}` + `usage`). */
+export interface CodexCliSyntheticResponse extends Record<string, unknown> {
+  id: string;
+  output: [
+    {
+      id: string;
+      type: 'message';
+      status: 'completed';
+      role: 'assistant';
+      content: [{ type: 'output_text'; text: string; annotations: unknown[]; logprobs: unknown[] }];
+    },
+  ];
+  usage: {
+    input_tokens: number;
+    input_tokens_details: { cached_tokens: number; cache_write_tokens: number };
+    output_tokens: number;
+    output_tokens_details: { reasoning_tokens: number };
+    total_tokens: number;
+  };
+}
+
+/** Synthesize the schema-complete `/v1/responses` body a real Codex client expects. */
 export function codexCliResponsesBody(args: {
   model: string;
   text: string;
   inputTokens: number;
   outputTokens: number;
-}): Record<string, unknown> {
+}): CodexCliSyntheticResponse {
+  const stamp = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+  const createdAt = Math.floor(Date.now() / 1000);
   return {
-    id: `resp_codexcli_${Date.now().toString(36)}`,
+    id: `resp_codexcli_${stamp}`,
     object: 'response',
+    created_at: createdAt,
+    completed_at: createdAt,
     status: 'completed',
+    error: null,
+    incomplete_details: null,
+    instructions: null,
+    max_output_tokens: null,
     model: args.model,
     output: [
       {
+        id: `msg_codexcli_${stamp}`,
         type: 'message',
+        status: 'completed',
         role: 'assistant',
-        content: [{ type: 'output_text', text: args.text }],
+        content: [{ type: 'output_text', text: args.text, annotations: [], logprobs: [] }],
       },
     ],
     output_text: args.text,
+    parallel_tool_calls: true,
+    previous_response_id: null,
+    reasoning: { effort: null, summary: null },
+    store: false,
+    temperature: null,
+    text: { format: { type: 'text' } },
+    tool_choice: 'auto',
+    tools: [],
+    top_p: null,
+    truncation: 'disabled',
     // Codex's Responses client requires the aggregate on response.completed.
     // Omitting it leaves the upstream request recorded as HTTP 200 while the
     // client rejects the terminal event as an invalid ResponseCompleted.
     usage: {
       input_tokens: args.inputTokens,
+      input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
       output_tokens: args.outputTokens,
+      output_tokens_details: { reasoning_tokens: 0 },
       total_tokens: args.inputTokens + args.outputTokens,
     },
+    user: null,
+    metadata: {},
     /** Diagnostic marker: this reply came off the subscription CLI, not the API. */
     gateway_codex_cli: true,
   };
+}
+
+/**
+ * Adapt a buffered CLI result onto the streaming Responses event contract.
+ * `response.completed` alone records usage, but Codex materializes its
+ * `agent_message` from the output-item/content event progression.
+ */
+export function codexCliResponsesCompletionSse(response: CodexCliSyntheticResponse): string {
+  const item = response.output[0];
+  const part = item.content[0];
+  let sequenceNumber = 1;
+  const event = (type: string, payload: Record<string, unknown>): string =>
+    `event: ${type}\ndata: ${JSON.stringify({ type, ...payload, sequence_number: sequenceNumber++ })}\n\n`;
+
+  return (
+    event('response.output_item.added', {
+      output_index: 0,
+      item: { ...item, status: 'in_progress', content: [] },
+    }) +
+    event('response.content_part.added', {
+      item_id: item.id,
+      output_index: 0,
+      content_index: 0,
+      part: { ...part, text: '' },
+    }) +
+    event('response.output_text.delta', {
+      item_id: item.id,
+      output_index: 0,
+      content_index: 0,
+      delta: part.text,
+      logprobs: [],
+    }) +
+    event('response.output_text.done', {
+      item_id: item.id,
+      output_index: 0,
+      content_index: 0,
+      text: part.text,
+      logprobs: [],
+    }) +
+    event('response.content_part.done', {
+      item_id: item.id,
+      output_index: 0,
+      content_index: 0,
+      part,
+    }) +
+    event('response.output_item.done', { output_index: 0, item }) +
+    event('response.completed', { response }) +
+    'data: [DONE]\n\n'
+  );
 }
 
 /** Flatten a Responses-API `input` (string or structured item array) to prompt text. */
