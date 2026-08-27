@@ -62,6 +62,7 @@ import { assessInjectionReach, formatInjectionReachToast } from '../memory/injec
 import { runWalCheckpointSweep } from '../storage/localstorage-wal-guard';
 import { runMemoryAnchorAuditOnce } from '../memory/audit-memory-anchors';
 import { runDesktopPerfScheduledRun } from '../system-health/desktop-perf-scheduled-run';
+import { runGuiE2eSurfaceScheduledRun } from '../system-health/gui-e2e-surface-scheduled-run';
 // EI-1622: the high-frequency EPHEMERAL periodic checks (systemHealth,
 // harnessStatusSweep, connectionPressure, serviceHealth, completionRefVerify,
 // spawnReclaimSweep, staleClaimSweep, learningInfraHealth, steeringChurnSweep) were
@@ -1515,4 +1516,47 @@ const desktopPerfScheduledRunWorkflow = idempotentRegisterWorkflow('desktopPerfS
 DBOS.registerScheduled(desktopPerfScheduledRunWorkflow, {
   name: 'desktopPerfScheduledRun',
   crontab: '0 40 2,10,18 * * *',
+});
+
+// Daily (03:15, clear of scratchGc's 03:00): the SCHEDULED PRODUCER for the
+// GUI E2E Tauri surface-verification suite (gui-e2e-tauri-surface-
+// verification-2026-08-27 P-008 — see gui-e2e-surface-scheduled-run.ts's
+// module doc). Runs scripts/tauri-surface-verify-suite.sh — 8 sequential
+// live, Tauri-driven, regression-failing DOM-assertion legs — so they stop
+// running "only by hand"; one of them already caught a real, always-
+// reproducing bug (WI-64726's /dev/gym crash) that a grep-based coverage
+// census and a mismatched unit-test mock both missed. `shouldShedHeavyTick`
+// applies here too — this is one of the heaviest ticks in this file, 8
+// sequential real Xvfb+VirtualGL+full-app boots. Never throws: a leg
+// failure is reported via the shared alarm-attention rail (escalateAlarm,
+// cooldown-gated), not the release/green-checkpoint gate — WI-40086 owns
+// that gate separately and this plan deliberately never touches it.
+async function guiE2eSurfaceScheduledRunTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('gui-e2e-surface-scheduled-run')) return;
+    try {
+      const r = await runGuiE2eSurfaceScheduledRun();
+      if (!r.ran) {
+        console.log(`[gui-e2e-surface-scheduled-run] skipped: ${r.skippedReason}`);
+      } else if (r.timedOut) {
+        console.warn(`[gui-e2e-surface-scheduled-run] timed out after ${r.durationMs}ms`);
+      } else {
+        console.log(
+          `[gui-e2e-surface-scheduled-run] ran in ${r.durationMs}ms, exit ${r.exitCode}, ` +
+            `${(r.legs ?? []).length} leg(s) parsed, escalated=${r.escalated ?? false}`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[gui-e2e-surface-scheduled-run] run skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'gui-e2e-surface-scheduled-run' });
+}
+const guiE2eSurfaceScheduledRunWorkflow = idempotentRegisterWorkflow('guiE2eSurfaceScheduledRun', () =>
+  DBOS.registerWorkflow(guiE2eSurfaceScheduledRunTick, {
+    name: 'guiE2eSurfaceScheduledRun', maxRecoveryAttempts: 3,
+  }),
+);
+DBOS.registerScheduled(guiE2eSurfaceScheduledRunWorkflow, {
+  name: 'guiE2eSurfaceScheduledRun',
+  crontab: '0 15 3 * * *',
 });

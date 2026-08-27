@@ -2729,6 +2729,24 @@ export const FLAGS = {
   // OFF ⇒ the kill-switch if the scheduled run ever misbehaves on the shared
   // dev box (contends for CPU/Xvfb with concurrent agent verification runs).
   DESKTOP_PERF_SCHEDULED_RUN: "papercusp-desktop-perf-scheduled-run",
+  // gui-e2e-tauri-surface-verification-2026-08-27 P-008: the SCHEDULED
+  // PRODUCER for the live, Tauri-driven surface-verification suite
+  // (scripts/tauri-surface-verify-suite.sh, wrapping the per-surface legs
+  // under scripts/tauri-surface-verify-p0*.sh via
+  // system-health/gui-e2e-surface-scheduled-run.ts). Runs the whole suite on
+  // a daily cadence so these regression-failing DOM assertions stop running
+  // "only by hand" — one already caught a real bug (the /dev/gym
+  // `harnesses.map is not a function` crash, WI-64726) that a grep-based
+  // census and a mismatched unit-test mock both missed.
+  // Deliberately does NOT touch the release/green-checkpoint gate (WI-40086
+  // owns that): a failing leg here escalates via the shared alarm-attention
+  // rail (escalateAlarm, cooldown-gated) rather than blocking a deploy.
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS): mirrors
+  // DESKTOP_PERF_SCHEDULED_RUN above — read-mostly DOM assertions against a
+  // throwaway isolated Xvfb Tauri instance, never throws on a test-finding
+  // failure. OFF ⇒ the kill-switch if the daily run ever contends too much
+  // with concurrent agent verification on the shared dev box.
+  GUI_E2E_SURFACE_SCHEDULED_RUN: "papercusp-gui-e2e-surface-scheduled-run",
   // WI-5820: the lag-triggered CPU profiler in event-loop-lag-monitor.ts. When a
   // 10s window's p95 loop delay crosses the critical threshold, capture a short V8
   // `.cpuprofile` to ~/.papercusp/loop-profiles — the histogram says "the loop is
