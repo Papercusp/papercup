@@ -267,7 +267,12 @@ export function evaluateOriginFreshness(
   const refusalReason = publishRefused
     ? `the p2p publish leg has REFUSED to publish for ${snapshot.publishRefusedSweeps} consecutive sweeps` +
       (snapshot.publishRefusalCode ? ` (${snapshot.publishRefusalCode})` : '') +
-      ' — nothing this device commits is reaching peers or origin'
+      // EI-21517899493871930: state ONLY what the publish guard observed. The p2p publish
+      // leg does not gate `git push origin` — they are separate egress paths — so a refusal
+      // is not evidence about origin, and asserting one induced two CRITICAL filings that
+      // were retracted within ~2 minutes. The origin leg is MEASURED (aheadCount /
+      // originTipAgeMs) and reported by describeOriginFreshnessAlert, never inferred here.
+      ' — nothing this device commits is reaching peers'
     : null;
 
   // WI-6996: an admitted-but-undrained publish backlog, sustained. Like the refusal
@@ -404,9 +409,17 @@ export function describeOriginFreshnessAlert(
     publishBacklogCommits?: number | null;
     /** EI-19442274898324113: how far the namespace stands ahead of canonical, for the body. */
     integratorBacklogCommits?: number | null;
+    /** EI-21517899493871930: the MEASURED origin leg, so a p2p-publish alarm reports origin's
+     *  actual state instead of inferring it. Same values the snapshot was evaluated from —
+     *  `git rev-list --count <originSha>..<canonicalSha>` and the age of the tracked origin
+     *  tip. OMITTED/null means UNMEASURED, and the alarm then says exactly that: it never
+     *  falls back to asserting impact. */
+    aheadCount?: number | null;
+    originTipAgeMs?: number | null;
   },
 ): OriginFreshnessAlertFraming {
   const where = ctx.potHomeSlug ? `${ctx.slug} (bridged hive ${ctx.potHomeSlug})` : ctx.slug;
+  const originLeg = describeMeasuredOriginLeg(verdict, ctx);
 
   if (verdict.publishRefused) {
     const code = ctx.publishRefusalCode ?? 'unknown';
