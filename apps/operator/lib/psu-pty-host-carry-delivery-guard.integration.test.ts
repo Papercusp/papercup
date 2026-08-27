@@ -31,7 +31,9 @@ const {
   encodeControl,
   eventLogPathForOwner,
   hostThroughPty,
+  metaPathFor,
   socketPathFor,
+  submitVerificationFailureReason,
 } = subject;
 
 const sleep = (ms: number) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
@@ -86,6 +88,16 @@ function injectRaw(socketPath: string, data: string): Promise<void> {
 }
 
 describe('carry-respawn native-turn delivery authority', () => {
+  it('keeps every non-success submit-verifier verdict distinguishable from delivery', () => {
+    expect(submitVerificationFailureReason({ exhausted: true, aborted: null })).toBe(
+      'submit-verification-exhausted',
+    );
+    expect(submitVerificationFailureReason({ exhausted: false, aborted: 'human-input' })).toBe(
+      'submit-verification-aborted-human-input',
+    );
+    expect(submitVerificationFailureReason({ exhausted: false, aborted: null })).toBeNull();
+  });
+
   it(
     'never books delivered when the fresh child paints output but persists no native user turn',
     async () => {
@@ -193,5 +205,90 @@ describe('carry-respawn native-turn delivery authority', () => {
       }
     },
     15_000,
+  );
+
+  it(
+    'books a verifier-exhausted RECYCLE carry as dropped, cleans up fatally, and never emits delivered',
+    async () => {
+      const ownerId = `su-carry-verifier-drop-${process.pid}-${Math.floor(performance.now())}`;
+      const socketPath = socketPathFor(ownerId);
+      const metaPath = metaPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "if(process.stdin.isTTY)process.stdin.setRawMode(true);" +
+        "process.stdin.setEncoding('utf8');" +
+        "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),15000);';
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '500',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '4',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '1',
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '1500',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: (code: number) => {
+          exitCode = code;
+        },
+      });
+
+      try {
+        const bootDeadline = Date.now() + 3_000;
+        while (!captured().includes('BOOT:') && Date.now() < bootDeadline) await sleep(20);
+        expect(captured()).toContain('BOOT:');
+
+        await injectEnvelope(socketPath, { mode: 'recycle', data: 'CARRIED' });
+        const outcomeDeadline = Date.now() + 5_000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < outcomeDeadline) {
+          if (existsSync(eventLog)) {
+            events = readFileSync(eventLog, 'utf8')
+              .trim()
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => JSON.parse(line));
+            if (events.some((event) => event.kind === 'respawn-carry-dropped')) break;
+          }
+          await sleep(20);
+        }
+
+        expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(2);
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-dropped',
+          reason: 'submit-verification-exhausted',
+          attempts: 1,
+          outputSeen: true,
+        }));
+        expect(events).not.toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-delivered',
+        }));
+        expect(await done).toBe(1);
+        expect(exitCode).toBe(1);
+        expect(existsSync(socketPath)).toBe(false);
+        expect(existsSync(metaPath)).toBe(false);
+      } finally {
+        if (existsSync(socketPath)) await injectRaw(socketPath, 'QUIT\n');
+        await done.catch(() => undefined);
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+      }
+    },
+    20_000,
   );
 });
