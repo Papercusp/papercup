@@ -69,6 +69,13 @@ export interface RegisterAllOpts {
   workspaceId: string;
   harnessSlug: string;
   /**
+   * WI-3985: boot-owned, per-merge-pass snapshot of the memory federation
+   * receive gate. Keeping the resolver on the registration opts lets every
+   * rebuilt scoped/global projection observe the same immutable value for a
+   * pass instead of racing independent live flag reads mid-fold.
+   */
+  memoryFederationFlagOn?: () => Promise<boolean>;
+  /**
    * Test/multi-peer seam — thread a specific postgres-js client into every
    * projection writer instead of the process-global `getOrgPg().sql`.
    * Production leaves this undefined. (p2p-perf projection-write-cost bench
@@ -457,7 +464,14 @@ export function buildHarnessProjections(opts: RegisterAllOpts): TableProjection<
     hh(buildAgentFactsProjection(hiveScoped)),
     // mem0-cross-machine-federation-2026-07-10 (F1-1 mirror): SHAREABLE memories,
     // hive-home-grained like hive_settings (the memory's harness_slug carries the hive home slug).
-    hh(buildMemoriesProjection(hiveScoped)),
+    hh(
+      buildMemoriesProjection({
+        ...hiveScoped,
+        ...(opts.memoryFederationFlagOn
+          ? { isFlagOn: opts.memoryFederationFlagOn }
+          : {}),
+      }),
+    ),
     // F1-2/F1-5 (federated-scout-gym): foreign QD elites, hive-home-grained too
     // (the elite's harness_slug carries the hive home slug — mig 465 demux).
     // F1-6/P-014: thread the WI-259 verified-source-log→device resolver as

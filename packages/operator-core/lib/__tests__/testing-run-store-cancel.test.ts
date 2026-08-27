@@ -14,12 +14,14 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
 
 // ─── Mock child_process.spawn ─────────────────────────────────────────────────
 
 class MockProc extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
+  pid: number | undefined;
   killed = false;
   kill = vi.fn((sig?: string) => {
     this.killed = true;
@@ -72,6 +74,17 @@ function makeRun(label = 'test-run') {
 // ─── cancelRun ────────────────────────────────────────────────────────────────
 
 describe('cancelRun', () => {
+  it('starts every detached run as a process-group leader', () => {
+    const snap = makeRun();
+
+    expect(snap.status).toBe('running');
+    expect(spawn).toHaveBeenCalledWith(
+      'echo',
+      ['hi'],
+      expect.objectContaining({ detached: true }),
+    );
+  });
+
   it('returns false for an unknown runId', () => {
     expect(cancelRun('non-existent-id')).toBe(false);
   });
@@ -113,6 +126,23 @@ describe('cancelRun', () => {
     const snap = makeRun();
     expect(cancelRun(snap.runId)).toBe(true);
     expect(cancelRun(snap.runId)).toBe(false);
+  });
+
+  it('signals the detached process group by negative pid', () => {
+    const processKill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    try {
+      const snap = makeRun();
+      mockProcInstance.pid = 4242;
+
+      expect(cancelRun(snap.runId)).toBe(true);
+      expect(processKill).toHaveBeenCalledWith(-4242, 'SIGTERM');
+      expect(mockProcInstance.kill).not.toHaveBeenCalledWith('SIGTERM');
+      // The fake process does not emit close on a group signal. Mark it dead so
+      // the delayed SIGKILL guard is a no-op after this assertion.
+      mockProcInstance.killed = true;
+    } finally {
+      processKill.mockRestore();
+    }
   });
 });
 

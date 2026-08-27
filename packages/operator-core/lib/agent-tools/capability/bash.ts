@@ -234,7 +234,7 @@ export default defineTool({
     'Run `bash -c` in the project dir; stream and spill large output to a log. Operator callers may bind redacted integration credentials.',
   guidance: {
     when:
-      'Run builds, tests, checks, or scripts. For fixed-string searches, prefer `rg -F` when available or fall back to `grep -F`; use a shell-safe single-quoted argument because an unmatched backtick fails before either search tool runs. For repository regex searches, ' +
+      'Run builds, tests, checks, or scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the pattern, since an unmatched backtick fails before either tool runs. For repository regex searches, ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.`,
     notWhen:
       'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',
@@ -242,10 +242,11 @@ export default defineTool({
       'run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push.',
     // EI-21543657511391052: the stale 'capability:bash_kill' entry is DELETED, not
     // replaced. It is absent from trimmed surfaces (su) and refuses some principals, so
-    // it routed callers to a verb they could not invoke. No substitute entry is added
-    // here because `chaining` above already names the working route (processes:kill
-    // { taskId }), and this tool sits at 1500/1500 of its prompt-weight budget — a
-    // replacement entry pushed it to 1505 and red-ed tool-guidance-budget.test.ts.
+    // it routed callers to a verb they could not invoke. No substitute is needed here
+    // because `chaining` above already names the working route (processes:kill{taskId}).
+    // NOTE for whoever edits this next: `seeAlso` is NOT summed by promptWeight()
+    // (tool-guidance-budget.ts — description + when + notWhen + chaining + byRole only),
+    // so changing this array cannot move the prompt-weight budget in either direction.
     seeAlso: [
       'capability:bash_output (read a backgrounded run)',
       'capability:git (git actions, gated as git)',

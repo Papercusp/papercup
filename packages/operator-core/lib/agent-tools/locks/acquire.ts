@@ -102,13 +102,19 @@ const PROGRESS_TICK_MS = 10_000;
 export default defineTool({
   name: 'locks:acquire',
   description:
-    'Claim repository files and/or authorized home-directory configuration files for exclusive editing. Returns ok+lock_id, or busy+contention details. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp; this is internal telemetry, not a caller override. On contention prefer wake_on_grant:true — queue a waiter + one-shot wake, return immediately; END YOUR TURN, re-invoked on grant (no polling, no held turn).',
+    'Claim repository files and/or authorized home-directory configuration files for exclusive editing. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller\'s current agent-state stamp; this is internal telemetry, not a caller override.',
   guidance: {
+    // P-011: response documentation lives in `returns`, which promptWeight() does not
+    // sum (description + when + notWhen + chaining + byRole only) — the WI-9334 pattern.
+    // The wake_on_grant guidance that used to duplicate itself here and in `chaining`
+    // now lives only in `chaining`.
+    returns:
+      'ok + lock_id on success, or busy + contention details (current holder, their intent, and the expiry) on a conflict.',
     when: 'For a DELIBERATE multi-file claim held across several edits AND the commit — acquire once, release after committing. Before individual Codex writes only when that session lacks lock hooks; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.',
     notWhen:
       'Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release. Explicit locks are the fallback for unhooked Codex.',
     chaining:
-      'On ok: edit → commit → locks:release { lock_id }. If the edit is still uncommitted, omit published_sha; pass published_sha only when you have actually published a lowercase 40–64-character hexadecimal commit SHA. On busy: wake_on_grant:true → end your turn; the wake carries your lock_id + running TTL — edit, then release. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake.',
+      'On ok: edit → commit → locks:release { lock_id }. If the edit is still uncommitted, omit published_sha; pass published_sha only when you have actually published a lowercase 40–64-character hexadecimal commit SHA. On busy PREFER wake_on_grant:true → END YOUR TURN; you are re-invoked on grant with your lock_id + running TTL — never poll, never hold a turn. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake.',
     seeAlso: [
       'locks:acquire_granular (a directory/subtree, not a single file set)',
       'locks:acquire_resource (a named shared resource — dev server, db schema)',

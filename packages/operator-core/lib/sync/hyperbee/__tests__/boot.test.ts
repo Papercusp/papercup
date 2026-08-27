@@ -27,7 +27,7 @@ import { buildAnnounce, type SignedAnnounce } from '../announce';
 import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests, type BootHistoryKind } from '../boot-history';
-import type { AdmittedLog } from '../read-merge';
+import type { AdmittedLog, MergeCursorStore } from '../read-merge';
 import {
   setReplicationStallEpisodeReporterForTests,
   setReplicationStallRecoveryReporterForTests,
@@ -247,6 +247,151 @@ describe('bootHarnessSubstrate — Model B handle shape + single-peer merge', ()
     } finally {
       errSpy.mockRestore();
     }
+  });
+});
+
+describe('bootHarnessSubstrate — WI-3985 memory gate cursor recovery', () => {
+  const MEMORY_TABLE = 'p2p-memories-by-id';
+  const OTHER_TABLE = 'wi3985-unrelated-table';
+
+  function tmpWorkspaceRoot(): string {
+    const dir = mkdtempSync(join(tmpdir(), 'mb-boot-wi3985-'));
+    cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+    return dir;
+  }
+
+  function bindingStore(): {
+    store: MergeCursorStore;
+    loads: Array<string | null>;
+    rows: Map<string, { position: number; binding: string | null }>;
+  } {
+    const rows = new Map<string, { position: number; binding: string | null }>();
+    const loads: Array<string | null> = [];
+    return {
+      rows,
+      loads,
+      store: {
+        async load(binding) {
+          loads.push(binding);
+          const out = new Map<string, number>();
+          for (const [keyHex, row] of rows) {
+            if (row.binding === binding) out.set(keyHex, row.position);
+          }
+          return out;
+        },
+        async save(positions, binding) {
+          for (const [keyHex, position] of positions) {
+            rows.set(keyHex, { position, binding });
+          }
+        },
+      },
+    };
+  }
+
+  async function appendWitnessOps(handle: Awaited<ReturnType<typeof bootHarnessSubstrate>>) {
+    await handle.append({
+      type: 'put',
+      table: MEMORY_TABLE,
+      hbKey: 'memory-1',
+      value: { id: 'memory-1', shareable: true },
+      ts: 1_000,
+      schema_version: CURRENT_SCHEMA_VERSION,
+    });
+    await handle.append({
+      type: 'put',
+      table: OTHER_TABLE,
+      hbKey: 'other-1',
+      value: { id: 'other-1' },
+      ts: 1_001,
+      schema_version: CURRENT_SCHEMA_VERSION,
+    });
+  }
+
+  it('OFF advances normally, live ON replays only memory once, then returns idle', async () => {
+    const persisted = bindingStore();
+    let enabled = false;
+    const applied: string[] = [];
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi3985-live',
+      harnessSlug: 'wi3985-live',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      mergeCursorStore: persisted.store,
+      memoryFederationFlagOn: async () => enabled,
+      applyOverride: async (op) => {
+        if (op.table === MEMORY_TABLE && !enabled) return false;
+        applied.push(op.table);
+        return true;
+      },
+    });
+    cleanups.push(() => handle.close());
+
+    await appendWitnessOps(handle);
+    expect(await handle.mergeNow()).toBe(1);
+    expect(applied).toEqual([OTHER_TABLE]);
+
+    enabled = true;
+    expect(await handle.mergeNow()).toBe(1);
+    expect(applied).toEqual([OTHER_TABLE, MEMORY_TABLE]);
+    expect([...persisted.rows.values()]).toEqual([
+      expect.objectContaining({ binding: '<none>::mem0-federation-egress=on' }),
+    ]);
+
+    expect(await handle.mergeNow()).toBe(0);
+    expect(applied).toEqual([OTHER_TABLE, MEMORY_TABLE]);
+  });
+
+  it('cold boot ON rejects OFF-stamped progress and re-folds the missed memory', async () => {
+    const workspaceRoot = tmpWorkspaceRoot();
+    const persisted = bindingStore();
+    let enabled = false;
+    const firstApplied: string[] = [];
+    const first = await bootHarnessSubstrate({
+      workspaceRoot,
+      workspaceId: 'ws-wi3985-cold',
+      harnessSlug: 'wi3985-cold',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      mergeCursorStore: persisted.store,
+      memoryFederationFlagOn: async () => enabled,
+      applyOverride: async (op) => {
+        if (op.table === MEMORY_TABLE && !enabled) return false;
+        firstApplied.push(op.table);
+        return true;
+      },
+    });
+    try {
+      await appendWitnessOps(first);
+      await first.mergeNow();
+      expect(firstApplied).toEqual([OTHER_TABLE]);
+      expect([...persisted.rows.values()]).toEqual([
+        expect.objectContaining({ binding: null, position: 2 }),
+      ]);
+    } finally {
+      await first.close();
+    }
+
+    enabled = true;
+    const secondApplied: string[] = [];
+    const second = await bootHarnessSubstrate({
+      workspaceRoot,
+      workspaceId: 'ws-wi3985-cold',
+      harnessSlug: 'wi3985-cold',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      mergeCursorStore: persisted.store,
+      memoryFederationFlagOn: async () => enabled,
+      applyOverride: async (op) => {
+        secondApplied.push(op.table);
+        return true;
+      },
+    });
+    cleanups.push(() => second.close());
+    await second.mergeNow();
+
+    expect(secondApplied).toContain(MEMORY_TABLE);
+    expect(persisted.loads).toContain('<none>::mem0-federation-egress=on');
   });
 });
 

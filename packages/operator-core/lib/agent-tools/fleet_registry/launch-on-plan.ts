@@ -53,6 +53,7 @@ import {
   fleetSlugFromName,
   getFleet,
   getFleetScheme,
+  mergeFleetLaunchWorkerAttestations,
   releaseFleetLaunchSlot,
   setFleetLeader,
   setFleetLaunchTransaction,
@@ -123,6 +124,7 @@ import { modeInstructionsFactKey } from '../mode/set';
 import {
   composeModelSpec,
   foldMemberSpec,
+  injectLaunchedByArg,
   memberLaunchCommand as sharedMemberLaunchCommand,
   memberSpecSchema,
   MEMBER_BASELINE_RULES as sharedMemberBaselineRules,
@@ -133,7 +135,6 @@ import {
   resolveLaunchMode,
   type FleetMemberDefaults,
   type FreshLaunchExpectedAttestation,
-  type FreshLaunchSessionProbe,
   type LaunchMode,
   type MemberSpec,
 } from '../../agent-launch-core';
@@ -1496,35 +1497,6 @@ function stampLaunchOutcome(
       transactionId: transaction.transactionId,
     },
   });
-}
-
-/** Merge the latest per-session worker snapshot without losing prior waves. */
-export function mergeLaunchWorkerAttestations(
-  transaction: FleetLaunchTransaction,
-  sessions: readonly FreshLaunchSessionProbe[],
-): void {
-  const byOwner = new Map(
-    (transaction.workerAttestations ?? [])
-      .filter((attestation) => typeof attestation.ownerId === 'string' && attestation.ownerId.length > 0)
-      .map((attestation) => [attestation.ownerId as string, attestation]),
-  );
-  for (const session of sessions) {
-    if (!session.ownerId || !session.workerAttestation) continue;
-    byOwner.set(session.ownerId, {
-      ...session.workerAttestation,
-      ownerId: session.ownerId,
-    });
-  }
-  if (byOwner.size === 0) return;
-
-  const requestedOrder = new Map(transaction.requestedMemberIds.map((ownerId, index) => [ownerId, index]));
-  transaction.workerAttestations = [...byOwner.values()].sort((a, b) =>
-    (requestedOrder.get(a.ownerId ?? '') ?? Number.MAX_SAFE_INTEGER) -
-    (requestedOrder.get(b.ownerId ?? '') ?? Number.MAX_SAFE_INTEGER),
-  );
-  transaction.workerReadyMemberIds = transaction.requestedMemberIds.filter(
-    (ownerId) => byOwner.get(ownerId)?.ready === true,
-  );
 }
 
 /**
@@ -3836,7 +3808,7 @@ export default defineTool({
     const transactionRequestedMemberIds = resumedLaunchTransaction?.requestedMemberIds ?? requestedMemberIds;
     const memberCommands = Array.from({ length: openCount }, (_v, i) => {
       const folded = resolvedMemberConfig(memberSpecIndex(i));
-      return memberLaunchCommand({
+      const rawCommand = memberLaunchCommand({
         ...folded,
         fleetSlug,
         harness,
@@ -3848,6 +3820,7 @@ export default defineTool({
         carry: folded.carry ?? 'warm',
         launchContext: folded.launchContext ?? memberLaunchContextPathForIndex(i),
       });
+      return injectLaunchedByArg(rawCommand, ownerId).command;
     });
     const expectedAttestations: FreshLaunchExpectedAttestation[] = Array.from({ length: openCount }, (_v, i) => {
       const folded = resolvedMemberConfig(memberSpecIndex(i));
@@ -3949,6 +3922,7 @@ export default defineTool({
             }),
           }),
     };
+    launchTransaction.launcherOwnerId = ownerId;
     const refreshLaunchRecovery = (): void => {
       const verified = new Set(launchTransaction.verifiedMemberIds);
       launchTransaction.recovery.retryOwnerIds = transactionRequestedMemberIds.filter((id) => !verified.has(id));
@@ -4021,7 +3995,7 @@ export default defineTool({
         // Losing the brief is survivable; losing the leader is not.
         leaderCtxPath = undefined;
       }
-      const leaderCommand = memberLaunchCommand({
+      const leaderCommand = injectLaunchedByArg(memberLaunchCommand({
         ...fleetDefaults,
         fleetSlug,
         harness,
@@ -4029,7 +4003,7 @@ export default defineTool({
         // The pre-pin. This is what makes the fleet row written above name a REAL agent.
         ownerId: spawnedLeaderOwnerId,
         launchContext: leaderCtxPath,
-      });
+      }), ownerId).command;
       const leaderLabel = `${fleetSlug} · LEADER (${planSlug ?? 'claim-spec'})`;
       const leaderResult = args.headless
         ? await spawnHeadless({
@@ -4190,7 +4164,7 @@ export default defineTool({
                   expectedAttestations: expectedAttestations.filter((item) => openedThisWave.includes(item.ownerId)),
                 };
                 let verdict = await verifyFreshLaunchStarted(waveArgs);
-                mergeLaunchWorkerAttestations(launchTransaction, verdict.sessions);
+                mergeFleetLaunchWorkerAttestations(launchTransaction, verdict.sessions);
                 if (verdict.agentStarted === null) {
                   // EI-20437060078324174: an expired window is the ABSENCE of an
                   // observation, not death — the measured false-negative registered
@@ -4200,7 +4174,7 @@ export default defineTool({
                   verdict = await verifyFreshLaunchStarted(waveArgs, {
                     timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS,
                   });
-                  mergeLaunchWorkerAttestations(launchTransaction, verdict.sessions);
+                  mergeFleetLaunchWorkerAttestations(launchTransaction, verdict.sessions);
                 }
                 waveVerified = verdict.agentStarted === true;
                 if (waveVerified) {

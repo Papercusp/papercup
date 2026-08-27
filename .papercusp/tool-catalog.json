@@ -2476,7 +2476,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Run builds, tests, checks, or scripts. For fixed-string searches, prefer `rg -F` when available or fall back to `grep -F`; use a shell-safe single-quoted argument because an unmatched backtick fails before either search tool runs. For repository regex searches, Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matched lines before piping to a row limit (for example, `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes. Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.",
+        "when": "Run builds, tests, checks, or scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the pattern, since an unmatched backtick fails before either tool runs. For repository regex searches, Probe `rg` in the target shell (`command -v rg >/dev/null 2>&1`) because client-private binaries may not be inherited; prefer ripgrep (`rg`) for text/regex search when it is available, otherwise use POSIX `grep`/`grep -E` or a Node parser. Scope searches to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `.papercusp`, `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`. Cap matched lines before piping to a row limit (for example, `rg --max-columns 256 --max-columns-preview ... | head -n 60`); `head` limits rows, not bytes. Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.",
         "notWhen": "Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.",
         "chaining": "run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push."
       }
@@ -15002,7 +15002,7 @@
           "POST"
         ]
       },
-      "description": "Claim repository files and/or authorized home-directory configuration files for exclusive editing. Returns ok+lock_id, or busy+contention details. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp; this is internal telemetry, not a caller override. On contention prefer wake_on_grant:true — queue a waiter + one-shot wake, return immediately; END YOUR TURN, re-invoked on grant (no polling, no held turn).",
+      "description": "Claim repository files and/or authorized home-directory configuration files for exclusive editing. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp; this is internal telemetry, not a caller override.",
       "capabilities": [
         "locks:write"
       ],
@@ -15065,7 +15065,7 @@
       "guidance": {
         "when": "For a DELIBERATE multi-file claim held across several edits AND the commit — acquire once, release after committing. Before individual Codex writes only when that session lacks lock hooks; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.",
         "notWhen": "Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release. Explicit locks are the fallback for unhooked Codex.",
-        "chaining": "On ok: edit → commit → locks:release { lock_id }. If the edit is still uncommitted, omit published_sha; pass published_sha only when you have actually published a lowercase 40–64-character hexadecimal commit SHA. On busy: wake_on_grant:true → end your turn; the wake carries your lock_id + running TTL — edit, then release. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake."
+        "chaining": "On ok: edit → commit → locks:release { lock_id }. If the edit is still uncommitted, omit published_sha; pass published_sha only when you have actually published a lowercase 40–64-character hexadecimal commit SHA. On busy PREFER wake_on_grant:true → END YOUR TURN; you are re-invoked on grant with your lock_id + running TTL — never poll, never hold a turn. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake."
       }
     },
     {

@@ -365,14 +365,11 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   // resolves the CALLER's own identity so you don't have to know/paste your own
   // ownerId. An explicit `assignee` wins over `mine` when both are passed.
   it('assignee/mine filter to items assigned to a given (or the caller\'s own) agent — issue + feature', async () => {
-    const bug = await createOne({ kind: 'bug', title: 'assigned bug', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'assigned bug', harness: 'papercup', assign_to: 'su-tester' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;
-    const feat = await createOne({ kind: 'feature', title: 'assigned feature', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'assigned feature', harness: 'papercup', assign_to: 'agent-other' });
     const featId = (feat.workItem as Record<string, unknown>).id as string;
     await createOne({ kind: 'bug', title: 'someone else\'s bug', harness: 'papercup' });
-
-    await claimOne({ id: bugId, assignee: 'su-tester' }); // CTX resolves to ownerId 'su-tester'
-    await claimOne({ id: featId, assignee: 'agent-other' });
 
     const mine = await listData({ harness: 'papercup', mine: true });
     expect(mine.map((w) => w.id)).toEqual([bugId]);
@@ -396,13 +393,10 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   // reads [] as "nothing to flush". Observed live — only the compaction tripwire
   // caught the miss, which is the guard of last resort, not a detector.
   it("assignee: 'self' resolves to the caller, like every sibling tool's self token", async () => {
-    const bug = await createOne({ kind: 'bug', title: 'self-token bug', harness: 'papercup' });
+    const bug = await createOne({ kind: 'bug', title: 'self-token bug', harness: 'papercup', assign_to: 'su-tester' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;
-    const other = await createOne({ kind: 'bug', title: 'peer-owned bug', harness: 'papercup' });
+    const other = await createOne({ kind: 'bug', title: 'peer-owned bug', harness: 'papercup', assign_to: 'agent-other' });
     const otherId = (other.workItem as Record<string, unknown>).id as string;
-
-    await claimOne({ id: bugId, assignee: 'su-tester' }); // CTX resolves to ownerId 'su-tester'
-    await claimOne({ id: otherId, assignee: 'agent-other' });
 
     const viaSelf = await listData({ harness: 'papercup', assignee: 'self' });
     expect(viaSelf.map((w) => w.id)).toEqual([bugId]);
@@ -425,9 +419,12 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
   });
 
   it('claim → set_state(close) → release walks the lifecycle envelopes (issue + feature)', async () => {
-    const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
+    // Critical severity is an explicit admission bypass, leaving the fixture
+    // unclaimed so this test can exercise the claim operation itself. Ordinary
+    // unassigned creates remain born-pending and are covered below.
+    const bug = await createOne({ kind: 'bug', title: 'b', severity: 'critical', harness: 'papercup' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;
-    const feat = await createOne({ kind: 'feature', title: 'f', harness: 'papercup' });
+    const feat = await createOne({ kind: 'feature', title: 'f', severity: 'critical', harness: 'papercup' });
     const featId = (feat.workItem as Record<string, unknown>).id as string;
 
     const claimed = await claimOne({ id: bugId, assignee: 'agent-b' });
@@ -883,6 +880,13 @@ describe('work_items:create {assign_to} — atomic create+claim envelope (real P
   it('omitting assign_to leaves the item unclaimed (the default is unchanged)', async () => {
     const res = await createOne({ kind: 'feature', title: 'no assign', harness: 'papercup' });
     expect((res.workItem as Record<string, unknown>).assignee).toBeNull();
+    const [row] = await db.sql<{ admission: string | null; admitted_by: string | null; taken_by: string | null }[]>`
+      SELECT admission, admitted_by, taken_by
+      FROM harness_shared.work_items
+      WHERE feature_id = ${(res.workItem as Record<string, unknown>).id as string}`;
+    expect(row.admission).toBe('pending');
+    expect(row.admitted_by).toBeNull();
+    expect(row.taken_by).toBeNull();
   });
 });
 

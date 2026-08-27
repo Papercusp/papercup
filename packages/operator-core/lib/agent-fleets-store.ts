@@ -21,7 +21,10 @@ import {
   type ColorScheme,
 } from './console-color-schemes';
 import { trackDetached } from './detached-imports';
-import type { FreshLaunchWorkerAttestation } from './agent-launch-core';
+import type {
+  FreshLaunchSessionProbe,
+  FreshLaunchWorkerAttestation,
+} from './agent-launch-core';
 
 /** Typed fleet control state (coord-authority-hardening-2026-07-11 P-009 / H4). */
 export type FleetControlState = 'active' | 'winding-down';
@@ -63,9 +66,49 @@ export function asFleetType(value: unknown): FleetType {
 export type FleetLaunchTransactionState = 'launching' | 'partial' | 'verified';
 export type FleetLaunchFailurePhase = 'spawn' | 'verification' | 'attestation' | 'persistence';
 
+export type FleetLaunchGovernorOutcome = 'productive' | 'unverified' | 'repairing' | 'failed';
+export type FleetLaunchGovernorAction = 'none' | 'wait' | 'retry' | 'prune' | 'respawn';
+
+export interface FleetLaunchGovernorVerdict {
+  version: 1;
+  outcome: FleetLaunchGovernorOutcome;
+  decidedAt: number;
+  target: number;
+  productiveCapacityFloor: number;
+  liveMemberIds: string[];
+  workerReadyMemberIds: string[];
+  unreadyMemberIds: string[];
+  unverifiedMemberIds: string[];
+  action: FleetLaunchGovernorAction;
+  reason: string;
+}
+
+export interface FleetLaunchGovernorEvent {
+  at: number;
+  action: 'observe' | 'retry' | 'prune' | 'respawn' | 'terminal';
+  reason: string;
+  ownerId?: string;
+  replacementOwnerId?: string;
+}
+
+/** P-004: bounded recovery metadata co-located with the canonical launch
+ * transaction. This is evidence about governor decisions, not a replacement
+ * for process liveness, wakeability, claim progress, or completion authority. */
+export interface FleetLaunchGovernorState {
+  version: 1;
+  attestationAttempts: Record<string, number>;
+  retiredMemberIds: string[];
+  history: FleetLaunchGovernorEvent[];
+  terminalVerdict: FleetLaunchGovernorVerdict | null;
+}
+
 export interface FleetLaunchTransaction {
   version: 1;
   transactionId: string;
+  /** The exact coord identity stamped into each member's --launched-by token.
+   * Optional for transactions persisted before P-004. A missing value is
+   * UNKNOWN and may never authorize a speculative replay. */
+  launcherOwnerId?: string;
   state: FleetLaunchTransactionState;
   requestedAt: number;
   updatedAt: number;
@@ -82,6 +125,8 @@ export interface FleetLaunchTransaction {
   workerReadyMemberIds?: string[];
   /** Latest typed per-member evidence merged on every verifier pass. */
   workerAttestations?: FreshLaunchWorkerAttestation[];
+  /** P-004 governor consumption/decision record. Optional for legacy rows. */
+  governor?: FleetLaunchGovernorState;
   failed: Array<{
     ownerId: string;
     phase: FleetLaunchFailurePhase;
@@ -106,7 +151,38 @@ export interface FleetLaunchTransaction {
     account: string;
     carry: 'warm' | 'cold';
     headless: boolean;
-  }>;
+  }>; 
+}
+
+/** Merge the latest per-session worker snapshot without losing prior waves.
+ * Shared by the launch writer and the headcount governor so readiness remains
+ * derived exactly once in agent-launch-core. */
+export function mergeFleetLaunchWorkerAttestations(
+  transaction: FleetLaunchTransaction,
+  sessions: readonly Pick<FreshLaunchSessionProbe, 'ownerId' | 'workerAttestation'>[],
+): void {
+  const byOwner = new Map(
+    (transaction.workerAttestations ?? [])
+      .filter((attestation) => typeof attestation.ownerId === 'string' && attestation.ownerId.length > 0)
+      .map((attestation) => [attestation.ownerId as string, attestation]),
+  );
+  for (const session of sessions) {
+    if (!session.ownerId || !session.workerAttestation) continue;
+    byOwner.set(session.ownerId, {
+      ...session.workerAttestation,
+      ownerId: session.ownerId,
+    });
+  }
+  if (byOwner.size === 0) return;
+
+  const requestedOrder = new Map(transaction.requestedMemberIds.map((ownerId, index) => [ownerId, index]));
+  transaction.workerAttestations = [...byOwner.values()].sort((a, b) =>
+    (requestedOrder.get(a.ownerId ?? '') ?? Number.MAX_SAFE_INTEGER) -
+    (requestedOrder.get(b.ownerId ?? '') ?? Number.MAX_SAFE_INTEGER),
+  );
+  transaction.workerReadyMemberIds = transaction.requestedMemberIds.filter(
+    (ownerId) => byOwner.get(ownerId)?.ready === true,
+  );
 }
 
 /** A named-fleet registry row. */
@@ -169,6 +245,9 @@ export interface FleetHeadcountConfig {
   model?: string;
   effort?: string;
   account?: string;
+  /** Minimum worker-ready members required before the governor opens a
+   * multi-member refill wave. Below this floor it launches one canary only. */
+  productiveCapacityFloor?: number;
   /** Background drain fleets default headless; false explicitly preserves visible placement. */
   headless?: boolean;
   role?: string;

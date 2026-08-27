@@ -366,6 +366,12 @@ export interface BootHarnessOpts {
    */
   mergeCursorStore?: MergeCursorStore | null;
   /**
+   * WI-3985 test seam for the live memory-federation receive gate. Production
+   * resolves MEM0_FEDERATION_EGRESS; boot snapshots it once per serialized
+   * merge pass and threads that snapshot into the memory projection.
+   */
+  memoryFederationFlagOn?: () => Promise<boolean>;
+  /**
    * Merge-poll interval override (ms). Tests set this to 0 to disable the
    * timer and drive `mergeNow()` by hand. Default 1000.
    */
@@ -1297,6 +1303,25 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       })()
     : undefined;
 
+  // WI-3985 — one flag read per serialized merge pass. The memory projection
+  // used to resolve the live flag independently for every op, while the shared
+  // merge cursor was persisted outside that decision. An OFF-gated memory op
+  // therefore advanced the cursor and became indistinguishable from an applied
+  // op. Keep the projection and apply-binding on one boot-owned snapshot.
+  const readMemoryFederationFlag = async (): Promise<boolean> => {
+    try {
+      if (opts.memoryFederationFlagOn) {
+        return (await opts.memoryFederationFlagOn()) === true;
+      }
+      return (await getFlag(FLAGS.MEM0_FEDERATION_EGRESS, 'system')) === true;
+    } catch {
+      return false;
+    }
+  };
+  let memoryFederationEnabledForPass = await readMemoryFederationFlag();
+  const memoryFederationFlagSnapshot = async (): Promise<boolean> =>
+    memoryFederationEnabledForPass;
+
   const buildScopedApply = (potHomeSlug: string | undefined) =>
     buildHarnessProjectionApply({
       workspaceId: opts.workspaceId,
@@ -1315,6 +1340,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       resolveAuthorDevice,
       ...(resolveHomeLogKeyHex ? { resolveHomeLogKeyHex } : {}),
       pendingMemberContent,
+      memoryFederationFlagOn: memoryFederationFlagSnapshot,
     });
 
   // WI-1544 (defect D): `rekey()` swaps topics IN PLACE, but `opts.swarmBinding` is
@@ -1418,6 +1444,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // (same instance as scopedApply's), so a non-Model-B / CLI apply path defers + drains
     // consistently. Inert for a non-hive harness.
     pendingMemberContent,
+    memoryFederationFlagOn: memoryFederationFlagSnapshot,
   });
 
   // ── Per-harness scoped projection apply (D-021 collision fix). ──
@@ -2019,6 +2046,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // re-merge did after a drop). A log ADDITION is additive (its cursor starts
   // at 0; lwwPick's total order makes fold order irrelevant) — no reset.
   let mergeCursor = createMergeCursor();
+  // LIVE OFF→ON recovery is intentionally separate from the shared cursor: the
+  // normal merge must keep advancing unrelated tables while memory federation
+  // is dark. On enable, this cursor re-reads history but applies only memory ops.
+  let memoryReplayCursor: ReturnType<typeof createMergeCursor> | null = null;
 
   // WI-2105 REV fix (FLAG-GATED, default ON): durable per-log merge-cursor
   // persistence. Seed each log's fold position from PG BEFORE the first fold and
@@ -2060,8 +2091,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // Mirrors `buildScopedApply`'s `potHomeSlug` expression exactly (line ~1161); if
   // that fallback chain ever changes, this must change with it or a boot will either
   // re-fold forever (stamp never matches) or resume across a real scope change.
-  const currentApplyBinding = (): string | null =>
+  const currentProjectionBinding = (): string | null =>
     hiveHomeProjectionSlug ?? ownPotHomeSlug ?? memberHomeRebindSlug ?? null;
+  const currentApplyBinding = (): string | null => {
+    const projectionBinding = currentProjectionBinding();
+    // OFF preserves the legacy binding exactly. ON uses a distinct stamp, so a
+    // cold boot cannot seed from progress recorded while memory applies no-op'd.
+    return memoryFederationEnabledForPass
+      ? `${projectionBinding ?? '<none>'}::mem0-federation-egress=on`
+      : projectionBinding;
+  };
 
   // Keep lifecycle transitions in event order even when a caller deliberately
   // does not await the metadata write (the channel-2 drop path must stay
@@ -3195,6 +3234,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // short-circuit further down). See servicePendingHeadSnapshot's doc comment.
     await servicePendingHeadSnapshot();
     try {
+      // Snapshot the dynamic memory gate under the merge lock before any cursor
+      // binding, seeding, or projection apply for this pass. A live OFF→ON edge
+      // starts one memory-only replay; OFF cancels an incomplete replay.
+      const memoryFederationEnabledNow = await readMemoryFederationFlag();
+      if (!memoryFederationEnabledNow) {
+        memoryReplayCursor = null;
+      } else if (!memoryFederationEnabledForPass) {
+        memoryReplayCursor = createMergeCursor();
+      }
+      memoryFederationEnabledForPass = memoryFederationEnabledNow;
+
       // WI-3852 (F2 of WI-898): a bucket EVICTED from either content-deferral buffer (epoch-
       // key-not-yet-local / member-not-yet-federated) since the last pass has NO recovery path
       // short of a process restart, because there is otherwise no steady-state re-fold in
@@ -3339,6 +3389,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       for (const known of mergeCursor.positions.keys()) {
         if (!logKeys.has(known)) {
           mergeCursor = createMergeCursor();
+          if (memoryReplayCursor) memoryReplayCursor = createMergeCursor();
           pgCursorSeedCache?.invalidate();
           break;
         }
@@ -3473,7 +3524,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           break;
         }
       }
-      if (!changed) {
+      if (!changed && !memoryReplayCursor) {
         // applyRevocationRefresh + drainReverifyDropQueue already ran at the top
         // of this pass; on the idle tick maybeReverifyAdmitted only re-drains and
         // (cadence permitting) kicks off the LOCKLESS verify — zero I/O here.
@@ -3572,6 +3623,26 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // + flips `rekeyOn` to the papercusp-hive-rekey flag (and may hoist both to boot scope
       // with the epoch-key deps). Identity stub today ⇒ `applyImpl === enforcedApply`,
       // byte-for-byte unchanged. ONE owner per this expression — never raced.
+      const durableCursorPositions = (): ReadonlyMap<string, number> => {
+        if (!memoryReplayCursor) return mergeCursor.positions;
+        const conservative = new Map<string, number>();
+        for (const [keyHex, mainPosition] of mergeCursor.positions) {
+          conservative.set(
+            keyHex,
+            Math.min(mainPosition, memoryReplayCursor.positions.get(keyHex) ?? 0),
+          );
+        }
+        return conservative;
+      };
+      const persistDurableCursor = (): Promise<void> | undefined =>
+        pgMergeCursorStore
+          ? persistCursor(
+              durableCursorPositions(),
+              pgMergeCursorStore,
+              currentApplyBinding(),
+            )
+          : undefined;
+
       const mergeOpts = {
         // D-021: route through THIS harness's scoped projection apply, not the
         // global registry (which the last-booted harness would own). EN-4: wrapped by
@@ -3622,9 +3693,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           } catch {
             // diagnostic-only
           }
-          return pgMergeCursorStore
-            ? persistCursor(positions, pgMergeCursorStore, currentApplyBinding())
-            : undefined;
+          return persistDurableCursor();
         },
       };
       // WI-2105 REV acceleration (17c98): fold the log with the SMALLEST remaining
@@ -3658,12 +3727,55 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // observability must never abort the merge pass
         }
         mergeCursor = createMergeCursor();
+        if (memoryReplayCursor) memoryReplayCursor = createMergeCursor();
         pgCursorSeedCache?.invalidate();
         // Reset positions ⇒ orderedLogs is now length-ascending, still a valid
         // fold order (WI-2105 acceleration); reuse it rather than re-sorting.
         result = await mergeAdmittedLogsIncremental(orderedLogs, mergeCursor, mergeOpts);
       }
-      const { applied } = result;
+      let { applied } = result;
+
+      // WI-3985 LIVE OFF→ON repair. Run the ordinary main merge first, then
+      // incrementally re-read admitted history with a separate cursor. Only the
+      // memory table reaches the exact same decrypt/enforcement/scoped apply
+      // stack; every unrelated op merely advances the replay cursor. While the
+      // replay is active, persist min(main,replay) under the ON binding so a
+      // crash resumes conservatively. Once caught up, publish the full main
+      // positions and return to the steady-state idle fast path.
+      if (memoryReplayCursor) {
+        const replayOpts = {
+          ...mergeOpts,
+          applyImpl: (op: OpEnvelope) =>
+            op.table === 'p2p-memories-by-id'
+              ? mergeOpts.applyImpl(op)
+              : Promise.resolve(false),
+          onCursorAdvance: () => persistDurableCursor(),
+        };
+        let replayResult = await mergeAdmittedLogsIncremental(
+          orderedLogs,
+          memoryReplayCursor,
+          replayOpts,
+        );
+        if (replayResult.truncated) {
+          memoryReplayCursor = createMergeCursor();
+          replayResult = await mergeAdmittedLogsIncremental(
+            orderedLogs,
+            memoryReplayCursor,
+            replayOpts,
+          );
+        }
+        applied += replayResult.applied;
+        if (replayResult.caughtUp) {
+          memoryReplayCursor = null;
+          if (pgMergeCursorStore) {
+            await persistCursor(
+              mergeCursor.positions,
+              pgMergeCursorStore,
+              currentApplyBinding(),
+            );
+          }
+        }
+      }
 
       // ── C-001 re-key DRAIN HOOK (su-c2a63) ── A `hive_epoch_keys` row applying THIS pass
       // fired `onEpochKeyApplied` → queued its (hive, epoch). Re-apply the deferred epoch-N
@@ -5338,6 +5450,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             // WI-259 P-004: keep the content-before-membership buffer wired on the joiner rebind
             // (a mid-session join makes this harness a hive member — content may now defer/drain).
             pendingMemberContent,
+            memoryFederationFlagOn: memoryFederationFlagSnapshot,
           });
           // A-003 apply-side determinism: the hive_members/hive_settings projections just
           // rebound from the member slug to the hive-home slug. An owner log admitted +
