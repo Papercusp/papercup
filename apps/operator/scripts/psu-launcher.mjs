@@ -74,6 +74,10 @@ import { SU_TIER_ROLES } from "../../../packages/operator-core/lib/su-tier-roles
 // carry two byte-identical copies of its regex pair (cloudModelBackendHint,
 // validateModelSpec); both now call it, so the gate cannot drift from them.
 import { isLocalModelSpec } from "../../../packages/operator-core/lib/local-model-spec.mjs";
+import {
+  SU_CONTEXT_SIZE,
+  normalizeSuContextSize,
+} from "../../../packages/operator-core/lib/su-context-size.mjs";
 // P-023 (D-015): the TIER half of the omp native-lsp gate, shared with the
 // server-side `mayKeepOmpNativeLsp` so the resume path cannot drift from it.
 import { ompModelTierAllowsNativeLsp } from "../../../packages/operator-core/lib/omp-native-lsp-tier.mjs";
@@ -134,7 +138,7 @@ Launch context:
   --no-plan                          Launch without a plan
   --model=<model[:effort]>           Model and optional effort
   --profile=<engineer|power>         SU prompt profile
-  --context-size=<trimmed|full>      Context payload tier
+  --context-size=trimmed             Context payload tier (legacy full normalizes to trimmed)
   --compaction-limit=<tokens>        Requested compaction limit
   --launch-context=<path>            Additional launch brief
   --kickoff=<text>                   Seed the first user turn
@@ -895,10 +899,16 @@ export function parseArgs(argv) {
     // otherwise binds to an owner the session never runs as.
     else if (a.startsWith("--owner-id="))
       out.ownerId = a.slice("--owner-id=".length);
-    // su-context-size-variants: 'full' | 'trimmed' — the initial-context size variant
-    // (orthogonal to --agent). Forwarded to bootstrap-su; applied per-client at launch.
-    else if (a.startsWith("--context-size="))
-      out.contextSize = a.slice("--context-size=".length);
+    else if (a.startsWith("--context-size=")) {
+      const normalized = normalizeSuContextSize(a.slice("--context-size=".length));
+      if (!normalized.ok) throw new Error(`--context-size: ${normalized.error}`);
+      out.contextSize = normalized.contextSize;
+      if (normalized.normalizedLegacyFull) {
+        console.error(
+          "psu: --context-size=full is retired; launching with trimmed instead. The growable tools:find/tools:invoke surface retains full capability reachability.",
+        );
+      }
+    }
     // context-trimming-tiers P-017: persona tier — full | fleet. Omitted ⇒ the
     // server auto-selects from the model window (≤200k known model → fleet).
     else if (a.startsWith("--persona-tier="))
@@ -5444,11 +5454,6 @@ export const SU_CONTEXT_TOKEN_ESTIMATES = { full: "~180k", trimmed: "~70k" };
 // initial context small without giving up on-demand discovery) — Native and Full are
 // still one keypress away for whoever wants the whole catalog or the pre-feature launch.
 export const SU_CONTEXT_CHOICES = [
-  { name: "Native", value: null },
-  {
-    name: `Full · ${SU_CONTEXT_TOKEN_ESTIMATES.full}  (whole tool catalog up-front)`,
-    value: "full",
-  },
   {
     name: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}  (core spine, native soft-trim) (default)`,
     value: "trimmed",
@@ -5818,10 +5823,9 @@ export function preflightWindowGuard({
  * growable trimmed seed (tools:find/tools:invoke preserve full reachability).
  */
 export function assertCodexToolTransport({ agent = "claude", contextSize }) {
-  if (agent !== "codex" || contextSize !== "full") return;
-  throw new Error(
-    "psu: Codex --context-size=full is not launchable: the full Papercusp tool catalog exceeds the code-mode IPC bridge's 64 MiB frame cap, so every tool call would fail before execution. Use --context-size=trimmed (the growable tools:find/tools:invoke seed retains full capability reachability). --force cannot bypass a transport frame limit (WI-39948).",
-  );
+  const normalized = normalizeSuContextSize(contextSize);
+  if (!normalized.ok) throw new Error(`psu: ${normalized.error}`);
+  return normalized.contextSize;
 }
 
 /** Run both preflight guards before a launch; exits/throws per policy. */
@@ -5833,11 +5837,11 @@ export function runLaunchPreflight({
   budget = null,
   force,
 }) {
-  assertCodexToolTransport({ agent, contextSize });
+  const effectiveContextSize = assertCodexToolTransport({ agent, contextSize });
   const personaBytes = assertLaunchPersona(promptFile);
   const guard = preflightWindowGuard({
     personaBytes,
-    contextSize,
+    contextSize: effectiveContextSize,
     model,
     agent,
     budget,
@@ -11678,7 +11682,7 @@ async function main() {
     // flag preselects + skips this, mirroring --fleet/--account. Defaults to 'trimmed';
     // Native (null) ⇒ no flag ⇒ byte-identical to the pre-feature launch, still one
     // keypress away.
-    if (!args.contextSize) args.contextSize = await pickContextSize();
+    if (!args.contextSize) args.contextSize = SU_CONTEXT_SIZE;
     const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
     const harness = p.needHarness ? await pickHarness(workspace) : p.harness;
     const plan = p.needPlan
@@ -11978,28 +11982,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
           `psu: live backend context-window probe unavailable for ${effectiveModel} (gateway/backend miss) — keeping configured registry values.`,
         );
     }
-    if (args.contextSize === "full") {
-      // ESCAPE HATCH (dynamic-tool-surface D-010): --context-size=full opts OUT of the
-      // seed — eager-load the whole catalog with discovery OFF (latency-critical broad-tool
-      // task / debugging). Everything else defaults to the seed below.
-      ompPiConfigDir = writeOmpSessionConfigDir(res.sessionId, {
-        discoveryOff: true,
-        model: effectiveModel,
-        modelsYml: res.envelopeEnv?.PAPERCUSP_OMP_MODELS_YML || null,
-        clientId: res.envelopeEnv?.PAPERCUSP_SID || null,
-        backendWindow,
-        interactive: !args.headless && !!process.stdout.isTTY,
-      });
-      if (ompPiConfigDir)
-        console.error(
-          `psu: omp --context-size=full — tool discovery OFF (whole catalog up-front) via per-session config ${ompPiConfigDir}`,
-        );
-      else
-        console.error(
-          "psu: omp --context-size=full could not materialize a discovery-off config; using OMP default.",
-        );
-    } else {
-      // DEFAULT for EVERY model/tier (dynamic-tool-surface D-010, "default all to trimmed"):
+    {
+      // DEFAULT for EVERY model/tier (dynamic-tool-surface D-010):
       // SEED the core spine. It's a growable FLOOR, not a cap — tools:find surfaces the tail
       // on demand (→ notifications/tools/list_changed → OMP re-fetches tools/list, VERIFIED
       // live), tools:invoke (also in the spine) calls anything by name, and the compact
@@ -12029,7 +12013,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       });
       if (ompPiConfigDir)
         console.error(
-          `psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (default; long tail reachable on demand via tools:find/tools:invoke). Use --context-size=full for the whole catalog up-front.`,
+          `psu: omp (${effectiveModel}) — MCP surface seeded to ${spine.length} core tools (long tail reachable on demand via tools:find/tools:invoke).`,
         );
       else
         console.error(
@@ -12103,16 +12087,14 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // from bootstrap-su via the `auto` body field). Default on for `--fleet`.
       ...(effectiveAutoMode(args) ? { PAPERCUSP_AUTO_MODE: "1" } : {}),
       ...(args.mode === "drain" ? { PAPERCUSP_DRAIN_MODE: "1" } : {}),
-      // su-context-size-variants: 'full' forces every tool schema loaded up-front by
-      // disabling ToolSearch deferral (fine on a 1M-window model; the whole point of full).
-      // Everything else FORCES deferral ON: claude silently disables tool search when
+      // Trimmed-only launch policy: keep ToolSearch deferral ON. Claude silently disables it when
       // ANTHROPIC_BASE_URL is overridden (it can't assume a proxy forwards tool_reference
       // blocks — ours does, it's a pass-through), so every gateway-routed (`--account`)
       // member was booting with ALL advertised schemas inline: 106–108k vs 60k measured
       // across the 2026-07-02 04:50 sonnet fleet (context-trimming-tiers P-031 gap 3).
       // Redundant-but-harmless on direct-API launches where deferral is already the default.
       ...(res.agent === "claude"
-        ? { ENABLE_TOOL_SEARCH: args.contextSize === "full" ? "false" : "true" }
+        ? { ENABLE_TOOL_SEARCH: "true" }
         : {}),
       // P-014 (agent-managed-compaction): the MECHANICAL compaction backstop. For a
       // P-022: native auto-compact is retired — every Claude launch runs with
@@ -12139,8 +12121,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // papercusp-su MCP url env-expands ${PAPERCUSP_TOOLS} (see buildClaudeMcpEntry), so
       // exporting the CORE SPINE makes the superuser MCP advertise ONLY the spine (~9k). The
       // tail stays reachable via tools:find/tools:invoke (in the spine) + the capability map.
-      // Only --context-size=full opts OUT (unset PAPERCUSP_TOOLS → full catalog + ToolSearch).
-      ...(res.agent === "claude" && args.contextSize !== "full"
+      ...(res.agent === "claude"
         ? { PAPERCUSP_TOOLS: claudeSeedToolNames().join(",") }
         : {}),
       // context-trimming-tiers D-004/P-009: the session PAYLOAD tier. The claude MCP url
@@ -12153,9 +12134,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // small. It doesn't: a big window makes an unshaped payload AFFORDABLE, not
       // useful — the same wasted tokens are still read, just without hitting a wall.
       // This now matches the tool-surface spine (D-010), which was already trimmed for
-      // everyone. Only an explicit --context-size=full opts out (unshaped payloads,
-      // byte-identical to pre-tier behavior).
-      PAPERCUSP_CONTEXT_TIER: args.contextSize === "full" ? "full" : "trimmed",
+      // everyone. Historical full inputs are normalized before this point.
+      PAPERCUSP_CONTEXT_TIER: "trimmed",
       // su-context-size-variants + weak-model-tool-tier: OMP runs against a per-session config
       // dir (home-relative) — 'full' with discovery off, or a WEAK model with the MCP surface
       // trimmed to the core spine (materialized above; null for non-omp / frontier-model / failure).
