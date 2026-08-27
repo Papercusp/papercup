@@ -1,6 +1,11 @@
 /** Production composition for the app.papercusp.com hosted control plane. */
 
-import { withHostedServiceContext, withTenantContext, type VerifiedTenantServerContext } from '@papercusp/db-org';
+import {
+  HOSTED_SERVICE_ROLE,
+  withHostedServiceContext,
+  withTenantContext,
+  type VerifiedTenantServerContext,
+} from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { PostgresHostedIdentityDirectory, type HostedIdentityDirectory } from '../auth/hosted-identity-binding';
 import {
@@ -77,6 +82,10 @@ export interface HostedRuntimeDependencies {
   readonly resolveSecret?: HostedRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
+}
+
+interface HostedServiceRoleRow {
+  readonly current_user: string;
 }
 
 function requiredConfiguration(value: unknown, name: string): string {
@@ -209,6 +218,18 @@ export function assertHostedRuntimeMounted(plane: AssembledHostedControlPlane): 
   }
 }
 
+async function assertHostedServicePosture(runService: HostedServiceContextRunner): Promise<void> {
+  await runService(async (sql) => {
+    const rows = await sql<HostedServiceRoleRow[]>`
+      SELECT current_user::text AS current_user
+    `;
+    const currentUser = rows.length === 1 ? rows[0]?.current_user : undefined;
+    if (currentUser !== HOSTED_SERVICE_ROLE) {
+      throw new Error(`hosted_runtime_service_role_mismatch:${currentUser ?? 'missing'}`);
+    }
+  });
+}
+
 /**
  * Resolve only secret references, construct the service/tenant-scoped adapters,
  * inject the signed webhook route, and assert the exact internet surface.
@@ -217,8 +238,10 @@ export async function createHostedRuntime(
   configuration: HostedRuntimeConfiguration,
   dependencies: HostedRuntimeDependencies = {},
 ): Promise<AssembledHostedControlPlane> {
-  const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
   const runService = dependencies.runService ?? withHostedServiceContext;
+  await assertHostedServicePosture(runService);
+
+  const resolveSecret = dependencies.resolveSecret ?? resolveSecretRef;
   const runTenant = dependencies.runTenant ?? withTenantContext;
   const sessionCookieSecret = await resolveSecret(configuration.hostedSessionCookieSecretRef);
 
