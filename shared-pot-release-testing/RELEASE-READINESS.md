@@ -2,7 +2,25 @@
 
 **Question:** can we confidently ship the shared-pot (P2P federated) feature to public production?
 
-**VERDICT — re-signed 2026-08-22T05:30Z (su-6651e, `WI-40548`, per
+**VERDICT — re-signed 2026-08-27T07:03Z (su-b3098, `WI-42218`, per
+`p2p-public-release-remaining-lanes-2026-07-16#D-074`): NO-GO for unconditional public ship.**
+The sole D-073 replacement run is terminal but **non-countable**. Its exact schema-2 verdict-bank
+row (`2026-08-27T07:00:43Z`, writer PID `535974`) joins to
+`/tmp/live-fed-gate-20260827-020717` and reports a superficially green token while explicitly
+recording `legs.local_matrix=SKIPPED` and `matrix_skip="leg disabled for this run
+(RUN_LOCAL_MATRIX=0)"`. That work directory contains no `local-matrix.out`, hence no exact-run
+D-067 frame-b positive control proving `remote>=1` and `local=0`, and no deciding local-matrix
+verdict. The rebuilt sidecar is also not clean current-HEAD evidence: embedded provenance names
+`gitHead=ad44b6f3462a3ec9f78615dd29788702463c78c7` with `gitDirty=true` and
+`gitHeadAtEmit=9ee881de7dcceec1371fd132840e2fe25685ebe1`; the bank records
+`source_dirty_files=26` and a different terminal head. D-069 therefore remains in force and
+P-506 is not retired. Per D-073, this gate will not be rerun; the separately authorized P-508
+lane may build only a **new clean current-HEAD seeded Server artifact**, then must pass embedded
+provenance/content audit, pristine boot, and the full physical two-host P-305 lifecycle before
+P-511 can reconsider the public-release verdict. Lost exec 55784 and stale staged bytes remain
+inadmissible.
+
+**PRIOR SIGNATURE — re-signed 2026-08-22T05:30Z (su-6651e, `WI-40548`, per
 `p2p-public-release-remaining-lanes-2026-07-16#D-046`): NO-GO for unconditional public ship.**
 The verdict is unchanged; this signature corrects a rationale that current executed evidence has
 overtaken. Two independent blockers now stand in the non-git/non-coordination P2P lane, and both
