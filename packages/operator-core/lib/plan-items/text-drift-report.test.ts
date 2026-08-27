@@ -31,6 +31,7 @@ const notifyAgentsMock = vi.fn();
 const resolvePlanItemStampMock = vi.fn();
 const getPlanRowMock = vi.fn();
 const planItemsForRowMock = vi.fn();
+const refreshPlanLinkedFeatureWorkItemMock = vi.fn();
 
 // Every mock below is PARTIAL. These modules sit in a large shared graph and
 // other modules in it import exports this file never touches; replacing a module
@@ -67,6 +68,11 @@ vi.mock('../agent-tools/plans/source', async (importOriginal) => ({
   planItemsForRow: (...args: unknown[]) => planItemsForRowMock(...args),
 }));
 
+vi.mock('../work-items', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  refreshPlanLinkedFeatureWorkItem: (...args: unknown[]) => refreshPlanLinkedFeatureWorkItemMock(...args),
+}));
+
 import { planItemTextHash, type PlanItemTextChange } from './text-drift';
 import {
   MAX_DRIFT_NOTIFICATIONS,
@@ -82,6 +88,7 @@ const IDENTITY = {
 
 interface StampRowFixture {
   feature_id: string;
+  item_kind: string | null;
   harness_slug: string | null;
   title: string | null;
   status: string | null;
@@ -90,6 +97,7 @@ interface StampRowFixture {
 }
 interface ColumnRowFixture {
   feature_id: string;
+  item_kind: string | null;
   harness_slug: string | null;
   title: string | null;
   status: string | null;
@@ -114,6 +122,7 @@ function primeQueries(opts: { stamp?: StampRowFixture[]; column?: ColumnRowFixtu
 function stampRow(over: Partial<StampRowFixture> = {}): StampRowFixture {
   return {
     feature_id: 'WI-1',
+    item_kind: 'feature',
     harness_slug: 'papercusp',
     title: 'old wording',
     status: 'wip',
@@ -125,6 +134,7 @@ function stampRow(over: Partial<StampRowFixture> = {}): StampRowFixture {
 function columnRow(over: Partial<ColumnRowFixture> = {}): ColumnRowFixture {
   return {
     feature_id: 'WI-2',
+    item_kind: 'feature',
     harness_slug: 'papercusp',
     title: 'old wording',
     status: 'wip',
@@ -132,6 +142,24 @@ function columnRow(over: Partial<ColumnRowFixture> = {}): ColumnRowFixture {
     source_plan_item_ids: ['P-001'],
     ...over,
   };
+}
+
+function primeRefreshPlan(
+  items: Array<{ id: string; text: string; decisionRefs?: string[] }>,
+  over: {
+    title?: string | null;
+    nowState?: string | null;
+    nowNext?: string | null;
+    decisions?: Array<{ id: string; title: string; body: string }>;
+  } = {},
+): void {
+  getPlanRowMock.mockResolvedValue({
+    title: over.title ?? 'Plan title',
+    nowState: over.nowState ?? null,
+    nowNext: over.nowNext ?? null,
+    decisions: over.decisions ?? [],
+  });
+  planItemsForRowMock.mockReturnValue(items);
 }
 
 const CHANGED: PlanItemTextChange = {
@@ -145,6 +173,9 @@ beforeEach(() => {
   vi.clearAllMocks();
   notifyAgentsMock.mockResolvedValue({ notified: ['su-holder'], subscribed: [], woke: 0 });
   getFlagMock.mockResolvedValue(true);
+  getPlanRowMock.mockResolvedValue(undefined);
+  planItemsForRowMock.mockReturnValue([]);
+  refreshPlanLinkedFeatureWorkItemMock.mockResolvedValue(true);
 });
 
 describe('reportPlanItemTextDrift — the post-write push', () => {
@@ -182,11 +213,14 @@ describe('reportPlanItemTextDrift — the post-write push', () => {
         workItemId: 'WI-1',
         itemId: 'P-001',
         kind: 'changed',
+        itemKind: 'feature',
+        family: 'feature',
         title: 'old wording',
         state: 'wip',
         holder: 'su-holder',
       },
     ]);
+    expect(res?.refreshed).toBe(0);
     expect(res?.notified).toBe(1);
     expect(notifyAgentsMock).toHaveBeenCalledTimes(1);
     const opts = notifyAgentsMock.mock.calls[0]![1] as { addressees: string[]; body: string; wake: boolean };
@@ -196,6 +230,81 @@ describe('reportPlanItemTextDrift — the post-write push', () => {
     expect(opts.body).toContain('build a completely different thing');
     // An inbox inject, never a turn-stealing wake.
     expect(opts.wake).toBe(false);
+  });
+
+  it('refreshes changed feature-family rows from current plan text and context', async () => {
+    primeQueries({ stamp: [stampRow()], column: [] });
+    primeRefreshPlan(
+      [{ id: 'P-001', text: 'current wording from the plan', decisionRefs: ['D-001'] }],
+      {
+        title: 'Refresh the plan-linked item',
+        nowState: 'Implement the supported refresh path',
+        nowNext: 'Run the focused drift tests',
+        decisions: [{ id: 'D-001', title: 'Keep refresh guarded', body: 'Only refresh exact feature-family links.' }],
+      },
+    );
+    const res = await reportPlanItemTextDrift({
+      planSlug: 'my-plan',
+      changes: [CHANGED],
+      identity: IDENTITY,
+    });
+
+    expect(res?.refreshed).toBe(1);
+    expect(res?.affected[0]).toMatchObject({ itemKind: 'feature', family: 'feature' });
+    expect(getPlanRowMock).toHaveBeenCalledTimes(1);
+    expect(getPlanRowMock).toHaveBeenCalledWith('my-plan', { harnessSlug: 'papercusp' });
+    expect(planItemsForRowMock).toHaveBeenCalledTimes(1);
+    expect(refreshPlanLinkedFeatureWorkItemMock).toHaveBeenCalledTimes(1);
+    expect(refreshPlanLinkedFeatureWorkItemMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workItemId: 'WI-1',
+        harnessSlug: 'papercusp',
+        planSlug: 'my-plan',
+        itemId: 'P-001',
+        itemText: 'current wording from the plan',
+        compiledBrief: expect.stringContaining('Refresh the plan-linked item'),
+      }),
+    );
+    const opts = notifyAgentsMock.mock.calls[0]![1] as { body: string; summary: string };
+    expect(opts.body).toContain('refreshed your feature work-item');
+    expect(opts.summary).toContain('was refreshed');
+    expect(res?.warning).toContain('1 changed feature-family row(s) were refreshed');
+  });
+
+  it('keeps issue-family and removed rows warning/ping-only', async () => {
+    primeQueries({
+      stamp: [
+        stampRow({ feature_id: 'WI-ISSUE', item_id: 'P-001', item_kind: 'bug' }),
+        stampRow({ feature_id: 'WI-REMOVED', item_id: 'P-002', item_kind: 'feature' }),
+      ],
+      column: [],
+    });
+    primeRefreshPlan([
+      { id: 'P-001', text: 'issue text' },
+      { id: 'P-002', text: 'removed item text' },
+    ]);
+    const res = await reportPlanItemTextDrift({
+      planSlug: 'my-plan',
+      changes: [
+        CHANGED,
+        { id: 'P-002', kind: 'removed', before: 'removed item text' },
+      ],
+      identity: IDENTITY,
+    });
+
+    expect(res?.affected).toEqual([
+      expect.objectContaining({ workItemId: 'WI-ISSUE', itemId: 'P-001', kind: 'changed', family: 'issue' }),
+      expect.objectContaining({ workItemId: 'WI-REMOVED', itemId: 'P-002', kind: 'removed', family: 'feature' }),
+    ]);
+    expect(res?.refreshed).toBe(0);
+    expect(refreshPlanLinkedFeatureWorkItemMock).not.toHaveBeenCalled();
+    expect(getPlanRowMock).not.toHaveBeenCalled();
+    expect(notifyAgentsMock).toHaveBeenCalledTimes(2);
+    expect((notifyAgentsMock.mock.calls[0]![1] as { body: string }).body).toContain(
+      'build a completely different thing',
+    );
+    expect((notifyAgentsMock.mock.calls[1]![1] as { body: string }).body).toContain('REMOVED from the plan');
+    expect(res?.warning).toContain('2 affected row(s) still carry mint-time title/summary/brief snapshots');
   });
 
   it('reports a COLUMN-linked work-item too — the plans:start path carries no payload stamp (EI-13738)', async () => {
@@ -250,6 +359,8 @@ describe('reportPlanItemTextDrift — the post-write push', () => {
     });
     expect(res?.affected).toHaveLength(1);
     expect(res?.notified).toBe(0);
+    expect(res?.refreshed).toBe(0);
+    expect(refreshPlanLinkedFeatureWorkItemMock).not.toHaveBeenCalled();
     expect(notifyAgentsMock).not.toHaveBeenCalled();
     expect(res?.warning).toContain('No holder was notified');
   });

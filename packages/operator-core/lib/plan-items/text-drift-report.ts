@@ -45,6 +45,7 @@ import { notifyAgents } from '../agent-tools/coordination/notify-agents';
 import { issueRef } from '../issues-engineer';
 import type { WorkItem } from '../work-items';
 import { TERMINAL_WORK_ITEM_STATES } from './convert';
+import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
 import {
   derivePlanItemTextDrift,
   type PlanItemTextChange,
@@ -65,6 +66,10 @@ export interface DriftedWorkItem {
   itemId: string;
   /** `removed` ⇒ the plan item is gone entirely, not merely reworded. */
   kind: 'changed' | 'removed';
+  /** The concrete work-item kind from `item_kind`, not the drift kind above. */
+  itemKind: string | null;
+  /** Work-item family derived from `itemKind`; null kinds are legacy feature rows. */
+  family: 'feature' | 'issue';
   title: string | null;
   state: string | null;
   /** The agent currently holding it, when claimed. */
@@ -75,6 +80,8 @@ export interface PlanItemTextDriftReport {
   planSlug: string;
   /** Non-terminal work_items minted from the items this write changed. */
   affected: DriftedWorkItem[];
+  /** Changed feature-family rows refreshed with current plan text/context. */
+  refreshed: number;
   /** Holders actually pinged (<= MAX_DRIFT_NOTIFICATIONS, 0 when unclaimed). */
   notified: number;
   /** One line for the tool result — states the consequence, not just the count. */
@@ -83,6 +90,7 @@ export interface PlanItemTextDriftReport {
 
 interface StampRow {
   feature_id: string;
+  item_kind: string | null;
   harness_slug: string | null;
   title: string | null;
   status: string | null;
@@ -93,6 +101,7 @@ interface StampRow {
 /** The same row via the DB-column linkage, which can name several items. */
 interface ColumnRow {
   feature_id: string;
+  item_kind: string | null;
   harness_slug: string | null;
   title: string | null;
   status: string | null;
@@ -105,6 +114,42 @@ interface ColumnRow {
  *  byte here once corrupted this very file (EI-18896033546676518). */
 function pairKey(workItemId: string, itemId: string): string {
   return `${workItemId}::${itemId}`;
+}
+
+const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
+
+function familyForItemKind(itemKind: string | null): 'feature' | 'issue' {
+  return itemKind && ISSUE_ITEM_KINDS.has(itemKind) ? 'issue' : 'feature';
+}
+
+interface PlanRefreshContext {
+  title: string | null;
+  nowState: string | null;
+  nowNext: string | null;
+  items: Array<{ id: string; text?: string | null; decisionRefs?: string[] }>;
+  decisions: Array<{ id: string; title: string; body: string }>;
+}
+
+/** Load the current plan context once per harness for the post-write refresh. */
+async function loadPlanRefreshContext(
+  planSlug: string,
+  harnessSlug: string,
+): Promise<PlanRefreshContext | null> {
+  try {
+    const { getPlanRow, planItemsForRow } = await import('../agent-tools/plans/source');
+    const row = await getPlanRow(planSlug, { harnessSlug });
+    if (!row) return null;
+    return {
+      title: row.title,
+      nowState: row.nowState,
+      nowNext: row.nowNext,
+      items: planItemsForRow(row),
+      decisions: row.decisions,
+    };
+  } catch {
+    // The plan write already committed; inability to refresh a snapshot is soft.
+    return null;
+  }
 }
 
 /**
@@ -133,6 +178,7 @@ export async function reportPlanItemTextDrift(opts: {
     [stampRows, columnRows] = await Promise.all([
       sql<StampRow[]>`
         SELECT feature_id, harness_slug, title, status, taken_by,
+               item_kind,
                payload->'plan_item'->>'item_id' AS item_id
           FROM harness_shared.work_items
          WHERE payload->'plan_item' IS NOT NULL
@@ -141,7 +187,7 @@ export async function reportPlanItemTextDrift(opts: {
            AND (status IS NULL OR status <> ALL(${terminal}::text[]))
          ORDER BY updated_ts DESC NULLS LAST`,
       sql<ColumnRow[]>`
-        SELECT feature_id, harness_slug, title, status, taken_by, source_plan_item_ids
+        SELECT feature_id, item_kind, harness_slug, title, status, taken_by, source_plan_item_ids
           FROM harness_shared.work_items
          WHERE source_plan_slug = ${opts.planSlug}
            AND source_plan_item_ids && ${itemIds}::text[]
@@ -156,9 +202,17 @@ export async function reportPlanItemTextDrift(opts: {
   // A row can match BOTH mechanisms — dedupe on work-item + item so a holder is
   // never pinged twice for one change.
   const affected: DriftedWorkItem[] = [];
+  const harnessByPair = new Map<string, string | null>();
   const seen = new Set<string>();
   const push = (
-    r: { feature_id: string; title: string | null; status: string | null; taken_by: string | null },
+    r: {
+      feature_id: string;
+      item_kind: string | null;
+      harness_slug: string | null;
+      title: string | null;
+      status: string | null;
+      taken_by: string | null;
+    },
     itemId: string,
   ) => {
     const change = changeById.get(itemId);
@@ -166,10 +220,13 @@ export async function reportPlanItemTextDrift(opts: {
     const key = pairKey(r.feature_id, itemId);
     if (seen.has(key)) return;
     seen.add(key);
+    harnessByPair.set(key, r.harness_slug);
     affected.push({
       workItemId: r.feature_id,
       itemId,
       kind: change.kind,
+      itemKind: r.item_kind,
+      family: familyForItemKind(r.item_kind),
       title: r.title,
       state: r.status,
       holder: r.taken_by,
@@ -183,16 +240,68 @@ export async function reportPlanItemTextDrift(opts: {
   }
   if (affected.length === 0) return null;
 
+  // Refresh only changed feature-family rows. Cache by harness because one write
+  // can affect many holders, while a plan slug can exist in several harnesses.
+  // `notify:false` is a preview mode and must remain side-effect free.
+  const refreshedPairs = new Set<string>();
+  if (opts.notify !== false) {
+    const contextByHarness = new Map<string, Promise<PlanRefreshContext | null>>();
+    let refreshWriter:
+      | (typeof import('../work-items'))['refreshPlanLinkedFeatureWorkItem']
+      | undefined;
+    for (const wi of affected) {
+      if (wi.kind !== 'changed' || wi.family !== 'feature') continue;
+      const key = pairKey(wi.workItemId, wi.itemId);
+      const harnessSlug = (harnessByPair.get(key) ?? opts.harnessSlug ?? '').trim();
+      if (!harnessSlug) continue;
+      let contextPromise = contextByHarness.get(harnessSlug);
+      if (!contextPromise) {
+        contextPromise = loadPlanRefreshContext(opts.planSlug, harnessSlug);
+        contextByHarness.set(harnessSlug, contextPromise);
+      }
+      const context = await contextPromise;
+      const item = context?.items.find((candidate) => candidate.id === wi.itemId);
+      if (!context || !item) continue;
+      try {
+        refreshWriter ??= (await import('../work-items')).refreshPlanLinkedFeatureWorkItem;
+        const compiledBrief =
+          compilePlanItemBrief({
+            itemId: wi.itemId,
+            itemText: item.text ?? '',
+            planTitle: context.title,
+            planFocus: { state: context.nowState, next: context.nowNext },
+            decisions: decisionsForItem(context, wi.itemId),
+          }) || null;
+        const didRefresh = await refreshWriter({
+          workItemId: wi.workItemId,
+          harnessSlug,
+          planSlug: opts.planSlug,
+          itemId: wi.itemId,
+          itemText: item.text ?? '',
+          compiledBrief,
+        });
+        if (didRefresh) refreshedPairs.add(key);
+      } catch {
+        // The write and report remain useful even when one guarded refresh fails.
+      }
+    }
+  }
+
   let notified = 0;
   if (opts.notify !== false) {
     for (const wi of affected.slice(0, MAX_DRIFT_NOTIFICATIONS)) {
       if (!wi.holder) continue; // unclaimed — reported to the editor, nobody to wake
       const change = changeById.get(wi.itemId);
+      const refreshed = refreshedPairs.has(pairKey(wi.workItemId, wi.itemId));
       const body =
         wi.kind === 'removed'
           ? `Plan item ${opts.planSlug}#${wi.itemId} — the item behind your work-item ${wi.workItemId} — was REMOVED from the plan just now. ` +
             `That work-item's title/summary/brief are a snapshot of the item as it read at pickup, and the item behind them no longer exists. ` +
             `Re-read the plan (plans:get) before continuing, and check with the editor whether the work is cancelled or moved.`
+          : refreshed
+            ? `Plan item ${opts.planSlug}#${wi.itemId} — the item behind your work-item ${wi.workItemId} — was REWRITTEN just now. ` +
+              `The system refreshed your feature work-item's title/summary/brief from the current plan text and context. ` +
+              `New text: "${(change?.after ?? '').slice(0, 400)}". Review the refreshed copy before you continue.`
           : `Plan item ${opts.planSlug}#${wi.itemId} — the item behind your work-item ${wi.workItemId} — was REWRITTEN just now. ` +
             `Your work-item's title/summary/brief still carry the wording it had at pickup, and nothing refreshes them. ` +
             `New text: "${(change?.after ?? '').slice(0, 400)}". Re-read it (plans:get-item { slug: '${opts.planSlug}', item: '${wi.itemId}' }) ` +
@@ -204,6 +313,8 @@ export async function reportPlanItemTextDrift(opts: {
           summary:
             wi.kind === 'removed'
               ? `⚠ ${opts.planSlug}#${wi.itemId} was removed from the plan — you hold ${wi.workItemId} for it`
+              : refreshed
+                ? `⚠ ${opts.planSlug}#${wi.itemId} was rewritten — ${wi.workItemId} was refreshed with the current wording`
               : `⚠ ${opts.planSlug}#${wi.itemId} was rewritten — your ${wi.workItemId} carries the old wording`,
           body,
           ...(opts.harnessSlug ? { harnessSlug: opts.harnessSlug } : {}),
@@ -219,18 +330,25 @@ export async function reportPlanItemTextDrift(opts: {
 
   const changedCount = affected.filter((a) => a.kind === 'changed').length;
   const removedCount = affected.length - changedCount;
+  const refreshedCount = refreshedPairs.size;
+  const staleCount = affected.length - refreshedCount;
   const parts: string[] = [];
   if (changedCount > 0) parts.push(`${changedCount} on rewritten item(s)`);
   if (removedCount > 0) parts.push(`${removedCount} on REMOVED item(s)`);
   const warning =
     `This write changed plan-item text that ${affected.length} open work-item(s) were minted from ` +
     `(${parts.join(', ')}): ${affected.map((a) => `${a.workItemId}->${a.itemId}`).join(', ')}. ` +
-    `Their title/summary/brief are mint-time snapshots and are NOT refreshed by this edit` +
+    (refreshedCount > 0
+      ? `${refreshedCount} changed feature-family row(s) were refreshed with the current plan text/context; `
+      : '') +
+    (staleCount > 0
+      ? `${staleCount} affected row(s) still carry mint-time title/summary/brief snapshots`
+      : 'All affected rows were refreshed with the current plan text/context') +
     (notified > 0
       ? `; ${notified} holder(s) were notified.`
       : `. No holder was notified (unclaimed, or notification unavailable) — tell them yourself if the change is material.`);
 
-  return { planSlug: opts.planSlug, affected, notified, warning };
+  return { planSlug: opts.planSlug, affected, refreshed: refreshedCount, notified, warning };
 }
 
 /**
