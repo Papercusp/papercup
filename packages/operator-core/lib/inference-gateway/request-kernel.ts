@@ -163,7 +163,6 @@ export interface ExecuteGatewayRequestKernelOptions<TRoute, TPrepared, TChunk, T
   adapter: GatewayKernelAdapter<TRoute, TPrepared, TChunk, TMetadata>;
   downstream: GatewayKernelDownstream<TChunk, TMetadata>;
   inFlight: GatewayKernelInFlightRegistry;
-  now?: () => number;
 }
 
 export interface GatewayKernelExecutionResult<TRoute> {
@@ -223,6 +222,14 @@ function telemetryProviderForLane(lane: GatewayLaneDescriptor): GatewayTelemetry
   if (lane.observability.provider === 'anthropic') return 'claude';
   if (lane.observability.provider === 'openai') return 'codex';
   return 'local';
+}
+
+function boundedCorrelationId(value: string | undefined, fallback: string): string {
+  const bounded = value
+    ?.trim()
+    .replace(/[^A-Za-z0-9._:@/+\-]/g, '?')
+    .slice(0, 160);
+  return bounded || fallback;
 }
 
 function validatePolicy(policy: GatewayKernelPolicy): void {
@@ -498,14 +505,16 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
   opts: ExecuteGatewayRequestKernelOptions<TRoute, TPrepared, TChunk, TMetadata>,
 ): Promise<GatewayKernelExecutionResult<TRoute>> {
   validatePolicy(opts.policy);
-  const now = opts.now ?? Date.now;
   const provider = telemetryProviderForLane(opts.request.lane);
   const span = opts.telemetry.begin({
     ownerId: opts.request.ownerId,
     provider,
     protocol: opts.request.lane.protocol,
   });
-  const correlationId = opts.request.correlationId?.trim() || `gateway-${span.requestId}`;
+  const correlationId = boundedCorrelationId(
+    opts.request.correlationId,
+    `gateway-${span.requestId}`,
+  );
   const pin = opts.request.pin ?? null;
   const requestController = new AbortController();
   const cancel = (source: AbortSignal) => requestController.abort(
@@ -531,10 +540,10 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     requestId: span.requestId,
     correlationId,
     lane: opts.request.lane,
-    ownerId: opts.request.ownerId?.trim() || null,
+    ownerId: span.ownerId,
     pin,
     signal: requestController.signal,
-    startedAt: now(),
+    startedAt: span.startedAt,
   };
   const triedRouteKeys = new Set<string>();
   let route: GatewayKernelRoute<TRoute> | null = null;
@@ -562,9 +571,10 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     triedRouteKeys.add(route.key);
     span.setTransport(route.transport);
     span.routeSelected();
+    let currentRoute: GatewayKernelRoute<TRoute> = route;
 
     lease = await abortable(
-      Promise.resolve(opts.admission.acquire({ ...base, route })),
+      Promise.resolve(opts.admission.acquire({ ...base, route: currentRoute })),
       requestController.signal,
     );
     span.admitted();
@@ -595,13 +605,13 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
       attempts = attempt;
       const attemptContext: GatewayKernelAttemptContext<TRoute> = {
         ...base,
-        route,
+        route: currentRoute,
         body,
         attempt,
         maxAttempts: opts.policy.maxAttempts,
         triedRouteKeys: [...triedRouteKeys],
       };
-      span.setTransport(route.transport);
+      span.setTransport(currentRoute.transport);
       const measureAuth = provider !== 'local';
       if (measureAuth) span.beginStage('auth');
       let prepared: TPrepared;
@@ -615,10 +625,10 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         await opts.admission.observeAttempt?.({ context: attemptContext, response: null, error: normalized });
         if (normalized.retryable && attempt < opts.policy.maxAttempts) {
           span.beginStage('routeSelection');
-          const next = await selectFailover({
+          const next: GatewayKernelRoute<TRoute> | null = await selectFailover({
             adapter: opts.adapter,
             base,
-            currentRoute: route,
+            currentRoute,
             triedRouteKeys,
             attempt,
             pin,
@@ -627,7 +637,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           });
           span.endStage('routeSelection');
           if (next) {
-            route = next;
+            route = currentRoute = next;
             triedRouteKeys.add(next.key);
             span.recordFailover();
             failovers++;
@@ -657,10 +667,10 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         await opts.admission.observeAttempt?.({ context: attemptContext, response: null, error: normalized });
         if (normalized.retryable && attempt < opts.policy.maxAttempts) {
           span.beginStage('routeSelection');
-          const next = await selectFailover({
+          const next: GatewayKernelRoute<TRoute> | null = await selectFailover({
             adapter: opts.adapter,
             base,
-            currentRoute: route,
+            currentRoute,
             triedRouteKeys,
             attempt,
             pin,
@@ -669,7 +679,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           });
           span.endStage('routeSelection');
           if (next) {
-            route = next;
+            route = currentRoute = next;
             triedRouteKeys.add(next.key);
             span.recordFailover();
             failovers++;
@@ -681,15 +691,20 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         span.endStage('upstreamTtfb');
       }
 
-      validateRoute(opts.request.lane, { ...route, transport: response.transport }, pin, false);
+      validateRoute(
+        opts.request.lane,
+        { ...currentRoute, transport: response.transport },
+        pin,
+        false,
+      );
       span.setTransport(response.transport);
       await opts.admission.observeAttempt?.({ context: attemptContext, response, error: null });
       if (response.retryable && attempt < opts.policy.maxAttempts) {
         span.beginStage('routeSelection');
-        const next = await selectFailover({
+        const next: GatewayKernelRoute<TRoute> | null = await selectFailover({
           adapter: opts.adapter,
           base,
-          currentRoute: route,
+          currentRoute,
           triedRouteKeys,
           attempt,
           pin,
@@ -699,7 +714,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         span.endStage('routeSelection');
         if (next) {
           await response.discard?.();
-          route = next;
+          route = currentRoute = next;
           triedRouteKeys.add(next.key);
           span.recordFailover();
           failovers++;

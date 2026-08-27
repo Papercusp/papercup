@@ -95,6 +95,7 @@ interface FixtureOverrides {
   pin?: GatewayKernelAccountPin | null;
   policy?: Partial<GatewayKernelPolicy>;
   signal?: AbortSignal;
+  downstreamSignal?: AbortSignal;
   selectInitial?: (routeA: GatewayKernelRoute<RouteValue>) => Promise<GatewayKernelRoute<RouteValue>>;
   executeAttempt?: (
     prepared: PreparedAttempt,
@@ -204,6 +205,7 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
       },
     },
     downstream: {
+      signal: overrides.downstreamSignal,
       async start(response) {
         started.push({ status: response.status, metadata: response.metadata });
         events.push(`downstream:start:${response.status}`);
@@ -383,6 +385,32 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
     expect(error).toMatchObject({ code: 'cancelled', outcome: 'cancelled', status: null });
     assertCompleteGatewayRequestTimeline(error.timeline!);
     expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1, failoverCalls: 0 });
+
+    const downstreamController = new AbortController();
+    let downstreamAttemptStarted!: () => void;
+    const downstreamStarted = new Promise<void>((resolve) => {
+      downstreamAttemptStarted = resolve;
+    });
+    const downstream = fixture(lane, {
+      downstreamSignal: downstreamController.signal,
+      executeAttempt: async (_prepared, context) => {
+        downstreamAttemptStarted();
+        return new Promise<KernelResponse>((_resolve, reject) => {
+          context.signal.addEventListener('abort', () => reject(context.signal.reason), { once: true });
+        });
+      },
+    });
+    const downstreamPending = executeGatewayRequestKernel(downstream.options);
+    await downstreamStarted;
+    downstreamController.abort(new Error('downstream disconnected'));
+    const downstreamCancellation = await caughtKernelError(downstreamPending);
+    expect(downstreamCancellation).toMatchObject({
+      code: 'cancelled',
+      outcome: 'cancelled',
+      status: null,
+    });
+    assertCompleteGatewayRequestTimeline(downstreamCancellation.timeline!);
+    expect(downstream.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
   });
 
   it('enforces the whole-request ceiling even when an attempt ignores cancellation', async () => {
