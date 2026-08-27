@@ -193,6 +193,7 @@ afterAll(async () => {
   if (prevApiBase === undefined) delete process.env.INTERNAL_API_BASE;
   else process.env.INTERNAL_API_BASE = prevApiBase;
   await new Promise<void>((r) => server?.close(() => r()));
+  await admin`DELETE FROM harness_shared.plan_revisions WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${SLUG}`.catch(() => {});
   await admin`DELETE FROM harness_shared.harness_plans WHERE plan_slug = ${SLUG}`.catch(() => {});
   await admin`DELETE FROM harness_shared.harness_plan_assertions WHERE plan_slug = ${SLUG}`.catch(() => {});
   await admin`DELETE FROM harness_shared.harness_features_consolidated WHERE harness_slug = ${TARGET}`.catch(() => {});
@@ -299,5 +300,35 @@ describe('plans:promote APPLY path (apply:true, all_waves)', () => {
     // Draft → active on promote.
     expect(body).toMatch(/^status: active$/m);
     expect(body).not.toMatch(/^status: draft$/m);
+  });
+
+  it('records one plan revision for each canonical apply write and keeps the latest snapshot current', async () => {
+    const [plan] = await admin<{ content: string; content_hash: string; version: number }[]>`
+      SELECT content, content_hash, version
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID}
+         AND harness_slug = ${PARENT_HARNESS}
+         AND plan_slug = ${SLUG}
+    `;
+    // Seed version 1, then plans:promote writes once for marking items and once
+    // for the final Promoted/Now/status write-back.
+    expect(plan.version).toBe(3);
+
+    const revisions = await admin<{
+      seq: number;
+      content_hash: string;
+      content_snapshot: string;
+    }[]>`
+      SELECT seq, content_hash, content_snapshot
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID}
+         AND harness_slug = ${PARENT_HARNESS}
+         AND plan_slug = ${SLUG}
+       ORDER BY seq
+    `;
+    expect(revisions.map((row) => row.seq)).toEqual([1, 2]);
+    expect(revisions.every((row) => row.content_snapshot.length > 0)).toBe(true);
+    expect(revisions[1].content_hash).toBe(plan.content_hash);
+    expect(revisions[1].content_snapshot).toBe(plan.content);
   });
 });

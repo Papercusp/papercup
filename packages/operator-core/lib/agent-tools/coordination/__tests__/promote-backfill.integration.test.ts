@@ -182,6 +182,33 @@ describe('plans:promote — WI-3972 backfill of ## Promoted (no policy, already-
     expect(content).toMatch(/^## Promoted\b/m);
     expect(content).toMatch(/F-BACKFILL-001/);
     expect(content).toMatch(/F-BACKFILL-002/);
+
+    const [plan] = await admin<{ content: string; content_hash: string; version: number }[]>`
+      SELECT content, content_hash, version
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID}
+         AND harness_slug = ${PARENT_HARNESS}
+         AND plan_slug = ${SLUG}
+    `;
+    expect(plan.version).toBe(2);
+    expect(plan.content).toBe(content);
+
+    const revisions = await admin<{
+      seq: number;
+      content_hash: string;
+      content_snapshot: string;
+    }[]>`
+      SELECT seq, content_hash, content_snapshot
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID}
+         AND harness_slug = ${PARENT_HARNESS}
+         AND plan_slug = ${SLUG}
+       ORDER BY seq
+    `;
+    expect(revisions).toHaveLength(1);
+    expect(revisions[0].seq).toBe(1);
+    expect(revisions[0].content_hash).toBe(plan.content_hash);
+    expect(revisions[0].content_snapshot).toBe(plan.content);
   });
 
   it('is idempotent — a second apply:true finds nothing new to backfill', async () => {
@@ -191,6 +218,16 @@ describe('plans:promote — WI-3972 backfill of ## Promoted (no policy, already-
     expect(data.mode).toBe('backfill');
     expect(data.backfilled.count).toBe(0);
     expect(data.backfilled.feature_ids).toEqual([]);
+
+    const revisions = await admin<{ seq: number }[]>`
+      SELECT seq
+        FROM harness_shared.plan_revisions
+       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID}
+         AND harness_slug = ${PARENT_HARNESS}
+         AND plan_slug = ${SLUG}
+       ORDER BY seq
+    `;
+    expect(revisions.map((row) => row.seq)).toEqual([1]);
   });
 
   it('regression guard: genuinely nothing to promote AND nothing to backfill still fails no_promote_policy', async () => {
