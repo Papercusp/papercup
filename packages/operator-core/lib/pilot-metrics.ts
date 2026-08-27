@@ -39,6 +39,12 @@ import { type PilotArm } from './pilot-arm-assignment.js';
  */
 export const MIN_EVENTS_FOR_RATE = 5;
 
+/** D-033: the achieved sample floor and preregistered substantive-tier verdict thresholds. */
+export const PILOT_MIN_ARM_N = 7;
+export const PILOT_LARGE_EFFECT_D = 1.6;
+export const PILOT_MIN_SCORE_DELTA = 1;
+export const PILOT_MAX_INCREMENTAL_COST_PER_POINT_REFERENCE_UNITS = 1;
+
 export interface ArmObservation {
   readonly itemId: string;
   readonly arm: PilotArm;
@@ -77,6 +83,9 @@ export interface RareEventCount {
 export interface ArmSummary {
   readonly arm: PilotArm;
   readonly n: number;
+  /** Coverage counters make a partially scored/priced arm mechanically visible. */
+  readonly scoredN: number;
+  readonly costedN: number;
   /** Primary metric. */
   readonly meanScore: number | null;
   readonly sdScore: number | null;
@@ -204,6 +213,8 @@ export function summariseArm(
   return {
     arm,
     n: mine.length,
+    scoredN: scores.length,
+    costedN: perItemCost.length,
     meanScore: mean(scores),
     sdScore: sampleSd(scores),
     scoreCi95: meanCi95(scores),
@@ -219,6 +230,8 @@ export interface PilotReport {
   readonly arms: Readonly<Record<PilotArm, ArmSummary>>;
   /** Effect size of each arm against arm A, the solo baseline. */
   readonly effectVsBaseline: Readonly<Record<'B' | 'C', number | null>>;
+  /** P-008's substantive-tier comparison: directed pair against solo + review. */
+  readonly effectVsReviewGate: Readonly<Record<'C', number | null>>;
   /**
    * The honest reading of what this pilot can and cannot conclude, derived from the
    * ACHIEVED n rather than the planned one — an early-stopped pilot must not inherit the
@@ -245,7 +258,218 @@ export function buildPilotReport(observations: readonly ArmObservation[]): Pilot
       B: cohensD(scoresFor('A'), scoresFor('B')),
       C: cohensD(scoresFor('A'), scoresFor('C')),
     },
+    effectVsReviewGate: {
+      C: cohensD(scoresFor('B'), scoresFor('C')),
+    },
     interpretation: interpretationFor(smallestArm),
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Adaptive tier verdict — D-033 preregistered before any pilot outcome
+ * ------------------------------------------------------------------ */
+
+export type AdaptiveTierGateStatus = 'ready' | 'insufficient-evidence' | 'tripwire-review';
+
+export interface AdaptiveTierPolicy {
+  readonly trivial: 'A';
+  readonly substantive: PilotArm;
+  readonly highRisk: 'C';
+}
+
+export const DEFAULT_ADAPTIVE_TIER_POLICY: AdaptiveTierPolicy = {
+  trivial: 'A',
+  substantive: 'B',
+  highRisk: 'C',
+};
+
+export interface PilotArmComparison {
+  readonly reference: 'A' | 'B';
+  readonly candidate: 'B' | 'C';
+  readonly scoreDelta: number | null;
+  readonly effectSize: number | null;
+  readonly meanCostDeltaUsd: number | null;
+  readonly incrementalCostPerScorePointUsd: number | null;
+  readonly maxIncrementalCostPerScorePointUsd: number | null;
+  readonly largePositiveEffect: boolean;
+  readonly largeNegativeEffect: boolean;
+  readonly costJustified: boolean | null;
+}
+
+export interface AdaptiveTierGateInput {
+  /** The collector's assignment/scorecard/usage evidence has no typed gaps. */
+  readonly collectionComplete: boolean;
+  /** Every observed rare-event tripwire was individually read and dispositioned. */
+  readonly tripwiresAdjudicated?: boolean;
+}
+
+export interface AdaptiveTierGateDecision {
+  readonly status: AdaptiveTierGateStatus;
+  readonly policy: AdaptiveTierPolicy;
+  readonly defaultPreserved: boolean;
+  readonly comparisons: {
+    readonly bVsA: PilotArmComparison;
+    readonly cVsB: PilotArmComparison;
+  };
+  readonly tripwires: {
+    readonly reopened: number;
+    readonly authorityProposed: number;
+    readonly total: number;
+    readonly adjudicated: boolean;
+  };
+  readonly readinessIssues: readonly string[];
+  readonly reason: string;
+}
+
+function finiteOrNull(value: number | null): number | null {
+  return value !== null && Number.isFinite(value) ? value : null;
+}
+
+function comparePilotArms(
+  report: PilotReport,
+  reference: 'A' | 'B',
+  candidate: 'B' | 'C',
+  effectSizeInput: number | null,
+): PilotArmComparison {
+  const referenceScore = finiteOrNull(report.arms[reference].meanScore);
+  const candidateScore = finiteOrNull(report.arms[candidate].meanScore);
+  const referenceCost = finiteOrNull(report.arms[reference].meanCostPerItemUsd);
+  const candidateCost = finiteOrNull(report.arms[candidate].meanCostPerItemUsd);
+  const effectSize = finiteOrNull(effectSizeInput);
+  const scoreDelta =
+    referenceScore === null || candidateScore === null ? null : candidateScore - referenceScore;
+  const meanCostDeltaUsd =
+    referenceCost === null || candidateCost === null ? null : candidateCost - referenceCost;
+  const incrementalCostPerScorePointUsd =
+    scoreDelta === null || scoreDelta <= 0 || meanCostDeltaUsd === null
+      ? null
+      : Math.max(0, meanCostDeltaUsd) / scoreDelta;
+  const maxIncrementalCostPerScorePointUsd =
+    referenceCost === null
+      ? null
+      : referenceCost * PILOT_MAX_INCREMENTAL_COST_PER_POINT_REFERENCE_UNITS;
+  const costJustified =
+    incrementalCostPerScorePointUsd === null || maxIncrementalCostPerScorePointUsd === null
+      ? null
+      : incrementalCostPerScorePointUsd <= maxIncrementalCostPerScorePointUsd;
+
+  return {
+    reference,
+    candidate,
+    scoreDelta,
+    effectSize,
+    meanCostDeltaUsd,
+    incrementalCostPerScorePointUsd,
+    maxIncrementalCostPerScorePointUsd,
+    largePositiveEffect:
+      scoreDelta !== null &&
+      effectSize !== null &&
+      scoreDelta >= PILOT_MIN_SCORE_DELTA &&
+      effectSize >= PILOT_LARGE_EFFECT_D,
+    largeNegativeEffect:
+      scoreDelta !== null &&
+      effectSize !== null &&
+      scoreDelta <= -PILOT_MIN_SCORE_DELTA &&
+      effectSize <= -PILOT_LARGE_EFFECT_D,
+    costJustified,
+  };
+}
+
+/**
+ * Turn a complete P-007 report into P-008's tier policy without outcome-time judgement.
+ *
+ * The default is deliberately sticky: at n=7/arm an inconclusive result cannot rule out a
+ * moderate benefit, so it preserves D-007's arm B rather than silently reading null as parity.
+ */
+export function deriveAdaptiveTierGate(
+  report: PilotReport,
+  input: AdaptiveTierGateInput,
+): AdaptiveTierGateDecision {
+  const bVsA = comparePilotArms(report, 'A', 'B', report.effectVsBaseline.B);
+  const cVsB = comparePilotArms(report, 'B', 'C', report.effectVsReviewGate.C);
+  const readinessIssues: string[] = [];
+
+  if (!input.collectionComplete) readinessIssues.push('collector reported typed evidence gaps');
+  for (const arm of ['A', 'B', 'C'] as const) {
+    const summary = report.arms[arm];
+    if (summary.n < PILOT_MIN_ARM_N) {
+      readinessIssues.push(`arm ${arm} achieved n=${summary.n}; need >=${PILOT_MIN_ARM_N}`);
+    }
+    if (summary.scoredN !== summary.n) {
+      readinessIssues.push(`arm ${arm} has scores for ${summary.scoredN}/${summary.n} item(s)`);
+    }
+    if (summary.costedN !== summary.n) {
+      readinessIssues.push(`arm ${arm} has costs for ${summary.costedN}/${summary.n} item(s)`);
+    }
+  }
+  if (bVsA.effectSize === null) readinessIssues.push('B-vs-A effect size is unavailable');
+  if (cVsB.effectSize === null) readinessIssues.push('C-vs-B effect size is unavailable');
+
+  const reopened = (['A', 'B', 'C'] as const).reduce(
+    (sum, arm) => sum + report.arms[arm].reopened.events,
+    0,
+  );
+  const authorityProposed = (['A', 'B', 'C'] as const).reduce(
+    (sum, arm) => sum + report.arms[arm].authorityProposed.events,
+    0,
+  );
+  const tripwires = {
+    reopened,
+    authorityProposed,
+    total: reopened + authorityProposed,
+    adjudicated: input.tripwiresAdjudicated === true,
+  } as const;
+  const defaultPolicy = { ...DEFAULT_ADAPTIVE_TIER_POLICY };
+  const base = { comparisons: { bVsA, cVsB }, tripwires, readinessIssues } as const;
+
+  if (readinessIssues.length) {
+    return {
+      ...base,
+      status: 'insufficient-evidence',
+      policy: defaultPolicy,
+      defaultPreserved: true,
+      reason: `D-007 policy preserved: ${readinessIssues.join('; ')}.`,
+    };
+  }
+  if (tripwires.total > 0 && !tripwires.adjudicated) {
+    return {
+      ...base,
+      status: 'tripwire-review',
+      policy: defaultPolicy,
+      defaultPreserved: true,
+      reason:
+        `D-007 policy preserved pending individual review of ${tripwires.reopened} reopen ` +
+        `and ${tripwires.authorityProposed} proposed-authority event(s).`,
+    };
+  }
+
+  // Large detected harm takes precedence over upgrading a policy whose reference arm failed.
+  if (bVsA.largeNegativeEffect) {
+    return {
+      ...base,
+      status: 'ready',
+      policy: { ...defaultPolicy, substantive: 'A' },
+      defaultPreserved: false,
+      reason: 'Substantive tier demoted to A: B showed preregistered large harm versus A.',
+    };
+  }
+  if (cVsB.largePositiveEffect && cVsB.costJustified === true) {
+    return {
+      ...base,
+      status: 'ready',
+      policy: { ...defaultPolicy, substantive: 'C' },
+      defaultPreserved: false,
+      reason: 'Substantive tier promoted to C: C showed a large, cost-justified effect versus B.',
+    };
+  }
+  return {
+    ...base,
+    status: 'ready',
+    policy: defaultPolicy,
+    defaultPreserved: true,
+    reason:
+      'Substantive tier remains B: no preregistered large, cost-justified C-over-B effect or ' +
+      'large B harm was detected; an inconclusive screening result is not parity.',
   };
 }
 

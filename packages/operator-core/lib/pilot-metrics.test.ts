@@ -1,11 +1,16 @@
 import { describe, it, expect } from 'vitest';
 
 import {
+  DEFAULT_ADAPTIVE_TIER_POLICY,
   MIN_EVENTS_FOR_RATE,
+  PILOT_LARGE_EFFECT_D,
+  PILOT_MIN_ARM_N,
+  PILOT_MIN_SCORE_DELTA,
   type ArmObservation,
   buildPilotReport,
   cohensD,
   countRareEvent,
+  deriveAdaptiveTierGate,
   interpretationFor,
   meanCi95,
   sampleSd,
@@ -123,9 +128,12 @@ describe('buildPilotReport', () => {
   it('summarises every arm and sizes the effect against the solo baseline', () => {
     const report = buildPilotReport(cohort);
     expect(report.arms.A.n).toBe(7);
+    expect(report.arms.A.scoredN).toBe(7);
+    expect(report.arms.A.costedN).toBe(7);
     expect(report.arms.C.n).toBe(7);
     expect(report.effectVsBaseline.B).toBeGreaterThan(0);
     expect(report.effectVsBaseline.C).toBeGreaterThan(0);
+    expect(report.effectVsReviewGate.C).toBeGreaterThan(0);
     // The pair costs roughly double per item — the number the quality gain must justify.
     expect(report.arms.C.meanCostPerItemUsd! / report.arms.A.meanCostPerItemUsd!)
       .toBeCloseTo(2, 1);
@@ -155,6 +163,121 @@ describe('buildPilotReport', () => {
     const noC = buildPilotReport(cohort.filter((o) => o.arm !== 'C'));
     expect(noC.interpretation).toMatch(/nothing can be concluded/i);
     expect(noC.effectVsBaseline.C).toBeNull();
+  });
+});
+
+describe('deriveAdaptiveTierGate — D-033 preregistered verdict', () => {
+  const arm = (
+    label: PilotArm,
+    scores: readonly number[],
+    cost: number,
+    over: Partial<ArmObservation> = {},
+  ): ArmObservation[] => scores.map((score, i) => obs(label, score, {
+    itemId: `WI-${label}-${i}`,
+    agentCostsUsd: label === 'C' ? [cost / 2, cost / 2] : [cost],
+    ...over,
+  }));
+
+  const report = (
+    a: readonly number[],
+    b: readonly number[],
+    c: readonly number[],
+    costs: readonly [number, number, number] = [1, 1.1, 2],
+    over: Partial<ArmObservation> = {},
+  ) => buildPilotReport([
+    ...arm('A', a, costs[0], over),
+    ...arm('B', b, costs[1], over),
+    ...arm('C', c, costs[2], over),
+  ]);
+
+  const a = [5, 6, 5, 6, 5, 6, 5];
+  const b = [5, 6, 6, 5, 6, 5, 6];
+  const c = [8, 9, 8, 9, 8, 9, 8];
+
+  it('pins the thresholds to D-022 and preserves D-007 as the default policy', () => {
+    expect(PILOT_MIN_ARM_N).toBe(7);
+    expect(PILOT_LARGE_EFFECT_D).toBe(1.6);
+    expect(PILOT_MIN_SCORE_DELTA).toBe(1);
+    expect(DEFAULT_ADAPTIVE_TIER_POLICY).toEqual({ trivial: 'A', substantive: 'B', highRisk: 'C' });
+  });
+
+  it('promotes substantive work to C only for a large, cost-justified C-over-B effect', () => {
+    const decision = deriveAdaptiveTierGate(report(a, b, c), { collectionComplete: true });
+    expect(decision.status).toBe('ready');
+    expect(decision.policy.substantive).toBe('C');
+    expect(decision.comparisons.cVsB.largePositiveEffect).toBe(true);
+    expect(decision.comparisons.cVsB.costJustified).toBe(true);
+  });
+
+  it('retains B when the quality effect is large but its incremental price is too high', () => {
+    const decision = deriveAdaptiveTierGate(report(a, b, c, [1, 1.1, 6]), {
+      collectionComplete: true,
+    });
+    expect(decision.status).toBe('ready');
+    expect(decision.policy.substantive).toBe('B');
+    expect(decision.comparisons.cVsB.largePositiveEffect).toBe(true);
+    expect(decision.comparisons.cVsB.costJustified).toBe(false);
+  });
+
+  it('demotes substantive work to A only when B shows preregistered large harm', () => {
+    const harmedB = [2, 3, 2, 3, 2, 3, 2];
+    const similarC = [2, 3, 3, 2, 3, 2, 3];
+    const decision = deriveAdaptiveTierGate(report(a, harmedB, similarC), {
+      collectionComplete: true,
+    });
+    expect(decision.status).toBe('ready');
+    expect(decision.policy.substantive).toBe('A');
+    expect(decision.comparisons.bVsA.largeNegativeEffect).toBe(true);
+  });
+
+  it('preserves B on an inconclusive screening result instead of reading null as parity', () => {
+    const nearB = [5, 6, 5, 6, 6, 5, 6];
+    const nearC = [6, 5, 6, 5, 6, 5, 6];
+    const decision = deriveAdaptiveTierGate(report(a, nearB, nearC), {
+      collectionComplete: true,
+    });
+    expect(decision.status).toBe('ready');
+    expect(decision.policy.substantive).toBe('B');
+    expect(decision.defaultPreserved).toBe(true);
+    expect(decision.reason).toMatch(/inconclusive screening result is not parity/i);
+  });
+
+  it('fails closed when collection, score, cost, or achieved-n evidence is incomplete', () => {
+    const observations = [
+      ...arm('A', a, 1),
+      ...arm('B', b, 1.1),
+      ...arm('C', c.slice(0, 6), 2),
+    ];
+    observations[0] = { ...observations[0], agentCostsUsd: undefined };
+    const decision = deriveAdaptiveTierGate(buildPilotReport(observations), {
+      collectionComplete: false,
+    });
+    expect(decision.status).toBe('insufficient-evidence');
+    expect(decision.policy).toEqual(DEFAULT_ADAPTIVE_TIER_POLICY);
+    expect(decision.readinessIssues).toEqual(expect.arrayContaining([
+      expect.stringMatching(/typed evidence gaps/i),
+      expect.stringMatching(/arm A has costs for 6\/7/i),
+      expect.stringMatching(/arm C achieved n=6/i),
+    ]));
+  });
+
+  it('requires individual rare-event adjudication before changing the policy', () => {
+    const observations = [
+      ...arm('A', a, 1),
+      ...arm('B', b, 1.1),
+      ...arm('C', c, 2),
+    ];
+    observations[0] = { ...observations[0], reopened: true };
+    const pilot = buildPilotReport(observations);
+    const held = deriveAdaptiveTierGate(pilot, { collectionComplete: true });
+    const cleared = deriveAdaptiveTierGate(pilot, {
+      collectionComplete: true,
+      tripwiresAdjudicated: true,
+    });
+    expect(held.status).toBe('tripwire-review');
+    expect(held.policy).toEqual(DEFAULT_ADAPTIVE_TIER_POLICY);
+    expect(cleared.status).toBe('ready');
+    expect(cleared.policy.substantive).toBe('C');
   });
 });
 
