@@ -124,7 +124,7 @@ const EDGE_WRITERS: ReadonlyMap<string, WriterEntry> = new Map([
       provenBy:
         'The features HTTP route. It passes (harness, featureId, blockedBy) straight to ' +
         'syncFeatureBlockEdges with no per-endpoint construction of its own, so the writer ' +
-        "proof covers it; the pass-through is asserted below so that stays true. It is NOT " +
+        'proof covers it; the pass-through is asserted below so that stays true. It is NOT ' +
         'independently covered if it ever starts building endpoints itself.',
     },
   ],
@@ -260,9 +260,7 @@ describe('dependency edge WRITERS are an enumerated set (P-008)', () => {
   });
 
   it('every entry names a non-trivial proof (an unproven writer cannot sit here quietly)', () => {
-    const thin = [...EDGE_WRITERS.entries()]
-      .filter(([, e]) => e.provenBy.trim().length < 40)
-      .map(([rel]) => rel);
+    const thin = [...EDGE_WRITERS.entries()].filter(([, e]) => e.provenBy.trim().length < 40).map(([rel]) => rel);
     expect(thin, 'EDGE_WRITERS entries whose provenBy does not name a proof.').toEqual([]);
   });
 
@@ -300,9 +298,7 @@ describe('the census DETECTS a writer (so its empty results mean something)', ()
     // The exact shape five live modules have: the writer named only in documentation. If this
     // read as a call, the allowlist would have to absorb the drift monitor and the invariant
     // registry, and the census would stop distinguishing writers from readers.
-    expect(callsWriter(withoutComments('// repair by re-running syncWorkItemDepEdges(...) for the item'))).toBe(
-      false,
-    );
+    expect(callsWriter(withoutComments('// repair by re-running syncWorkItemDepEdges(...) for the item'))).toBe(false);
     expect(callsWriter(withoutComments(' * Mirrors syncFeatureBlockEdges(harness, id, [])'))).toBe(false);
   });
 
