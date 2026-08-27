@@ -213,6 +213,10 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('coord:orient')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
     expect(timeoutForTool('release:trace')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:presence')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-21562940235111441: the fleet-scope reconciliation has its own 30s
+    // server watchdog; ptool must leave enough time for its typed timeout
+    // result to cross the MCP transport instead of racing it at 30s.
+    expect(timeoutForTool('scheduler:get_next')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:get',
       args: { slug: 'nonp2p-bug-drain-fleet-2026-08-16', harness: 'papercusp' },
@@ -228,6 +232,10 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'coord:presence',
       args: { owner: 'su-b215e3bd-66d1-42ce-8186-55df285710be' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'scheduler:get_next',
+      args: { harness: 'papercusp' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:set-plan-status',
