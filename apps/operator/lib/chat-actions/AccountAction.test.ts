@@ -290,3 +290,91 @@ describe('--account=default is READ from the launch argv, not guessed at', () =>
     expect(axis().current(argvCtx([])).value).toBe('unpinned');
   });
 });
+
+/**
+ * WI-42439 — the pill tested ONE gateway-free spelling; the writer accepts THREE.
+ *
+ * `resolveAccountPin` (bootstrap-su.ts) routes `default`, `none` AND `system` around the
+ * inference gateway, but `gatewayFree` here read `launchAccount === 'default'` alone. On a
+ * `--account=system` session the menu therefore offered every pool account as a clickable
+ * pin: the click writes durably, `accounts:pin` returns ok, and routing never changes —
+ * the silent no-op this module's own header cites EI-20208335287200289 for.
+ *
+ * Measured live BEFORE the fix (isolated Tauri rig, DISPLAY :91, bridge pid 952615, on a
+ * real `--account=system` session): the `__default` row read aria-disabled="true" in the
+ * same render — so the code COULD disable a row — while all 12 pool rows read "false".
+ * 25 live claude sessions were on `--account=system` at that moment.
+ *
+ * The first case is the CLASS guard: its inputs are derived from the shared spelling set,
+ * so a spelling added to the writer without teaching the pill fails here instead of shipping.
+ */
+describe('WI-42439 — every gateway-free --account spelling disables live re-pinning', () => {
+  const argvCtx = (launchArgv: unknown): ChatActionContext =>
+    ({ sessionOwnerId: OWNER, accountPin: null, launchArgv }) as ChatActionContext;
+
+  it.each([...GATEWAY_FREE_ACCOUNT_SPELLINGS])(
+    'CLASS GUARD: --account=%s disables the pool rows, Auto, and the write',
+    async (spelling) => {
+      const rows = accountOptions([{ id: 'aviynw3' }, { id: 'aviynw4' }], spelling);
+      for (const r of rows) {
+        expect(r.disabled, `${r.id} must not be settable on --account=${spelling}`).toBe(true);
+      }
+      expect(rows.find((o) => o.id === 'aviynw3')!.hint).toMatch(/bypasses the inference gateway/i);
+
+      // The pill must not tell the owner a pin would take effect.
+      const title = axis().current(argvCtx(['psu', `--account=${spelling}`])).title!;
+      expect(title).toMatch(/bypasses the inference gateway/i);
+      expect(title).not.toMatch(/pinning here overrides/i);
+
+      // And set() refuses BEFORE the call — the call itself would have succeeded.
+      fetchMock.mockResolvedValue({
+        ok: true,
+        text: async () => JSON.stringify({ ok: true, appliedLive: true }),
+      });
+      await expect(
+        axis().set(argvCtx(['psu', `--account=${spelling}`]), 'aviynw3'),
+      ).rejects.toThrow(/respawn/i);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('the exact pre-fix regression: --account=system claimed a pin would override routing', () => {
+    /* The literal false sentence the owner saw, pinned so a revert cannot restore it quietly. */
+    const title = axis().current(argvCtx(['psu', '--account=system'])).title!;
+    expect(title).not.toContain('pinning here overrides that routing for this session');
+  });
+
+  it('is case- and whitespace-insensitive, matching the writer that lower-cases first', () => {
+    for (const v of [' System ', 'DEFAULT', 'None']) {
+      expect(
+        accountOptions([{ id: 'aviynw3' }], v).find((o) => o.id === 'aviynw3')!.disabled,
+      ).toBe(true);
+    }
+  });
+
+  it('CONTROL: a genuinely gateway-routed session is still fully settable', async () => {
+    /* Without this the suite would also pass if the fix simply disabled EVERYTHING. */
+    const rows = accountOptions([{ id: 'aviynw3' }], 'auto');
+    expect(rows.find((o) => o.id === 'aviynw3')!.disabled).toBeUndefined();
+    expect(rows.find((o) => o.id === 'auto')!.disabled).toBeUndefined();
+    expect(rows.find((o) => o.id === '__default')!.disabled).toBe(true);
+
+    fetchMock.mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ ok: true, appliedLive: true }),
+    });
+    await expect(
+      axis().set(argvCtx(['psu', '--account=aviynw3']), 'aviynw4'),
+    ).resolves.not.toThrow();
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('CONTROL: an unknown argv still does not disable the menu', () => {
+    for (const argv of [[], undefined]) {
+      expect(axis().current(argvCtx(argv)).title).not.toMatch(/bypasses the inference gateway/i);
+    }
+    expect(
+      accountOptions([{ id: 'aviynw3' }], undefined).find((o) => o.id === 'aviynw3')!.disabled,
+    ).toBeUndefined();
+  });
+});
