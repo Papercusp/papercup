@@ -735,12 +735,18 @@ export interface BasedOnEntry {
 }
 
 const blockingArg = z
-  .boolean()
+  .boolean({
+    error:
+      'blocking must be the BOOLEAN `true` or `false`, not explanatory text. Put the explanation in ' +
+      '`body` section text and a checkable blocker in `body[].blockedOn`.',
+  })
   .optional()
   .describe(
-    'ENVELOPE. Is the SENDER blocked until this is dealt with? A scheduler acts on a message as a ' +
-      'UNIT, which is why this cannot vary per section. Distinct from `expects`: `expects` is what ' +
-      'you want BACK, `blocking` is what it costs you to wait for it.',
+    'ENVELOPE. Optional BOOLEAN flag: pass the literal `true` or `false`. Is the SENDER blocked until ' +
+      'this is dealt with? A scheduler acts on a message as a UNIT, which is why this cannot vary per ' +
+      'section. Distinct from `expects`: `expects` is what you want BACK, `blocking` is what it costs ' +
+      'you to wait for it. Do not put explanatory prose in this field; put the explanation in `body` ' +
+      'section text and a checkable blocker in `body[].blockedOn`.',
   );
 
 // ─────────────────────────────────────────────────────────────────────────────

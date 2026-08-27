@@ -81,6 +81,44 @@ describe('EI-20223353810864057 — primary coord:send guidance names required su
   });
 });
 
+describe('EI-216010 — `blocking` teaches its boolean envelope shape', () => {
+  it('refuses explanatory strings with the accepted literals and the detail field named', () => {
+    const args = {
+      to: ['peer'],
+      summary: 'hi',
+      expects: 'none',
+      blocking: 'waiting on the validator',
+    };
+    const msg = refusal(args);
+
+    expect(paths(args)).toContain('blocking');
+    expect(msg).toMatch(/BOOLEAN/);
+    expect(msg).toMatch(/`true`/);
+    expect(msg).toMatch(/`false`/);
+    expect(msg).toMatch(/`body`/);
+    expect(msg).toMatch(/`body\[\]\.blockedOn`/);
+    expect(msg).not.toMatch(/expected boolean, received string/i);
+  });
+
+  it.each([true, false, undefined])('still accepts blocking=%p', (blocking) => {
+    expect(
+      sendTool.args.safeParse({ to: ['peer'], summary: 'hi', expects: 'none', blocking }).success,
+    ).toBe(true);
+  });
+
+  it('publishes the boolean contract and where blocker prose belongs', () => {
+    const schema = z.toJSONSchema(sendTool.args) as {
+      properties?: { blocking?: { description?: string; type?: string } };
+    };
+    const blockingDescription = schema.properties?.blocking?.description ?? '';
+
+    expect(schema.properties?.blocking?.type).toBe('boolean');
+    expect(blockingDescription).toMatch(/literal `true` or `false`/i);
+    expect(blockingDescription).toMatch(/explanatory prose/i);
+    expect(blockingDescription).toMatch(/body.*blockedOn/i);
+  });
+});
+
 /** Every issue message from a failed parse, joined — order-independent matching. */
 function refusal(args: unknown): string {
   const r = sendTool.args.safeParse(args);
