@@ -1,0 +1,140 @@
+/**
+ * Production adapters for `system:consult-expiry-sweep`.
+ * EI-21559794492221235 · pattern reference: `../acceptance-grading-sweep-observe.ts`
+ *
+ * ── WHY THIS IS ITS OWN MODULE ─────────────────────────────────────────────────
+ * `consult-expiry-core.ts` is pure and integration-tested, and that is exactly what
+ * made this blind spot easy to miss: the CORE was covered, so the sweep read as
+ * tested. But the three adapters that bind that core to real services —
+ * `emitReplyEvent`, `reach`, `revive` — lived as lambdas inside the
+ * `registerSystemAction` closure in `../harness/routines/consult-expiry-action.ts`.
+ * Nothing outside that closure could reach them, so a test could only pin their
+ * SOURCE TEXT, never execute them.
+ *
+ * That is not a hypothetical gap. It is the same shape as the defect in
+ * `acceptance-grading-sweep-observe`: a closure-sealed adapter read a field that did
+ * not exist, returned a falsy value on every row, and stayed invisible to 75 passing
+ * tests because no test could call it.
+ *
+ * ── WHAT THE ADAPTERS ACTUALLY DECIDE ──────────────────────────────────────────
+ * These are not pass-throughs, which is the reason they are worth executing:
+ *
+ *   - `consult_state` is workspace-PARTITIONED and ONE sweep serves every workspace,
+ *     so the workspace must ride on each CALL. Taking it from the routine's ambient
+ *     scope instead would silently address the wrong tenant — and would still pass
+ *     every core test, because the core supplies the workspace and never checks where
+ *     the adapter got it from.
+ *   - `reach` must build its system identity per row from `opts.workspaceId`, and must
+ *     narrow `notifyAgents`' richer result down to the `{ woke }` the core consumes.
+ *   - `revive` must split one flat `opts` across the reviver's TWO parameters — the
+ *     consult triple in the first, the workspace context in the second. Threading
+ *     `workspaceId` into the wrong one is a one-word mistake with no type error.
+ *
+ * Dependencies arrive as parameters and the service shapes are declared structurally,
+ * so a test can drive these with fakes and this module stays off the events-engine,
+ * notify-agents, and reviver import graphs.
+ */
+import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import type { NotifyAgentsOpts, NotifyAgentsResult } from '../agent-tools/coordination/notify-agents';
+import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
+import type { ExpirySweepDeps } from './consult-expiry-core';
+import type { ConsultReviveContext, ConsultReviveResult } from './revive-responder';
+
+/** The ownerId this sweep acts under. Exported so a test asserts the real constant
+ *  rather than re-typing the string it is checking against. */
+export const CONSULT_EXPIRY_SWEEP_OWNER_ID = 'system:consult-expiry-sweep';
+
+// The service shapes below are `import type` only — erased at runtime — so this module
+// binds to the REAL contracts (a drifted parameter is a compile error here) without
+// pulling the events engine, notify-agents, or the reviver onto its import graph.
+
+/** What this module needs from `emitAwaitedEvent`. */
+export type AwaitedEventEmitter = (input: EmitAwaitedEventOpts) => Promise<EmitResult>;
+
+/** What this module needs from `notifyAgents`. */
+export type AgentNotifier = (
+  identity: AgentIdentity,
+  opts: NotifyAgentsOpts,
+) => Promise<NotifyAgentsResult>;
+
+/** What this module needs from `reviveConsultResponder` — note the TWO-parameter
+ *  shape, which is the thing the adapter has to get right. */
+export type ResponderReviver = (
+  opts: { ownerId: string; conversationId: string; brief: string },
+  ctx: ConsultReviveContext,
+) => Promise<ConsultReviveResult>;
+
+/**
+ * The per-row workspace SYSTEM identity the sweep acts under.
+ *
+ * Identity cannot come from the routine's ALS scope: `consult_state` is
+ * workspace-partitioned and one sweep serves every workspace (mirrors `probeIdentity`
+ * in `coord-invariant-actions.ts`).
+ */
+export function sweepIdentity(workspaceId: string): AgentIdentity {
+  return {
+    ownerId: CONSULT_EXPIRY_SWEEP_OWNER_ID,
+    ownerLabel: 'consult expiry sweep',
+    source: 'omp-hook-session',
+    workspaceId,
+    userId: null,
+  } as AgentIdentity;
+}
+
+/**
+ * Latched `consult:reply:<conv>` emit → the (possibly parked) requester.
+ * The emit must land in the ROW's workspace, not the routine's ambient scope.
+ */
+export function consultExpiryEmitReplyEvent(
+  emit: AwaitedEventEmitter,
+): ExpirySweepDeps['emitReplyEvent'] {
+  return async (e) => {
+    await emit({
+      key: e.key,
+      summary: e.summary,
+      payload: e.payload,
+      to: e.to,
+      workspaceId: e.workspaceId,
+      source: 'consult-expiry-sweep',
+    });
+  };
+}
+
+/**
+ * D-005 cascade advance: an unanswered window elapsing wakes the NEXT selectee
+ * exactly like a decline does — subscribe + ping + wake, so the selectee joins the
+ * consult conversation durably.
+ */
+export function consultExpiryReach(
+  notify: AgentNotifier,
+): NonNullable<ExpirySweepDeps['reach']> {
+  return async (opts) => {
+    const r = await notify(sweepIdentity(opts.workspaceId), {
+      addressees: [opts.responder],
+      objectRef: { kind: 'conversation', ref: opts.conversationId },
+      summary: opts.summary,
+      body: opts.body,
+      wake: true,
+    });
+    return { woke: r.woke };
+  };
+}
+
+/**
+ * EI-20864690354207496 refill-exhaustion revival: carry-respawn a dead above-floor
+ * candidate when a due row's cascade exhausts below `selection.min`. `launchedBy` is
+ * stamped as the sweep so the spawn is attributable back to it.
+ */
+export function consultExpiryRevive(
+  revive: ResponderReviver,
+): NonNullable<ExpirySweepDeps['revive']> {
+  return async (opts) =>
+    revive(
+      { ownerId: opts.ownerId, conversationId: opts.conversationId, brief: opts.brief },
+      {
+        workspaceId: opts.workspaceId,
+        harnessSlug: null,
+        launchedBy: CONSULT_EXPIRY_SWEEP_OWNER_ID,
+      },
+    );
+}
