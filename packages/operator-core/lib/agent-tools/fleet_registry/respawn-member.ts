@@ -245,6 +245,76 @@ function launchOutcome(res: unknown): { ok: boolean; text: string } {
   return { ok: !env.isError, text: env.content?.[0]?.text ?? '' };
 }
 
+type RespawnFailureHeadcount = {
+  target: number;
+  current: number | null;
+  shortfall: number | null;
+  underStrength: boolean | null;
+  verdict: 'at-target' | 'under-strength' | 'unknown';
+  memberOwnerIds?: string[];
+};
+
+/**
+ * Read the fleet's member-seat census after a replacement launch fails. A failed launch does not
+ * itself prove that the fleet is down a member: another live member may already satisfy the
+ * saved target (the common over-capacity/ghost-drain case). Keep a failed roster read UNKNOWN so
+ * a transient diagnostic failure cannot be misreported as either a healthy or under-strength
+ * fleet. The drained owner and durable fleet leader do not occupy member seats.
+ */
+async function readRespawnFailureHeadcount(opts: {
+  target: number;
+  drainedOwnerId: string;
+  leaderOwnerId: string | null;
+  list: () => Promise<FleetPresenceRow[]>;
+}): Promise<RespawnFailureHeadcount> {
+  try {
+    const excluded = new Set([opts.drainedOwnerId, opts.leaderOwnerId].filter((id): id is string => Boolean(id)));
+    const memberOwnerIds = [...new Set((await opts.list())
+      .map((row) => row.ownerId)
+      .filter((ownerId) => !excluded.has(ownerId)))];
+    const current = memberOwnerIds.length;
+    const shortfall = Math.max(0, opts.target - current);
+    return {
+      target: opts.target,
+      current,
+      shortfall,
+      underStrength: shortfall > 0,
+      verdict: shortfall > 0 ? 'under-strength' : 'at-target',
+      memberOwnerIds,
+    };
+  } catch {
+    return {
+      target: opts.target,
+      current: null,
+      shortfall: null,
+      underStrength: null,
+      verdict: 'unknown',
+    };
+  }
+}
+
+function respawnFailureMessage(headcount: RespawnFailureHeadcount): string {
+  if (headcount.verdict === 'at-target') {
+    return (
+      `old member drained but the replacement launch FAILED — the fleet remains at target ` +
+      `(${headcount.current} LIVE member${headcount.current === 1 ? '' : 's'} of ${headcount.target}); ` +
+      'do not relaunch a replacement.'
+    );
+  }
+  if (headcount.verdict === 'under-strength') {
+    return (
+      `old member drained but the replacement launch FAILED — the fleet is under-strength ` +
+      `(${headcount.current} LIVE member${headcount.current === 1 ? '' : 's'} of ${headcount.target}, ` +
+      `SHORT BY ${headcount.shortfall}); retry the replacement launch (capability:launch-agent).`
+    );
+  }
+  return (
+    `old member drained but the replacement launch FAILED — the live fleet headcount could not ` +
+    `be verified against target ${headcount.target}; do not assume the fleet is down one member. ` +
+    'Re-read fleet:status before retrying.'
+  );
+}
+
 /**
  * Validate the persisted persona before respawn-member performs its destructive drain.
  * capability:launch-agent runs the same prompt assembly check, but that check occurs only
@@ -633,6 +703,12 @@ export default defineTool({
     );
 
     if (!launch.ok) {
+      const headcount = await readRespawnFailureHeadcount({
+        target: savedLaunchSpec.target,
+        drainedOwnerId: memberOwnerId,
+        leaderOwnerId: target.fleet.leaderOwnerId,
+        list: () => listFleetPresence(workspaceId, slug),
+      });
       return json(
         {
           ok: false,
@@ -652,7 +728,8 @@ export default defineTool({
             preservedFields: savedLaunchSpec.preservedFields,
           },
           verified: false,
-          message: 'old member drained but the replacement launch FAILED — the fleet is down one member; relaunch it (capability:launch-agent) or retry.',
+          headcount,
+          message: respawnFailureMessage(headcount),
         },
         true,
       );

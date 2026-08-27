@@ -27,6 +27,7 @@ const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
 const SLUG = 'rocket';
 let persistedRole = 'su';
+let persistedTarget = 16;
 
 vi.mock('./member-target', () => ({
   resolveFleetMemberTarget: (...a: unknown[]) => resolveFleetMemberTarget(...a),
@@ -96,6 +97,7 @@ describe('fleet:respawn-member — ambient workspace transaction safety (EI-2021
 beforeEach(() => {
   vi.clearAllMocks();
   persistedRole = 'su';
+  persistedTarget = 16;
   getPresence.mockResolvedValue({ potSlug: 'papercusp' });
   getSessionBrief.mockResolvedValue(null);
   resolveProjectDir.mockResolvedValue('/tmp/papercusp');
@@ -147,7 +149,7 @@ beforeEach(() => {
     return {
       ok: true,
       found: true,
-      target: 16,
+      target: persistedTarget,
       config: {
         plan: 'byoc-plan',
         harness: 'papercusp',
@@ -168,7 +170,7 @@ beforeEach(() => {
         source: 'fleet:headcount-target',
         workspaceId: 'ws',
         fleetSlug: SLUG,
-        target: 16,
+        target: persistedTarget,
       },
       reusePath: opts.reusePath,
     };
@@ -546,13 +548,54 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(launchHandler).toHaveBeenCalledTimes(1);
   });
 
-  it('reports the down-a-member failure when the relaunch fails after a successful kill', async () => {
+  it('reports the under-strength failure when the relaunch fails after a successful kill', async () => {
+    persistedTarget = 3;
+    listFleetPresence.mockReset()
+      .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
+      .mockResolvedValueOnce([row(LEADER), row('surviving-member')]);
     launchHandler.mockResolvedValue({ content: [{ type: 'text', text: 'launch failed: no capacity' }], isError: true });
     const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
     const p = parse(res);
     expect(p.ok).toBe(false);
-    expect(p.message).toMatch(/down one member/);
+    expect(p.headcount).toMatchObject({
+      target: 3,
+      current: 1,
+      shortfall: 2,
+      underStrength: true,
+      verdict: 'under-strength',
+      memberOwnerIds: ['surviving-member'],
+    });
+    expect(p.message).toMatch(/under-strength/);
+    expect(p.message).toMatch(/SHORT BY 2/);
+    expect(p.message).toMatch(/retry the replacement launch/);
     expect(killHandler).toHaveBeenCalledTimes(1); // the kill DID happen
+  });
+
+  it('reports at-target evidence without prescribing a relaunch after a capacity failure', async () => {
+    persistedTarget = 2;
+    listFleetPresence.mockReset()
+      .mockResolvedValueOnce([row(LEADER), row(MEMBER)])
+      .mockResolvedValueOnce([row(LEADER), row('surviving-member-a'), row('surviving-member-b')]);
+    launchHandler.mockResolvedValue({ content: [{ type: 'text', text: 'launch failed: no capacity' }], isError: true });
+
+    const p = parse(await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never));
+
+    expect(p).toMatchObject({
+      ok: false,
+      verified: false,
+      headcount: {
+        target: 2,
+        current: 2,
+        shortfall: 0,
+        underStrength: false,
+        verdict: 'at-target',
+        memberOwnerIds: ['surviving-member-a', 'surviving-member-b'],
+      },
+    });
+    expect(p.message).toMatch(/remains at target/);
+    expect(p.message).toMatch(/do not relaunch/);
+    expect(p.message).not.toMatch(/down one member|retry the replacement launch/);
+    expect(killHandler).toHaveBeenCalledTimes(1);
   });
 
   it('refuses when no boot-baked setting is passed (nothing to respawn)', async () => {
