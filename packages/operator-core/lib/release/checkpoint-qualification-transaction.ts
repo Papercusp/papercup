@@ -146,6 +146,24 @@ export type QualificationTransition =
   | { status: 'updated' | 'idempotent'; transaction: CheckpointQualificationTransaction }
   | { status: 'conflict' | 'terminal'; transaction: CheckpointQualificationTransaction };
 
+/**
+ * EI-21643577467008123 — this waiting reason is emitted only after the durable
+ * waiter failed to start. It therefore has no owner that can ever advance it and
+ * must not retain the singleton transaction against a later retry/successor.
+ * Every other pre-suite wait remains exclusive until its real owner advances it.
+ */
+function isRetryableUnownedWait(
+  current: CheckpointQualificationTransaction | null,
+): current is CheckpointQualificationTransaction {
+  return Boolean(
+    current &&
+      current.phase === 'waiting' &&
+      current.outcome.kind === 'pre-suite-no-verdict' &&
+      current.outcome.reason === 'wait-for-eligibility-unavailable' &&
+      current.currentPhysicalRunner === null,
+  );
+}
+
 const uniqueStrings = (values: readonly string[], cap = 64): string[] =>
   [...new Set(values.map((value) => value.trim()).filter(Boolean))].slice(0, cap);
 
@@ -414,13 +432,31 @@ export function beginQualificationTransaction(
   input: BeginQualificationInput,
 ): QualificationTransition {
   const nowMs = input.nowMs ?? Date.now();
+  const retryableUnownedWait = isRetryableUnownedWait(current);
   if (current?.attemptId === input.attemptId) {
+    if (retryableUnownedWait) {
+      return {
+        status: 'updated',
+        transaction: {
+          ...current,
+          updatedAtMs: nowMs,
+          requiredAncestorSha: input.requiredAncestorSha?.trim() || current.requiredAncestorSha,
+          candidate: input.candidate?.trim() || current.candidate,
+          phase: 'ready',
+          phaseEnteredAtMs: nowMs,
+          phaseDurationsMs: completedPhaseDurations(current, 'ready', nowMs),
+          outcome: { kind: 'pending' },
+          blockers: [],
+          evidenceRefs: uniqueStrings([...current.evidenceRefs, ...(input.evidenceRefs ?? [])]),
+        },
+      };
+    }
     return {
       status: isTerminalQualificationOutcome(current.outcome) ? 'terminal' : 'idempotent',
       transaction: current,
     };
   }
-  if (current && !isTerminalQualificationOutcome(current.outcome)) {
+  if (current && !isTerminalQualificationOutcome(current.outcome) && !retryableUnownedWait) {
     return { status: 'conflict', transaction: current };
   }
   const transaction: CheckpointQualificationTransaction = {

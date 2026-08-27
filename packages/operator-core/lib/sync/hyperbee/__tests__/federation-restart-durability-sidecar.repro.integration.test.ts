@@ -1423,6 +1423,7 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
           announceIdentityOverride: idMember.override,
           mergePollMs: MERGE_POLL_MS,
           connectedNeverReplicatedGraceMs: GRACE_MS,
+          allowReplicationLivenessTimerInTest: true,
           sidecarOffloadOverride,
         },
       });
@@ -1460,9 +1461,13 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
       const t0 = Date.now();
       await drainOutboxOnce(owner.handle, dbOwner.sql);
 
-      // (1) The zombie is REAL: content must NOT land within a window well
-      // short of GRACE_MS — if it did, the offload override failed to prevent
-      // replication and this test is not exercising what it claims to.
+      // (1) The zombie is REAL: content must NOT land within this initial
+      // observation window — if it did, the offload override failed to prevent
+      // replication and this test is not exercising what it claims to. Do NOT
+      // assert that forceRejoin is still false here: the detector grace starts
+      // at its first post-admission liveness sample, before the roster/content
+      // setup above, so a responsive detector may legitimately expire its grace
+      // before this later, content-relative window finishes (WI-6324).
       const landedEarly = await pollUntil(
         async () => (await readFeature(orgDb.adminSql, HIVE_HOME, 'F-zombie')) ?? undefined,
         { timeoutMs: Math.floor(GRACE_MS * 0.6), intervalMs: 100 },
@@ -1471,10 +1476,6 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
         landedEarly,
         `F-zombie landed BEFORE the grace window elapsed (memberConnAttempts=${memberConnAttempts}) — the sidecarOffloadOverride zombie seam did not actually prevent replication (this test is not exercising a genuine stall)`,
       ).toBeUndefined();
-      expect(
-        forceRejoinFired,
-        'the production forced-rejoin escalation must NOT have fired yet at this point — it should only fire after GRACE_MS, not within this short early window',
-      ).toBe(false);
 
       // (2) EI-13317's fix recovers it: connected_never_replicated escalates
       // PROMPTLY (no 3-attempt ladder wait) to a forced rejoin once GRACE_MS

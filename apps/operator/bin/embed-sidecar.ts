@@ -24,21 +24,11 @@
  *   PAPERCUSP_EMBED_SIDECAR_PORT — loopback port (default 3384).
  */
 
-import { realpathSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
+import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
 // Auto-run only when invoked directly (dev: tsx apps/operator/bin/embed-sidecar.ts).
 // The packaged path calls runEmbedSidecarServer() from serve.ts instead.
-// Symlink-robust (WI-1443): also compare argv[1]'s realpath (papercup -> papercusp).
-const invokedDirectly = ((): boolean => {
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  if (import.meta.url === pathToFileURL(argv1).href) return true;
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
-  } catch {
-    return false;
-  }
-})();
-if (invokedDirectly) runEmbedSidecarServer();
+// isCliEntry keeps that direct-run + symlink behavior while returning false
+// when this module is inlined into a host bundle.
+if (isCliEntry(import.meta.url)) runEmbedSidecarServer();

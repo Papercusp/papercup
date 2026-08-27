@@ -4,6 +4,7 @@
  * the exact boundary that decides whether an auditor actually read code.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
 
 const { mockOrgSql } = vi.hoisted(() => ({ mockOrgSql: vi.fn() }));
 
@@ -230,6 +231,28 @@ describe('plans:audit D-008 writer contract', () => {
 });
 
 describe('plans:audit phase:activation', () => {
+  it('publishes the required planTargets destination grammar on the nested field', () => {
+    const projected = lookupByMcpName('plans:audit');
+    expect(projected).toBeDefined();
+    const schema = projected?.inputSchema as {
+      properties?: {
+        mappings?: {
+          items?: {
+            properties?: {
+              planTargets?: { description?: string };
+            };
+          };
+        };
+      };
+    };
+    const description = schema.properties?.mappings?.items?.properties?.planTargets?.description;
+
+    expect(description).toContain('P-NNN');
+    expect(description).toContain('D-NNN');
+    expect(description).toContain('section:<heading>');
+    expect(description).toContain('section: prefix is required');
+  });
+
   it('refuses a non-final main wait with an actionable item diagnostic', async () => {
     mockGetPlanRow.mockResolvedValue({
       content: `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n- **P-001** \`todo\` Wait for green-checkpoint before continuing implementation.\n`,

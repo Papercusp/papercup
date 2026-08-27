@@ -96,7 +96,9 @@ const activationMappingSchema = z.object({
   id: z.string().regex(/^M-\d{3,}$/),
   sourceRefs: z.array(z.string().min(1).max(500)).min(1).max(100),
   requirement: z.string().min(1).max(4000),
-  planTargets: z.array(z.string().min(1).max(500)).min(1).max(100),
+  planTargets: z.array(z.string().min(1).max(500)).min(1).max(100).describe(
+    'Plan destinations: use P-NNN for plan items, D-NNN for decisions, or section:<heading> for exact plan sections; the section: prefix is required.',
+  ),
   disposition: z.enum(['covered', 'repaired', 'rejected', 'open']),
 }).superRefine((mapping, ctx) => {
   if (new Set(mapping.sourceRefs).size !== mapping.sourceRefs.length) {

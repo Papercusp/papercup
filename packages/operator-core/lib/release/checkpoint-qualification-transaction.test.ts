@@ -46,6 +46,63 @@ describe('logical checkpoint qualification transaction', () => {
     })).toBe(false);
   });
 
+  it('releases the singleton when an eligibility waiter never started, while preserving real waits', () => {
+    const unavailable = waitQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'wait-for-eligibility-unavailable',
+      blockers: [{
+        code: 'dbos-eligibility-waiter',
+        detail: 'DBOS is not installed',
+        clearEvents: [],
+      }],
+      nowMs: 200,
+    }).transaction;
+
+    const sameAttempt = beginQualificationTransaction(unavailable, {
+      attemptId: 'attempt-1',
+      requiredAncestorSha: 'abc123',
+      declaredPaths: ['a.ts', 'b.ts'],
+      candidate: 'candidate-1',
+      evidenceRefs: ['tool:release:checkpoint-run'],
+      nowMs: 300,
+    });
+    expect(sameAttempt).toMatchObject({
+      status: 'updated',
+      transaction: {
+        attemptId: 'attempt-1',
+        phase: 'ready',
+        outcome: { kind: 'pending' },
+        blockers: [],
+        phaseDurationsMs: { ready: 100, waiting: 100 },
+      },
+    });
+
+    const successor = beginQualificationTransaction(unavailable, {
+      attemptId: 'attempt-2',
+      candidate: 'candidate-2',
+      nowMs: 300,
+    });
+    expect(successor).toMatchObject({
+      status: 'updated',
+      transaction: {
+        attemptId: 'attempt-2',
+        previousAttemptId: 'attempt-1',
+        phase: 'ready',
+        outcome: { kind: 'pending' },
+      },
+    });
+
+    const ownedWait = waitQualificationTransaction(begin(), {
+      attemptId: 'attempt-1',
+      reason: 'eligibility-wait',
+      nowMs: 200,
+    }).transaction;
+    expect(beginQualificationTransaction(ownedWait, {
+      attemptId: 'attempt-2',
+      nowMs: 300,
+    }).status).toBe('conflict');
+  });
+
   it('persists retryable no-verdict waits and allows at most one physical runner', () => {
     const waiting = waitQualificationTransaction(begin(), {
       attemptId: 'attempt-1',

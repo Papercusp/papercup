@@ -15,6 +15,11 @@ function parseProcStat(raw) {
   if (!Number.isFinite(utime) || !Number.isFinite(stime)) return null;
   return { state: state2, ticks: utime + stime };
 }
+var HOST_IO_WAIT_WCHAN_RE = /^(?:rq_qos_wait|io_schedule(?:_timeout)?|blk_mq_[a-z0-9_]+|wait_on_(?:buffer|page(?:_bit)?|page_writeback)|folio_wait_[a-z0-9_]+|jbd2_[a-z0-9_]+|do_get_write_access|wait_transaction_locked)$/i;
+function isConfirmedHostIoWait(activity) {
+  const wchan = activity.wchan?.trim();
+  return activity.state === "D" && activity.cpuMs === 0 && activity.cores === 0 && Boolean(wchan && HOST_IO_WAIT_WCHAN_RE.test(wchan));
+}
 var UNKNOWN = {
   kind: "unknown",
   cpuMs: null,
@@ -146,6 +151,7 @@ function mainThreadActivity() {
     currentTicks: now?.ticks ?? null,
     elapsedMs: healthyCpu ? Date.now() - healthyCpu.atMs : 0
   });
+  const wchan = readMainThreadWchan();
   const out = {
     mainThreadActivity: verdict.kind,
     mainThreadState: now?.state ?? "unknown"
@@ -153,9 +159,14 @@ function mainThreadActivity() {
   if (verdict.cpuMs != null) out.mainThreadCpuMsDuringStall = Math.round(verdict.cpuMs);
   if (verdict.cores != null) out.mainThreadCores = Number(verdict.cores.toFixed(2));
   if (verdict.suspectWrongSubject) out.suspectWrongSubject = true;
-  const wchan = readMainThreadWchan();
   if (wchan) out.mainThreadWchan = wchan;
-  return out;
+  return {
+    state: now?.state ?? null,
+    cpuMs: verdict.cpuMs,
+    cores: verdict.cores,
+    wchan,
+    fields: out
+  };
 }
 var state = initialLoopSentinelState(
   Date.now(),
@@ -163,6 +174,7 @@ var state = initialLoopSentinelState(
 );
 var warnedThisStall = false;
 var reportedThisStall = false;
+var hostIoWaitReportedThisStall = false;
 var acted = false;
 var timer = setInterval(() => {
   if (acted) return;
@@ -188,6 +200,7 @@ var timer = setInterval(() => {
     case "grace": {
       warnedThisStall = false;
       reportedThisStall = false;
+      hostIoWaitReportedThisStall = false;
       const healthy = readMainThreadStat();
       if (healthy) healthyCpu = { ticks: healthy.ticks, atMs: Date.now() };
       return;
@@ -199,7 +212,7 @@ var timer = setInterval(() => {
           stalenessMs: action.stalenessMs,
           wedgeAfterMs: thresholds.wedgeAfterMs,
           consecutiveStale: action.consecutiveStale,
-          ...mainThreadActivity(),
+          ...mainThreadActivity().fields,
           ...lastKnownLag()
         });
       }
@@ -218,6 +231,23 @@ var timer = setInterval(() => {
       );
       return;
     case "kill": {
+      const activity = mainThreadActivity();
+      if (isConfirmedHostIoWait(activity)) {
+        if (hostIoWaitReportedThisStall) return;
+        hostIoWaitReportedThisStall = true;
+        emit("main event loop WEDGED \u2014 host I/O wait, NOT killing", {
+          stalenessMs: action.stalenessMs,
+          consecutiveStale: action.consecutiveStale,
+          wedgeAfterMs: thresholds.wedgeAfterMs,
+          mode,
+          pid,
+          reason: "main thread is in confirmed uninterruptible storage wait; continue watching without restarting the host",
+          hostIoWait: true,
+          ...activity.fields,
+          ...lastKnownLag()
+        });
+        return;
+      }
       if (mode === "kill") {
         acted = true;
         clearInterval(timer);
@@ -234,7 +264,7 @@ var timer = setInterval(() => {
           mode,
           pid,
           reason: action.reason,
-          ...mainThreadActivity(),
+          ...activity.fields,
           ...lastKnownLag()
         }
       );

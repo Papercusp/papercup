@@ -5273,10 +5273,6 @@ var init_mem0_connection = __esm({
   }
 });
 
-// bin/embed-sidecar.ts
-import { realpathSync } from "node:fs";
-import { pathToFileURL } from "node:url";
-
 // ../../packages/operator-core/lib/memory/embed-sidecar-server.ts
 import * as http from "node:http";
 
@@ -6787,6 +6783,34 @@ function mergeById(entries) {
   }
   return [...byId.values()];
 }
+var EmbedBudgetExceededError = class extends Error {
+  constructor(budgetMs) {
+    super(`embed_budget_exceeded: query embed exceeded ${budgetMs}ms budget`);
+    this.budgetMs = budgetMs;
+    this.name = "EmbedBudgetExceededError";
+  }
+};
+async function embedWithinBudget(embed, budgetMs) {
+  if (budgetMs === void 0 || budgetMs <= 0) return embed();
+  const pending = embed();
+  return await new Promise((resolve3, reject) => {
+    let settled = false;
+    const finish = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+    const timer = setTimeout(
+      () => finish(() => reject(new EmbedBudgetExceededError(budgetMs))),
+      budgetMs
+    );
+    pending.then(
+      (v) => finish(() => resolve3(v)),
+      (e) => finish(() => reject(e))
+    );
+  });
+}
 var Mem0Backend = class {
   name = "mem0";
   /** pgvector similarity \u2014 an absolute, cross-call-comparable measure. */
@@ -6858,7 +6882,7 @@ var Mem0Backend = class {
     const tsById = /* @__PURE__ */ new Map();
     let merged = null;
     if (opts.vector || scopes.length > 1) {
-      const vector = opts.vector ?? await this.embedQuery(query);
+      const vector = opts.vector ?? await embedWithinBudget(() => this.embedQuery(query), opts.embedTimeoutMs);
       if (vector) {
         const pulls = scopes.map(async (scope) => {
           const rows = await this.vectorSearch(vector, limit, {
@@ -8167,17 +8191,31 @@ function createEmbedSidecarServer(opts = {}) {
   );
   let active = 0;
   const waiting = [];
+  let queued = 0;
+  const createQueueBatch = () => ({ entries: [], queued: false, running: 0 });
+  const queueBatch = (batch) => {
+    if (batch.entries.length === 0 || batch.queued) return;
+    batch.queued = true;
+    waiting.push(batch);
+  };
+  const startNext = (batch) => {
+    const next = batch.entries.shift();
+    if (!next) return false;
+    queued--;
+    next.start();
+    return true;
+  };
   function drainQueue() {
     while (active < concurrency && waiting.length > 0) {
-      const next = waiting.shift();
-      if (next.started || next.settled) continue;
-      next.start();
+      const batch = waiting.shift();
+      batch.queued = false;
+      startNext(batch);
     }
   }
   const scheduleDrain = () => {
     setTimeout(drainQueue, 5);
   };
-  const enqueue = (work) => {
+  const enqueue = (work, batch = createQueueBatch()) => {
     let resolveTask;
     let rejectTask;
     const promise = new Promise((resolve3, reject) => {
@@ -8191,23 +8229,33 @@ function createEmbedSidecarServer(opts = {}) {
         if (entry.started || entry.settled) return;
         entry.started = true;
         active++;
+        batch.running++;
         Promise.resolve().then(work).then(resolveTask, rejectTask).finally(() => {
           active--;
+          batch.running--;
+          queueBatch(batch);
           scheduleDrain();
         });
       },
       cancel: () => {
         if (entry.started || entry.settled) return false;
-        const index = waiting.indexOf(entry);
+        const index = batch.entries.indexOf(entry);
         if (index < 0) return false;
-        waiting.splice(index, 1);
+        batch.entries.splice(index, 1);
+        queued--;
         entry.settled = true;
         rejectTask(new SidecarRequestAbortedError());
         return true;
       }
     };
-    if (active < concurrency) entry.start();
-    else waiting.push(entry);
+    batch.entries.push(entry);
+    queued++;
+    if (active < concurrency && waiting.length === 0 && !batch.queued) {
+      startNext(batch);
+    } else {
+      if (batch.running === 0) queueBatch(batch);
+      drainQueue();
+    }
     return { promise, cancel: entry.cancel };
   };
   const cacheMax = opts.cacheMax ?? EMBED_CACHE_MAX_DEFAULT;
@@ -8233,7 +8281,7 @@ function createEmbedSidecarServer(opts = {}) {
       vecCache.delete(oldest);
     }
   };
-  const computeCached = (key, work, signal) => {
+  const computeCached = (key, work, signal, batch) => {
     if (signal.aborted) return Promise.reject(new SidecarRequestAbortedError());
     const cached = cacheGet(key);
     if (cached) {
@@ -8245,7 +8293,7 @@ function createEmbedSidecarServer(opts = {}) {
       cacheHits++;
     } else {
       cacheMisses++;
-      entry = { task: enqueue(work), consumers: 0 };
+      entry = { task: enqueue(work, batch), consumers: 0 };
       inflight.set(key, entry);
       const owned2 = entry;
       void owned2.task.promise.then(
@@ -8294,18 +8342,18 @@ function createEmbedSidecarServer(opts = {}) {
       );
     });
   };
-  const embedOneCached = (model, kind, text, signal) => computeCached(`${model}:${kind}\0${text}`, async () => {
+  const embedOneCached = (model, kind, text, signal, batch) => computeCached(`${model}:${kind}\0${text}`, async () => {
     const embed = await getEmbedder(model, kind);
     return embed(text);
-  }, signal);
-  const rerankOneCached = (model, query, text, signal) => computeCached(`${model}\0${query}\0${text}`, async () => {
+  }, signal, batch);
+  const rerankOneCached = (model, query, text, signal, batch) => computeCached(`${model}\0${query}\0${text}`, async () => {
     const rerankFn = await getReranker(model);
     const scores = await rerankFn(query, [text]);
     if (scores.length !== 1 || typeof scores[0] !== "number" || !Number.isFinite(scores[0])) {
       throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
     }
     return [scores[0]];
-  }, signal).then((boxed) => boxed[0]);
+  }, signal, batch).then((boxed) => boxed[0]);
   const handleEmbed = async (req, res, signal) => {
     let parsed;
     try {
@@ -8321,8 +8369,9 @@ function createEmbedSidecarServer(opts = {}) {
       return;
     }
     try {
+      const batch = createQueueBatch();
       const vectors = await Promise.all(
-        v.texts.map((text) => embedOneCached(v.model, v.kind, text, signal))
+        v.texts.map((text) => embedOneCached(v.model, v.kind, text, signal, batch))
       );
       const body = {
         vectors,
@@ -8351,7 +8400,10 @@ function createEmbedSidecarServer(opts = {}) {
       return;
     }
     try {
-      const scores = await Promise.all(v.texts.map((text) => rerankOneCached(v.model, v.query, text, signal)));
+      const batch = createQueueBatch();
+      const scores = await Promise.all(
+        v.texts.map((text) => rerankOneCached(v.model, v.query, text, signal, batch))
+      );
       const body = {
         scores,
         runtime: EMBED_SIDECAR_RUNTIME,
@@ -8425,16 +8477,27 @@ function createEmbedSidecarServer(opts = {}) {
         //
         // Why the pre-existing signal could not catch it: `workers.embedder.
         // pendingCount` READS like queue depth but is `_pending.size` \u2014 units
-        // already handed to the worker \u2014 so it is structurally capped at
-        // `concurrency` and is an OCCUPANCY gauge. The one field that looked
-        // like a backlog signal CANNOT EXCEED `concurrency`, so it can never
-        // indicate a backlog: pinned at 2, it is indistinguishable from "two in
-        // flight, all well". That also defeats probing, since a discriminator
-        // correlating latency against it is correlating against a constant.
+        // already HANDED TO the worker \u2014 so it is an OCCUPANCY gauge that says
+        // nothing about what is still waiting. In steady state it simply equals
+        // `active` and is therefore bounded by `concurrency` (measured: 6/6,
+        // 5/5, 2/2), so pinned at the cap it is indistinguishable from "N in
+        // flight, all well". That also defeats probing: at c=2 it is a constant,
+        // and a discriminator correlating latency against a constant finds
+        // nothing however carefully it is run.
+        //
+        // It is worse than merely capped \u2014 it is CONFLATED, and therefore
+        // ambiguous in BOTH directions. Boot warm-up embeds bypass this FIFO,
+        // so during warm-up `_pending` carries non-FIFO work too and the gauge
+        // can EXCEED concurrency (measured 10 against concurrency 6 at ~12s
+        // uptime). So a reading above the cap does not mean a backlog either.
+        //
+        // Measured 2026-08-24, ~29s after a restart, this endpoint reported
+        // `pendingCount: 6` while the real backlog was **15**. That single pair
+        // is the whole case for the field below.
         //
         // `depth` is the queue no one could see; `saturated` is the predicate a
         // health check should actually alert on (up AND keeping up).
-        queue: { depth: waiting.length, active, saturated: active >= concurrency }
+        queue: { depth: queued, active, saturated: active >= concurrency }
       });
     },
     [EMBED_SIDECAR_CAP_EMBED]: withRequestCancellation(handleEmbed),
@@ -8498,15 +8561,23 @@ function runEmbedSidecarServer() {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-// bin/embed-sidecar.ts
-var invokedDirectly = (() => {
+// ../../packages/operator-core/lib/util/cli-entry.ts
+import { realpathSync } from "node:fs";
+import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
+function isCliEntry(importMetaUrl) {
+  if (true) {
+    return false;
+  }
   const argv1 = process.argv[1];
   if (!argv1) return false;
-  if (import.meta.url === pathToFileURL(argv1).href) return true;
+  if (importMetaUrl === pathToFileURL(argv1).href) return true;
   try {
-    return import.meta.url === pathToFileURL(realpathSync(argv1)).href;
+    if (importMetaUrl === pathToFileURL(realpathSync(argv1)).href) return true;
+    return realpathSync(fileURLToPath3(importMetaUrl)) === realpathSync(argv1);
   } catch {
     return false;
   }
-})();
-if (invokedDirectly) runEmbedSidecarServer();
+}
+
+// bin/embed-sidecar.ts
+if (isCliEntry(import.meta.url)) runEmbedSidecarServer();

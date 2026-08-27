@@ -1334,17 +1334,33 @@ export async function __buildMcpToolContext_forTests(
  * context instead of synthesizing a framework-reserved tool argument: raw
  * ProjectedTool registrations must never observe transport controls in args.
  */
-function projectionMaterializationContext(ctx: UnifiedToolContext, needsFullSource: boolean): UnifiedToolContext {
-  if (!needsFullSource) return ctx;
+function projectionMaterializationContext(
+  ctx: UnifiedToolContext,
+  needsFullSource: boolean,
+  needsStructuredSource = false,
+): UnifiedToolContext {
+  // A structured `pick` still needs JSON even when the caller explicitly
+  // supplied a payload tier. Previously the full-source promotion flag also
+  // controlled this format choice, so an explicit nested `payloadTier:'full'`
+  // left the target on the implicit compact/TOON format and `pick` failed open
+  // as a non-JSON body. Keep the tier decision separate: an explicit target
+  // tier remains authoritative, while the in-process materialization is JSON
+  // whenever the projection needs structured fields.
+  if (!needsFullSource && !needsStructuredSource) return ctx;
+  const promoted = needsFullSource
+    ? {
+        contextTier: 'full' as const,
+        payloadTierOverride: 'full' as const,
+        transportCapExempt: true,
+      }
+    : {};
   return {
     ...ctx,
     // `pick` classifies the materialized text as JSON. MCP's implicit compact
     // default may select TOON, so force JSON only for this in-process source;
     // the caller's explicit format remains the final wire-format choice.
     requestedFormat: projectionMaterializationFormat(ctx.requestedFormat, true),
-    contextTier: 'full',
-    payloadTierOverride: 'full',
-    transportCapExempt: true,
+    ...promoted,
   };
 }
 
@@ -1665,7 +1681,11 @@ async function buildMcpToolContext(
     const baseCtx: UnifiedToolContext =
       effectiveWs === ctxRef.current!.workspaceId ? ctxRef.current! : { ...ctxRef.current!, workspaceId: effectiveWs };
     const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
-      const materializationCtx = projectionMaterializationContext(ctx, projectionNeedsFullSource);
+      const materializationCtx = projectionMaterializationContext(
+        ctx,
+        projectionNeedsFullSource,
+        projectionSpec?.pick !== undefined,
+      );
       return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
     })) as McpCallResult;
     const freeFormProjected = projectionSpec
@@ -2800,7 +2820,11 @@ const handler = createMcpHandler(
                   itemKeyField: projected.delta?.itemKeyField,
                   runRaw: async (autoRequestedDelta, overrideDelta = true) => {
                     const deltaCtx = overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx;
-                    const materializationCtx = projectionMaterializationContext(deltaCtx, projectionNeedsFullSource);
+                    const materializationCtx = projectionMaterializationContext(
+                      deltaCtx,
+                      projectionNeedsFullSource,
+                      projectionSpec?.pick !== undefined,
+                    );
                     return (await dispatchProjectedToolToMcp(
                       projected,
                       toolName,
