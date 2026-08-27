@@ -97,6 +97,7 @@ beforeAll(async () => {
     '602-work-item-follow-blockers.sql',
     '632-event-key-fire-latch.sql',
     '871-lifecycle-bound-watches.sql',
+    '825-verified-wait-producer-health.sql',
   ]) {
     await db.sql.unsafe(readMigration(migration)).simple();
   }
