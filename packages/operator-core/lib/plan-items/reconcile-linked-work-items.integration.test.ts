@@ -234,6 +234,16 @@ async function insertWorkItemRow(o: {
             0, 0)`;
 }
 
+/** Seed endpoint rows for canonical dependency admission while the work-item API remains mocked. */
+async function insertDependencyRows(ids: readonly string[], harness = 'sheets') {
+  for (const id of ids) {
+    await rootSql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, payload, created_ts, updated_ts)
+      VALUES (${WS}, ${harness}, ${id}, 'feature', 'open', '{}'::jsonb, 0, 0)`;
+  }
+}
+
 describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
   it('resolves a non-terminal, no-progress linked work-item via the implements edge', async () => {
     stub({ id: 'WI-mirror-1', state: 'open', lastProgressAt: null });
@@ -1291,6 +1301,7 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     stub({ id: 'F-old', harness: 'sheets', state: 'todo', family: 'feature' });
     stub({ id: 'F-new', harness: 'sheets', state: 'todo', family: 'feature' });
     stub({ id: 'F-manual', harness: 'sheets', state: 'todo', family: 'feature' });
+    await insertDependencyRows(['F-target', 'F-old', 'F-new', 'F-manual']);
     await edge({ plan, item: 'P-001', srcKind: 'feature', srcRef: 'sheets#F-old' });
     await edge({ plan, item: 'P-002', srcKind: 'feature', srcRef: 'sheets#F-new' });
     await edge({ plan, item: 'P-003', srcKind: 'feature', srcRef: 'sheets#F-target' });
