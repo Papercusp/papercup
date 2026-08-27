@@ -362,6 +362,28 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
       expect(txt).toBe('states?:array(≤20)<enum(open|failing)> claimable states');
     });
 
+    it('EI-21579794371308546: a primitive array item type is visible in discovery text', () => {
+      // coord:send's `premises` is an array of ref strings, while neighbouring
+      // section fields are arrays/objects with their own structured members.
+      // Omitting the item type makes the compact schema teach an ambiguous
+      // `array(≤20)` shape and invites object-shaped premises.
+      const txt = schemaToText({
+        properties: {
+          premises: {
+            type: 'array',
+            maxItems: 20,
+            items: { type: 'string', minLength: 1 },
+          },
+          forYouBecause: {
+            type: 'object',
+            properties: { relation: { type: 'string' } },
+            required: ['relation'],
+          },
+        },
+      });
+      expect(txt).toBe('premises?:array(≤20)<string>; forYouBecause?:object{relation}');
+    });
+
     it('no bound declared → no parens (unchanged from before)', () => {
       expect(schemaToText({ properties: { key: { type: 'string' } } })).toBe('key?:string');
     });

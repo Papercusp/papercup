@@ -44,7 +44,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await org?.cleanup();
-});
+  // Strict shared-container DROP DATABASE cleanup is documented at 6s-267s;
+  // keep this adapter on the canonical real-PG teardown budget instead of the
+  // integration layer's ordinary 90s hook deadline (EI-21580561576387499).
+}, 300_000);
 
 describe('Google Calendar adapter with the real delivery ledger and Personal Vault sink', () => {
   it('persists the provider cursor and dedupes repeated upcoming polls into one private document', async () => {

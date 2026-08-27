@@ -18,7 +18,11 @@ import {
 import { DEFAULT_SCRIPT_TIMEOUT_MS, type FieldMiss, type ToolResult } from '@papercusp/tooldef';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
-import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
+import {
+  FOREGROUND_TIMEOUT_CEILING_MS,
+  clampForegroundTimeoutMs,
+  foregroundClampDisclosure,
+} from '../capability/foreground-transport-cap';
 import { captureRecipe, type RecipeCaptureDisposition } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
 import { deriveRecipeAuthority, recipeRevision } from '../../recipe-authority';
@@ -194,7 +198,11 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        `Wall-clock budget (default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s). EI-9239: code:run has no run_in_background — every call is ` +
+        `Wall-clock budget (default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s). ⚠ THE EFFECTIVE CEILING IS ` +
+          `${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s — a larger value here is ACCEPTED but never in force, so do not ` +
+          `raise this to buy more time (EI-21570021207351896: a caller read the 120 max as a real budget and ` +
+          `could not account for a termination at ${FOREGROUND_TIMEOUT_CEILING_MS}ms; the timeout error now says so ` +
+          `explicitly). EI-9239: code:run has no run_in_background — every call is ` +
           `foreground, and the papercusp-su MCP transport hard-caps a foreground call at ~55s regardless ` +
           `of this value. A request above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is clamped down to it ` +
           `so the script gets a clean internal script_timeout (with whatever it returned so far) instead ` +
@@ -206,6 +214,15 @@ export default defineTool({
   async handler(args, ctx) {
     const runStartedAtMs = Date.now();
     const script = args.script;
+
+    // EI-21570021207351896 / EI-21569537333182760: keep the requested and the EFFECTIVE budget as
+    // separate values. The clamp below is unchanged — what was missing is that nothing downstream
+    // could tell the two apart, so a run that died at the ceiling reported a deadline the caller
+    // never set. Do NOT collapse these back into one expression: the pair is what makes the
+    // disclosure possible.
+    const requestedTimeoutMs = args.timeoutSec ? args.timeoutSec * 1000 : undefined;
+    const effectiveTimeoutMs =
+      requestedTimeoutMs !== undefined ? clampForegroundTimeoutMs(requestedTimeoutMs) : undefined;
 
     const all = listAllProjectedTools();
     // Scope the facade to tools this agent's role may call (mirrors the dispatcher role-allowlist);
@@ -227,10 +244,27 @@ export default defineTool({
       // EI-9239: clamp below the ~55s MCP transport cap (mirrors capability:inspect's identical
       // EI-6073 fix) so a script_timeout fires cleanly here instead of the caller getting an
       // opaque transport-level request_timeout after the script's own budget was never reached.
-      timeoutMs: args.timeoutSec ? clampForegroundTimeoutMs(args.timeoutSec * 1000) : undefined,
+      timeoutMs: requestedTimeoutMs !== undefined ? effectiveTimeoutMs : undefined,
       wrapDispatch: bindCurrentCallerDispatch,
       ...(contract ? { inputs: contract.inputs } : {}),
     });
+
+    // EI-21570021207351896 / EI-21569537333182760: DISCLOSE the clamp on the envelope the caller
+    // actually reads. Both items were filed because `timeoutSec: 120` produced a bare
+    // `script_timeout after 50000ms` — the requested budget appears nowhere, so the only available
+    // reading was that the documented 1..120 range is untrue. The schema description already
+    // explained the clamp, but a description is not on the failure the agent is holding.
+    //
+    // Narrowly gated on purpose: only when the caller SUPPLIED a budget, only when the clamp
+    // actually lowered it, and only on the timeout error itself. A run that was never clamped, or
+    // that failed for any other reason, is untouched — a timeout notice on a non-timeout failure
+    // is the false-hint bug that `foregroundTimeoutHint` is careful to avoid.
+    if (!result.ok && requestedTimeoutMs !== undefined && effectiveTimeoutMs !== undefined) {
+      const clampDisclosure = foregroundClampDisclosure(requestedTimeoutMs, effectiveTimeoutMs);
+      if (clampDisclosure && typeof result.error === 'string' && result.error.startsWith('script_timeout')) {
+        (result as { error?: string }).error = `${result.error}${clampDisclosure}`;
+      }
+    }
 
     // P-013: capture the execution evidence BEFORE shaping the model-facing
     // payload. callRecords are internal dispatch evidence; the normalized trace

@@ -2285,9 +2285,13 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     const candidate = "c".repeat(40);
     const inputFingerprint = "d".repeat(64);
     const makeDepsExec = (reused: boolean) => {
-      const calls: Array<{ cmd: string; args: string[] }> = [];
-      const exec: CheckpointExec = async (cmd, args) => {
-        calls.push({ cmd, args });
+      const calls: Array<{
+        cmd: string;
+        args: string[];
+        opts?: Parameters<CheckpointExec>[2];
+      }> = [];
+      const exec: CheckpointExec = async (cmd, args, opts) => {
+        calls.push({ cmd, args, opts });
         if (args.includes("--ensure-ref")) {
           return {
             code: 0,
@@ -2329,6 +2333,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(sharedSetup.args).toEqual(
       expect.arrayContaining(["--node-modules-generation-id", generationId]),
     );
+    expect(sharedSetup.opts?.env?.PC_HEAVY_COALESCE).toBe("0");
 
     // reused=false → the exclusive barrier is preserved.
     const exclusive = makeDepsExec(false);
@@ -2349,6 +2354,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     ).setupTree(candidate, { preparedSource: true });
     const exclusiveSetup = exclusive.calls[1];
     expect(exclusiveSetup.args).toContain("--exclusive-all-slots");
+    expect(exclusiveSetup.opts?.env?.PC_HEAVY_COALESCE).toBe("0");
   });
 
   it("D-081 joined guard: unseen exact inputs traverse the real prelock publisher and materializer to a normal candidate-bound verdict", async () => {

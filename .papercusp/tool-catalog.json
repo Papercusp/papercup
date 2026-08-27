@@ -9322,7 +9322,7 @@
           "POST"
         ]
       },
-      "description": "Inventory of the SIX tracked AGENT process kinds only (run.sh, omp, claude, paperclip, pty, next) with cmdline, cwd, and inferred harness/workspace. NOT a general process list and NOT a `ps` substitute: every other process — vitest, tsc, npm, gate/deploy scripts, containers — is dropped before you see it, so a short/empty result means \"no agent processes of those kinds\", never \"nothing is running\".",
+      "description": "Inventory of the SIX tracked AGENT process kinds only (run.sh, omp, claude, paperclip, pty, next) with stable executable/role/build metadata, start time, cwd, and inferred harness/workspace. Arbitrary argv is never returned. NOT a general process list and NOT a `ps` substitute: every other process — vitest, tsc, npm, gate/deploy scripts, containers — is dropped before you see it, so a short/empty result means \"no agent processes of those kinds\", never \"nothing is running\".",
       "capabilities": [
         "intel:read"
       ],

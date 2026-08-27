@@ -13293,6 +13293,14 @@ export function realCheckpointDeps(
             ]),
           ],
           {
+            // EI-21581171948416792: materialization is a side-effectful validation
+            // boundary, never a replayable heavy result. D-033 moved reused generations
+            // onto an ordinary shared slot, which also made this argv eligible for
+            // pc-heavy coalescing. A second identical setup after the immutable marker
+            // changed then replayed the prior success instead of re-checking the
+            // generation token. Disable coalescing for BOTH shared and exclusive paths;
+            // admission still controls concurrency, but every setup invocation executes.
+            env: { ...process.env, PC_HEAVY_COALESCE: "0" },
             timeoutMs: SETUP_TREE_TIMEOUT_MS,
             timeoutResetsOnProgress: true,
             hardTimeoutMs: SETUP_TREE_HARD_TIMEOUT_MS,

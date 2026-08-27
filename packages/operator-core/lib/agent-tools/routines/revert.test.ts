@@ -35,6 +35,20 @@ const next = {
   metadata: { source: 'after' },
 };
 
+// `readRoutineSnap` is the production boundary from the Postgres row shape into
+// the serializable audit snapshot shape. Keep the mock rows in the same shape as
+// the real SELECT so these tests exercise that conversion instead of bypassing it.
+function rowFor(snap: typeof previous) {
+  return {
+    trigger_config: snap.triggerConfig,
+    payload_template: snap.payloadTemplate,
+    active: snap.active,
+    next_fire_at: snap.nextFireAtIso === null ? null : new Date(snap.nextFireAtIso),
+    group_slug: snap.groupSlug,
+    metadata: snap.metadata,
+  };
+}
+
 function body(result: unknown): Record<string, unknown> {
   const out = result as { content: Array<{ text: string }> };
   return JSON.parse(out.content[0]!.text) as Record<string, unknown>;
@@ -61,10 +75,10 @@ describe('routines:revert MCP boundary', () => {
           details: { prev: previous, next },
         },
       ])
-      .mockResolvedValueOnce([next])
-      .mockResolvedValueOnce([next])
+      .mockResolvedValueOnce([rowFor(next)])
+      .mockResolvedValueOnce([rowFor(next)])
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([previous]);
+      .mockResolvedValueOnce([rowFor(previous)]);
 
     const result = body(
       await tool.handler({ auditId: 'gwc-source-1' } as never, { role: 'operator' } as never),
@@ -96,7 +110,8 @@ describe('routines:revert MCP boundary', () => {
           details: { prev: previous, next },
         },
       ])
-      .mockResolvedValueOnce([{ ...next, active: false }]);
+      .mockResolvedValueOnce([rowFor({ ...next, active: false })])
+      .mockResolvedValueOnce([rowFor({ ...next, active: false })]);
 
     await expect(
       tool.handler({ auditId: 'gwc-source-1' } as never, { role: 'operator' } as never),

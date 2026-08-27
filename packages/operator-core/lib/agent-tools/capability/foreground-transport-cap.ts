@@ -48,6 +48,41 @@ export function clampForegroundTimeoutMs(requestedMs: number): number {
  *
  * Pure + exported for unit testing.
  */
+/**
+ * EI-21570021207351896 / EI-21569537333182760 — the clamp must SAY it clamped.
+ *
+ * `clampForegroundTimeoutMs` silently lowers a caller's budget. That is correct behaviour, but a
+ * tool whose SCHEMA advertises a wider range (code:run declares `timeoutSec` 1..120) and then
+ * fails at the ceiling hands the caller a deadline they never chose and cannot account for:
+ * both items above were filed as "I requested timeoutSec:120 and it was terminated at 50000ms",
+ * because the number 50000 appears in the error with nothing anywhere connecting it to the 120
+ * that was asked for. The caller's only reading is that the published budget is a lie — which,
+ * undisclosed, is indistinguishable from a bug in the deadline itself.
+ *
+ * Deliberately SEPARATE from `foregroundTimeoutHint` rather than folded into it. That hint
+ * asserts the process tree "was KILLED — nothing is still running server-side", which is true
+ * for `capability:bash` / `capability:inspect` (they own the child) and NOT true of code:run,
+ * whose worker is terminated while a host-side facade call it dispatched may still be settling
+ * (see the `onTimeout` cancellation seam, EI-20282336542235171). Reusing that wording here would
+ * have produced a confidently FALSE disposition claim — the exact class of error that makes an
+ * agent skip reconciling an in-flight write. This helper states only what is universally true:
+ * what you asked for, what you actually got, and why they differ.
+ *
+ * Returns '' when the request was NOT clamped, so an honest budget never carries a false notice.
+ * Pure + exported for unit testing.
+ */
+export function foregroundClampDisclosure(requestedMs: number, effectiveMs: number): string {
+  if (!(requestedMs > effectiveMs)) return '';
+  return (
+    ` — ⚠ CLAMPED: you requested ${(requestedMs / 1000).toFixed(0)}s but the effective budget was ` +
+    `${(effectiveMs / 1000).toFixed(0)}s, the foreground ceiling kept below the ~${(
+      MCP_TRANSPORT_CAP_MS / 1000
+    ).toFixed(0)}s MCP transport cap so this returns a real error instead of an opaque ` +
+    `request_timeout. The deadline you set was never in force — do not read this as your budget ` +
+    `being exhausted, and re-running with a larger timeoutSec will NOT buy more time.`
+  );
+}
+
 export function foregroundTimeoutHint(status: string, timeoutMs: number, rerunAs: string): string {
   if (status !== 'timed_out') return '';
   return (

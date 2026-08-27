@@ -150,7 +150,8 @@ function nestedObjectFieldsText(p: {
 /**
  * Render a caller-facing constraint declared on an array's primitive item
  * schema. JSON Schema nests these under `items`, so looking only at the array
- * node loses the constraint (for example plans:add-decision's `refs` pattern).
+ * node loses the constraint (for example plans:add-decision's `refs` pattern)
+ * or the item shape itself (for example coord:send's string premises refs).
  */
 export function arrayItemConstraintText(input: unknown): string {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
@@ -164,9 +165,16 @@ export function arrayItemConstraintText(input: unknown): string {
     : [];
   if (enumValues.length > 0) return `<enum(${enumValues.join('|')})>`;
   const pattern = typeof item.pattern === 'string' && item.pattern.length > 0 ? item.pattern : '';
-  if (!pattern) return '';
-  const itemType = typeof item.type === 'string' ? item.type : 'string';
-  return `<${itemType}~/${pattern}/>`;
+  const itemType = typeof item.type === 'string' ? item.type : '';
+  if (pattern) return `<${itemType || 'string'}~/${pattern}/>`;
+
+  // A plain primitive item type is still caller-facing shape. Without it,
+  // `premises: z.array(z.string())` was projected as only `array(≤20)`, and
+  // callers could reasonably generalize the neighbouring object-shaped
+  // section fields into `premises: [{ ref: ... }]` before the runtime refusal.
+  // Keep object/array items represented by their nested-field projection (or
+  // bare `array`) rather than adding a redundant `<object>`/`<array>` marker.
+  return itemType && !['object', 'array'].includes(itemType) ? `<${itemType}>` : '';
 }
 
 type NumericSchemaBound = { value: number; exclusive: boolean };

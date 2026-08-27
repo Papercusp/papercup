@@ -8,6 +8,7 @@ import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
   foregroundTimeoutHint,
+  foregroundClampDisclosure,
 } from './foreground-transport-cap';
 
 // EI-6073 / EI-20645849301780712 — a FOREGROUND tool call that outruns the ~55s MCP transport
@@ -80,6 +81,85 @@ describe('foregroundTimeoutHint — actionable hint on a clamped timeout (EI-607
     expect(foregroundTimeoutHint('completed', FOREGROUND_TIMEOUT_CEILING_MS, RERUN)).toBe('');
     expect(foregroundTimeoutHint('failed', FOREGROUND_TIMEOUT_CEILING_MS, RERUN)).toBe('');
     expect(foregroundTimeoutHint('killed', FOREGROUND_TIMEOUT_CEILING_MS, RERUN)).toBe('');
+  });
+});
+
+describe('foregroundClampDisclosure — the clamp must SAY it clamped (EI-21570021207351896)', () => {
+  const REQUESTED = 120_000;
+
+  it('names BOTH the requested budget and the effective one — the pair is the whole point', () => {
+    const d = foregroundClampDisclosure(REQUESTED, FOREGROUND_TIMEOUT_CEILING_MS);
+    expect(d).toContain('120s'); // what the caller asked for
+    expect(d).toContain('50s'); // what was actually in force
+  });
+
+  // Both items were filed as "I requested 120 and was killed at 50000ms". The specific dead end
+  // was concluding the deadline had been honoured and the SCRIPT was simply too slow. Say the
+  // opposite out loud, and say that retrying bigger is futile — otherwise the natural next move
+  // is timeoutSec:120 again, which changes nothing.
+  it('states the requested deadline was never in force, and that raising it will not help', () => {
+    const d = foregroundClampDisclosure(REQUESTED, FOREGROUND_TIMEOUT_CEILING_MS);
+    expect(d).toMatch(/never in force/i);
+    expect(d).toMatch(/will NOT buy more time/i);
+  });
+
+  // The disposition claim that would have been WRONG here. capability:bash/inspect own their
+  // child and may truthfully say it was killed; code:run's worker dies while a host-side facade
+  // call may still be settling, so borrowing that sentence would assert a falsehood about
+  // in-flight writes. Pin the absence so a future "let's just reuse the hint" edit fails here.
+  it('does NOT claim the process tree was killed — untrue for code:run (EI-20282336542235171)', () => {
+    const d = foregroundClampDisclosure(REQUESTED, FOREGROUND_TIMEOUT_CEILING_MS);
+    expect(d).not.toMatch(/KILLED/);
+    expect(d).not.toMatch(/nothing is still running/i);
+  });
+
+  it('is EMPTY when the request was NOT clamped — an honest budget carries no notice', () => {
+    expect(foregroundClampDisclosure(5_000, 5_000)).toBe('');
+    expect(foregroundClampDisclosure(FOREGROUND_TIMEOUT_CEILING_MS, FOREGROUND_TIMEOUT_CEILING_MS)).toBe('');
+  });
+
+  // CALIBRATION (permanent control): the assertions above must be able to FAIL. A disclosure that
+  // omitted the requested budget — the exact shape that shipped, where only the effective 50000ms
+  // ever reached the caller — must be rejected by the same checks.
+  it('the same assertions REJECT a disclosure that omits the REQUESTED budget', () => {
+    const effectiveOnly = 'script_timeout after 50000ms';
+    expect(effectiveOnly).toContain('50'); // passes — this is what shipped
+    expect(effectiveOnly).not.toContain('120s'); // ← the real guard would fail here
+    expect(effectiveOnly).not.toMatch(/never in force/i); // ← and here
+  });
+});
+
+/**
+ * EI-21570021207351896 / EI-21569537333182760 — code:run CLAMPS but must also DISCLOSE.
+ *
+ * The class guard below proves every foreground tool APPLIES the clamp; it never asked whether
+ * the clamp is visible to the caller, which is why code:run passed it for as long as it did while
+ * silently lowering a published 1..120 budget to 50s. This is scoped to code:run deliberately:
+ * capability:bash and capability:inspect already disclose through `foregroundTimeoutHint`, and
+ * that helper's "process tree was KILLED" wording is TRUE for them and false for code:run, so a
+ * single shared assertion across all five would be wrong rather than merely broad.
+ */
+describe('code:run discloses the clamp on the failure envelope (EI-21570021207351896)', () => {
+  const runSrc = readFileSync(join(TOOLS_DIR, 'code/run.ts'), 'utf8');
+
+  it('imports the disclosure from the shared module and calls it', () => {
+    expect(runSrc).toMatch(/foregroundClampDisclosure/);
+    expect(runSrc).toMatch(/foregroundClampDisclosure\(/);
+  });
+
+  // The teeth: the pre-fix form collapsed requested and effective into ONE expression, which is
+  // precisely why nothing downstream could report the difference. A revert restores it.
+  it('keeps the requested and effective budgets as SEPARATE values', () => {
+    expect(runSrc).toMatch(/requestedTimeoutMs/);
+    expect(runSrc).toMatch(/effectiveTimeoutMs/);
+    expect(
+      runSrc,
+      'the inline clamp collapses the pair — the disclosure then has nothing to compare',
+    ).not.toMatch(/timeoutMs:\s*args\.timeoutSec\s*\?\s*clampForegroundTimeoutMs\(/);
+  });
+
+  it('the arg description leads with the EFFECTIVE ceiling, not the accepted max', () => {
+    expect(runSrc).toMatch(/EFFECTIVE CEILING IS/);
   });
 });
 

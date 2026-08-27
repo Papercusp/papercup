@@ -407,33 +407,28 @@ export function scriptedOmpSetupEnv(backend: any, args: any, env?: NodeJS.Proces
     OMP_SKIP_SETUP: string;
 };
 /**
- * Route a scripted FRESH launch's first turn to the backend's safe delivery
- * seam. Claude and Codex keep their native trailing positional prompt. OMP's
- * UI session starts asynchronous MCP discovery, so its first turn must go
- * through the managed pty's startup/output barrier instead of being submitted
- * by OMP while its prompt is still being assembled (EI-20339142329504181).
+ * Route every scripted FRESH launch's first turn to the managed-pty safe
+ * delivery seam. Keeping prompts out of every backend's argv prevents shared
+ * host process diagnostics from exposing the prompt; the PTY host submits the
+ * turn after the child settles (EI-20339142329504181).
  *
  * The returned kickoff is already provenance-tagged; callers pass it to
- * runWrapper({ kickoff }) for OMP. Pure apart from the existing provenance
+ * runWrapper({ kickoff }) for every backend. Pure apart from the existing provenance
  * ledger write performed by tagKickoffProvenance.
  */
 export function routeFreshKickoff(backend: any, res: any, args: any, env?: NodeJS.ProcessEnv): {
     positionalArgs: never[];
     managedKickoff: any;
     kickoffSeeded: boolean;
-} | {
-    positionalArgs: any[];
-    managedKickoff: null;
-    kickoffSeeded: boolean;
 };
 /**
  * Finish a fresh SU launch with the backend-specific first-turn delivery.
- * Claude/Codex receive the tagged prompt as the final positional argv token;
- * OMP keeps argv unchanged and receives the prompt through the managed pty.
+ * Every backend keeps argv free of the prompt and receives it through the
+ * managed pty.
  *
  * Keep this assembly in one pure helper so the caller cannot truthfully log
  * "kickoff seeded" while accidentally dropping routeFreshKickoff's
- * positionalArgs before runWrapper (the live failure behind WI-39943).
+ * managed kickoff before runWrapper (the live failure behind WI-39943).
  */
 export function finalizeFreshSuArgs(backend: any, launchArgs: any, res: any, args: any, env?: NodeJS.ProcessEnv): {
     args: any[];
@@ -445,8 +440,7 @@ export function finalizeFreshSuArgs(backend: any, launchArgs: any, res: any, arg
  * fresh SU launches. Role launches used to stop after flags/passthrough, so a
  * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
  * an empty prompt forever. Keep the native positional prompt last for
- * Claude/Codex (after every flag); fresh OMP uses the managed-pty kickoff
- * returned alongside the argv. Tag machine-origin turns and expose whether a
+ * every backend uses the managed-pty kickoff returned alongside the argv. Tag machine-origin turns and expose whether a
  * turn was actually seeded so the caller can report the launch honestly. Pure
  * except for the existing provenance-ledger write performed by
  * tagKickoffProvenance.
