@@ -453,6 +453,7 @@ async function defaultEnsureCodexHomeForWake(
         model: record.model,
         token: readSuperuserToken(),
         codexGatewayAuto: input.requireGatewayProvider === true,
+        codexGatewayPriority: input.requireGatewayProvider === true ? 'su' : null,
         trustDir: null,
       }),
     };
