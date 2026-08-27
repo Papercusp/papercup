@@ -1,0 +1,197 @@
+// @vitest-environment node
+/**
+ * Carry delivery authority regression (psu-recycle-carry-delivery-truth P-006).
+ *
+ * `PROBE_SCRIPT` deliberately redirects the WHOLE subject module to a copy
+ * outside the checkout. That seam is load-bearing: it lets
+ * `scripts/mutation-probe.sh` replace both native-proof failure branches with
+ * parseable no-ops and prove this behavioral guard fails, without ever making
+ * the tracked host script dirty in the git-sync shared tree.
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+} from 'node:fs';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { execPath } from 'node:process';
+import { pathToFileURL } from 'node:url';
+
+const subjectPath = process.env.PROBE_SCRIPT
+  ? resolve(process.env.PROBE_SCRIPT)
+  : resolve(__dirname, '../scripts/psu-pty-host.mjs');
+const subject = (await import(/* @vite-ignore */ pathToFileURL(subjectPath).href)) as typeof import('../scripts/psu-pty-host.mjs');
+const {
+  encodeControl,
+  eventLogPathForOwner,
+  hostThroughPty,
+  socketPathFor,
+} = subject;
+
+const sleep = (ms: number) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+
+function fakeIo() {
+  let output = '';
+  return {
+    captured: () => output,
+    io: {
+      stdout: {
+        columns: 80,
+        rows: 24,
+        write: (data: Buffer | string) => {
+          output += data.toString();
+        },
+        on() {},
+        off() {},
+      },
+      stdin: {
+        isTTY: false,
+        on() {},
+        off() {},
+        resume() {},
+        pause() {},
+      },
+    },
+  };
+}
+
+function injectEnvelope(socketPath: string, envelope: Record<string, unknown>): Promise<void> {
+  return new Promise((resolveInject) => {
+    const connection = net.connect(socketPath, () => {
+      connection.write(JSON.stringify({ v: 1, ...envelope }));
+      connection.end();
+    });
+    connection.on('data', () => {});
+    connection.on('error', () => resolveInject());
+    connection.on('close', () => resolveInject());
+  });
+}
+
+function injectRaw(socketPath: string, data: string): Promise<void> {
+  return new Promise((resolveInject) => {
+    const connection = net.connect(socketPath, () => {
+      connection.write(encodeControl({ mode: 'raw', data }));
+      connection.end();
+    });
+    connection.on('data', () => {});
+    connection.on('error', () => resolveInject());
+    connection.on('close', () => resolveInject());
+  });
+}
+
+describe('carry-respawn native-turn delivery authority', () => {
+  it(
+    'never books delivered when the fresh child paints output but persists no native user turn',
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), 'psu-carry-delivery-guard-'));
+      const claudeConfig = join(root, 'claude');
+      mkdirSync(join(claudeConfig, 'projects', '-tmp'), { recursive: true });
+
+      const phase = process.env.PAPERCUSP_MUTATION_PHASE ?? 'ordinary';
+      const ownerId = `su-carry-delivery-guard-${phase}-${process.pid}-${Math.floor(performance.now())}`;
+      const socketPath = socketPathFor(ownerId);
+      const eventLog = eventLogPathForOwner(ownerId);
+      const nativeId = '12345678-1234-4234-8234-123456789abc';
+      const marker = '⟦turn-origin:self-compaction nonce:0011223344556677⟧';
+      const { captured, io } = fakeIo();
+
+      // Generic PTY activity is intentionally healthy-looking: every input
+      // repaints the child. The backend never writes a native transcript, so
+      // only the authoritative native-session proof can reject delivery.
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;process.stdout.write('PAINT\\n');if(b.includes('QUIT'))process.exit(0);});" +
+        'setTimeout(()=>process.exit(0),10000);';
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          CLAUDE_CONFIG_DIR: claudeConfig,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '500',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        nativePersistenceTimeoutMs: 200,
+        mintCarryRespawnArgs: (args: string[]) => ({
+          args,
+          nativeId,
+          launchContextPath: '/tmp/carry.md',
+        }),
+        onExit: () => {},
+      });
+
+      try {
+        const bootDeadline = Date.now() + 2_000;
+        while (!captured().includes('BOOT:') && Date.now() < bootDeadline) await sleep(20);
+        expect(captured()).toContain('BOOT:');
+
+        await injectEnvelope(socketPath, {
+          mode: 'carry-respawn',
+          data: `${marker}\nContinue where you left off`,
+          systemPromptAddendum: 'deterministic carry',
+        });
+
+        const terminalDeadline = Date.now() + 5_000;
+        let events: Array<Record<string, unknown>> = [];
+        while (Date.now() < terminalDeadline) {
+          if (existsSync(eventLog)) {
+            events = readFileSync(eventLog, 'utf8')
+              .trim()
+              .split('\n')
+              .filter(Boolean)
+              .map((line) => JSON.parse(line));
+            if (events.some((event) =>
+              event.kind === 'respawn-carry-dropped' || event.kind === 'respawn-carry-delivered')) {
+              break;
+            }
+          }
+          await sleep(20);
+        }
+
+        expect(captured()).toContain('PAINT');
+        expect(events.filter((event) => event.kind === 'respawn-carry-turn-start-retry')).toHaveLength(1);
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'turn-start-unverified',
+          nativeId,
+          detail: 'native-turn-marker-timeout',
+        }));
+        expect(events).toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-dropped',
+          nativeId,
+          reason: 'turn-start-unverified',
+          turnStartVerified: false,
+        }));
+        expect(events).not.toContainEqual(expect.objectContaining({
+          kind: 'respawn-carry-delivered',
+          nativeId,
+        }));
+      } finally {
+        if (existsSync(socketPath)) await injectRaw(socketPath, 'QUIT\n');
+        await done;
+        if (existsSync(eventLog)) unlinkSync(eventLog);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+    15_000,
+  );
+});
