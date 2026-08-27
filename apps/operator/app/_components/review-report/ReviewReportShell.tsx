@@ -239,22 +239,13 @@ class ReviewDetailController {
   }
 
   prune(presentRowIds: ReadonlySet<string>): void {
-    if (
-      this.hoveredRowId !== null &&
-      !presentRowIds.has(this.hoveredRowId)
-    ) {
+    if (this.hoveredRowId !== null && !presentRowIds.has(this.hoveredRowId)) {
       this.hoveredRowId = null;
     }
-    if (
-      this.focusedRowId !== null &&
-      !presentRowIds.has(this.focusedRowId)
-    ) {
+    if (this.focusedRowId !== null && !presentRowIds.has(this.focusedRowId)) {
       this.focusedRowId = null;
     }
-    if (
-      this.activeRowId !== null &&
-      !presentRowIds.has(this.activeRowId)
-    ) {
+    if (this.activeRowId !== null && !presentRowIds.has(this.activeRowId)) {
       this.activate(null);
     }
   }
@@ -299,11 +290,7 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
     () => detailController.isActive(row.id),
     [detailController, row.id],
   );
-  const detailOpen = useSyncExternalStore(
-    subscribe,
-    getSnapshot,
-    getSnapshot,
-  );
+  const detailOpen = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const setRowNode = useCallback(
     (node: HTMLLIElement | null) => registerRowNode(row.id, node),
     [registerRowNode, row.id],
