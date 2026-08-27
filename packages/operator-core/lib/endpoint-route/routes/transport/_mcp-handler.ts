@@ -2752,8 +2752,17 @@ const handler = createMcpHandler(
               content: [
                 {
                   type: 'text' as const,
+                  // EI-21570323060383850 / EI-21570305229276182: ECHO THE KEY. This branch tells the
+                  // caller to "retry with the same _meta.idempotencyKey" — but the key is injected
+                  // by the CLIENT on every call (see the `_meta.idempotencyKey` note above), so the
+                  // agent reading this error has never seen its value and cannot comply. Both items
+                  // were filed by callers who followed the instruction, found no key anywhere in the
+                  // envelope, and had to fall back to reconciling fleet assignments by hand — the
+                  // one outcome the replay contract exists to make unnecessary. An instruction that
+                  // names a value the reader cannot obtain is worse than none: it reads as a safe
+                  // path that silently isn't available.
                   text: idempotencyKey
-                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing).`
+                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing. This call's key is "${idempotencyKey}" — pass exactly that value; a fresh key re-executes the tool instead of replaying it).`
                     : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
                 },
               ],

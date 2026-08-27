@@ -298,6 +298,23 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     // Idempotency-key-aware wording (the two branches in _mcp-handler.ts differ
     // on whether a key was supplied) — this call passed one.
     expect(textOf(res)).toContain('retry with the same _meta.idempotencyKey');
+    // EI-21570323060383850 / EI-21570305229276182: the instruction must name the key it is
+    // telling the caller to reuse. The client injects the key on every call, so an agent
+    // reading this error has never seen its value; both items were filed by callers who tried
+    // to comply, found no key in the envelope, and fell back to reconciling by hand. Asserting
+    // the literal VALUE (not just the phrase above) is what makes that non-recurrable.
+    expect(textOf(res)).toContain('idem-deadline-1');
+  });
+
+  // The negative half, and the reason the assertion above is on the value rather than the
+  // wording: the no-key branch must NOT start naming a key, or it would print an empty/undefined
+  // one and send the caller chasing a replay that cannot work.
+  it('the no-key branch names no key at all (EI-21570323060383850)', async () => {
+    const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'));
+    expect(res.isError).toBe(true);
+    expect(textOf(res)).toContain('had no idempotencyKey');
+    expect(textOf(res)).not.toContain("This call's key is");
+    expect(textOf(res)).not.toMatch(/key is "?(undefined|null|)"/);
   });
 
   it('does NOT re-block the response on the receipt persist — replayStores is still empty the instant the caller is answered', async () => {
