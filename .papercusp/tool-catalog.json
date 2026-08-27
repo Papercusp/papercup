@@ -19772,7 +19772,8 @@
         "promote",
         "kettle",
         "worker",
-        "cup"
+        "cup",
+        "judge"
       ],
       "guidance": {
         "when": "You have an exact slug and need the plan contents. In operator/superuser scope, the slug auto-resolves its owning harness within the caller's workspace; pass a concrete `harness` (for example, 'papercusp') when you need to constrain or disambiguate that lookup. `harness: 'all'` is only valid in an unscoped (--all-workspaces) session.",
