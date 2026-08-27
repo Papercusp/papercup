@@ -829,6 +829,14 @@ export const PTOOL_CONNECT_MAX_ATTEMPTS = Math.ceil(
   PTOOL_CONNECT_TIMEOUT_MS / PTOOL_CONNECT_RETRY_DELAY_MS,
 ) + 1;
 
+// A proxy-generated handshake 502 already represents the proxy exhausting its
+// own bounded upstream-silence retries (currently three upstream attempts).
+// Allow one ptool replay for a transient race, but do not replay that expensive
+// failure until the outer 120s budget starts another copy of the same stall.
+// HTTP 429 remains on the longer budget above: it is pre-dispatch admission
+// shedding and the proxy explicitly asks clients to retry it.
+export const PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS = 2;
+
 // `tools/list` is the first request after the MCP session initialize. It is still
 // a write-free handshake and can receive the proxy's class-specific 429 after
 // `connect()` has succeeded, so give discovery the same bounded recovery budget
@@ -1399,6 +1407,7 @@ export async function connectWithLocalRetry(
   // /api/health answered in ~2ms. Classify every attempt and append the tally
   // to whichever error finally escapes.
   const attemptKinds = [];
+  let proxyUpstreamErrorAttempts = 0;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     let timeout;
     try {
@@ -1423,13 +1432,17 @@ export async function connectWithLocalRetry(
       return await connected.promise;
     } catch (error) {
       lastError = error;
-      attemptKinds.push(classifyConnectFailure(error));
+      const failureKind = classifyConnectFailure(error);
+      attemptKinds.push(failureKind);
+      if (failureKind === 'proxy-upstream-502') proxyUpstreamErrorAttempts += 1;
       const remainingTotalMs = totalTimeoutMs > 0
         ? totalTimeoutMs - (Date.now() - startedAt)
         : null;
       if (
         !local ||
         (isExplicitHttpConnectFailure(error) && !isRetryableLocalHttpConnectFailure(error)) ||
+        (failureKind === 'proxy-upstream-502' &&
+          proxyUpstreamErrorAttempts >= PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS) ||
         attempt === maxAttempts ||
         (remainingTotalMs !== null && remainingTotalMs <= 0)
       ) {
@@ -1541,6 +1554,7 @@ export async function listToolsWithLocalRetry(
   const enforceDeadline = timeoutMs > 0 && totalTimeoutMs > 0;
   const startedAt = Date.now();
   let lastError;
+  let proxyUpstreamErrorAttempts = 0;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const remainingTotalMs = enforceDeadline
@@ -1559,11 +1573,16 @@ export async function listToolsWithLocalRetry(
       );
     } catch (error) {
       lastError = error;
+      if (classifyConnectFailure(error) === 'proxy-upstream-502') {
+        proxyUpstreamErrorAttempts += 1;
+      }
       const remainingAfterFailure = enforceDeadline
         ? totalTimeoutMs - (Date.now() - startedAt)
         : null;
       if (
         !(isRetryableLocalHttpConnectFailure(error) || isTransportFailure(error)) ||
+        (proxyUpstreamErrorAttempts >= PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS &&
+          classifyConnectFailure(error) === 'proxy-upstream-502') ||
         attempt === maxAttempts ||
         (remainingAfterFailure !== null && remainingAfterFailure <= 0)
       ) {

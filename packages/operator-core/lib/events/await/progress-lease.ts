@@ -286,38 +286,49 @@ export async function executeProgressLeaseRemedy(
   const lease = certificate.progressLease;
   if (!lease) throw new Error('progress lease certificate is missing progressLease state');
   const remedy = lease.remedy;
-  if (remedy.kind === 'spec-widen' || remedy.kind === 'outside-lane-placement') {
-    return { kind: remedy.kind, disposition: 'surfaced', summary: remedy.instructions };
-  }
-  if (remedy.kind === 'leader-claim') {
-    const workItemId = remedy.workItemId ?? certificate.owner.workItemId;
-    if (!workItemId) {
-      return { kind: remedy.kind, disposition: 'failed', summary: 'No work-item id was supplied for leader takeover.' };
+  try {
+    if (remedy.kind === 'spec-widen' || remedy.kind === 'outside-lane-placement') {
+      return { kind: remedy.kind, disposition: 'surfaced', summary: remedy.instructions };
     }
-    const claimed = await claimWorkItem(workItemId, lease.subscriberId, {
-      harness: remedy.harness ?? undefined,
-      expectedAssignee: certificate.owner.ownerId ?? undefined,
+    if (remedy.kind === 'leader-claim') {
+      const workItemId = remedy.workItemId ?? certificate.owner.workItemId;
+      if (!workItemId) {
+        return { kind: remedy.kind, disposition: 'failed', summary: 'No work-item id was supplied for leader takeover.' };
+      }
+      const claimed = await claimWorkItem(workItemId, lease.subscriberId, {
+        harness: remedy.harness ?? undefined,
+        expectedAssignee: certificate.owner.ownerId ?? undefined,
+      });
+      return claimed
+        ? { kind: remedy.kind, disposition: 'executed', summary: `Transferred ${workItemId} to waiting leader ${lease.subscriberId} by expected-holder CAS.`, workItemId }
+        : { kind: remedy.kind, disposition: 'failed', summary: `Takeover CAS for ${workItemId} lost or was refused; re-read ownership.`, workItemId };
+    }
+    const conditionKey = `progress-lease:${lease.leaseId}`;
+    const created = await upsertConditionWorkItem(conditionKey, {
+      kind: 'task',
+      title: remedy.title,
+      summary: remedy.summary ?? `Unblock delegated wait progress lease ${lease.leaseId}.`,
+      harness: remedy.harness,
+      workspaceId: lease.resolver.workspaceId,
+      payload: { progressLease: lease.leaseId, delegatedOwner: certificate.owner.ownerId },
     });
-    return claimed
-      ? { kind: remedy.kind, disposition: 'executed', summary: `Transferred ${workItemId} to waiting leader ${lease.subscriberId} by expected-holder CAS.`, workItemId }
-      : { kind: remedy.kind, disposition: 'failed', summary: `Takeover CAS for ${workItemId} lost or was refused; re-read ownership.`, workItemId };
+    if (created.id) await claimWorkItem(created.id, lease.subscriberId, { harness: remedy.harness });
+    return {
+      kind: remedy.kind,
+      disposition: created.id ? 'executed' : 'failed',
+      summary: created.id
+        ? `${created.created ? 'Created' : 'Adopted'} and claimed unblock item ${created.id}.`
+        : 'Unable to create or adopt the unblock work-item.',
+      workItemId: created.id,
+    };
+  } catch (error) {
+    return {
+      kind: remedy.kind,
+      disposition: 'failed',
+      summary: `Remedy backend failed: ${error instanceof Error ? error.message : String(error)}`,
+      ...(remedy.kind === 'leader-claim'
+        ? { workItemId: remedy.workItemId ?? certificate.owner.workItemId }
+        : {}),
+    };
   }
-  const conditionKey = `progress-lease:${lease.leaseId}`;
-  const created = await upsertConditionWorkItem(conditionKey, {
-    kind: 'task',
-    title: remedy.title,
-    summary: remedy.summary ?? `Unblock delegated wait progress lease ${lease.leaseId}.`,
-    harness: remedy.harness,
-    workspaceId: lease.resolver.workspaceId,
-    payload: { progressLease: lease.leaseId, delegatedOwner: certificate.owner.ownerId },
-  });
-  if (created.id) await claimWorkItem(created.id, lease.subscriberId, { harness: remedy.harness });
-  return {
-    kind: remedy.kind,
-    disposition: created.id ? 'executed' : 'failed',
-    summary: created.id
-      ? `${created.created ? 'Created' : 'Adopted'} and claimed unblock item ${created.id}.`
-      : 'Unable to create or adopt the unblock work-item.',
-    workItemId: created.id,
-  };
 }
