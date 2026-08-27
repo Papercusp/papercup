@@ -28,6 +28,7 @@ function plan(overrides: Partial<PlanIndexRow> = {}): PlanIndexRow {
     template: null,
     templateData: null,
     inputSchema: null,
+    isBlenderOrigin: false,
     supersedes: [],
     supersededBy: null,
     opStatus: null,
@@ -209,7 +210,7 @@ describe('manifest and evidence rendering', () => {
       snapshotFinishedAt: '2026-08-20T12:00:01.000Z',
       liveOwnershipMeasuredAt: '2026-08-20T12:00:00.500Z',
       allPlans: [
-        plan({ title: '<script>alert("x")</script>' }),
+        plan({ title: '<script>alert("x")</script>', isBlenderOrigin: true }),
         plan({ planSlug: 'shipped', status: 'shipped' }),
         plan({ planSlug: 'archived', archived: true }),
         plan({ planSlug: 'instance', templateSlug: 'template-a' }),
@@ -234,6 +235,7 @@ describe('manifest and evidence rendering', () => {
     expect(result.rows).toHaveLength(1);
     expect(result.rows[0]).toMatchObject({ slug: 'plan-a', category: 'ongoing-protected' });
     expect(result.bands).toMatchObject({ protected: 1 });
+    expect(result.provenance).toEqual({ blender: 1, outsideBlender: 0 });
     expect(Object.values(result.bands).reduce((sum, count) => sum + count, 0)).toBe(result.rows.length);
   });
 
@@ -247,6 +249,8 @@ describe('manifest and evidence rendering', () => {
       rows: [{ title: '<script>alert("x")</script>' }],
     });
     expect(html).toContain('No plan, item, blocker, claim, assignment, fleet, or agent state was changed.');
+    expect(html).toContain('All plan sources');
+    expect(html).toContain('Outside Blender');
   });
 
   it('keeps the implementation manual-only and free of direct lifecycle SQL/writer seams', () => {

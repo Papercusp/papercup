@@ -60,6 +60,7 @@ import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire } from '../pot/watchdog';
 import { routineStorageSlug } from '../pot-membership';
+import { BLENDER_PLAN_SQL_PATTERN } from '../agent-tools/plans/plan-provenance';
 
 // ── tunable (env-overridable, like the liveness-watchdog floor) ───────────────
 
@@ -224,7 +225,7 @@ export async function readScoutDraftCandidates(
        AND harness_slug = ${planStorageSlug}
        AND status = 'draft'
        AND archived = false
-       AND content LIKE ${'%\norigin: scout\n%'}
+       AND content LIKE ${BLENDER_PLAN_SQL_PATTERN}
      ORDER BY updated_at ASC
      LIMIT ${limit}`;
   return rows.map((r) => ({
@@ -254,7 +255,7 @@ async function readScoutDraftScopes(sql: Sql): Promise<Array<{ workspaceId: stri
       FROM harness_shared.harness_plans
      WHERE status = 'draft'
        AND archived = false
-       AND content LIKE ${'%\norigin: scout\n%'}
+       AND content LIKE ${BLENDER_PLAN_SQL_PATTERN}
   `;
   const seen = new Set<string>();
   const scopes: Array<{ workspaceId: string; planStorageSlug: string }> = [];
@@ -281,7 +282,7 @@ async function countStaleScoutDraftBacklog(sql: Sql, workspaceId: string, staleB
        AND status = 'draft'
        AND archived = false
        AND updated_at <= to_timestamp(${staleBeforeMs} / 1000.0)
-       AND content LIKE ${'%\norigin: scout\n%'}`;
+       AND content LIKE ${BLENDER_PLAN_SQL_PATTERN}`;
   return Math.max(0, Number(rows[0]?.c ?? 0));
 }
 

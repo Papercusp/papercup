@@ -34,6 +34,7 @@ import { PAPERCUSP_WORKSPACE_ID } from '../../harness/papercusp-workspace';
 import { potHomeSlugForHarness } from '../../hive-federation';
 import { isTerminalItemStatus } from '../../fleet-drained-events';
 import type { AgenticPlanExecutionTarget } from '../../agentic-plan-execution-target';
+import { BLENDER_PLAN_SQL_PATTERN } from './plan-provenance';
 
 export const PLANS_DIR_REL = 'apps/operator/docs/plans';
 export const ARCHIVE_DIR_REL = 'apps/operator/docs/plans/archive';
@@ -173,6 +174,8 @@ export interface PlanRow {
   /** LIST-only derived relation: at least one installed external-event binding
    *  launches this plan. Presence, not armed state, defines the trigger facet. */
   hasExternalTrigger?: boolean;
+  /** LIST-only canonical provenance projection from the plan content marker. */
+  isBlenderOrigin?: boolean;
   supersedes: string[];
   supersededBy: string | null;
   opStatus: 'started' | 'paused' | 'done' | null;
@@ -234,6 +237,7 @@ interface PlanDbRow {
   output_schema?: unknown;
   has_input_schema?: boolean;
   has_external_trigger?: boolean;
+  is_blender_origin?: boolean;
   supersedes: string[] | null;
   superseded_by: string | null;
   op_status: string | null;
@@ -279,6 +283,7 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     outputSchema: r.output_schema ?? null,
     hasInputSchema: r.has_input_schema ?? r.input_schema != null,
     hasExternalTrigger: r.has_external_trigger,
+    isBlenderOrigin: r.is_blender_origin,
     supersedes: r.supersedes ?? [],
     supersededBy: r.superseded_by,
     opStatus: (r.op_status as PlanRow['opStatus']) ?? null,
@@ -1060,6 +1065,7 @@ export async function listPlanIndexRows(
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, forced_past,
                input_schema IS NOT NULL AS has_input_schema,
+               content LIKE ${BLENDER_PLAN_SQL_PATTERN} AS is_blender_origin,
                EXISTS (
                  SELECT 1
                    FROM harness_shared.trigger_bindings tb
@@ -1099,6 +1105,7 @@ export async function listPlanIndexRows(
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
                  archived, is_legacy, updated_at, items, now_state, now_next
+                 , content LIKE ${BLENDER_PLAN_SQL_PATTERN} AS is_blender_origin
            FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
              AND (${filters.includeArchived} OR archived = false)
@@ -1190,6 +1197,7 @@ export async function listPlanIndexRowsForWorkspace(
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, forced_past,
                input_schema IS NOT NULL AS has_input_schema,
+               content LIKE ${BLENDER_PLAN_SQL_PATTERN} AS is_blender_origin,
                EXISTS (
                  SELECT 1
                    FROM harness_shared.trigger_bindings tb
@@ -1229,6 +1237,7 @@ export async function listPlanIndexRowsForWorkspace(
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
                  archived, is_legacy, updated_at, items, now_state, now_next
+                 , content LIKE ${BLENDER_PLAN_SQL_PATTERN} AS is_blender_origin
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId}
              AND (${filters.includeArchived} OR archived = false)

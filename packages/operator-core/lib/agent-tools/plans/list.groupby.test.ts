@@ -90,6 +90,7 @@ const row = (over: Record<string, unknown>): unknown => ({
   scheduleActive: false,
   hasInputSchema: false,
   hasExternalTrigger: false,
+  isBlenderOrigin: false,
   harnessSlug: "papercup",
   ...over,
 });
@@ -289,6 +290,25 @@ describe("plans:list — groupBy aggregates", () => {
       { key: "false", count: 2 },
       { key: "true", count: 1 },
     ]);
+  });
+
+  it("groups origin from the canonical plan-content projection", async () => {
+    M.listPlanIndexRows.mockResolvedValue([
+      row({ planSlug: "a", isBlenderOrigin: true }),
+      row({ planSlug: "b", isBlenderOrigin: false }),
+      row({ planSlug: "c" }),
+    ]);
+    const { groups, plans } = await run({ groupBy: "origin" });
+    expect(groups).toEqual([
+      { key: null, count: 2 },
+      { key: "scout", count: 1 },
+    ]);
+    expect(plans).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ slug: "a", origin: "scout" }),
+        expect.objectContaining({ slug: "b", origin: null }),
+      ]),
+    );
   });
 
   it("an item-derived dimension (importance) still resolves items under aggregateOnly", async () => {

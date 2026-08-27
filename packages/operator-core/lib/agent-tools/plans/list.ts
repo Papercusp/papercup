@@ -41,6 +41,7 @@ import {
 import { reconcileStartStatus } from "./plan-start-state";
 import { shapePlansList } from "./list-shape";
 import { cachedRead, type CachedReadCtx } from "../../cache";
+import { planOriginFromBlenderFlag } from "./plan-provenance";
 
 /** Cap for the multi-harness arg per P-021 — keeps IN-style fan-out bounded. */
 const HARNESS_SLUGS_MAX = 64;
@@ -50,7 +51,7 @@ const HARNESS_SLUGS_MAX = 64;
  * The plan tables (harness_plans/plan_revisions/plan_runs) are trigger-covered so a
  * plan write auto-invalidates via the cache-ECA — this short soft TTL only bounds
  * staleness for the un-triggered OVERLAY dimensions the read folds in (the open
- * issue-block overlay via coord_links, scout provenance via scout_routed_ideas).
+ * issue-block overlay via coord_links).
  */
 const PLANS_LIST_SOFT_TTL_MS = 45_000;
 
@@ -667,26 +668,6 @@ export default defineTool({
           }
         }
 
-        // Scout provenance: one batched ledger read (scout_routed_ideas is the
-        // canonical record of what the Scout loop routed — frontmatter need not be
-        // parsed, and pre-stamp plans are covered retroactively). Workspace-free by
-        // design (see readScoutPlanRefs — in-dispatch ALS is 'default'). Non-fatal.
-        let scoutPlanRefs = new Set<string>();
-        try {
-          const { readScoutPlanRefs } =
-            await import("../../scout/routed-ledger");
-          scoutPlanRefs = await readScoutPlanRefs();
-        } catch (err) {
-          // Non-fatal — origin degrades to null. Logged because a silent miss here
-          // cost a live debugging session (2026-06-11): the Create tab's scout
-          // filter quietly matches nothing when this read breaks.
-           
-          console.warn(
-            "[plans:list] scout-provenance read failed — origin omitted:",
-            err instanceof Error ? err.message : err,
-          );
-        }
-
         for (const { harnessSlug, rows } of batches) {
           // Index-only rows (audit P-042 — EI-98/EI-174/EI-175): every field this
           // row needs lives in the harness_plans projection columns, so the
@@ -794,9 +775,7 @@ export default defineTool({
               startStatus: reconcileStartStatus(row.opStatus, status),
               priority: row.opPriority,
               maxImportance,
-              origin: scoutPlanRefs.has(`plan:${slug}`)
-                ? ("scout" as const)
-                : null,
+              origin: planOriginFromBlenderFlag(row.isBlenderOrigin),
               // P-021 schedule glance — already-loaded columns, no extra read.
               // A recurrence set ⇒ recurring; else a bare one-shot fire time ⇒ one-shot.
               scheduled: row.schedule != null || row.scheduledAt != null,

@@ -96,6 +96,7 @@ import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
 import { promotePlanItems } from '../plan-workitem-promotion-run';
 import { routineStorageSlug } from '../pot-membership';
+import { BLENDER_PLAN_SQL_PATTERN } from '../agent-tools/plans/plan-provenance';
 
 // ── tunables ──────────────────────────────────────────────────────────────────
 
@@ -174,7 +175,7 @@ export async function readScoutReadyCandidates(
        AND status = 'ready'
        AND archived = false
        AND (op_status IS NULL OR op_status <> 'started')
-       AND content LIKE ${'%\norigin: scout\n%'}
+       AND content LIKE ${BLENDER_PLAN_SQL_PATTERN}
        AND (
          content ~ ('- [*][*]P-[0-9]+[*][*] ' || chr(96) || '(todo|wip)' || chr(96))
          OR NOT (content ~ '- [*][*]P-[0-9]+[*][*] ')
@@ -417,7 +418,7 @@ async function countEligibleReadyPlans(workspaceId: string): Promise<number> {
        AND status = 'ready'
        AND archived = false
        AND (op_status IS NULL OR op_status <> 'started')
-       AND content LIKE ${'%\norigin: scout\n%'}
+       AND content LIKE ${BLENDER_PLAN_SQL_PATTERN}
        AND (
          content ~ ('- [*][*]P-[0-9]+[*][*] ' || chr(96) || '(todo|wip)' || chr(96))
          OR NOT (content ~ '- [*][*]P-[0-9]+[*][*] ')
