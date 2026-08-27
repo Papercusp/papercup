@@ -1,7 +1,7 @@
 # Coordination system — adversarial test coverage matrix
 URL: /internal/docs/testing/coordination-coverage-matrix
 
-
+Adversarial coverage map for cross-agent isolation, real resume/config seams, and multi-session coordination behavior, including the credentialed three-backend resume smoke.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -254,18 +254,21 @@ interactive `psu` claude sessions shared one `~/.claude`. The fix (`bootstrap-su
   route assertions (CLAUDE\_CONFIG\_DIR present for claude, absent for omp/codex,
   non-fatal on materialize failure).
 
-**The real-CLI resume rung now has a live-smoke.** The CI test
-(`wake-resume-isolation.test.ts`) still asserts the wake-executor *builds* the
-right resume command + hands it to `spawnDetached` (bin/args/env captured via an
-injected `spawnDetached`). Its complement — does that command, run for real,
-actually continue the session? — is `apps/operator/scripts/resume-spawn-live.ts`,
-surfaced as the coordination-suite **C5 real resume spawn (live)** runner. It
-builds the resume command via the SAME `resumeCommandFor`, runs it against the
-REAL `claude` / `codex` binary in the EI-155 isolated `CLAUDE_CONFIG_DIR` /
-`CODEX_HOME`, and asserts the resume CONTINUED the exact session **deterministically**
-— the session transcript / rollout file GROWS — independent of the model's output.
-Gated (needs creds → not CI); each agent leg SKIPS when its CLI is absent/unauthed.
-Both legs verified green on this box (claude 2.1.169, codex).
+**The real-CLI resume rung covers all three backends.** The CI test
+(`wake-resume-isolation.test.ts`) still asserts the wake executor builds the
+right command and hands it to `spawnDetached`. Its credentialed complement is
+`apps/operator/scripts/resume-spawn-live.ts`, surfaced as the coordination-suite
+**C5 real resume spawn (live)** runner. It builds each resume with the production
+`resumeCommandFor`, launches against a real isolated transcript store, and
+asserts the exact transcript/rollout grows after resume—independent of model
+wording. Claude also asserts the injected wake text is present.
+
+The current runner uses an isolated `CLAUDE_CONFIG_DIR`,
+`PI_CODING_AGENT_DIR`, or `CODEX_HOME` for Claude, OMP, or Codex respectively.
+It skips a missing/unauthed CLI and fails when an available backend does not
+continue its exact session. Verified together on this box with Claude Code
+2.1.246, OMP 18.0.3, and Codex CLI 0.149.1 (2026-08-26); resumed-turn wall times
+in that sample were 10.251s, 11.929s, and 4.717s respectively.
 
 ## Accepted gaps (logged — not silent)
 

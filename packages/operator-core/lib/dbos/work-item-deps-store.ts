@@ -162,9 +162,7 @@ function applyDependencyMutations(
 
 function endpointBareId(endpoint: DependencyIdentity): string | null {
   if (endpoint.kind !== ISSUE_ENDPOINT_KIND && endpoint.kind !== FEATURE_KIND) return null;
-  return isQualifiedFeatureRef(endpoint.ref)
-    ? endpoint.ref.slice(endpoint.ref.indexOf('#') + 1)
-    : endpoint.ref;
+  return isQualifiedFeatureRef(endpoint.ref) ? endpoint.ref.slice(endpoint.ref.indexOf('#') + 1) : endpoint.ref;
 }
 
 function rowNode(row: WorkItemNodeRow): DependencyGraphNodeInput {

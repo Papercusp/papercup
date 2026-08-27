@@ -1,7 +1,7 @@
-# psu --resume \"No conversation found\": ghost adv rows, not broken resume plumbing
+# psu --resume \"No conversation found\": ghosts, reservations, and lossless recovery
 URL: /internal/docs/agent-insights/psu-resume-ghost-sessions
 
-How psu resume distinguishes transcript ghosts, dead/live row skew, and stale single-winner resume claims; includes diagnosis and recovery paths.
+How psu resume distinguishes transcript ghosts, live rows, explicit reservations, unevaluated requests, and replay-safe acquire/finalize/release transitions across Claude, OMP, and Codex.
 
 ## The trap
 
@@ -56,58 +56,77 @@ was only wired into the brain path, not the picker / direct-id paths.
   paths, so child-exit now stamps `ended_at`/`exit_code`. Best-effort: a 404
   from an operator predating the endpoint is swallowed.
 
-## The INVERSE bug: a resumed session recorded as DEAD (2026-06-22)
+## The INVERSE bug and the current lossless handoff (2026-08-26)
 
-Stamping `ended_at` on exit (above) created a mirror problem. `psu --resume`
-revives the **process**, but `launchResume` takes the **no-POST path** (it reuses
-the original coord identity + adv row, never re-hitting bootstrap-su), so the row
-kept the `ended_at`/`exit_code` from the prior exit. Result: a **running** resumed
-agent recorded as **dead** — invisible to the `coord:presence` roster (which by
-then [derives from the session log](/internal/docs/agent-insights/presence-derives-from-session-log)
-and correctly trusts "ended means ended"). Measured 2026-06-22: 24 running
-`claude --resume` agents, **all 24** with `ended_at` set → zero visible.
+Stamping `ended_at` on exit fixed dead rows that looked live, but exposed the
+mirror problem: a real resume must make the row live again without letting two
+processes become writers. The first repair used `started_at` as a five-minute
+single-winner claim. That was safe against duplicates, but it confused
+"acquisition started" with "a child is alive": Ctrl+C or a launcher crash before
+spawn left every honest retry locked out for five minutes.
 
-The current fix has four parts:
+The current protocol is a lossless, backend-neutral handoff:
 
-* **`claimAdvSessionResume(id)`** (`adv-sessions.ts`) is the sole numeric-id
-  launch-acquisition path. It atomically clears `ended_at`/`exit_code` and bumps
-  `started_at`, admitting either a cleanly ended row or a stale active row older
-  than the five-minute claim window. A second claimant inside the window loses.
-* **`POST /api/agent-mcp/console/bootstrap-su/session-resumed`** +
-  `reportSessionResumed` in the launcher claim the row before config repair or
-  spawn. The response retains the historical `reactivated` field, but `false`
-  now means the claim was not acquired and the launcher must not spawn.
-* **`reactivateAdvSessionByOwner(ownerId)`** remains intentionally separate for
-  genuine-activity repair (`coord:presence` / dispatch heartbeat). It is a
-  best-effort idempotent visibility repair, not permission to launch a process.
-* **Supersede a STALE heartbeat** (`reconcileRosterSources` in
-  `recorded-sessions.ts`) — a leftover stale `coord_presence` row from the original
-  launch must not shadow the resumed session.
+1. **Acknowledge the prior end.** `reportSessionEnded` uses a stable end-attempt
+   key. A pre-dispatch 429 or unknown response is retried with that key; if parent
+   exit wins first, a bounded pending-end witness survives for the next resume to
+   reconcile. The lifecycle REST paths have their own reserved proxy slice, so
+   ordinary traffic is shed before one-shot end/resume transitions.
+2. **Reserve without asserting liveness.** `acquireAdvSessionResume` writes
+   `resume_claim_key` + `resume_claimed_at` while preserving terminal evidence.
+   Replaying the same key returns the same verdict. A different key receives a
+   typed `reserved` result with `leaseExpiresAt` and `retryAfterMs`; an expired
+   reservation is replaced atomically. The writer's
+   `RESUME_RESERVATION_LEASE_SEC` is **60 seconds**, replacing the retired
+   five-minute `started_at` window.
+3. **Spawn, then finalize.** Direct psu and managed-PTY launches call
+   `session-resume-finalized` only after child/host liveness is concrete. Every
+   pre-spawn/setup failure calls `session-resume-released`, immediately admitting
+   recovery instead of waiting for lease expiry.
+4. **Replay lost transition responses.** Finalize/release receipts are stored in
+   the existing `agent_launch_idempotency` ledger. A timeout after commit can
+   replay the same key and recover the committed boolean verdict; it cannot create
+   a second claimant or misread a cleared reservation as failure.
+5. **Keep activity repair separate.** `reactivateAdvSessionByOwner` remains a
+   best-effort visibility repair for genuine activity. It is not launch permission
+   and cannot replace acquire → spawn → finalize.
 
-The older ended-only numeric helper, `reactivateAdvSession(id)`, was retired on
-2026-08-24 after a live failure showed its gap: a claimant could flip the row
-active and die before spawn, leaving every immediate manual retry permanently
-rejected because the endpoint had no stale-active recovery.
+This is shared by Claude, OMP, and Codex. Backend-native transcript/config and
+writer-lock checks remain defense in depth; the database handoff is not a second
+backend-specific lock.
 
-Note the contrast with the ghost-row trap above: a ghost has **no transcript** and
-is genuinely unresumable; this case is a **resumable, running** session merely
-mis-recorded as dead. Both share the `adv_sessions`-row-vs-reality skew, opposite
-directions.
+### Diagnostics are state-specific
+
+* A proven held reservation names its expiry and the launcher waits/retries with
+  the same local attempt key inside a bounded budget. A reservation is never
+  described as another live process.
+* HTTP rejection before evaluation and transport ambiguity say the request was
+  **not evaluated**; they do not invent database or process state.
+* Only a database-live row or backend-native live/writer evidence justifies a
+  live-contender message. Recovery text keeps Codex's concrete writer-lock context
+  and supplies Claude/OMP transcript/config context where available.
+* An untyped or malformed operator response fails closed and says the reservation
+  state could not be determined.
 
 ## Diagnosis recipe (if it recurs)
 
-1. Does the transcript exist? `ls ~/.papercusp/session-claude/<coordOwnerId>/projects/*/<sessionId>.jsonl`
-   (owner + sid from `GET /api/adv/sessions/resumable`). Missing → ghost row,
-   nothing was ever persisted, nothing to recover.
-2. Transcript exists but resume still fails → check the resume re-supplied
-   `CLAUDE_CONFIG_DIR` (the EI-155 edge: `launchResume` derives it from
-   `coordOwnerId`; without it claude looks in the shared `~/.claude` and finds
-   nothing).
-3. Transcript exists, no live host remains, and psu reports “ended-session resume
-   claim was not acquired” → inspect the adv row’s `started_at`. A recent timestamp
-   means another claimant won; an older active row should be reclaimable after the
-   five-minute claim window. If it is not, verify the deployed `session-resumed`
-   route calls `claimAdvSessionResume`, not the retired ended-only helper.
+1. Does the transcript exist in the backend's recorded root? Missing means a ghost
+   row: nothing was persisted, so there is nothing to resume.
+2. Does the resume use the row's recorded cwd and config root
+   (`CLAUDE_CONFIG_DIR`, `PI_CODING_AGENT_DIR`/OMP thread root, or
+   `CODEX_HOME`)? A transcript in a different root looks missing to the CLI.
+3. If psu reports a held reservation, inspect `resume_claim_key`,
+   `resume_claimed_at`, and the returned `leaseExpiresAt`. A live 60-second
+   reservation is launch-in-progress evidence, not process-liveness evidence; an
+   expired one should be atomically replaceable.
+4. If psu says the request was not evaluated, diagnose the proxy/transport path.
+   Do not inspect `started_at` and infer a winner: acquisition may never have
+   reached the datastore.
+5. For a crash/setup failure, verify `session-resume-released` cleared the
+   reservation while preserving terminal evidence. For a spawned child, verify
+   `session-resume-finalized` cleared it and made the row live.
+6. After a timeout-after-commit, retry the **same** attempt key and verify the
+   idempotency ledger replays the committed end/acquire/finalize/release verdict.
 
 ## Consequences to know
 
@@ -120,6 +139,22 @@ directions.
 * Pre-fix rows keep `ended_at = NULL` (no backfill — distinguishing
   dead-from-idle retroactively is unsafe); they're harmless now that the
   picker filters by transcript existence.
+
+## Current verification (2026-08-26)
+
+* Real-Postgres integration ran concurrently to prove fixture isolation and the
+  shared lifecycle matrix: `recorded-sessions.integration.test.ts` **27/27** and
+  `psu-resume-lifecycle.integration.test.ts` **6/6** across Claude, OMP, and
+  Codex. It covers same-key acquire/finalize/release replay, end-write 429,
+  timeout-after-commit, crash-before-spawn release, reservation expiry, two
+  simultaneous resumers, exact session/cwd continuity, and backend root markers.
+* The real CLI smoke `apps/operator/scripts/resume-spawn-live.ts` passed on
+  Claude Code 2.1.246, OMP 18.0.3, and Codex CLI 0.149.1. Each fresh isolated
+  transcript/rollout grew after the production `resumeCommandFor` command.
+  One current-staging sample measured whole resumed-turn wall time at **10.251s
+  Claude**, **11.929s OMP**, and **4.717s Codex**. These are provider+CLI turn
+  latencies, not datastore-acquire latency; the reservation safety budget remains
+  the writer's explicit **60-second** lease.
 
 ## The fork identity model (`psu --resume --fork`)
 

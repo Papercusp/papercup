@@ -7,12 +7,37 @@ Create the Papercusp Slack app, store its Socket Mode credentials outside the re
 
 Papercusp uses Slack Socket Mode: the desktop makes an outbound WebSocket connection and exposes no public webhook. Live mention, DM, and `/papercusp` envelopes are acknowledged immediately and deduplicated by Slack `event_id`. After a cold start, configured channels reconcile through `conversations.history`; the adapter performs at most one page per minute and honors HTTP 429 `Retry-After`.
 
+## 0. Both routes below need a TRUSTED principal — a bare curl is refused
+
+⚠ **Read this before running anything.** The two routes in steps 1 and 3 declare `auth: { trust: ['verified', 'trusted'] }` (`external-triggers.ts`, the `slackManifest` and `slackConnect` definitions). That is deliberate: provider-token setup must not inherit the cookie-less `unverified-loopback` fallback that sibling admin routes accept.
+
+A plain shell `curl` resolves at rung 5 of the principal ladder (`auth/require-principal.ts`) to `trust: 'unverified-loopback'`, which is NOT in that allowlist, so it fails:
+
+```
+$ curl -fsS http://127.0.0.1:3070/api/admin/triggers/slack/manifest
+HTTP 403
+{"error":{"code":"forbidden","message":"trust unverified-loopback not in allowlist"}}
+```
+
+**The fix is to authenticate as the superuser bearer** (rung 3 → `trust: 'trusted'`), validated against `~/.papercusp/superuser-token` (mode 0600) and additionally required to be loopback. Every curl below carries it:
+
+```bash
+-H "Authorization: Bearer $(cat ~/.papercusp/superuser-token)"
+```
+
+No `Origin` header is needed. `requireAllowedOriginOr403` (`endpoint-route/cors.ts`) explicitly allows a request that sends no `Origin` — "non-browser: curl, server-to-server, SU bearer".
+
+⛔ **Do not "fix" a 403 here by adding `unverified-loopback` to either route's auth tier.** That gate is the control keeping a cookie-less caller away from provider-token storage. Authenticate the caller instead.
+
+There is currently **no UI path**: `/admin/triggers` contains no Slack surface, and nothing outside the route definition calls `/admin/triggers/slack/connect`. The corrected curl below is the only supported route today.
+
 ## 1. Create the Slack app from the maintained manifest
 
 Fetch the current manifest from the local operator:
 
 ```bash
-curl -fsS http://127.0.0.1:3070/api/admin/triggers/slack/manifest | jq .manifest
+curl -fsS -H "Authorization: Bearer $(cat ~/.papercusp/superuser-token)" \
+  http://127.0.0.1:3070/api/admin/triggers/slack/manifest | jq .manifest
 ```
 
 Paste that JSON into **Slack API → Your Apps → Create New App → From an app manifest**. The manifest enables Socket Mode, subscribes to `app_mention` and `message.im`, declares the `/papercusp` command, and requests the history scopes required for offline reconciliation.
@@ -39,14 +64,19 @@ jq -n \
   --argjson channels "$SLACK_CHANNELS" \
   '{appToken:$appToken,botToken:$botToken,installSlug:"papercusp",channels:$channels}' \
 | curl -fsS -X POST http://127.0.0.1:3070/api/admin/triggers/slack/connect \
+    -H "Authorization: Bearer $(cat ~/.papercusp/superuser-token)" \
     -H 'content-type: application/json' --data-binary @-
 unset SLACK_APP_TOKEN SLACK_BOT_TOKEN SLACK_CHANNELS
 ```
 
+A credential problem surfaces as HTTP 400 with a detail naming the provider call, e.g. `{"ok":false,"error":"slack_connect_failed","detail":"slack_auth_test_200:invalid_auth"}`. That response means the request cleared the auth tier and the CSRF gate and reached Slack — so it is a token problem, not a setup-path problem.
+
 ## 4. Verify health
 
 * `triggers:status` shows the Slack source as `connected`; a bad or missing credential becomes `error`, while a transient network or rate-limit failure becomes `degraded`.
+* A `kind='slack'` row appears in `harness_shared.trigger_sources` for the workspace.
 * `schedule:inventory` shows the managed `slack-socket-reconcile` lifecycle timer, including its last fire and last error.
 * Replaying the same Socket Mode event does not launch twice because the canonical delivery ledger keys the Slack event by `event_id`.
+* Once the source is live, `ext:slack:<event>` becomes awaitable (`events:catalog`, family `external-trigger`), so downstream acceptance should PARK on that key rather than poll for the row.
 
 Slack protocol references: [https://docs.slack.dev/apis/events-api/using-socket-mode/](https://docs.slack.dev/apis/events-api/using-socket-mode/) · [https://docs.slack.dev/reference/app-manifest/](https://docs.slack.dev/reference/app-manifest/) · [https://docs.slack.dev/reference/methods/conversations.history/](https://docs.slack.dev/reference/methods/conversations.history/) · [https://docs.slack.dev/apis/web-api/rate-limits/](https://docs.slack.dev/apis/web-api/rate-limits/)
