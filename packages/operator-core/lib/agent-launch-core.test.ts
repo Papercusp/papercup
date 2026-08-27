@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const launchCoreSql = vi.hoisted(() =>
   vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [] as unknown[]),
@@ -10,7 +10,9 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 
 import {
+  AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS,
   buildAgentLaunchCommand,
+  claimAgentLaunch,
   composeModelSpec,
   foldMemberSpec,
   injectAccountArg,
@@ -28,6 +30,91 @@ import {
 } from './agent-launch-core';
 
 const OWNER = 'su-b0fbfa98-0594-4a46-909f-3ca16622101d';
+
+beforeEach(() => {
+  launchCoreSql.mockReset();
+  launchCoreSql.mockResolvedValue([] as unknown[]);
+});
+
+describe('claimAgentLaunch crash recovery', () => {
+  it('atomically lets an honest retry win after an empty in-progress claim outlives its lease', async () => {
+    const firstNow = 1_800_000_000_000;
+    const retryNow = firstNow + AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS + 1;
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ idempotency_key: 'crash-window' }])
+      // Simulate the winning process disappearing before record/release. The
+      // next call reaches the same UPSERT after the lease threshold.
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ idempotency_key: 'crash-window' }]);
+
+    const first = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'crash-window',
+      launchedBy: 'su-first',
+      now: firstNow,
+    });
+    const retry = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'crash-window',
+      launchedBy: 'su-retry',
+      now: retryNow,
+    });
+
+    expect(first.won).toBe(true);
+    expect(retry.won).toBe(true);
+    const retryUpsert = launchCoreSql.mock.calls[3];
+    const query = String(retryUpsert?.[0]?.join(' '));
+    expect(query).toContain('ON CONFLICT (workspace_id, idempotency_key) DO UPDATE');
+    expect(query).toContain("existing.summary = '{}'::jsonb");
+    expect(retryUpsert?.slice(1)).toContain(retryNow - AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS);
+  });
+
+  it('keeps a recent empty claim fail-closed so an ordinary retry cannot duplicate a launch', async () => {
+    const now = 1_800_000_000_000;
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ summary: {}, launched_at: now - 1_000, launched_by: 'su-first' }]);
+
+    const retry = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'still-running',
+      launchedBy: 'su-retry',
+      now,
+    });
+
+    expect(retry).toEqual({
+      won: false,
+      priorSummary: {},
+      priorLaunchedAt: now - 1_000,
+      priorLaunchedBy: 'su-first',
+    });
+  });
+
+  it('never leases over a completed launch summary, even when the row is old', async () => {
+    const now = 1_800_000_000_000;
+    const summary = { opened: 1, mode: 'fresh' };
+    launchCoreSql
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{
+        summary,
+        launched_at: now - AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS - 1,
+        launched_by: 'su-first',
+      }]);
+
+    const replay = await claimAgentLaunch({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'completed-launch',
+      launchedBy: 'su-retry',
+      now,
+    });
+
+    expect(replay.won).toBe(false);
+    expect(replay.priorSummary).toEqual(summary);
+  });
+});
 
 describe('injectAccountArg (P-012: a scripted psu launch must never sit on the account picker)', () => {
   it('injects --account=default into a psu command that lacks one', () => {

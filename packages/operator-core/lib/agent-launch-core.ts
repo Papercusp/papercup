@@ -930,10 +930,21 @@ export function composeMemberLaunchContext(opts: {
   return `${baseline}\n\n---\n\n# Fleet-specific brief (from your leader — wins on specifics)\n\n${brief}\n`;
 }
 
-/** The window a launch claim stays authoritative for. Old claims are pruned on
- *  each call — the ledger answers "did THIS call already land", not "has anyone
- *  ever used this key", so a week is generous for a retry. */
+/** The window a completed launch result stays authoritative. Old rows are
+ *  pruned on each call — the ledger answers "did THIS call already land", not
+ *  "has anyone ever used this key", so a week is generous for a retry. */
 const LAUNCH_CLAIM_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * An empty summary is the durable in-progress sentinel. A normal launch records
+ * a result or releases the row, but a process can die in the narrow window
+ * between claiming and either action. Keep a recent sentinel fail-closed so an
+ * ordinary client retry cannot open duplicate windows, then let one caller
+ * atomically take it over after every bounded launch/verification window has
+ * elapsed. Fifteen minutes is deliberately longer than the launch door's
+ * spawn + readiness verification budget.
+ */
+export const AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS = 15 * 60 * 1000;
 
 export interface AgentLaunchClaim {
   /** false ⇒ a prior call already launched under this key; do NOT launch again. */
@@ -969,10 +980,15 @@ export async function claimAgentLaunch(opts: {
        WHERE launched_at < ${now - LAUNCH_CLAIM_TTL_MS}
     `;
     const won = await sql<Array<{ idempotency_key: string }>>`
-      INSERT INTO harness_shared.agent_launch_idempotency
+      INSERT INTO harness_shared.agent_launch_idempotency AS existing
         (workspace_id, idempotency_key, launched_at, launched_by, summary)
       VALUES (${opts.workspaceId}, ${key}, ${now}, ${opts.launchedBy ?? null}, '{}'::jsonb)
-      ON CONFLICT (workspace_id, idempotency_key) DO NOTHING
+      ON CONFLICT (workspace_id, idempotency_key) DO UPDATE
+         SET launched_at = EXCLUDED.launched_at,
+             launched_by = EXCLUDED.launched_by,
+             summary = '{}'::jsonb
+       WHERE existing.summary = '{}'::jsonb
+         AND existing.launched_at < ${now - AGENT_LAUNCH_EMPTY_CLAIM_LEASE_MS}
       RETURNING idempotency_key
     `;
     if (won.length) return { won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null };
