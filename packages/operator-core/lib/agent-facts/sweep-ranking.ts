@@ -127,3 +127,34 @@ export function rankOfId(ordered: readonly SweepRankableRow[], id: string | numb
   const idx = ordered.findIndex((r) => String(r.id) === String(id));
   return idx + 1;
 }
+
+/**
+ * Does `candidate` rank STRICTLY ABOVE `incumbent` in the sweep's ordering?
+ * (EI-21585375376448939)
+ *
+ * The cross-author cap guard needs exactly one bit before it refuses a write:
+ * is the incoming fact BETTER than the row it would displace? Answering that
+ * by re-deriving the comparison at the call site would recreate the anonymous
+ * buried comparator this module exists to prevent (see the header), so the
+ * question gets a named, pure, directly-testable home here beside the ordering
+ * it depends on.
+ *
+ * ⚠ STRICT: a tie returns false. The SQL ordering specifies no total order, so
+ * tied rows are "one of these goes next", not a decidable winner — and the
+ * caller is a protective guard, where the safe reading of "no better than" is
+ * "do not displace". Ties therefore keep the refusal rather than silently
+ * resolving in the writer's favour.
+ */
+export function outranksForSweep(
+  candidate: SweepRankableRow,
+  incumbent: SweepRankableRow,
+  nowMs: number = Date.now(),
+): boolean {
+  const byConfidence =
+    sweepConfidenceRank(candidate.confidence) - sweepConfidenceRank(incumbent.confidence);
+  if (byConfidence !== 0) return byConfidence < 0;
+  const byFraction =
+    sweepRemainingFraction(incumbent, nowMs) - sweepRemainingFraction(candidate, nowMs);
+  if (byFraction !== 0) return byFraction > 0;
+  return epochMs(incumbent.updated_at) < epochMs(candidate.updated_at);
+}

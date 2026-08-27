@@ -13840,7 +13840,7 @@
           "POST"
         ]
       },
-      "description": "Read the canonical infra-liveness memory-pressure verdict from the latest perf-signals capture, plus an independent free-memory falsifier. Normally call state:read { cell:\"host.memoryPressure\" }; this is its resolver lens.",
+      "description": "Read the canonical infra-liveness memory-pressure verdict from the latest perf-signals capture, plus an independent free-memory reading. Normally call state:read { cell:\"host.memoryPressure\" }; this is its resolver lens.",
       "capabilities": [
         "intel:read"
       ],

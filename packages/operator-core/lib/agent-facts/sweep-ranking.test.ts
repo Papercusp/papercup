@@ -32,6 +32,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   orderAsSweepWould,
+  outranksForSweep,
   rankOfId,
   sweepConfidenceRank,
   sweepRemainingFraction,
@@ -266,5 +267,105 @@ describe('rankOfId — locating the written row in that ordering', () => {
   it('returns 0 for an absent or null id rather than a misleading rank', () => {
     expect(rankOfId(ordered, 'not-here')).toBe(0);
     expect(rankOfId(ordered, null)).toBe(0);
+  });
+});
+
+/**
+ * EI-21585375376448939 — the cross-author cap guard's one question.
+ *
+ * The guard picks its victim at OFFSET cap-1, i.e. the WORST-ranked row in the
+ * scope, then refuses when that row is verified and belongs to someone else.
+ * On a scope that has saturated with a 100%-verified population (the measured
+ * steady state: 200/200 verified across 123-130 distinct authors), that test
+ * matches for essentially every author, so the rail stops protecting one fact
+ * and becomes a scope-wide WRITE LOCK.
+ *
+ * `outranksForSweep` is what lets the guard ask the question it should have
+ * been asking — "is this write actually better than what it displaces?" — so
+ * these cases pin the answer, and each is paired with a wrong control that
+ * would re-open the lock or open it too far.
+ */
+describe('outranksForSweep — is the incoming fact better than the row it displaces?', () => {
+  /** A fresh write: created now, so key 2 scores ~1.0, the maximum it can produce. */
+  const incoming = (confidence: string | null, ttlDays: number): SweepRankableRow => ({
+    id: null,
+    confidence,
+    created_at: at(0),
+    expires_at: at(ttlDays),
+    updated_at: at(0),
+  });
+
+  /**
+   * The real victim shape: verified, but chosen precisely BECAUSE it is closest
+   * to natural death — here ~13% of its declared life left, matching the
+   * survivingFractionFloor measured live on the saturated workspace scope.
+   */
+  const nearDeathVerified: SweepRankableRow = {
+    id: 'victim',
+    confidence: 'verified',
+    created_at: at(-7),
+    expires_at: at(1),
+    updated_at: at(-7),
+  };
+
+  it('a fresh VERIFIED write outranks a verified victim that is nearly expired', () => {
+    // This is the exact case the guard refused: the store's own survival.rank
+    // reported rank 1 of 200 (nextVictim false) for this write, while the row
+    // it would displace ranked last. Refusing it protected the worst fact in
+    // the scope by rejecting the best one.
+    expect(outranksForSweep(incoming('verified', 90), nearDeathVerified, NOW)).toBe(true);
+  });
+
+  it('a PROVISIONAL write does NOT outrank a verified victim, however long its TTL', () => {
+    // Key 1 dominates, so a weaker claim cannot buy its way past a stronger one
+    // with a longer TTL — the protection the rail exists to provide is intact.
+    expect(outranksForSweep(incoming('provisional', 90), nearDeathVerified, NOW)).toBe(false);
+    expect(outranksForSweep(incoming(null, 90), nearDeathVerified, NOW)).toBe(false);
+    expect(outranksForSweep(incoming('suspected', 90), nearDeathVerified, NOW)).toBe(false);
+  });
+
+  it('is STRICT: an exact tie keeps the refusal rather than favouring the writer', () => {
+    // The SQL ordering specifies no total order, so tied rows are "one of these
+    // goes next", not a decidable winner. A guard must read that as "no better
+    // than" and decline to displace.
+    const twin: SweepRankableRow = { ...nearDeathVerified, id: 'twin' };
+    expect(outranksForSweep({ ...twin, id: null }, twin, NOW)).toBe(false);
+  });
+
+  it('agrees with orderAsSweepWould — the ordering and the pairwise test are one rule', () => {
+    // The whole reason this lives beside the ordering: if the two ever disagree,
+    // the guard refuses writes the sweep would have kept (or the reverse).
+    for (const row of ROWS) {
+      for (const conf of ['verified', 'provisional', 'suspected', null] as const) {
+        const cand = incoming(conf, 30);
+        const [first] = orderAsSweepWould([{ ...row }, { ...cand, id: '__cand__' }], NOW);
+        expect(outranksForSweep(cand, row, NOW)).toBe(String(first?.id) === '__cand__');
+      }
+    }
+  });
+
+  // ── falsifiability: each control is a plausible way to get this wrong ──────
+  // A control that stops being rejected means the property it pins has died.
+  it.each([
+    [
+      'a NON-STRICT comparison (ties favour the writer) — would let a tied write evict',
+      (c: SweepRankableRow, i: SweepRankableRow): boolean => !outranksForSweep(i, c, NOW),
+    ],
+    [
+      'ignoring confidence (TTL only) — would let a suspected write evict a verified fact',
+      (c: SweepRankableRow, i: SweepRankableRow): boolean =>
+        sweepRemainingFraction(c, NOW) > sweepRemainingFraction(i, NOW),
+    ],
+  ])('CONTROL — %s disagrees with the real rule', (_label, wrong) => {
+    const twin: SweepRankableRow = { ...nearDeathVerified, id: 'twin' };
+    const cases: [SweepRankableRow, SweepRankableRow][] = [
+      [incoming('suspected', 90), nearDeathVerified],
+      [{ ...twin, id: null }, twin],
+    ];
+    // At least one case must diverge, or the control is not actually wrong and
+    // this suite would pass against a broken implementation.
+    expect(
+      cases.some(([cand, inc]) => wrong(cand, inc) !== outranksForSweep(cand, inc, NOW)),
+    ).toBe(true);
   });
 });
