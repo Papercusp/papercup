@@ -250,6 +250,10 @@ export function ptyWriteChunks(value, maxCodeUnits = 16 * 1024) {
 }
 
 function nativeTranscriptRoot(agent, env, home) {
+  if (agent === 'claude') {
+    const root = env.CLAUDE_CONFIG_DIR ? String(env.CLAUDE_CONFIG_DIR) : join(home, '.claude');
+    return join(root, 'projects');
+  }
   if (agent === 'codex') {
     const root = env.CODEX_HOME ? String(env.CODEX_HOME) : join(home, '.codex');
     return join(root, 'sessions');
@@ -263,11 +267,28 @@ function nativeTranscriptRoot(agent, env, home) {
   return null;
 }
 
+/** The carry prompt's unique first line is the strongest cross-backend proof
+ * that the fresh native transcript accepted THIS successor turn. */
+export function leadingTurnOriginMarker(text) {
+  const firstLine = String(text ?? '').replace(/\r\n?/g, '\n').split('\n', 1)[0].trim();
+  return /^⟦turn-origin:[a-z0-9][a-z0-9-]* nonce:[a-f0-9]{16,64}⟧$/i.test(firstLine)
+    ? firstLine
+    : null;
+}
+
 /** Find the exact port marker in a recently-written target-native JSONL. This
  * is the delivery authority: PTY output/activity is intentionally insufficient.
- * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number, home?: string}} options
+ * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
+ *   home?: string, nativeId?: string | null}} options
  */
-export function findNativeTranscriptMarker({ agent, env = process.env, marker, sinceMs, home = homedir() }) {
+export function findNativeTranscriptMarker({
+  agent,
+  env = process.env,
+  marker,
+  sinceMs,
+  home = homedir(),
+  nativeId = null,
+}) {
   const root = nativeTranscriptRoot(agent, env, home);
   if (!root || !existsSync(root) || !marker) return null;
   const markerBytes = Buffer.from(marker, 'utf8');
@@ -287,6 +308,10 @@ export function findNativeTranscriptMarker({ agent, env = process.env, marker, s
         continue;
       }
       if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+      // A carry-respawn mints a fresh native id. Restricting the proof to that
+      // file prevents a coincidental marker in an older transcript from
+      // certifying the successor that actually stayed mute.
+      if (nativeId && !entry.name.includes(String(nativeId))) continue;
       try {
         const st = statSync(path);
         if (st.mtimeMs < sinceMs - 5_000 || st.size < markerBytes.length || st.size > 64 * 1024 * 1024) continue;
@@ -301,7 +326,7 @@ export function findNativeTranscriptMarker({ agent, env = process.env, marker, s
 
 /**
  * @param {{agent: string, env?: EnvironmentMap, marker: string, sinceMs: number,
- *   home?: string, timeoutMs?: number, pollMs?: number}} options
+ *   home?: string, timeoutMs?: number, pollMs?: number, nativeId?: string | null}} options
  */
 export async function waitForNativeTranscriptMarker({
   agent,
@@ -311,10 +336,11 @@ export async function waitForNativeTranscriptMarker({
   home = homedir(),
   timeoutMs = 30_000,
   pollMs = 250,
+  nativeId = null,
 }) {
   const deadline = Date.now() + timeoutMs;
   do {
-    const nativeRef = findNativeTranscriptMarker({ agent, env, marker, sinceMs, home });
+    const nativeRef = findNativeTranscriptMarker({ agent, env, marker, sinceMs, home, nativeId });
     if (nativeRef) return { persisted: true, nativeRef };
     if (Date.now() >= deadline) break;
     await new Promise((resolve) => setTimeout(resolve, pollMs));
@@ -1779,6 +1805,16 @@ export function makeSubmitVerifier({
       return { polls: i, resubmits, aborted: null, exhausted };
     },
   };
+}
+
+/** Translate the submit verifier's semantic negative outcomes into the stable
+ * delivery reasons consumed by launch/recycle callers. A human-input abort is
+ * not proof that the injected turn landed, so it must remain distinguishable
+ * from both success and bounded exhaustion. Pure; exported for tests. */
+export function submitVerificationFailureReason(result) {
+  if (result?.exhausted) return 'submit-verification-exhausted';
+  if (result?.aborted) return `submit-verification-aborted-${result.aborted}`;
+  return null;
 }
 
 /** How often the discovery file's activity fields are refreshed. Coarse on
@@ -3274,6 +3310,10 @@ export const SESSION_COMPACTED_EMIT_ENTRY = join(HOST_SCRIPT_DIR, 'emit-session-
  * env, so the CLI needs no DATABASE_URL handed to it. Compaction is rare, so the tsx
  * cold-start cost is acceptable.
  *
+ * `opts.nativeId` is the exact successor native session this completed cut
+ * spawned. The detached CLI uses it to refuse a context-estimate refresh while
+ * the owner mapping still points at the predecessor (EI-21567375926533125).
+ *
  * FAIL-SOFT + fire-and-forget: if the entry does not exist yet (CLI not landed), or tsx /
  * PG fail, nothing touches the live session. Only the CALLER's real-completion path invokes
  * this (never the done.deferred drop). Pure side-effect; returns the spawned child or null.
@@ -3287,12 +3327,16 @@ export function fireSessionCompactedEvent(ownerId, focus, opts = {}) {
   // expected state until the event-await plan's P-103 CLI ships.
   if (!exists(entry)) return null;
   try {
-    const child = spawnFn('npx', ['tsx', entry, String(ownerId), String(focus ?? '')], {
-      cwd: join(HOST_SCRIPT_DIR, '..', '..', '..'), // checkout root — where npx finds tsx
-      env: process.env,
-      detached: true,
-      stdio: 'ignore',
-    });
+    const child = spawnFn(
+      'npx',
+      ['tsx', entry, String(ownerId), String(focus ?? ''), String(opts.nativeId ?? '')],
+      {
+        cwd: join(HOST_SCRIPT_DIR, '..', '..', '..'), // checkout root — where npx finds tsx
+        env: process.env,
+        detached: true,
+        stdio: 'ignore',
+      },
+    );
     // A spawn error (npx/tsx missing) must never surface into the session.
     child.on?.('error', () => {});
     child.unref?.();
@@ -4065,8 +4109,28 @@ export function hostThroughPty(o) {
               if (i + 1 < chunks.length) await new Promise((r) => setTimeout(r, 0));
             }
           }
-          if (child === injectChild) {
-            await verifySubmitted(label, { terminateOnExhaustion: terminateOnSubmitVerifyExhaustion });
+          if (child !== injectChild) {
+            return { delivered: false, reason: 'superseded', attempts };
+          }
+          const submitVerification = await verifySubmitted(label, {
+            terminateOnExhaustion: terminateOnSubmitVerifyExhaustion,
+          });
+          if (child !== injectChild) {
+            return { delivered: false, reason: 'superseded', attempts };
+          }
+          // EI-21561923024113260 / WI-42318: verifier exhaustion and abort are
+          // semantic negative/unknown outcomes. Ignoring either let a pty write
+          // race cleanup or human input and still become delivered:true.
+          // Callers with a stronger semantic proof (managed/native transcript)
+          // deliberately disable generic fatal exhaustion and own the verdict
+          // themselves. Only callers that opt into this verifier as authority
+          // may turn its negative/unknown result into a delivery drop.
+          const verificationFailure = terminateOnSubmitVerifyExhaustion
+            ? submitVerificationFailureReason(submitVerification)
+            : null;
+          if (verificationFailure) {
+            dropReason = verificationFailure;
+            break;
           }
           return { delivered: true, attempts };
         }
@@ -4095,6 +4159,10 @@ export function hostThroughPty(o) {
             ? 'the child never emitted its startup-ready marker AND the last-resort attempt found no prompt'
             : dropReason === 'no-startup-ready-marker'
               ? 'the child never emitted its startup-ready marker'
+              : dropReason === 'submit-verification-exhausted'
+                ? 'submit verification exhausted without observing output after a resubmit'
+                : dropReason.startsWith('submit-verification-aborted-')
+                  ? `submit verification aborted (${dropReason.slice('submit-verification-aborted-'.length)})`
               : 'the child never settled to its prompt'
         } ` +
           `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
@@ -5676,7 +5744,7 @@ export function hostThroughPty(o) {
             // reaches — so fire it here or every adopting cut goes unannounced.
             if (respawnMode === 'carry-respawn') {
               try {
-                fireSessionCompactedEvent(ownerId, 'carry-respawn');
+                fireSessionCompactedEvent(ownerId, 'carry-respawn', { nativeId });
               } catch {
                 /* announcing the cut must not be able to prevent it */
               }
@@ -5895,7 +5963,9 @@ export function hostThroughPty(o) {
       // carry-respawn IS this member's context cut — fire the same event here so
       // peers' `events:await { event: "session:compacted:<owner>" }` stays a live
       // surface instead of a key nothing emits anymore.
-      if (respawnMode === 'carry-respawn') fireSessionCompactedEvent(ownerId, 'carry-respawn');
+      if (respawnMode === 'carry-respawn') {
+        fireSessionCompactedEvent(ownerId, 'carry-respawn', { nativeId });
+      }
       recycling = false;
       if (!carryText) {
         if (drillId) {
@@ -5916,18 +5986,89 @@ export function hostThroughPty(o) {
       // leaving the session booted-but-idle with no trace until its next
       // scheduled wake). The carry also stays in the inbox as the last-resort
       // next-turn resume, so a drop is observable, not lossy.
-      const carryResult = await injectTurnAtPrompt({
+      const recordCarryDrop = () => {
+        baseMeta.lastCarryDropAt = Date.now();
+        baseMeta.carryDropCount = (baseMeta.carryDropCount || 0) + 1;
+        // A generic submit-verifier exhaustion may already have cleaned up the
+        // host. Preserve the in-memory counter and durable event, but never
+        // recreate a stale discovery file after cleanup removed it.
+        if (!cleaned) writeMeta();
+      };
+      let carryResult = await injectTurnAtPrompt({
         text: carryText,
         label: drillId ? `carry-drill ${drillId} first prompt` : 'recycle carry-note',
         // A fresh child can be output-quiet before its input handler exists.
         // Apply the same backend-aware boot proof as a scripted resume/port.
         requireInitialOutput: true,
-        onDrop: () => {
-          baseMeta.lastCarryDropAt = Date.now();
-          baseMeta.carryDropCount = (baseMeta.carryDropCount || 0) + 1;
-          writeMeta();
-        },
+        onDrop: recordCarryDrop,
       });
+      let turnStartProof = null;
+      // EI-21561923024113260: PTY output proves only that the successor painted
+      // something. The incident had outputSeen:true and no user turn for 182s.
+      // Production carry prompts carry a unique leading turn-origin marker and
+      // a fresh native id, so require that exact pair in the fresh backend
+      // transcript before emitting respawn-carry-delivered. Drills retain their
+      // existing PTY-level contract because their synthetic payloads do not
+      // necessarily carry turn provenance.
+      if (!drillId && carryResult.delivered) {
+        const marker = leadingTurnOriginMarker(carryText);
+        const proofSupported = ['claude', 'codex', 'omp'].includes(String(env.PAPERCUSP_AGENT || ''));
+        const proofWindowMs = Math.max(250, Math.floor(nativePersistenceTimeoutMs / 2));
+        if (marker && nativeId && proofSupported) {
+          turnStartProof = await waitForNativeTranscriptMarker({
+            agent: env.PAPERCUSP_AGENT,
+            env,
+            marker,
+            nativeId,
+            sinceMs: lastRespawnAtMs,
+            timeoutMs: proofWindowMs,
+          });
+          if (!turnStartProof.persisted) {
+            appendHostEvent(ownerId, 'respawn-carry-turn-start-retry', {
+              mode: respawnMode,
+              nativeId,
+              reason: 'native-turn-marker-timeout',
+            });
+            try { child.write('\r'); } catch { /* child exit is handled elsewhere */ }
+            turnStartProof = await waitForNativeTranscriptMarker({
+              agent: env.PAPERCUSP_AGENT,
+              env,
+              marker,
+              nativeId,
+              sinceMs: lastRespawnAtMs,
+              timeoutMs: proofWindowMs,
+            });
+          }
+        } else {
+          turnStartProof = {
+            persisted: false,
+            nativeRef: null,
+            reason: !marker
+              ? 'missing-leading-turn-origin'
+              : !nativeId
+                ? 'missing-native-id'
+                : 'unsupported-backend',
+          };
+        }
+        if (!turnStartProof.persisted) {
+          recordCarryDrop();
+          carryResult = { ...carryResult, delivered: false, reason: 'turn-start-unverified' };
+          appendHostEvent(ownerId, 'turn-start-unverified', {
+            mode: respawnMode,
+            nativeId: nativeId ?? null,
+            detail: turnStartProof.reason ?? 'native-turn-marker-timeout',
+          });
+          try {
+            process.stderr.write(
+              `psu-pty-host: carry turn start UNVERIFIED for ${ownerId} ` +
+                `(native ${nativeId ?? 'unknown'}; ${turnStartProof.reason ?? 'marker timeout'}) — ` +
+                `recording a drop, never respawn-carry-delivered\n`,
+            );
+          } catch {
+            /* diagnostic only */
+          }
+        }
+      }
       if (drillId) {
         // EI-12655 (drill-1 instrumentation, leader-concurred): a never-settled
         // drop was previously indistinguishable from a never-booted child.
@@ -5960,6 +6101,8 @@ export function hostThroughPty(o) {
             reason: carryResult.delivered ? undefined : carryResult.reason,
             attempts: carryResult.attempts,
             outputSeen: childStartupOutput.length > 0,
+            turnStartVerified: turnStartProof ? Boolean(turnStartProof.persisted) : undefined,
+            nativeRef: turnStartProof?.nativeRef ?? undefined,
           },
         );
       }
