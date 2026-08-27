@@ -57,8 +57,10 @@ export type WorkItemDependencyMutation =
     };
 
 export interface WorkItemDependencyBatchInput {
-  /** Item + edge workspace. Existing work-item callers pass DEFAULT_COORD_WORKSPACE. */
+  /** Edge-table workspace. Existing work-item edges live in DEFAULT_COORD_WORKSPACE. */
   readonly workspaceId: string;
+  /** Domain workspace containing the endpoint rows; defaults to `workspaceId`. */
+  readonly itemWorkspaceId?: string;
   /** Operations are applied in order to one candidate graph, then committed atomically. */
   readonly mutations: readonly WorkItemDependencyMutation[];
 }
@@ -111,7 +113,7 @@ interface WorkItemNodeRow {
 }
 
 const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
-const ISSUE_ONLY_TERMINAL_STATUSES = new Set(['resolved', 'closed']);
+const ISSUE_TERMINAL_STATUSES = new Set(['resolved', 'closed', 'done', 'dropped']);
 
 function identityLabel(id: DependencyIdentity): string {
   return `${id.kind}:${id.ref}`;
@@ -159,9 +161,10 @@ function applyDependencyMutations(
 }
 
 function endpointBareId(endpoint: DependencyIdentity): string | null {
-  if (endpoint.kind === ISSUE_ENDPOINT_KIND) return endpoint.ref;
-  if (endpoint.kind !== FEATURE_KIND || !isQualifiedFeatureRef(endpoint.ref)) return null;
-  return endpoint.ref.slice(endpoint.ref.indexOf('#') + 1);
+  if (endpoint.kind !== ISSUE_ENDPOINT_KIND && endpoint.kind !== FEATURE_KIND) return null;
+  return isQualifiedFeatureRef(endpoint.ref)
+    ? endpoint.ref.slice(endpoint.ref.indexOf('#') + 1)
+    : endpoint.ref;
 }
 
 function rowNode(row: WorkItemNodeRow): DependencyGraphNodeInput {
@@ -169,13 +172,20 @@ function rowNode(row: WorkItemNodeRow): DependencyGraphNodeInput {
   const id: DependencyIdentity = issueFamily
     ? { kind: ISSUE_ENDPOINT_KIND, ref: row.feature_id }
     : { kind: FEATURE_KIND, ref: featureRef(row.harness_slug, row.feature_id) };
-  const alias: DependencyIdentity = issueFamily
-    ? { kind: FEATURE_KIND, ref: featureRef(row.harness_slug, row.feature_id) }
-    : { kind: ISSUE_ENDPOINT_KIND, ref: row.feature_id };
+  const qualified = featureRef(row.harness_slug, row.feature_id);
+  const aliases: DependencyIdentity[] = issueFamily
+    ? [
+        { kind: FEATURE_KIND, ref: qualified },
+        { kind: ISSUE_ENDPOINT_KIND, ref: qualified },
+      ]
+    : [
+        { kind: ISSUE_ENDPOINT_KIND, ref: row.feature_id },
+        { kind: FEATURE_KIND, ref: row.feature_id },
+      ];
   return {
     id,
-    aliases: [alias],
-    terminal: TERMINAL_STATUSES.has(row.status) || ISSUE_ONLY_TERMINAL_STATUSES.has(row.status),
+    aliases,
+    terminal: issueFamily ? ISSUE_TERMINAL_STATUSES.has(row.status) : TERMINAL_STATUSES.has(row.status),
     scope: `${row.workspace_id}/${row.harness_slug}`,
   };
 }
@@ -344,7 +354,10 @@ export async function mutateWorkItemDependencies(
     async (tx) => {
       const current = await loadStoredDependencyEdges(tx, input.workspaceId);
       const candidate = applyDependencyMutations(current, input.mutations);
-      const nodes = await loadDependencyNodes(tx, input.workspaceId, [...current, ...candidate]);
+      const nodes = await loadDependencyNodes(tx, input.itemWorkspaceId ?? input.workspaceId, [
+        ...current,
+        ...candidate,
+      ]);
       const before = analyseStoredEdges(nodes, current);
       const after = analyseStoredEdges(nodes, candidate);
       const findings = newlyRejectedFindings(before, after, current, candidate);
