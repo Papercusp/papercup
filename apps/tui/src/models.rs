@@ -216,6 +216,8 @@ pub struct PlanSummary {
     /// EI-7430: the `standard` tier flattens `itemCounts` into these two scalar
     /// fields instead of the full object (list-shape.ts openDoneCounts) — absent
     /// on the `full` tier, in which case `item_counts` above carries the detail.
+    /// `PlansResponse` rehydrates these scalars into `item_counts` after decode
+    /// so every renderer can continue using the same progress model.
     #[serde(default)]
     pub open: Option<u32>,
     #[serde(default)]
@@ -226,9 +228,44 @@ pub struct PlanSummary {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct PlansResponse {
+struct PlansResponseWire {
     #[serde(default)]
+    plans: Vec<PlanSummary>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlansResponse {
     pub plans: Vec<PlanSummary>,
+}
+
+impl<'de> Deserialize<'de> for PlansResponse {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = PlansResponseWire::deserialize(deserializer)?;
+        let mut plans = wire.plans;
+        for plan in &mut plans {
+            plan.rehydrate_standard_counts();
+        }
+        Ok(Self { plans })
+    }
+}
+
+impl PlanSummary {
+    /// Restore the compact `standard` payload's aggregate counts to the
+    /// renderer-facing model. The full payload has detailed `itemCounts` and
+    /// omits both scalars, so it remains unchanged.
+    fn rehydrate_standard_counts(&mut self) {
+        let (Some(open), Some(done)) = (self.open, self.done) else {
+            return;
+        };
+        self.item_counts = ItemCounts {
+            todo: open,
+            done,
+            ..Default::default()
+        };
+    }
 }
 
 /// One pot chip on a goal row (`/api/tui/goals` → `goals[].pots[]`) — the
@@ -941,8 +978,10 @@ pub struct AttentionItem {
     pub body: Option<String>,
     #[serde(default)]
     pub status: String,
+    /// Canonical attention priority from the plans:attention wire
+    /// (`urgent`/`high`/`normal`/`low`). Older or synthetic rows may omit it.
     #[serde(default)]
-    pub importance: Option<f64>,
+    pub importance: Option<String>,
     #[serde(default)]
     pub needs_human: bool,
     /// Inbox tier (inbox-tiering-and-message-agent D-006): decision | handled |
@@ -2141,11 +2180,17 @@ pub struct QueueControlReleaseLiveness {
     #[serde(default)]
     pub status: String,
     #[serde(default)]
+    pub contract_present: bool,
+    #[serde(default)]
+    pub condition: Option<String>,
+    #[serde(default)]
     pub owner: Option<String>,
     #[serde(default)]
     pub trigger: Option<String>,
     #[serde(default)]
     pub reachability: Option<String>,
+    #[serde(default)]
+    pub evidence: Option<String>,
     #[serde(default)]
     pub findings: Vec<String>,
 }
@@ -2654,6 +2699,10 @@ pub struct FleetRateFleet {
     pub cap: u32,
     #[serde(default)]
     pub in_flight: u32,
+    /// Real non-stale fleet-wide agent count from coord_presence. This is
+    /// distinct from `in_flight`, which only counts rate-governed dispatches.
+    #[serde(default)]
+    pub live_agents: u32,
     #[serde(default)]
     pub effective: u32,
     #[serde(default)]
@@ -2978,7 +3027,7 @@ mod fleet_rate_tests {
     fn fleet_rate_status_decodes_wire_and_derives() {
         let json = r#"{
           "config": {"maxSimultaneousAgents": 6, "concurrencyFloor": 1},
-          "fleet": {"cap": 6, "inFlight": 3, "effective": 4, "floor": 1},
+          "fleet": {"cap": 6, "inFlight": 3, "liveAgents": 165, "effective": 4, "floor": 1},
           "buckets": [
             {"key":"anthropic:big","paused":true,"pausedUntil":null},
             {"key":"openai:big","paused":false}
@@ -2992,6 +3041,7 @@ mod fleet_rate_tests {
         let s: FleetRateStatus = serde_json::from_str(json).unwrap();
         assert_eq!(s.config.max_simultaneous_agents, 6);
         assert_eq!(s.fleet.in_flight, 3);
+        assert_eq!(s.fleet.live_agents, 165);
         assert_eq!(s.fleet.effective, 4);
         assert_eq!(s.paused_count(), 1);
         // Headline = the WORST known bucket; null-ceiling buckets ignored.
@@ -3148,7 +3198,7 @@ mod tests {
                 "inFlight":[{"id":"WI-live","kind":"feature","title":"Live","state":"open","assignee":"su-a"}],
                 "parked":[
                     {"id":"WI-human","kind":"bug","title":"Human","state":"needs-human","reason":"credential","mechanism":"needs-human"},
-                    {"id":"WI-park","kind":"feature","title":"Parked","state":"open","reason":"release once P-003 lands","mechanism":"claimHold","queueControl":{"durablePark":{"parker":"su-park","reason":"release once P-003 lands","parkedAt":null,"age":{"status":"missing","ageMs":null,"bucket":"unknown"},"unparkCondition":{"status":"stated","text":"release once P-003 lands"},"releaseLiveness":{"status":"unverified","owner":null,"trigger":null,"reachability":null,"findings":["owner-missing"]}}}}
+                    {"id":"WI-park","kind":"feature","title":"Parked","state":"open","reason":"release once P-003 lands","mechanism":"claimHold","queueControl":{"durablePark":{"parker":"su-park","reason":"release once P-003 lands","parkedAt":null,"age":{"status":"missing","ageMs":null,"bucket":"unknown"},"unparkCondition":{"status":"stated","text":"release once P-003 lands"},"releaseLiveness":{"status":"unverified","contractPresent":false,"condition":null,"owner":null,"trigger":null,"reachability":null,"evidence":null,"findings":["owner-missing"]}}}}
                 ]
             }"#,
         )
@@ -3167,6 +3217,9 @@ mod tests {
         assert_eq!(park.age.status, "missing");
         assert_eq!(park.age.bucket, "unknown");
         assert_eq!(park.unpark_condition.status, "stated");
+        assert!(!park.release_liveness.contract_present);
+        assert_eq!(park.release_liveness.condition, None);
+        assert_eq!(park.release_liveness.evidence, None);
         assert_eq!(park.release_liveness.findings, vec!["owner-missing"]);
 
         let assignment: BeeAssignment = serde_json::from_str(
@@ -3263,29 +3316,49 @@ mod tests {
     }
 
     #[test]
-    fn parses_attention_shape() {
-        // Trimmed from the live /api/admin/plans/attention probe.
+    fn parses_live_mixed_source_attention_shape() {
+        // Trimmed from the live /api/admin/plans/attention response. The feed
+        // combines plan, coordination, harness, and operator sources; all
+        // sources use the canonical string importance vocabulary.
         let j = r#"{"groups":[
-            {"key":"p-1","kind":"plan","planSlug":"p-1","harnessSlug":null,"title":"P 1","maxImportance":5,
+            {"key":"p-1","kind":"plan","planSlug":"p-1","harnessSlug":"papercusp","title":"P 1","maxImportance":"urgent",
              "items":[
                {"id":"plan-item:p-1:P-001","kind":"plan-item","source":"plan","harnessSlug":null,
                 "planSlug":"p-1","itemRef":"P-001","title":"Do X","body":"Body of X","status":"todo",
-                "importance":3,"needsHuman":false,"actions":[],"ref":"x"},
+                "importance":"normal","needsHuman":false,"actions":[],"ref":"x"},
                {"id":"coord:esc:9","kind":"coord-escalation","source":"coord","harnessSlug":null,
                 "planSlug":null,"itemRef":null,"title":"Escalation!","body":null,"status":"needs-human",
-                "importance":9,"needsHuman":true}
+                "importance":"urgent","needsHuman":true},
+               {"id":"coord:msg:4","kind":"coord-message","source":"coord","harnessSlug":null,
+                "planSlug":null,"itemRef":null,"title":"FYI","body":"A message","status":"message",
+                "importance":"high","needsHuman":false}
+             ]},
+            {"key":"alerts:papercusp","kind":"alerts","planSlug":null,"harnessSlug":"papercusp",
+             "title":"Alerts — papercusp","maxImportance":"low",
+             "items":[
+               {"id":"smoke-fail:papercusp","kind":"smoke-fail","source":"harness","harnessSlug":"papercusp",
+                "planSlug":null,"itemRef":null,"title":"Smoke test failing","body":"failure","status":"fail",
+                "importance":"low","needsHuman":false}
              ]}
         ]}"#;
-        let r: AttentionResponse = serde_json::from_str(j).unwrap();
-        assert_eq!(r.groups.len(), 1);
-        assert_eq!(r.groups[0].items.len(), 2);
+        let r: AttentionResponse = serde_json::from_str(j).expect("live attention response must decode");
+        assert_eq!(r.groups.len(), 2);
+        assert_eq!(r.groups[0].items.len(), 3);
         let first = &r.groups[0].items[0];
         assert_eq!(first.item_ref.as_deref(), Some("P-001"));
         assert_eq!(first.status, "todo");
+        assert_eq!(first.importance.as_deref(), Some("normal"));
         assert!(!first.needs_human);
         let esc = &r.groups[0].items[1];
         assert_eq!(esc.kind, "coord-escalation");
+        assert_eq!(esc.importance.as_deref(), Some("urgent"));
         assert!(esc.needs_human);
+        let msg = &r.groups[0].items[2];
+        assert_eq!(msg.source, "coord");
+        assert_eq!(msg.importance.as_deref(), Some("high"));
+        let smoke = &r.groups[1].items[0];
+        assert_eq!(smoke.source, "harness");
+        assert_eq!(smoke.importance.as_deref(), Some("low"));
     }
 
     #[test]
@@ -3896,6 +3969,26 @@ mod tests {
         assert_eq!(r.plans.len(), 2);
         assert_eq!(r.plans[0].item_counts.total(), 0);
         assert_eq!(r.plans[1].item_counts.done, 2);
+    }
+
+    #[test]
+    fn plans_response_rehydrates_standard_flat_counts() {
+        // The TUI requests the standard tier, whose writer replaces itemCounts
+        // with aggregate open/done scalars. Restore those values before any
+        // renderer reads the shared ItemCounts model.
+        let r: PlansResponse = serde_json::from_str(
+            r#"{"plans":[
+                {"slug":"standard-plan","status":"active","open":4,"done":2}
+            ]}"#,
+        )
+        .unwrap();
+        let p = &r.plans[0];
+        assert_eq!(p.open, Some(4));
+        assert_eq!(p.done, Some(2));
+        assert_eq!(p.item_counts.todo, 4);
+        assert_eq!(p.item_counts.done, 2);
+        assert_eq!(p.item_counts.total(), 6);
+        assert_eq!(p.item_counts.remaining(), 4);
     }
 
     #[test]
