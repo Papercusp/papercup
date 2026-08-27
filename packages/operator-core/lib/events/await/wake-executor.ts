@@ -1195,6 +1195,13 @@ export async function rehydrateLoopWakeText(
   baseText: string,
   deps: {
     getLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+    /**
+     * Delivery-boundary refresh. The normal reader may be memoized so the cold
+     * injection and the rehydrated text share one snapshot, but a queued wake can
+     * cross a checkpoint write between those reads. A refresh reader may perform
+     * one additional authoritative read and must return the newest valid snapshot.
+     */
+    refreshLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
     getLoopStatusFn?: typeof getLoopStatus;
   } = {},
 ): Promise<string> {
@@ -1202,7 +1209,8 @@ export async function rehydrateLoopWakeText(
     const markerCandidate = readLatestLoopDeliveryMarker(d.payload);
     const marker = markerCandidate?.marker ?? null;
     if (!marker?.harness) return baseText; // not a loop wake — untouched, no DB read
-    const getNoteMeta = deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
+    const getNoteMeta =
+      deps.refreshLoopCarryNoteWithMetaFn ?? deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
     const getStatus = deps.getLoopStatusFn ?? getLoopStatus;
     let statusRead = false;
     let deliverySupersession: LoopDeliverySupersession | null = null;
@@ -1915,6 +1923,12 @@ export interface ExecuteWakeDeps {
    *  walls text is still current. Injected for tests; defaults to the real
    *  getLoopCarryNoteWithMeta (carry-note.ts). */
   getLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
+  /**
+   * Delivery-boundary refresh for the carry-note snapshot. The normal reader is
+   * memoized so all paths in one wake agree, while this seam may perform one
+   * additional read and retain whichever valid version is newer.
+   */
+  refreshLoopCarryNoteWithMetaFn?: typeof defaultGetLoopCarryNoteWithMeta;
   /** WI-6860: read the subscriber's loop status (for `lastTurnAt`) — used ONLY by
    *  the EI-19294445744419497 un-checkpointed-work staleness hint to compare a
    *  cold carry-note's write instant against the subscriber's actual last turn.
@@ -2376,6 +2390,25 @@ async function coldWakeRequiresPsuHost(d: DeliveryWork, deps: ExecuteWakeDeps): 
   return decideColdWake({ payload: marker, coldEnabled, carryNote }).cold;
 }
 
+type DeliveryCarryNoteMeta = Awaited<ReturnType<typeof defaultGetLoopCarryNoteWithMeta>>;
+
+/** Prefer the newest valid carry-note version while tolerating a transient/null read. */
+function newestDeliveryCarryNoteMeta(
+  current: DeliveryCarryNoteMeta,
+  candidate: DeliveryCarryNoteMeta | null | undefined,
+): DeliveryCarryNoteMeta {
+  if (!candidate || typeof candidate !== 'object') return current;
+  if (candidate.note === null && current.note !== null) return current;
+  if (current.note === null && candidate.note !== null) return candidate;
+  const currentTs = typeof current.updatedAtMs === 'number' && Number.isFinite(current.updatedAtMs)
+    ? current.updatedAtMs
+    : Number.NEGATIVE_INFINITY;
+  const candidateTs = typeof candidate.updatedAtMs === 'number' && Number.isFinite(candidate.updatedAtMs)
+    ? candidate.updatedAtMs
+    : Number.NEGATIVE_INFINITY;
+  return candidateTs >= currentTs ? candidate : current;
+}
+
 /** Execute one wake delivery attempt. Never throws — every failure is an outcome. */
 export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): Promise<WakeOutcome> {
   const getSession = deps.getSession ?? getAdvSession;
@@ -2414,9 +2447,25 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     deliveryCarryNoteReads.set(key, pending);
     return pending;
   };
+  // A carry-note can be written after the first snapshot is taken but before the
+  // wake reaches its actual injection/resume boundary. Refresh once there, then
+  // retain the newest timestamped version so a lagging replica cannot replace it.
+  const refreshDeliveryCarryNoteWithMeta: typeof defaultGetLoopCarryNoteWithMeta = async (ref) => {
+    const key = JSON.stringify([ref.workspaceId ?? null, ref.harness, ref.ownerId]);
+    const current = await getDeliveryCarryNoteWithMeta(ref);
+    try {
+      const observed = await readCarryNoteWithMeta(ref);
+      const newest = newestDeliveryCarryNoteMeta(current, observed);
+      deliveryCarryNoteReads.set(key, Promise.resolve(newest));
+      return newest;
+    } catch {
+      return current;
+    }
+  };
   const deliveryDeps: ExecuteWakeDeps = {
     ...deps,
     getLoopCarryNoteWithMetaFn: getDeliveryCarryNoteWithMeta,
+    refreshLoopCarryNoteWithMetaFn: refreshDeliveryCarryNoteWithMeta,
   };
   const collectSessionFiles = deps.collectSessionFiles ?? defaultCollectSessionFiles;
   const rematerializeSession = deps.rematerializeSession ?? defaultRematerializeSession;

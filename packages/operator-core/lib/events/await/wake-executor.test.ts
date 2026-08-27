@@ -3019,10 +3019,43 @@ describe('executeWake — psu-host cold-auto fork (su-cold-auto-mode-2026-07-03 
     );
 
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
-    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(1);
+    // The delivery resolver refreshes once at the boundary, then keeps the
+    // timestamp-newer B snapshot even when that second read is stale.
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(2);
     const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
     expect(data).toContain(deliveryCheckpoint);
     expect(data).not.toContain(staleSecondRead);
+  });
+
+  it('EI-21637048865481637: a newer checkpoint written after the first delivery read is what the wake injects', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const olderCheckpoint = '## Next action\nP-002/P-003/P-005 are not started';
+    const newerCheckpoint = '## Next action\nP-002/P-003/P-005 are complete; continue with validation';
+    const olderAt = Date.parse('2026-08-27T19:13:38.348Z');
+    const newerAt = Date.parse('2026-08-27T19:49:40.000Z');
+    const getLoopCarryNoteWithMetaFn = vi
+      .fn()
+      .mockResolvedValueOnce({ note: olderCheckpoint, updatedAtMs: olderAt })
+      .mockResolvedValueOnce({ note: newerCheckpoint, updatedAtMs: newerAt });
+
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: coldPayload({ wakeCount: 6 }),
+      }),
+      coldDeps({
+        injectPsuHost: injectPsuHost as never,
+        getLoopCarryNoteFn: undefined,
+        getLoopCarryNoteWithMetaFn: getLoopCarryNoteWithMetaFn as never,
+      }),
+    );
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    expect(getLoopCarryNoteWithMetaFn).toHaveBeenCalledTimes(2);
+    const data = (injectPsuHost.mock.calls[0] as unknown as [string, { data: string }])[1].data;
+    expect(data).toContain(newerCheckpoint);
+    expect(data).not.toContain(olderCheckpoint);
+    expect(data).toContain('[08-27T19:49:40Z]');
   });
 
   // WI-6951: the un-checkpointed-work banner must read the STRICT turn signal
