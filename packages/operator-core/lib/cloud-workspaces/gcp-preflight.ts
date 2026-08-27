@@ -82,6 +82,7 @@ export const GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS = [
   'compute.disks.setLabels',
   'compute.instances.create',
   'compute.instances.get',
+  'compute.instances.getGuestAttributes',
   'compute.instances.list',
   'compute.instances.start',
   'compute.instances.stop',

@@ -156,6 +156,10 @@ describe('GCP workspace-host credential references', () => {
 });
 
 describe('GCP workspace-host preflight', () => {
+  it('preflights the guest-attribute permission required for authenticated host-key enrollment', () => {
+    expect(GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS).toContain('compute.instances.getGuestAttributes');
+  });
+
   it('verifies project, billing, APIs, IAM, quota, catalogs, and image access without leaking credentials', async () => {
     const fetchImpl = successFetch();
     const report = await runGcpWorkspaceHostPreflight({}, deps({ fetch: fetchImpl }));
