@@ -287,9 +287,9 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
         ...(legacyRecord.launchSpec as Record<string, unknown>),
         contextSize: 'full',
       },
-      launchArgv: legacyRecord.launchArgv?.map((item) =>
+      launchArgv: (legacyRecord.launchArgv as string[]).map((item) =>
         item === '--context-size=trimmed' ? '--context-size=full' : item,
-      ) ?? null,
+      ),
     };
     const parsed = savedFleetLaunchSpecFromLegacyRecord(fullRecord, 'ws-test', 'byoc');
     expect(parsed).toMatchObject({
@@ -394,9 +394,9 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
         ...(legacyRecord.launchSpec as Record<string, unknown>),
         fleet: { slug: historicalFleet, role: 'member' },
       },
-      launchArgv: legacyRecord.launchArgv?.map((item) =>
+      launchArgv: (legacyRecord.launchArgv as string[]).map((item) =>
         item === '--fleet=byoc' ? `--fleet=${historicalFleet}` : item,
-      ) ?? null,
+      ),
     };
 
     expect(savedFleetLaunchSpecFromLegacyRecord(staleRecord, 'ws-test', 'byoc')).toMatchObject({
@@ -408,9 +408,9 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
   it('fails closed when the two persisted source fleet fields disagree', () => {
     const mismatchedRecord: AdvSessionLaunchRecord = {
       ...legacyRecord,
-      launchArgv: legacyRecord.launchArgv?.map((item) =>
+      launchArgv: (legacyRecord.launchArgv as string[]).map((item) =>
         item === '--fleet=byoc' ? '--fleet=other-historical-fleet' : item,
-      ) ?? null,
+      ),
     };
 
     expect(savedFleetLaunchSpecFromLegacyRecord(mismatchedRecord, 'ws-test', 'byoc')).toMatchObject({
