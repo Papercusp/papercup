@@ -164,6 +164,32 @@ export interface PromotePlanItemsOptions {
   planRun?: PlanRunPromotionContext;
   /** Preserve the plan template's authored feature-family executor kind. */
   itemKind?: FeatureFamilyKind;
+  /**
+   * EI-21574373783224719: the fleet this promotion is minting a lane FOR. When set,
+   * each promoted work-item carries `payload.fleet_slug`, which is leg 1 of
+   * {@link import('./work-items').reservedPlanLaneExclusionSql} — "a fleet stamp is a
+   * reservation in its own right, independently of plan lifecycle" (EI-13524).
+   *
+   * WHY THIS EXISTS. `fleet:launch-on-plan`'s promotion FAILSAFE mints a plan's lanes as
+   * claimable work-items when the leader skipped `plans:start` (launch-on-plan.ts, the
+   * "#3 FAILSAFE" block) — and deliberately does NOT flip `op_status='started'`, because
+   * that would put the plan on the DBOS orchestrator frontier and give a fleet-driven plan
+   * a SECOND dispatcher. Correct as far as it goes, but it left the minted rows with NO
+   * reservation signal at all: the two execution legs of the floor read op_status/lifecycle
+   * (never set on this path) and the fleet leg read a payload key NOTHING wrote. So the
+   * failsafe made each lane claimable by the fleet AND by every unrelated agent in the pool
+   * at the same time. Measured 2026-08-27: WI-41517 (plan
+   * anti-babysitting-monitor-enforcement-2026-08-25, P-005) was served by self-select to two
+   * different non-fleet agents 57 minutes apart while the fleet was demonstrably live on the
+   * sibling lane; 37 open unclaimed lanes across 6 live-fleet plans sat in that same state,
+   * and `payload.fleet_slug` had 0 producers across 123,735 rows.
+   *
+   * Stamping it is what ACTIVATES the existing primitive rather than adding a new one. The
+   * owning fleet's members stay authorized (the claim paths thread `claimantFleetSlug`), a
+   * spec that explicitly references the fleet field still passes, and a by-id claim bypasses
+   * the floor as before — so this narrows ONLY unrelated agents' self-select.
+   */
+  fleetSlug?: string;
 }
 
 /** The zero-edge result shape shared by every early return (nothing minted ⇒ nothing to link). */
@@ -503,6 +529,10 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         payload: {
           plan_item: stamp,
           ...(opts.planRun ? { plan_run: opts.planRun } : {}),
+          // EI-21574373783224719: reserve the minted lane for the fleet it was minted FOR
+          // (see PromotePlanItemsOptions.fleetSlug). Omitted when this promotion is not
+          // fleet-scoped, so an ordinary plans:start keeps today's unreserved behaviour.
+          ...(opts.fleetSlug ? { fleet_slug: opts.fleetSlug } : {}),
           needs_2_machine_rig: phaseRequiresTwoMachineRig(rawByPlanItem.get(itemId)?.phase),
         },
         createdBy: opts.createdBy,
@@ -593,6 +623,9 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         payload: {
           plan_item: stampForPlanItem(item.id),
           plan_run: opts.planRun,
+          // EI-21574373783224719: same fleet reservation as the mint path above — an
+          // ADOPTED row is just as self-selectable by outsiders as a freshly minted one.
+          ...(opts.fleetSlug ? { fleet_slug: opts.fleetSlug } : {}),
           needs_2_machine_rig: phaseRequiresTwoMachineRig(rawByPlanItem.get(item.id)?.phase),
         },
         createdBy: opts.createdBy,
