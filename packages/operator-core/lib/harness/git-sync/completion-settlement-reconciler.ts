@@ -1,6 +1,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { CompletionSettlementManifestSchema, TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
 import { completionHeadBlobMap } from '../../agent-tools/work_items/completion-freshness';
+import { emitAwaitedEvent } from '../../events/await/engine';
 
 const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 const MAX_CANDIDATES = 200;
@@ -32,13 +33,25 @@ export function residualPathsForCommit(
 
 type CandidateRow = { feature_id: string; payload: unknown };
 
+export interface CompletionSettlementReconcilerDeps {
+  /** Exact-tree lookup seam used by focused reconciliation tests. */
+  lookup?: typeof completionHeadBlobMap;
+  /** Await-event seam; production uses the durable, per-key latched emitter. */
+  emit?: typeof emitAwaitedEvent;
+  /** Database seam for focused tests. */
+  sql?: ReturnType<typeof getOrgPg>['sql'];
+}
+
 /** Reconcile a bounded batch of proposed code completions against the exact emitted commit. */
 export async function reconcileProposedCompletionsAtCommit(
   commitSha: string,
   scope: { installSlug: string; workspaceId: string },
+  deps: CompletionSettlementReconcilerDeps = {},
 ): Promise<{ inspected: number; upgraded: string[]; residual: number }> {
   if (!SHA_RE.test(commitSha)) return { inspected: 0, upgraded: [], residual: 0 };
-  const { sql } = getOrgPg();
+  const sql = deps.sql ?? getOrgPg().sql;
+  const lookup = deps.lookup ?? completionHeadBlobMap;
+  const emit = deps.emit ?? emitAwaitedEvent;
   const rows = await sql<CandidateRow[]>`
     SELECT feature_id, payload
       FROM harness_shared.work_items
@@ -64,7 +77,7 @@ export async function reconcileProposedCompletionsAtCommit(
     const manifest = evidence?.settlementManifest;
     const parsed = CompletionSettlementManifestSchema.safeParse(manifest);
     if (!parsed.success) continue;
-    const residualPaths = residualPathsForCommit(parsed.data, commitSha);
+    const residualPaths = residualPathsForCommit(parsed.data, commitSha, lookup);
     if (!residualPaths) continue;
     residualCount += residualPaths.length;
     const nextManifest = { ...parsed.data, residualPaths };
@@ -84,7 +97,25 @@ export async function reconcileProposedCompletionsAtCommit(
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'generation']}::text[] = ${String(parsed.data.generation)}
          AND payload #>> ${[TERMINAL_COMPLETION_EVIDENCE_KEY, 'settlementManifest', 'evidenceHash']}::text[] = ${parsed.data.evidenceHash}
        RETURNING feature_id`;
-    if (residualPaths.length === 0 && result[0]) upgraded.push(result[0].feature_id);
+    if (residualPaths.length === 0 && result[0]) {
+      const id = result[0].feature_id;
+      upgraded.push(id);
+      // D-003: the generation/evidence-scoped CAS above is the exact-once gate.
+      // Replays and stale generations miss RETURNING and therefore cannot re-fire.
+      await emit({
+        key: `work-item:settled:${id}`,
+        summary: `${id} settlement committed at ${commitSha.slice(0, 12)}`,
+        payload: {
+          id,
+          harness: scope.installSlug,
+          commitSha,
+          generation: parsed.data.generation,
+          evidenceHash: parsed.data.evidenceHash,
+        },
+        source: 'git-sync-completion-settlement',
+        workspaceId: scope.workspaceId,
+      });
+    }
   }
   return { inspected: rows.length, upgraded, residual: residualCount };
 }

@@ -228,8 +228,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     keyTemplate: 'work-item:done:<id>',
     params: [{ name: 'id', required: true, describe: 'the work-item id' }],
     describe:
-      "A work item SETTLED (feature→passed/deprecated, issue→resolved/closed). Use only for a DIFFERENT assignee's item: events:await refuses your own current work item before registration because it cannot unblock itself.",
+      "A work item entered a terminal state (feature→passed/deprecated, issue→resolved/closed). This compatibility signal does NOT prove declared code files were committed; use work-item:settled:<id> for delivery-sensitive waits. Use only for a DIFFERENT assignee's item: events:await refuses your own current work item before registration because it cannot unblock itself.",
     emitter: 'work-items-events',
+    exists: true,
+  },
+  {
+    family: 'work-item-settled',
+    keyTemplate: 'work-item:settled:<id>',
+    params: [{ name: 'id', required: true, describe: 'the code work-item id' }],
+    describe:
+      'A terminal code work item was durably upgraded from proposed to committed after every declared file matched the exact git-sync commit. Partial commits, stale generations, and replays do not fire this key.',
+    emitter: 'completion-settlement-reconciler (packages/operator-core/lib/harness/git-sync/completion-settlement-reconciler.ts)',
     exists: true,
   },
   {

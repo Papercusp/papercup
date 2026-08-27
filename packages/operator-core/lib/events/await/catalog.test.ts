@@ -56,6 +56,7 @@ describe('buildKey', () => {
       'governor:transition:backlog-unhealthy',
     );
     expect(buildKey('work-item', { id: 'WI-1234' })).toBe('work-item:status:WI-1234');
+    expect(buildKey('work-item-settled', { id: 'WI-1234' })).toBe('work-item:settled:WI-1234');
     expect(buildKey('lock', { ticket: 'abc' })).toBe('lock:grant:abc');
     expect(buildKey('plan-item', { slug: 'my-plan', id: 'P-014' })).toBe('plan-item:done:my-plan:P-014');
     expect(buildKey('external-trigger', { source: 'gmail', event: 'message.received' })).toBe(
@@ -66,6 +67,7 @@ describe('buildKey', () => {
 
   it('throws when a required param is missing', () => {
     expect(() => buildKey('work-item', {})).toThrow(/requires param 'id'/);
+    expect(() => buildKey('work-item-settled', {})).toThrow(/requires param 'id'/);
     expect(() => buildKey('service-up', {})).toThrow(/requires param 'name'/);
   });
 
