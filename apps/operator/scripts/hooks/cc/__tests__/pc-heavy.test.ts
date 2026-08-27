@@ -2171,6 +2171,58 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       killGroup(gate);
     }
   }, 30_000);
+
+  it('terminates a frozen root after a bounded high-PSI lease when pressure never recovers', async () => {
+    const psiFile = join(dir, 'psi-full-avg10-never-recovers');
+    const admissionDir = join(dir, 'psi-admissions');
+    writeFileSync(psiFile, '9\n');
+
+    const holder = spawn(
+      'bash',
+      [
+        PC_HEAVY,
+        'bash',
+        '-c',
+        "trap 'exit 0' TERM INT HUP; while :; do sleep 0.05; done",
+      ],
+      {
+        env: baseEnv({
+          PC_HEAVY_SLOTS: '1',
+          PC_HEAVY_COALESCE: '0',
+          PC_HEAVY_GATE_RESERVE: '0',
+          PC_HEAVY_ADMISSION_ID: 'permanent-high-psi',
+          PC_HEAVY_MEM_PSI_OVERRIDE_FILE: psiFile,
+          PC_HEAVY_MEM_PSI_SAMPLE_SEC: '0',
+          PC_HEAVY_MEM_PSI_MAX_FREEZE_SEC: '1',
+          PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+          PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '1',
+          PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '128',
+        }),
+        cwd: dir,
+        detached: true,
+      },
+    );
+    const holderErr = createTextCollector(holder.stderr);
+    const exited = new Promise<number>((resolve) => holder.on('exit', (code) => resolve(code ?? -1)));
+    try {
+      await waitFor('the root entering the high-PSI frozen state', () =>
+        holderErr.peek().includes('PC_HEAVY_ADMISSION status=frozen'),
+      );
+      await waitFor('the permanently pressured root terminating after its lease', () => holder.exitCode !== null, 8_000);
+
+      expect(await exited).toBe(75);
+      expect(holderErr.peek()).toContain(
+        'PC_HEAVY_ADMISSION status=expired reason=memory-psi-high-timeout priority=10 psiFullAvg10=9 admittedCgroupMiB=128 admissionId=permanent-high-psi retryHandle=psi-recovery:permanent-high-psi',
+      );
+      expect(holderErr.peek()).toContain(
+        'PC_HEAVY_RESULT status=undetermined reason=memory-psi-high-timeout exit=75',
+      );
+      expect(readdirSync(admissionDir).some((name) => name.includes('permanent-high-psi'))).toBe(false);
+    } finally {
+      writeFileSync(psiFile, '0\n');
+      killGroup(holder);
+    }
+  }, 15_000);
 });
 
 describe('pc-heavy.sh — finite-cgroup typecheck admission (EI-21206772578500745)', () => {
