@@ -206,6 +206,14 @@ export interface SplitSourceTestPair {
   siblingCommit: string;
 }
 
+/**
+ * EI-21641123041897099 — this detector is diagnostic-only, so it must not spend
+ * unbounded singleton-gate time spawning per-path Git commands. A broad candidate
+ * is still judged normally; only the optional filename-affinity annotation is
+ * omitted, with the caller logging the reason.
+ */
+export const QUIET_CUT_SPLIT_PAIR_DIAGNOSTIC_MAX_CHANGED_FILES = 128;
+
 /** Return same-directory source/test siblings for the JS/TS family. */
 export function sourceTestSiblingPaths(file: string): string[] {
   const match = /^(.*?)(\.(?:[cm]?js|[cm]?ts|jsx|tsx))$/.exec(file);
@@ -229,27 +237,54 @@ export async function detectSplitSourceTestPairs(input: {
   candidate: string;
   tip: string;
 }): Promise<SplitSourceTestPair[]> {
-  const changed = await changedFilesRecursive(input.repo, input.base, input.candidate).catch(() => null);
+  const changed = await changedFilesRecursive(
+    input.repo,
+    input.base,
+    input.candidate,
+  ).catch(() => null);
   if (!changed) return [];
+  if (
+    changed.files.length > QUIET_CUT_SPLIT_PAIR_DIAGNOSTIC_MAX_CHANGED_FILES
+  ) {
+    throw new Error(
+      `changed-file radius ${changed.files.length} exceeds diagnostic cap ` +
+        `${QUIET_CUT_SPLIT_PAIR_DIAGNOSTIC_MAX_CHANGED_FILES}; filename-affinity annotation omitted`,
+    );
+  }
   const found = new Map<string, SplitSourceTestPair>();
   for (const candidatePath of changed.files) {
-    const candidateExists = await git(input.repo, ["cat-file", "-e", `${input.candidate}:${candidatePath}`])
+    const candidateExists = await git(input.repo, [
+      "cat-file",
+      "-e",
+      `${input.candidate}:${candidatePath}`,
+    ])
       .then(() => true)
       .catch(() => false);
     if (!candidateExists) continue;
     for (const siblingPath of sourceTestSiblingPaths(candidatePath)) {
-      const siblingCommit = await git(input.repo, ["log", "-1", "--format=%H", input.tip, "--", siblingPath]).catch(
-        () => "",
-      );
+      const siblingCommit = await git(input.repo, [
+        "log",
+        "-1",
+        "--format=%H",
+        input.tip,
+        "--",
+        siblingPath,
+      ]).catch(() => "");
       if (!siblingCommit) continue;
-      const outsideCandidate = !(await isAncestor(input.repo, siblingCommit, input.candidate).catch(() => true));
+      const outsideCandidate = !(await isAncestor(
+        input.repo,
+        siblingCommit,
+        input.candidate,
+      ).catch(() => true));
       if (!outsideCandidate) continue;
       const key = [candidatePath, siblingPath].sort().join("\0");
       found.set(key, { candidatePath, siblingPath, siblingCommit });
     }
   }
   return [...found.values()].sort((a, b) =>
-    `${a.candidatePath}\0${a.siblingPath}`.localeCompare(`${b.candidatePath}\0${b.siblingPath}`),
+    `${a.candidatePath}\0${a.siblingPath}`.localeCompare(
+      `${b.candidatePath}\0${b.siblingPath}`,
+    ),
   );
 }
 
