@@ -709,6 +709,43 @@ describe('buildTenantScopeAdvisory — per-table overrides (EI-18669912007336072
     ).toBeNull();
     expect(calls).toHaveLength(0);
   });
+
+  // EI-21601240974104741: predicate_watches is workspace-tenanted, while
+  // harness_slug is nullable optional scope. Requiring both keys drops the
+  // valid NULL-harness rows from workspace-level watch queries.
+  it('suggests workspace-only scope for predicate_watches', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.predicate_watches WHERE predicate = 'work-item:done'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('predicate_watches');
+    expect(advisory).toContain("workspace_id = 'papercusp-workspace'");
+    expect(advisory).not.toContain("harness_slug = 'papercusp'");
+    expect(calls).toHaveLength(0); // semantic override; no information_schema read
+  });
+
+  it('accepts a predicate_watches workspace predicate without requiring harness_slug', async () => {
+    const { sql, calls } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory(
+        "SELECT * FROM predicate_watches WHERE predicate = 'work-item:done' AND workspace_id = 'papercusp-workspace'",
+        { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+      ),
+    ).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('still warns when predicate_watches has only a harness_slug predicate', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT * FROM harness_shared.predicate_watches WHERE harness_slug = 'papercusp'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('predicate_watches');
+    expect(advisory).toContain('workspace_id');
+    expect(calls).toHaveLength(0);
+  });
 });
 
 // EI-18749676091756794: the generic heuristic prescribed a WRONG query for

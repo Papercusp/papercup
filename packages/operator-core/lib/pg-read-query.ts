@@ -398,6 +398,17 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
         : "workspace_id = '<workspace>'",
     preferredTool: 'processes:list (task-ledger provenance inventory)',
   },
+  // EI-21601240974104741: predicate watches are isolated by workspace_id;
+  // harness_slug is nullable optional scope, so requiring both keys drops
+  // valid workspace-level watches from advisory/reproduction queries.
+  predicate_watches: {
+    requiredColumns: ['workspace_id'],
+    keyDescription: 'workspace_id — harness_slug is nullable optional scope',
+    suggest: (opts) =>
+      opts.workspaceId
+        ? `workspace_id = '${opts.workspaceId.replaceAll("'", "''")}'`
+        : "workspace_id = '<workspace>'",
+  },
 };
 
 /**
