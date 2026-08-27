@@ -816,10 +816,43 @@ for p in raw_paths:
         except Exception:
             return None  # fail-open — never wedge an edit on a parse error
 
+    def _resolve_enclosing_worktree(repo_root):
+        """Return (linked_root, main_root) for an enclosing linked worktree.
+
+        `find_repo_root` stops at the nearest repository, which can be a
+        submodule nested inside the worktree we must refuse. Walk ancestors so
+        worktree policy follows the enclosing checkout and is independent of
+        where that checkout is registered on disk.
+        """
+        try:
+            candidate = os.path.realpath(repo_root)
+            while candidate and candidate != os.path.dirname(candidate):
+                main_root = _resolve_worktree_main_root(candidate)
+                if main_root is not None:
+                    return candidate, main_root
+                candidate = os.path.dirname(candidate)
+        except Exception:
+            pass
+        return None, None
+
     _canonical_tree = os.path.realpath(
         os.environ.get('PAPERCUSP_CANONICAL_TREE')
         or os.path.join(workspace_root, 'papercusp'))
     _real_root = os.path.realpath(root)
+    _linked_root, _wt_main = _resolve_enclosing_worktree(root)
+    if (_linked_root is not None
+            and _wt_main is not None
+            and os.path.realpath(_wt_main) == _canonical_tree
+            and os.path.realpath(_linked_root) != _canonical_tree
+            and not _is_isolation_worktree(_linked_root, _canonical_tree)):
+        deny(
+            f"worktree guard: refused — '{_linked_root}' is a LINKED WORKTREE of "
+            f"the canonical staging tree ({_canonical_tree}), registered "
+            f"outside it. Agents edit ONLY the canonical tree itself; work "
+            f"left in any of its linked worktrees is never committed by "
+            f"git-sync (it silently strands). cd into the canonical tree "
+            f"and make this edit there."
+        )
     _scope_root = None
     _scope_real = None
     try:
@@ -844,18 +877,7 @@ for p in raw_paths:
         # nested submodule's own `.git` entry. A linked submodule is not a
         # linked worktree, while a submodule inside a stray linked worktree
         # must still be refused as part of that enclosing tree.
-        _wt_main = _resolve_worktree_main_root(_scope_root)
-        if _wt_main is not None and os.path.realpath(_wt_main) == _canonical_tree:
-            if _scope_real != _canonical_tree:
-                deny(
-                    f"worktree guard: refused — '{_scope_root}' is a LINKED WORKTREE of "
-                    f"the canonical staging tree ({_canonical_tree}), registered "
-                    f"outside it. Agents edit ONLY the canonical tree itself; work "
-                    f"left in any of its linked worktrees is never committed by "
-                    f"git-sync (it silently strands). cd into the canonical tree "
-                    f"and make this edit there."
-                )
-        elif (_scope_real != _canonical_tree
+        if (_scope_real != _canonical_tree
                 and os.path.realpath(os.path.dirname(_scope_root)) == workspace_root):
             # WI-5031: a sibling is only a stranding hazard when it is a
             # checkout of the SAME project as the canonical tree (papercup-
