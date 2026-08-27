@@ -2211,6 +2211,16 @@ export default defineTool({
           harnessSlug: planHarnessSlug,
           planSlug,
           createdBy: ownerId,
+          // EI-21574373783224719: RESERVE what this failsafe mints for THIS fleet.
+          // The block above deliberately leaves op_status alone (a second dispatcher on a
+          // fleet-driven plan would be worse), but that left the minted lanes carrying no
+          // reservation signal whatsoever — so `reservedPlanLaneExclusionSql` scored them
+          // as free backlog and self-select handed them to unrelated agents while the fleet
+          // was live on the same plan (WI-41517, served to two non-fleet agents 57 minutes
+          // apart). Stamping the fleet activates that floor's EXISTING fleet leg (EI-13524)
+          // without touching plan lifecycle: this fleet's own members remain authorized,
+          // by-id claims still bypass the floor, and only outsiders' self-select narrows.
+          fleetSlug,
         });
         promotionFailsafe = { ...res, ran: true };
       } catch {
