@@ -13,11 +13,221 @@ import { join } from 'node:path';
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
+import { markAdvSessionEnded } from '../adv-sessions';
+import {
+  cancelClaimableAwaits,
+  cancelInboxWakeAwaits,
+  retireLifecycleBoundWatchesForOwners,
+} from '../events/await/store';
+import { releaseAllWorkItemLeasesForOwner } from '../work-item-lease-release';
 
 const DEFAULT_HISTORY_FRESH_MS = 5 * 60_000;
 const DEFAULT_ROLLOUT_LAG_MS = 15 * 60_000;
 const DEFAULT_WATCHDOG_INTERVAL_MS = 5 * 60_000;
+const DEFAULT_PROVIDER_FAILURE_CONSECUTIVE = 3;
+export const CODEX_PROVIDER_ERROR_TAIL_BYTES = 512 * 1024;
 const PHASE_PREFIX = 'codex-rollout-stall:';
+const PROVIDER_FAILURE_PHASE_PREFIX = 'codex-provider-failure:';
+const PROVIDER_ERROR_EVIDENCE_LIMIT = 6;
+const PROVIDER_ERROR_TEXT_LIMIT = 500;
+
+export type CodexProviderErrorSource = 'event_msg:error' | 'event_msg:task_complete';
+
+export interface CodexProviderError {
+  source: CodexProviderErrorSource;
+  code: string;
+  rawCode: string;
+  message: string | null;
+  retryAt: string | null;
+  account: string | null;
+  timestamp: string | null;
+  turnKey: string | null;
+}
+
+export interface CodexProviderFailureRecurrence {
+  consecutiveFailures: number;
+  threshold: number;
+  dead: boolean;
+  latest: CodexProviderError | null;
+  failures: CodexProviderError[];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function firstString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function clipProviderText(value: string | null): string | null {
+  if (!value) return null;
+  return value.length <= PROVIDER_ERROR_TEXT_LIMIT
+    ? value
+    : value.slice(0, PROVIDER_ERROR_TEXT_LIMIT) + '…';
+}
+
+function normalizeProviderErrorCode(rawCode: string): string {
+  const normalized = rawCode
+    .replace(/([a-z])([A-Z])/g, '$1_$2')
+    .replace(/[.\s-]+/g, '_')
+    .toLowerCase();
+  if (normalized === 'usagelimitexceeded') return 'usage_limit_exceeded';
+  if (normalized === 'ratelimitexceeded') return 'rate_limit_exceeded';
+  return normalized || 'provider_error';
+}
+
+function retryAtFromMessage(message: string | null): string | null {
+  if (!message) return null;
+  const match = message.match(/\b(?:try again|retry|resets?|reset)\s+(?:again\s+)?(?:at|on)?\s*([^.!?\n]{2,160})/i);
+  return match?.[1]?.trim() || null;
+}
+
+/**
+ * Classify the native Codex terminal records that the session-ingest text
+ * parser intentionally skips. A task_complete error is one failed turn even
+ * when an earlier event_msg:error described the same failure.
+ */
+export function classifyCodexProviderError(line: string): CodexProviderError | null {
+  let record: Record<string, unknown>;
+  try {
+    record = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+  if (record.type !== 'event_msg') return null;
+  const payload = asRecord(record.payload);
+  if (!payload) return null;
+  const payloadType = typeof payload.type === 'string' ? payload.type : '';
+  if (payloadType !== 'error' && payloadType !== 'task_complete') return null;
+  const error = asRecord(payload.error);
+  const hasError = payloadType === 'error' || payload.error != null || payload.codex_error_info != null;
+  if (!hasError) return null;
+
+  const rawCode =
+    firstString(
+      payload.codex_error_info,
+      error?.codex_error_info,
+      payload.error_code,
+      error?.code,
+      payload.code,
+    ) ?? 'provider_error';
+  const message = clipProviderText(
+    firstString(payload.message, error?.message, error?.detail, error?.error, payload.error),
+  );
+  const account = firstString(
+    payload.account,
+    payload.account_id,
+    payload.provider_account,
+    error?.account,
+    error?.account_id,
+  );
+  const turnKey = firstString(
+    payload.turn_id,
+    payload.turnId,
+    error?.turn_id,
+    error?.turnId,
+  );
+  const source: CodexProviderErrorSource =
+    payloadType === 'task_complete' ? 'event_msg:task_complete' : 'event_msg:error';
+  return {
+    source,
+    code: normalizeProviderErrorCode(rawCode),
+    rawCode,
+    message,
+    retryAt: retryAtFromMessage(message),
+    account,
+    timestamp: firstString(record.timestamp, payload.timestamp),
+    turnKey,
+  };
+}
+
+function isCodexSuccessfulTerminal(line: string): boolean {
+  let record: Record<string, unknown>;
+  try {
+    record = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return false;
+  }
+  if (record.type !== 'event_msg') return false;
+  const payload = asRecord(record.payload);
+  if (!payload) return false;
+  const payloadType = typeof payload.type === 'string' ? payload.type : '';
+  if (payloadType !== 'task_complete' && payloadType !== 'turn_completed') return false;
+  return payload.error == null && payload.codex_error_info == null && payload.status !== 'error';
+}
+
+/**
+ * Evaluate the trailing provider-failure streak in rollout lines. Native
+ * Codex commonly writes both event_msg:error and task_complete.error for one
+ * failed turn; those adjacent records are collapsed so the threshold counts
+ * turns, not wire records. Any successful task/turn completion resets it.
+ */
+export function evaluateCodexProviderFailureRecurrence(
+  lines: readonly string[],
+  opts: { consecutiveFailures?: number } = {},
+): CodexProviderFailureRecurrence {
+  const threshold = Math.max(1, Math.floor(opts.consecutiveFailures ?? DEFAULT_PROVIDER_FAILURE_CONSECUTIVE));
+  type Terminal =
+    | { kind: 'failure'; error: CodexProviderError; lineIndex: number }
+    | { kind: 'success' };
+  const terminals: Terminal[] = [];
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const error = classifyCodexProviderError(lines[lineIndex] ?? '');
+    if (error) {
+      const previous = terminals[terminals.length - 1];
+      const duplicateTaskError =
+        error.source === 'event_msg:task_complete' &&
+        previous?.kind === 'failure' &&
+        previous.error.source === 'event_msg:error' &&
+        (
+          (error.turnKey != null && error.turnKey === previous.error.turnKey) ||
+          (
+            error.turnKey == null &&
+            previous.error.turnKey == null &&
+            error.code === previous.error.code &&
+            error.message === previous.error.message &&
+            lineIndex - previous.lineIndex <= 3
+          )
+        );
+      if (duplicateTaskError) {
+        terminals[terminals.length - 1] = { kind: 'failure', error, lineIndex };
+      } else {
+        terminals.push({ kind: 'failure', error, lineIndex });
+      }
+      continue;
+    }
+    if (isCodexSuccessfulTerminal(lines[lineIndex] ?? '')) terminals.push({ kind: 'success' });
+  }
+
+  const failures: CodexProviderError[] = [];
+  for (let index = terminals.length - 1; index >= 0; index -= 1) {
+    const terminal = terminals[index];
+    if (!terminal || terminal.kind === 'success') break;
+    failures.unshift(terminal.error);
+  }
+  return {
+    consecutiveFailures: failures.length,
+    threshold,
+    dead: failures.length >= threshold,
+    latest: failures[failures.length - 1] ?? null,
+    failures,
+  };
+}
+
+/** Pure bounded-tail parser seam used by the filesystem reader and tests. */
+export function scanCodexProviderFailureTail(
+  tailText: string,
+  opts: { consecutiveFailures?: number } = {},
+): CodexProviderFailureRecurrence {
+  return evaluateCodexProviderFailureRecurrence(tailText.split(/\r?\n/), opts);
+}
 
 export interface CodexRolloutPersistenceThresholds {
   historyFreshMs?: number;
