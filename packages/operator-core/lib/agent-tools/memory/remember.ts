@@ -423,6 +423,7 @@ export default defineTool({
         ? { ...metadata, __journal_supersede_of: args.supersede }
         : metadata,
       verbatim: true,
+      shareable: args.shareable,
     });
     const journaledFields = journalId
       ? {

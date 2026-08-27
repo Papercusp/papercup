@@ -68,6 +68,8 @@ export interface JournalWriteArgs {
   content: string;
   metadata?: Record<string, unknown>;
   verbatim?: boolean;
+  /** Preserve the MemoryBackend opt-in federation bit across recovery. */
+  shareable?: boolean;
   /** 'live-write' (tool write path) | 'transcript-miner' (P-008 backfill). */
   source?: string;
 }
@@ -92,10 +94,12 @@ export async function journalPendingWrite(args: JournalWriteArgs): Promise<strin
     // pools ("The \"string\" argument must be of type string..."), which made
     // journaling silently skip on every production write (WI-4021 incident).
     const rows = await sql<{ id: string }[]>`
-      INSERT INTO harness_shared.memory_write_journal (scope, kind, content, metadata, verbatim, source)
+      INSERT INTO harness_shared.memory_write_journal
+        (scope, kind, content, metadata, verbatim, shareable, source)
       VALUES (${args.scope}, ${args.kind ?? null}, ${args.content},
               ${args.metadata ? JSON.stringify(args.metadata) : null}::text::jsonb,
-              ${args.verbatim ?? true}, ${args.source ?? 'live-write'})
+              ${args.verbatim ?? true}, ${args.shareable ?? null},
+              ${args.source ?? 'live-write'})
       RETURNING id`;
     return rows[0]?.id ?? null;
   } catch (err) {
@@ -210,6 +214,7 @@ interface JournalRow {
   content: string;
   metadata: Record<string, unknown> | null;
   verbatim: boolean;
+  shareable: boolean | null;
   attempts: number;
 }
 
@@ -246,7 +251,7 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
   // Cheap early-out: don't touch the backend (client build, embedder spin-up)
   // when there is nothing to drain — the common case for every healthy tick.
   const rows = await sql<JournalRow[]>`
-    SELECT id, requested_at, scope, kind, content, metadata, verbatim, attempts
+    SELECT id, requested_at, scope, kind, content, metadata, verbatim, shareable, attempts
       FROM harness_shared.memory_write_journal
      WHERE status = 'pending'
        AND (last_attempt_at IS NULL
@@ -373,6 +378,7 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
           recovered_journal_id: row.id,
         },
         verbatim: row.verbatim,
+        ...(typeof row.shareable === 'boolean' ? { shareable: row.shareable } : {}),
       });
       if (supersedeOf) {
         const replacingId = ids[0];

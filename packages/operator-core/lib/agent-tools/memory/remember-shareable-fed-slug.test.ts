@@ -164,6 +164,7 @@ describe('memory:remember — shareable memories need a federation routing key (
     const out = parse(await call({ content: 'x', kind: 'project', harness_slug: 'member-harness', shareable: true }));
     expect(out.reason).not.toBe('shareable_memory_needs_federation_scope');
     expect(metadataOf()).toMatchObject({ fed_harness_slug: 'the-hive-home' });
+    expect(journalPendingWrite).toHaveBeenCalledWith(expect.objectContaining({ shareable: true }));
   });
 
   it('a hive-scoped shareable memory rides that hive directly (no registry hop)', async () => {
@@ -187,5 +188,6 @@ describe('memory:remember — shareable memories need a federation routing key (
     expect(metadataOf()).not.toHaveProperty('fed_harness_slug');
     expect(resolveFactFederationSlug).not.toHaveBeenCalled();
     expect(getFlag).not.toHaveBeenCalled();
+    expect(journalPendingWrite).toHaveBeenCalledWith(expect.objectContaining({ shareable: false }));
   });
 });

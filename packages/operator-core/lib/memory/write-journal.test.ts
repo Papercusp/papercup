@@ -50,7 +50,7 @@ import { journalPendingWrite, markJournalCommitted, drainMemoryWriteJournal } fr
 
 const baseRow = {
   id: 'row-1', requested_at: '2026-07-10T20:00:00Z', scope: 'userA', kind: 'project',
-  content: 'the fact', metadata: { scope: 'user' }, verbatim: true, attempts: 0,
+  content: 'the fact', metadata: { scope: 'user' }, verbatim: true, shareable: null, attempts: 0,
 };
 
 beforeEach(() => {
@@ -85,6 +85,15 @@ describe('journalPendingWrite / markJournalCommitted', () => {
     for (const v of executed[0].values) {
       expect(typeof v === 'object' && v !== null).toBe(false);
     }
+  });
+
+  it('persists the shareable backend option as a first-class journal value', async () => {
+    const id = await journalPendingWrite({
+      scope: 'hive:papercusp', content: 'federated fact', shareable: true,
+    });
+    expect(id).toBe('journal-row-1');
+    expect(executed[0].text).toContain('(scope, kind, content, metadata, verbatim, shareable, source)');
+    expect(executed[0].values).toContain(true);
   });
 
   it('degrades to null (never throws) when the journal table is unavailable', async () => {
@@ -141,6 +150,19 @@ describe('drainMemoryWriteJournal', () => {
     const commit = executed.find((e) => e.text.includes("SET status = 'committed'"));
     expect(commit?.values).toContain('new-mem-1');
     expect(r.recoveredWindow).toEqual({ from: baseRow.requested_at, to: baseRow.requested_at });
+  });
+
+  it('replays shareable=true while historical/private rows remain private by default', async () => {
+    pendingRows = [{ ...baseRow, id: 'row-shareable', shareable: true }];
+    await drainMemoryWriteJournal();
+    let [, opts] = backend.remember.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(opts.shareable).toBe(true);
+
+    backend.remember.mockClear();
+    pendingRows = [{ ...baseRow, id: 'row-private', shareable: null }];
+    await drainMemoryWriteJournal();
+    [, opts] = backend.remember.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(opts).not.toHaveProperty('shareable');
   });
 
   it('replays a superseding remember, strips its journal marker, then closes the old window', async () => {
