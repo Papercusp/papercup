@@ -646,6 +646,16 @@ describe('affected-tests: migration lint guard (WI-38351)', () => {
     ).toContain(LM_TASK);
   });
 
+  it('attaches for the bare libs/papercusp gitlink path used for nested edits', () => {
+    const submodule = someSubmodulePath();
+    expect(submodule).toBe('libs/papercusp');
+    expect(
+      dryTasks(submodule),
+      'a nested migration edit is reported as the bare submodule gitlink; omitting this ' +
+        'root trigger lets the migration lint skip the exact change that introduced it',
+    ).toContain(LM_TASK);
+  });
+
   it('attaches when the LINTER itself changes, which can invalidate the whole corpus at once', () => {
     expect(dryTasks('scripts/lint-migrations.mjs')).toContain(LM_TASK);
   });

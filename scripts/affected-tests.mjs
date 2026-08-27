@@ -2697,6 +2697,10 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // permanently-red leg in GitHub CI — same degrade-not-fail property that made
     // gen:authored-docs:check registrable above.
     appliesTo: (f) =>
+      // A nested submodule edit reaches this router as the bare gitlink root, not as
+      // the migration file changed inside it. Invalidate the whole corpus for that
+      // shape, or a migration can land without its reservation lint ever running.
+      f === "libs/papercusp" ||
       // The migration corpus itself — the numbered .sql files every check above reads. Kept as a
       // directory test rather than an `^libs/papercusp/` anchor so a second scan dir (SCAN_DIRS in
       // lint-migrations.mjs / next-migration.mjs) is covered the day one is added.
