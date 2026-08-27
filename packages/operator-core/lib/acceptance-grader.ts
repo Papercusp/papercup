@@ -53,6 +53,15 @@ export const ACCEPTANCE_GRADER_STALE_AFTER_MS = 2 * 60 * 60_000;
 const ACCEPTANCE_GRADER_MAX_STALE_RETRIES = 4;
 const ACCEPTANCE_GRADER_LOG_TAIL_BYTES = 16_000;
 const ACCEPTANCE_GRADER_MAX_TERMINAL_FALLBACKS = 1;
+/**
+ * A fresh headless launch returns after its spawn/boot verifier, not after the
+ * first bytes from the child have necessarily reached its log file. Keep the
+ * reconciliation window deliberately small and finite: it catches a terminal
+ * first-turn response that races the launch receipt without turning the
+ * acceptance path into a background watcher.
+ */
+export const ACCEPTANCE_GRADER_TERMINAL_LOG_RECHECK_DELAY_MS = 250;
+export const ACCEPTANCE_GRADER_TERMINAL_LOG_MAX_RECHECKS = 4;
 const ACCEPTANCE_GRADER_FALLBACK = {
   agent: 'codex' as const,
   model: 'gpt-5.6-sol' as const,
@@ -65,6 +74,43 @@ export type AcceptanceGraderTerminalFailureCode = 'model_quota_exhausted';
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
   evidence: string;
+}
+
+type AcceptanceGraderLogTailReader = (path: string) => string | Promise<string>;
+
+/**
+ * Read a launch receipt's log more than once, but only inside a bounded
+ * post-launch window. `capability:launch-agent` returns when the process is
+ * spawned/verified, while a headless CLI can write its first-turn quota screen
+ * shortly afterwards. A single read therefore creates a race where a dead
+ * judge is left running until the quiet-task reaper. The bounded retry is
+ * intentionally local to this launch transaction and stops after a fixed
+ * number of reads.
+ */
+export async function detectAcceptanceGraderTerminalFailure(
+  logPath: string | null,
+  {
+    readLogTail,
+    sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+    delayMs = ACCEPTANCE_GRADER_TERMINAL_LOG_RECHECK_DELAY_MS,
+    maxRechecks = ACCEPTANCE_GRADER_TERMINAL_LOG_MAX_RECHECKS,
+  }: {
+    readLogTail: AcceptanceGraderLogTailReader;
+    sleep?: (ms: number) => Promise<void>;
+    delayMs?: number;
+    maxRechecks?: number;
+  },
+): Promise<AcceptanceGraderTerminalFailure | null> {
+  if (!logPath) return null;
+  const boundedRechecks = Math.max(0, Math.floor(maxRechecks));
+  const boundedDelay = Math.max(0, Math.floor(delayMs));
+  for (let recheck = 0; recheck <= boundedRechecks; recheck += 1) {
+    const rawLog = await readLogTail(logPath);
+    const terminalFailure = classifyAcceptanceGraderTerminalFailure(rawLog);
+    if (terminalFailure) return terminalFailure;
+    if (recheck < boundedRechecks) await sleep(boundedDelay);
+  }
+  return null;
 }
 
 /**
@@ -426,7 +472,10 @@ export async function launchAcceptanceGrader(
     launch?: typeof launchAgentTool.handler;
     listTasks?: typeof listTasks;
     killTask?: typeof killTask;
-    readLogTail?: (path: string) => string;
+    readLogTail?: AcceptanceGraderLogTailReader;
+    sleep?: (ms: number) => Promise<void>;
+    terminalLogRecheckDelayMs?: number;
+    terminalLogMaxRechecks?: number;
     nowMs?: () => number;
     staleAfterMs?: number;
   } = {},
@@ -465,6 +514,7 @@ export async function launchAcceptanceGrader(
     const readTasks = deps.listTasks ?? listTasks;
     const terminateTask = deps.killTask ?? killTask;
     const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
+    const sleep = deps.sleep;
     const nowMs = deps.nowMs ?? Date.now;
     const staleAfterMs = deps.staleAfterMs ?? ACCEPTANCE_GRADER_STALE_AFTER_MS;
     const staleTaskIds: string[] = [];
@@ -526,7 +576,16 @@ export async function launchAcceptanceGrader(
       const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
       const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
       const terminalFailure = logPath
-        ? classifyAcceptanceGraderTerminalFailure(readLogTail(logPath))
+        ? await detectAcceptanceGraderTerminalFailure(logPath, {
+            readLogTail,
+            ...(sleep ? { sleep } : {}),
+            ...(deps.terminalLogRecheckDelayMs !== undefined
+              ? { delayMs: deps.terminalLogRecheckDelayMs }
+              : {}),
+            ...(deps.terminalLogMaxRechecks !== undefined
+              ? { maxRechecks: deps.terminalLogMaxRechecks }
+              : {}),
+          })
         : null;
 
       if (terminalFailure) {

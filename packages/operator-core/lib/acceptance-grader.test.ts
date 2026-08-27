@@ -3,6 +3,7 @@ import {
   acceptanceGraderLabelPrefix,
   buildAssignedAcceptanceGraderBrief,
   classifyAcceptanceGraderTerminalFailure,
+  detectAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
   resolveAcceptanceGrader,
 } from './acceptance-grader';
@@ -194,6 +195,51 @@ describe('launchAcceptanceGrader', () => {
     });
   });
 
+  it('rechecks the headless log after launch returns before deciding quota fallback', async () => {
+    const quotaLog =
+      "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+    let primaryReads = 0;
+    const launch = vi.fn(async (args: Record<string, unknown>) =>
+      args.agent === 'codex'
+        ? {
+            content: [{ type: 'text', text: 'launched fallback' }],
+            data: { deduped: false, launch: { tasks: [{ taskId: 'task-fallback' }] } },
+          }
+        : {
+            content: [{ type: 'text', text: 'launched primary' }],
+            data: {
+              deduped: false,
+              launch: { tasks: [{ taskId: 'task-delayed-quota', logPath: '/tmp/delayed-quota.log' }] },
+            },
+          },
+    );
+    const kill = vi.fn(async () => ({ ok: true }));
+    const sleep = vi.fn(async () => undefined);
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      killTask: kill as never,
+      sleep,
+      terminalLogRecheckDelayMs: 0,
+      readLogTail: (path) => {
+        if (path !== '/tmp/delayed-quota.log') return '';
+        primaryReads += 1;
+        return primaryReads === 1 ? '' : quotaLog;
+      },
+    });
+
+    expect(primaryReads).toBe(2);
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith('task-delayed-quota', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      state: 'launched',
+      terminalRecovery: {
+        retiredTaskIds: ['task-delayed-quota'],
+        codes: ['model_quota_exhausted'],
+      },
+    });
+  });
+
   it('stops after the single terminal fallback when its model is quota-blocked too', async () => {
     const quotaLog =
       "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
@@ -246,6 +292,25 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
     expect(classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.')).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure("You've reached your test limit.")).toBeNull();
+  });
+});
+
+describe('detectAcceptanceGraderTerminalFailure', () => {
+  it('stops after the bounded recheck window when no terminal response arrives', async () => {
+    const readLogTail = vi.fn(() => 'still booting');
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(
+      detectAcceptanceGraderTerminalFailure('/tmp/judge.log', {
+        readLogTail,
+        sleep,
+        delayMs: 0,
+        maxRechecks: 2,
+      }),
+    ).resolves.toBeNull();
+
+    expect(readLogTail).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
   });
 });
 
