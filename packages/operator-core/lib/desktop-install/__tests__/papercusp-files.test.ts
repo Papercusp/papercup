@@ -1166,6 +1166,11 @@ describe('shared base notes reach the LIVE blueprint base (recurrence guard)', (
       expect(text).toContain("system routines or a registered fleet leader's\nreal supervision duties");
       expect(text).toContain('A red release/CI gate has exactly ONE fixer');
       expect(text).toContain("state:read { cell: 'gate.greenCheckpoint.ownership' }");
+      expect(text).toContain('Scope this exclusivity to `LIVE_GATE_OPS` only');
+      expect(text).toContain('you are DONE\n  with `LIVE_GATE_OPS`, not with every gate-related task');
+      expect(text).toContain('does **not** reserve `GATE_SYSTEM_DEV`');
+      expect(text).toContain('continues under its own work-item/plan lane and file locks');
+      expect(text).toContain('end the whole task only when every remaining step genuinely depends');
       expect(text).not.toContain("a days-red gate is everyone's problem");
     }
   });
