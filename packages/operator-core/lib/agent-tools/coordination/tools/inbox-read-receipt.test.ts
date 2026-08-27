@@ -58,7 +58,8 @@ vi.mock("../watermarks", () => ({
   readWatermark: M.readWatermark,
   writeWatermark: M.writeWatermark,
 }));
-vi.mock("@papercusp/coordination/core", () => ({
+vi.mock("@papercusp/coordination/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@papercusp/coordination/core")>()),
   emptyWatermark: () => ({ messages_shown_ts: "" }),
 }));
 vi.mock("../../../events/await/engine", () => ({

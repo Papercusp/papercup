@@ -4,7 +4,8 @@ const fetchPresenceFleet = vi.fn();
 const latestFleetMembership = vi.fn();
 const listFleetMembers = vi.fn();
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   classifyAgentPane: vi.fn(),
 }));
 vi.mock('../../agent-fleets-store', () => ({

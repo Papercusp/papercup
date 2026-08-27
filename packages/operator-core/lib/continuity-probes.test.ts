@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const catalog = vi.hoisted(() => [] as Array<Record<string, any>>);
 const cells = vi.hoisted(() => new Map<string, Record<string, any>>());
 
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   listAllProjectedTools: () => catalog,
   projectedToolRegistryRevision: (tools: Array<Record<string, any>>) =>
     `rev:${tools.map((entry) => entry.expose.mcp.name).join(',')}:${JSON.stringify(tools.map((entry) => entry.inputSchema)).length}`,

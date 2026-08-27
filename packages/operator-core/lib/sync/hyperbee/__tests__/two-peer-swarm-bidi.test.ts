@@ -39,11 +39,24 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import createTestnet from 'hyperdht/testnet.js';
 import Hyperswarm from 'hyperswarm';
-import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
+import {
+  bootHarnessSubstrate as bootHarnessSubstrateImpl,
+  type BootedHarnessHandle,
+  type BootHarnessOpts,
+} from '../boot';
 import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
+
+/**
+ * Keep this suite hermetic. Production resolves re-key dependencies
+ * fail-closed, but these unit cases exercise the substrate with no real PG.
+ * Individual tests can still override this default through the existing seam.
+ */
+function bootHarnessSubstrate(opts: BootHarnessOpts) {
+  return bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts });
+}
 
 // ── Async resource teardown (newest-first, mirrors two-peer-swarm.test.ts). ──
 const cleanups: Array<() => void | Promise<void>> = [];

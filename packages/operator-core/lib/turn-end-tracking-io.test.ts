@@ -37,7 +37,8 @@ vi.mock('./tool-call-log-store', () => ({
 vi.mock('./tool-call-log', () => ({
   renderToolCallLog: (...a: unknown[]) => renderToolCallLog(...a),
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql }),
 }));
 vi.mock('./session-tasks', () => ({

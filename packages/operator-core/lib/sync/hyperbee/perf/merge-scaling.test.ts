@@ -19,11 +19,24 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bootHarnessSubstrate, type BootedHarnessHandle } from '../boot';
+import {
+  bootHarnessSubstrate as bootHarnessSubstrateImpl,
+  type BootedHarnessHandle,
+  type BootHarnessOpts,
+} from '../boot';
 import { closeHarnessStore, _resetCacheForTests } from '../corestore';
 import type { OpEnvelope } from '../op-envelope-types';
 import type { PeerLogOp } from '../peer-log';
 import { generateCorpus } from './corpus';
+
+/**
+ * Keep this suite hermetic. Production resolves re-key dependencies
+ * fail-closed, but these unit cases exercise the substrate with no real PG.
+ * Individual tests can still override this default through the existing seam.
+ */
+function bootHarnessSubstrate(opts: BootHarnessOpts) {
+  return bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts });
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {

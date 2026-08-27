@@ -45,11 +45,23 @@ import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { bootHarnessSubstrate } from '../boot';
+import {
+  bootHarnessSubstrate as bootHarnessSubstrateImpl,
+  type BootHarnessOpts,
+} from '../boot';
 import { buildAnnounce, type SignedAnnounce } from '../announce';
 import { _resetCacheForTests } from '../corestore';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests } from '../boot-history';
+
+/**
+ * Keep this suite hermetic. Production resolves re-key dependencies
+ * fail-closed, but these unit cases exercise the substrate with no real PG.
+ * Individual tests can still override this default through the existing seam.
+ */
+function bootHarnessSubstrate(opts: BootHarnessOpts) {
+  return bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts });
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 

@@ -19,8 +19,20 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { bootHarnessSubstrate } from '../boot';
+import {
+  bootHarnessSubstrate as bootHarnessSubstrateImpl,
+  type BootHarnessOpts,
+} from '../boot';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
+
+/**
+ * Keep this suite hermetic. Production resolves re-key dependencies
+ * fail-closed, but these unit cases exercise the substrate with no real PG.
+ * Individual tests can still override this default through the existing seam.
+ */
+function bootHarnessSubstrate(opts: BootHarnessOpts) {
+  return bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts });
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
