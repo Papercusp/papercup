@@ -12,13 +12,18 @@ tags: ["operator", "release-pipeline", "green-checkpoint", "git-sync", "deploy",
 status: active
 documents:
   - "libs/papercusp/packages/orchestrator/src/prompt-build.ts"
+  - "libs/papercusp/packages/harness/blueprints/base/prompts/su.md"
   - "packages/operator-core/lib/deploy-pipeline-policy.ts"
   - "packages/operator-core/lib/coord/gate-ownership.ts"
+  - "packages/operator-core/lib/cell-registrations.ts"
+  - "packages/operator-core/lib/cell-registrations.test.ts"
+  - "packages/operator-core/lib/desktop-install/__tests__/papercusp-files.test.ts"
   - "apps/operator/lib/release/deploy-cli.ts"
 plans:
   - "deploy-pipeline-legibility-2026-06-18"
   - "release-pipeline-resilience-2026-06-09"
   - "staging-first-implementation-acceptance-2026-08-27"
+  - "gate-ownership-condition-singleton-2026-08-03"
 normative: true
 governs:
   - "waiting on a deploy"
@@ -76,23 +81,31 @@ Never edit the release or checkpoint trees; the pipeline owns them. `:3070` serv
 
 ## A red gate has exactly one live fixer
 
+The exclusivity is deliberately narrow: it governs **`LIVE_GATE_OPS`**, not every task whose code or title mentions the gate.
+
+- **`LIVE_GATE_OPS`** are coupled to the current verdict or live control plane: firing or re-running a checkpoint, deploying or forcing a result, triaging the current red tests, mutating the repair queue, or monitoring the current run.
+- **`GATE_SYSTEM_DEV`** is independently registered source work: cache logic, instrumentation, test selection, retention/GC, alerting, tests, documentation, and refactors.
+
+Exactly one live agent owns `LIVE_GATE_OPS`. `GATE_SYSTEM_DEV` follows ordinary work-item, plan-lane, and file-lock coordination and is not reserved by the live gate holder.
+
 Before acting on a red or stalled green-checkpoint, read:
 
 ```
 state:read { cell: 'gate.greenCheckpoint.ownership' }
 ```
 
-Apply the result literally:
+Apply the result to the correct lane:
 
-- **Held by a live agent:** send useful evidence once, then stop. Do not claim the gate, arm a fallback monitor, or keep rereading it this session.
-- **Claimable but your claim is refused:** treat the refusal as authoritative evidence that the gate is held, even if the cell under-reported it.
-- **Genuinely unowned:** claim it and become the one fixer. Query the test-run ledger for the actual failing checks, diagnose the root cause, fix it durably, add the recurrence guard that should have caught the class, and verify locally.
-- **Owned by a dead or non-progressing holder:** wake the holder directly and verify pickup; if it remains stranded, take over the work rather than sleeping on it.
+- **Held by a live agent:** stop only your `LIVE_GATE_OPS`. Send useful current-gate evidence once, then do not claim the live gate item, arm a fallback monitor, or keep rereading gate status. Continue every independently registered `GATE_SYSTEM_DEV` step.
+- **Claimable but your claim is refused:** treat the refusal as authoritative evidence that `LIVE_GATE_OPS` is held, even if the cell under-reported it. This still does not reserve generic source development.
+- **Genuinely unowned:** claim the live gate item and become its one fixer. Query the test-run ledger for the actual failing checks, diagnose the root cause, fix it durably, add the recurrence guard that should have caught the class, and verify locally.
+- **Owned by a dead or non-progressing holder:** wake the holder directly and verify pickup; if the live-operation lane remains stranded, take it over rather than sleeping on it.
 
-The automatic release-fixer is best-effort, not proof of ownership or progress. Its dispatch can fail or its session can die. Live ownership plus progress is the authority.
+If `GATE_SYSTEM_DEV` needs evidence from the current run, request that evidence once from the live holder and continue every preparatory or independent step. End the whole development task only when every remaining step genuinely depends on the live result.
 
-While that one fixer greens the shared gate, every other lane continues non-final implementation and acceptance on staging/current-build. A red or held gate blocks promotion and shipment; it does **not** block planes 1–2.
+The automatic release-fixer is best-effort, not proof of ownership or progress. Its dispatch can fail or its session can die. Live ownership plus progress is the authority for `LIVE_GATE_OPS`.
 
+While that one fixer greens the shared gate, all other lanes continue non-final implementation and acceptance on staging/current-build. A red or held gate blocks promotion and shipment; it does **not** block planes 1–2 or reserve unrelated gate-system engineering.
 ## Locate your change with the pipeline read, not a browser
 
 Use:
