@@ -56,10 +56,14 @@ const AFFECTS = z.array(AFFECTED_PLAN_SLUG).max(20);
 const AFFECTS_DESC =
   'Existing plan slugs of OTHER plans this decision bears on. The decision stays canonically in `slug`; each affected plan gets a cross-reference plan_event + a notify to its watchers. Surface labels and item/work-item ids are not accepted here.';
 
+const DECISION_BODY_DESC =
+  'The decision body. HARD CAP 5000 chars — over-length is REJECTED, not truncated, so split a long rationale or trim before calling. ' +
+  'Measure before you rule: when the decision asserts a factual claim about the tree, read the tree and add a `Measured:` line naming the file:line or command + result. A decision cited from another decision is authority for design, not evidence about current code.';
+
 const itemSpec = z.object({
   slug: z.string().min(1),
   title: hardText(LIMITS.SHORT_TITLE),
-  body: hardText(5000).describe('The decision body. HARD CAP 5000 chars — over-length is REJECTED, not truncated, so split a long rationale or trim before calling.'),
+  body: hardText(5000).describe(DECISION_BODY_DESC),
   refs: REFS.optional(),
   itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
   affects: AFFECTS.optional().describe(AFFECTS_DESC),
@@ -72,7 +76,7 @@ const argsSchema = z
     slug: z.string().min(1).optional(),
     harness: harnessArg,
     title: hardText(LIMITS.SHORT_TITLE).optional(),
-    body: hardText(5000).optional().describe('The decision body. HARD CAP 5000 chars — over-length is REJECTED, not truncated, so split a long rationale or trim before calling.'),
+    body: hardText(5000).optional().describe(DECISION_BODY_DESC),
     refs: REFS.optional(),
     itemRefs: REFS.optional().describe(ITEM_REFS_ALIAS_DESC),
     affects: AFFECTS.optional().describe(AFFECTS_DESC),
@@ -102,6 +106,32 @@ interface NewDecision {
   affects?: string[];
   harness?: string;
   rationale?: string;
+}
+
+export interface DecisionMeasurementAdvisory {
+  code: 'tree_fact_measurement_missing';
+  paths: string[];
+  message: string;
+}
+
+// Advisory-only by design: a path can appear in a design example that makes no
+// factual claim, so rejecting every match would create false-positive governance
+// failures. The returned warning is nevertheless machine-visible on the exact
+// write that needs review, rather than relying on a prompt sentence alone.
+const SOURCE_PATH_RE = /\b(?:[A-Za-z0-9_@.-]+\/)*[A-Za-z0-9_@.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|sql|rs|go|py)(?::\d+)?\b/g;
+const MEASURED_LINE_RE = /^Measured:\s+\S.+$/im;
+
+export function decisionMeasurementAdvisory(body: string): DecisionMeasurementAdvisory | null {
+  const paths = [...new Set(body.match(SOURCE_PATH_RE) ?? [])].slice(0, 12);
+  if (paths.length === 0 || MEASURED_LINE_RE.test(body)) return null;
+  return {
+    code: 'tree_fact_measurement_missing',
+    paths,
+    message:
+      'This decision names source-like paths but has no `Measured:` line. If it asserts current tree behavior, ' +
+      'open the code and amend the decision with `Measured: <file:line or command + result>`. Another decision ' +
+      'is design authority, not evidence about the current tree.',
+  };
 }
 
 function formatPadded(n: number): string {
@@ -381,6 +411,7 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
   // WI-42142 — decision provenance, resolved BEFORE the plan lock (the helper's
   // header carries the full rationale and the measurement behind enforced-vs-advisory).
   const { fields: provenance, anchors } = await decisionProvenance(`${it.title}\n${it.body}`, ctx);
+  const measurementAdvisory = decisionMeasurementAdvisory(it.body);
   if (anchors.length > 0) {
     return {
       ok: false,
@@ -467,7 +498,15 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
   // or propagate — just hand back the id the earlier (already-landed) call
   // allocated.
   if (result.value.deduped) {
-    return { ok: true, decisionId, slug: it.slug, deduped: true, filePath: result.filePath, ...provenance };
+    return {
+      ok: true,
+      decisionId,
+      slug: it.slug,
+      deduped: true,
+      filePath: result.filePath,
+      ...(measurementAdvisory ? { measurementAdvisory } : {}),
+      ...provenance,
+    };
   }
 
   // P-070 usage ledger (best-effort): a decision is contributor activity on a
@@ -512,6 +551,7 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
     revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
     ...(propagatedTo.length > 0 ? { propagated_to: propagatedTo } : {}),
     ...(unknownAffects.length > 0 ? { unknown_affects: unknownAffects } : {}),
+    ...(measurementAdvisory ? { measurementAdvisory } : {}),
     // WI-42142: advisory provenance fields — absent on the clean common case, so a
     // decision with no directive shape and no turn ref keeps its exact prior shape.
     ...provenance,
@@ -521,9 +561,9 @@ async function addDecisionOne(it: NewDecision, ctx: UnifiedToolContext): Promise
 export default defineTool({
   name: 'plans:add-decision',
   description:
-    "Append one OR many new decisions to a plan. Allocates the next D-NNN id inside a lock (concurrent calls produce non-colliding ids). Auto-bumps frontmatter updated:. Single: { slug, title, body }. Many: items:[{ slug, title, body, refs?, affects? }]. `itemRefs` is accepted as an alias of `refs` (plans:get echoes a decision's refs back under that name; `refs` wins if both are given). Returns { ok, results:[{ ok, slug, decisionId, deduped?, propagated_to? | error }], counts } — each result embeds the NEW decisionId; correlate by id, not position; one failure never fails the rest. Retry-safe: if the exact same { title, body } is already this plan's MOST RECENT decision (a timed-out call that actually landed), the retry hands back that existing decisionId instead of appending a duplicate (`deduped: true`) — safe to retry after an ambiguous timeout without reading the plan back first.",
+    "Append one OR many new decisions to a plan. Allocates the next D-NNN id inside a lock (concurrent calls produce non-colliding ids). Auto-bumps frontmatter updated:. Single: { slug, title, body }. Many: items:[{ slug, title, body, refs?, affects? }]. `itemRefs` is accepted as an alias of `refs` (plans:get echoes a decision's refs back under that name; `refs` wins if both are given). A decision asserting current tree facts must include `Measured: <file:line or command + result>`; source-like paths without it return `measurementAdvisory`. Returns { ok, results:[{ ok, slug, decisionId, deduped?, propagated_to?, measurementAdvisory? | error }], counts } — each result embeds the NEW decisionId; correlate by id, not position; one failure never fails the rest. Retry-safe: if the exact same { title, body } is already this plan's MOST RECENT decision (a timed-out call that actually landed), the retry hands back that existing decisionId instead of appending a duplicate (`deduped: true`) — safe to retry after an ambiguous timeout without reading the plan back first.",
   guidance: {
-    when: "A decision-shaped output: trade-off resolved, scope ratified, choice made between options. Capture so a fresh agent doesn't relitigate. Add several at once via items:[…].",
+    when: "A decision-shaped output: trade-off resolved, scope ratified, choice made between options. Capture so a fresh agent doesn't relitigate. Before asserting a factual claim about current code, open the tree; put the evidence in a `Measured:` line (file:line or command + result). Another decision can govern design but cannot prove a tree fact. Add several at once via items:[…].",
     notWhen:
       'Adding work units — use plans:add-item. Flipping status — plans:set-status. Updating overall state — plans:set-now.',
     chaining:

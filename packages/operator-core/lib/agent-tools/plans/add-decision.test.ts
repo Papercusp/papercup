@@ -61,6 +61,7 @@ import tool, {
   findRetryDuplicateOfLastDecision,
   appendDecisionToBody,
   allocateNextDecisionId,
+  decisionMeasurementAdvisory,
 } from './add-decision';
 import { parsePlan } from './parser';
 
@@ -142,6 +143,30 @@ describe('plans:add-decision — itemRefs alias for refs', () => {
       itemRefs: ['not-a-p-id'],
     });
     expect(parsed.success).toBe(false);
+  });
+});
+
+describe('plans:add-decision — measure before you rule', () => {
+  it('documents the tree-measurement contract on both the schema and tool guidance', () => {
+    expect(tool.args.shape.body.description).toContain('Measured:');
+    expect(tool.guidance?.when).toContain('open the tree');
+    expect(tool.description).toContain('measurementAdvisory');
+  });
+
+  it('flags source-like paths when no measurement accompanies the tree claim', () => {
+    expect(decisionMeasurementAdvisory(
+      'relay-provenance.ts:212 owns this field and coordination/based-on.ts must reuse it.',
+    )).toMatchObject({
+      code: 'tree_fact_measurement_missing',
+      paths: ['relay-provenance.ts:212', 'coordination/based-on.ts'],
+    });
+  });
+
+  it('accepts a concrete Measured line and ignores design prose without source paths', () => {
+    expect(decisionMeasurementAdvisory(
+      'relay-provenance.ts:212 owns this field.\nMeasured: rg -n "evidence" relay-provenance.ts returned line 212.',
+    )).toBeNull();
+    expect(decisionMeasurementAdvisory('Choose the shared provenance surface over a third one.')).toBeNull();
   });
 });
 
@@ -448,6 +473,29 @@ describe('plans:add-decision — exact-slug harness recovery', () => {
     expect(result.results[0]).toMatchObject({ ok: true, decisionId: 'D-001' });
     expect(result.results[0]).not.toHaveProperty('provenanceLint');
     expect(result.results[0]).not.toHaveProperty('turnProvenance');
+  });
+
+  it('returns a machine-visible measurement advisory on the decision write that needs review', async () => {
+    const ctx = handlerContext();
+
+    const result = await handlerBody(
+      {
+        harness: 'explicit-harness',
+        slug: 'handler-plan',
+        title: 'Provenance placement',
+        body: 'relay-provenance.ts:212 owns the evidence band, so based-on.ts must store the read trace there.',
+      },
+      ctx,
+    );
+
+    expect(result.results[0]).toMatchObject({
+      ok: true,
+      decisionId: 'D-001',
+      measurementAdvisory: {
+        code: 'tree_fact_measurement_missing',
+        paths: ['relay-provenance.ts:212', 'based-on.ts'],
+      },
+    });
   });
 
   it('refuses an ambiguous recovered slug before taking the plan lock', async () => {
