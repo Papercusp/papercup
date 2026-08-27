@@ -174,8 +174,8 @@
 }
 
 .pc-context-projection__badge[data-state="live"] {
-  border-color: color-mix(in srgb, var(--ok, #59d499) 52%, transparent);
-  color: var(--ok, #59d499);
+  border-color: color-mix(in srgb, var(--good) 52%, transparent);
+  color: var(--good);
 }
 
 .pc-context-projection__badge[data-state="parked"],
