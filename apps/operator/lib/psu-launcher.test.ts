@@ -124,6 +124,9 @@ import {
   reportSessionEnded,
   pendingSessionEndWitnessPath,
   readPendingSessionEndWitness,
+  NO_LIVE_CODEX_WRITER_EVIDENCE,
+  normalizeResumeLocalLivenessEvidence,
+  normalizeCodexResumeLocalLivenessEvidence,
   reportSessionResumed,
   acquireSessionResumeWithRecovery,
   reportSessionResumeFinalized,
@@ -8554,6 +8557,64 @@ function refusalOf(outcome: Awaited<ReturnType<typeof reportSessionResumed>>) {
   return outcome;
 }
 
+describe("Codex resume local-liveness evidence", () => {
+  const canonical = {
+    version: 1,
+    kind: "no-live-codex-writer",
+  };
+
+  it("normalizes only the exact closed positive witness", () => {
+    expect(NO_LIVE_CODEX_WRITER_EVIDENCE).toEqual(canonical);
+    expect(normalizeResumeLocalLivenessEvidence(canonical)).toEqual(canonical);
+    expect(normalizeResumeLocalLivenessEvidence(canonical)).not.toBe(canonical);
+
+    for (const value of [
+      null,
+      undefined,
+      [],
+      { version: 1, kind: "no-live-codex-writer", extra: true },
+      { version: "1", kind: "no-live-codex-writer" },
+      { version: 1, kind: "free" },
+    ]) {
+      expect(normalizeResumeLocalLivenessEvidence(value)).toBeNull();
+    }
+  });
+
+  it("emits the witness only for a non-fork Codex with both positive local oracles", () => {
+    expect(
+      normalizeCodexResumeLocalLivenessEvidence({
+        agent: "codex",
+        fork: false,
+        forceResume: undefined,
+        liveHost: null,
+        writerHolder: { held: false, reason: "free" },
+      }),
+    ).toEqual(canonical);
+    expect(
+      normalizeCodexResumeLocalLivenessEvidence({
+        agent: "codex",
+        fork: false,
+        forceResume: undefined,
+        liveHost: null,
+        writerHolder: { held: false, reason: "no-lock-file" },
+      }),
+    ).toEqual(canonical);
+
+    for (const value of [
+      { agent: "claude", liveHost: null, writerHolder: { held: false, reason: "free" } },
+      { agent: "omp", liveHost: null, writerHolder: { held: false, reason: "free" } },
+      { agent: "codex", fork: true, liveHost: null, writerHolder: { held: false, reason: "free" } },
+      { agent: "codex", forceResume: "1", liveHost: null, writerHolder: { held: false, reason: "free" } },
+      { agent: "codex", liveHost: {}, writerHolder: { held: false, reason: "free" } },
+      { agent: "codex", liveHost: null, writerHolder: { held: true, reason: "held" } },
+      { agent: "codex", liveHost: null, writerHolder: { held: false, reason: "unknown" } },
+      { agent: "codex", liveHost: null, writerHolder: null },
+    ]) {
+      expect(normalizeCodexResumeLocalLivenessEvidence(value)).toBeNull();
+    }
+  });
+});
+
 describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", () => {
   it("POSTs the row id to bootstrap-su/session-resumed with the bearer", async () => {
     const calls = [];
@@ -8594,6 +8655,46 @@ describe("reportSessionResumed (atomic adv-row resume claim — fail closed)", (
       advSessionId: 42,
       resumeClaimKey: "resume-claim-1",
     });
+  });
+
+  it("forwards only the canonical local-liveness witness, omitting malformed input", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl = async (_url, opts) => {
+      bodies.push(JSON.parse(String(opts.body)));
+      return {
+        ok: true,
+        json: async () => ({ ok: true, status: "acquired", acquired: true }),
+      };
+    };
+
+    await reportSessionResumed(42, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      resumeClaimKey: "resume-evidence-1",
+      localLivenessEvidence: { kind: "no-live-codex-writer", version: 1 },
+    });
+    await reportSessionResumed(43, {
+      fetchImpl,
+      operatorUrl: "http://op:1",
+      resumeClaimKey: "resume-evidence-2",
+      localLivenessEvidence: {
+        version: 1,
+        kind: "no-live-codex-writer",
+        extra: true,
+      },
+    });
+
+    expect(bodies).toEqual([
+      {
+        advSessionId: 42,
+        resumeClaimKey: "resume-evidence-1",
+        localLivenessEvidence: {
+          version: 1,
+          kind: "no-live-codex-writer",
+        },
+      },
+      { advSessionId: 43, resumeClaimKey: "resume-evidence-2" },
+    ]);
   });
 
   it("retries an unknown transport result with the SAME replay key", async () => {
@@ -8921,6 +9022,80 @@ describe("acquireSessionResumeWithRecovery — truthful reserved wait/retry", ()
     }
     expect(sleep).not.toHaveBeenCalled();
   });
+
+  it("forwards one canonical witness across a reserved retry and omits malformed evidence", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    let attempt = 0;
+    const reportImpl = vi.fn(async (_id, opts) => {
+      calls.push(opts);
+      attempt += 1;
+      if (attempt === 1) {
+        return {
+          claimed: false,
+          reason: "contended",
+          status: "reserved",
+          retryAfterMs: 1,
+          resumeClaimKey: opts.resumeClaimKey,
+        } as const;
+      }
+      return {
+        claimed: true,
+        status: "acquired",
+        resumeClaimKey: opts.resumeClaimKey,
+      } as const;
+    });
+    let now = 0;
+
+    await expect(
+      acquireSessionResumeWithRecovery(42, {
+        resumeClaimKey: "resume-recovery-evidence",
+        reportImpl,
+        localLivenessEvidence: {
+          version: 1,
+          kind: "no-live-codex-writer",
+        },
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
+        },
+        onNotice: () => {},
+      }),
+    ).resolves.toMatchObject({ claimed: true, status: "acquired" });
+    expect(calls).toEqual([
+      {
+        resumeClaimKey: "resume-recovery-evidence",
+        localLivenessEvidence: {
+          version: 1,
+          kind: "no-live-codex-writer",
+        },
+      },
+      {
+        resumeClaimKey: "resume-recovery-evidence",
+        localLivenessEvidence: {
+          version: 1,
+          kind: "no-live-codex-writer",
+        },
+      },
+    ]);
+
+    const malformedReport = vi.fn(async (_id, opts) => ({
+      claimed: true,
+      status: "acquired",
+      resumeClaimKey: opts.resumeClaimKey,
+    } as const));
+    await acquireSessionResumeWithRecovery(43, {
+      resumeClaimKey: "resume-recovery-omitted",
+      reportImpl: malformedReport,
+      localLivenessEvidence: {
+        version: 1,
+        kind: "no-live-codex-writer",
+        extra: true,
+      },
+    });
+    expect(malformedReport).toHaveBeenCalledWith(43, {
+      resumeClaimKey: "resume-recovery-omitted",
+    });
+  });
 });
 
 describe("resume reservation finalize/release reporters", () => {
@@ -9089,7 +9264,7 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     const pendingEnd = body.indexOf("readPendingSessionEndWitness(session.id)");
     const endReplay = body.indexOf("await reportSessionEnded(", pendingEnd);
     const claim = body.indexOf(
-      "await acquireSessionResumeWithRecovery(session.id)",
+      "const claim = await acquireSessionResumeWithRecovery(session.id,",
     );
     const configRepair = body.indexOf(
       "await ensureInteractiveConfigViaOperator",
@@ -9128,7 +9303,7 @@ describe("launchResume wiring — claim before setup or spawn", () => {
 
   it("exits immediately when the ended-session resume claim is lost", () => {
     const claim = body.indexOf(
-      "const claim = await acquireSessionResumeWithRecovery(session.id);",
+      "const claim = await acquireSessionResumeWithRecovery(session.id,",
     );
     const refusal = body.indexOf("if (!claim.claimed) {", claim);
     const nextClaimState = body.indexOf("resumeClaimed = true;", refusal);
@@ -9139,6 +9314,20 @@ describe("launchResume wiring — claim before setup or spawn", () => {
     expect(nextClaimState).toBeGreaterThan(refusal);
     expect(refusalBody).toContain("process.exit(2);");
     expect(refusalBody).not.toContain("process.exitCode = 2;");
+  });
+
+  it("computes local evidence before acquisition and forwards it only when canonical", () => {
+    const evidence = body.indexOf(
+      "localLivenessEvidence = normalizeCodexResumeLocalLivenessEvidence({",
+    );
+    const claim = body.indexOf(
+      "const claim = await acquireSessionResumeWithRecovery(session.id,",
+    );
+    const forwarded = body.indexOf("...(localLivenessEvidence", claim);
+
+    expect(evidence).toBeGreaterThan(-1);
+    expect(claim).toBeGreaterThan(evidence);
+    expect(forwarded).toBeGreaterThan(claim);
   });
 
   it("releases every post-acquire setup failure with the same key", () => {

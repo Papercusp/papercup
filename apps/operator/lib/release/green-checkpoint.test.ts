@@ -1234,16 +1234,15 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(ready);
   });
 
-  it("promotes the exact tested repair before the staging join and resumes crashes on both sides of release advance", async () => {
+  it("keeps an isolated repair off release and promotes only its canonical full-gate re-entry", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "verified repair");
 
-    // Staging absorbed the same repair as a separate commit and then kept moving. Its tree
-    // contains the repair, but its history does not contain the exact head the repair suite
-    // verified. Promoting `repaired` directly would strand this integration line behind a
-    // non-fast-forward gate on the very next tick.
+    // Staging absorbed the same repair as a separate commit and then kept moving. The isolated
+    // repair suite may prove the patch content, but only an immutable joined staging SHA may
+    // re-enter the complete gate and become eligible for release.
     await git(repo, ["reset", "--hard", ready]);
     await commit("b", "fixed", "patch-equivalent staging repair");
     const stagingTip = await commit("c", "3", "later staging work");
@@ -1274,26 +1273,22 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.cleanupFrozenRepairWorktree = async () => {};
     const pushedCandidates: string[] = [];
     const advancedCandidates: string[] = [];
-    let advanceAttempts = 0;
     deps.push = async (_ref, _base, candidateSha) => {
       pushedCandidates.push(candidateSha!);
     };
     deps.advance = async (candidateSha) => {
-      advanceAttempts += 1;
       advancedCandidates.push(candidateSha);
-      if (advanceAttempts === 1) {
-        throw new Error("simulated crash before release advance");
-      }
       return advanceReady(repo, candidateSha, "ready");
     };
     let reconciliationAttempts = 0;
+    const reconciledHeads: string[] = [];
     Object.assign(deps, {
       reconcileFrozenRepairIntoStaging: async (
         next: FrozenCandidateRepairQueue,
       ) => {
         reconciliationAttempts += 1;
         if (reconciliationAttempts === 1) {
-          throw new Error("simulated crash after release advance");
+          throw new Error("simulated canonical join failure");
         }
         const currentStaging = await revParse(repo, "main");
         const tree = await git(repo, ["rev-parse", `${currentStaging}^{tree}`]);
@@ -1313,32 +1308,18 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
           joined,
           currentStaging,
         ]);
+        reconciledHeads.push(joined);
         return joined;
       },
     });
 
-    // The exact-green suite persists ready-to-promote before publication. A death after
-    // the push but before the local release ref moves leaves the queue resumable and does
-    // not spend a second suite.
-    await expect(runGreenCheckpoint(cfg(), deps)).rejects.toThrow(
-      "simulated crash before release advance",
-    );
-    expect(queue).toMatchObject({
-      phase: "ready-to-promote",
-      repairHead: repaired,
-    });
-    expect(await revParse(repo, "ready")).toBe(ready);
-    expect(pushedCandidates).toEqual([repaired]);
-    expect(advancedCandidates).toEqual([repaired]);
-    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    // A green isolated suite persists ready-to-promote, but a failed canonical join does not
+    // publish the repair SHA or move the release ref. The exact queue remains resumable.
+    const heldForCanonicalJoin = await runGreenCheckpoint(cfg(), deps);
 
-    // Resume retries the idempotent exact push, advances release to the tested SHA, then
-    // crashes in the staging join. The queue must survive while main stays on that SHA.
-    const heldAfterReleaseAdvance = await runGreenCheckpoint(cfg(), deps);
-
-    expect(heldAfterReleaseAdvance).toMatchObject({
-      advanced: true,
-      green: true,
+    expect(heldForCanonicalJoin).toMatchObject({
+      advanced: false,
+      green: null,
       reason: "repair-in-progress",
       candidate: repaired,
       from: ready,
@@ -1348,25 +1329,27 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       phase: "ready-to-promote",
       repairHead: repaired,
     });
-    expect(await revParse(repo, "ready")).toBe(repaired);
-    expect(pushedCandidates).toEqual([repaired, repaired]);
-    expect(advancedCandidates).toEqual([repaired, repaired]);
+    expect(await revParse(repo, "ready")).toBe(ready);
+    expect(await revParse(repo, "main")).toBe(stagingTip);
+    expect(pushedCandidates).toEqual([]);
+    expect(advancedCandidates).toEqual([]);
     expect(reconciliationAttempts).toBe(1);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
 
-    // Once release already equals the queued repair head, a restart skips both ref effects
-    // and resumes only the staging join. The queue clears only after that join publishes.
-    const reconciled = await runGreenCheckpoint(cfg(), deps);
+    // Resume joins the verified repair into canonical staging, replaces the durable row with
+    // a ready-to-test pin for that immutable SHA, and spends a full gate before publication.
+    const promoted = await runGreenCheckpoint(cfg(), deps);
+    const joinedTip = reconciledHeads.at(-1)!;
 
-    const joinedTip = await revParse(repo, "main");
-    expect(reconciled).toMatchObject({
-      advanced: false,
+    expect(promoted).toMatchObject({
+      advanced: true,
       green: true,
       reason: "advanced",
-      candidate: repaired,
-      from: repaired,
+      candidate: joinedTip,
+      from: ready,
     });
-    expect(await revParse(repo, "ready")).toBe(repaired);
+    expect(await revParse(repo, "ready")).toBe(joinedTip);
+    expect(await revParse(repo, "main")).toBe(joinedTip);
     expect(await git(repo, ["rev-parse", `${joinedTip}^{tree}`])).toBe(
       stagingTree,
     );
@@ -1374,26 +1357,14 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       git(repo, ["merge-base", "--is-ancestor", repaired, joinedTip]),
     ).resolves.toBe("");
     expect(queue).toBeNull();
-    expect(pushedCandidates).toEqual([repaired, repaired]);
-    expect(advancedCandidates).toEqual([repaired, repaired]);
+    expect(pushedCandidates).toEqual([joinedTip]);
+    expect(advancedCandidates).toEqual([joinedTip]);
     expect(reconciliationAttempts).toBe(2);
-    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
-
-    // Only after both refs satisfy the queue transaction may the moving staging tip be
-    // selected and judged by a normal gate.
-    const promoted = await runGreenCheckpoint(cfg(), deps);
-
-    expect(promoted).toMatchObject({
-      advanced: true,
-      green: true,
-      reason: "advanced",
-      candidate: joinedTip,
-      from: repaired,
-    });
-    expect(await revParse(repo, "ready")).toBe(joinedTip);
-    expect(pushedCandidates.at(-1)).toBe(joinedTip);
-    expect(advancedCandidates.at(-1)).toBe(joinedTip);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(2);
+    expect(calls.filter((call) => call.startsWith("setup:"))).toEqual([
+      `setup:${repaired.slice(0, 7)}`,
+      `setup:${joinedTip.slice(0, 7)}`,
+    ]);
   });
 
   it("retries forward from a red repair head without adopting the moving staging tip", async () => {

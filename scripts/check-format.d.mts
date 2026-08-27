@@ -23,10 +23,16 @@ export function buildPrettierArgs(cli: any, repoPath: any, range: any, mode?: st
 export function buildPrettierWholeFileArgs(cli: any, repoPath: any): any[];
 export function buildPrettierStdinArgs(cli: any, repoPath: any, range: any): any[];
 /**
- * Prettier's range check compares the formatter output for the whole file.
- * That lets an unrelated change outside the requested range (notably the final
- * newline when the range starts at offset zero) fail an otherwise clean range.
- * Compare only the requested source span so the scoped check remains scoped.
+ * Prettier's range formatter can reprint an enclosing AST node before the
+ * requested range. Comparing equal offsets in its whole-file output then
+ * compares unrelated bytes after that reprint shifts the output. Map formatter
+ * edits back to source offsets instead, so only edits that touch the requested
+ * source range fail the scoped check.
+ *
+ * Ranges from characterRangeForLines are line-aligned. An insertion exactly at
+ * either boundary is treated as adjacent context: Prettier may insert context
+ * while expanding the range, but a formatting change to a requested line is
+ * represented by a removed source line and is still detected.
  */
 export function rangeFormattingDiffers(source: any, formatted: any, range: any): boolean;
 /**

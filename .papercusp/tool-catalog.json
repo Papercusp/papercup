@@ -18280,7 +18280,7 @@
           "POST"
         ]
       },
-      "description": "Preview or materialize the seeded, permuted-block assignment for the directed-pair 3-arm pilot. confirm is false by default. A confirmed cohort fails closed unless A/B carry one solo participant, C carries director+implementer sessions, and any B assignment has a terminal live probe whose testedSha equals deployedSha. Writes the auditable pilotArm/seed/stratum/block/participant-window payload stamp, then re-derives it; a failed multi-row write rolls back its pilot keys.",
+      "description": "Preview or atomically materialize the exact 21-item seeded directed-pair pilot cohort. Preview is pure and returns the deterministic assignment plus completion/grading fan-in plan. Confirmation derives workspace, harness and actor from tool context, requires exact frozen row/claim versions, validates canonical binding+dispatch receipts, re-reads the current green deployed pin, and applies all 21 stamps in one transaction.",
       "capabilities": [
         "work_items:write"
       ],
@@ -18303,8 +18303,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Preparing or starting a real directed-pair pilot cohort. Preview first, record the seed, bind exact participant session ids + claim-window starts, then confirm only after the arm-B live probe passes.",
-        "notWhen": "Hand-picking arms, assigning trivial/high-risk work, or grading/collecting completed results (pilot:collect). Never use generic payload edits to bypass this gate.",
+        "when": "Preparing or starting the frozen 21-item directed-pair pilot cohort. Preview first, persist canonical participant claim/dispatch receipts, then confirm with exact expectedUpdatedTs/expectedAssignee/expectedTakenAt values after the arm-B live probe passes.",
+        "notWhen": "Hand-picking arms, supplying participant identity or cost-window timestamps, assigning trivial/high-risk work, or collecting results (pilot:collect). Never use generic payload edits to bypass this gate.",
         "chaining": "pilot:assign { confirm:false } → run/verify the arm-B probe → pilot:assign { same seed/candidates, confirm:true } → execute items → blinded scorecards:emit → pilot:collect."
       }
     },
@@ -18316,7 +18316,7 @@
           "POST"
         ]
       },
-      "description": "Collect a completed directed-pair pilot cohort from canonical work-item, scorecard and usage ledgers and build the D-022 report. Verifies the seeded assignment, requires one complete post-assignment scorecard from a non-participant grader, attributes cost to every stamped participant session inside its claim window (two costs for arm C), and returns explicit gaps instead of fabricating zero cost or a floor score.",
+      "description": "Collect the exact completed 21-item directed-pair pilot cohort from canonical work-item, participant-receipt, scorecard and usage ledgers. Requires exact completion registration receipts (21 direct or composed 20+1), mandatory subject-filtered grading 20+1 receipts, prebound independent graders, exact returned card ids, and server-issued binding-to-close cost windows. Missing evidence is returned as typed gaps.",
       "capabilities": [
         "coord:read"
       ],
@@ -29322,7 +29322,7 @@
           "POST"
         ]
       },
-      "description": "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID. Pass `since` for itemized closed/opened deltas. Pass `fleet` plus `window:'fleet-lifetime'` for the canonical stored-spec fleet snapshot (current-spec or at-event-spec flow), including explicit population, unit, exactness, and attribution metadata.",
+      "description": "One-call leader census for a harness work queue. Additive `queueControl` fields distinguish active claims, liveness-bound hold-open leases, durable parks, and agent-review gates; durable parks include parker/reason/time/age plus UNPARK-condition and release-liveness status. Legacy buckets/mechanisms remain compatible.",
       "capabilities": [
         "work_items:read"
       ],
@@ -29502,7 +29502,7 @@
           "POST"
         ]
       },
-      "description": "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP so they do not sum; `affinityCoverage` warns when fewer than 50% of claimable rows carry non-empty `payload.paths`; `sampleExcluded` (1-10) adds `excludedSample` — ids per floor for stale-hold triage.",
+      "description": "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `queueControl` separates active claims, hold-open leases, durable parks, and agent review (overlapping axes); `sampleExcluded` adds provenance, age, and UNPARK-condition detail without changing legacy floor fields.",
       "capabilities": [
         "work_items:read"
       ],
