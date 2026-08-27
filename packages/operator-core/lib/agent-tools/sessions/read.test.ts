@@ -39,6 +39,12 @@ function makeTx(rows: unknown[]) {
 }
 
 describe('sessions:read EI-20236684982538421 — structured large-window response', () => {
+  it('keeps the tail exclusivity rule in the compact discovery prefix', () => {
+    expect(projected.description.slice(0, 320)).toContain(
+      "`tail:N` already means `order:'desc', limit:N`; do not combine `tail` with `order` or `limit`.",
+    );
+  });
+
   it('advertises an object result and preserves all rows in structuredContent', async () => {
     const rows = Array.from({ length: 33 }, (_, turn_idx) => ({
       source_kind: 'codex',
