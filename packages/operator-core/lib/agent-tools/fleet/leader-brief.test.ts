@@ -22,6 +22,7 @@ import {
   computeDeclaredPlanSpecDivergenceAlert,
   computeSpinningAlert,
   computeStrandedFleetAlert,
+  compactLaunchWorkerAttestation,
   compactLeaderBriefBenchSuggestions,
   compactLeaderBriefIntentAttention,
   compactLeaderBriefMemberVerdicts,
@@ -47,6 +48,96 @@ import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('fleet:leader-brief launch worker attestation projection (P-003)', () => {
+  it('projects stage status and failures from the durable transaction without re-deriving them', () => {
+    const projected = compactLaunchWorkerAttestation({
+      version: 1,
+      transactionId: 'tx-worker-1',
+      state: 'partial',
+      requestedAt: 1,
+      updatedAt: 2,
+      requestedMemberIds: ['su-ready', 'su-no-wake'],
+      openedMemberIds: ['su-ready', 'su-no-wake'],
+      verifiedMemberIds: ['su-ready', 'su-no-wake'],
+      workerReadyMemberIds: ['su-ready'],
+      workerAttestations: [
+        {
+          version: 1,
+          ownerId: 'su-ready',
+          ready: true,
+          stages: {
+            agentCall: { status: 'satisfied', successfulCalls: 2 },
+            durableWake: { status: 'satisfied', wakeSource: 'loop' },
+            schedulerPull: { status: 'satisfied', calls: 1, successfulCalls: 1 },
+            disposition: { status: 'satisfied', kind: 'claimed', workItemId: 'WI-1' },
+          },
+          failures: [],
+        },
+        {
+          version: 1,
+          ownerId: 'su-no-wake',
+          ready: false,
+          stages: {
+            agentCall: { status: 'satisfied', successfulCalls: 1 },
+            durableWake: { status: 'missing', wakeSource: null },
+            schedulerPull: { status: 'satisfied', calls: 1, successfulCalls: 1 },
+            disposition: { status: 'satisfied', kind: 'no-claim', reason: 'lane_drained' },
+          },
+          failures: [{
+            stage: 'durableWake',
+            code: 'durable-wake-missing',
+            detail: 'No durable wake.',
+          }],
+        },
+      ],
+      failed: [],
+      waves: [],
+      recovery: { retryOwnerIds: [], nextAction: 'none' },
+      requestedMembers: [],
+    } as never);
+
+    expect(projected).toEqual({
+      transactionId: 'tx-worker-1',
+      state: 'partial',
+      requested: 2,
+      observed: 2,
+      ready: 1,
+      workerReadyMemberIds: ['su-ready'],
+      members: [
+        {
+          ownerId: 'su-ready',
+          ready: true,
+          stages: {
+            agentCall: 'satisfied',
+            durableWake: 'satisfied',
+            schedulerPull: 'satisfied',
+            disposition: 'satisfied',
+          },
+          failures: [],
+        },
+        {
+          ownerId: 'su-no-wake',
+          ready: false,
+          stages: {
+            agentCall: 'satisfied',
+            durableWake: 'missing',
+            schedulerPull: 'satisfied',
+            disposition: 'satisfied',
+          },
+          failures: ['durable-wake-missing'],
+        },
+      ],
+    });
+  });
+
+  it('omits the block for legacy transactions that predate worker attestation', () => {
+    expect(compactLaunchWorkerAttestation({
+      transactionId: 'legacy',
+      requestedMemberIds: [],
+    } as never)).toBeUndefined();
+  });
+});
 
 describe('fleet:leader-brief announced gate projection (P-027)', () => {
   const announcement = (overrides: Record<string, unknown> = {}) =>

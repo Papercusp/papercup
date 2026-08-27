@@ -47,8 +47,11 @@ import { buildClaimableNowAggregate } from './leader-brief-aggregate';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import type { AgentIdentity } from '../coordination/identity';
-import { getFleet } from '../../agent-fleets-store';
-import type { FleetControlState } from '../../agent-fleets-store';
+import {
+  getFleet,
+  type FleetControlState,
+  type FleetLaunchTransaction,
+} from '../../agent-fleets-store';
 import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
 import {
   ensureFleetLeaderControl,
@@ -411,6 +414,56 @@ export interface LeaderBriefMemberVerdict {
   agentId: string;
   verdict: MemberVerdict | null;
   idleCause: MemberIdleCause;
+}
+
+export interface LeaderBriefLaunchWorkerAttestation {
+  transactionId: string;
+  state: FleetLaunchTransaction['state'];
+  requested: number;
+  observed: number;
+  ready: number;
+  workerReadyMemberIds: string[];
+  members: Array<{
+    ownerId: string | null;
+    ready: boolean;
+    stages: {
+      agentCall: string;
+      durableWake: string;
+      schedulerPull: string;
+      disposition: string;
+    };
+    failures: string[];
+  }>;
+}
+
+/** Compact the durable transaction evidence without re-deriving any stage. */
+export function compactLaunchWorkerAttestation(
+  transaction: FleetLaunchTransaction | null | undefined,
+): LeaderBriefLaunchWorkerAttestation | undefined {
+  if (!transaction || (transaction.workerAttestations == null && transaction.workerReadyMemberIds == null)) {
+    return undefined;
+  }
+  const workerReadyMemberIds = [...new Set(transaction.workerReadyMemberIds ?? [])];
+  const members = (transaction.workerAttestations ?? []).map((attestation) => ({
+    ownerId: attestation.ownerId,
+    ready: attestation.ready,
+    stages: {
+      agentCall: attestation.stages.agentCall.status,
+      durableWake: attestation.stages.durableWake.status,
+      schedulerPull: attestation.stages.schedulerPull.status,
+      disposition: attestation.stages.disposition.status,
+    },
+    failures: attestation.failures.map((failure) => failure.code),
+  }));
+  return {
+    transactionId: transaction.transactionId,
+    state: transaction.state,
+    requested: transaction.requestedMemberIds.length,
+    observed: members.length,
+    ready: workerReadyMemberIds.length,
+    workerReadyMemberIds,
+    members,
+  };
 }
 
 export type LeaderBriefBenchSuggestionKind = NonNullable<LeaderBriefMember['benchSuggestion']>['kind'];
@@ -2947,9 +3000,11 @@ export async function buildLeaderBrief(
   let leadershipClaimed: AutoClaimedNotice | undefined;
   let leaderControl: LeaderControlOutcome | undefined;
   let fleetCreatedAtMs: number | null = null;
+  let launchWorkerAttestation: LeaderBriefLaunchWorkerAttestation | undefined;
   try {
     const fleetRecord = await getFleet(workspaceId, fleet);
     fleetCreatedAtMs = fleetRecord?.createdAt ?? null;
+    launchWorkerAttestation = compactLaunchWorkerAttestation(fleetRecord?.lastLaunchTransaction);
     const registeredLeader = fleetRecord?.leaderOwnerId ?? null;
     const leaderRow = registeredLeader ? rosterEntries.find((e) => e.agentId === registeredLeader) : undefined;
     const disposition = decideLeadershipDisposition({
@@ -3690,6 +3745,9 @@ export async function buildLeaderBrief(
         floorStarvedAlert: floorStarvedAlert != null,
         ...(customInvariants ? { customInvariantAlert: customInvariantAlert != null } : {}),
       },
+      // P-003: compact projection of the SAME durable launch transaction fleet:status
+      // returns wholesale. No liveness or claim state is re-derived here.
+      ...(launchWorkerAttestation ? { launchWorkerAttestation } : {}),
       // P-006/D-005: static PULL view over the exact-plan claim-spec. Its
       // measured|unknown discriminator survives shaping; an unread graph never
       // becomes rows:[] or an absent field that looks like "no bottlenecks".
