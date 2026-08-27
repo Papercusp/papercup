@@ -71,3 +71,37 @@ describe('claimable_now aggregate projection (WI-41164 / P-002)', () => {
     expect(JSON.stringify(output)).not.toContain('x'.repeat(1_000));
   });
 });
+
+describe('headcount aggregate projection (WI-41145)', () => {
+  it('keeps target, current, shortfall, and verdict in every monitor tier', () => {
+    for (const tier of ['standard', 'trimmed'] as const) {
+      const output = shapeLeaderBrief(
+        {
+          ok: true,
+          summary: {
+            fleet: 'under-strength-fleet',
+            members: 3,
+            headcount: {
+              enabled: true,
+              target: 5,
+              current: 3,
+              shortfall: 2,
+              underStrength: true,
+              verdict: 'under-strength',
+            },
+          },
+        },
+        tier,
+      ) as { summary: { headcount: Record<string, unknown> } };
+
+      expect(output.summary.headcount).toEqual({
+        enabled: true,
+        target: 5,
+        current: 3,
+        shortfall: 2,
+        underStrength: true,
+        verdict: 'under-strength',
+      });
+    }
+  });
+});

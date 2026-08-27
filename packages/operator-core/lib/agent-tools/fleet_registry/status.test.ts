@@ -2,17 +2,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   getFleet: vi.fn(),
+  getFleetHeadcountTarget: vi.fn(),
   listFleetRosterDiagnosed: vi.fn(),
+  liveFleetMemberIds: vi.fn(),
   countRunningWorkspaceBees: vi.fn(),
   countRunningFleetBees: vi.fn(),
   getCompletionIntegrityStats: vi.fn(),
   resolveAgentIdentity: vi.fn(),
 }));
 
-vi.mock('../../agent-fleets-store', () => ({
-  FLEET_TYPES: ['single', 'paired'] as const,
-  getFleet: (...a: unknown[]) => h.getFleet(...a),
-}));
+vi.mock('../../agent-fleets-store', async () => {
+  const actual =
+    await vi.importActual<typeof import('../../agent-fleets-store')>('../../agent-fleets-store');
+  return {
+    ...actual,
+    getFleet: (...a: unknown[]) => h.getFleet(...a),
+    getFleetHeadcountTarget: (...a: unknown[]) => h.getFleetHeadcountTarget(...a),
+  };
+});
 // Real split helpers (pure) + a mocked roster/bee-count IO seam. status.ts now calls
 // listFleetRosterDiagnosed (WI-3818) — mocked to resolve { entries, degradedLegs }.
 vi.mock('../../fleet/fleet-roster', async () => {
@@ -22,6 +29,7 @@ vi.mock('../../fleet/fleet-roster', async () => {
     isBeeRole: actual.isBeeRole,
     splitFleetRosterCounts: actual.splitFleetRosterCounts,
     listFleetRosterDiagnosed: (...a: unknown[]) => h.listFleetRosterDiagnosed(...a),
+    liveFleetMemberIds: (...a: unknown[]) => h.liveFleetMemberIds(...a),
     countRunningWorkspaceBees: (...a: unknown[]) => h.countRunningWorkspaceBees(...a),
     countRunningFleetBees: (...a: unknown[]) => h.countRunningFleetBees(...a),
   };
@@ -91,6 +99,8 @@ beforeEach(() => {
   });
   h.countRunningWorkspaceBees.mockResolvedValue(0);
   h.countRunningFleetBees.mockResolvedValue(0);
+  h.getFleetHeadcountTarget.mockResolvedValue(null);
+  h.liveFleetMemberIds.mockResolvedValue([]);
   h.getCompletionIntegrityStats.mockResolvedValue({
     harness: 'papercusp',
     terminalTotal: 10,
@@ -119,6 +129,57 @@ describe('fleet:status', () => {
     expect(out.completionStats).toBeUndefined();
     expect(out.launchTransaction).toMatchObject({ transactionId: 'tx-1', state: 'partial' });
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
+  });
+
+  it('reports an enabled target against the exact current launch membership', async () => {
+    h.getFleetHeadcountTarget.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      enabled: true,
+      target: 5,
+      config: {},
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    h.liveFleetMemberIds.mockResolvedValueOnce(['su-1', 'su-2', 'su-3']);
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.headcount).toEqual({
+      enabled: true,
+      target: 5,
+      current: 3,
+      shortfall: 2,
+      underStrength: true,
+      verdict: 'under-strength',
+    });
+    expect(h.liveFleetMemberIds).toHaveBeenCalledWith('rocket', 'ws', 'launch');
+  });
+
+  it('keeps a disabled saved launch recipe from masquerading as an active target', async () => {
+    h.getFleetHeadcountTarget.mockResolvedValueOnce({
+      workspaceId: 'ws',
+      fleetSlug: 'rocket',
+      enabled: false,
+      target: 1,
+      config: {},
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    h.liveFleetMemberIds.mockResolvedValueOnce(['su-1', 'su-2']);
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.headcount).toEqual({
+      enabled: false,
+      target: null,
+      current: 2,
+      shortfall: null,
+      underStrength: null,
+      verdict: 'disabled',
+    });
   });
 
   it('labels unconfirmed launch ids by the roster presence read', async () => {
@@ -462,6 +523,25 @@ describe('fleet:status', () => {
       expect(out.beeCount).toBe(0);
       expect(out.degraded).toBe(true);
       expect(out.degradedLegs.sort()).toEqual(['beeCount', 'runningBees']);
+      warnSpy.mockRestore();
+    });
+
+    it('reports unknown headcount instead of a healthy zero when the target read hangs', async () => {
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      h.getFleetHeadcountTarget.mockReturnValue(new Promise(() => {}));
+      h.liveFleetMemberIds.mockResolvedValueOnce(['su-live']);
+      const resultPromise = invoke({ fleet: 'rocket' });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const out = parse(await resultPromise);
+      expect(out.headcount).toEqual({
+        enabled: null,
+        target: null,
+        current: 1,
+        shortfall: null,
+        underStrength: null,
+        verdict: 'unknown',
+      });
+      expect(out.degradedLegs).toContain('headcountTarget');
       warnSpy.mockRestore();
     });
 

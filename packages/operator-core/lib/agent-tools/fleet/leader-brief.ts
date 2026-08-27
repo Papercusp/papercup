@@ -49,6 +49,8 @@ import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/ide
 import type { AgentIdentity } from '../coordination/identity';
 import {
   getFleet,
+  getFleetHeadcountTarget,
+  projectFleetHeadcountState,
   type FleetControlState,
   type FleetLaunchGovernorAction,
   type FleetLaunchGovernorOutcome,
@@ -72,7 +74,7 @@ import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows, type SelfRef } from '../coordination/self-marker';
 import { selectFleetPopulation, type FleetPopulationCensus } from './fleet-population';
 import { COORD_ROLES } from '../coordination/roles';
-import { listFleetRosterDiagnosed } from '../../fleet/fleet-roster';
+import { listFleetRosterDiagnosed, liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { shouldRecoverClaimFromHealth, type AgentAssignment, type ClaimHealth } from '../../fleet/assignments';
 import { listPresence } from '../coordination/presence';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
@@ -156,6 +158,7 @@ const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
  * serves. Keep the fan-out deterministic and bounded.
  */
 export const LEADER_BRIEF_READ_CONCURRENCY = 4;
+const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 8_000;
 
 type LeaderBriefReadResult<T> = T extends () => Promise<infer R> ? R : never;
 
@@ -3048,6 +3051,29 @@ export async function buildLeaderBrief(
   // old claim-primary read omitted live idle members whose assignment view had
   // no row, so leader-brief and fleet:status reported different rosters.
   const rosterResult = await listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId });
+  const [headcountTargetResult, headcountCurrentResult] = await runLeaderBriefReads(
+    [
+      () =>
+        withBoundedTimeout(getFleetHeadcountTarget(workspaceId, fleet), {
+          fallback: undefined,
+          timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+          label: 'leader-brief:headcountTarget',
+        }),
+      () =>
+        withBoundedTimeout(
+          liveFleetMemberIds(fleet, workspaceId, 'launch').then((ids) => ids.length),
+          {
+            fallback: null,
+            timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+            label: 'leader-brief:headcountCurrent',
+          },
+        ),
+    ] as const,
+  );
+  const headcount = projectFleetHeadcountState(
+    headcountTargetResult.value,
+    headcountCurrentResult.value,
+  );
   const rosterEntries: DecoratedAgent[] = rosterResult.entries.map((entry) => ({
     ...entry,
     ...(entry.wakeMode === 'auto' || entry.wakeMode === 'manual'
@@ -3363,6 +3389,11 @@ export async function buildLeaderBrief(
     // leader-brief and fleet:assignments within minutes, each defensible, none
     // reconciled inline.
     population: memberCensus,
+    // WI-41145: intended population beside exact current launch membership.
+    // A disabled saved profile retains its launch recipe internally, but its
+    // public target stays null so a reusable recipe cannot masquerade as an
+    // active headcount commitment. Read failures remain in-band `unknown`.
+    headcount,
     speaking: members.filter((m) => m.verdict === 'speaking').length,
     monitoring: members.filter((m) => m.monitorState === 'monitoring').length,
     waiting: members.filter((m) => m.monitorState === 'waiting').length,

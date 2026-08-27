@@ -308,6 +308,13 @@ function compactSummary(value: unknown, ultra = false): unknown {
   );
   if (population) out.population = population;
 
+  const headcount = pick(
+    source.headcount,
+    ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict'],
+    120,
+  );
+  if (headcount) out.headcount = headcount;
+
   if ('claimable_now' in source) out.claimable_now = compactClaimableNow(source.claimable_now);
 
   const pool = pick(
