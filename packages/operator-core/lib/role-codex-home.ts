@@ -846,6 +846,8 @@ export function writeRoleCodexHome(opts: {
    *  block with the x-papercusp-account header omitted — the gateway auto-selects. Ignored
    *  when codexGatewayAccountId is set. */
   codexGatewayAuto?: boolean;
+  /** Admission label written beside the owner header for a gateway-routed role home. */
+  codexGatewayPriority?: string | null;
   /** The directory the operator is launching this agent into (spec.cwd). Seeded
    *  as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME does
    *  not block at codex's "Do you trust this directory?" boot prompt. */
@@ -871,7 +873,11 @@ export function writeRoleCodexHome(opts: {
   const configPath = join(codexHome, 'config.toml');
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
-  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
+  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, {
+    gatewayOn: opts.codexGatewayAuto,
+    ownerId: opts.sid,
+    priority: opts.codexGatewayPriority,
+  });
   const contextConfig = codexContextConfigToml(opts.model).trimEnd();
   const toml = [
     ...(contextConfig ? contextConfig.split('\n') : []),
@@ -971,6 +977,7 @@ export interface SuCodexConfigInput {
   token?: string | null;
   codexGatewayAccountId?: string | null;
   codexGatewayAuto?: boolean;
+  codexGatewayPriority?: string | null;
   trustDir?: string | null;
 }
 
@@ -989,7 +996,11 @@ export interface SuCodexConfigInput {
 export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const sep = opts.mcpUrl.includes('?') ? '&' : '?';
   const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
-  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
+  const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, {
+    gatewayOn: opts.codexGatewayAuto,
+    ownerId: opts.sid,
+    priority: opts.codexGatewayPriority,
+  });
   const contextConfig = codexContextConfigToml(opts.model).trimEnd();
   return [
     ...(contextConfig ? contextConfig.split('\n') : []),
@@ -1049,17 +1060,26 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey:
   const expectedContextConfig = codexContextConfigToml(opts.model);
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
+  const expectedGateway = codexGatewayConfigToml(opts.codexGatewayAccountId, {
+    gatewayOn: opts.codexGatewayAuto,
+    ownerId: opts.sid,
+    priority: opts.codexGatewayPriority,
+  });
   let configReady = false;
   try {
     const current = readFileSync(configPath, 'utf8');
     const contextMatches = expectedContextConfig
       ? current.startsWith(expectedContextConfig)
       : !/^model_(?:context_window|auto_compact_token_limit)\s*=/m.test(current);
+    const gatewayReady = expectedGateway.root.length
+      ? current.includes(expectedGateway.root.join('\n')) && current.includes(expectedGateway.tables.join('\n'))
+      : !current.includes('PAPERCUSP_CODEX_GATEWAY_ROOT') && !current.includes('PAPERCUSP_CODEX_GATEWAY_PROVIDER');
     configReady =
       current.includes('[mcp_servers.papercusp-su]') &&
       current.includes(expectedClient) &&
       contextMatches &&
-      current.includes(expectedLogDir);
+      current.includes(expectedLogDir) &&
+      gatewayReady;
   } catch {
     /* absent or unreadable — that is precisely the repair case */
   }
@@ -1095,6 +1115,8 @@ export function writeSuCodexHome(opts: {
    *  block with the x-papercusp-account header omitted — the gateway auto-selects. Ignored
    *  when codexGatewayAccountId is set. */
   codexGatewayAuto?: boolean;
+  /** Gateway admission label; `su` for interactive SU homes. */
+  codexGatewayPriority?: string | null;
   /** The directory the operator is launching this SU session into (resolveSuLaunchCwd).
    *  Seeded as `[projects."<dir>"] trust_level = "trusted"` so a fresh CODEX_HOME
    *  does not block at codex's "Do you trust this directory?" boot prompt. */

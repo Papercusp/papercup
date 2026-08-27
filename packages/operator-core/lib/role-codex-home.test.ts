@@ -190,12 +190,16 @@ describe('writeRoleCodexHome', () => {
       sessionKey: 'gw-pin',
       mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
       promptText: 'P',
+      sid: 'role-worker',
       codexGatewayAccountId: 'chatgpt-sub-cli',
+      codexGatewayPriority: 'worker',
     });
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('model_provider = "papercusp-codex-gateway"');
     expect(toml).toContain('[model_providers.papercusp-codex-gateway]');
     expect(toml).toContain('"x-papercusp-account" = "chatgpt-sub-cli"');
+    expect(toml).toContain('"x-papercusp-owner" = "role-worker"');
+    expect(toml).toContain('"x-papercusp-priority" = "worker"');
   });
 
   it('codexGatewayAuto (no pin) → the SAME provider block with the account header OMITTED — unpinned auto-routing, never an empty header', async () => {
@@ -204,12 +208,16 @@ describe('writeRoleCodexHome', () => {
       sessionKey: 'gw-auto',
       mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
       promptText: 'P',
+      sid: 'role-worker',
       codexGatewayAuto: true,
+      codexGatewayPriority: 'worker',
     });
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('model_provider = "papercusp-codex-gateway"');
     expect(toml).toContain('[model_providers.papercusp-codex-gateway]');
     expect(toml).not.toContain('x-papercusp-account');
+    expect(toml).toContain('"x-papercusp-owner" = "role-worker"');
+    expect(toml).toContain('"x-papercusp-priority" = "worker"');
   });
 
   it('neither pin nor auto → NO gateway config at all (direct egress unchanged)', async () => {
@@ -218,9 +226,13 @@ describe('writeRoleCodexHome', () => {
       sessionKey: 'gw-off',
       mcpUrl: 'http://x/api/mcp?role=worker&sig=z',
       promptText: 'P',
+      sid: 'role-worker',
+      codexGatewayPriority: 'worker',
     });
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).not.toContain('papercusp-codex-gateway');
+    expect(toml).not.toContain('x-papercusp-owner');
+    expect(toml).not.toContain('x-papercusp-priority');
   });
 
   it('symlinks auth.json to the real ~/.codex/auth.json (shared OAuth, not a copy)', async () => {
@@ -425,11 +437,15 @@ describe('writeSuCodexHome', () => {
       promptText: 'P',
       sid: 'su-context',
       model: 'gpt-5.6-terra:xhigh',
+      codexGatewayAuto: true,
+      codexGatewayPriority: 'su',
     });
     expect(readFileSync(fresh.configPath, 'utf8')).toMatch(
       /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
     );
     expect(readFileSync(fresh.configPath, 'utf8')).toContain(`log_dir = "${join(fresh.codexHome, 'log')}"`);
+    expect(readFileSync(fresh.configPath, 'utf8')).toContain('"x-papercusp-owner" = "su-context"');
+    expect(readFileSync(fresh.configPath, 'utf8')).toContain('"x-papercusp-priority" = "su"');
 
     writeFileSync(fresh.configPath, '# archived config lost\n');
     const repaired = ensureSuCodexHomeConfig({
@@ -437,12 +453,16 @@ describe('writeSuCodexHome', () => {
       mcpUrl: 'http://x/api/mcp?superuser=1',
       sid: 'su-context',
       model: 'gpt-5.6-terra:xhigh',
+      codexGatewayAuto: true,
+      codexGatewayPriority: 'su',
     });
     expect(repaired.repaired).toBe(true);
     expect(readFileSync(repaired.configPath, 'utf8')).toMatch(
       /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
     );
     expect(readFileSync(repaired.configPath, 'utf8')).toContain(`log_dir = "${join(repaired.codexHome, 'log')}"`);
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain('"x-papercusp-owner" = "su-context"');
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain('"x-papercusp-priority" = "su"');
   });
 
   it.each([
