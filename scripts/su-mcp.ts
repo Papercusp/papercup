@@ -50,6 +50,8 @@
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { decode, isResultFormat, type ResultFormat } from '@papercusp/result-encoding';
 
 interface ServerCfg {
   url: string;
@@ -102,6 +104,40 @@ function parseArgs(argv: string[]): { flags: Record<string, string>; positional:
     else positional.push(a);
   }
   return { flags, positional };
+}
+
+/**
+ * Normalize a text content payload for machine-friendly stdout.
+ *
+ * Compact MCP responses identify their encoding with `format: <format>\n`.
+ * TOON and JSON are lossless, so decode either one and emit canonical compact
+ * JSON. CSV/TSV are intentionally left untouched because their decoders coerce
+ * values to strings; Markdown is display-only. Unknown markers and malformed
+ * lossless payloads also remain raw so this recovery client never invents a
+ * value or hides the server's response.
+ */
+const FORMAT_MARKER_RE = /^format:\s*(\S+)\r?\n/;
+
+export function normalizeResultText(text: string): string {
+  const marker = FORMAT_MARKER_RE.exec(text);
+  const formatText = marker?.[1];
+  const format: ResultFormat | undefined = formatText && isResultFormat(formatText)
+    ? formatText
+    : marker
+      ? undefined
+      : 'json';
+
+  // Only JSON and TOON preserve the original value exactly. The marker is
+  // retained for lossy/display-only formats so callers can still inspect the
+  // representation they explicitly requested.
+  if (format !== 'json' && format !== 'toon') return text;
+
+  const body = marker ? text.slice(marker[0].length) : text;
+  try {
+    return JSON.stringify(decode(body, format)) ?? 'null';
+  } catch {
+    return text;
+  }
 }
 
 async function main(): Promise<void> {
@@ -185,14 +221,16 @@ async function main(): Promise<void> {
 
   const content = result?.content as { type: string; text: string }[] | undefined;
   if (!flags.raw && Array.isArray(content) && content.length === 1 && content[0]?.type === 'text') {
-    console.log(content[0].text);
+    console.log(normalizeResultText(content[0].text));
   } else {
     console.log(JSON.stringify(result, null, 2));
   }
   if (result?.isError) process.exit(1);
 }
 
-main().catch((e) => {
-  console.error(e instanceof Error ? e.message : String(e));
-  process.exit(1);
-});
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
+  main().catch((e) => {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  });
+}
