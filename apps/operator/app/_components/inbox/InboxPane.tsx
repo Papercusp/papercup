@@ -121,6 +121,7 @@ const BULK_OUTCOME_LABEL: Record<string, string> = {
   recommended: 'for review',
   skipped: 'skipped',
   failed: 'failed',
+  dismissed: 'dismissed',
 };
 
 const FILTER_LABEL: Record<InboxFilter, string> = {

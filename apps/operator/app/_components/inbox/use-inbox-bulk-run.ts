@@ -57,7 +57,8 @@ export type BulkItemOutcome =
   | "auto_resolved"
   | "recommended"
   | "skipped"
-  | "failed";
+  | "failed"
+  | "dismissed";
 
 /** The run row as the sync query returns it (`BulkRunRow` on the wire). */
 export interface BulkRun {
@@ -129,6 +130,7 @@ export interface BulkRunState {
 export interface StartResult {
   ok: boolean;
   runId?: string;
+  phase?: BulkRunPhase | null;
   launched?: boolean;
   launchError?: string;
   preservedOutcomes?: number;
@@ -184,7 +186,7 @@ export function deriveRunCounts(
   for (const i of items) {
     if (i.outcome === "auto_resolved") resolved += 1;
     else if (i.outcome === "recommended") forReview += 1;
-    else if (i.outcome === "skipped") skipped += 1;
+    else if (i.outcome === "skipped" || i.outcome === "dismissed") skipped += 1;
     else if (i.outcome === "failed") failed += 1;
   }
   // `totalItems` is authoritative for the DENOMINATOR even when rows are still
@@ -286,7 +288,14 @@ export function useBulkRunOps(): {
   ) => Promise<StartResult>;
   stop: (runId: string) => Promise<void>;
   restart: (runId: string) => Promise<StartResult>;
+  resume: (runId: string, itemIds: readonly string[]) => Promise<StartResult>;
   dismiss: (runId: string) => Promise<void>;
+  dismissItem: (
+    runId: string,
+    itemId: string,
+    note?: string | null,
+  ) => Promise<BulkAcceptResult>;
+  reconcileItem: (runId: string, itemId: string) => Promise<BulkAcceptResult>;
   acceptRecommendation: (
     runId: string,
     item: AttentionItem,
@@ -353,6 +362,98 @@ export function useBulkRunOps(): {
     await postOp({ op: "dismiss", runId });
   }, []);
 
+  const resume = useCallback(
+    async (
+      runId: string,
+      rawItemIds: readonly string[],
+    ): Promise<StartResult> => {
+      const itemIds = [
+        ...new Set(rawItemIds.map((id) => id.trim()).filter(Boolean)),
+      ];
+      try {
+        const json = await postOp({ op: "resume", runId, itemIds });
+        return {
+          ok: true,
+          runId,
+          phase:
+            typeof json.phase === "string"
+              ? (json.phase as BulkRunPhase)
+              : json.phase === null
+                ? null
+                : undefined,
+          launched: json.launched === true,
+          launchError:
+            typeof json.launchError === "string" ? json.launchError : undefined,
+          preservedOutcomes:
+            typeof json.preservedOutcomes === "number"
+              ? json.preservedOutcomes
+              : undefined,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
+  const dismissItem = useCallback(
+    async (
+      runId: string,
+      itemId: string,
+      note?: string | null,
+    ): Promise<BulkAcceptResult> => {
+      try {
+        const json = await postOp({
+          op: "dismiss-item",
+          runId,
+          itemId,
+          note: note ?? null,
+        });
+        return {
+          ok: true,
+          phase:
+            typeof json.phase === "string"
+              ? (json.phase as BulkRunPhase)
+              : json.phase === null
+                ? null
+                : undefined,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
+  const reconcileItem = useCallback(
+    async (runId: string, itemId: string): Promise<BulkAcceptResult> => {
+      try {
+        const json = await postOp({ op: "reconcile-item", runId, itemId });
+        return {
+          ok: true,
+          phase:
+            typeof json.phase === "string"
+              ? (json.phase as BulkRunPhase)
+              : json.phase === null
+                ? null
+                : undefined,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
   const acceptRecommendation = useCallback(
     async (runId: string, item: AttentionItem, rec: BulkRunItem) => {
       const actionId = rec.actionId;
@@ -410,5 +511,14 @@ export function useBulkRunOps(): {
     [],
   );
 
-  return { start, stop, restart, dismiss, acceptRecommendation };
+  return {
+    start,
+    stop,
+    restart,
+    resume,
+    dismiss,
+    dismissItem,
+    reconcileItem,
+    acceptRecommendation,
+  };
 }

@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   createRun: vi.fn(),
   failRunIfExecuting: vi.fn(),
+  getRun: vi.fn(),
   restartRun: vi.fn(),
   resumeReviewRun: vi.fn(),
   markItemAccepted: vi.fn(),
@@ -41,6 +42,7 @@ vi.mock('../../attention/bulk-run-store', () => {
     BulkRunAlreadyActiveError,
     createRun: (...args: unknown[]) => h.createRun(...args),
     failRunIfExecuting: (...args: unknown[]) => h.failRunIfExecuting(...args),
+    getRun: (...args: unknown[]) => h.getRun(...args),
     restartRun: (...args: unknown[]) => h.restartRun(...args),
     resumeReviewRun: (...args: unknown[]) => h.resumeReviewRun(...args),
     markItemAccepted: (...args: unknown[]) => h.markItemAccepted(...args),
@@ -142,6 +144,7 @@ function expectPinnedBeforeSpawn(owner: string): void {
 beforeEach(() => {
   vi.clearAllMocks();
   h.createRun.mockResolvedValue({ ...baseRun });
+  h.getRun.mockResolvedValue({ ...baseRun, phase: 'review' });
   h.setRunPhase.mockImplementation(async (input: { phase: string; resolverOwner?: string }) => ({
     ...baseRun,
     phase: input.phase,
@@ -202,10 +205,7 @@ describe('Inbox bulk-resolver owner lifecycle', () => {
       preservedOutcomes: 1,
     });
 
-    const response = await handler(
-      post('/api/admin/attention-bulk-resolve', { op: 'restart', runId: 'run-1' }),
-      ctx(),
-    );
+    const response = await handler(post('/api/admin/attention-bulk-resolve', { op: 'restart', runId: 'run-1' }), ctx());
 
     expect(response.status).toBe(200);
     const owner = spawnedOwner();
@@ -249,9 +249,7 @@ describe('Inbox bulk-resolver owner lifecycle', () => {
       itemId: 'item-1',
       note: 'Owner deliberately declined this row',
     });
-    expect(h.markItemDismissed.mock.invocationCallOrder[0]).toBeLessThan(
-      h.settleRunPhase.mock.invocationCallOrder[0]!,
-    );
+    expect(h.markItemDismissed.mock.invocationCallOrder[0]).toBeLessThan(h.settleRunPhase.mock.invocationCallOrder[0]!);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       itemId: 'item-1',
@@ -277,9 +275,7 @@ describe('Inbox bulk-resolver owner lifecycle', () => {
       actionId: 'manual',
       note: 'Owner rechecked the live source after resolving it manually',
     });
-    expect(h.markItemAccepted.mock.invocationCallOrder[0]).toBeLessThan(
-      h.settleRunPhase.mock.invocationCallOrder[0]!,
-    );
+    expect(h.markItemAccepted.mock.invocationCallOrder[0]).toBeLessThan(h.settleRunPhase.mock.invocationCallOrder[0]!);
     await expect(response.json()).resolves.toMatchObject({
       ok: true,
       itemId: 'item-1',
@@ -303,6 +299,25 @@ describe('Inbox bulk-resolver owner lifecycle', () => {
     await expect(response.json()).resolves.toMatchObject({
       error: { code: 'review_item_not_actionable' },
     });
+  });
+
+  it('preserves review when a legacy client dismisses only the report view', async () => {
+    const response = await handler(
+      post('/api/admin/attention-bulk-resolve', {
+        op: 'dismiss',
+        runId: 'run-1',
+      }),
+      ctx(),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      phase: 'review',
+      dismissed: true,
+      reviewPreserved: true,
+    });
+    expect(h.setRunPhase).not.toHaveBeenCalled();
+    expect(h.settleRunPhase).not.toHaveBeenCalled();
   });
 });
 

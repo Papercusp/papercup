@@ -45,16 +45,14 @@ import { FLAGS } from '@papercusp/flags';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { gateApiRoute } from '../../../require-flag';
 import { buildAgentLaunchCommand } from '../../../agent-launch-core';
-import {
-  resolveBulkResolverLaunch,
-  type EffectiveBulkResolverLaunch,
-} from '../../../agent-config-constants';
+import { resolveBulkResolverLaunch, type EffectiveBulkResolverLaunch } from '../../../agent-config-constants';
 import type { SpawnConsoleResult } from '../../../console-spawn';
 import { operatorHomeHarnessSlug } from '../../../harness/operator-home-harness';
 import {
   BulkRunAlreadyActiveError,
   createRun,
   failRunIfExecuting,
+  getRun,
   restartRun,
   resumeReviewRun,
   markItemAccepted,
@@ -139,7 +137,7 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     '- If you must give up, inbox:bulk-run-settle { failed: true, error } so the owner sees why.',
     '',
     'STOPPING (WI-41022) — Stop is authoritative at the bulk-run-act boundary:',
-    '- Every manifest/action/report call refreshes this resolver owner\'s run heartbeat. Re-read the',
+    "- Every manifest/action/report call refreshes this resolver owner's run heartbeat. Re-read the",
     '  manifest before each batch; that is both the authority check and the liveness cadence.',
     '- The manifest carries `stopped`. Re-read the manifest before each BATCH of terminal actions,',
     '  and the moment `stopped` is true, HALT: take no further terminal action on any item, do not',
@@ -232,9 +230,7 @@ export function resolvePersistedResolverLaunch(snapshot: BulkRunLaunchSnapshot) 
   });
 }
 
-export type ResolverSpawnOutcome =
-  | { ok: true; sessionId: string; child: ChildProcess }
-  | { ok: false; error: string };
+export type ResolverSpawnOutcome = { ok: true; sessionId: string; child: ChildProcess } | { ok: false; error: string };
 
 /**
  * Translate the spawner's discriminated result instead of treating "the call
@@ -242,10 +238,7 @@ export type ResolverSpawnOutcome =
  * `sessionId` property from BOTH result variants and returning ok:true even when
  * spawnHeadless had explicitly returned status:'error'.
  */
-export function resolverSpawnOutcome(
-  result: SpawnConsoleResult,
-  resolverOwner: string,
-): ResolverSpawnOutcome {
+export function resolverSpawnOutcome(result: SpawnConsoleResult, resolverOwner: string): ResolverSpawnOutcome {
   if (result.status !== 'ok') return { ok: false, error: result.error };
   if (!result.child) {
     return {
@@ -379,12 +372,17 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
     }
 
     if (op === 'dismiss') {
-      // The owner is done with the review list. The run closes; the items it
-      // recommended stay recommended in the record (nothing is retro-resolved),
-      // and every one of them is still resolvable by hand in the pane.
-      const run = await setRunPhase({ runId, phase: 'complete' });
-      await invalidateBulkRun();
-      return Response.json({ ok: true, runId, phase: run?.phase ?? null, dismissed: true });
+      // Legacy close-view op. Never force `complete` over unresolved rows:
+      // current clients clear the report URL locally, while old clients get a
+      // success response that preserves the honest review phase.
+      const run = await getRun(runId);
+      return Response.json({
+        ok: true,
+        runId,
+        phase: run?.phase ?? null,
+        dismissed: true,
+        reviewPreserved: true,
+      });
     }
 
     if (op === 'restart') {
@@ -395,9 +393,10 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
           {
             error: {
               code: restarted.reason,
-              message: restarted.reason === 'run_not_found'
-                ? `bulk-resolve run ${runId} was not found`
-                : `bulk-resolve run ${runId} is still healthy or no longer restartable`,
+              message:
+                restarted.reason === 'run_not_found'
+                  ? `bulk-resolve run ${runId} was not found`
+                  : `bulk-resolve run ${runId} is still healthy or no longer restartable`,
               runId,
               phase: restarted.phase,
             },
@@ -458,21 +457,55 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       const resumed = await resumeReviewRun({ runId, itemIds, resolverOwner });
       if (!resumed.ok) {
         return Response.json(
-          { error: { code: resumed.reason, message: `bulk-resolve run ${runId} could not resume selected review rows`, runId, phase: resumed.phase } },
+          {
+            error: {
+              code: resumed.reason,
+              message: `bulk-resolve run ${runId} could not resume selected review rows`,
+              runId,
+              phase: resumed.phase,
+            },
+          },
           { status: resumed.reason === 'run_not_found' ? 404 : 409 },
         );
       }
       const launch = resolvePersistedResolverLaunch(resumed.run.launchSnapshot);
       if (!launch.ok || !launch.effective) {
-        await setRunPhase({ runId, phase: 'failed', error: launch.message ?? 'persisted launch settings are no longer valid' });
+        await setRunPhase({
+          runId,
+          phase: 'failed',
+          error: launch.message ?? 'persisted launch settings are no longer valid',
+        });
         await invalidateBulkRun();
-        return Response.json({ error: { code: 'invalid_persisted_launch_settings', message: launch.message, runId } }, { status: 409 });
+        return Response.json(
+          { error: { code: 'invalid_persisted_launch_settings', message: launch.message, runId } },
+          { status: 409 },
+        );
       }
-      const launched = await launchResolver(runId, resumed.run.totalItems, resumed.run.harnessSlug, launch.effective, resolverOwner);
+      const launched = await launchResolver(
+        runId,
+        resumed.run.totalItems,
+        resumed.run.harnessSlug,
+        launch.effective,
+        resolverOwner,
+      );
       const phase = launched.ok ? 'running' : 'failed';
-      await setRunPhase({ runId, phase, resolverOwner, ...(launched.ok ? {} : { error: launched.error ?? 'resume launch failed' }) });
+      await setRunPhase({
+        runId,
+        phase,
+        resolverOwner,
+        ...(launched.ok ? {} : { error: launched.error ?? 'resume launch failed' }),
+      });
       await invalidateBulkRun();
-      return Response.json({ ok: true, runId, phase, resumed: true, launched: launched.ok, requeuedIds: resumed.requeuedIds, preservedOutcomes: resumed.preservedOutcomes, ...(launched.ok ? {} : { launchError: launched.error }) });
+      return Response.json({
+        ok: true,
+        runId,
+        phase,
+        resumed: true,
+        launched: launched.ok,
+        requeuedIds: resumed.requeuedIds,
+        preservedOutcomes: resumed.preservedOutcomes,
+        ...(launched.ok ? {} : { launchError: launched.error }),
+      });
     }
 
     if (op === 'accept') {
@@ -527,14 +560,15 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       // resolution has already succeeded on the source surface before
       // `reconcile-item` is offered; `dismiss-item` deliberately declines only
       // this unresolved review row. Neither path dispatches a source action.
-      const item = op === 'dismiss-item'
-        ? await markItemDismissed({ runId, itemId, note })
-        : await markItemAccepted({
-            runId,
-            itemId,
-            actionId: 'manual',
-            note: note ?? 'Owner rechecked the live source after resolving it manually',
-          });
+      const item =
+        op === 'dismiss-item'
+          ? await markItemDismissed({ runId, itemId, note })
+          : await markItemAccepted({
+              runId,
+              itemId,
+              actionId: 'manual',
+              note: note ?? 'Owner rechecked the live source after resolving it manually',
+            });
       if (!item) {
         return Response.json(
           {
@@ -657,13 +691,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
 
     const resolverOwner = `su-${randomUUID()}`;
     await setRunPhase({ runId: run.runId, phase: 'pending', resolverOwner });
-    const launched = await launchResolver(
-      run.runId,
-      items.length,
-      harness,
-      preflight.launch,
-      resolverOwner,
-    );
+    const launched = await launchResolver(run.runId, items.length, harness, preflight.launch, resolverOwner);
     if (launched.ok) {
       await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner });
     } else {

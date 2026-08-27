@@ -47,6 +47,32 @@
   color: var(--fg-mute);
 }
 
+.inbox-bulk-report__recovery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.inbox-bulk-report__recovery button {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 5px 10px;
+  color: var(--fg);
+  background: var(--bg-elevated);
+  cursor: pointer;
+}
+
+.inbox-bulk-report__recovery button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.inbox-bulk-report__recovery button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
 .inbox-bulk-report__loading {
   display: flex;
   min-height: 100%;

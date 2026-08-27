@@ -503,6 +503,59 @@ describe("acceptRecommendation — resolve FIRST, record SECOND", () => {
     });
   });
 
+  it("routes selected retry, per-row dismissal, and source reconciliation through the owner endpoint", async () => {
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          phase: "running",
+          launched: true,
+          preservedOutcomes: 13,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, phase: "review", dismissed: true }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, phase: "complete", reconciled: true }),
+      });
+    const ops = useOps();
+
+    await expect(
+      ops().resume("run-1", [" item-a ", "item-a"]),
+    ).resolves.toMatchObject({
+      ok: true,
+      phase: "running",
+      launched: true,
+      preservedOutcomes: 13,
+    });
+    await expect(
+      ops().dismissItem("run-1", "item-b", "Owner declined it"),
+    ).resolves.toEqual({ ok: true, phase: "review" });
+    await expect(ops().reconcileItem("run-1", "item-c")).resolves.toEqual({
+      ok: true,
+      phase: "complete",
+    });
+
+    expect(
+      fetchMock.mock.calls
+        .slice(-3)
+        .map((call) => JSON.parse(call[1].body as string)),
+    ).toEqual([
+      { op: "resume", runId: "run-1", itemIds: ["item-a"] },
+      {
+        op: "dismiss-item",
+        runId: "run-1",
+        itemId: "item-b",
+        note: "Owner declined it",
+      },
+      { op: "reconcile-item", runId: "run-1", itemId: "item-c" },
+    ]);
+  });
+
   it("dispatches resolveAttentionAction, THEN records the acceptance", async () => {
     H.resolveAttentionAction.mockResolvedValue({ resolved: true });
     const ops = useOps();

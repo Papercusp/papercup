@@ -129,12 +129,13 @@ function actionLabel(
 function reviewStatus(
   runItem: BulkRunItem,
   locallyApplied: ReadonlySet<string>,
+  locallyDismissed: ReadonlySet<string>,
 ): ReviewRowStatus {
   if (locallyApplied.has(runItem.itemId) || runItem.outcome === "auto_resolved")
     return "applied";
-  if (runItem.outcome === "recommended" || runItem.outcome === "pending")
-    return "pending";
-  return "dismissed";
+  if (locallyDismissed.has(runItem.itemId) || runItem.outcome === "dismissed")
+    return "dismissed";
+  return "pending";
 }
 
 function evidenceLines(runItem: BulkRunItem): string[] {
@@ -175,6 +176,7 @@ export function buildInboxBulkReviewGroups(
   attentionById: ReadonlyMap<string, AttentionItem>,
   locallyApplied: ReadonlySet<string> = new Set(),
   localErrors: ReadonlyMap<string, string> = new Map(),
+  locallyDismissed: ReadonlySet<string> = new Set(),
   detailFor?: (item: AttentionItem, runItem: BulkRunItem) => ReactNode,
 ): ReviewReportGroup[] {
   const grouped = new Map<string, ReviewReportGroup>();
@@ -198,7 +200,7 @@ export function buildInboxBulkReviewGroups(
       grouped.set(groupId, group);
     }
 
-    const status = reviewStatus(runItem, locallyApplied);
+    const status = reviewStatus(runItem, locallyApplied, locallyDismissed);
     const localError = localErrors.get(runItem.itemId);
     const hasAction =
       Boolean(runItem.actionId) &&
@@ -221,10 +223,7 @@ export function buildInboxBulkReviewGroups(
         Boolean(item),
       error: localError,
       detail:
-        status === "pending" &&
-        runItem.outcome === "recommended" &&
-        item &&
-        detailFor
+        status === "pending" && item && detailFor
           ? detailFor(item, runItem)
           : fallbackDetail(runItem),
     };
@@ -243,6 +242,61 @@ interface HydratedRecommendationProps {
     draftOverride: string | null,
   ) => Promise<{ ok: boolean; error?: string }>;
   onDiscuss?: (item: AttentionItem) => void;
+  onRetry: () => void;
+  onDismiss: () => void;
+  onReconcile: () => void;
+}
+
+function InboxBulkRecoveryActions({
+  item,
+  busy,
+  sourceMissing,
+  onOpen,
+  onRetry,
+  onDismiss,
+  onReconcile,
+}: {
+  item: BulkRunItem;
+  busy: boolean;
+  sourceMissing: boolean;
+  onOpen?: () => void;
+  onRetry: () => void;
+  onDismiss: () => void;
+  onReconcile: () => void;
+}) {
+  return (
+    <div className="inbox-bulk-report__recovery">
+      <button type="button" disabled={busy || !onOpen} onClick={onOpen}>
+        Open source
+      </button>
+      <button
+        type="button"
+        data-testid={`inbox-bulk-retry-${item.itemId}`}
+        disabled={busy}
+        onClick={onRetry}
+      >
+        Retry
+      </button>
+      {sourceMissing ? (
+        <button
+          type="button"
+          data-testid={`inbox-bulk-reconcile-${item.itemId}`}
+          disabled={busy}
+          onClick={onReconcile}
+        >
+          Mark resolved
+        </button>
+      ) : null}
+      <button
+        type="button"
+        data-testid={`inbox-bulk-dismiss-item-${item.itemId}`}
+        disabled={busy}
+        onClick={onDismiss}
+      >
+        Dismiss item
+      </button>
+    </div>
+  );
 }
 
 function HydratedRecommendation({
@@ -251,44 +305,76 @@ function HydratedRecommendation({
   busy,
   onAccept,
   onDiscuss,
+  onRetry,
+  onDismiss,
+  onReconcile,
 }: HydratedRecommendationProps) {
   const detail = usePlanAttentionItem(listItem.id);
+  const actions = (sourceMissing: boolean, openItem?: AttentionItem) => (
+    <InboxBulkRecoveryActions
+      item={runItem}
+      busy={busy}
+      sourceMissing={sourceMissing}
+      onOpen={onDiscuss && openItem ? () => onDiscuss(openItem) : undefined}
+      onRetry={onRetry}
+      onDismiss={onDismiss}
+      onReconcile={onReconcile}
+    />
+  );
   if (detail.loading) {
     return (
-      <span
-        className="inbox-bulk-report__detail-loading"
-        role="status"
-        aria-live="polite"
-      >
-        Loading this item&rsquo;s live options…
-      </span>
+      <>
+        <span
+          className="inbox-bulk-report__detail-loading"
+          role="status"
+          aria-live="polite"
+        >
+          Loading this item&rsquo;s live options…
+        </span>
+        {actions(false, listItem)}
+      </>
     );
   }
   if (detail.error) {
     return (
-      <span className="inbox-bulk-report__detail-loading" role="alert">
-        Could not load this item&rsquo;s current options: {detail.error}
-      </span>
+      <>
+        <span className="inbox-bulk-report__detail-loading" role="alert">
+          Could not load this item&rsquo;s current options: {detail.error}
+        </span>
+        {actions(false, listItem)}
+      </>
     );
   }
   if (!detail.data) {
     return (
-      <span className="inbox-bulk-report__detail-loading" role="alert">
-        This item is no longer available in the live Inbox. Nothing was applied;
-        resolve it from the current Inbox if it reappears.
-      </span>
+      <>
+        <span className="inbox-bulk-report__detail-loading" role="status">
+          This item is no longer available in the live Inbox. If you resolved it
+          manually, mark it resolved here; otherwise Retry or dismiss it.
+        </span>
+        {actions(true, listItem)}
+      </>
     );
   }
 
   const hydratedItem = { ...listItem, ...detail.data };
   return (
-    <InboxBulkRecommendation
-      item={hydratedItem}
-      rec={runItem}
-      busy={busy}
-      onAccept={(draftOverride) => onAccept(hydratedItem, draftOverride)}
-      onDiscuss={onDiscuss ? () => onDiscuss(hydratedItem) : undefined}
-    />
+    <>
+      {runItem.outcome === "recommended" ? (
+        <InboxBulkRecommendation
+          item={hydratedItem}
+          rec={runItem}
+          busy={busy}
+          onAccept={(draftOverride) => onAccept(hydratedItem, draftOverride)}
+          onDiscuss={onDiscuss ? () => onDiscuss(hydratedItem) : undefined}
+        />
+      ) : (
+        <span className="inbox-bulk-report__detail-loading">
+          {fallbackDetail(runItem)}
+        </span>
+      )}
+      {actions(false, hydratedItem)}
+    </>
   );
 }
 
@@ -327,10 +413,14 @@ export default function InboxBulkReport({
   onOpenThread,
   onClose,
 }: InboxBulkReportProps) {
-  const { acceptRecommendation, dismiss } = useBulkRunOps();
+  const { acceptRecommendation, dismissItem, reconcileItem, resume } =
+    useBulkRunOps();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [locallyApplied, setLocallyApplied] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [locallyDismissed, setLocallyDismissed] = useState<Set<string>>(
     () => new Set(),
   );
   const [localErrors, setLocalErrors] = useState<Map<string, string>>(
@@ -404,6 +494,96 @@ export default function InboxBulkReport({
     [applyRecommendation, busy, onClose],
   );
 
+  const clearItemError = useCallback((itemId: string) => {
+    setLocalErrors((previous) => {
+      if (!previous.has(itemId)) return previous;
+      const next = new Map(previous);
+      next.delete(itemId);
+      return next;
+    });
+  }, []);
+
+  const retryItem = useCallback(
+    async (runItem: BulkRunItem) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const result = await resume(run.runId, [runItem.itemId]);
+        if (!result.ok) {
+          setLocalErrors((previous) =>
+            new Map(previous).set(
+              runItem.itemId,
+              result.error ?? "The resolver could not retry this item.",
+            ),
+          );
+          return;
+        }
+        clearItemError(runItem.itemId);
+        onClose();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, clearItemError, onClose, resume, run.runId],
+  );
+
+  const dismissOne = useCallback(
+    async (runItem: BulkRunItem) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const result = await dismissItem(
+          run.runId,
+          runItem.itemId,
+          "Owner dismissed this item from the grouped recovery report",
+        );
+        if (!result.ok) {
+          setLocalErrors((previous) =>
+            new Map(previous).set(
+              runItem.itemId,
+              result.error ?? "The item could not be dismissed.",
+            ),
+          );
+          return;
+        }
+        clearItemError(runItem.itemId);
+        setLocallyDismissed((previous) =>
+          new Set(previous).add(runItem.itemId),
+        );
+        if (result.phase === "complete") onClose();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, clearItemError, dismissItem, onClose, run.runId],
+  );
+
+  const reconcileOne = useCallback(
+    async (runItem: BulkRunItem) => {
+      if (busy) return;
+      setBusy(true);
+      try {
+        const result = await reconcileItem(run.runId, runItem.itemId);
+        if (!result.ok) {
+          setLocalErrors((previous) =>
+            new Map(previous).set(
+              runItem.itemId,
+              result.error ??
+                "The manual source resolution could not be recorded.",
+            ),
+          );
+          return;
+        }
+        clearItemError(runItem.itemId);
+        setLocallyApplied((previous) => new Set(previous).add(runItem.itemId));
+        if (result.phase === "complete") onClose();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, clearItemError, onClose, reconcileItem, run.runId],
+  );
+
   const groups = useMemo(
     () =>
       buildInboxBulkReviewGroups(
@@ -411,6 +591,7 @@ export default function InboxBulkReport({
         attentionById,
         locallyApplied,
         localErrors,
+        locallyDismissed,
         (item, runItem) => (
           <InboxBulkRecommendationDetail
             key={runItem.itemId}
@@ -421,6 +602,9 @@ export default function InboxBulkReport({
               acceptSingle(hydratedItem, runItem, draftOverride)
             }
             onDiscuss={onOpenThread}
+            onRetry={() => void retryItem(runItem)}
+            onDismiss={() => void dismissOne(runItem)}
+            onReconcile={() => void reconcileOne(runItem)}
           />
         ),
       ),
@@ -429,8 +613,12 @@ export default function InboxBulkReport({
       attentionById,
       locallyApplied,
       localErrors,
+      locallyDismissed,
       busy,
       acceptSingle,
+      retryItem,
+      dismissOne,
+      reconcileOne,
       onOpenThread,
     ],
   );
@@ -469,20 +657,6 @@ export default function InboxBulkReport({
     [applyRecommendation, attentionById, busy, onClose, runItemById],
   );
 
-  const onDismiss = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      await dismiss(run.runId);
-      onClose();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, dismiss, onClose, run.runId]);
-
   const counts = deriveRunCounts(runItems, run);
   return (
     <ReviewReportShell
@@ -505,16 +679,17 @@ export default function InboxBulkReport({
       groups={groups}
       busy={busy}
       applyLabel="Apply selected"
-      dismissLabel="Dismiss"
+      dismissLabel="Close"
       onApply={(ids) => void onApply(ids)}
-      onDismiss={() => void onDismiss()}
+      onDismiss={onClose}
       footer={
         <span>
           <strong>Resolve-first guarantee.</strong> Selected rows dispatch
           through the same live Inbox action path as a hand resolve, then record
           acceptance on the run. A failed resolve stays visible and unrecorded.
           Hover a row—or focus its checkbox—to review the item&rsquo;s current
-          options, edit a drafted reply, or open its discussion.
+          options, edit a drafted reply, open the source, Retry, or dismiss one
+          row deliberately. Closing the report never completes unresolved work.
         </span>
       }
     />

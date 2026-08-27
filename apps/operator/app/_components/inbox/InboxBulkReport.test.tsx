@@ -14,6 +14,9 @@ import type { BulkRun, BulkRunItem } from "./use-inbox-bulk-run";
 const H = vi.hoisted(() => ({
   accept: vi.fn(),
   dismiss: vi.fn(),
+  resume: vi.fn(),
+  dismissItem: vi.fn(),
+  reconcileItem: vi.fn(),
   detail: vi.fn(),
   details: new Map<string, AttentionItem>(),
 }));
@@ -25,6 +28,9 @@ vi.mock("./use-inbox-bulk-run", async (importOriginal) => {
     useBulkRunOps: () => ({
       acceptRecommendation: H.accept,
       dismiss: H.dismiss,
+      resume: H.resume,
+      dismissItem: H.dismissItem,
+      reconcileItem: H.reconcileItem,
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -148,6 +154,9 @@ const run: BulkRun = {
 };
 
 beforeEach(() => {
+  H.resume.mockResolvedValue({ ok: true, phase: "running", launched: true });
+  H.dismissItem.mockResolvedValue({ ok: true, phase: "review" });
+  H.reconcileItem.mockResolvedValue({ ok: true, phase: "review" });
   H.details.clear();
   H.details.set("a", attention("a"));
   H.details.set("b", attention("b"));
@@ -228,7 +237,7 @@ describe("buildInboxBulkReviewGroups", () => {
     });
     expect(
       groups.find((group) => group.title === "Skipped · Escalation")?.rows[0],
-    ).toMatchObject({ status: "dismissed", selectable: false });
+    ).toMatchObject({ status: "pending", selectable: false });
   });
 
   it("keeps only a non-empty drafted Answer selectable among navigate actions", () => {
@@ -350,11 +359,61 @@ describe("<InboxBulkReport>", () => {
     );
 
     fireEvent.pointerEnter(screen.getByTestId("review-row-a"));
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain(
-      "no longer available in the live Inbox",
-    );
+    expect(
+      screen.getByText(/no longer available in the live Inbox/),
+    ).toBeTruthy();
     expect(screen.queryByTestId("recommendation-a")).toBeNull();
+  });
+
+  it("reconciles a manual source action only after the live item disappears", async () => {
+    H.details.delete("a");
+    render(
+      <InboxBulkReport run={run} runItems={[runItem()]} onClose={vi.fn()} />,
+    );
+    fireEvent.pointerEnter(screen.getByTestId("review-row-a"));
+    fireEvent.click(screen.getByTestId("inbox-bulk-reconcile-a"));
+
+    await waitFor(() =>
+      expect(H.reconcileItem).toHaveBeenCalledWith("run-8", "a"),
+    );
+    expect(screen.getByTestId("review-row-mark-a").textContent).toBe("✓");
+  });
+
+  it("retries or dismisses an unresolved skipped row without hiding it implicitly", async () => {
+    const skipped = runItem({ outcome: "skipped", actionId: null });
+    const onClose = vi.fn();
+    const { rerender } = render(
+      <InboxBulkReport run={run} runItems={[skipped]} onClose={onClose} />,
+    );
+    fireEvent.focus(screen.getByTestId("review-row-a"));
+    fireEvent.click(screen.getByTestId("inbox-bulk-retry-a"));
+    await waitFor(() => expect(H.resume).toHaveBeenCalledWith("run-8", ["a"]));
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    onClose.mockClear();
+    rerender(
+      <InboxBulkReport run={run} runItems={[skipped]} onClose={onClose} />,
+    );
+    fireEvent.focus(screen.getByTestId("review-row-a"));
+    fireEvent.click(screen.getByTestId("inbox-bulk-dismiss-item-a"));
+    await waitFor(() =>
+      expect(H.dismissItem).toHaveBeenCalledWith(
+        "run-8",
+        "a",
+        "Owner dismissed this item from the grouped recovery report",
+      ),
+    );
+    expect(screen.getByTestId("review-row-mark-a").textContent).toBe("—");
+  });
+
+  it("closes only the report view without mutating unresolved rows", () => {
+    const onClose = vi.fn();
+    render(
+      <InboxBulkReport run={run} runItems={[runItem()]} onClose={onClose} />,
+    );
+    fireEvent.click(screen.getByTestId("review-report-dismiss"));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(H.dismiss).not.toHaveBeenCalled();
   });
 
   it("routes inline accept and Discuss through the hydrated current item", async () => {

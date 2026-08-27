@@ -27,21 +27,21 @@
  * resolver could not be launched (the route returns the run either way). Every
  * item stays individually resolvable by hand in both cases.
  */
-import { useCallback, useState } from 'react';
-import { ChevronRight, Loader2, Sparkles, Square, X } from 'lucide-react';
-import type { AttentionItem } from '@/app/admin/plans/plans-api';
+import { useCallback, useState } from "react";
+import { ChevronRight, Loader2, Sparkles, Square, X } from "lucide-react";
+import type { AttentionItem } from "@/app/admin/plans/plans-api";
 import {
   deriveRunCounts,
   useBulkRunOps,
   type BulkRun,
   type BulkRunItem,
   type BulkSeedItem,
-} from './use-inbox-bulk-run';
+} from "./use-inbox-bulk-run";
 import { formatRunElapsed } from "../review-report/bulk-run-time";
 export { formatRunElapsed } from "../review-report/bulk-run-time";
-import BulkResolverSettingsControl from '../bulk-resolver/BulkResolverSettingsControl';
-import { useBulkResolverSettings } from '../bulk-resolver/bulk-resolver-settings';
-import './inbox-bulk.css';
+import BulkResolverSettingsControl from "../bulk-resolver/BulkResolverSettingsControl";
+import { useBulkResolverSettings } from "../bulk-resolver/bulk-resolver-settings";
+import "./inbox-bulk.css";
 
 export interface InboxBulkStripProps {
   /** The pane's CURRENT filtered+sorted set — the exact rows it is showing. */
@@ -83,8 +83,8 @@ export default function InboxBulkStrip({
   onRunStarted,
   onReview,
 }: InboxBulkStripProps) {
-  const { start, stop, restart, dismiss } = useBulkRunOps();
-  const resolverSettings = useBulkResolverSettings('inbox-resolve');
+  const { start, stop, restart } = useBulkRunOps();
+  const resolverSettings = useBulkResolverSettings("inbox-resolve");
   const [starting, setStarting] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -95,21 +95,35 @@ export default function InboxBulkStrip({
     setStarting(true);
     setNotice(null);
     try {
-      const res = await start(toBulkSeed(visible), filterSnapshot, null, resolverSettings.profile);
+      const res = await start(
+        toBulkSeed(visible),
+        filterSnapshot,
+        null,
+        resolverSettings.profile,
+      );
       if (!res.ok) {
-        setNotice(res.error ?? 'could not start the run');
+        setNotice(res.error ?? "could not start the run");
         return;
       }
       if (res.runId) onRunStarted(res.runId);
       // The run row exists either way; only the RESOLVER failed to launch. Say
       // so plainly rather than leaving a run that will never move looking live.
       if (!res.launched) {
-        setNotice(`resolver could not start${res.launchError ? `: ${res.launchError}` : ''}`);
+        setNotice(
+          `resolver could not start${res.launchError ? `: ${res.launchError}` : ""}`,
+        );
       }
     } finally {
       setStarting(false);
     }
-  }, [visible, starting, start, filterSnapshot, onRunStarted, resolverSettings]);
+  }, [
+    visible,
+    starting,
+    start,
+    filterSnapshot,
+    onRunStarted,
+    resolverSettings,
+  ]);
 
   const onRestart = useCallback(async () => {
     if (!run || restarting) return;
@@ -118,11 +132,15 @@ export default function InboxBulkStrip({
     try {
       const result = await restart(run.runId);
       if (!result.ok) {
-        setNotice(result.error ?? 'could not restart the resolver');
+        setNotice(result.error ?? "could not restart the resolver");
       } else if (!result.launched) {
-        setNotice(`resolver could not restart${result.launchError ? `: ${result.launchError}` : ''}`);
+        setNotice(
+          `resolver could not restart${result.launchError ? `: ${result.launchError}` : ""}`,
+        );
       } else {
-        setNotice(`Resolver restarted · ${result.preservedOutcomes ?? 0} completed outcome${result.preservedOutcomes === 1 ? '' : 's'} preserved`);
+        setNotice(
+          `Resolver restarted · ${result.preservedOutcomes ?? 0} completed outcome${result.preservedOutcomes === 1 ? "" : "s"} preserved`,
+        );
       }
     } finally {
       setRestarting(false);
@@ -132,7 +150,10 @@ export default function InboxBulkStrip({
   /* ── RUNNING ─────────────────────────────────────────────────────────── */
   if (isRunning && run) {
     return (
-      <div className="op-inbox__bulk op-inbox__bulk--running" data-testid="inbox-bulk-running">
+      <div
+        className="op-inbox__bulk op-inbox__bulk--running"
+        data-testid="inbox-bulk-running"
+      >
         <BulkResolverSettingsControl
           kind="inbox-resolve"
           settings={resolverSettings}
@@ -165,7 +186,10 @@ export default function InboxBulkStrip({
           aria-valuemax={100}
           aria-label={`Bulk resolve progress: ${counts.decided} of ${counts.total} decided`}
         >
-          <div className="op-inbox__bulk-fill" style={{ width: `${counts.percent}%` }} />
+          <div
+            className="op-inbox__bulk-fill"
+            style={{ width: `${counts.percent}%` }}
+          />
         </div>
         <div className="op-inbox__bulk-counts" data-testid="inbox-bulk-counts">
           <span className="op-inbox__bulk-count op-inbox__bulk-count--good">
@@ -181,7 +205,11 @@ export default function InboxBulkStrip({
             {counts.left} left
           </span>
         </div>
-        {notice ? <div className="op-inbox__bulk-notice" role="status">{notice}</div> : null}
+        {notice ? (
+          <div className="op-inbox__bulk-notice" role="status">
+            {notice}
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -191,24 +219,35 @@ export default function InboxBulkStrip({
     const elapsed = formatRunElapsed(run.startedAt, run.finishedAt);
     const pending = recommendations.length;
     return (
-      <div className="op-inbox__bulk op-inbox__bulk--review" data-testid="inbox-bulk-review">
+      <div
+        className="op-inbox__bulk op-inbox__bulk--review"
+        data-testid="inbox-bulk-review"
+      >
         <BulkResolverSettingsControl
           kind="inbox-resolve"
           settings={resolverSettings}
           effective={run.launchSnapshot ?? {}}
         />
         <div className="op-inbox__bulk-head">
-          <span className="op-inbox__bulk-icon op-inbox__bulk-icon--review" aria-hidden="true">
+          <span
+            className="op-inbox__bulk-icon op-inbox__bulk-icon--review"
+            aria-hidden="true"
+          >
             <Sparkles size={16} />
           </span>
-          <span className="op-inbox__bulk-title" data-testid="inbox-bulk-review-headline">
+          <span
+            className="op-inbox__bulk-title"
+            data-testid="inbox-bulk-review-headline"
+          >
             {pending} need your call · {counts.resolved} auto-resolved
             {/* Items the resolver never reached are named rather than dropped —
                 a run that stopped early must not read as a run that finished. */}
-            {unreached.length > 0 ? ` · ${unreached.length} not reached` : ''}
+            {unreached.length > 0 ? ` · ${unreached.length} not reached` : ""}
           </span>
           <span className="op-inbox__bulk-spacer" />
-          {elapsed ? <span className="op-inbox__bulk-elapsed">run {elapsed}</span> : null}
+          {elapsed ? (
+            <span className="op-inbox__bulk-elapsed">run {elapsed}</span>
+          ) : null}
         </div>
         <div className="op-inbox__bulk-actions">
           <button
@@ -218,21 +257,13 @@ export default function InboxBulkStrip({
             disabled={pending === 0}
             onClick={() => onReview(run.runId)}
           >
-            Review {pending} decision{pending === 1 ? '' : 's'}
+            Review {pending} decision{pending === 1 ? "" : "s"}
             <ChevronRight size={14} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
-            className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
-            data-testid="inbox-bulk-dismiss"
-            onClick={() => void dismiss(run.runId)}
-          >
-            Dismiss
           </button>
         </div>
         <p className="op-inbox__bulk-hint">
-          Each recommendation is pre-picked from that item&rsquo;s real options — open a row to
-          accept, override or edit it.
+          Each recommendation is pre-picked from that item&rsquo;s real options
+          — open a row to accept, override or edit it.
         </p>
       </div>
     );
@@ -242,13 +273,16 @@ export default function InboxBulkStrip({
   const n = visible.length;
   return (
     <div className="op-inbox__bulk-slot">
-      <BulkResolverSettingsControl kind="inbox-resolve" settings={resolverSettings} />
+      <BulkResolverSettingsControl
+        kind="inbox-resolve"
+        settings={resolverSettings}
+      />
       <button
         type="button"
         className="op-inbox__bulk-start"
         data-testid="inbox-bulk-start"
         disabled={n === 0 || starting || !resolverSettings.ready}
-        aria-label={`Bulk resolve ${n} filtered item${n === 1 ? '' : 's'}`}
+        aria-label={`Bulk resolve ${n} filtered item${n === 1 ? "" : "s"}`}
         onClick={() => void onStart()}
       >
         <span className="op-inbox__bulk-icon" aria-hidden="true">
@@ -262,7 +296,9 @@ export default function InboxBulkStrip({
         </span>
         <span className="op-inbox__bulk-start-copy">
           <span className="op-inbox__bulk-start-title">
-            {starting ? 'Starting…' : `Bulk resolve ${n} filtered item${n === 1 ? '' : 's'}`}
+            {starting
+              ? "Starting…"
+              : `Bulk resolve ${n} filtered item${n === 1 ? "" : "s"}`}
           </span>
           <span className="op-inbox__bulk-start-sub">
             Papercup resolves what it can · the rest come back pre-recommended
@@ -273,8 +309,12 @@ export default function InboxBulkStrip({
       {/* A failed run is a real, visible state — not a silent no-op. `error` is
           the run's own recorded reason (a launch failure); `notice` is this
           click's. */}
-      {notice || (run?.phase === 'failed' && run.error) ? (
-        <div className="op-inbox__bulk-notice" role="alert" data-testid="inbox-bulk-notice">
+      {notice || (run?.phase === "failed" && run.error) ? (
+        <div
+          className="op-inbox__bulk-notice"
+          role="alert"
+          data-testid="inbox-bulk-notice"
+        >
           <span>{notice ?? run?.error}</span>
           {notice ? (
             <button
