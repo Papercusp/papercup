@@ -208,6 +208,13 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     expect(timeoutForTool('plans:new')).toBe(PTOOL_PLANS_NEW_TIMEOUT_MS);
+    // EI-21567372634210816: plans:start has a 60s dispatcher default while
+    // ptool's ordinary client deadline is 30s; cover both transport routes.
+    expect(timeoutForTool('plans:start')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'plans:start',
+      args: { slug: 'fleet-worker-lifecycle-convergence-2026-08-26', harness: 'papercusp' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(PTOOL_PLANS_NEW_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('plans:set-plan-status')).toBe(60_000);
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);

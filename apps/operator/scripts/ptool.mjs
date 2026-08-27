@@ -1034,6 +1034,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
   ['plans:new', PTOOL_PLANS_NEW_TIMEOUT_MS],
+  // EI-21567372634210816: plans:start runs the plan-start consult, approval,
+  // idempotent item promotion, exact-plan admission, and claim-spec binding.
+  // Its projected dispatcher defaults to 60s when no timeoutSec is declared;
+  // keep ptool from cutting the request off at its ordinary 30s deadline and
+  // turning a completed-or-in-flight mutation into outcome_unknown.
+  ['plans:start', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21360596114670049: the idempotent plan lifecycle writer evaluates the
   // full completion/audit/spec/rubric gate before taking the plan lock. Under
   // operator pressure that valid pre-write path can outlive the flat 30s
