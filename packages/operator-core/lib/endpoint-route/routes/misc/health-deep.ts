@@ -207,6 +207,129 @@ export function readCpuWorker(): CpuWorkerReading {
   return getCpuWorkerState();
 }
 
+/**
+ * The MCP proxy's OWN local health path. operator-core must not import from
+ * `apps/`, so this literal is a deliberate second copy of
+ * `MCP_PROXY_LOCAL_HEALTH_PATH` (apps/operator/lib/mcp-proxy/budgets.mjs) —
+ * PINNED, not derived: `health-deep-mcp-plane.test.ts` reads that file and fails
+ * if the two ever diverge (the derived-truth ladder's PIN rung).
+ */
+export const MCP_PROXY_HEALTH_PATH = '/__mcp_proxy_health';
+/** Short: the plane is either answering promptly or it is the thing being reported on. */
+export const MCP_PLANE_PROBE_TIMEOUT_MS = 1_500;
+/** Fraction of a class ceiling at which occupancy reads as 'elevated'. */
+export const MCP_PLANE_ELEVATED_UTILIZATION = 0.75;
+
+export type McpPlanePressure = 'ok' | 'elevated' | 'saturated' | 'unknown';
+
+/** Per-class occupancy as the proxy reports it. EVERY field is optional on purpose: a
+ *  running proxy may predate (or postdate) any given field — the deployed one at the time
+ *  of writing had no `criticalContinuationQueue` while the committed source did. */
+export interface McpInFlightSnapshot {
+  total?: number;
+  ordinary?: number;
+  ordinaryCeiling?: number;
+  reservedControlPlane?: number;
+  reservedControlPlaneCeiling?: number;
+  criticalContinuation?: number;
+  criticalContinuationQueue?: { waiting?: number; max?: number; oldestAgeMs?: number | null };
+  maxInFlight?: number;
+  oldestAgeMs?: Record<string, number | null>;
+}
+
+export interface McpPlaneReading {
+  /** 'ok' = proxy answered · 'down' = unreachable/unparseable (that IS the finding). */
+  status: ProbeStatus;
+  latencyMs: number;
+  pressure: McpPlanePressure;
+  detail?: string;
+  inFlight: McpInFlightSnapshot | null;
+}
+
+/**
+ * PURE + unit-tested occupancy verdict.
+ *
+ * ⚠ The `critical-continuation` class is a SINGLE-FLIGHT BULKHEAD: its ceiling is 1, so
+ * 1-of-1 in flight is its NORMAL WORKING STATE, not saturation. It is judged by whether
+ * work is QUEUED behind that one slot — never by the slot being occupied. Counting 1/1 as
+ * saturated would pin this signal permanently red (the live proxy sat at exactly
+ * criticalContinuation:1 while healthy), and a signal that is always red is one readers
+ * learn to ignore — the precise failure this whole probe exists to prevent.
+ */
+export function classifyMcpPressure(f: McpInFlightSnapshot | null): McpPlanePressure {
+  if (!f) return 'unknown';
+  const ratios: number[] = [];
+  const add = (n: unknown, d: unknown): void => {
+    if (typeof n === 'number' && typeof d === 'number' && d > 0) ratios.push(n / d);
+  };
+  add(f.ordinary, f.ordinaryCeiling);
+  add(f.reservedControlPlane, f.reservedControlPlaneCeiling);
+  add(f.total, f.maxInFlight);
+  const q = f.criticalContinuationQueue;
+  if (q && typeof q.waiting === 'number' && q.waiting > 0) {
+    ratios.push(typeof q.max === 'number' && q.max > 0 ? Math.min(1, q.waiting / q.max) : 1);
+  }
+  if (ratios.length === 0) return 'unknown';
+  const peak = Math.max(...ratios);
+  if (peak >= 1) return 'saturated';
+  if (peak >= MCP_PLANE_ELEVATED_UTILIZATION) return 'elevated';
+  return 'ok';
+}
+
+/**
+ * EI-21524598788382723 — the gap this closes. `/api/health` answers 200 in ~4ms and
+ * `/api/health/deep` exercised FIVE subsystems (pg, memory, loop lag, cpu worker, dbos)
+ * while omitting the one plane every agent's every tool call traverses. So the documented
+ * symptom was a green health check beside a plane that was shedding or timing out every
+ * call — an agent reading "health 200" concludes its TOOL is broken and goes and
+ * investigates the wrong subsystem.
+ *
+ * `loopLag` above was added after EI-19285078178745571 (2026-08-01: every MCP call wedged
+ * ~17min while /api/health answered fast) and is the closest prior signal — but it is a
+ * PROXY for this plane, not this plane. The event loop can be perfectly healthy while the
+ * proxy sheds every request on admission: measured 2026-08-27, loopLag read `ok` (p95
+ * 38ms) in the same minutes durability writes were being shed `mcp_proxy_overloaded`.
+ *
+ * Deliberately does NOT gate `ready`/503 — same reasoning the loopLag docstring gives, and
+ * it matters MORE here: shedding is the admission guard WORKING, and a busy proxy flipping
+ * :3070 to 503 would invite a supervisor/deploy health-probe to treat a healthy host as
+ * failed and roll it back. Report-only, additive; every existing leg is unchanged.
+ */
+export async function readMcpPlane(): Promise<McpPlaneReading> {
+  const t0 = Date.now();
+  const port = Number(process.env.PAPERCUSP_MCP_PROXY_PORT ?? 9071);
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}${MCP_PROXY_HEALTH_PATH}`, {
+      signal: AbortSignal.timeout(MCP_PLANE_PROBE_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      return {
+        status: 'down',
+        latencyMs: Date.now() - t0,
+        pressure: 'unknown',
+        inFlight: null,
+        detail: `proxy health returned HTTP ${res.status}`,
+      };
+    }
+    const body = (await res.json()) as { inFlight?: McpInFlightSnapshot } | null;
+    const inFlight = body?.inFlight ?? null;
+    return {
+      status: 'ok',
+      latencyMs: Date.now() - t0,
+      pressure: classifyMcpPressure(inFlight),
+      inFlight,
+    };
+  } catch (err) {
+    return {
+      status: 'down',
+      latencyMs: Date.now() - t0,
+      pressure: 'unknown',
+      inFlight: null,
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 export default defineTool({
   method: 'GET',
   path: '/health/deep',
@@ -219,7 +342,7 @@ export default defineTool({
     const dbosEnabled = dbosLaunchesHere();
     const dbos = dbosStarted();
 
-    const [pg, memory] = await Promise.all([
+    const [pg, memory, mcpPlane] = await Promise.all([
       probeSubsystem(async () => {
         const { getOrgPg } = await import('@papercusp/db-org');
         await getOrgPg().sql`SELECT 1`;
@@ -231,6 +354,9 @@ export default defineTool({
         // NOT the wedge we're guarding against (that HANGS → caught as 'down').
         return avail.ok ? 'ok' : 'disabled';
       }, DEEP_PROBE_TIMEOUT_MS),
+      // Carries its own deadline + never throws, so it needs no probeSubsystem race:
+      // an unreachable proxy IS the reading, not a failed probe.
+      readMcpPlane(),
     ]);
     // Synchronous, cheap (a native histogram read) — no deadline race needed.
     const loopLag = readLoopLag();
@@ -245,7 +371,7 @@ export default defineTool({
     });
 
     return Response.json(
-      { ok: ready, ready, dbos, dbosEnabled, pg, memory, loopLag, cpuWorker, ts: new Date().toISOString() },
+      { ok: ready, ready, dbos, dbosEnabled, pg, memory, loopLag, cpuWorker, mcpPlane, ts: new Date().toISOString() },
       { status: ready ? 200 : 503 },
     );
   },
