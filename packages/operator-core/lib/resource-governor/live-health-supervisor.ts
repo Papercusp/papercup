@@ -13,6 +13,7 @@ import {
   respawnBudgetExhausted,
   type SidecarSpawnPlan,
 } from '../process-supervision/sidecar-spawn-shared';
+import { createTextCollector } from '../child-output';
 import { managedSpawn } from '../task-manager/managed-spawn';
 import { LIVE_HEALTH_MONITOR_READY_PREFIX } from './live-health-monitor-main';
 
@@ -115,7 +116,12 @@ async function spawnMonitor(): Promise<void> {
 
   await new Promise<void>((resolve, reject) => {
     let settled = false;
-    let stdoutBuffer = '';
+    // Boundary-safe: a multi-byte UTF-8 character split across two 'data'
+    // events must not decode to replacement chars. peek() never flushes, so it
+    // is safe to call on every chunk; consumedChars tracks the line-complete
+    // prefix we have already dispatched.
+    const stdoutCollector = createTextCollector();
+    let consumedChars = 0;
     const finish = (error?: Error) => {
       if (settled) return;
       settled = true;
@@ -132,10 +138,12 @@ async function spawnMonitor(): Promise<void> {
       finish(new Error(`live-health monitor did not become ready within ${LIVE_HEALTH_MONITOR_READY_TIMEOUT_MS}ms`));
     }, LIVE_HEALTH_MONITOR_READY_TIMEOUT_MS);
     timeout.unref?.();
-    child.stdout?.on('data', (chunk: Buffer) => {
-      stdoutBuffer += chunk.toString();
-      const lines = stdoutBuffer.split('\n');
-      stdoutBuffer = lines.pop() ?? '';
+    stdoutCollector.attach(child.stdout);
+    child.stdout?.on('data', () => {
+      const all = stdoutCollector.peek();
+      const lines = all.slice(consumedChars).split('\n');
+      const partial = lines.pop() ?? '';
+      consumedChars = all.length - partial.length;
       for (const line of lines) {
         if (line.startsWith(LIVE_HEALTH_MONITOR_READY_PREFIX)) {
           state.ready = true;
