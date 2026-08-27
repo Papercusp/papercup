@@ -1067,6 +1067,37 @@ export interface CheckpointProcessAuthorityReading {
   harness: string | null;
 }
 
+/** An authority reading whose four IDENTITY fields are proven present.
+ *
+ *  The census above only pushes a match after establishing every one of them — a non-empty
+ *  `PAPERCUSP_GATE_VERDICT_*` workspace/harness stamp, a resolvable unified cgroup path, and a
+ *  real pid from the process list — so an `active: true` reading always satisfies this in fact.
+ *  The flat interface cannot express that per-field, which is why the identity fields are typed
+ *  `| null` for the inactive/probe-failed branches that legitimately carry nulls. */
+export type IdentifiedCheckpointProcessAuthority = CheckpointProcessAuthorityReading & {
+  pid: number;
+  cgroupPath: string;
+  workspace: string;
+  harness: string;
+};
+
+/** Narrow a reading to {@link IdentifiedCheckpointProcessAuthority}.
+ *
+ *  Publish `pre_lock_authority` only through this guard. Its contract is that all four fields
+ *  are non-null strings/number, and a reading that fails the guard must OMIT the stamp rather
+ *  than emit a partial one — a `null` coerced into a `string` slot would tell a caller a
+ *  checkpoint process was identified when it was not. */
+export function hasCheckpointProcessAuthorityIdentity(
+  reading: CheckpointProcessAuthorityReading,
+): reading is IdentifiedCheckpointProcessAuthority {
+  return (
+    reading.pid !== null &&
+    reading.cgroupPath !== null &&
+    reading.workspace !== null &&
+    reading.harness !== null
+  );
+}
+
 /** Keep the pre-lock authority read below the status surface's larger probe budget. */
 export const CHECKPOINT_PROCESS_AUTHORITY_PROBE_TIMEOUT_MS = 1_000;
 
@@ -2498,12 +2529,16 @@ export async function launchDetachedCheckpoint(
         active: true,
         unit,
         systemd: active.systemd,
-        pre_lock_authority: {
-          workspace: authority.workspace,
-          harness: authority.harness,
-          cgroup_path: authority.cgroupPath,
-          pid: authority.pid,
-        },
+        ...(hasCheckpointProcessAuthorityIdentity(authority)
+          ? {
+              pre_lock_authority: {
+                workspace: authority.workspace,
+                harness: authority.harness,
+                cgroup_path: authority.cgroupPath,
+                pid: authority.pid,
+              },
+            }
+          : {}),
         candidate: null,
         candidate_stale: false,
         started_at: startedAt,

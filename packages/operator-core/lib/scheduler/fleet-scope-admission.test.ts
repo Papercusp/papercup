@@ -10,6 +10,22 @@ import {
   matchesClaimSpecFilter,
   type ClaimSpecSubject,
 } from './claim-spec-match';
+/** The all-zero `IssueClaimExclusionBreakdown.queueControl` axis-set. Declared ONCE so the
+ *  breakdown fixtures below stay type-complete against the real interface: `queueControl` is
+ *  REQUIRED (get-next.ts), and these fixtures assert floor/exclusion behaviour, for which every
+ *  queue-control axis is deliberately empty. A fixture that genuinely exercises an axis should
+ *  spread this and override just that field, so a NEW axis added to the interface strands one
+ *  declaration here rather than every call site. */
+const ZERO_QUEUE_CONTROL = {
+  activeClaims: 0,
+  rawClaimHolds: 0,
+  holdOpenLeases: 0,
+  durableParks: 0,
+  unattributedClaimHolds: 0,
+  pendingAgentReview: 0,
+  revisionRequestedAgentReview: 0,
+};
+
 const admissionMocks = vi.hoisted(() => ({
   getClaimSpecRecord: vi.fn(),
   latestFleetMembership: vi.fn(),
@@ -770,6 +786,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       matchedByFilter: 302,
       claimable: 0,
       affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
+      queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
         taken: 0,
         claimHold: 33,
@@ -874,6 +891,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         matchedByFilter: 2,
         claimable: 0,
         affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
+        queueControl: ZERO_QUEUE_CONTROL,
         excluded: {
           taken: 0,
           claimHold: 0,
@@ -966,6 +984,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       matchedByFilter: 0,
       claimable: 0,
       affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
+      queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
         taken: 0,
         claimHold: 0,
@@ -1152,6 +1171,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       matchedByFilter: 0,
       claimable: 0,
       affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
+      queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
         taken: 0,
         claimHold: 0,
@@ -1270,6 +1290,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       matchedByFilter: 0,
       claimable: 0,
       affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
+      queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
         taken: 0,
         claimHold: 0,
@@ -1397,6 +1418,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       matchedByFilter: 22,
       claimable: 19,
       affinityCoverage: { denominator: 19, nonEmptyPaths: 19, floor: 0.5, belowFloor: false },
+      queueControl: ZERO_QUEUE_CONTROL,
       excluded: {
         taken: 0,
         claimHold: 1,

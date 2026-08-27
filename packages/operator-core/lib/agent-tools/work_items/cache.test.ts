@@ -16,6 +16,11 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
 import { tagsForTableChange } from "../../events/cache-eca-rule";
+// Type-only: erased at compile time, so it does NOT defeat the vi.mock('../../work-items')
+// factory below. It exists so the listWorkItems mock declares the REAL filter parameter —
+// without it vitest infers the mock's call-args tuple as `[]`, and the projection
+// assertions below (which read `mock.calls[n][0]`) cannot index it.
+import type { ListWorkItemsFilter } from "../../work-items";
 
 // The base TABLE that carries emit_change_notify (mig-374 unified work-items here). A
 // write to ANY work-item — feature OR issue family, raw-SQL or federated — fires
@@ -29,7 +34,7 @@ const writeTags = (id: string): string[] => tagsForTableChange(WORK_ITEM_TABLE, 
 const writeTableTag = (): string[] => tagsForTableChange(WORK_ITEM_TABLE, null);
 
 const M = vi.hoisted(() => ({
-  listWorkItems: vi.fn(async () => [] as unknown[]),
+  listWorkItems: vi.fn(async (_filter: ListWorkItemsFilter = {}) => [] as unknown[]),
   getWorkItem: vi.fn(async (id: string) => ({
     id,
     kind: "feature",
