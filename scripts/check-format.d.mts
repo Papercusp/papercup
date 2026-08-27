@@ -62,5 +62,7 @@ export function parseFormatCliArgs(args: any): {
     newFilePaths?: string[];
     wholeFilePaths?: string[];
 };
+/** Describe the exact changed range that failed scoped formatting. */
+export function formatRangeDiagnostic(label: any, repoPath: any, lineRange: any, detail?: string): string;
 export const REPO_ROOT: string;
 export const FORMAT_USAGE: "Usage:\n  npm run format:check:scoped -- [--whole-file <file>] [--new-file <file>] <file...>\n  npm run format:write:scoped -- [--whole-file <file>] [--new-file <file>] <file...>\n\nCheck or write only the changed ranges of explicit files in the repository. Repeat\n--whole-file for existing files that should be checked or written in full. Repeat\n--new-file for files created by the current task; those files are also checked or\nwritten as complete files even if git-sync has already committed them. Both flags\naccept an equals form, such as --whole-file=path/to/file.ts.\n";
