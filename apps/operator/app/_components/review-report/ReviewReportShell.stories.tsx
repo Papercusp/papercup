@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { BrushCleaning, Sparkles } from "lucide-react";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import ReviewReportShell, { type ReviewReportGroup } from "./ReviewReportShell";
 
 const meta: Meta<typeof ReviewReportShell> = {
@@ -258,7 +258,9 @@ export const PlansCleanUp: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.hover(canvas.getByTestId("review-row-p1"));
-    await expect(await canvas.findByTestId("review-row-detail-p1")).toBeVisible();
+    await waitFor(() =>
+      expect(canvas.getByTestId("review-row-detail-p1")).toBeVisible(),
+    );
   },
 };
 
@@ -275,7 +277,9 @@ export const InboxBulkResolve: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.hover(canvas.getByTestId("review-row-i1"));
-    await expect(await canvas.findByTestId("review-row-detail-i1")).toBeVisible();
+    await waitFor(() =>
+      expect(canvas.getByTestId("review-row-detail-i1")).toBeVisible(),
+    );
   },
 };
 
