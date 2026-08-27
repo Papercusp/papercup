@@ -55,8 +55,11 @@ import {
 import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './plan-spec-quality-gate';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { buildPromotedRows, upsertPromotedBlock } from '../coordination/tools/promote';
+import { titleFromPlanItem } from '../../plan-workitem-promotion';
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 import type { ActivationAuditEditNotice } from '../../plan-audits';
+import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 
 /** Boolean that also accepts the exact wire strings 'true'/'false' — same
  * EI-302 manifest-pinned-schema tolerance as plans:new's `force`. */
@@ -505,6 +508,74 @@ export default defineTool({
           promotionError = (error as Error).message;
         }
 
+        // EI-21594810094177772: plans:start promotes plan items into work-items,
+        // but previously left the source plan without the generated `## Promoted`
+        // block. That made a successful start lint-red until a separate
+        // plans:promote/backfill call happened. Reuse the canonical row builder
+        // and body writer from plans:promote so retries are idempotent and the
+        // work-item ids are recorded with their source plan-item provenance.
+        let promotedBlock: { ok: true; rows: number; changed: boolean } | null = null;
+        let promotedBlockError: string | null = null;
+        if (promotion && promotion.workItems.length > 0) {
+          const sourceItems = new Map((read?.parsed.items ?? []).map((item) => [item.id, item]));
+          const rowFeatures = promotion.workItems.map(({ planItemId, workItemId }) => {
+            const sourceItem = sourceItems.get(planItemId);
+            return {
+              title: sourceItem ? titleFromPlanItem(sourceItem) : workItemId,
+              from_items: [planItemId],
+            };
+          });
+          const rowIds = promotion.workItems.map(({ workItemId }) => workItemId);
+          const writeIntent = 'plans:start → write ## Promoted block for promoted work-items';
+          try {
+            const revision = planRevisionCapture(
+              ctx as PlanRevisionCtx,
+              slug,
+              writeIntent,
+              { workspaceId: startWorkspaceId, harnessSlug },
+            );
+            const writeResult = await withPlanLock<
+              { ok: true; rows: number; changed: boolean } | { ok: false; error: string; message: string }
+            >(
+              ctx as never,
+              {
+                slug,
+                intent: writeIntent,
+                workspaceId: startWorkspaceId,
+                harnessSlug,
+                afterWrite: revision.afterWrite,
+              },
+              async (current) => {
+                if (current === null) {
+                  return {
+                    newBody: null,
+                    value: {
+                      ok: false as const,
+                      error: 'plan_not_found',
+                      message: `no plan '${slug}' in ${startWorkspaceId}/${harnessSlug}`,
+                    },
+                  };
+                }
+                const rows = buildPromotedRows(rowFeatures, rowIds);
+                const nextBody = upsertPromotedBlock(current, rows);
+                return {
+                  newBody: nextBody === current ? null : bumpUpdatedDate(nextBody),
+                  value: { ok: true as const, rows: rows.length, changed: nextBody !== current },
+                };
+              },
+            );
+            if (writeResult.kind === 'busy') {
+              promotedBlockError = 'plan_locked';
+            } else if (!writeResult.value.ok) {
+              promotedBlockError = writeResult.value.error;
+            } else {
+              promotedBlock = writeResult.value;
+            }
+          } catch (error) {
+            promotedBlockError = error instanceof Error ? error.message : String(error);
+          }
+        }
+
         let admission: Awaited<ReturnType<typeof import('./plan-admission-preflight').preflightExactPlanAdmission>> | null = null;
         let admissionError: string | null = null;
         let claimSpecBinding: Awaited<ReturnType<typeof import('../../scheduler/claim-spec-store').setClaimSpec>> | null = null;
@@ -565,6 +636,11 @@ export default defineTool({
                 : promotion
                   ? `Item promotion completed before this response: promoted ${promotion.promoted}, skipped ${promotion.skipped}.`
                   : 'Item promotion returned no outcome; verify claimable work-items before launching a fleet.';
+        const promotedBlockMessage = promotedBlockError
+          ? ` Generated \`## Promoted\` block write failed: ${promotedBlockError}.`
+          : promotedBlock
+            ? ` Generated \`## Promoted\` block ${promotedBlock.changed ? 'written' : 'already current'} for ${promotedBlock.rows} work-item(s).`
+            : '';
 
         if (!admission?.ready) {
           ctxAny.metadata?.({
@@ -586,11 +662,13 @@ export default defineTool({
             ...(activationAudit ? { activationAudit } : {}),
             promotion,
             ...(promotionError ? { promotionError } : {}),
+            ...(promotedBlock ? { promotedBlock } : {}),
+            ...(promotedBlockError ? { promotedBlockError } : {}),
             admission,
             ...(admissionError ? { admissionError } : {}),
             ...(specQuality ? { specQuality } : {}),
             ...(checkpointConsult ? { checkpointConsult } : {}),
-            message: `${promotionMessage} ${admission ? admission.message : `Exact-plan admission could not be measured: ${admissionError ?? 'unknown error'}`}`,
+            message: `${promotionMessage}${promotedBlockMessage} ${admission ? admission.message : `Exact-plan admission could not be measured: ${admissionError ?? 'unknown error'}`}`,
             ...(axisLive ? {} : { opStatusRetired: true as const }),
           };
         }
@@ -615,12 +693,14 @@ export default defineTool({
             ...(activationAudit ? { activationAudit } : {}),
             promotion,
             ...(promotionError ? { promotionError } : {}),
+            ...(promotedBlock ? { promotedBlock } : {}),
+            ...(promotedBlockError ? { promotedBlockError } : {}),
             admission,
             claimSpecBinding,
             claimSpecBindingError,
             ...(specQuality ? { specQuality } : {}),
             ...(checkpointConsult ? { checkpointConsult } : {}),
-            message: `${promotionMessage} Exact-plan claim-spec binding failed: ${claimSpecBindingError}`,
+            message: `${promotionMessage}${promotedBlockMessage} Exact-plan claim-spec binding failed: ${claimSpecBindingError}`,
             ...(axisLive ? {} : { opStatusRetired: true as const }),
           };
         }
@@ -642,10 +722,13 @@ export default defineTool({
           admission,
           claimSpecBinding,
           ...(promotionError ? { promotionError } : {}),
+          ...(promotedBlock ? { promotedBlock } : {}),
+          ...(promotedBlockError ? { promotedBlockError } : {}),
           ...(specQuality ? { specQuality } : {}),
           ...(checkpointConsult ? { checkpointConsult } : {}),
           message:
             promotionMessage +
+            promotedBlockMessage +
             (axisLive
               ? ''
               : ' The operational started axis is PERMANENTLY RETIRED (P-068 DELETED papercusp-mug-kettle-system — there is no flag to flip and no toggle in /admin/features), so op_status was not written — su agents self-select these items via scheduler:get_next instead of waiting for a dispatcher.'),

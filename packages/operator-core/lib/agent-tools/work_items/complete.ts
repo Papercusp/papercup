@@ -935,6 +935,23 @@ export function completionRepoRootsFromRegistry(
   return [...roots];
 }
 
+/**
+ * Find the nearest valid Git checkout for an absolute completion path. Unlike the testing
+ * runner's workspace resolver, completion identity must also recognize standalone submodules
+ * such as papercusp-desktop, whose package.json intentionally has no npm workspaces field.
+ */
+export function completionCheckoutRootForPath(file: string): string | undefined {
+  if (!nodePath.isAbsolute(file)) return undefined;
+  let dir = nodePath.dirname(nodePath.resolve(file));
+  for (let depth = 0; depth < 64; depth += 1) {
+    if (hasValidGitEntry(dir)) return dir;
+    const parent = nodePath.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
 async function completionRepoRootsForWorkspace(
   workspaceId?: string,
   declaredPaths: readonly string[] = [],
@@ -943,7 +960,7 @@ async function completionRepoRootsForWorkspace(
   const additionalRoots = [
     ...discoverKnownHiveCheckoutRoots(),
     ...declaredPaths
-      .map((path) => checkoutRootForPath(path))
+      .map((path) => completionCheckoutRootForPath(path) ?? checkoutRootForPath(path))
       .filter((root): root is string => Boolean(root)),
   ];
   try {
@@ -2373,7 +2390,9 @@ async function completeOne(
   // root, so an absolute Hive path would otherwise skip this lookup and get Papercusp-stamped.
   const initialUnresolvedPaths = unresolvedPathsInCompletion(completionEvidenceForGate);
   const declaredCompletionPaths = completionEvidenceForGate?.filesChanged ?? [];
-  const hasAbsoluteCheckoutPath = declaredCompletionPaths.some((path) => Boolean(checkoutRootForPath(path)));
+  const hasAbsoluteCheckoutPath = declaredCompletionPaths.some(
+    (path) => Boolean(completionCheckoutRootForPath(path) ?? checkoutRootForPath(path)),
+  );
   const registeredRepoRoots = initialUnresolvedPaths || hasAbsoluteCheckoutPath
     ? await completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths)
     : undefined;

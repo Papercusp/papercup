@@ -58,6 +58,7 @@ import {
 import { FanoutCapError, type ResolveFanoutCtx } from '@papercusp/fanout-resolver';
 import { withPlanLock, bumpUpdatedDate } from '../../plans/with-plan-lock';
 import { flipStatusInBody } from '../../plans/set-status';
+import { planRevisionCapture, type PlanRevisionCtx } from '../../plans/revisions';
 import { extractAssertions, type PlanAssertion } from '../../plans/val-assertions';
 import { evaluatePromotionAssertionGate } from '../../plans/promotion-assertion-gate';
 import { matchRoutingGateHint } from '../../../routing-gate-hints';
@@ -67,6 +68,7 @@ import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
 import { phaseRequiresTwoMachineRig } from '../../../plan-phase-rig';
 
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
+const PROMOTED_ROW_ID_RE = /^\- \[[ x]\] ((?:F|WI)-[A-Z0-9-]+)/;
 
 /**
  * Marker for the auto-generated promote-status line inside `## Now`.
@@ -163,11 +165,12 @@ export function upsertPromotedBlock(body: string, newRows: string[]): string {
     const blockContent = body.slice(start, blockEnd);
 
     const existingIds = new Set<string>();
-    for (const m of blockContent.matchAll(/^\- \[[ x]\] (F-[A-Z0-9-]+)/gm)) {
-      existingIds.add(m[1]);
+    for (const row of blockContent.split('\n')) {
+      const m = PROMOTED_ROW_ID_RE.exec(row);
+      if (m) existingIds.add(m[1]);
     }
     const deduped = newRows.filter((r) => {
-      const m = /^\- \[[ x]\] (F-[A-Z0-9-]+)/.exec(r);
+      const m = PROMOTED_ROW_ID_RE.exec(r);
       return m ? !existingIds.has(m[1]) : true;
     });
     if (deduped.length === 0) return body;
@@ -509,7 +512,7 @@ async function backfillPromotedFromConsolidated(opts: {
   if (!apply) {
     const newRows = /^## Promoted\b/m.test(planRaw)
       ? backfillRows.filter((row) => {
-          const m = /^\- \[[ x]\] (F-[A-Z0-9-]+)/.exec(row);
+          const m = PROMOTED_ROW_ID_RE.exec(row);
           return m ? !new RegExp(`\\b${m[1]}\\b`).test(planRaw) : true;
         })
       : backfillRows;
@@ -535,12 +538,19 @@ async function backfillPromotedFromConsolidated(opts: {
   }
 
   let wrote = false;
+  const revision = planRevisionCapture(
+    ctx as PlanRevisionCtx,
+    slug,
+    'plans:promote → WI-3972 backfill ## Promoted block (no policy, already-promoted features)',
+    planScope,
+  );
   const writeResult = await withPlanLock<null>(
     ctx as never,
     {
       slug,
       intent: 'plans:promote → WI-3972 backfill ## Promoted block (no policy, already-promoted features)',
       ...planScope,
+      afterWrite: revision.afterWrite,
     },
     async (current): Promise<{ newBody: string | null; value: null }> => {
       if (current === null) return { newBody: null, value: null };
@@ -1368,6 +1378,12 @@ export default defineTool({
     const markedItems: string[] = [];
     const skippedItems: Array<{ id: string; reason: string }> = [];
     if (args.mark_items && allFromItems.size > 0) {
+      const revision = planRevisionCapture(
+        ctx as PlanRevisionCtx,
+        args.slug,
+        `plans:promote → mark ${allFromItems.size} item(s) as done`,
+        planScope,
+      );
       const result = await withPlanLock<
         { ok: true; marked: number } | { ok: false; code: 'not_found' }
       >(
@@ -1376,6 +1392,7 @@ export default defineTool({
           slug: args.slug,
           intent: `plans:promote → mark ${allFromItems.size} item(s) as done`,
           ...planScope,
+          afterWrite: revision.afterWrite,
         },
         async (current) => {
           if (current === null) {
@@ -1483,12 +1500,19 @@ export default defineTool({
       });
     }
 
+    const revision = planRevisionCapture(
+      ctx as PlanRevisionCtx,
+      args.slug,
+      'plans:promote → write ## Promoted block + Now status + activate',
+      planScope,
+    );
     await withPlanLock<null>(
       ctx as never,
       {
         slug: args.slug,
         intent: 'plans:promote → write ## Promoted block + Now status + activate',
         ...planScope,
+        afterWrite: revision.afterWrite,
       },
       async (current): Promise<{ newBody: string | null; value: null }> => {
         if (current === null) return { newBody: null, value: null };

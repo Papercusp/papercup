@@ -580,7 +580,7 @@ describe('fleet headcount target (WI-2479)', () => {
       workspaceId: WS, fleetSlug: 'headcount-disabled-profile', now: 10_000_000, sql: rootSql,
     })).toBeNull();
     expect(await getFleetHeadcountTarget(WS, 'headcount-disabled-profile', rootSql)).toMatchObject({
-      fleetSlug: 'headcount-disabled-profile', target: 1, config,
+      fleetSlug: 'headcount-disabled-profile', enabled: false, target: 1, config,
     });
     const [row] = await rootSql.unsafe<{
       headcount_target: number | null;

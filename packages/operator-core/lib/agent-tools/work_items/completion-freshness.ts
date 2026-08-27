@@ -330,23 +330,35 @@ export function completionTreeStampForEvidence(
   const declared = (evidence.filesChanged ?? []).slice(0, MAX_PATHS_PROBED);
   let selectedRoot = roots[0]!;
   let selectedMatches = -1;
+  let selectedAbsoluteSpecificity = -1;
 
   for (const repoRoot of roots) {
     let matches = 0;
+    let absoluteSpecificity = -1;
     for (const raw of declared) {
       const declaredPath = raw.trim();
       if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
       try {
         const abs = nodePath.resolve(repoRoot, declaredPath);
         if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
-        if (exists(abs)) matches += 1;
+        if (exists(abs)) {
+          matches += 1;
+          // An absolute path can be physically contained by both a superproject and its
+          // submodule. Prefer the deepest containing checkout so its HEAD/blob identity is
+          // stamped, while relative-path ties retain the primary-root compatibility rule.
+          if (nodePath.isAbsolute(declaredPath)) absoluteSpecificity = Math.max(absoluteSpecificity, repoRoot.length);
+        }
       } catch {
         // An unreadable candidate is not evidence that another checkout owns the file.
       }
     }
-    if (matches > selectedMatches) {
+    if (
+      matches > selectedMatches ||
+      (matches === selectedMatches && absoluteSpecificity > selectedAbsoluteSpecificity)
+    ) {
       selectedRoot = repoRoot;
       selectedMatches = matches;
+      selectedAbsoluteSpecificity = absoluteSpecificity;
     }
   }
 

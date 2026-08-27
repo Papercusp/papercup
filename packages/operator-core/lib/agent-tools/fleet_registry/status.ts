@@ -8,12 +8,17 @@
  */
 import { z } from 'zod';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
-import { getFleet } from '../../agent-fleets-store';
+import {
+  getFleet,
+  getFleetHeadcountTarget,
+  projectFleetHeadcountState,
+} from '../../agent-fleets-store';
 import {
   listFleetRosterDiagnosed,
   splitFleetRosterCounts,
   countRunningFleetBees,
   countRunningWorkspaceBees,
+  liveFleetMemberIds,
   type FleetRosterEntry,
   type FleetRosterDegradedLeg,
 } from '../../fleet/fleet-roster';
@@ -319,7 +324,14 @@ export default defineTool({
     // (an optional harness-scoped aggregate) and the bee counts are the
     // droppable-first detail; the roster itself reports its OWN per-sub-read
     // degradation (fleet-roster.ts) rather than degrading as a single unit.
-    const [rosterResult, completionStatsResult, runningBeesResult, beeCountResult] = await Promise.all([
+    const [
+      rosterResult,
+      completionStatsResult,
+      runningBeesResult,
+      beeCountResult,
+      headcountTargetResult,
+      headcountCurrentResult,
+    ] = await Promise.all([
       listFleetRosterDiagnosed({
         fleetSlug: args.fleet,
         workspaceId,
@@ -342,6 +354,19 @@ export default defineTool({
         timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
         label: 'fleet:status:beeCount',
       }),
+      withBoundedTimeout(getFleetHeadcountTarget(workspaceId, args.fleet), {
+        fallback: undefined,
+        timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+        label: 'fleet:status:headcountTarget',
+      }),
+      withBoundedTimeout(
+        liveFleetMemberIds(args.fleet, workspaceId, 'launch').then((ids) => ids.length),
+        {
+          fallback: null,
+          timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+          label: 'fleet:status:headcountCurrent',
+        },
+      ),
     ]);
     // A leader can be present in another fleet's labelled roster when it leads
     // multiple fleets. Reconcile the liveness-only enrichment alongside the
@@ -368,7 +393,13 @@ export default defineTool({
       ...(completionStatsResult.degraded ? ['completionStats'] : []),
       ...(runningBeesResult.degraded ? ['runningBees'] : []),
       ...(beeCountResult.degraded ? ['beeCount'] : []),
+      ...(headcountTargetResult.degraded ? ['headcountTarget'] : []),
+      ...(headcountCurrentResult.degraded ? ['headcountCurrent'] : []),
     ];
+    const headcount = projectFleetHeadcountState(
+      headcountTargetResult.value,
+      headcountCurrentResult.value,
+    );
     // WI-1764 #4 / WI-1813: `memberCount` = VISIBLE desktop su members from the roster
     // (presence — members-only, was roster.length). `beeCount` = BACKGROUND bees spawned
     // INTO this fleet, from the nursery (countRunningFleetBees — reliable + presence-
@@ -512,6 +543,7 @@ export default defineTool({
       memberCount,
       beeCount,
       runningBees,
+      headcount,
       members: roster.map((m) => ({
         agentId: m.agentId,
         label: m.ownerLabel ?? m.label,

@@ -270,6 +270,9 @@ export interface FleetHeadcountConfig {
 export interface FleetHeadcountTarget {
   workspaceId: string;
   fleetSlug: string;
+  /** Whether automatic restoration is enabled. Disabled rows intentionally
+   * retain their launch recipe, so `target` alone cannot carry this state. */
+  enabled: boolean;
   target: number;
   config: FleetHeadcountConfig;
   /** The durable row used the retired spelling and was normalized on read. */
@@ -277,6 +280,68 @@ export interface FleetHeadcountTarget {
   nextAttemptAt: number | null;
   backoffMs: number;
   lastError: string | null;
+}
+
+export type FleetHeadcountVerdict = 'disabled' | 'unknown' | 'at-target' | 'under-strength';
+
+/** One truthful current-vs-target projection shared by every fleet read surface.
+ * `undefined` means the profile read failed; `null` means it succeeded and no
+ * saved profile exists. A disabled profile may still carry target=1 for recipe
+ * reuse, so its public target is deliberately null. */
+export interface FleetHeadcountState {
+  enabled: boolean | null;
+  target: number | null;
+  current: number | null;
+  shortfall: number | null;
+  underStrength: boolean | null;
+  verdict: FleetHeadcountVerdict;
+}
+
+export function projectFleetHeadcountState(
+  profile: FleetHeadcountTarget | null | undefined,
+  current: number | null,
+): FleetHeadcountState {
+  const measuredCurrent =
+    current == null || !Number.isFinite(current) ? null : Math.max(0, Math.floor(current));
+  if (profile === undefined) {
+    return {
+      enabled: null,
+      target: null,
+      current: measuredCurrent,
+      shortfall: null,
+      underStrength: null,
+      verdict: 'unknown',
+    };
+  }
+  if (profile == null || !profile.enabled) {
+    return {
+      enabled: false,
+      target: null,
+      current: measuredCurrent,
+      shortfall: null,
+      underStrength: null,
+      verdict: 'disabled',
+    };
+  }
+  if (measuredCurrent == null) {
+    return {
+      enabled: true,
+      target: profile.target,
+      current: null,
+      shortfall: null,
+      underStrength: null,
+      verdict: 'unknown',
+    };
+  }
+  const shortfall = Math.max(0, profile.target - measuredCurrent);
+  return {
+    enabled: true,
+    target: profile.target,
+    current: measuredCurrent,
+    shortfall,
+    underStrength: shortfall > 0,
+    verdict: shortfall > 0 ? 'under-strength' : 'at-target',
+  };
 }
 
 /** Canonical mutation/read boundary for durable fleet launch profiles. */
@@ -857,6 +922,7 @@ function headcountRowToTarget(r: {
   return {
     workspaceId: r.workspace_id,
     fleetSlug: r.fleet_slug,
+    enabled: r.headcount_target != null,
     // A disabled governor still carries a canonical launch profile. Saved-spec
     // consumers reconstruct one member from that profile, while governor reads
     // continue filtering on headcount_target IS NOT NULL and stay disabled.

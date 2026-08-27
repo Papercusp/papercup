@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
 const claimSpecMocks = vi.hoisted(() => ({ setClaimSpec: vi.fn() }));
 const activationMocks = vi.hoisted(() => ({ gate: vi.fn() }));
+const planLockMocks = vi.hoisted(() => ({ withPlanLock: vi.fn() }));
 
 const H = vi.hoisted(() => {
   const state: {
@@ -22,6 +23,7 @@ const H = vi.hoisted(() => {
     /** WI-5825 regression override: force the next statement to match 0 rows. */
     forceNoMatch: boolean;
     specQuality: Record<string, unknown>;
+    promotedBody: string;
     parsedItems: Array<{
       id: string;
       storedStatus: string;
@@ -37,6 +39,7 @@ const H = vi.hoisted(() => {
     txCalls: [],
     frontmatterStatus: 'ready',
     forceNoMatch: false,
+    promotedBody: `---\ntitle: mock\nstatus: ready\n---\n\n## Now\n\n**State:** ready\n`,
     parsedItems: [],
     specQuality: {
       satisfied: true,
@@ -149,7 +152,7 @@ vi.mock('../plan-spec-quality-gate', () => ({
 // a no-op so the proceed-case test doesn't need the real lock side-database.
 vi.mock('../with-plan-lock', async (orig) => {
   const actual = await orig<typeof import('../with-plan-lock')>();
-  return { ...actual, withPlanLock: vi.fn(async () => ({ kind: 'noop', value: false })) };
+  return { ...actual, withPlanLock: planLockMocks.withPlanLock };
 });
 
 import tool from '../start';
@@ -210,6 +213,7 @@ beforeEach(() => {
   H.state.frontmatterStatus = 'ready';
   H.state.forceNoMatch = false;
   H.state.parsedItems = [];
+  H.state.promotedBody = `---\ntitle: mock\nstatus: ready\n---\n\n## Now\n\n**State:** ready\n`;
   H.state.specQuality = {
     satisfied: true,
     applicable: false,
@@ -222,6 +226,8 @@ beforeEach(() => {
   claimSpecMocks.setClaimSpec.mockResolvedValue({ ok: true, errors: [], revision: 1 });
   promotePlanItemsMock.mockReset();
   promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false, ...NO_EDGES });
+  planLockMocks.withPlanLock.mockReset();
+  planLockMocks.withPlanLock.mockResolvedValue({ kind: 'noop', value: false });
 });
 
 /**
@@ -561,5 +567,95 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       planSlug: 'live-plan-2026-06-02',
       workspaceId: 'ws-of-harness',
     });
+  });
+
+  it('writes the promoted work-item rows back to the plan with source provenance', async () => {
+    H.state.parsedItems = [
+      {
+        id: 'P-001',
+        storedStatus: 'todo',
+        text: 'Build the API',
+        blockedBy: [],
+        importance: 'normal',
+        decisionRefs: [],
+        phase: 'Phase 1',
+        lineNumber: 1,
+        rawLine: '- **P-001** `todo` Build the API',
+      },
+    ];
+    promotePlanItemsMock.mockResolvedValue({
+      promoted: 1,
+      skipped: 0,
+      ...NO_EDGES,
+      workItems: [
+        { planItemId: 'P-001', workItemId: 'WI-123', newlyPromoted: true, actionable: true },
+      ],
+    });
+    H.state.promotedBody = `---\ntitle: mock\nstatus: ready\n---\n\n## Now\n\n**State:** ready\n`;
+    planLockMocks.withPlanLock.mockImplementation(
+      async (
+        _ctx: unknown,
+        opts: { intent?: string },
+        mutator: (current: string | null, meta: unknown) => Promise<{ newBody: string | null; value: unknown }>,
+      ) => {
+        if (!opts.intent?.includes('write ## Promoted')) return { kind: 'noop', value: false };
+        const outcome = await mutator(H.state.promotedBody, null);
+        if (outcome.newBody !== null) H.state.promotedBody = outcome.newBody;
+        return {
+          kind: 'applied',
+          value: outcome.value,
+          filePath: 'plans/mock.md',
+          version: 2,
+          scope: { workspaceId: 'ws-of-harness', harnessSlug: 'papercup' },
+        };
+      },
+    );
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.results[0]).toMatchObject({
+      ok: true,
+      promotedBlock: { ok: true, rows: 1, changed: true },
+    });
+    expect(H.state.promotedBody).toContain('## Promoted');
+    expect(H.state.promotedBody).toContain('- [ ] WI-123 — Build the API <!-- P-001 -->');
+  });
+
+  it('surfaces a plan-lock failure while retaining the successful promotion outcome', async () => {
+    H.state.parsedItems = [
+      {
+        id: 'P-001',
+        storedStatus: 'todo',
+        text: 'Build the API',
+        blockedBy: [],
+        importance: 'normal',
+        decisionRefs: [],
+        phase: 'Phase 1',
+        lineNumber: 1,
+        rawLine: '- **P-001** `todo` Build the API',
+      },
+    ];
+    promotePlanItemsMock.mockResolvedValue({
+      promoted: 1,
+      skipped: 0,
+      ...NO_EDGES,
+      workItems: [
+        { planItemId: 'P-001', workItemId: 'WI-123', newlyPromoted: true, actionable: true },
+      ],
+    });
+    planLockMocks.withPlanLock.mockImplementation(async (_ctx: unknown, opts: { intent?: string }) =>
+      opts.intent?.includes('write ## Promoted')
+        ? { kind: 'busy', busy: [] }
+        : { kind: 'noop', value: false },
+    );
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.results[0]).toMatchObject({
+      ok: true,
+      promotion: { promoted: 1 },
+      promotedBlockError: 'plan_locked',
+    });
+    expect(res.data.results[0].message).toContain('Generated `## Promoted` block write failed: plan_locked');
   });
 });

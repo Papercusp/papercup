@@ -56,6 +56,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  completionCheckoutRootForPath,
   completionRepoRootsFromRegistry,
   completionSettlementManifest,
   completionTreeStamp,
@@ -409,6 +410,36 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
         { exists: (abs) => abs === absolutePath, readFile },
       ),
     ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
+  });
+
+  it('prefers the nested submodule for an absolute path despite an unrelated dirty file', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-tree-stamp-nested-'));
+    TEMP_ROOTS.push(workspaceRoot);
+    const operatorRoot = join(workspaceRoot, 'papercusp');
+    const submoduleRoot = join(operatorRoot, 'papercusp-desktop');
+    const changedPath = join(submoduleRoot, 'src', 'fix.ts');
+    const unrelatedDirtyPath = join(submoduleRoot, 'tmp', 'unrelated.ts');
+    mkdirSync(join(operatorRoot, '.git'), { recursive: true });
+    mkdirSync(join(submoduleRoot, '.git'), { recursive: true });
+    mkdirSync(join(submoduleRoot, 'src'), { recursive: true });
+    mkdirSync(join(submoduleRoot, 'tmp'), { recursive: true });
+    writeFileSync(join(operatorRoot, '.git', 'HEAD'), `${OPERATOR_SHA}\n`);
+    writeFileSync(join(submoduleRoot, '.git', 'HEAD'), `${SIDESTAGE_SHA}\n`);
+    writeFileSync(changedPath, 'fixed\n');
+    writeFileSync(unrelatedDirtyPath, 'unrelated dirty work\n');
+
+    expect(completionCheckoutRootForPath(changedPath)).toBe(submoduleRoot);
+    expect(
+      completionTreeStampForEvidence(
+        { filesChanged: [changedPath] },
+        [operatorRoot, submoduleRoot],
+        { exists: (abs) => abs === changedPath || abs === unrelatedDirtyPath, readFile: (abs) => {
+          if (abs === join(operatorRoot, '.git', 'HEAD')) return `${OPERATOR_SHA}\n`;
+          if (abs === join(submoduleRoot, '.git', 'HEAD')) return `${SIDESTAGE_SHA}\n`;
+          return undefined;
+        } },
+      ),
+    ).toMatchObject({ repositoryRoot: submoduleRoot });
   });
 
   it('keeps the primary checkout on a tie so legacy completions do not change repositories', () => {
