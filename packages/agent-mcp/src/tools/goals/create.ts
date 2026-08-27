@@ -27,6 +27,7 @@ import {
   goalHolderPolicySchema,
 } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { validatePropertySchemaDeclaration } from '@papercusp/operator-core/lib/typed-properties-db';
+import { PLATFORM_POT_SLUG } from '@papercusp/operator-core/lib/platform-pot-slug';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
 import { applyGoalBlockedBy } from './goal-deps';
