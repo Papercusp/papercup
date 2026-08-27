@@ -439,9 +439,10 @@ export function finalizeFreshSuArgs(backend: any, launchArgs: any, res: any, arg
  * Finish a fresh ROLE launch argv with the same scripted first-turn seam used by
  * fresh SU launches. Role launches used to stop after flags/passthrough, so a
  * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
- * an empty prompt forever. Keep the native positional prompt last for
- * every backend uses the managed-pty kickoff returned alongside the argv. Tag machine-origin turns and expose whether a
- * turn was actually seeded so the caller can report the launch honestly. Pure
+ * an empty prompt forever. Keep the prompt out of argv for every backend and
+ * return the managed-pty kickoff alongside the argv. Tag machine-origin turns
+ * and expose whether a turn was actually seeded so the caller can report the
+ * launch honestly. Pure
  * except for the existing provenance-ledger write performed by
  * tagKickoffProvenance.
  *

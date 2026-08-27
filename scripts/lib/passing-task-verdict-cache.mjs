@@ -82,6 +82,56 @@ export function passingTaskVerdictIdentityEnvironment(environment) {
   };
 }
 
+/**
+ * The single stable group every passing verdict is ALSO written under, so a task proven green in
+ * gate run N can be reused in run N+1. The per-run group above deliberately confines reuse to one
+ * run; that is correct for the *identity* of a run, but it is also the whole reason a red gate
+ * re-tests the ~100 tasks that already passed. See EI-21577710345620735.
+ *
+ * Reuse is NOT widened by this group: a cross-run hit still has to match the FULL identity —
+ * taskKey, command, gateConfig, implementation version, and above all `dependencyHash`, which is
+ * the content sha256 of every file in the task's dependency closure. "Nothing this task reads has
+ * changed" is the actual claim being made, and it is content-addressed, not sha-range guesswork.
+ */
+export const PASSING_TASK_VERDICT_CROSS_RUN_GROUP = "cross-run-v1";
+
+/**
+ * Identity environment for the CROSS-RUN group.
+ *
+ * Same clone as `passingTaskVerdictIdentityEnvironment`, minus the values that necessarily differ
+ * between two runs of the same unchanged task. Each removal below is load-bearing: leave any one
+ * of them in and the cross-run identity can never match, which does not fail loudly — it silently
+ * degrades to "no reuse", i.e. exactly the deadlock this exists to break.
+ *
+ *   PAPERCUSP_TEST_RUN_GROUP    — the run identity itself; keeping it IS the one-run confinement.
+ *   AFFECTED_TASK_VERDICT_*     — transport/proof plumbing, absent from the run being compared to.
+ *   VITEST_MAX_WORKERS/FORKS/THREADS — the scheduler's per-task concurrency allocation. These
+ *     describe HOW the task was scheduled (capacity mode, live load), never WHAT it exercised, and
+ *     they change run to run on a busy box. This is the same reasoning the per-run identity already
+ *     applies to the PC_HEAVY_* transport variables.
+ *
+ * Deliberately still hashed: AFFECTED_BASE. While the gate is red the green pin does not move, so
+ * consecutive runs share a base and reuse applies; when it finally goes green the base advances and
+ * every task re-runs exactly once. That is the correct conservative behaviour, not an oversight.
+ */
+export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
+  const { environment: identityEnvironment } =
+    passingTaskVerdictIdentityEnvironment(environment);
+  for (const perRunName of [
+    "PAPERCUSP_TEST_RUN_GROUP",
+    "AFFECTED_TASK_VERDICT_PROOF_GROUP",
+    "VITEST_MAX_WORKERS",
+    "VITEST_MAX_FORKS",
+    "VITEST_MAX_THREADS",
+  ]) {
+    delete identityEnvironment[perRunName];
+  }
+  return {
+    environment: identityEnvironment,
+    cacheGroup: PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+  };
+}
+
 /** One bounded, machine-readable composite cache verdict for gate logs. */
 export function formatPassingTaskVerdictSummary(
   decisions,
@@ -452,11 +502,21 @@ export function mergePassingTaskVerdictUpdates(
       },
     },
   };
+  // The MAX_GROUPS cap is an LRU designed for per-RUN groups, which are disposable by
+  // construction. The cross-run group is the opposite: it is the only one whose whole value is
+  // surviving into later runs, and evicting it does not fail loudly — it silently degrades to
+  // "no reuse", which is indistinguishable from the deadlock it exists to break. Pin it out of
+  // the LRU and let the cap govern the per-run groups it was written for.
+  const crossRunGroup = groups[PASSING_TASK_VERDICT_CROSS_RUN_GROUP];
   const retainedGroups = Object.fromEntries(
     Object.entries(groups)
+      .filter(([name]) => name !== PASSING_TASK_VERDICT_CROSS_RUN_GROUP)
       .sort(([, a], [, b]) => String(b.updatedAt).localeCompare(String(a.updatedAt)))
       .slice(0, PASSING_TASK_VERDICT_CACHE_MAX_GROUPS),
   );
+  if (crossRunGroup) {
+    retainedGroups[PASSING_TASK_VERDICT_CROSS_RUN_GROUP] = crossRunGroup;
+  }
   return {
     version: PASSING_TASK_VERDICT_CACHE_VERSION,
     groups: retainedGroups,
