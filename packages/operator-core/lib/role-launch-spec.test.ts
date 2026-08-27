@@ -465,9 +465,14 @@ describe('buildLaunchSpec — kind dispatch', () => {
 // is baked into the superuser MCP URL BY DEFAULT for EVERY client + tier. It's a
 // growable floor (tools:find → notifications/tools/list_changed re-fetch; + tools:invoke
 // fallback; + a compact capability map for discoverability), so seeding no longer strands
-// the tail — it's a ~165k→~10k token win everywhere. Only an explicit contextSize:'full'
-// opts OUT into the eager whole-catalog load (the escape hatch for latency-critical
-// broad-tool tasks / a client that can't do dynamic expansion / debugging).
+// the tail — it's a ~165k→~10k token win everywhere.
+//
+// There is NO opt-out any more (trimmed-only-agent-context-launch-2026-08-27 P-001/P-002).
+// contextSize:'full' used to escape into the eager whole-catalog load; it is now only a
+// deprecated ALIAS that normalizeSuContextSize maps to 'trimmed' before launch, so the
+// `legacy full` cases below assert it produces the IDENTICAL seed rather than merely
+// producing some seed — asserting only that `tools` is present would still pass if the
+// alias started resolving to a different surface, which is the regression that matters.
 describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-default)', () => {
   async function suMcpUrl(
     agent: 'claude' | 'omp' | 'codex',
@@ -508,14 +513,19 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     expect(tools).toContain('locks:release');
   });
 
-  it('codex + legacy full ⇒ tools= remains present', async () => {
-    expect((await suMcpUrl('codex', { contextSize: 'full' })).searchParams.has('tools')).toBe(true);
+  it('codex + legacy full ⇒ seeds IDENTICALLY to trimmed (alias, not a mode)', async () => {
+    const legacy = (await suMcpUrl('codex', { contextSize: 'full' })).searchParams.get('tools');
+    const trimmed = (await suMcpUrl('codex', { contextSize: 'trimmed' })).searchParams.get('tools');
+    expect(legacy).toBe(trimmed);
+    expect(legacy).toBe([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
   });
 
   // dynamic-tool-surface D-004: codex now SEEDS the core spine BY DEFAULT (any tier)
   // for the token-cost win — the seed is a growable floor (tools:find → list_changed
-  // re-fetch) + tools:invoke reaches the tail, so nothing is stranded. Only an
-  // explicit contextSize:'full' opts codex back into the ~140k-token full catalog.
+  // re-fetch) + tools:invoke reaches the tail, so nothing is stranded. Nothing opts
+  // back into the ~140k-token full catalog: for codex the eager load was not merely
+  // expensive but transport-INVALID once the code-mode IPC frame exceeded its limit,
+  // which is why 'full' is an alias here rather than a supported escape hatch.
   it('codex + omitted, no model ⇒ tools= present (seed-by-default, D-004 token win)', async () => {
     expect((await suMcpUrl('codex')).searchParams.get('tools')).toBe(
       [...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','),
@@ -543,8 +553,13 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     );
   });
 
-  it('omp + legacy full ⇒ tools= remains present', async () => {
-    expect((await suMcpUrl('omp', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(true);
+  it('omp + legacy full ⇒ seeds IDENTICALLY to trimmed, even on a FRONTIER model', async () => {
+    const legacy = (await suMcpUrl('omp', { model: FRONTIER, contextSize: 'full' })).searchParams.get('tools');
+    const trimmed = (await suMcpUrl('omp', { model: FRONTIER, contextSize: 'trimmed' })).searchParams.get('tools');
+    expect(legacy).toBe(trimmed);
+    // The frontier tier is the case that used to resolve to 'full', so it is the one
+    // where a reintroduced tier-derived branch would show up first.
+    expect(legacy).toBe([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
   });
 
   it('codex + WEAK model ⇒ tools= present (the tier gates it, not just the manual flag)', async () => {
@@ -574,8 +589,11 @@ describe('buildSuLaunchSpec — contextSize ?tools= seed lever (trimmed-by-defau
     );
   });
 
-  it('claude + legacy full ⇒ tools= remains present', async () => {
-    expect((await suMcpUrl('claude', { model: FRONTIER, contextSize: 'full' })).searchParams.has('tools')).toBe(true);
+  it('claude + legacy full ⇒ seeds IDENTICALLY to trimmed', async () => {
+    const legacy = (await suMcpUrl('claude', { model: FRONTIER, contextSize: 'full' })).searchParams.get('tools');
+    const trimmed = (await suMcpUrl('claude', { model: FRONTIER, contextSize: 'trimmed' })).searchParams.get('tools');
+    expect(legacy).toBe(trimmed);
+    expect(legacy).toBe([...CORE_MCP_TOOL_NAMES, ...SU_EXTRA_MCP_TOOL_NAMES].join(','));
   });
 });
 

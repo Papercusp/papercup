@@ -154,20 +154,24 @@ export interface BuildRoleLaunchSpecInput {
   /** Signed-URL TTL; defaults to the signer's 24h. */
   ttlSec?: number;
   /**
-   * Initial MCP tool-surface size (context-trimming-tiers / WI-4608): 'trimmed'
-   * seeds the signed MCP URL with `?tools=<CORE_MCP_TOOL_NAMES>` (the same
-   * dynamic-tool-surface seed buildSuLaunchSpec applies for a su session) so the
-   * launched agent's FIRST tools/list carries the ~19-tool core spine instead of
-   * the whole ~581-tool catalog — the seed GROWS at runtime via ctx.activateTools
-   * (tools:find), it is not a hard cap. 'full' forces the whole catalog (today's
-   * unconditional behaviour for every role).
+   * Initial MCP tool-surface size. There is only ONE effective value —
+   * 'trimmed' — for EVERY role (trimmed-only-agent-context-launch-2026-08-27
+   * P-001/P-002). It seeds the signed MCP URL with `?tools=<CORE_MCP_TOOL_NAMES>`
+   * so the launched agent's FIRST tools/list carries the core spine instead of
+   * the whole catalog. The seed GROWS at runtime via ctx.activateTools
+   * (tools:find) and tools:invoke reaches anything unseeded, so trimmed means
+   * LAZY, never restricted.
    *
-   * Omitted → AUTO-SELECT: 'trimmed' for the autonomous pot-decider roles ('mug'/
-   * 'kettle', canonicalized via canonicalCoordRole — so 'queen'/'overwatch' also
-   * match) since these are long-running, frequently-relaunched, model-window-
-   * constrained sessions whose repeated "Prompt is too long" deaths (WI-4608)
-   * trace to ALWAYS loading the full catalog up front with no default trim; every
-   * OTHER role keeps 'full' — byte-identical to before this option existed.
+   * 'full' is a DEPRECATED COMPATIBILITY ALIAS, not a mode: `normalizeSuContextSize`
+   * maps it to 'trimmed' before anything is persisted or spawned, so a legacy CLI
+   * argument or stored launch row cannot open a doomed terminal. It used to
+   * eagerly advertise the entire catalog, which is what produced the repeated
+   * "Prompt is too long" deaths (WI-4608) and, for Codex, an invalid transport
+   * frame once the code-mode IPC payload exceeded its limit.
+   *
+   * Omitted → 'trimmed'. Do NOT reintroduce a role-based auto-select or offer
+   * 'full' in new UI/API schemas; accept the legacy spelling only at durable and
+   * CLI boundaries. Canonical policy + normalizer: `su-context-size.mjs`.
    */
   contextSize?: 'full' | 'trimmed' | null;
 }
@@ -221,10 +225,13 @@ export interface RoleLaunchSpec {
    * so a woken session keeps its role-scoped tool surface.
    */
   sessionMcpDir: string;
-  /** The RESOLVED context size (explicit input, or the role-based auto-select —
-   *  see `BuildRoleLaunchSpecInput.contextSize`). Diagnostic + lets a caller
-   *  surface it (mirrors `LaunchSpec.personaTier` on the su path). */
-  contextSize: 'full' | 'trimmed';
+  /** The RESOLVED context size. Always 'trimmed': it comes from
+   *  `normalizeSuContextSize`, which maps the legacy 'full' alias down before it
+   *  can reach a spawn. Typed as the single value rather than the input union so
+   *  the EFFECTIVE mode cannot silently widen back to 'full' — the type is the
+   *  guard that a legacy alias never becomes a launch mode. Diagnostic + lets a
+   *  caller surface it (mirrors `LaunchSpec.personaTier` on the su path). */
+  contextSize: 'trimmed';
 }
 
 /**
@@ -497,9 +504,11 @@ export interface BuildSuLaunchSpecInput {
   harnessSlug?: string | null;
   /** Playbook profile: 'engineer' (default) | 'power' | 'generic'. */
   profile?: string;
-  /** su-context-size-variants: 'full' | 'trimmed' — an EXPLICIT initial-context
-   *  size override. When omitted, the trim is derived from the model tier
-   *  (weak → trimmed, frontier → full); 'trimmed' forces the trim on any tier. */
+  /** Initial-context size. 'trimmed' is the only effective value, on every model
+   *  tier; there is no longer a tier-derived trim and no frontier-gets-'full'
+   *  branch (trimmed-only-agent-context-launch-2026-08-27 P-001/P-002). 'full' is
+   *  accepted here ONLY as a deprecated alias for old CLI args and stored rows,
+   *  and `normalizeSuContextSize` maps it to 'trimmed' before launch. */
   contextSize?: 'full' | 'trimmed' | null;
   /** The model spec the session launches with (e.g. `ollama/ornith-35b:IQ3_M` or
    *  `anthropic/claude-opus-4-8`). Drives the model-capability tier that gates the

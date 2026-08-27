@@ -58,10 +58,16 @@ export interface LaunchAgentOpts extends LaunchOpts {
    */
   deferSpawn?: boolean;
   /**
-   * su-context-size-variants: initial-context size variant, orthogonal to
-   * `agent`. 'full' loads the whole superuser catalog; 'trimmed' uses the
-   * client's native soft-trim (small core up-front, rest on demand). Omitted →
-   * the client's native default.
+   * Initial-context size variant, orthogonal to `agent`. The only value is
+   * 'trimmed' (`SuContextSize`): a small core surface up front, grown on demand
+   * via tools:find / ctx.activateTools, with tools:invoke reaching anything
+   * unseeded. Omitted → 'trimmed'.
+   *
+   * The former 'full' variant, which advertised the whole superuser catalog up
+   * front, is GONE as a mode (trimmed-only-agent-context-launch-2026-08-27) —
+   * it survives only as a deprecated input alias that normalizes to 'trimmed'.
+   * Do not reintroduce it here: this type is the launch-time surface, so
+   * re-widening it is what would let a legacy value reach a spawn.
    */
   contextSize?: SuContextSize;
   /**
