@@ -14,6 +14,7 @@ const productionMocks = vi.hoisted(() => ({
   listFleetAssignments: vi.fn(),
   reconcileWakeability: vi.fn(),
   fetchContextPressure: vi.fn(),
+  fetchFleetAdmissionBlocks: vi.fn(),
 }));
 
 vi.mock('../../fleet/assignments', async (importOriginal) => ({
@@ -28,8 +29,13 @@ vi.mock('../../agent-tools/coordination/context-pressure', async (importOriginal
   ...(await importOriginal<typeof import('../../agent-tools/coordination/context-pressure')>()),
   fetchContextPressure: productionMocks.fetchContextPressure,
 }));
+vi.mock('../../agent-tools/coordination/fleet-scope-admission-blocks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-tools/coordination/fleet-scope-admission-blocks')>()),
+  fetchFleetAdmissionBlocks: productionMocks.fetchFleetAdmissionBlocks,
+}));
 import {
   __resetFleetTransitionSnapshotForTests,
+  gatherFleetAdmissionObservations,
   runFleetTransitionSweep,
 } from './fleet-transition-sweep-action';
 import type { FleetMemberObservation } from '../../fleet-transition-events';
@@ -94,6 +100,7 @@ beforeEach(() => {
   productionMocks.listFleetAssignments.mockReset();
   productionMocks.reconcileWakeability.mockReset();
   productionMocks.fetchContextPressure.mockReset();
+  productionMocks.fetchFleetAdmissionBlocks.mockReset();
 });
 
 describe('runFleetTransitionSweep', () => {
@@ -192,6 +199,28 @@ describe('runFleetTransitionSweep', () => {
       [member({ sessionState: 'recorded', contextPressure: 'critical', wakeable: false, claimCount: 0 })],
     ]);
     expect(rounds).toEqual([[], []]);
+  });
+
+  it('excludes recorded non-wakeable former members from admission blocks while retaining live members', async () => {
+    productionMocks.listFleetAssignments.mockResolvedValue([
+      { ...presenceRow('live'), agentId: 'su-live', agentLabel: 'su-live' },
+      { ...presenceRow('recorded'), agentId: 'su-former', agentLabel: 'su-former' },
+    ]);
+    productionMocks.reconcileWakeability.mockImplementation(async (agents: Array<{ agentId: string }>) =>
+      agents.map((agent) => ({
+        ...agent,
+        sessionState: agent.agentId === 'su-former' ? 'recorded' : 'live',
+        wakeable: agent.agentId !== 'su-former',
+      })),
+    );
+    productionMocks.fetchFleetAdmissionBlocks.mockResolvedValue([{}]);
+
+    await expect(gatherFleetAdmissionObservations()).resolves.toEqual([
+      { fleetSlug: 'fleet-a', blockedCount: 1 },
+    ]);
+    expect(productionMocks.fetchFleetAdmissionBlocks).toHaveBeenCalledWith('fleet-a', {
+      liveMemberIds: ['su-live'],
+    });
   });
 
   it('keeps fleets independent — a crossing in one fleet is not attributed to another', async () => {

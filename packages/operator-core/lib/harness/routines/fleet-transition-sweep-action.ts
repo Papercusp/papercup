@@ -143,18 +143,40 @@ async function gatherCurrentFleetMemberObservation(
  * a block that clears and later reappears is a real new crossing.
  */
 export async function gatherFleetAdmissionObservations(): Promise<FleetAdmissionObservation[]> {
-  let agents: AgentAssignment[];
+  let agents: ObservableAgent[];
   try {
     agents = groupByAgent(await listFleetAssignments({}));
   } catch {
     return [];
   }
 
-  const fleets = [...new Set(agents.map((agent) => agent.fleetSlug).filter((slug): slug is string => Boolean(slug)))].sort();
+  const fleeted = agents.filter((agent): agent is ObservableAgent & { fleetSlug: string } => Boolean(agent.fleetSlug));
+  if (fleeted.length === 0) return [];
+
+  // Admission notices are append-only and remain visible for 24 hours. Reconcile
+  // the roster before reading them so a recorded/ended former member cannot keep
+  // manufacturing an actionable leader wake after it has left the fleet. Unknown
+  // enrichment fails open: isActionableFleetObservation only excludes the exact
+  // recorded + non-wakeable + claimless stand-down shape.
+  const withLiveness = await reconcileWakeability(fleeted).catch(() => fleeted);
+  const fleets = [...new Set(fleeted.map((agent) => agent.fleetSlug))].sort();
   return Promise.all(
     fleets.map(async (fleetSlug) => {
       try {
-        const blocks = await fetchFleetAdmissionBlocks(fleetSlug);
+        const liveMemberIds = withLiveness
+          .filter(
+            (agent) =>
+              agent.fleetSlug === fleetSlug &&
+              agent.sessionState !== 'ended' &&
+              isActionableFleetObservation({
+                sessionState: agent.sessionState ?? null,
+                wakeable: agent.wakeable ?? null,
+                claimCount: agent.claims.length,
+              }),
+          )
+          .map((agent) => agent.agentId)
+          .sort();
+        const blocks = await fetchFleetAdmissionBlocks(fleetSlug, { liveMemberIds });
         return { fleetSlug, blockedCount: blocks.length };
       } catch {
         // `fetchFleetAdmissionBlocks` is already fail-soft in production, but
