@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 831,
+  "count": 832,
   "tools": [
     {
       "name": "ablation:report",
@@ -12776,6 +12776,37 @@
         "when": "Turn a learning lane's spend gate on/off or change its budget live — tighten a lane mid-incident, disarm an experiment's lane, or re-arm a lane the governor disabled.",
         "notWhen": "For the gym lane of a pot use gym:arm (it writes the autoloop config AND the gym:<slug> governor row atomically). To pause the lane's SCHEDULE use routines:set. For the workspace-wide Blender ceiling use learning:set-scout-budget.",
         "chaining": "Read current lanes first (the Frontier/Blender pane, or SELECT via dev:pg_query on learning_governor_loops) to get the exact loopId."
+      }
+    },
+    {
+      "name": "governor:state_snapshot",
+      "http": {
+        "path": "/api/agent-tools/governor/state_snapshot",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the canonical bounded resource-governor snapshot used by state:read governor.* cells.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "release-fixer"
+      ],
+      "guidance": {
+        "when": "As the resolver behind governor.health/admission/queue/resources/recovery.",
+        "notWhen": "To mutate governor state or inspect individual queue rows.",
+        "chaining": "state:read { cell:\"governor.health\" } is the ordinary entry point."
       }
     },
     {
