@@ -1791,14 +1791,20 @@ try:
             and not ADVISORY
             and not re.search(r'pipefail|PIPESTATUS', command)):
         _fg_pipe_cmd = _scannable_quote_stripped()
-        for _fg_pipeline in _scan_pipelines(_fg_pipe_cmd):
-            if len(_fg_pipeline) < 2:
+        # Do not use `_scan_pipelines` here: its shell-operator scanner treats
+        # the `&` in the ubiquitous stderr redirect `2>&1` as a command
+        # separator. That drops the verification stage from
+        # `cargo test 2>&1 | tail`, which is the exact live repro this guard
+        # exists to catch. The established background matcher already splits
+        # only on command-list separators; reuse that shape, then inspect the
+        # text BEFORE the final filter pipe for verification intent.
+        for _fg_segment in re.split(r'&&|\|\||;|\n', _fg_pipe_cmd):
+            _fg_segment = _fg_segment.strip()
+            _fg_filter = _PIPE_TAIL_RE.search(_fg_segment)
+            if not _fg_filter:
                 continue
-            if not _PIPE_TAIL_RE.search(
-                    '|'.join(_fg_pipeline[-2:]).strip()):
-                continue
-            if not any(_PIPE_VERIFICATION_RE.search(_stage)
-                       for _stage in _fg_pipeline[:-1]):
+            if not _PIPE_VERIFICATION_RE.search(
+                    _fg_segment[:_fg_filter.start()]):
                 continue
             ADVISORY = (
                 'foreground verification-pipe exit-code advisory '
