@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { z } from 'zod';
 import captureTool, { defaultScorecardConditionKey } from './capture';
-import { coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
+import { coerceCaptureArgs, coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import {
   captureImprovement,
   recordCaptureReviewFailure,
@@ -1040,6 +1040,65 @@ describe('improvements:capture kind coercion (WI-1974)', () => {
       properties?: { kind?: { enum?: string[]; type?: string } };
     };
     expect(json.properties?.kind?.enum).toEqual(['bug', 'change', 'feature']);
+  });
+});
+
+// EI-21601117899178959: the persisted/domain model names learning provenance
+// `signalOrigin`, while improvements:capture historically exposed only the core's
+// `origin` spelling. Keep the compatibility alias at the tool boundary and always
+// forward the canonical field to capture-core.
+describe('improvements:capture signalOrigin compatibility alias (EI-21601117899178959)', () => {
+  const parse = (x: unknown) => (captureTool.args as { parse: (v: unknown) => Record<string, unknown> }).parse(x);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-origin'));
+    mockCapture.mockResolvedValue({ ok: true, id: 'EI-origin', created: true } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+  });
+
+  it('canonicalizes signalOrigin to origin before schema validation', () => {
+    expect(coerceCaptureArgs({ title: 't', signalOrigin: 'drill' })).toEqual({ title: 't', origin: 'drill' });
+  });
+
+  it('accepts the domain-model spelling and exposes only canonical origin to the handler', () => {
+    const parsed = parse({ title: 't', signalOrigin: 'replay' });
+    expect(parsed).toMatchObject({ title: 't', origin: 'replay' });
+    expect(parsed.signalOrigin).toBeUndefined();
+  });
+
+  it('accepts equal origin and signalOrigin values while retaining one canonical field', () => {
+    expect(parse({ title: 't', origin: 'shadow', signalOrigin: 'shadow' })).toMatchObject({ origin: 'shadow' });
+  });
+
+  it('rejects conflicting origin and signalOrigin values loudly', () => {
+    const result = (captureTool.args as { safeParse: (v: unknown) => { success: boolean; error?: { issues: unknown[] } } }).safeParse({
+      title: 'conflicting provenance',
+      origin: 'drill',
+      signalOrigin: 'replay',
+    });
+    expect(result.success).toBe(false);
+    expect(JSON.stringify(result.success ? [] : result.error!.issues)).toContain('conflicting origin values');
+  });
+
+  it('forwards a raw signalOrigin alias when an in-process caller bypasses preprocessing', async () => {
+    await callTool({ title: 'direct alias', kind: 'bug', signalOrigin: 'shadow' });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ origin: 'shadow' }));
+  });
+
+  it('rejects conflicting aliases before forwarding to capture-core', async () => {
+    await expect(
+      callTool({ title: 'conflicting direct aliases', kind: 'bug', origin: 'drill', signalOrigin: 'replay' }),
+    ).rejects.toThrow('conflicting origin values');
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
+  it('publishes signalOrigin as the documented compatibility enum', () => {
+    const json = z.toJSONSchema(captureTool.args as never) as {
+      properties?: { signalOrigin?: { enum?: string[] } };
+    };
+    expect(json.properties?.signalOrigin?.enum).toEqual(['organic', 'drill', 'replay', 'shadow']);
   });
 });
 
