@@ -3174,6 +3174,67 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
     expect(payload.promotionFailsafe).toMatchObject({ ran: true, promoted: 4 });
   });
 
+  /**
+ * EI-21574373783224719: the reservation contract as a single predicate, so the assertion and
+ * its falsifiability controls are provably the SAME check. A promoted lane is reserved for the
+ * launching fleet only when the promotion call carries a non-blank `fleetSlug` naming the same
+ * fleet the handler admitted against — that value becomes `payload.fleet_slug`, which is leg 1
+ * of `reservedPlanLaneExclusionSql` and the only thing that keeps a non-fleet agent's
+ * self-select off the lane.
+ */
+function reservesLaneForLaunchingFleet(
+  promoteArgs: { fleetSlug?: unknown },
+  preflightArgs: { fleetSlug?: unknown },
+): boolean {
+  const slug = promoteArgs.fleetSlug;
+  return typeof slug === 'string' && slug.length > 0 && slug === preflightArgs.fleetSlug;
+}
+
+// EI-21574373783224719: promoting is only HALF the failsafe's job — what it mints must also be
+  // RESERVED for the fleet it was minted for. The failsafe deliberately does not flip
+  // op_status='started' (that would hand a fleet-driven plan a second dispatcher via the DBOS
+  // orchestrator frontier), so without a fleet stamp the minted rows carry NO reservation signal
+  // at all: `reservedPlanLaneExclusionSql`'s two execution legs read op_status/lifecycle (never
+  // set on this path) and its fleet leg reads `payload.fleet_slug` — which, before this fix, had
+  // ZERO producers (0 of 123,735 rows). Net effect: every lane this failsafe minted was
+  // simultaneously claimable by the fleet AND by every unrelated agent's self-select. Measured
+  // live: WI-41517 (anti-babysitting-monitor-enforcement-2026-08-25 P-005) was served to two
+  // different non-fleet agents 57 minutes apart while the fleet was demonstrably working the
+  // sibling lane, with 37 such lanes exposed across 6 live-fleet plans.
+  //
+  // Guard the ARGUMENT rather than the resulting payload: the stamping itself is
+  // promotePlanItems' own contract (covered there), while the defect here was that this caller
+  // never told it which fleet to reserve for.
+  it('reserves what it promotes for the LAUNCHING fleet — passes fleetSlug (EI-21574373783224719)', async () => {
+    const res = await invokeLaunchHandler(
+      { name: 'Fresh Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+
+    const promoteArgs = promotePlanItemsMock.mock.calls[0][0] as { fleetSlug?: unknown };
+    // Compared against the slug the handler independently hands the admission preflight rather
+    // than a hardcoded derivation, so the guard keeps holding if fleetSlugFromName's
+    // slugification ever changes — while still catching a wrong-fleet stamp, which would
+    // reserve the lane away from the very fleet that is about to work it.
+    const preflightArgs = admissionMocks.preflight.mock.calls[0]?.[0] as { fleetSlug?: unknown };
+    expect(reservesLaneForLaunchingFleet(promoteArgs, preflightArgs)).toBe(true);
+
+    // FALSIFIABILITY CONTROLS, kept PERMANENTLY in the test rather than proven once by
+    // mutating the shared tree (the repo's mutation-probe guidance for a subject you
+    // `import`: keep the deliberately-wrong shape as a control; never hold a production file
+    // mutated while git-sync may sweep it). These are the three real regression shapes, and
+    // each must FAIL the same predicate the assertion above passes — so a future refactor that
+    // weakens the predicate cannot leave this test passing vacuously.
+    expect(reservesLaneForLaunchingFleet({}, preflightArgs)).toBe(false); // pre-fix: arg omitted
+    expect(reservesLaneForLaunchingFleet({ fleetSlug: '' }, preflightArgs)).toBe(false); // blank
+    expect(reservesLaneForLaunchingFleet({ fleetSlug: 'a-different-fleet' }, preflightArgs)).toBe(
+      false,
+    ); // wrong fleet — reserves the lane AWAY from the fleet about to work it
+  });
+
   it('warns in the message when it had to backstop a missing plans:start (promoted > 0)', async () => {
     promotePlanItemsMock.mockResolvedValue({ promoted: 2, skipped: 0 });
     const res = await invokeLaunchHandler(
