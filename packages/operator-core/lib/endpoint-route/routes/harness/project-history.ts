@@ -61,6 +61,10 @@ export default defineTool({
   method: 'GET',
   path: '/harness/:slug/project-history',
   auth: 'loopback',
+  // Generation reads the complete plan/work-item export and allows 90s for the
+  // child CLI. Keep the route watchdog above that ceiling so the default 30s
+  // stack timeout cannot turn a valid v2 document into an opaque 408.
+  timeoutSec: 120,
   async handler(_req, ctx) {
     const slug = String(ctx.params.slug ?? '').trim();
     if (!/^[a-z0-9][a-z0-9._-]{0,119}$/i.test(slug)) {

@@ -22,6 +22,7 @@ import routeDefinition, { generateHarnessProjectHistory } from './project-histor
 type RouteDefinition = {
   path: string;
   auth: string;
+  timeoutSec: number;
   handler: (request: Request, context: { params: Record<string, string> }) => Promise<Response>;
 };
 
@@ -44,6 +45,7 @@ describe('GET /harness/:slug/project-history', () => {
   it('registers a loopback-only route', () => {
     expect(route.path).toBe('/harness/:slug/project-history');
     expect(route.auth).toBe('loopback');
+    expect(route.timeoutSec).toBe(120);
   });
 
   it('rejects an invalid slug before resolving a repository', async () => {
