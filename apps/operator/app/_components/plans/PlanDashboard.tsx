@@ -44,6 +44,7 @@ import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { useSyncQuery } from '@papercusp/sync';
 import { useFlag } from '@/lib/flag-hooks';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
+import { Button } from '@/app/harness/Button';
 import { bucketOf, usePlanList } from '@/app/admin/plans/plans-api';
 import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
 import SessionChatModal from '../chat/SessionChatModal';
@@ -276,57 +277,63 @@ export default function PlanDashboard({
           >
             <ArrowLeft size={14} aria-hidden="true" />
           </button>
-          {bucket ? (
-            <span className={`plan-dash__bucket plan-dash__bucket--${bucket}`}>
-              {bucket === 'running' ? 'plan' : bucket}
+          <div className="plan-dash__identity">
+            <div className="plan-dash__title-line">
+              {bucket ? (
+                <span className={`plan-dash__bucket plan-dash__bucket--${bucket}`}>
+                  {bucket === 'running' ? 'plan' : bucket}
+                </span>
+              ) : null}
+              <h1 className="plan-dash__title" title={title}>
+                {title}
+              </h1>
+            </div>
+            <span className="plan-dash__slug" title={`${harness ?? '?'} · ${planSlug}`}>
+              {harness ? `${harness} · ` : ''}
+              {planSlug}
             </span>
-          ) : null}
-          <h1 className="plan-dash__title" title={title}>
-            {title}
-          </h1>
-          <span className="plan-dash__slug" title={`${harness ?? '?'} · ${planSlug}`}>
-            {harness ? `${harness} · ` : ''}
-            {planSlug}
-          </span>
-          <span className="plan-dash__spacer" />
-          {cleanupEnabled ? (
-            <PlanCleanupEntryButton
-              planSlug={planSlug}
-              harness={harness}
-              title={title}
-              appearance="dashboard"
-              active={cleanupActive}
-              onRunStarted={(runId) => void setCleanupRunId(runId)}
-            />
-          ) : null}
-          <button
-            type="button"
-            className="plan-dash__btn plan-dash__btn--ghost"
-            onClick={openFullPlan}
-            data-testid="plan-dash-open-full"
-          >
-            <ExternalLink size={11} aria-hidden="true" />
-            Open full plan
-          </button>
-          <button
-            type="button"
-            className="plan-dash__btn plan-dash__btn--ghost"
-            onClick={openTranscriptSearch}
-            data-testid="plan-dash-search-transcripts"
-          >
-            <Search size={11} aria-hidden="true" />
-            Search transcripts
-          </button>
-          <button
-            type="button"
-            className="plan-dash__btn"
-            onClick={() => void onLaunch()}
-            disabled={launching}
-            data-testid="plan-dash-launch"
-          >
-            <Plus size={11} aria-hidden="true" />
-            {launching ? 'Launching…' : 'Launch agent'}
-          </button>
+          </div>
+
+          <div className="plan-dash__actions" aria-label="Plan actions">
+            <Button
+              variant="primary"
+              className="plan-dash__btn plan-dash__btn--primary"
+              onClick={openFullPlan}
+              data-testid="plan-dash-open-full"
+            >
+              <ExternalLink size={13} aria-hidden="true" />
+              Open full plan
+            </Button>
+            <Button
+              variant="accent"
+              className="plan-dash__btn"
+              onClick={() => void onLaunch()}
+              disabled={launching}
+              data-testid="plan-dash-launch"
+            >
+              <Plus size={12} aria-hidden="true" />
+              {launching ? 'Launching…' : 'Launch agent'}
+            </Button>
+            <Button
+              variant="ghost"
+              className="plan-dash__btn plan-dash__btn--ghost"
+              onClick={openTranscriptSearch}
+              data-testid="plan-dash-search-transcripts"
+            >
+              <Search size={12} aria-hidden="true" />
+              Search transcripts
+            </Button>
+            {cleanupEnabled ? (
+              <PlanCleanupEntryButton
+                planSlug={planSlug}
+                harness={harness}
+                title={title}
+                appearance="dashboard"
+                active={cleanupActive}
+                onRunStarted={(runId) => void setCleanupRunId(runId)}
+              />
+            ) : null}
+          </div>
         </div>
 
         <div className="plan-dash__meta">

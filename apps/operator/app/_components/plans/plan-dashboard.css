@@ -25,6 +25,7 @@
 .plan-dash {
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
   gap: 14px;
   padding: 16px 20px 24px;
   min-height: 100%;
@@ -42,8 +43,8 @@
 
 .plan-dash__title-row {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -64,6 +65,26 @@
 .plan-dash__back:hover {
   color: var(--fg);
   border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+.plan-dash__back:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.plan-dash__identity {
+  display: flex;
+  flex: 1 1 320px;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 160px;
+}
+
+.plan-dash__title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .plan-dash__bucket {
@@ -110,47 +131,88 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 0 1 auto;
+  max-width: 100%;
 }
 
-.plan-dash__spacer {
-  flex: 1;
+.plan-dash__actions {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .plan-dash__btn {
-  display: inline-flex;
-  align-items: center;
   gap: 5px;
-  padding: 3px 10px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: color-mix(in srgb, var(--accent) 70%, var(--fg));
+  min-height: 30px;
+  padding-inline: 10px;
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
-  cursor: pointer;
   flex: 0 0 auto;
 }
 
-.plan-dash__btn:hover {
-  background: color-mix(in srgb, var(--accent) 18%, transparent);
+/* The Vite shell loads a late generic `.pc-btn` skin. Scope these variant
+ * rules through the dashboard so semantic primary/ghost intent wins there. */
+.plan-dash .plan-dash__btn--primary {
+  min-height: 32px;
+  padding-inline: 13px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 5px 16px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
-.plan-dash__btn:disabled {
-  opacity: 0.55;
-  cursor: default;
+.plan-dash .plan-dash__btn--primary:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: var(--accent-ink);
 }
 
-.plan-dash__btn--ghost {
-  border-color: var(--border);
+.plan-dash .plan-dash__btn--ghost {
+  border-color: transparent;
   background: transparent;
   color: var(--fg-mute);
 }
 
-.plan-dash__btn--ghost:hover {
+.plan-dash .plan-dash__btn--ghost:hover {
   color: var(--fg);
   background: var(--bg-2);
+}
+
+/* The dashboard can be narrow inside a wide viewport while the chat/sidebar
+ * columns remain open, so responsiveness must follow this surface's own width. */
+@container (max-width: 920px) {
+  .plan-dash__title-row {
+    flex-wrap: wrap;
+  }
+
+  .plan-dash__identity {
+    flex-basis: calc(100% - 42px);
+  }
+
+  .plan-dash__actions {
+    width: 100%;
+    padding-left: 38px;
+    justify-content: flex-start;
+  }
+}
+
+@container (max-width: 560px) {
+  .plan-dash {
+    padding-inline: 14px;
+  }
+
+  .plan-dash__actions {
+    padding-left: 0;
+  }
+
+  .plan-dash .plan-dash__btn--primary {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
 }
 
 /* ── Meta strip: ✎/⚒ clocks + progress + needs-you ─────────────────────── */

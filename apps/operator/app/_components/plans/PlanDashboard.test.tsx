@@ -279,7 +279,13 @@ describe('PlanDashboard header', () => {
   it('Open full plan writes the scoped ?wppop ref', () => {
     seed();
     renderDash();
-    fireEvent.click(screen.getByTestId('plan-dash-open-full'));
+    const primary = screen.getByTestId('plan-dash-open-full');
+    expect(primary.className).toContain('pc-btn-primary');
+    expect(screen.getByTestId('plan-dash-launch').className).not.toContain('pc-btn-primary');
+    expect(screen.getByTestId('plan-dash-search-transcripts').className).not.toContain(
+      'pc-btn-primary',
+    );
+    fireEvent.click(primary);
     expect(setters['wppop']).toHaveBeenCalledWith('papercusp::p1');
   });
 
