@@ -90,8 +90,6 @@ const mutate = (mutations: WorkItemDependencyBatchInput['mutations'], retries?: 
       sql: db.sql as Sql,
       retry: {
         maxRetries: 12,
-        baseDelayMs: 0,
-        sleep: async () => {},
         onRetry: ({ code }) => retries?.push(code),
       },
     },
@@ -267,10 +265,9 @@ beforeAll(async () => {
     .simple();
 
   // The shipping topology-preserving re-home capability and the P-007 deletion
-  // refusal guard.  The latter stays .DRAFT until this suite proves it, then the
-  // test path and file are armed together.
+  // refusal guard. Both real migration files are applied rather than restated.
   await applyMigrationForTest(db.sql, resolve(SQL_DIR, '734-repoint-qualified-refs-on-rehome.sql'));
-  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '988-work-item-dependency-delete-guard.sql.DRAFT'));
+  await applyMigrationForTest(db.sql, resolve(SQL_DIR, '988-work-item-dependency-delete-guard.sql'));
 
   await db.sql
     .unsafe(
