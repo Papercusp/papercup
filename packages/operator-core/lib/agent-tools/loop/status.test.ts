@@ -39,6 +39,9 @@ vi.mock('../../events/await/store', () => ({
 }));
 
 vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: vi.fn() }));
+vi.mock('../../harness/routines/loop-transition-log', () => ({
+  readLatestLoopTransition: vi.fn(async () => ({ status: 'none' })),
+}));
 vi.mock('../../carry-note', () => ({
   getLoopCarryNoteWithMeta: vi.fn(async () => ({ note: null, updatedAtMs: null })),
   shortCarryHash: vi.fn((note: string) => `hash:${note}`),
@@ -46,11 +49,13 @@ vi.mock('../../carry-note', () => ({
 
 import { _resetStoreIdentityForTests, pinOrVerifyStoreIdentity } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
+import { readLatestLoopTransition } from '../../harness/routines/loop-transition-log';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
 import { listWakeAwaitsForSubscriber } from '../../events/await/store';
 import statusTool from './status';
 
 const getLoopStatusMock = getLoopStatus as unknown as ReturnType<typeof vi.fn>;
+const readLatestLoopTransitionMock = readLatestLoopTransition as unknown as ReturnType<typeof vi.fn>;
 const getLoopCarryNoteWithMetaMock = getLoopCarryNoteWithMeta as unknown as ReturnType<typeof vi.fn>;
 const listWakeAwaitsMock = listWakeAwaitsForSubscriber as unknown as ReturnType<typeof vi.fn>;
 
@@ -60,9 +65,13 @@ const IMPOSTOR = { systemIdentifier: '7111222333444555666', database: 'papercusp
 // Via `unknown`: the tool's declared arg/event generics do not overlap this narrowed
 // shape, and TS2352 correctly refuses the direct assertion (same pattern as pg_health.test.ts).
 const run = (args: Record<string, unknown> = {}) =>
-  (statusTool as unknown as {
-    handler: (a: unknown, ctx: unknown) => Promise<{ content: [{ type: 'text'; text: string }] }>;
-  }).handler(args, {}).then((r) => JSON.parse(r.content[0].text));
+  (
+    statusTool as unknown as {
+      handler: (a: unknown, ctx: unknown) => Promise<{ content: [{ type: 'text'; text: string }] }>;
+    }
+  )
+    .handler(args, {})
+    .then((r) => JSON.parse(r.content[0].text));
 
 describe('loop:status — ambient workspace transaction safety (EI-20229292848756531)', () => {
   it('opts out because the handler owns independent DB reads and never consumes ctx.tx', () => {
@@ -119,6 +128,64 @@ beforeEach(() => {
   getLoopCarryNoteWithMetaMock.mockResolvedValue({ note: null, updatedAtMs: null });
   listWakeAwaitsMock.mockReset();
   listWakeAwaitsMock.mockResolvedValue({ totalCount: 0, sample: [] });
+  readLatestLoopTransitionMock.mockReset();
+  readLatestLoopTransitionMock.mockResolvedValue({ status: 'none' });
+});
+
+describe('loop:status latest transition diagnostics (EI-21573850378423298)', () => {
+  it('surfaces await-suppression and its driving event instead of resembling fire starvation', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      name: 'loop-su-caller-own-id',
+      active: true,
+      ownerId: 'su-caller-own-id',
+      harnessSlug: 'papercusp',
+      intervalSec: 60,
+      firesSinceArm: 0,
+      nextFireAt: '2026-08-27T03:17:32.159Z',
+    });
+    readLatestLoopTransitionMock.mockResolvedValue({
+      status: 'found',
+      transition: {
+        at: '2026-08-27T03:08:18.952Z',
+        event: 'rearmed',
+        actor: 'await-suppression',
+        newNextFireAt: '2026-08-27T03:17:32.159Z',
+        intervalSec: 60,
+        detail: {
+          via: 'await-suppression',
+          drivingEventKey: 'plan:stable:recovery-complete',
+        },
+      },
+    });
+
+    const out = await run();
+
+    expect(out.lastTransition).toMatchObject({
+      status: 'found',
+      transition: {
+        actor: 'await-suppression',
+        detail: { drivingEventKey: 'plan:stable:recovery-complete' },
+      },
+    });
+    expect(readLatestLoopTransitionMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      installSlug: 'papercusp',
+      routineName: 'loop-su-caller-own-id',
+      targetOwnerId: 'su-caller-own-id',
+    });
+    const returns = (statusTool as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
+    expect(returns).toContain('lastTransition');
+    expect(returns).toContain("actor:'await-suppression'");
+  });
+
+  it('returns null and skips the transition read when no loop exists', async () => {
+    getLoopStatusMock.mockResolvedValue(null);
+
+    const out = await run();
+
+    expect(out.lastTransition).toBeNull();
+    expect(readLatestLoopTransitionMock).not.toHaveBeenCalled();
+  });
 });
 
 describe('loop:status carry-note read-back (EI-21380031331878722)', () => {
