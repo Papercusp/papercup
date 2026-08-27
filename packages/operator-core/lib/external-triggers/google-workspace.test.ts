@@ -2,9 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 import { GOOGLE_CONTACTS_CONNECTIONS_ENDPOINT } from '../oauth/providers';
 import {
   GOOGLE_GMAIL_PROFILE_ENDPOINT,
+  isGoogleWorkspaceTerminalAuthError,
   probeGoogleContactsAccess,
   resolveGoogleWorkspaceProviderAccount,
 } from './google-workspace';
+
+describe('Google Workspace terminal auth classification', () => {
+  it('requires reconnect for refresh revocation and provider 401s, but retries provider outages', () => {
+    expect(isGoogleWorkspaceTerminalAuthError(new Error('google oauth: Token has been expired or revoked.'))).toBe(
+      true,
+    );
+    expect(isGoogleWorkspaceTerminalAuthError('google oauth: invalid_grant')).toBe(true);
+    expect(isGoogleWorkspaceTerminalAuthError('google_gmail_watch_401:Invalid Credentials')).toBe(true);
+    expect(isGoogleWorkspaceTerminalAuthError('google_calendar_incremental_list_503')).toBe(false);
+  });
+});
 
 describe('Google Contacts scope probe', () => {
   it('uses the contacts-scoped connections resource, never the profile-only people/me resource', async () => {
@@ -25,8 +37,9 @@ describe('Google Contacts scope probe', () => {
   it('reports the upstream status so a rejected token is not reported as healthy', async () => {
     const fetchMock = vi.fn(async () => new Response('forbidden', { status: 403 }));
 
-    await expect(probeGoogleContactsAccess('contacts-token', fetchMock as typeof fetch))
-      .rejects.toThrow('google_contacts_403');
+    await expect(probeGoogleContactsAccess('contacts-token', fetchMock as typeof fetch)).rejects.toThrow(
+      'google_contacts_403',
+    );
   });
 });
 

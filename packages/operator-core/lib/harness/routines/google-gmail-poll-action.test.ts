@@ -174,6 +174,112 @@ describe('google-gmail-poll system action', () => {
     );
   });
 
+  it('isolates a revoked mailbox until an account-targeted reconnect resumes its preserved cursor', async () => {
+    const revokedId = 'source-revoked';
+    const siblingId = 'source-sibling';
+    const initial = [source(revokedId, 'revoked@example.com'), source(siblingId, 'sibling@example.com')];
+    const state = new Map(initial.map((current) => [current.id, current]));
+    let pass = 0;
+    const updateSource = vi.fn(async (_sql, _workspaceId, sourceId: string, input) => {
+      const current = state.get(sourceId)!;
+      const updated: ExternalTriggerSourceRow = {
+        ...current,
+        status: input.status,
+        cursor: input.cursor ?? current.cursor,
+      };
+      state.set(sourceId, updated);
+      return updated;
+    });
+    const resolveAccessToken = vi.fn(async (current: ExternalTriggerSourceRow) => `token:${current.credentialRef}`);
+    const ensureWatch = vi.fn(async (_sql, current: ExternalTriggerSourceRow) => {
+      if (pass === 0 && current.id === revokedId) {
+        throw new Error('google_gmail_watch_401:Invalid Credentials');
+      }
+      return {
+        renewed: false,
+        emailAddress: String(current.cursor.emailAddress),
+        historyId: String(current.cursor.historyId),
+        expiration: String(current.cursor.watchExpiration),
+        source: current,
+      };
+    });
+    const syncSource = vi.fn(async (_sql, current: ExternalTriggerSourceRow) => {
+      const historyId = `next-${current.id}-pass-${pass}`;
+      state.set(current.id, { ...current, cursor: { ...current.cursor, historyId } });
+      return {
+        mode: 'incremental' as const,
+        messages: 1,
+        historyPages: 1,
+        messagePages: 0,
+        historyId,
+      };
+    });
+    const acknowledge = vi.fn(async (_workspaceId: string, ackIds: string[]) => ackIds.length);
+    const deps = {
+      sql: {} as never,
+      listSources: vi.fn(async () => [...state.values()].filter((current) => current.status !== 'error')),
+      resolveAccessToken,
+      provision: vi.fn(async () => ({
+        projectId: 'project',
+        subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const,
+        subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      ensureWatch,
+      ensureFlagshipBinding: vi.fn(),
+      pull: vi.fn(async () =>
+        pass === 0
+          ? [doorbell('ack-revoked', 'revoked@example.com'), doorbell('ack-sibling', 'sibling@example.com')]
+          : [doorbell('ack-revoked-redelivery', 'revoked@example.com')],
+      ),
+      acknowledge,
+      syncSource,
+      updateSource,
+    };
+
+    const failed = await runGoogleGmailPoll(CTX, deps);
+
+    expect(failed).toMatchObject({
+      sources: 2,
+      succeeded: 1,
+      failed: 1,
+      acknowledged: 1,
+      failures: [{ sourceId: revokedId, status: 'error', error: 'google_gmail_watch_401:Invalid Credentials' }],
+    });
+    expect(acknowledge).toHaveBeenNthCalledWith(1, 'papercusp-workspace', ['ack-sibling']);
+    expect(state.get(revokedId)).toMatchObject({
+      status: 'error',
+      cursor: { historyId: `history-${revokedId}` },
+    });
+    expect(state.get(siblingId)).toMatchObject({
+      status: 'connected',
+      cursor: { historyId: `next-${siblingId}-pass-0` },
+    });
+
+    const beforeReconnect = state.get(revokedId)!;
+    state.set(revokedId, {
+      ...beforeReconnect,
+      status: 'connected',
+      credentialRef: 'google-workspace:reconnected-revoked',
+    });
+    pass = 1;
+    const recovered = await runGoogleGmailPoll(CTX, deps);
+
+    expect(recovered).toMatchObject({ sources: 2, succeeded: 2, failed: 0, acknowledged: 1 });
+    expect(acknowledge).toHaveBeenNthCalledWith(2, 'papercusp-workspace', ['ack-revoked-redelivery']);
+    expect(syncSource.mock.calls.map(([, current]) => current.id)).toEqual([siblingId, revokedId]);
+    expect(state.get(revokedId)).toMatchObject({
+      status: 'connected',
+      credentialRef: 'google-workspace:reconnected-revoked',
+      cursor: { historyId: `next-${revokedId}-pass-1` },
+    });
+    expect(state.get(siblingId)?.cursor).toMatchObject({ historyId: `next-${siblingId}-pass-0` });
+    expect(updateSource).toHaveBeenCalledTimes(1);
+  });
+
   it('clears a degraded source after the next successful idle poll', async () => {
     let current = source('source-idle', 'idle@example.com');
     let accessTokenAttempts = 0;

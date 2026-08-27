@@ -7,7 +7,10 @@ import {
   listPollableExternalTriggerSources,
   updateExternalTriggerSourceSyncState,
 } from '../../external-triggers/source-store';
-import { resolveGoogleWorkspaceAccessToken } from '../../external-triggers/google-workspace';
+import {
+  isGoogleWorkspaceTerminalAuthError,
+  resolveGoogleWorkspaceAccessToken,
+} from '../../external-triggers/google-workspace';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 export interface GoogleCalendarPollFailure {
@@ -47,12 +50,6 @@ function errorText(cause: unknown): string {
   return (cause instanceof Error ? cause.message : String(cause)).slice(0, 4000);
 }
 
-function terminalAuthError(message: string): boolean {
-  return /(?:oauth|credential_ref|access_token).*(?:invalid|expired|not_connected|not_registered|required)|still_401/i.test(
-    message,
-  );
-}
-
 /**
  * Poll every owned/credentialed gcal source independently. One broken account
  * cannot starve the remaining sources; degraded provider errors retry on the
@@ -90,7 +87,7 @@ export async function runGoogleCalendarPoll(
       result.upcoming += synced.upcoming;
     } catch (cause) {
       const error = errorText(cause);
-      const status = terminalAuthError(error) ? 'error' : 'degraded';
+      const status = isGoogleWorkspaceTerminalAuthError(error) ? 'error' : 'degraded';
       await updateSource(sql, ctx.workspaceId, source.id, {
         status,
         lastError: error,

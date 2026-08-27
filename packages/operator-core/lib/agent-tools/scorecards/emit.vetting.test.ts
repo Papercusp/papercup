@@ -480,6 +480,7 @@ describe('scorecards:emit vetting stamp (P-004)', () => {
         synthesized: false,
         score10: 10,
         linkedItems: [],
+        rubricRevision: 7,
         vetting: { consultId: 'conv-vet-1', rubricRevision: 7 }, // SAME consult + revision
       },
     ]);

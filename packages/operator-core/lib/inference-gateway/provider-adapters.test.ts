@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  assertGatewayLaneCapability,
+  gatewayLaneConformanceMatrix,
   gatewayProviderStatuses,
   legacyEntryRouteForGatewayLane,
   legacyExecutorForGatewayTransport,
@@ -7,6 +9,7 @@ import {
   makeGatewayProviderAdapters,
   providerForGatewayPath,
   providerForGatewayRequest,
+  type GatewayLaneCapabilityRequest,
   type GatewayProviderId,
 } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
@@ -114,6 +117,96 @@ describe('gateway provider adapters', () => {
       transports: [],
     };
     expect(() => legacyEntryRouteForGatewayLane(malformed)).toThrow(/has no declared transport/);
+  });
+
+  it('generates an exhaustive backend/protocol/transport conformance matrix from the registry', () => {
+    const lanes = makeGatewayLaneRegistry({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      codexCliAccountCount: () => 1,
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+    const matrix = gatewayLaneConformanceMatrix(lanes);
+
+    expect(matrix).toHaveLength(44);
+    expect(new Set(matrix.map((row) => row.id)).size).toBe(matrix.length);
+    expect(matrix.filter((row) => row.client === 'claude')).toHaveLength(6);
+    expect(matrix.filter((row) => row.client === 'codex')).toHaveLength(15);
+    expect(matrix.filter((row) => row.client === 'omp')).toHaveLength(23);
+    expect(
+      [...new Set(matrix.filter((row) => row.client === 'omp').map((row) => row.protocol))].sort(),
+    ).toEqual(['anthropic-messages', 'openai-chat', 'openai-responses']);
+    expect(matrix.some((row) => row.protocol === ('omp' as never))).toBe(false);
+
+    for (const row of matrix) {
+      expect(assertGatewayLaneCapability(row.lane, row).id).toBe(row.transport);
+    }
+    expect(matrix).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          client: 'claude',
+          protocol: 'anthropic-messages',
+          upstream: 'anthropic-api',
+          transport: 'oauth-http',
+          auth: 'oauth',
+        }),
+        expect.objectContaining({
+          client: 'codex',
+          protocol: 'openai-responses',
+          upstream: 'openai-api',
+          transport: 'bearer-http',
+          auth: 'bearer',
+        }),
+        expect.objectContaining({
+          client: 'codex',
+          upstream: 'chatgpt-codex',
+          transport: 'oauth-http',
+          auth: 'oauth',
+        }),
+        expect.objectContaining({
+          client: 'codex',
+          transport: 'cli-exec',
+          auth: 'cli-home',
+          streaming: false,
+        }),
+        expect.objectContaining({
+          client: 'omp',
+          protocol: 'openai-chat',
+          upstream: 'local-registry',
+          transport: 'local-http',
+          auth: 'none',
+        }),
+      ]),
+    );
+  });
+
+  it('fails closed on every unsupported capability axis instead of substituting a fallback', () => {
+    const lanes = makeGatewayLaneRegistry({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+    const matrix = gatewayLaneConformanceMatrix(lanes);
+    const bearer = matrix.find(
+      (row) => row.client === 'codex' && row.transport === 'bearer-http' && !row.streaming,
+    )!;
+    const cli = matrix.find((row) => row.client === 'codex' && row.transport === 'cli-exec')!;
+    const local = matrix.find((row) => row.transport === 'local-http' && !row.streaming)!;
+    const reject = (
+      lane: typeof lanes.anthropicMessages,
+      request: GatewayLaneCapabilityRequest,
+      code: string,
+    ) => expect(() => assertGatewayLaneCapability(lane, request)).toThrow(new RegExp(`\\[${code}\\]`));
+
+    reject(cli.lane, { ...cli, streaming: true }, 'stream-mode');
+    reject(bearer.lane, { ...bearer, auth: 'oauth' }, 'auth-mode');
+    reject(bearer.lane, { ...bearer, modelDiscovery: 'upstream' }, 'model-discovery');
+    reject(local.lane, { ...local, retryPolicy: 'account-failover' }, 'retry-policy');
+    reject(local.lane, { ...local, accountPin: 'hard' }, 'account-pin');
+    reject(bearer.lane, { ...bearer, upstream: 'anthropic-api' }, 'upstream-route');
+    reject(bearer.lane, { ...bearer, protocol: 'anthropic-messages' }, 'wire-protocol');
   });
 
   it('declares Claude, Codex, and OMP provider contracts explicitly', () => {

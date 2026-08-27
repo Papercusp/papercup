@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PriorityAdmissionQueue } from '@papercusp/papercusp-shared/agent';
-import { makeGatewayLaneRegistry, type GatewayLaneDescriptor } from './provider-adapters';
+import {
+  assertGatewayLaneCapability,
+  gatewayLaneConformanceMatrix,
+  makeGatewayLaneRegistry,
+  type GatewayLaneDescriptor,
+  type GatewayTransportId,
+} from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
   executeGatewayLegacyLane,
@@ -42,6 +48,7 @@ const laneRegistry = makeGatewayLaneRegistry({
 });
 
 const laneCases = Object.values(laneRegistry).map((lane) => ({ id: lane.id, lane }));
+const conformanceCases = gatewayLaneConformanceMatrix(laneRegistry);
 
 interface RouteValue {
   name: string;
@@ -90,6 +97,8 @@ interface FixtureOverrides {
   policy?: Partial<GatewayKernelPolicy>;
   signal?: AbortSignal;
   downstreamSignal?: AbortSignal;
+  transport?: GatewayTransportId;
+  streaming?: boolean;
   selectInitial?: (routeA: GatewayKernelRoute<RouteValue>) => Promise<GatewayKernelRoute<RouteValue>>;
   executeAttempt?: (
     prepared: PreparedAttempt,
@@ -103,7 +112,10 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
   const written: Uint8Array[] = [];
   const started: Array<{ status: number; metadata: ResponseMetadata }> = [];
   const telemetry = new GatewayRequestTelemetry();
-  const transport = lane.transports.find((candidate) => !candidate.degraded)?.id ?? lane.transports[0]!.id;
+  const transport =
+    overrides.transport ??
+    lane.transports.find((candidate) => !candidate.degraded)?.id ??
+    lane.transports[0]!.id;
   const accountBacked = lane.capabilities.accountPinning !== 'none';
   const routeA: GatewayKernelRoute<RouteValue> = {
     key: `${lane.id}:a`,
@@ -187,9 +199,11 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
         }
         return {
           status: 200,
-          streaming: true,
+          streaming: overrides.streaming ?? true,
           transport: context.route.transport,
-          metadata: { contentType: 'text/event-stream' },
+          metadata: {
+            contentType: overrides.streaming === false ? 'application/json' : 'text/event-stream',
+          },
           body: chunks('first', 'second'),
         };
       },
@@ -249,6 +263,42 @@ async function caughtKernelError(promise: Promise<unknown>): Promise<GatewayRequ
 describe('gateway request kernel lane coverage', () => {
   it('enumerates every static lane descriptor exactly once', () => {
     expect(laneCases.map(({ id }) => id)).toEqual(['anthropic-messages', 'openai-responses', 'local-openai-chat']);
+  });
+});
+
+describe.each(conformanceCases)('$id conformance', (row) => {
+  it('passes the shared lifecycle contract for its declared capability combination', async () => {
+    expect(assertGatewayLaneCapability(row.lane, row).id).toBe(row.transport);
+    const f = fixture(row.lane, {
+      transport: row.transport,
+      streaming: row.streaming,
+      pin:
+        row.accountPin === 'none'
+          ? null
+          : { accountId: 'account-a', mode: row.accountPin },
+      executeAttempt: async (_prepared, context) => ({
+        status: 200,
+        streaming: row.streaming,
+        transport: context.route.transport,
+        metadata: {
+          contentType: row.streaming ? 'text/event-stream' : 'application/json',
+        },
+        body: chunks('matrix-result'),
+      }),
+    });
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result).toMatchObject({
+      laneId: row.lane.id,
+      status: 200,
+      outcome: 'ok',
+      attempts: 1,
+      failovers: 0,
+      finalRoute: { transport: row.transport },
+    });
+    assertCompleteGatewayRequestTimeline(result.timeline);
+    expect(f.counts()).toMatchObject({ releaseCount: 1, unregisterCount: 1 });
   });
 });
 

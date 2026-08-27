@@ -375,38 +375,6 @@ export default defineTool({
     // carries the same mode into bootstrap-su.
     const launchMode = await readCallerLaunchMode(workspaceId, callerOwnerId);
 
-    // P-014: claim the launch BEFORE spawning anything — a replay must not open a
-    // second set of windows. (No key ⇒ unguarded, exactly like cup:spawn.)
-    const claim = await claimAgentLaunch({
-      workspaceId,
-      idempotencyKey: args.idempotencyKey,
-      launchedBy: callerOwnerId,
-    });
-    if (!claim.won) {
-      const prior = claim.priorSummary && Object.keys(claim.priorSummary).length ? claim.priorSummary : null;
-      const priorLaunch = prior && typeof prior.launch === 'object' && prior.launch !== null
-        ? prior.launch as Record<string, unknown>
-        : prior;
-      const when = claim.priorLaunchedAt ? new Date(claim.priorLaunchedAt).toISOString() : 'earlier';
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text:
-              `Already launched (deduped) — idempotencyKey ${JSON.stringify(args.idempotencyKey)} was claimed at ${when}` +
-              `${claim.priorLaunchedBy ? ` by ${claim.priorLaunchedBy}` : ''}. Nothing new was spawned.\n` +
-              (prior ? `That call reported: ${JSON.stringify(prior)}` : 'No summary was recorded for that call — check /adv/sessions for what it opened.'),
-          },
-        ],
-        data: {
-          deduped: true,
-          launch: priorLaunch
-            ? { ...priorLaunch, deduped: true }
-            : { deduped: true, opened: 0, failed: 0, mode: 'deduped', fleet: null, tasks: [] },
-        },
-      };
-    }
-
     // Resolve the resume/fork/successor target: an agent id (usual) or an exact
     // session uuid. D-007 keeps ordinary resume/fork behavior unchanged; the
     // explicit successor path is the one exception that intentionally starts a
@@ -966,6 +934,42 @@ export default defineTool({
     // Back-compat: `command` (singular) is the representative reported/recorded command
     // — identical across members in the common no-`members` case.
     const command = memberCommands[0] ?? '';
+
+    // P-014: claim the launch only after all validation, target/profile resolution,
+    // backend/model preflight, and command composition have succeeded. A refused
+    // preflight must leave the key reusable so a corrected retry can launch; the
+    // claim still lands immediately before the first spawn, preventing duplicate
+    // windows for re-fired calls. (No key ⇒ unguarded, exactly like cup:spawn.)
+    const claim = await claimAgentLaunch({
+      workspaceId,
+      idempotencyKey: args.idempotencyKey,
+      launchedBy: callerOwnerId,
+    });
+    if (!claim.won) {
+      const prior = claim.priorSummary && Object.keys(claim.priorSummary).length ? claim.priorSummary : null;
+      const priorLaunch = prior && typeof prior.launch === 'object' && prior.launch !== null
+        ? prior.launch as Record<string, unknown>
+        : prior;
+      const when = claim.priorLaunchedAt ? new Date(claim.priorLaunchedAt).toISOString() : 'earlier';
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text:
+              `Already launched (deduped) — idempotencyKey ${JSON.stringify(args.idempotencyKey)} was claimed at ${when}` +
+              `${claim.priorLaunchedBy ? ` by ${claim.priorLaunchedBy}` : ''}. Nothing new was spawned.\n` +
+              (prior ? `That call reported: ${JSON.stringify(prior)}` : 'No summary was recorded for that call — check /adv/sessions for what it opened.'),
+          },
+        ],
+        data: {
+          deduped: true,
+          launch: priorLaunch
+            ? { ...priorLaunch, deduped: true }
+            : { deduped: true, opened: 0, failed: 0, mode: 'deduped', fleet: null, tasks: [] },
+        },
+      };
+    }
+
     // Public member carry/claimKinds behavior stays unchanged. A respawn's
     // INTERNAL savedLaunchCarry was resolved/audited before this handler and is
     // emitted above; it is not the same as accepting a public member override.

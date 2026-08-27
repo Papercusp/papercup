@@ -85,6 +85,18 @@ export function googleWorkspaceCredentialRef(field: string): string {
   return `${GOOGLE_WORKSPACE_OAUTH_PLUGIN}:${field}`;
 }
 
+/**
+ * Distinguish reconnect-required Google credential failures from transient
+ * provider faults. Google may surface revocation either while refreshing the
+ * OAuth grant or as a provider API 401 against an otherwise unexpired token.
+ */
+export function isGoogleWorkspaceTerminalAuthError(cause: unknown): boolean {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  return /(?:oauth|credential_ref|access_token).*(?:invalid|expired|revoked|not[_ -]?connected|not[_ -]?registered|required)|(?:invalid_grant|invalid_token)|google_(?:workspace|gmail|calendar)_[a-z0-9_]+_401\b|still[_ -]?401/i.test(
+    message,
+  );
+}
+
 export function assertGoogleWorkspaceOwnerUserId(ownerUserId: string | undefined): string {
   const normalized = ownerUserId?.trim() ?? '';
   if (!UUID.test(normalized)) throw new Error('google_workspace_owner_user_id_invalid');

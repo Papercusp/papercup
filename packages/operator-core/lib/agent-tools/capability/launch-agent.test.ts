@@ -376,6 +376,38 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(codexPreflightModelMock).toHaveBeenCalledWith('/tmp/codex', 'gpt-5.6');
   });
 
+  it('does not consume an idempotency key on model refusal, so a corrected retry can launch', async () => {
+    codexPreflightHomeMock.mockResolvedValue('/tmp/codex');
+    codexPreflightModelMock
+      .mockResolvedValueOnce({
+        verdict: 'refused',
+        status: 400,
+        detail: `{"detail":"The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account."}`,
+      })
+      .mockResolvedValueOnce({ verdict: 'ok', status: 200, detail: 'supported' });
+
+    const first = await launchAgent.handler(
+      { agent: 'codex', model: 'gpt-5.6:xhigh', brief: 'run the check', idempotencyKey: 'wi-42381-independent-grade-v1' },
+      ctx,
+    );
+
+    expect(isError(first)).toBe(true);
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+
+    const corrected = await launchAgent.handler(
+      { agent: 'codex', model: 'gpt-5.6-sol:high', brief: 'run the check', idempotencyKey: 'wi-42381-independent-grade-v1' },
+      ctx,
+    );
+
+    expect(isError(corrected)).toBe(false);
+    expect(claimAgentLaunchMock).toHaveBeenCalledTimes(1);
+    expect(claimAgentLaunchMock).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: 'wi-42381-independent-grade-v1' }),
+    );
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+  });
+
   it('proceeds with a warning when Codex model preflight is inconclusive', async () => {
     codexPreflightHomeMock.mockResolvedValue('/tmp/codex');
     codexPreflightModelMock.mockResolvedValue({ verdict: 'unknown', status: 429, detail: 'rate limited' });

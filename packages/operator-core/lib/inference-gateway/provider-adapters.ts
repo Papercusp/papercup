@@ -29,6 +29,7 @@ export type GatewayRetryPolicyId = 'account-failover' | 'local-backend-failover'
 export interface GatewayTransportDescriptor {
   id: GatewayTransportId;
   auth: 'bearer' | 'oauth' | 'cli-home' | 'none';
+  upstreams: readonly GatewayUpstreamRoute[];
   streaming: boolean;
   nonStreaming: boolean;
   /** Legacy handler that currently realizes this strategy while P-010 moves
@@ -84,6 +85,25 @@ export interface GatewayLaneRegistry {
 export interface GatewayLegacyEntryRoute {
   executor: GatewayLegacyEntryExecutorId;
   transport: GatewayTransportId;
+}
+
+export type GatewayAccountPinMode = 'hard' | 'soft' | 'none';
+
+export interface GatewayLaneCapabilityRequest {
+  client: GatewayClientBackend;
+  protocol: GatewayWireProtocol;
+  upstream: GatewayUpstreamRoute;
+  transport: GatewayTransportId;
+  auth: GatewayTransportDescriptor['auth'];
+  streaming: boolean;
+  modelDiscovery: GatewayModelCatalogPolicy;
+  retryPolicy: GatewayRetryPolicyId;
+  accountPin: GatewayAccountPinMode;
+}
+
+export interface GatewayLaneConformanceCase extends GatewayLaneCapabilityRequest {
+  id: string;
+  lane: GatewayLaneDescriptor;
 }
 
 export interface GatewayProviderAdapter {
@@ -144,6 +164,7 @@ export function makeGatewayLaneRegistry(opts: {
         {
           id: 'oauth-http',
           auth: 'oauth',
+          upstreams: ['anthropic-api'],
           streaming: true,
           nonStreaming: true,
           legacyExecutor: 'proxy',
@@ -176,6 +197,7 @@ export function makeGatewayLaneRegistry(opts: {
         {
           id: 'bearer-http',
           auth: 'bearer',
+          upstreams: ['openai-api'],
           streaming: true,
           nonStreaming: true,
           legacyExecutor: 'proxyOpenAi',
@@ -183,6 +205,7 @@ export function makeGatewayLaneRegistry(opts: {
         {
           id: 'oauth-http',
           auth: 'oauth',
+          upstreams: ['chatgpt-codex'],
           streaming: true,
           nonStreaming: true,
           legacyExecutor: 'serveCodexOAuthProxy',
@@ -190,6 +213,7 @@ export function makeGatewayLaneRegistry(opts: {
         {
           id: 'cli-exec',
           auth: 'cli-home',
+          upstreams: ['chatgpt-codex'],
           streaming: false,
           nonStreaming: true,
           legacyExecutor: 'serveCodexCliBridge',
@@ -224,6 +248,7 @@ export function makeGatewayLaneRegistry(opts: {
         {
           id: 'local-http',
           auth: 'none',
+          upstreams: ['local-registry'],
           streaming: true,
           nonStreaming: true,
           legacyExecutor: 'proxyLocal',
@@ -271,6 +296,122 @@ export function legacyExecutorForGatewayTransport(
     throw new Error(`inference-gateway: lane '${lane.id}' does not support transport '${transport}'`);
   }
   return strategy.legacyExecutor;
+}
+
+function capabilityFailure(
+  lane: GatewayLaneDescriptor,
+  code: string,
+  detail: string,
+): never {
+  throw new Error(`inference-gateway: lane '${lane.id}' capability rejected [${code}]: ${detail}`);
+}
+
+/**
+ * Validate one complete backend/protocol/upstream/transport request against a
+ * compiled lane. Every mismatch fails closed; this function never substitutes a
+ * different transport, auth mode, retry class, or pin policy.
+ */
+export function assertGatewayLaneCapability(
+  lane: GatewayLaneDescriptor,
+  request: GatewayLaneCapabilityRequest,
+): GatewayTransportDescriptor {
+  if (!lane.clients.includes(request.client)) {
+    capabilityFailure(lane, 'client-backend', `client '${request.client}' is not registered`);
+  }
+  if (request.protocol !== lane.protocol) {
+    capabilityFailure(lane, 'wire-protocol', `protocol '${request.protocol}' does not match '${lane.protocol}'`);
+  }
+  const transport = lane.transports.find((candidate) => candidate.id === request.transport);
+  if (!transport) {
+    capabilityFailure(lane, 'transport', `transport '${request.transport}' is not registered`);
+  }
+  if (transport.auth !== request.auth) {
+    capabilityFailure(
+      lane,
+      'auth-mode',
+      `transport '${transport.id}' requires '${transport.auth}', not '${request.auth}'`,
+    );
+  }
+  if (!transport.upstreams.includes(request.upstream)) {
+    capabilityFailure(
+      lane,
+      'upstream-route',
+      `transport '${transport.id}' cannot route to '${request.upstream}'`,
+    );
+  }
+  if (request.streaming ? !transport.streaming : !transport.nonStreaming) {
+    capabilityFailure(
+      lane,
+      'stream-mode',
+      `transport '${transport.id}' does not support ${request.streaming ? 'streaming' : 'non-streaming'}`,
+    );
+  }
+  if (request.modelDiscovery !== lane.capabilities.modelDiscovery) {
+    capabilityFailure(
+      lane,
+      'model-discovery',
+      `requested '${request.modelDiscovery}', lane declares '${lane.capabilities.modelDiscovery}'`,
+    );
+  }
+  if (request.retryPolicy !== lane.retryPolicy) {
+    capabilityFailure(
+      lane,
+      'retry-policy',
+      `requested '${request.retryPolicy}', lane declares '${lane.retryPolicy}'`,
+    );
+  }
+  if (request.accountPin !== 'none' && lane.capabilities.accountPinning === 'none') {
+    capabilityFailure(lane, 'account-pin', `lane does not support '${request.accountPin}' pins`);
+  }
+  return transport;
+}
+
+/** Generate the exhaustive conformance surface from the registry itself. */
+export function gatewayLaneConformanceMatrix(
+  registry: GatewayLaneRegistry,
+): GatewayLaneConformanceCase[] {
+  const rows: GatewayLaneConformanceCase[] = [];
+  for (const lane of Object.values(registry)) {
+    const pins: GatewayAccountPinMode[] =
+      lane.capabilities.accountPinning === 'none' ? ['none'] : ['hard', 'soft', 'none'];
+    for (const client of lane.clients) {
+      for (const transport of lane.transports) {
+        const streamModes = [
+          ...(transport.streaming ? [true] : []),
+          ...(transport.nonStreaming ? [false] : []),
+        ];
+        for (const upstream of transport.upstreams) {
+          for (const streaming of streamModes) {
+            for (const accountPin of pins) {
+              const row: GatewayLaneConformanceCase = {
+                id: [
+                  lane.id,
+                  client,
+                  transport.id,
+                  upstream,
+                  streaming ? 'stream' : 'nonstream',
+                  accountPin,
+                ].join(':'),
+                lane,
+                client,
+                protocol: lane.protocol,
+                upstream,
+                transport: transport.id,
+                auth: transport.auth,
+                streaming,
+                modelDiscovery: lane.capabilities.modelDiscovery,
+                retryPolicy: lane.retryPolicy,
+                accountPin,
+              };
+              assertGatewayLaneCapability(lane, row);
+              rows.push(row);
+            }
+          }
+        }
+      }
+    }
+  }
+  return rows;
 }
 
 export function makeGatewayProviderAdapters(opts: {
