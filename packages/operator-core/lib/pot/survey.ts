@@ -42,7 +42,8 @@ import { listPlanIndexRowsCached } from '../agent-tools/plans/index-cache';
 import { reconcileStartStatus, isTerminalPlanStatus } from '../agent-tools/plans/plan-start-state';
 import { rankPlacements, type PlacementCandidate } from './placement-ranker';
 import type { Ranked } from '../queue-ranker';
-import { defaultBlockingStore } from '../work-item-blocking';
+import { ALL_SUCCESSFUL_STATUSES, defaultBlockingStore } from '../work-item-blocking';
+import type { WorkItemBlockerRequirement } from '../dbos/work-item-deps-store';
 import { selectReady, type ReadinessNode } from '../dbos/frontier-readiness';
 import { activeExternalBlockers } from '../external-blockers';
 import { placementConfig } from './placement-watchdog';
@@ -313,7 +314,7 @@ export function frontierRowToCandidate(row: FrontierRow, now: number): Placement
  */
 export interface HarnessBlockGraph {
   /** blocked feature_id → blocker feature_ids (within-harness, bare ids). */
-  blockers: Map<string, string[]>;
+  blockers: Map<string, (string | WorkItemBlockerRequirement)[]>;
   /** feature_id → status, for the referenced blockers (terminal resolution). */
   statuses: Map<string, string>;
 }
@@ -385,12 +386,15 @@ export function filterReadyFrontier(
     }
     for (const r of hRows) {
       for (const blocker of graph?.blockers.get(r.feature_id) ?? []) {
-        if (nodes.has(blocker)) continue; // already a candidate node
-        const status = graph?.statuses.get(blocker);
-        if (status != null) nodes.set(blocker, { id: blocker, status, blockedBy: [] });
+        const blockerId = typeof blocker === 'string' ? blocker : blocker.id;
+        if (nodes.has(blockerId)) continue; // already a candidate node
+        const status = graph?.statuses.get(blockerId);
+        if (status != null) nodes.set(blockerId, { id: blockerId, status, blockedBy: [] });
       }
     }
-    const { ready: readyNodes } = selectReady([...nodes.values()], new Set(), FRONTIER_READINESS);
+    const { ready: readyNodes } = selectReady(
+      [...nodes.values()], new Set(), FRONTIER_READINESS, undefined, ALL_SUCCESSFUL_STATUSES,
+    );
     const readyIds = new Set(readyNodes.map((n) => n.id));
     for (const r of hRows) {
       if (!readyIds.has(r.feature_id)) {
@@ -966,7 +970,9 @@ export async function fetchHarnessBlockGraph(
 ): Promise<HarnessBlockGraph> {
   const blockers = await defaultBlockingStore.blockersFor(harness);
   const blockerIds = new Set<string>();
-  for (const arr of blockers.values()) for (const b of arr) blockerIds.add(b);
+  for (const arr of blockers.values()) {
+    for (const blocker of arr) blockerIds.add(typeof blocker === 'string' ? blocker : blocker.id);
+  }
   let statuses = new Map<string, string>();
   if (blockerIds.size > 0) {
     const rows = await sql<{ feature_id: string; status: string }[]>`

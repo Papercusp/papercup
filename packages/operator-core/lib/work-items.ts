@@ -4964,13 +4964,19 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
              SELECT 1 FROM harness_shared.harness_features_consolidated bf
               WHERE bf.workspace_id = harness_shared.harness_features_consolidated.workspace_id
                 AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
+                AND (
+                  (d.satisfaction = 'settled' AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped'))
+                  OR (d.satisfaction = 'success' AND bf.status NOT IN ('passed', 'done'))
+                )
            )
            OR EXISTS (
              SELECT 1 FROM harness_shared.engineer_issues bi
               WHERE bi.workspace_id = harness_shared.harness_features_consolidated.workspace_id
                 AND bi.issue_id = d.blocker_ref
-                AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
+                AND (
+                  (d.satisfaction = 'settled' AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped'))
+                  OR (d.satisfaction = 'success' AND bi.state NOT IN ('resolved', 'done'))
+                )
            )
          )
     )`
@@ -5622,13 +5628,19 @@ function unsatisfiedBlockerSql(sql: OrgSql) {
       SELECT 1 FROM harness_shared.harness_features_consolidated bf
        WHERE bf.workspace_id = wi.workspace_id
          AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-         AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped')
+         AND (
+           (d.satisfaction = 'settled' AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped'))
+           OR (d.satisfaction = 'success' AND bf.status NOT IN ('passed', 'done'))
+         )
     )
     OR EXISTS (
       SELECT 1 FROM harness_shared.engineer_issues bi
        WHERE bi.workspace_id = wi.workspace_id
          AND bi.issue_id = d.blocker_ref
-         AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped')
+         AND (
+           (d.satisfaction = 'settled' AND bi.state NOT IN ('resolved', 'closed', 'done', 'dropped'))
+           OR (d.satisfaction = 'success' AND bi.state NOT IN ('resolved', 'done'))
+         )
     )
   )`;
 }
@@ -5639,6 +5651,8 @@ export interface UnresolvedDepBlocker {
   ref: string;
   /** The edge's own `blocker_kind` ('issue' | 'feature') — read off the edge, never re-derived. */
   kind: string;
+  /** Omitted only by legacy/injected readers; persisted rows always project the settled default. */
+  satisfaction?: 'settled' | 'success';
 }
 
 /** One active item a member already holds that is blocked by a refused dependency. */
@@ -5683,8 +5697,8 @@ export interface HeldDependencyEscapeContext {
  */
 export async function readUnresolvedDepBlockers(id: string, harness?: string): Promise<UnresolvedDepBlocker[]> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ blocker_ref: string; blocker_kind: string }[]>`
-    SELECT DISTINCT d.blocker_ref, d.blocker_kind
+  const rows = await sql<{ blocker_ref: string; blocker_kind: string; satisfaction: 'settled' | 'success' }[]>`
+    SELECT DISTINCT d.blocker_ref, d.blocker_kind, d.satisfaction
       FROM harness_shared.work_items wi
       JOIN harness_shared.work_item_deps d
         ON d.workspace_id = 'default'
@@ -5699,7 +5713,7 @@ export async function readUnresolvedDepBlockers(id: string, harness?: string): P
        AND ${unsatisfiedBlockerSql(sql)}
      ORDER BY d.blocker_ref
      LIMIT 25`;
-  return rows.map((r) => ({ ref: r.blocker_ref, kind: r.blocker_kind }));
+  return rows.map((r) => ({ ref: r.blocker_ref, kind: r.blocker_kind, satisfaction: r.satisfaction }));
 }
 
 /**
@@ -8001,7 +8015,7 @@ export async function linkWorkItem(
   id: string,
   dst: ObjectRef,
   rel: string,
-  opts: { harness?: string; by?: string } = {},
+  opts: { harness?: string; by?: string; satisfaction?: 'settled' | 'success' } = {},
 ): Promise<{ ok: true } | { error: string }> {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { error: `work_item '${id}' not found` };
@@ -8009,11 +8023,11 @@ export async function linkWorkItem(
     return { error: `feature target ref must be '<harness>#<id>' (got '${dst.ref}')` };
   }
   if (wi.family === 'issue') {
-    await linkIssue(id, dst, rel, opts.by);
+    await linkIssue(id, dst, rel, opts.by, opts.satisfaction);
   } else {
     const src = workItemObjectRef(wi);
     if (rel === 'blocks' && (dst.kind === 'issue' || dst.kind === 'feature')) {
-      await mirrorWorkItemBlockingEdge(src, dst, { createdBy: opts.by });
+      await mirrorWorkItemBlockingEdge(src, dst, { createdBy: opts.by, satisfaction: opts.satisfaction });
     } else {
       await links.link(src, dst, rel, { created_by: opts.by, created_ts: nowIso() });
     }
