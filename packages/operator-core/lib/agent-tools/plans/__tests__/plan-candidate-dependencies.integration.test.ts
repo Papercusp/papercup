@@ -20,11 +20,12 @@ let wsId: string;
 function planBody(
   status: 'draft' | 'ready' | 'active',
   opts: { p1BlockedBy?: string[]; p2BlockedBy?: string[] } = {},
+  slug = SLUG,
 ): string {
   const blockedBy = (refs: string[] | undefined) => (refs?.length ? ` blocked-by: ${refs.join(', ')}` : '');
   return `---
 title: candidate dependency structured writer
-slug: ${SLUG}
+slug: ${slug}
 status: ${status}
 created: 2026-08-27
 updated: 2026-08-27
@@ -52,26 +53,28 @@ function makeCtx() {
 }
 
 async function runSetBlockedBy(item: string, blockedBy: string[]) {
-  const response = (await setItemBlockedByTool.handler(
-    { harness: HARNESS, slug: SLUG, item, blockedBy } as never,
-    makeCtx(),
-  )) as {
+  const data = await runSetBlockedByArgs({ harness: HARNESS, slug: SLUG, item, blockedBy });
+  return {
+    result: data.results[0]!,
+    counts: data.counts,
+  };
+}
+
+async function runSetBlockedByArgs(args: Record<string, unknown>) {
+  const response = (await setItemBlockedByTool.handler(args as never, makeCtx())) as {
     data: {
       counts: { ok: number; failed: number };
       results: Array<Record<string, unknown>>;
     };
   };
-  return {
-    result: response.data.results[0]!,
-    counts: response.data.counts,
-  };
+  return response.data;
 }
 
-async function livePlan(): Promise<{ content: string; version: number }> {
+async function livePlan(slug = SLUG): Promise<{ content: string; version: number }> {
   const rows = await admin<Array<{ content: string; version: number }>>`
     SELECT content, version
       FROM harness_shared.harness_plans
-     WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${SLUG}
+     WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
   `;
   return rows[0]!;
 }
@@ -208,5 +211,108 @@ describe('withPlanLock candidate dependency admission — structured writer', ()
     expect(counts).toEqual({ ok: 0, failed: 1 });
     expect(result).toMatchObject({ ok: false, error: 'invalid_plan_dependencies' });
     expect(await livePlan()).toEqual(before);
+  }, 60_000);
+
+  it('applies a same-plan edge reorientation as one final-state candidate and one version bump', async () => {
+    await seedPlan(
+      admin,
+      wsId,
+      HARNESS,
+      SLUG,
+      planBody('ready', { p2BlockedBy: ['P-001'] }),
+    );
+    const before = await livePlan();
+
+    const data = await runSetBlockedByArgs({
+      harness: HARNESS,
+      items: [
+        { slug: SLUG, item: 'P-001', blockedBy: ['P-002'] },
+        { slug: SLUG, item: 'P-002', blockedBy: [] },
+      ],
+    });
+
+    expect(data.counts).toEqual({ ok: 2, failed: 0 });
+    expect(data.results).toMatchObject([
+      { ok: true, itemId: 'P-001', from: [], to: ['P-002'] },
+      { ok: true, itemId: 'P-002', from: ['P-001'], to: [] },
+    ]);
+    expect(data.results[0]?.revision).toEqual(data.results[1]?.revision);
+    const after = await livePlan();
+    expect(after.version).toBe(before.version + 1);
+    expect(after.content).toContain('first blocked-by: P-002');
+    expect(after.content).not.toContain('second blocked-by:');
+  }, 60_000);
+
+  it('aborts every same-plan edit when one item is missing', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready'));
+    const before = await livePlan();
+
+    const data = await runSetBlockedByArgs({
+      harness: HARNESS,
+      items: [
+        { slug: SLUG, item: 'P-001', blockedBy: ['P-002'] },
+        { slug: SLUG, item: 'P-999', blockedBy: [] },
+      ],
+    });
+
+    expect(data.counts).toEqual({ ok: 0, failed: 2 });
+    expect(data.results).toMatchObject([
+      {
+        ok: false,
+        itemId: 'P-001',
+        error: 'atomic_group_aborted',
+        cause: 'item_not_found',
+        failedItemIds: ['P-999'],
+      },
+      { ok: false, itemId: 'P-999', error: 'item_not_found' },
+    ]);
+    expect(await livePlan()).toEqual(before);
+  }, 60_000);
+
+  it('rejects an atomic batch whose final graph is cyclic without committing an intermediate edit', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready'));
+    const before = await livePlan();
+
+    const data = await runSetBlockedByArgs({
+      harness: HARNESS,
+      items: [
+        { slug: SLUG, item: 'P-001', blockedBy: ['P-002'] },
+        { slug: SLUG, item: 'P-002', blockedBy: ['P-001'] },
+      ],
+    });
+
+    expect(data.counts).toEqual({ ok: 0, failed: 2 });
+    expect(data.results).toMatchObject([
+      { ok: false, itemId: 'P-001', error: 'invalid_plan_dependencies' },
+      { ok: false, itemId: 'P-002', error: 'invalid_plan_dependencies' },
+    ]);
+    expect(data.results[0]?.dependencyDiagnostics).toEqual(data.results[1]?.dependencyDiagnostics);
+    expect(await livePlan()).toEqual(before);
+  }, 60_000);
+
+  it('keeps heterogeneous plan groups independent when one group is refused', async () => {
+    const otherSlug = `${SLUG}-other`;
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready'));
+    await seedPlan(admin, wsId, HARNESS, otherSlug, planBody('ready', {}, otherSlug));
+    const firstBefore = await livePlan();
+    const otherBefore = await livePlan(otherSlug);
+
+    const data = await runSetBlockedByArgs({
+      harness: HARNESS,
+      items: [
+        { slug: SLUG, item: 'P-001', blockedBy: ['P-001'] },
+        { slug: otherSlug, item: 'P-001', blockedBy: ['P-002'] },
+      ],
+    });
+
+    expect(data.counts).toEqual({ ok: 1, failed: 1 });
+    expect(data.results).toMatchObject([
+      { ok: false, slug: SLUG, itemId: 'P-001', error: 'self_block' },
+      { ok: true, slug: otherSlug, itemId: 'P-001', to: ['P-002'] },
+    ]);
+    expect(await livePlan()).toEqual(firstBefore);
+    const otherAfter = await livePlan(otherSlug);
+    expect(otherAfter.version).toBe(otherBefore.version + 1);
+    expect(otherAfter.content).toContain('first blocked-by: P-002');
   }, 60_000);
 });

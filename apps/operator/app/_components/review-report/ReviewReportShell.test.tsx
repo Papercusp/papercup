@@ -16,6 +16,7 @@ import userEvent from "@testing-library/user-event";
 import ReviewReportShell, {
   partitionReviewRows,
   type ReviewReportGroup,
+  type ReviewReportRow,
 } from "./ReviewReportShell";
 
 const operatorRoot = existsSync(resolve(process.cwd(), "app/globals.css"))
@@ -349,6 +350,52 @@ describe("rendering", () => {
       screen.getByTestId("review-row-f1").getAttribute("aria-describedby"),
     ).toBeNull();
     expect(screen.queryByTestId("review-row-detail-f1")).toBeNull();
+  });
+
+  it("isolates active-detail changes from untouched rows in a 240-row report", () => {
+    let untouchedTitleReads = 0;
+    const rows: ReviewReportRow[] = Array.from({ length: 240 }, (_, index) => ({
+      id: `stress-${index}`,
+      title: `Stress row ${index}`,
+      evidence: [`Evidence ${index}`],
+      confidence: "provable",
+      detail: <span>Detail {index}</span>,
+    }));
+    Object.defineProperty(rows[239], "title", {
+      configurable: true,
+      enumerable: true,
+      get() {
+        untouchedTitleReads += 1;
+        return "Untouched sentinel row";
+      },
+    });
+
+    renderShell({
+      groups: [
+        {
+          id: "stress",
+          title: "Stress fixture",
+          rows,
+        },
+      ],
+    });
+    const readsAfterInitialRender = untouchedTitleReads;
+    expect(readsAfterInitialRender).toBeGreaterThan(0);
+
+    fireEvent.pointerEnter(screen.getByTestId("review-row-stress-0"));
+    expect(screen.getByTestId("review-row-detail-stress-0")).toBeTruthy();
+    expect(untouchedTitleReads).toBe(readsAfterInitialRender);
+
+    fireEvent.pointerEnter(screen.getByTestId("review-row-stress-1"));
+    expect(screen.queryByTestId("review-row-detail-stress-0")).toBeNull();
+    expect(screen.getByTestId("review-row-detail-stress-1")).toBeTruthy();
+    expect(untouchedTitleReads).toBe(readsAfterInitialRender);
+  });
+
+  it("contains each row's layout and paint work", () => {
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__row\s*\{[^}]*contain:\s*layout paint;/s,
+    );
   });
 
   it("gives both programmatic focus fallbacks an explicit visible ring", () => {

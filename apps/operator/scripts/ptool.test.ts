@@ -11,6 +11,7 @@ import {
   parseArgs,
   parseJsonInput,
   resolveContextTier,
+  resolvePayloadHarnessScope,
   resolveHarnessScope,
   resolveTokenPath,
   resolveTokenPaths,
@@ -129,6 +130,31 @@ describe('ptool MCP identity binding', () => {
       env: { PAPERCUSP_HARNESS_SLUG: 'papercusp' },
     })).toBe('cli-harness');
     expect(resolveHarnessScope({ env: { NODE_ENV: 'test' } })).toBeNull();
+  });
+
+  it('derives a direct payload harness before the inherited environment scope', () => {
+    const payload = { harness: ' papercusp ' };
+    const env = { PAPERCUSP_HARNESS_SLUG: 'sb-devboard-hive' };
+
+    expect(resolvePayloadHarnessScope(payload, { toolName: 'coord:declare-intent' })).toBe('papercusp');
+    expect(resolveHarnessScope({ payload, toolName: 'coord:declare-intent', env })).toBe('papercusp');
+    expect(resolveHarnessScope({
+      harness: 'cli-harness',
+      payload,
+      toolName: 'coord:declare-intent',
+      env,
+    })).toBe('cli-harness');
+  });
+
+  it('derives a tools:invoke target harness from its nested args', () => {
+    const payload = {
+      name: 'coord:declare-intent',
+      args: { harness: 'papercusp' },
+    };
+    const env = { PAPERCUSP_HARNESS_SLUG: 'sb-devboard-hive' };
+
+    expect(resolvePayloadHarnessScope(payload, { toolName: 'tools:invoke' })).toBe('papercusp');
+    expect(resolveHarnessScope({ payload, toolName: 'tools:invoke', env })).toBe('papercusp');
   });
 });
 

@@ -2487,6 +2487,33 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
+  it('does not read or rewrite the claim spec when a duplicate top-up is suppressed', async () => {
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      won: false,
+      priorAt: Date.now() - 190_000,
+      priorCount: 30,
+    });
+    setClaimSpecMock.mockClear();
+
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Suppressed Claim Spec Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 30,
+        claimKinds: ['bug'],
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.relaunchSuppressed).toBe(true);
+    expect(payload.opened).toEqual([]);
+    expect(payload.claimSpecApplied).toBeNull();
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+  });
+
   it('resumes exact unopened pre-pinned identities when a partial canary becomes live inside the window', async () => {
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['su-late-canary']);

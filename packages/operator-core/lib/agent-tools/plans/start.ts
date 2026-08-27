@@ -48,6 +48,10 @@ import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
 import { checkPlanStartable } from './plan-start-gate';
+import {
+  invalidPlanDependenciesValue,
+  validatePlanCandidateDependencies,
+} from './plan-candidate-dependencies';
 import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './plan-spec-quality-gate';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -161,6 +165,28 @@ export default defineTool({
             status: lifecycle,
             message: `Plan is ${lifecycle}; reopen it (set status back to ready/draft) before starting.`,
           };
+        }
+
+        // P-009: start is an execution door even with the retired op_status
+        // axis. Validate the body under the TARGET executable state before the
+        // consult, any operational write, auto-approval, or promotion. Passing
+        // `started` is deliberate: scheduled-instance rows can carry copied
+        // frontmatter, and a draft forward ref stops being allowable the moment
+        // this call would make its items executable.
+        if (read) {
+          const dependencyVerdict = validatePlanCandidateDependencies(read.parsed, 'started');
+          if (dependencyVerdict.state === 'rejected') {
+            const refusal = invalidPlanDependenciesValue(slug, dependencyVerdict);
+            ctxAny.metadata?.({ slug, harnessSlug, refused: refusal.code });
+            return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: refusal.code,
+              message: refusal.message,
+              dependencyDiagnostics: refusal.dependencyDiagnostics,
+            };
+          }
         }
 
         // P-004: start is an execution/auto-approval door, so legacy ready

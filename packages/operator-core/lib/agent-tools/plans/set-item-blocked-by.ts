@@ -16,14 +16,16 @@
  * 2026-06-21): single { slug, itemId, blockedBy }, many of one plan to the same list
  * { slug, itemIds:[…], blockedBy }, or heterogeneous items:[{ slug, itemId, blockedBy
  * }] → { ok, results:[{ ok, slug, itemId, from, to | error }], counts }. Correlate by
- * { slug, itemId } not array position; one failure never fails the rest.
+ * { slug, itemId } not array position. Every resolved (workspace,harness,plan)
+ * group is one locked candidate: one bad item aborts that group, while independent
+ * plan groups still report and commit independently.
  */
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
-import { resolveCtxHarnessSlug } from './_ctx-opts';
 import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
+import { resolvePlanWriteScope } from './_write-scope';
 import { maskFences, NOTE_SUFFIX_RE } from './parser';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -146,86 +148,193 @@ interface BlockedByItem {
   rationale?: string;
 }
 
-type SetBlockedByValue =
-  | { ok: true; itemId: string; from: string[]; to: string[] }
-  | { ok: false; code: 'not_found' | 'item_not_found' | 'self_block' };
+interface ResolvedBlockedByItem extends BlockedByItem {
+  inputIndex: number;
+  workspaceId: string;
+  harnessSlug: string;
+}
 
-/** Apply one blocked-by change, returning the self-describing bulk result. PRESERVES
- *  the dedupe + self-block reject, lock, revision, and sync-invalidate per item. */
-async function setBlockedByOne(it: BlockedByItem, ctx: UnifiedToolContext): Promise<BulkItemResult> {
-  // Dedupe + reject a self-block (an item can't depend on itself).
-  const blockedBy = [...new Set(it.blockedBy)];
-  if (blockedBy.includes(it.itemId)) {
-    return { ok: false, slug: it.slug, itemId: it.itemId, error: 'self_block' };
-  }
+interface BlockedByGroup {
+  key: string;
+  workspaceId: string;
+  harnessSlug: string;
+  slug: string;
+  items: ResolvedBlockedByItem[];
+}
 
-  const sctx = harnessScopedCtx(it.harness, ctx);
-  const harnessSlug = resolveCtxHarnessSlug(sctx);
+type SetBlockedByGroupValue =
+  | {
+      ok: true;
+      changes: Array<{ inputIndex: number; itemId: string; from: string[]; to: string[] }>;
+    }
+  | {
+      ok: false;
+      code: string;
+      missingItemIds?: string[];
+      dependencyDiagnostics?: unknown[];
+    };
+
+function groupRationale(items: ResolvedBlockedByItem[]): string | undefined {
+  const rationales = [
+    ...new Set(
+      items
+        .map((item) => clampText(item.rationale, LIMITS.ANNOTATION))
+        .filter((rationale): rationale is string => Boolean(rationale)),
+    ),
+  ];
+  if (rationales.length === 0) return undefined;
+  return clampText(rationales.join(' | '), LIMITS.ANNOTATION) ?? undefined;
+}
+
+function atomicAbortResults(
+  group: BlockedByGroup,
+  failedItemIds: ReadonlySet<string>,
+  cause: string,
+): Array<{ inputIndex: number; result: BulkItemResult }> {
+  return group.items.map((item) => ({
+    inputIndex: item.inputIndex,
+    result: failedItemIds.has(item.itemId)
+      ? { ok: false, slug: item.slug, itemId: item.itemId, error: cause }
+      : {
+          ok: false,
+          slug: item.slug,
+          itemId: item.itemId,
+          error: 'atomic_group_aborted',
+          cause,
+          failedItemIds: [...failedItemIds],
+        },
+  }));
+}
+
+/**
+ * Apply every change for one resolved plan in ONE withPlanLock transaction. The
+ * local body is mutated completely before P-008/P-009 evaluates the final graph,
+ * so a caller can atomically reorient edges without a rejected/visible
+ * intermediate graph. Any bad item or final candidate leaves the whole group
+ * untouched.
+ */
+async function setBlockedByGroup(
+  group: BlockedByGroup,
+  ctx: UnifiedToolContext,
+): Promise<Array<{ inputIndex: number; result: BulkItemResult }>> {
+  const selfBlocked = new Set(
+    group.items.filter((item) => item.blockedBy.includes(item.itemId)).map((item) => item.itemId),
+  );
+  if (selfBlocked.size > 0) return atomicAbortResults(group, selfBlocked, 'self_block');
+
   const rev = planRevisionCapture(
     ctx as PlanRevisionCtx,
-    it.slug,
-    clampText(it.rationale, LIMITS.ANNOTATION),
-    harnessSlug ? { harnessSlug } : {},
+    group.slug,
+    groupRationale(group.items),
+    { workspaceId: group.workspaceId, harnessSlug: group.harnessSlug },
   );
 
-  const result = await withPlanLock<SetBlockedByValue>(
+  const result = await withPlanLock<SetBlockedByGroupValue>(
     ctx as never,
     {
-      slug: it.slug,
-      intent: `plans:set-item-blocked-by ${it.itemId}`,
-      ...(harnessSlug ? { harnessSlug } : {}),
+      slug: group.slug,
+      intent: `plans:set-item-blocked-by atomic batch (${group.items.map((item) => item.itemId).join(', ')})`,
+      workspaceId: group.workspaceId,
+      harnessSlug: group.harnessSlug,
       afterWrite: rev.afterWrite,
     },
-    async (current): Promise<{ newBody: string | null; value: SetBlockedByValue }> => {
+    async (current): Promise<{ newBody: string | null; value: SetBlockedByGroupValue }> => {
       if (current === null) return { newBody: null, value: { ok: false, code: 'not_found' } };
-      const { newBody, found, oldBlockedBy } = setBlockedByInBody(current, it.itemId, blockedBy);
-      if (!found) return { newBody: null, value: { ok: false, code: 'item_not_found' } };
-      const finalBody = bumpUpdatedDate(newBody);
+
+      let candidate = current;
+      const changes: Array<{ inputIndex: number; itemId: string; from: string[]; to: string[] }> = [];
+      const missingItemIds: string[] = [];
+      for (const item of group.items) {
+        const mutation = setBlockedByInBody(candidate, item.itemId, item.blockedBy);
+        if (!mutation.found) {
+          missingItemIds.push(item.itemId);
+          continue;
+        }
+        candidate = mutation.newBody;
+        changes.push({
+          inputIndex: item.inputIndex,
+          itemId: item.itemId,
+          from: mutation.oldBlockedBy,
+          to: item.blockedBy,
+        });
+      }
+      if (missingItemIds.length > 0) {
+        return {
+          newBody: null,
+          value: { ok: false, code: 'item_not_found', missingItemIds },
+        };
+      }
       return {
-        newBody: finalBody,
-        value: { ok: true, itemId: it.itemId, from: oldBlockedBy, to: blockedBy },
+        newBody: bumpUpdatedDate(candidate),
+        value: { ok: true, changes },
       };
     },
   );
 
   if (result.kind === 'busy') {
-    return {
-      ok: false,
-      slug: it.slug,
-      itemId: it.itemId,
-      error: 'busy',
-      busy: result.busy.map((b) => ({
-        path: b.path,
-        owner_label: b.owner_label,
-        intent: b.intent,
-        expires_ts: b.expires_ts,
-      })),
-    };
+    const busy = result.busy.map((b) => ({
+      path: b.path,
+      owner_label: b.owner_label,
+      intent: b.intent,
+      expires_ts: b.expires_ts,
+    }));
+    return group.items.map((item) => ({
+      inputIndex: item.inputIndex,
+      result: { ok: false, slug: item.slug, itemId: item.itemId, error: 'busy', busy },
+    }));
   }
   if (!result.value.ok) {
-    return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code };
+    const failure = result.value;
+    if (failure.code === 'item_not_found') {
+      return atomicAbortResults(group, new Set(failure.missingItemIds ?? []), 'item_not_found');
+    }
+    const dependencyDiagnostics =
+      result.dependencyDiagnostics ?? failure.dependencyDiagnostics;
+    return group.items.map((item) => ({
+      inputIndex: item.inputIndex,
+      result: {
+        ok: false,
+        slug: item.slug,
+        itemId: item.itemId,
+        error: failure.code,
+        ...(dependencyDiagnostics?.length ? { dependencyDiagnostics } : {}),
+      },
+    }));
   }
 
   // Refresh the per-plan item rail so a blocked-by-derived view updates immediately.
   try {
     const { notifySyncInvalidate } = await import('../../sync-sse');
-    await notifySyncInvalidate('planItems.byPlan', { planSlug: it.slug });
+    await notifySyncInvalidate('planItems.byPlan', { planSlug: group.slug });
   } catch {
     /* best-effort — the next natural refresh picks it up */
   }
 
-  return {
-    slug: it.slug,
-    ...result.value,
-    filePath: result.filePath,
-    revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
-  };
+  const changes = new Map(result.value.changes.map((change) => [change.inputIndex, change]));
+  return group.items.map((item) => {
+    const change = changes.get(item.inputIndex)!;
+    return {
+      inputIndex: item.inputIndex,
+      result: {
+        ok: true,
+        slug: item.slug,
+        itemId: item.itemId,
+        from: change.from,
+        to: change.to,
+        filePath: result.filePath,
+        revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+        ...(result.dependencyDiagnostics?.length
+          ? { dependencyDiagnostics: result.dependencyDiagnostics }
+          : {}),
+      },
+    };
+  });
 }
 
 export default defineTool({
   name: 'plans:set-item-blocked-by',
   description:
-    "Set or clear one OR many items' `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. Single: { slug, item, blockedBy }. Many of one plan: { slug, itemIds:[…], blockedBy }. Heterogeneous: items:[{ slug, item, blockedBy }]. Returns { ok, results:[{ ok, slug, itemId, from, to | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
+    "Set or clear one OR many items' `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. Single: { slug, item, blockedBy }. Many of one plan: { slug, itemIds:[…], blockedBy }. Heterogeneous: items:[{ slug, item, blockedBy }]. Every resolved plan group is atomic: all its edits form one validated candidate or none land; independent plan groups still proceed. Returns { ok, results:[{ ok, slug, itemId, from, to | error }], counts } — correlate by { slug, itemId }, not position.",
   guidance: {
     when: "An item's dependencies change — a new prerequisite surfaced, or a blocker cleared (blockedBy:[] to un-block). The structured alternative to a plans:edit on the item line. Set several at once via itemIds:[…] (one plan) or items:[…].",
     notWhen:
@@ -267,9 +376,81 @@ export default defineTool({
               rationale: args.rationale,
             },
           ];
-    const env = await runBulk(list, (it) => setBlockedByOne(it, ctx), {
-      keyOf: (it) => ({ slug: it.slug, itemId: it.itemId }),
+    // Resolve the canonical plan write key before grouping. Grouping on the raw
+    // harness arg is incorrect because member harnesses collapse to their Hive
+    // home; two syntactically different args can still name the same plan row.
+    const scoped = await runBulk(list, async (item, inputIndex) => {
+      const sctx = harnessScopedCtx(item.harness, ctx);
+      const scope = await resolvePlanWriteScope(sctx);
+      return {
+        ok: true as const,
+        resolved: {
+          ...item,
+          blockedBy: [...new Set(item.blockedBy)],
+          inputIndex,
+          workspaceId: scope.workspaceId,
+          harnessSlug: scope.harnessSlug,
+        } satisfies ResolvedBlockedByItem,
+      };
+    }, {
+      keyOf: (item) => ({ slug: item.slug, itemId: item.itemId }),
     });
+
+    const resultsByIndex = new Map<number, BulkItemResult>();
+    const groups = new Map<string, BlockedByGroup>();
+    scoped.results.forEach((scopeResult, inputIndex) => {
+      if (!scopeResult.ok) {
+        resultsByIndex.set(inputIndex, scopeResult);
+        return;
+      }
+      const resolved = (scopeResult as typeof scopeResult & { resolved: ResolvedBlockedByItem }).resolved;
+      const key = JSON.stringify([resolved.workspaceId, resolved.harnessSlug, resolved.slug]);
+      const group = groups.get(key) ?? {
+        key,
+        workspaceId: resolved.workspaceId,
+        harnessSlug: resolved.harnessSlug,
+        slug: resolved.slug,
+        items: [],
+      };
+      group.items.push(resolved);
+      groups.set(key, group);
+    });
+
+    await runBulk(
+      [...groups.values()],
+      async (group) => {
+        try {
+          for (const { inputIndex, result } of await setBlockedByGroup(group, ctx)) {
+            resultsByIndex.set(inputIndex, result);
+          }
+          return { ok: true, group: group.key };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          for (const item of group.items) {
+            resultsByIndex.set(item.inputIndex, {
+              ok: false,
+              slug: item.slug,
+              itemId: item.itemId,
+              error: message,
+            });
+          }
+          return { ok: false, group: group.key, error: message };
+        }
+      },
+      { keyOf: (group) => ({ group: group.key }) },
+    );
+
+    const env = await runBulk(
+      list,
+      async (item, inputIndex) =>
+        resultsByIndex.get(inputIndex) ?? {
+          ok: false,
+          slug: item.slug,
+          itemId: item.itemId,
+          error: 'atomic_group_result_missing',
+        },
+      { keyOf: (item) => ({ slug: item.slug, itemId: item.itemId }) },
+    );
     return bulkContent(env);
   },
 });

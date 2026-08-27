@@ -223,9 +223,7 @@ export function resolvePayloadHarnessScope(payload, { toolName = null } = {}) {
   if (!isToolsInvoke || !payload.args || typeof payload.args !== 'object' || Array.isArray(payload.args)) {
     return null;
   }
-  return resolvePayloadHarnessScope(payload.args, {
-    toolName: payload.args.name === 'tools:invoke' ? 'tools:invoke' : null,
-  });
+  return resolvePayloadHarnessScope(payload.args, { toolName: 'tools:invoke' });
 }
 
 /**
@@ -2011,9 +2009,57 @@ async function main() {
     console.log(PTOOL_USAGE);
     return;
   }
+
+  // Read scripted input before opening the MCP session. The payload can carry
+  // the harness that should scope that session, including through a nested
+  // tools:invoke envelope; connecting first would bind the stale environment
+  // harness before the payload is available (EI-21577595300302349).
+  const jsonKind = jsonSourceKind(args);
+  const scriptKind = scriptSourceKind(args);
+  if (jsonKind != null && scriptKind != null) {
+    console.error('ptool: choose one input source: --json/--json-file or --script/--script-file');
+    process.exit(1);
+  }
+  const inputKind = scriptKind ?? jsonKind;
+  let inputArgs;
+  if (scriptKind != null) {
+    if (args.tool && args.tool !== 'code:run') {
+      console.error('ptool: --script/--script-file can only be used with code:run');
+      process.exit(1);
+    }
+    try {
+      if (scriptKind === 'file') inputArgs = { script: readFileSync(args.scriptFile, 'utf8') };
+      else if (scriptKind === 'stdin') inputArgs = { script: readFileSync(0, 'utf8') };
+      else inputArgs = { script: args.script };
+    } catch (e) {
+      console.error(`ptool: could not read script from ${scriptKind === 'file' ? `--script-file ${args.scriptFile}` : 'stdin'}: ${e.message}`);
+      process.exit(1);
+    }
+  } else if (jsonKind != null) {
+    let jsonText;
+    try {
+      if (jsonKind === 'file') jsonText = readFileSync(args.jsonFile, 'utf8');
+      else if (jsonKind === 'stdin') jsonText = readFileSync(0, 'utf8');
+      else jsonText = args.json;
+    } catch (e) {
+      console.error(`ptool: could not read JSON from ${jsonKind === 'file' ? `--json-file ${args.jsonFile}` : 'stdin'}: ${e.message}`);
+      process.exit(1);
+    }
+    try {
+      inputArgs = parseJsonInput(jsonText, { emptyAsObject: jsonKind === 'stdin' });
+    } catch (e) {
+      console.error(`ptool: --json${jsonKind === 'inline' ? '' : ` (${jsonKind})`} is not valid JSON: ${e.message}`);
+      process.exit(1);
+    }
+  }
+
   let operatorUrl = args.url || OPERATOR_URL;
   const workspace = resolveWorkspaceScope({ workspace: args.workspace });
-  const harness = resolveHarnessScope({ harness: args.harness });
+  const harness = resolveHarnessScope({
+    harness: args.harness,
+    payload: jsonKind != null ? inputArgs : undefined,
+    toolName: args.tool,
+  });
   const scope = { workspace, harness, tokenFile: args.tokenFile };
   const rediscover = shouldRediscoverOperatorUrl(args, process.env) ? discoverOperatorUrl : null;
   const connectOperator = () => connectWithLocalRetry(connect, operatorUrl, scope, {
@@ -2051,50 +2097,14 @@ async function main() {
       console.error(`ptool: no tool named "${toolName}". Try \`ptool --list ${serviceOf(toolName)}\`.`);
       process.exit(1);
     }
-
-    // Assemble args: explicit JSON or direct code:run script source, else
-    // interactive prompting. Pure source-kind helpers keep shell-hostile
-    // scripts on a quoting-free path (EI-20235746813390458).
-    let callArgs;
-    const jsonKind = jsonSourceKind(args);
-    const scriptKind = scriptSourceKind(args);
-    if (jsonKind != null && scriptKind != null) {
-      console.error('ptool: choose one input source: --json/--json-file or --script/--script-file');
+    if (scriptKind != null && toolName !== 'code:run') {
+      console.error('ptool: --script/--script-file can only be used with code:run');
       process.exit(1);
     }
-    const inputKind = scriptKind ?? jsonKind;
-    if (scriptKind != null) {
-      if (toolName !== 'code:run') {
-        console.error('ptool: --script/--script-file can only be used with code:run');
-        process.exit(1);
-      }
-      try {
-        if (scriptKind === 'file') callArgs = { script: readFileSync(args.scriptFile, 'utf8') };
-        else if (scriptKind === 'stdin') callArgs = { script: readFileSync(0, 'utf8') };
-        else callArgs = { script: args.script };
-      } catch (e) {
-        console.error(`ptool: could not read script from ${scriptKind === 'file' ? `--script-file ${args.scriptFile}` : 'stdin'}: ${e.message}`);
-        process.exit(1);
-      }
-    } else if (jsonKind != null) {
-      let jsonText;
-      try {
-        if (jsonKind === 'file') jsonText = readFileSync(args.jsonFile, 'utf8');
-        else if (jsonKind === 'stdin') jsonText = readFileSync(0, 'utf8');
-        else jsonText = args.json;
-      } catch (e) {
-        console.error(`ptool: could not read JSON from ${jsonKind === 'file' ? `--json-file ${args.jsonFile}` : 'stdin'}: ${e.message}`);
-        process.exit(1);
-      }
-      try {
-        callArgs = parseJsonInput(jsonText, { emptyAsObject: jsonKind === 'stdin' });
-      } catch (e) {
-        console.error(`ptool: --json${jsonKind === 'inline' ? '' : ` (${jsonKind})`} is not valid JSON: ${e.message}`);
-        process.exit(1);
-      }
-    } else {
-      callArgs = await collectArgs(tool.inputSchema);
-    }
+
+    // Assemble args from the input parsed before connect, or prompt
+    // interactively when no scripted source was provided.
+    let callArgs = inputKind != null ? inputArgs : await collectArgs(tool.inputSchema);
     if (args.projection != null) {
       let projection;
       try {

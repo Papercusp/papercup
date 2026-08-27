@@ -13,9 +13,10 @@
  * (EI-14024), so the dependency structure the plan described existed nowhere the scheduler
  * could query. The pass split is load-bearing: a plan-item id only becomes a work-item id at
  * mint time, so a single pass silently drops every forward reference. See
- * `writePromotedDependencyEdges` for which writer to use — D-010, and it is not the obvious one —
- * and for P-008/D-012's cycle policy: PRE-FLIGHT AND REJECT at edge granularity (refuse the edges
- * a cyclic plan graph implies, still mint the nodes, which the lane gate already parks).
+ * `writePromotedDependencyEdges` for which writer to use — D-010, and it is not the obvious one.
+ * P-009 now validates the complete executable plan candidate BEFORE pass 1, so a cycle or dangling
+ * endpoint mints no node and no edge. The older edge-level cycle pre-flight remains a defense for
+ * stored-index/read drift and cross-plan writer failures, not the primary admission boundary.
  *
  * Coherent with convert-at-pickup (plan-items/convert.ts): promotion reuses the
  * SAME idempotency truth (the `implements` coord_links edge via
@@ -54,6 +55,10 @@ import {
   type PlanSpecQualityGateVerdict,
 } from './agent-tools/plans/plan-spec-quality-gate';
 import type { AgenticPlanExecutionTarget } from './agentic-plan-execution-target';
+import {
+  validatePlanCandidateDependencies,
+  type PlanCandidateDependencyDiagnostic,
+} from './agent-tools/plans/plan-candidate-dependencies';
 
 export interface PromotePlanResult {
   /** new work-items minted this call */
@@ -101,6 +106,10 @@ export interface PromotePlanResult {
   specQualityBlocked?: true;
   /** Report-only or enforced exact specSetHash verdict evaluated before minting. */
   specQuality?: PlanSpecQualityGateVerdict;
+  /** P-009: the executable plan candidate failed before any work-item was minted. */
+  dependencyBlocked?: true;
+  /** Exact cycle/endpoint evidence from the shared P-008 candidate validator. */
+  dependencyDiagnostics?: PlanCandidateDependencyDiagnostic[];
   /**
    * P-008: `blockedBy` refs naming a plan item that DOES NOT EXIST in the plan — an authoring
    * error `plans:lint` already reports, split out from `blockersUnresolved` because the two
@@ -332,6 +341,21 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
     .filter((i) => isOpenStatus(i.status))
     .map((i) => ({ id: i.id, text: i.text }));
   if (openItems.length === 0) return { promoted: 0, skipped: 0, ...NO_EDGES };
+
+  // P-009: direct promotion is independently callable, so plans:start's guard
+  // cannot be the authority. Validate the canonical markdown snapshot as
+  // executable before spec gates or pass 1 can mint a single node. `started`
+  // forces executable semantics even for a copied/draft frontmatter status.
+  const dependencyVerdict = validatePlanCandidateDependencies(read.parsed, 'started');
+  if (dependencyVerdict.state === 'rejected') {
+    return {
+      promoted: 0,
+      skipped: openItems.length,
+      ...NO_EDGES,
+      dependencyBlocked: true,
+      dependencyDiagnostics: dependencyVerdict.diagnostics,
+    };
+  }
 
   // P-004: direct promotion is a real entry door too. Re-check the same exact
   // specSetHash verdict plans:start uses so a caller cannot bypass the gate by

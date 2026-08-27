@@ -301,6 +301,7 @@
   min-height: 38px;
   padding: 7px 12px;
   border-top: 1px solid var(--border);
+  contain: layout paint;
   transition: background-color 120ms ease;
 }
 

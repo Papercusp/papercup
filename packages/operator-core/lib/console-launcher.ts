@@ -330,6 +330,11 @@ export async function buildConsoleEnvelope(
       requestUrl: opts.operatorBaseUrl,
     }),
     PAPERCUSP_WORKSPACE: opts.workspaceId,
+    // Account routing is launch-envelope state, not ambient shell state. The
+    // console launch command defaults to --account=default; carry the same
+    // explicit marker so psu clears inherited gateway credentials before
+    // restoring the system login (EI-21575557995965463).
+    PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default',
     // WI-1773 follow-up: route through the resilient-proxy resolver, same as
     // buildSuperuserMcpUrl below. Previously this baked the RAW operatorBaseUrl
     // (e.g. direct :3070) into the child's env unconditionally — psu-launcher's

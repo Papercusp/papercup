@@ -413,3 +413,19 @@ describe('buildConsoleEnvelope PAPERCUSP_OPERATOR_URL (WI-1773 follow-up)', () =
     expect(envelope.env.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:9071');
   });
 });
+
+describe('buildConsoleEnvelope account routing (EI-21575557995965463)', () => {
+  it('carries the explicit default route marker in the child environment', async () => {
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      runCommand: 'true',
+      skipMcpJson: true,
+    });
+
+    // psu uses this envelope marker to clear inherited gateway credentials;
+    // without it, --account=default can silently keep the parent route.
+    expect(envelope.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+  });
+});

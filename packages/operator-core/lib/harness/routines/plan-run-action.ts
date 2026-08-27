@@ -33,7 +33,11 @@ import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
 import { deriveIndexFromContent, type PlanIndexDecision, type PlanIndexItem } from '../../agent-tools/plans/source';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
-import { hashPlanContent } from '@papercusp/plan-parser';
+import { hashPlanContent, parsePlan } from '@papercusp/plan-parser';
+import {
+  invalidPlanDependenciesValue,
+  validatePlanCandidateDependencies,
+} from '../../agent-tools/plans/plan-candidate-dependencies';
 import {
   promotePlanItems,
   type PlanRunPromotionContext,
@@ -340,6 +344,15 @@ async function runScheduledPlanFireTx(
   // valid run into a zero-work promotion.
   const instanceContent = setFrontmatterScalar(template.content, 'slug', instanceSlug);
   const instanceContentHash = hashPlanContent(instanceContent);
+  // P-009: this raw INSERT bypasses withPlanLock, so it must invoke the same
+  // candidate policy explicitly before the active instance or its plan_runs row
+  // becomes visible. Treat the clone as executable regardless of copied parent
+  // frontmatter; a draft forward ref is not allowable in a running instance.
+  const dependencyVerdict = validatePlanCandidateDependencies(parsePlan(instanceContent), 'started');
+  if (dependencyVerdict.state === 'rejected') {
+    const refusal = invalidPlanDependenciesValue(instanceSlug, dependencyVerdict);
+    throw new Error(`${refusal.code}:${instanceSlug}:${refusal.message}`);
+  }
   const contentIndex = deriveIndexFromContent(instanceContent);
   // `content` is canonical for current plans, but imported/legacy plans may
   // carry a populated derived JSON index even when their markdown predates the

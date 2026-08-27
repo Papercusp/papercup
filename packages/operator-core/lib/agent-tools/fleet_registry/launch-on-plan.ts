@@ -2473,9 +2473,9 @@ export default defineTool({
     // #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08) + EI-7671 + EI-10409: set the
     // fleet-level claim spec BEFORE any member terminal opens — scoping every member's
     // scheduler:get_next self-pull to THIS plan (`plan = <slug>`), AND to args.claimKinds when
-    // given. Applied here, pre-spawn, closing the boot-race where members self-pull under the
-    // empty-filter DEFAULT_CLAIM_SPEC (admits every kind + every plan in the harness) before the
-    // leader gets around to calling scheduler:set_claim_spec by hand.
+    // given. This is deliberately deferred until the launch-slot guard has admitted a real
+    // wave: a duplicate-suppressed retry opens nothing and must not rewrite an authored lane
+    // or bump its revision (EI-21577837411148486).
     //
     // EI-10409: this used to ALWAYS overwrite, which (a) silently clobbered a spec the leader had
     // just hand-authored seconds earlier (e.g. a vetted id-pinned wave) with no warning, and (b)
@@ -2487,226 +2487,238 @@ export default defineTool({
     // plan= filter whenever claimKinds is given. Best-effort throughout: a spec read/write failure
     // never blocks the launch (members still start; get_next's harness floor still scopes them to
     // this pot).
-    let claimSpecApplied: {
-      ok: boolean;
-      revision?: number;
-      warning?: string;
-      errors?: string[];
-      poolEffect?: SpecPoolEffect;
-    } | null = null;
-    // P-010: when the claimKinds pool-collapse guard refuses, abort the launch BEFORE any
-    // terminal opens (the whole point — a starving spec must never open members onto nothing).
-    let claimCollapseRefusal: { errors: string[]; poolEffect: SpecPoolEffect | null } | null = null;
-    // A same-owner spawned-leader retry already installed the fleet lane on its first call.
-    // Preserve that spec byte-for-byte; this retry is only allowed to finish a member wave.
-    if (delegatedSpawnRetry) {
-      claimSpecApplied = {
-        ok: true,
-        warning:
-          `leader:'spawn' retry preserved the existing claim spec for fleet \`${fleetSlug}\`; ` +
-          'the caller remains outside the fleet',
-      };
-    } else {
-      try {
-        const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
-        const cupId = fleetSpecBeeKey(fleetSlug);
-        let existingSpec: ClaimSpec = DEFAULT_CLAIM_SPEC;
+    type ClaimSpecApplication = {
+      claimSpecApplied: {
+        ok: boolean;
+        revision?: number;
+        warning?: string;
+        errors?: string[];
+        poolEffect?: SpecPoolEffect;
+      } | null;
+      // P-010: when the claimKinds pool-collapse guard refuses, abort the launch BEFORE any
+      // terminal opens (the whole point — a starving spec must never open members onto nothing).
+      claimCollapseRefusal: { errors: string[]; poolEffect: SpecPoolEffect | null } | null;
+    };
+    const applyFleetClaimSpec = async (): Promise<ClaimSpecApplication> => {
+      let claimSpecApplied: ClaimSpecApplication['claimSpecApplied'] = null;
+      let claimCollapseRefusal: ClaimSpecApplication['claimCollapseRefusal'] = null;
+      // A same-owner spawned-leader retry already installed the fleet lane on its first call.
+      // Preserve that spec byte-for-byte; this retry is only allowed to finish a member wave.
+      if (delegatedSpawnRetry) {
+        claimSpecApplied = {
+          ok: true,
+          warning:
+            `leader:'spawn' retry preserved the existing claim spec for fleet \`${fleetSlug}\`; ` +
+            'the caller remains outside the fleet',
+        };
+      } else {
         try {
-          existingSpec = await getClaimSpec({ cupId, workspaceId: claimSpecWorkspaceId });
-        } catch {
-          existingSpec = DEFAULT_CLAIM_SPEC; // never block the launch on a read failure
-        }
-        const authored = isLeaderAuthoredClaimSpec(existingSpec.specId, fleetSlug);
+          const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
+          const cupId = fleetSpecBeeKey(fleetSlug);
+          let existingSpec: ClaimSpec = DEFAULT_CLAIM_SPEC;
+          try {
+            existingSpec = await getClaimSpec({ cupId, workspaceId: claimSpecWorkspaceId });
+          } catch {
+            existingSpec = DEFAULT_CLAIM_SPEC; // never block the launch on a read failure
+          }
+          const authored = isLeaderAuthoredClaimSpec(existingSpec.specId, fleetSlug);
 
-        // The spec we WOULD apply (null = preserve the existing authored spec, no write), plus
-        // the EI-10409 merge/preserve note carried onto the applied result.
-        let specToApply: Record<string, unknown> | null = null;
-        let applyWarning: string | null = null;
-        if (authored) {
-          if (args.claimKinds?.length) {
-            specToApply = mergeKindIntoClaimSpec(existingSpec, args.claimKinds);
-            applyWarning =
-              `EI-10409: merged kind∈[${args.claimKinds.join(',')}] into pre-existing leader-authored ` +
-              `claim spec ${formatSpecRef(existingSpec.specId, existingSpec.revision)} rather than overwriting it`;
+          // The spec we WOULD apply (null = preserve the existing authored spec, no write), plus
+          // the EI-10409 merge/preserve note carried onto the applied result.
+          let specToApply: Record<string, unknown> | null = null;
+          let applyWarning: string | null = null;
+          if (authored) {
+            if (args.claimKinds?.length) {
+              specToApply = mergeKindIntoClaimSpec(existingSpec, args.claimKinds);
+              applyWarning =
+                `EI-10409: merged kind∈[${args.claimKinds.join(',')}] into pre-existing leader-authored ` +
+                `claim spec ${formatSpecRef(existingSpec.specId, existingSpec.revision)} rather than overwriting it`;
+            } else {
+              claimSpecApplied = {
+                ok: true,
+                revision: existingSpec.revision,
+                warning:
+                  `EI-10409: preserved pre-existing leader-authored claim spec ` +
+                  `${formatSpecRef(existingSpec.specId, existingSpec.revision)} — not overwritten`,
+              };
+            }
           } else {
+            // EI-21148090110387275: COMPOSE claimKinds with the plan predicate rather than
+            // replacing it. buildFleetPlanClaimSpec already ANDs a `kind ∈ claimKinds` leaf onto
+            // the `plan = <planSlug>` leaf when kinds are given — so whenever a plan was supplied,
+            // route through it (with or without claimKinds) so an existing tool-generated
+            // `fleet-launch-<slug>-plan` spec is refreshed IN PLACE (same specId, plan predicate
+            // preserved) instead of being clobbered by the global, plan-blind
+            // `fleet-launch-<slug>-kinds` spec buildFleetKindClaimSpec produces. Only a
+            // claimKinds-only launch (no plan — P-003's "pure claim-spec fleet") falls back to
+            // buildFleetKindClaimSpec; the early `plan || claimKinds` validation guarantees
+            // claimKinds is non-empty whenever planSlug is absent here.
+            specToApply = planSlug
+              ? buildFleetPlanClaimSpec(fleetSlug, planSlug, args.claimKinds)
+              : buildFleetKindClaimSpec(fleetSlug, args.claimKinds!);
+          }
+
+          // P-010 (WI-5212 pool-collapse guard): run the SAME write-time pool-effect count +
+          // collapse verdict scheduler:set_claim_spec runs — refuse a scope matching 0 rows of a
+          // nonempty pool (or a cratered authored lane) BEFORE any terminal opens, and surface
+          // poolEffect.matched.
+          //
+          // EI-19276371141300541: this guard used to run ONLY on the claimKinds path — a FRESH
+          // plan-only spec (buildFleetPlanClaimSpec, `plan = <slug>`) got neither the zero-match
+          // refuse NOR a surfaced poolEffect, on the theory that "plan-promoted items vary in
+          // status; guarding it risks a false refusal". That theory doesn't hold: the promotion
+          // failsafe above already ran BEFORE this block, so a legitimately-fed plan lane already
+          // has its items promoted (states=['open'] by construction) by the time we count here — a
+          // freshly-generated plan lane is exactly as measurable as a freshly-generated kind lane.
+          // Skipping the check for it is precisely how a 10-member fleet launched onto a plan whose
+          // own tracking items (not the backlog being drained) matched exactly ONE row, while
+          // `claimSpecApplied` reported `ok:true` with nothing to say a starvation had occurred.
+          // Now run for every FRESHLY-BUILT spec (kind-only, plan-only, or their merge into an
+          // authored lane) — never for a preserved authored no-claimKinds spec (nothing changed
+          // there to measure). FAILS OPEN: a preview/count error never blocks the launch (safety
+          // net, not a new SPOF).
+          let poolEffect: SpecPoolEffect | null = null;
+          if (specToApply) {
+            try {
+              const validated = validateClaimSpec(specToApply);
+              if (validated.ok && validated.spec) {
+                const { previewSpecPoolEffect, evaluateCollapseGuard } =
+                  await import('../../scheduler/spec-pool-preview');
+                // Count the REAL work_items partition (the launch's resolved workspace) — NOT the
+                // claim-spec store partition (resolveClaimSpecWorkspace), which is a different key
+                // space. This mirrors scheduler:set_claim_spec's own countScope (ident.workspaceId).
+                const countScope = { workspaceId, harness };
+                poolEffect = await previewSpecPoolEffect(validated.spec, countScope);
+                let previousMatched: number | null = null;
+                if (authored) {
+                  try {
+                    previousMatched = (await previewSpecPoolEffect(existingSpec, countScope)).matched;
+                  } catch {
+                    previousMatched = null; // previous unmeasurable → guard degrades to fresh-spec rules
+                  }
+                }
+                const verdict = evaluateCollapseGuard({
+                  matched: poolEffect.matched,
+                  pool: poolEffect.pool,
+                  previousMatched,
+                  previousSource: authored ? 'authored' : 'default',
+                  confirm: args.confirmClaimCollapse === true,
+                });
+                if (verdict.refuse) {
+                  claimCollapseRefusal = { errors: verdict.errors, poolEffect };
+                } else if (verdict.warning) {
+                  applyWarning = applyWarning ? `${applyWarning}\n${verdict.warning}` : verdict.warning;
+                }
+
+                // EI-19276371141300541: a NONZERO but LOW match count evades the zero-match refuse
+                // above yet is the exact starvation shape a caller otherwise cannot see — the
+                // reported incident matched exactly 1 row for a 10-member fleet (matched !== 0, so
+                // `zeroMatch` never fires). Surface it as a loud warning — never a refusal, since a
+                // real backlog genuinely smaller than the requested headcount is legitimate and
+                // members simply idle until more work lands — whenever the matched pool can't feed
+                // every requested member.
+                if (!verdict.refuse && poolEffect.matched > 0 && poolEffect.matched < count) {
+                  const lowMatchWarning =
+                    `⚠ claim-lane pool-effect: this spec matches only ${poolEffect.matched} of ${poolEffect.pool} ` +
+                    `claimable row(s) under states=[${poolEffect.states.join(',')}]${poolEffect.harness ? ` in \`${poolEffect.harness}\`` : ''} ` +
+                    `— for a ${count}-member fleet. At least ${count - poolEffect.matched} member(s) will find nothing to claim under this lane.`;
+                  applyWarning = applyWarning ? `${applyWarning}\n${lowMatchWarning}` : lowMatchWarning;
+                }
+
+                // WI-6673 — THE DUAL OF THE COLLAPSE GUARD. Above refuses a lane matching TOO
+                // FEW rows (starvation). This warns about the opposite and equally real failure:
+                // a lane matching PLENTY of rows that are not work. On 2026-08-01 a bug-drain
+                // fleet was launched at a lane of 1,252 "claimable" items that was 98.7%
+                // nit-severity auto-filed observations; the true bug backlog was ~285. Nothing
+                // in the launch path objected, because every count was correct — a big number
+                // simply looks like a healthy backlog. WARN, never refuse: a legitimately
+                // low-severity lane (a nit-sweep fleet) is a real thing to want.
+                try {
+                  const { aggregateAdmittedComposition } = await import('../../scheduler/get-next');
+                  const comp = await aggregateAdmittedComposition(validated.spec.view.filter, {
+                    harness,
+                    states: validated.spec.states,
+                  });
+                  if (comp.degenerate) {
+                    const pct = Math.round((comp.lowSeverityShare ?? 0) * 100);
+                    const burst = comp.peakDay
+                      ? ` ${comp.peakDay.count} of them were filed on a single day (${comp.peakDay.day}), the signature of burst auto-filing rather than discovered work.`
+                      : '';
+                    // The denominator MUST be the admitted total, not poolEffect.matched: `pct`
+                    // is computed over rows passing ALL claim floors, while `matched` is the
+                    // pre-floor filter match (a strictly larger population). Pairing one with
+                    // the other states a true percentage against the wrong base — the exact
+                    // defect class WI-6673 exists to catch, reproduced inside its own warning.
+                    const degenWarning =
+                      `⚠ DEGENERATE LANE: ${pct}% of the ${comp.total} claimable row(s) are nit/minor severity` +
+                      (poolEffect.matched !== comp.total
+                        ? ` (of ${poolEffect.matched} matched before claim floors)`
+                        : '') +
+                      `.${burst}` +
+                      ` This lane is very likely an OBSERVATION FIREHOSE, not a backlog — a large count is not a workload.` +
+                      ` Composition: kinds ${JSON.stringify(comp.byKind)}, severities ${JSON.stringify(comp.bySeverity)}.` +
+                      ` If you meant to drain real defects, scope the lane by severity or kind before the members start pulling (WI-6673).`;
+                    applyWarning = applyWarning ? `${applyWarning}\n${degenWarning}` : degenWarning;
+                  }
+                } catch {
+                  /* composition is a diagnostic, never a launch blocker — fail open */
+                }
+              }
+            } catch (e: any) {
+              applyWarning = `${applyWarning ? `${applyWarning}\n` : ''}pool-effect preview failed open (spec applied, collapse guard skipped): ${e?.message ?? e}`;
+            }
+          }
+
+          // Apply — unless the guard refused (handled after the try) or we preserved an authored
+          // no-kinds spec (claimSpecApplied already set, specToApply null).
+          if (!claimCollapseRefusal && specToApply) {
+            // EI-21177728511242093: `harness` is this launch's resolved (mandatory) harness
+            // scope — the SAME value already threaded into `countScope` above for the
+            // pool-effect preview. Passing `potSlug: null` here unconditionally overwrote
+            // the claim spec's `harness_slug` column on EVERY relaunch/top-up, even when a
+            // prior launch (or a leader's own scheduler:set_claim_spec) had correctly scoped
+            // it — stranding get_next reads that filter by harness and leaving a live member
+            // with no matching claimable work. Mirror scheduler:set_claim_spec's own
+            // resolution (an explicit/ctx harness always wins) instead of hardcoding null.
+            const applied = await setClaimSpec({
+              cupId,
+              workspaceId: claimSpecWorkspaceId,
+              spec: specToApply,
+              updatedBy: ownerId,
+              potSlug: harness,
+            });
+            const warning =
+              applied.ok && applyWarning
+                ? applied.warning
+                  ? `${applied.warning}\n${applyWarning}`
+                  : applyWarning
+                : applied.warning;
             claimSpecApplied = {
-              ok: true,
-              revision: existingSpec.revision,
-              warning:
-                `EI-10409: preserved pre-existing leader-authored claim spec ` +
-                `${formatSpecRef(existingSpec.specId, existingSpec.revision)} — not overwritten`,
+              ...applied,
+              ...(warning ? { warning } : {}),
+              ...(applied.ok && poolEffect ? { poolEffect } : {}),
             };
           }
-        } else {
-          // EI-21148090110387275: COMPOSE claimKinds with the plan predicate rather than
-          // replacing it. buildFleetPlanClaimSpec already ANDs a `kind ∈ claimKinds` leaf onto
-          // the `plan = <planSlug>` leaf when kinds are given — so whenever a plan was supplied,
-          // route through it (with or without claimKinds) so an existing tool-generated
-          // `fleet-launch-<slug>-plan` spec is refreshed IN PLACE (same specId, plan predicate
-          // preserved) instead of being clobbered by the global, plan-blind
-          // `fleet-launch-<slug>-kinds` spec buildFleetKindClaimSpec produces. Only a
-          // claimKinds-only launch (no plan — P-003's "pure claim-spec fleet") falls back to
-          // buildFleetKindClaimSpec; the early `plan || claimKinds` validation guarantees
-          // claimKinds is non-empty whenever planSlug is absent here.
-          specToApply = planSlug
-            ? buildFleetPlanClaimSpec(fleetSlug, planSlug, args.claimKinds)
-            : buildFleetKindClaimSpec(fleetSlug, args.claimKinds!);
+        } catch (e: any) {
+          claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
         }
-
-        // P-010 (WI-5212 pool-collapse guard): run the SAME write-time pool-effect count +
-        // collapse verdict scheduler:set_claim_spec runs — refuse a scope matching 0 rows of a
-        // nonempty pool (or a cratered authored lane) BEFORE any terminal opens, and surface
-        // poolEffect.matched.
-        //
-        // EI-19276371141300541: this guard used to run ONLY on the claimKinds path — a FRESH
-        // plan-only spec (buildFleetPlanClaimSpec, `plan = <slug>`) got neither the zero-match
-        // refuse NOR a surfaced poolEffect, on the theory that "plan-promoted items vary in
-        // status; guarding it risks a false refusal". That theory doesn't hold: the promotion
-        // failsafe above already ran BEFORE this block, so a legitimately-fed plan lane already
-        // has its items promoted (states=['open'] by construction) by the time we count here — a
-        // freshly-generated plan lane is exactly as measurable as a freshly-generated kind lane.
-        // Skipping the check for it is precisely how a 10-member fleet launched onto a plan whose
-        // own tracking items (not the backlog being drained) matched exactly ONE row, while
-        // `claimSpecApplied` reported `ok:true` with nothing to say a starvation had occurred.
-        // Now run for every FRESHLY-BUILT spec (kind-only, plan-only, or their merge into an
-        // authored lane) — never for a preserved authored no-claimKinds spec (nothing changed
-        // there to measure). FAILS OPEN: a preview/count error never blocks the launch (safety
-        // net, not a new SPOF).
-        let poolEffect: SpecPoolEffect | null = null;
-        if (specToApply) {
-          try {
-            const validated = validateClaimSpec(specToApply);
-            if (validated.ok && validated.spec) {
-              const { previewSpecPoolEffect, evaluateCollapseGuard } =
-                await import('../../scheduler/spec-pool-preview');
-              // Count the REAL work_items partition (the launch's resolved workspace) — NOT the
-              // claim-spec store partition (resolveClaimSpecWorkspace), which is a different key
-              // space. This mirrors scheduler:set_claim_spec's own countScope (ident.workspaceId).
-              const countScope = { workspaceId, harness };
-              poolEffect = await previewSpecPoolEffect(validated.spec, countScope);
-              let previousMatched: number | null = null;
-              if (authored) {
-                try {
-                  previousMatched = (await previewSpecPoolEffect(existingSpec, countScope)).matched;
-                } catch {
-                  previousMatched = null; // previous unmeasurable → guard degrades to fresh-spec rules
-                }
-              }
-              const verdict = evaluateCollapseGuard({
-                matched: poolEffect.matched,
-                pool: poolEffect.pool,
-                previousMatched,
-                previousSource: authored ? 'authored' : 'default',
-                confirm: args.confirmClaimCollapse === true,
-              });
-              if (verdict.refuse) {
-                claimCollapseRefusal = { errors: verdict.errors, poolEffect };
-              } else if (verdict.warning) {
-                applyWarning = applyWarning ? `${applyWarning}\n${verdict.warning}` : verdict.warning;
-              }
-
-              // EI-19276371141300541: a NONZERO but LOW match count evades the zero-match refuse
-              // above yet is the exact starvation shape a caller otherwise cannot see — the
-              // reported incident matched exactly 1 row for a 10-member fleet (matched !== 0, so
-              // `zeroMatch` never fires). Surface it as a loud warning — never a refusal, since a
-              // real backlog genuinely smaller than the requested headcount is legitimate and
-              // members simply idle until more work lands — whenever the matched pool can't feed
-              // every requested member.
-              if (!verdict.refuse && poolEffect.matched > 0 && poolEffect.matched < count) {
-                const lowMatchWarning =
-                  `⚠ claim-lane pool-effect: this spec matches only ${poolEffect.matched} of ${poolEffect.pool} ` +
-                  `claimable row(s) under states=[${poolEffect.states.join(',')}]${poolEffect.harness ? ` in \`${poolEffect.harness}\`` : ''} ` +
-                  `— for a ${count}-member fleet. At least ${count - poolEffect.matched} member(s) will find nothing to claim under this lane.`;
-                applyWarning = applyWarning ? `${applyWarning}\n${lowMatchWarning}` : lowMatchWarning;
-              }
-
-              // WI-6673 — THE DUAL OF THE COLLAPSE GUARD. Above refuses a lane matching TOO
-              // FEW rows (starvation). This warns about the opposite and equally real failure:
-              // a lane matching PLENTY of rows that are not work. On 2026-08-01 a bug-drain
-              // fleet was launched at a lane of 1,252 "claimable" items that was 98.7%
-              // nit-severity auto-filed observations; the true bug backlog was ~285. Nothing
-              // in the launch path objected, because every count was correct — a big number
-              // simply looks like a healthy backlog. WARN, never refuse: a legitimately
-              // low-severity lane (a nit-sweep fleet) is a real thing to want.
-              try {
-                const { aggregateAdmittedComposition } = await import('../../scheduler/get-next');
-                const comp = await aggregateAdmittedComposition(validated.spec.view.filter, {
-                  harness,
-                  states: validated.spec.states,
-                });
-                if (comp.degenerate) {
-                  const pct = Math.round((comp.lowSeverityShare ?? 0) * 100);
-                  const burst = comp.peakDay
-                    ? ` ${comp.peakDay.count} of them were filed on a single day (${comp.peakDay.day}), the signature of burst auto-filing rather than discovered work.`
-                    : '';
-                  // The denominator MUST be the admitted total, not poolEffect.matched: `pct`
-                  // is computed over rows passing ALL claim floors, while `matched` is the
-                  // pre-floor filter match (a strictly larger population). Pairing one with
-                  // the other states a true percentage against the wrong base — the exact
-                  // defect class WI-6673 exists to catch, reproduced inside its own warning.
-                  const degenWarning =
-                    `⚠ DEGENERATE LANE: ${pct}% of the ${comp.total} claimable row(s) are nit/minor severity` +
-                    (poolEffect.matched !== comp.total
-                      ? ` (of ${poolEffect.matched} matched before claim floors)`
-                      : '') +
-                    `.${burst}` +
-                    ` This lane is very likely an OBSERVATION FIREHOSE, not a backlog — a large count is not a workload.` +
-                    ` Composition: kinds ${JSON.stringify(comp.byKind)}, severities ${JSON.stringify(comp.bySeverity)}.` +
-                    ` If you meant to drain real defects, scope the lane by severity or kind before the members start pulling (WI-6673).`;
-                  applyWarning = applyWarning ? `${applyWarning}\n${degenWarning}` : degenWarning;
-                }
-              } catch {
-                /* composition is a diagnostic, never a launch blocker — fail open */
-              }
-            }
-          } catch (e: any) {
-            applyWarning = `${applyWarning ? `${applyWarning}\n` : ''}pool-effect preview failed open (spec applied, collapse guard skipped): ${e?.message ?? e}`;
-          }
-        }
-
-        // Apply — unless the guard refused (handled after the try) or we preserved an authored
-        // no-kinds spec (claimSpecApplied already set, specToApply null).
-        if (!claimCollapseRefusal && specToApply) {
-          // EI-21177728511242093: `harness` is this launch's resolved (mandatory) harness
-          // scope — the SAME value already threaded into `countScope` above for the
-          // pool-effect preview. Passing `potSlug: null` here unconditionally overwrote
-          // the claim spec's `harness_slug` column on EVERY relaunch/top-up, even when a
-          // prior launch (or a leader's own scheduler:set_claim_spec) had correctly scoped
-          // it — stranding get_next reads that filter by harness and leaving a live member
-          // with no matching claimable work. Mirror scheduler:set_claim_spec's own
-          // resolution (an explicit/ctx harness always wins) instead of hardcoding null.
-          const applied = await setClaimSpec({
-            cupId,
-            workspaceId: claimSpecWorkspaceId,
-            spec: specToApply,
-            updatedBy: ownerId,
-            potSlug: harness,
-          });
-          const warning =
-            applied.ok && applyWarning
-              ? applied.warning
-                ? `${applied.warning}\n${applyWarning}`
-                : applyWarning
-              : applied.warning;
-          claimSpecApplied = {
-            ...applied,
-            ...(warning ? { warning } : {}),
-            ...(applied.ok && poolEffect ? { poolEffect } : {}),
-          };
-        }
-      } catch (e: any) {
-        claimSpecApplied = { ok: false, errors: [e?.message ?? String(e)] };
       }
-    }
+      return { claimSpecApplied, claimCollapseRefusal };
+    };
 
-    // P-010: a refused claim-lane guard aborts the launch cleanly — the launch slot is claimed
-    // further below, so NO terminals were opened and NO members land on an empty lane. The
-    // leader reads the counts and either fixes the backlog/kinds/plan or re-sends
-    // confirmClaimCollapse. EI-19276371141300541: this now also fires for a fresh plan-only
-    // lane (no claimKinds given), so the lane description below must not assume claimKinds is
-    // set.
-    if (claimCollapseRefusal) {
-      const pe = claimCollapseRefusal.poolEffect;
+    const refuseClaimCollapseAfterSlot = async (
+      slotAt: number,
+      refusal: NonNullable<ClaimSpecApplication['claimCollapseRefusal']>,
+    ) => {
+      // The slot is reserved before claim-spec evaluation so a suppressed retry cannot
+      // mutate the lane. If the fresh lane itself is refused, release that reservation so
+      // the caller can correct the scope and retry immediately.
+      try {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slotAt });
+      } catch {
+        /* the guard self-heals when the window elapses */
+      }
+      const pe = refusal.poolEffect;
       const laneDesc = args.claimKinds?.length ? `claimKinds=[${args.claimKinds.join(',')}]` : `plan=\`${planSlug}\``;
       // EI-21016597300738770: this is an EARLY return, before the ordinary
       // success-message assembler appends promotionFailsafeWarning. When
@@ -2716,7 +2728,7 @@ export default defineTool({
       // diagnosis here too; the collapse guard still refuses and opens nothing.
       const promotionWarning = planSlug ? promotionFailsafeWarning(planSlug, promotionFailsafe) : null;
       return err(
-        `${promotionWarning ? `${promotionWarning}\n` : ''}${claimCollapseRefusal.errors.join('\n')}\n` +
+        `${promotionWarning ? `${promotionWarning}\n` : ''}${refusal.errors.join('\n')}\n` +
           (pe
             ? `${laneDesc} matched ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(
                 ',',
@@ -2724,7 +2736,7 @@ export default defineTool({
             : '') +
           'NO members were opened. Re-send with confirmClaimCollapse:true to launch anyway (a pre-staged lane whose items are not promoted yet), or fix the claimKinds / plan / backlog first.',
       );
-    }
+    };
 
     // Only the DEFICIT opens — and the target size is deliberately independent of
     // the per-call terminal limit. A 27-member fleet may target 28 (opens one), while
@@ -2732,6 +2744,7 @@ export default defineTool({
     const topUpWave = computeFleetTopUpWave(count, liveMembers);
     let openCount = topUpWave.requestedOpenCount;
     const requestedOpenCount = openCount;
+    let claimSpecApplied: ClaimSpecApplication['claimSpecApplied'] = null;
 
     // ── WI-5211 REMOTE placement: distribute the deficit across the OTHER machines'
     // federated seat-offers — one signed spawn-request per target machine (composing
@@ -2866,6 +2879,12 @@ export default defineTool({
             `Fleet \`${fleetSlug}\` was already launched ${agoS}s ago (possibly by this very session) — NO new spawn-requests were published. ` +
             'Remote members arrive ASYNC (federation + the honor gate + spawn + presence can take minutes): watch fleet:status / coord:presence before re-requesting.',
         });
+      }
+
+      const claimSpecResult = await applyFleetClaimSpec();
+      claimSpecApplied = claimSpecResult.claimSpecApplied;
+      if (claimSpecResult.claimCollapseRefusal) {
+        return refuseClaimCollapseAfterSlot(remoteSlot.at, claimSpecResult.claimCollapseRefusal);
       }
 
       const remotePlacements: Array<{
@@ -3295,6 +3314,12 @@ export default defineTool({
         relaunchSuppressed: true,
         message: lines.join('\n'),
       });
+    }
+
+    const claimSpecResult = await applyFleetClaimSpec();
+    claimSpecApplied = claimSpecResult.claimSpecApplied;
+    if (claimSpecResult.claimCollapseRefusal) {
+      return refuseClaimCollapseAfterSlot(slot.at, claimSpecResult.claimCollapseRefusal);
     }
 
     // Compose every member's launch context = the universal MEMBER OPERATING

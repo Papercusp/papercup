@@ -21395,7 +21395,7 @@
           "POST"
         ]
       },
-      "description": "Set or clear one OR many items' `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. Single: { slug, item, blockedBy }. Many of one plan: { slug, itemIds:[…], blockedBy }. Heterogeneous: items:[{ slug, item, blockedBy }]. Returns { ok, results:[{ ok, slug, itemId, from, to | error }], counts } — correlate by { slug, itemId }, not position; one failure never fails the rest.",
+      "description": "Set or clear one OR many items' `blocked-by:` dependency list — surgical (only the target item line's keyword changes; status/text/importance preserved), inside the plan lock, records a revision. Pass blockedBy:[] to clear. Single: { slug, item, blockedBy }. Many of one plan: { slug, itemIds:[…], blockedBy }. Heterogeneous: items:[{ slug, item, blockedBy }]. Every resolved plan group is atomic: all its edits form one validated candidate or none land; independent plan groups still proceed. Returns { ok, results:[{ ok, slug, itemId, from, to | error }], counts } — correlate by { slug, itemId }, not position.",
       "capabilities": [
         "plans:write"
       ],

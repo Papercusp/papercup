@@ -27,11 +27,14 @@
  * live (selection self-intersects with what is still pending).
  */
 import {
+  memo,
+  useCallback,
   useId,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { Check, ChevronDown, ShieldCheck } from "lucide-react";
@@ -180,6 +183,254 @@ const CONFIDENCE_LABEL: Record<ReviewRowConfidence, string> = {
   recommended: "recommended",
 };
 
+/**
+ * Row-scoped activation store for the report's hottest interaction path.
+ *
+ * A parent `useState(activeRowId)` makes every pointer crossing reconcile the
+ * complete report. Real runs can contain hundreds of rows, so activation is
+ * kept outside the shell render and subscribers are indexed by row id. A
+ * change notifies only the previous and next rows; every untouched row stays
+ * out of React's render and commit work.
+ */
+class ReviewDetailController {
+  private activeRowId: string | null = null;
+  private hoveredRowId: string | null = null;
+  private focusedRowId: string | null = null;
+  private readonly listeners = new Map<string, Set<() => void>>();
+
+  subscribe(rowId: string, listener: () => void): () => void {
+    const rowListeners = this.listeners.get(rowId) ?? new Set<() => void>();
+    rowListeners.add(listener);
+    this.listeners.set(rowId, rowListeners);
+    return () => {
+      rowListeners.delete(listener);
+      if (rowListeners.size === 0) this.listeners.delete(rowId);
+    };
+  }
+
+  isActive(rowId: string): boolean {
+    return this.activeRowId === rowId;
+  }
+
+  pointerEnter(rowId: string): void {
+    this.hoveredRowId = rowId;
+    this.activate(rowId);
+  }
+
+  pointerLeave(rowId: string): void {
+    if (this.hoveredRowId === rowId) this.hoveredRowId = null;
+    if (this.activeRowId === rowId) this.activate(this.focusedRowId);
+  }
+
+  focusEnter(rowId: string): void {
+    this.focusedRowId = rowId;
+    this.activate(rowId);
+  }
+
+  focusLeave(rowId: string): void {
+    if (this.focusedRowId === rowId) this.focusedRowId = null;
+    if (this.activeRowId === rowId) this.activate(this.hoveredRowId);
+  }
+
+  clear(): void {
+    this.hoveredRowId = null;
+    this.focusedRowId = null;
+    this.activate(null);
+  }
+
+  prune(presentRowIds: ReadonlySet<string>): void {
+    if (
+      this.hoveredRowId !== null &&
+      !presentRowIds.has(this.hoveredRowId)
+    ) {
+      this.hoveredRowId = null;
+    }
+    if (
+      this.focusedRowId !== null &&
+      !presentRowIds.has(this.focusedRowId)
+    ) {
+      this.focusedRowId = null;
+    }
+    if (
+      this.activeRowId !== null &&
+      !presentRowIds.has(this.activeRowId)
+    ) {
+      this.activate(null);
+    }
+  }
+
+  private activate(nextRowId: string | null): void {
+    const previousRowId = this.activeRowId;
+    if (previousRowId === nextRowId) return;
+    this.activeRowId = nextRowId;
+    if (previousRowId !== null) this.emit(previousRowId);
+    if (nextRowId !== null) this.emit(nextRowId);
+  }
+
+  private emit(rowId: string): void {
+    for (const listener of this.listeners.get(rowId) ?? []) listener();
+  }
+}
+
+interface ReviewReportRowViewProps {
+  row: ReviewReportRow;
+  detailRegionId: string;
+  selected: boolean;
+  busy: boolean;
+  detailController: ReviewDetailController;
+  registerRowNode: (rowId: string, node: HTMLLIElement | null) => void;
+  onToggleRow: (rowId: string) => void;
+}
+
+const ReviewReportRowView = memo(function ReviewReportRowView({
+  row,
+  detailRegionId,
+  selected,
+  busy,
+  detailController,
+  registerRowNode,
+  onToggleRow,
+}: ReviewReportRowViewProps) {
+  const subscribe = useCallback(
+    (listener: () => void) => detailController.subscribe(row.id, listener),
+    [detailController, row.id],
+  );
+  const getSnapshot = useCallback(
+    () => detailController.isActive(row.id),
+    [detailController, row.id],
+  );
+  const detailOpen = useSyncExternalStore(
+    subscribe,
+    getSnapshot,
+    getSnapshot,
+  );
+  const setRowNode = useCallback(
+    (node: HTMLLIElement | null) => registerRowNode(row.id, node),
+    [registerRowNode, row.id],
+  );
+  const status = rowStatus(row);
+  const selectable = rowSelectable(row);
+  const evidence =
+    row.evidence.length > 0 ? row.evidence : ["No reason was recorded."];
+
+  return (
+    <li
+      ref={setRowNode}
+      className={`review-report__row review-report__row--${status}${detailOpen ? " review-report__row--detail-open" : ""}`}
+      data-testid={`review-row-${row.id}`}
+      data-review-row-id={row.id}
+      aria-describedby={detailOpen ? detailRegionId : undefined}
+      tabIndex={selectable ? -1 : 0}
+      onPointerEnter={() => detailController.pointerEnter(row.id)}
+      onPointerLeave={() => detailController.pointerLeave(row.id)}
+      onFocusCapture={() => detailController.focusEnter(row.id)}
+      onBlurCapture={(event) => {
+        const next = event.relatedTarget;
+        if (next instanceof Node && event.currentTarget.contains(next)) return;
+        detailController.focusLeave(row.id);
+      }}
+    >
+      <span className="review-report__row-check-slot">
+        {selectable ? (
+          <Checkbox
+            dataTestId={`review-row-check-${row.id}`}
+            ariaLabel={`Select ${row.title}`}
+            checked={selected}
+            disabled={busy}
+            onChange={() => onToggleRow(row.id)}
+          />
+        ) : (
+          <span
+            className="review-report__row-status-mark"
+            data-testid={`review-row-mark-${row.id}`}
+            title={status === "pending" ? "manual review required" : status}
+            aria-hidden
+          >
+            {status === "applied" ? "✓" : status === "pending" ? "↗" : "—"}
+          </span>
+        )}
+      </span>
+      <span className="review-report__row-identity">
+        {row.sourceLabel != null ? (
+          <span className="review-report__source-chip">{row.sourceLabel}</span>
+        ) : null}
+        {row.referenceLabel != null ? (
+          <span className="review-report__reference">{row.referenceLabel}</span>
+        ) : null}
+      </span>
+      <span className="review-report__row-change">
+        {row.transition != null ? (
+          <span
+            className="review-report__transition"
+            data-testid={`review-row-transition-${row.id}`}
+          >
+            <span
+              className="review-report__state review-report__state--from"
+              data-state={row.transition.from}
+            >
+              {row.transition.from}
+            </span>
+            <span
+              className="review-report__transition-arrow"
+              aria-hidden="true"
+            >
+              →
+            </span>
+            <span
+              className="review-report__state review-report__state--to"
+              data-state={row.transition.to}
+            >
+              {row.transition.to}
+            </span>
+          </span>
+        ) : (
+          <span className="review-report__row-title">{row.title}</span>
+        )}
+      </span>
+      <span className="review-report__row-evidence">
+        <span className="review-report__evidence-item">{evidence[0]}</span>
+      </span>
+      <span
+        className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
+        data-testid={`review-row-conf-${row.id}`}
+      >
+        {CONFIDENCE_LABEL[row.confidence]}
+      </span>
+      {detailOpen ? (
+        <div
+          id={detailRegionId}
+          className="review-report__row-hover-detail"
+          data-testid={`review-row-detail-${row.id}`}
+          role="region"
+          aria-label={`Details for ${row.title}`}
+        >
+          <div className="review-report__detail-evidence">
+            <strong>Decision evidence</strong>
+            <ul>
+              {evidence.map((line, evidenceIndex) => (
+                <li key={`${row.id}-evidence-${evidenceIndex}`}>{line}</li>
+              ))}
+            </ul>
+          </div>
+          {row.detail != null ? (
+            <div className="review-report__detail-consumer">{row.detail}</div>
+          ) : null}
+        </div>
+      ) : null}
+      {row.error != null ? (
+        <span
+          className="review-report__row-error"
+          data-testid={`review-row-error-${row.id}`}
+          role="alert"
+          aria-atomic="true"
+        >
+          {row.error}
+        </span>
+      ) : null}
+    </li>
+  );
+});
+
 export default function ReviewReportShell({
   title,
   icon,
@@ -199,11 +450,7 @@ export default function ReviewReportShell({
     initialSelection(groups, defaultSelected),
   );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const [activeDetailRowId, setActiveDetailRowId] = useState<string | null>(
-    null,
-  );
-  const hoveredDetailRowId = useRef<string | null>(null);
-  const focusedDetailRowId = useRef<string | null>(null);
+  const [detailController] = useState(() => new ReviewDetailController());
   const reportRef = useRef<HTMLElement>(null);
   const applyButtonRef = useRef<HTMLButtonElement>(null);
   const dismissButtonRef = useRef<HTMLButtonElement>(null);
@@ -238,22 +485,8 @@ export default function ReviewReportShell({
   // A live report can remove a row and later reintroduce the same stable id.
   // Once it leaves, no stale hover/focus state may resurrect its detail.
   useLayoutEffect(() => {
-    if (
-      hoveredDetailRowId.current !== null &&
-      !presentRowIds.has(hoveredDetailRowId.current)
-    ) {
-      hoveredDetailRowId.current = null;
-    }
-    if (
-      focusedDetailRowId.current !== null &&
-      !presentRowIds.has(focusedDetailRowId.current)
-    ) {
-      focusedDetailRowId.current = null;
-    }
-    setActiveDetailRowId((previous) =>
-      previous !== null && !presentRowIds.has(previous) ? null : previous,
-    );
-  }, [presentRowIds]);
+    detailController.prune(presentRowIds);
+  }, [detailController, presentRowIds]);
 
   // Selection intersected with what is STILL pending — a consumer marking rows
   // applied between renders must not leave phantom selections behind.
@@ -363,14 +596,22 @@ export default function ReviewReportShell({
     target?.focus({ preventScroll: true });
   }, [groups]);
 
-  const toggleRow = (id: string) => {
+  const registerRowNode = useCallback(
+    (rowId: string, node: HTMLLIElement | null) => {
+      if (node) rowNodes.current.set(rowId, node);
+      else rowNodes.current.delete(rowId);
+    },
+    [],
+  );
+
+  const toggleRow = useCallback((id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  };
+  }, []);
 
   const toggleGroup = (group: ReviewReportGroup) => {
     const ids = group.rows.filter(rowSelectable).map((r) => r.id);
@@ -386,9 +627,7 @@ export default function ReviewReportShell({
   };
 
   const toggleCollapsed = (groupId: string) => {
-    hoveredDetailRowId.current = null;
-    focusedDetailRowId.current = null;
-    setActiveDetailRowId(null);
+    detailController.clear();
     setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
@@ -626,187 +865,18 @@ export default function ReviewReportShell({
               </header>
               {!isCollapsed && (
                 <ul className="review-report__rows">
-                  {group.rows.map((row, rowIndex) => {
-                    const status = rowStatus(row);
-                    const selectable = rowSelectable(row);
-                    const detailOpen = activeDetailRowId === row.id;
-                    const evidence =
-                      row.evidence.length > 0
-                        ? row.evidence
-                        : ["No reason was recorded."];
-                    const detailRegionId = `${titleId}-detail-${index}-${rowIndex}`;
-                    return (
-                      <li
-                        ref={(node) => {
-                          if (node) rowNodes.current.set(row.id, node);
-                          else rowNodes.current.delete(row.id);
-                        }}
-                        key={row.id}
-                        className={`review-report__row review-report__row--${status}${detailOpen ? " review-report__row--detail-open" : ""}`}
-                        data-testid={`review-row-${row.id}`}
-                        data-review-row-id={row.id}
-                        aria-describedby={
-                          detailOpen ? detailRegionId : undefined
-                        }
-                        tabIndex={selectable ? -1 : 0}
-                        onPointerEnter={() => {
-                          hoveredDetailRowId.current = row.id;
-                          setActiveDetailRowId(row.id);
-                        }}
-                        onPointerLeave={() => {
-                          if (hoveredDetailRowId.current === row.id) {
-                            hoveredDetailRowId.current = null;
-                          }
-                          setActiveDetailRowId((current) =>
-                            current === row.id
-                              ? focusedDetailRowId.current
-                              : current,
-                          );
-                        }}
-                        onFocusCapture={() => {
-                          focusedDetailRowId.current = row.id;
-                          setActiveDetailRowId(row.id);
-                        }}
-                        onBlurCapture={(event) => {
-                          const next = event.relatedTarget;
-                          if (
-                            next instanceof Node &&
-                            event.currentTarget.contains(next)
-                          ) {
-                            return;
-                          }
-                          if (focusedDetailRowId.current === row.id) {
-                            focusedDetailRowId.current = null;
-                          }
-                          setActiveDetailRowId((current) =>
-                            current === row.id
-                              ? hoveredDetailRowId.current
-                              : current,
-                          );
-                        }}
-                      >
-                        <span className="review-report__row-check-slot">
-                          {selectable ? (
-                            <Checkbox
-                              dataTestId={`review-row-check-${row.id}`}
-                              ariaLabel={`Select ${row.title}`}
-                              checked={liveSelected.has(row.id)}
-                              disabled={busy}
-                              onChange={() => toggleRow(row.id)}
-                            />
-                          ) : (
-                            <span
-                              className="review-report__row-status-mark"
-                              data-testid={`review-row-mark-${row.id}`}
-                              title={
-                                status === "pending"
-                                  ? "manual review required"
-                                  : status
-                              }
-                              aria-hidden
-                            >
-                              {status === "applied"
-                                ? "✓"
-                                : status === "pending"
-                                  ? "↗"
-                                  : "—"}
-                            </span>
-                          )}
-                        </span>
-                        <span className="review-report__row-identity">
-                          {row.sourceLabel != null ? (
-                            <span className="review-report__source-chip">
-                              {row.sourceLabel}
-                            </span>
-                          ) : null}
-                          {row.referenceLabel != null ? (
-                            <span className="review-report__reference">
-                              {row.referenceLabel}
-                            </span>
-                          ) : null}
-                        </span>
-                        <span className="review-report__row-change">
-                          {row.transition != null ? (
-                            <span
-                              className="review-report__transition"
-                              data-testid={`review-row-transition-${row.id}`}
-                            >
-                              <span
-                                className="review-report__state review-report__state--from"
-                                data-state={row.transition.from}
-                              >
-                                {row.transition.from}
-                              </span>
-                              <span
-                                className="review-report__transition-arrow"
-                                aria-hidden="true"
-                              >
-                                →
-                              </span>
-                              <span
-                                className="review-report__state review-report__state--to"
-                                data-state={row.transition.to}
-                              >
-                                {row.transition.to}
-                              </span>
-                            </span>
-                          ) : (
-                            <span className="review-report__row-title">
-                              {row.title}
-                            </span>
-                          )}
-                        </span>
-                        <span className="review-report__row-evidence">
-                          <span className="review-report__evidence-item">
-                            {evidence[0]}
-                          </span>
-                        </span>
-                        <span
-                          className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
-                          data-testid={`review-row-conf-${row.id}`}
-                        >
-                          {CONFIDENCE_LABEL[row.confidence]}
-                        </span>
-                        {detailOpen ? (
-                          <div
-                            id={detailRegionId}
-                            className="review-report__row-hover-detail"
-                            data-testid={`review-row-detail-${row.id}`}
-                            role="region"
-                            aria-label={`Details for ${row.title}`}
-                          >
-                            <div className="review-report__detail-evidence">
-                              <strong>Decision evidence</strong>
-                              <ul>
-                                {evidence.map((line, evidenceIndex) => (
-                                  <li
-                                    key={`${row.id}-evidence-${evidenceIndex}`}
-                                  >
-                                    {line}
-                                  </li>
-                                ))}
-                              </ul>
-                            </div>
-                            {row.detail != null ? (
-                              <div className="review-report__detail-consumer">
-                                {row.detail}
-                              </div>
-                            ) : null}
-                          </div>
-                        ) : null}
-                        {row.error != null ? (
-                          <span
-                            className="review-report__row-error"
-                            data-testid={`review-row-error-${row.id}`}
-                            role="alert"
-                            aria-atomic="true"
-                          >
-                            {row.error}
-                          </span>
-                        ) : null}
-                      </li>
-                    );
-                  })}
+                  {group.rows.map((row, rowIndex) => (
+                    <ReviewReportRowView
+                      key={row.id}
+                      row={row}
+                      detailRegionId={`${titleId}-detail-${index}-${rowIndex}`}
+                      selected={liveSelected.has(row.id)}
+                      busy={busy}
+                      detailController={detailController}
+                      registerRowNode={registerRowNode}
+                      onToggleRow={toggleRow}
+                    />
+                  ))}
                 </ul>
               )}
             </section>
