@@ -3,22 +3,24 @@
  *
  * This extends the existing admission run ledger instead of creating another audit store.
  * The four queue-control axes deliberately overlap: a row may have an active claim, a
- * hold-open lease, a durable park, and an agent-review state at the same time. Nothing in
- * this module clears a hold or changes a work-item.
+ * hold-open lease, a durable park, and an agent-review state at the same time. The audit
+ * path is report-only; the reconciliation path below accepts only explicit evidence plus
+ * a control-state fingerprint and writes an atomic audit row for every successful clear.
  */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { readAgentReviewState } from './harness/improvements/agent-review-policy';
+import { saveTextArtifact } from './text-artifacts';
 import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 import { readWorkItemClaimHoldProvenance, type OrgSql } from './work-items';
 
 export const WORK_ITEM_DURABLE_PARK_AUDIT = 'work-item-durable-park-audit';
 export const DURABLE_PARK_AUDIT_RUN_KIND = 'daily-digest' as const;
 export const DEFAULT_AGENT_REVIEW_OVERDUE_HOURS = 24;
+export const DURABLE_PARK_CLEAR_AUDIT_ACTION = 'work_items:durable_park:clear';
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
-const STATED_UNPARK_CONDITION =
-  /\b(?:unpark|unhold|release|resume|clear)\b|\b(?:when|once|after|until|unless)\b/i;
+const STATED_UNPARK_CONDITION = /\b(?:unpark|unhold|release|resume|clear)\b|\b(?:when|once|after|until|unless)\b/i;
 
 export type AuditAgeStatus = 'known' | 'missing' | 'invalid';
 export type AuditAgeBucket = 'under-1d' | '1-7d' | '7-30d' | '30d-plus' | 'unknown';
@@ -112,16 +114,239 @@ export interface DurableParkAuditReport {
   };
 }
 
+export type DurableParkClearReason =
+  | 'condition-satisfied'
+  | 'duplicate-terminal'
+  | 'review-completed'
+  | 'typed-blocker-resolved'
+  | 'operator-directed';
+
+export interface DurableParkReconcileDecision {
+  id: string;
+  expectedParkFingerprint: string;
+  reasonCode: DurableParkClearReason;
+  /** Concrete, owner-inspectable proof. A reason code without evidence is refused. */
+  evidence: string;
+}
+
+export type DurableParkReconcileOutcome =
+  | 'cleared'
+  | 'already-cleared'
+  | 'assigned'
+  | 'missing'
+  | 'not-durable-park'
+  | 'stale-fingerprint';
+
+export interface DurableParkReconcileRowResult {
+  id: string;
+  outcome: DurableParkReconcileOutcome;
+  expectedParkFingerprint: string;
+  observedParkFingerprint: string | null;
+  reasonCode: DurableParkClearReason;
+  evidence: string;
+  preservedLease: boolean;
+  takenBy: string | null;
+}
+
+export interface DurableParkReconcileResult {
+  schemaVersion: 'durable-park-reconcile-v1';
+  runId: string;
+  inputSha256: string;
+  workspaceId: string;
+  harnessSlug: string;
+  generatedAt: string;
+  actor: string;
+  requested: number;
+  cleared: number;
+  unchanged: number;
+  rows: DurableParkReconcileRowResult[];
+  artifactPath: string;
+}
+
+export interface DurableParkEvidenceMatrixRow {
+  id: string;
+  title: string | null;
+  state: string;
+  takenBy: string | null;
+  takenAt: string | null;
+  updatedAtMs: number | null;
+  parkFingerprint: string;
+  axes: {
+    rawClaimHold: true;
+    durablePark: {
+      by: string;
+      reason: string | null;
+      at: string | null;
+    } | null;
+    holdOpenLease: {
+      by: string;
+      reason: string | null;
+      at: string | null;
+    } | null;
+    agentReview: ReturnType<typeof readAgentReviewState>;
+  };
+  /** Exact source payload makes every item-level conclusion independently re-checkable. */
+  sourcePayload: Record<string, unknown>;
+}
+
+export interface DurableParkEvidenceMatrix {
+  schemaVersion: 'durable-park-evidence-matrix-v1';
+  runId: string;
+  workspaceId: string;
+  harnessSlug: string;
+  generatedAt: string;
+  population: {
+    rawClaimHolds: number;
+    durableParks: number;
+    holdOpenLeases: number;
+    leaseAndPark: number;
+    assigned: number;
+  };
+  rows: DurableParkEvidenceMatrixRow[];
+}
+
 function record(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
 function numberOrNull(value: unknown): number | null {
   if (value == null) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+function textOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+/**
+ * Fingerprint only the control state a durable-park clear is allowed to rely on.
+ * Unrelated payload edits (a checkpoint mirror, tags, UI metadata) deliberately do
+ * not invalidate a disposition, while a state/claim/park/lease change always does.
+ */
+export function durableParkFingerprint(input: { state: string; takenBy: string | null; payload: unknown }): string {
+  const payload = record(input.payload);
+  const control = {
+    state: input.state,
+    takenBy: textOrNull(input.takenBy),
+    rawClaimHold: String(payload._claimHold) === 'true',
+    durablePark: {
+      by: textOrNull(payload.claim_hold_by),
+      reason: textOrNull(payload.claim_hold_reason),
+      at: textOrNull(payload.claim_hold_at),
+    },
+    holdOpenLease: {
+      by: textOrNull(payload.held_open_by),
+      reason: textOrNull(payload.held_open_reason),
+      at: textOrNull(payload.held_open_at),
+    },
+  };
+  return createHash('sha256').update(JSON.stringify(control)).digest('hex');
+}
+
+export function buildDurableParkEvidenceMatrix(input: {
+  rows: readonly DurableParkAuditSourceRow[];
+  runId: string;
+  workspaceId: string;
+  harnessSlug: string;
+  nowMs: number;
+}): DurableParkEvidenceMatrix {
+  const rows: DurableParkEvidenceMatrixRow[] = [];
+  let durableParks = 0;
+  let holdOpenLeases = 0;
+  let leaseAndPark = 0;
+  let assigned = 0;
+
+  for (const row of input.rows) {
+    const payload = record(row.payload);
+    if (String(payload._claimHold) !== 'true') continue;
+    const provenance = readWorkItemClaimHoldProvenance(payload);
+    if (provenance.parked) durableParks += 1;
+    if (provenance.heldOpen) holdOpenLeases += 1;
+    if (provenance.parked && provenance.heldOpen) leaseAndPark += 1;
+    if (textOrNull(row.takenBy)) assigned += 1;
+    rows.push({
+      id: row.id,
+      title: row.title,
+      state: row.state,
+      takenBy: textOrNull(row.takenBy),
+      takenAt: row.takenAt,
+      updatedAtMs: row.updatedAtMs,
+      parkFingerprint: durableParkFingerprint({ state: row.state, takenBy: row.takenBy, payload }),
+      axes: {
+        rawClaimHold: true,
+        durablePark: provenance.parked
+          ? { by: provenance.parked.by, reason: provenance.parked.reason, at: provenance.parked.at }
+          : null,
+        holdOpenLease: provenance.heldOpen
+          ? { by: provenance.heldOpen.by, reason: provenance.heldOpen.reason, at: provenance.heldOpen.at }
+          : null,
+        agentReview: readAgentReviewState(payload),
+      },
+      sourcePayload: payload,
+    });
+  }
+  rows.sort((a, b) => a.id.localeCompare(b.id));
+
+  return {
+    schemaVersion: 'durable-park-evidence-matrix-v1',
+    runId: input.runId,
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    generatedAt: new Date(input.nowMs).toISOString(),
+    population: {
+      rawClaimHolds: rows.length,
+      durableParks,
+      holdOpenLeases,
+      leaseAndPark,
+      assigned,
+    },
+    rows,
+  };
+}
+
+export interface DurableParkClearPlan extends DurableParkReconcileRowResult {
+  nextPayload: Record<string, unknown> | null;
+}
+
+/** Pure per-row CAS planner; the transaction wrapper below applies only `cleared`. */
+export function planDurableParkClear(
+  row: { id: string; state: string; takenBy: string | null; payload: unknown },
+  decision: DurableParkReconcileDecision,
+): DurableParkClearPlan {
+  const payload = record(row.payload);
+  const observedParkFingerprint = durableParkFingerprint({
+    state: row.state,
+    takenBy: row.takenBy,
+    payload,
+  });
+  const result = (outcome: DurableParkReconcileOutcome, preservedLease = false): DurableParkClearPlan => ({
+    id: decision.id,
+    outcome,
+    expectedParkFingerprint: decision.expectedParkFingerprint,
+    observedParkFingerprint,
+    reasonCode: decision.reasonCode,
+    evidence: decision.evidence,
+    preservedLease,
+    takenBy: textOrNull(row.takenBy),
+    nextPayload: null,
+  });
+  const provenance = readWorkItemClaimHoldProvenance(payload);
+  if (!provenance.parked) return result('already-cleared', !!provenance.heldOpen);
+  if (String(payload._claimHold) !== 'true') return result('not-durable-park', !!provenance.heldOpen);
+  if (textOrNull(row.takenBy)) return result('assigned', !!provenance.heldOpen);
+  if (decision.expectedParkFingerprint !== observedParkFingerprint) {
+    return result('stale-fingerprint', !!provenance.heldOpen);
+  }
+
+  const nextPayload = { ...payload };
+  delete nextPayload.claim_hold_by;
+  delete nextPayload.claim_hold_reason;
+  delete nextPayload.claim_hold_at;
+  const preservedLease = !!provenance.heldOpen;
+  if (preservedLease) nextPayload._claimHold = true;
+  else delete nextPayload._claimHold;
+  return { ...result('cleared', preservedLease), nextPayload };
 }
 
 function ageBucket(ageMs: number): AuditAgeBucket {
@@ -279,8 +504,7 @@ export function buildDurableParkAuditReport(input: {
     population: {
       nonTerminal: input.rows.length,
       axes,
-      note:
-        'Axes overlap by design: active claim, hold-open lease, durable park, and agent review are independent facts.',
+      note: 'Axes overlap by design: active claim, hold-open lease, durable park, and agent review are independent facts.',
     },
     parkAgeBuckets,
     unparkConditions,
@@ -319,6 +543,9 @@ export async function runWorkItemDurableParkAudit(opts: {
   now?: () => number;
   reviewOverdueHours?: number;
   sql?: OrgSql;
+  /** Existing text-artifact surface; false/omitted keeps library callers side-effect compatible. */
+  artifactPath?: string | false;
+  saveArtifact?: (harnessSlug: string, relPath: string, content: string) => Promise<void>;
 }): Promise<DurableParkAuditReport> {
   const sql = opts.sql ?? getOrgPg().sql;
   const runId = opts.runId?.trim() || `${WORK_ITEM_DURABLE_PARK_AUDIT}:${randomUUID()}`;
@@ -363,23 +590,38 @@ export async function runWorkItemDurableParkAudit(opts: {
          AND wi.harness_slug = ${opts.harnessSlug}
          AND NOT (wi.status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
        ORDER BY wi.feature_id`;
+    const sourceRows: DurableParkAuditSourceRow[] = rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      state: row.state,
+      takenBy: row.taken_by,
+      takenAt: instant(row.taken_at),
+      updatedAtMs: numberOrNull(row.updated_ts),
+      payload: row.payload,
+      reviewRoutedAtMs: numberOrNull(row.review_routed_at_ms),
+    }));
+    const completedAtMs = now();
     const report = buildDurableParkAuditReport({
-      rows: rows.map((row) => ({
-        id: row.id,
-        title: row.title,
-        state: row.state,
-        takenBy: row.taken_by,
-        takenAt: instant(row.taken_at),
-        updatedAtMs: numberOrNull(row.updated_ts),
-        payload: row.payload,
-        reviewRoutedAtMs: numberOrNull(row.review_routed_at_ms),
-      })),
+      rows: sourceRows,
       runId,
       workspaceId: opts.workspaceId,
       harnessSlug: opts.harnessSlug,
-      nowMs: now(),
+      nowMs: completedAtMs,
       reviewOverdueHours: opts.reviewOverdueHours,
     });
+    const matrix = buildDurableParkEvidenceMatrix({
+      rows: sourceRows,
+      runId,
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      nowMs: completedAtMs,
+    });
+    const artifactPath = typeof opts.artifactPath === 'string' ? opts.artifactPath.trim() : '';
+    const matrixJson = JSON.stringify(matrix, null, 2);
+    const matrixSha256 = createHash('sha256').update(matrixJson).digest('hex');
+    if (artifactPath) {
+      await (opts.saveArtifact ?? saveTextArtifact)(opts.harnessSlug, artifactPath, matrixJson);
+    }
     const latencyMs = Math.max(0, now() - startedAtMs);
     await sql`
       UPDATE harness_shared.admission_runs
@@ -395,6 +637,13 @@ export async function runWorkItemDurableParkAudit(opts: {
                mode: 'durable-park-audit',
                reportOnly: true,
                report,
+               evidenceMatrix: {
+                 artifactPath: artifactPath || null,
+                 sha256: matrixSha256,
+                 rows: matrix.population.rawClaimHolds,
+                 durableParks: matrix.population.durableParks,
+                 holdOpenLeases: matrix.population.holdOpenLeases,
+               },
              })}::text::jsonb
        WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}`;
     return report;
@@ -407,6 +656,300 @@ export async function runWorkItemDurableParkAudit(opts: {
                status: 'failed',
                mode: 'durable-park-audit',
                reportOnly: true,
+               error: error instanceof Error ? error.message : String(error),
+             })}::text::jsonb
+       WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}`;
+    throw error;
+  }
+}
+
+const DURABLE_PARK_CLEAR_REASONS = new Set<DurableParkClearReason>([
+  'condition-satisfied',
+  'duplicate-terminal',
+  'review-completed',
+  'typed-blocker-resolved',
+  'operator-directed',
+]);
+
+type ReconcileDbRow = {
+  id: string;
+  state: string;
+  taken_by: string | null;
+  payload: unknown;
+};
+
+function reconcileArtifactPath(runId: string): string {
+  const safe = runId.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'run';
+  return `reports/durable-parks/${safe}-reconcile.json`;
+}
+
+function validateReconcileInput(opts: { actor: string; decisions: readonly DurableParkReconcileDecision[] }): void {
+  if (!opts.actor.trim()) throw new Error('durable-park reconciliation requires actor');
+  if (opts.decisions.length === 0) throw new Error('durable-park reconciliation requires at least one decision');
+  if (opts.decisions.length > 500) throw new Error('durable-park reconciliation is capped at 500 decisions per run');
+  const ids = new Set<string>();
+  for (const decision of opts.decisions) {
+    if (!decision.id.trim()) throw new Error('durable-park reconciliation decision id is required');
+    if (ids.has(decision.id)) throw new Error(`duplicate durable-park reconciliation id: ${decision.id}`);
+    ids.add(decision.id);
+    if (!/^[0-9a-f]{64}$/.test(decision.expectedParkFingerprint)) {
+      throw new Error(`invalid expectedParkFingerprint for ${decision.id}`);
+    }
+    if (!DURABLE_PARK_CLEAR_REASONS.has(decision.reasonCode)) {
+      throw new Error(`invalid durable-park reasonCode for ${decision.id}: ${String(decision.reasonCode)}`);
+    }
+    if (!decision.evidence.trim())
+      throw new Error(`durable-park reconciliation evidence is required for ${decision.id}`);
+  }
+}
+
+function reconcileInputSha256(input: {
+  workspaceId: string;
+  harnessSlug: string;
+  actor: string;
+  decisions: readonly DurableParkReconcileDecision[];
+}): string {
+  const canonical = {
+    workspaceId: input.workspaceId,
+    harnessSlug: input.harnessSlug,
+    actor: input.actor.trim(),
+    decisions: [...input.decisions]
+      .map((decision) => ({
+        id: decision.id,
+        expectedParkFingerprint: decision.expectedParkFingerprint,
+        reasonCode: decision.reasonCode,
+        evidence: decision.evidence,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  };
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
+/**
+ * Apply explicit, evidence-backed durable-park dispositions through a predicate CAS.
+ * A coexisting liveness lease survives intact; an assignment, state/control drift, or
+ * missing fingerprint converts that row to a report-only outcome.
+ */
+export async function runWorkItemDurableParkReconciliation(opts: {
+  workspaceId: string;
+  harnessSlug: string;
+  actor: string;
+  decisions: readonly DurableParkReconcileDecision[];
+  runId?: string;
+  now?: () => number;
+  sql?: OrgSql;
+  artifactPath?: string;
+  saveArtifact?: (harnessSlug: string, relPath: string, content: string) => Promise<void>;
+}): Promise<DurableParkReconcileResult> {
+  validateReconcileInput(opts);
+  const sql = opts.sql ?? getOrgPg().sql;
+  const now = opts.now ?? Date.now;
+  const runId = opts.runId?.trim() || `${WORK_ITEM_DURABLE_PARK_AUDIT}:reconcile:${randomUUID()}`;
+  const artifactPath = opts.artifactPath?.trim() || reconcileArtifactPath(runId);
+  const startedAtMs = now();
+  const inputSha256 = reconcileInputSha256(opts);
+
+  const existing = await sql<Array<{ detail: Record<string, unknown> | null }>>`
+    SELECT detail
+      FROM harness_shared.admission_runs
+     WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}
+     LIMIT 1`;
+  const existingDetail = record(existing[0]?.detail);
+  if (existingDetail.status === 'complete' && existingDetail.mode === 'durable-park-reconcile') {
+    const prior = record(existingDetail.result);
+    if (prior.schemaVersion === 'durable-park-reconcile-v1') {
+      const priorRows = Array.isArray(prior.rows)
+        ? prior.rows.filter((row): row is DurableParkReconcileRowResult => !!row && typeof row === 'object')
+        : [];
+      const priorActor = textOrNull(prior.actor) ?? textOrNull(existingDetail.actor);
+      const priorInputSha256 =
+        textOrNull(existingDetail.inputSha256) ??
+        (priorActor && priorRows.length
+          ? reconcileInputSha256({
+              workspaceId: textOrNull(prior.workspaceId) ?? opts.workspaceId,
+              harnessSlug: textOrNull(prior.harnessSlug) ?? opts.harnessSlug,
+              actor: priorActor,
+              decisions: priorRows.map((row) => ({
+                id: row.id,
+                expectedParkFingerprint: row.expectedParkFingerprint,
+                reasonCode: row.reasonCode,
+                evidence: row.evidence,
+              })),
+            })
+          : null);
+      if (priorInputSha256 !== inputSha256) {
+        throw new Error(`durable-park reconciliation runId ${runId} was already used with different input`);
+      }
+      return { ...(prior as unknown as DurableParkReconcileResult), inputSha256 };
+    }
+  }
+
+  await sql`
+    INSERT INTO harness_shared.admission_runs
+      (id, workspace_id, harness_slug, run_kind, started_at, detail)
+    VALUES
+      (${runId}, ${opts.workspaceId}, ${opts.harnessSlug}, ${DURABLE_PARK_AUDIT_RUN_KIND},
+       ${new Date(startedAtMs)},
+       ${JSON.stringify({
+         status: 'running',
+         mode: 'durable-park-reconcile',
+         actor: opts.actor,
+         inputSha256,
+         requested: opts.decisions.length,
+       })}::text::jsonb)
+    ON CONFLICT (id) DO NOTHING`;
+
+  try {
+    const rowResults: DurableParkReconcileRowResult[] = [];
+    for (const decision of opts.decisions) {
+      const result = await sql.begin(async (rawTx) => {
+        const tx = rawTx as unknown as OrgSql;
+        const rows = await tx<ReconcileDbRow[]>`
+          SELECT feature_id AS id, status AS state, taken_by, payload
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${opts.workspaceId}
+             AND harness_slug = ${opts.harnessSlug}
+             AND feature_id = ${decision.id}`;
+        const row = rows[0];
+        if (!row) {
+          return {
+            id: decision.id,
+            outcome: 'missing' as const,
+            expectedParkFingerprint: decision.expectedParkFingerprint,
+            observedParkFingerprint: null,
+            reasonCode: decision.reasonCode,
+            evidence: decision.evidence,
+            preservedLease: false,
+            takenBy: null,
+          };
+        }
+
+        const plan = planDurableParkClear(
+          { id: row.id, state: row.state, takenBy: row.taken_by, payload: row.payload },
+          decision,
+        );
+        const { nextPayload, ...outcome } = plan;
+        if (plan.outcome !== 'cleared' || !nextPayload) return outcome;
+
+        const priorPayload = record(row.payload);
+        const updated = await tx<Array<{ payload: unknown }>>`
+          UPDATE harness_shared.work_items
+             SET payload = CASE
+                   WHEN COALESCE(payload, '{}'::jsonb) ->> 'held_open_by' IS NOT NULL
+                    AND COALESCE(payload, '{}'::jsonb) ->> 'held_open_by' <> ''
+                   THEN COALESCE(payload, '{}'::jsonb)
+                          - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
+                   ELSE COALESCE(payload, '{}'::jsonb)
+                          - '_claimHold' - 'claim_hold_by' - 'claim_hold_reason' - 'claim_hold_at'
+                 END,
+                 updated_ts = ${now()}
+           WHERE workspace_id = ${opts.workspaceId}
+             AND harness_slug = ${opts.harnessSlug}
+             AND feature_id = ${decision.id}
+             AND status = ${row.state}
+             AND taken_by IS NULL
+             AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' = 'true'
+             AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_by')
+                   IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_by)}
+             AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_reason')
+                   IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_reason)}
+             AND (COALESCE(payload, '{}'::jsonb) ->> 'claim_hold_at')
+                   IS NOT DISTINCT FROM ${textOrNull(priorPayload.claim_hold_at)}
+             AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_by')
+                   IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_by)}
+             AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_reason')
+                   IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_reason)}
+             AND (COALESCE(payload, '{}'::jsonb) ->> 'held_open_at')
+                   IS NOT DISTINCT FROM ${textOrNull(priorPayload.held_open_at)}
+          RETURNING payload`;
+        if (!updated[0]) {
+          const raced = await tx<ReconcileDbRow[]>`
+            SELECT feature_id AS id, status AS state, taken_by, payload
+              FROM harness_shared.work_items
+             WHERE workspace_id = ${opts.workspaceId}
+               AND harness_slug = ${opts.harnessSlug}
+               AND feature_id = ${decision.id}`;
+          if (!raced[0]) return { ...outcome, outcome: 'missing' as const, observedParkFingerprint: null };
+          const retryPlan = planDurableParkClear(
+            {
+              id: raced[0].id,
+              state: raced[0].state,
+              takenBy: raced[0].taken_by,
+              payload: raced[0].payload,
+            },
+            decision,
+          );
+          const { nextPayload: _ignored, ...retryOutcome } = retryPlan;
+          return retryOutcome;
+        }
+        const before = readWorkItemClaimHoldProvenance(row.payload);
+        await tx`
+          INSERT INTO harness_shared.audit_log
+            (id, ts, actor, action, subject, details, workspace_id)
+          VALUES
+            (${`durable-park-clear-${randomUUID()}`}, ${now()}, ${opts.actor},
+             ${DURABLE_PARK_CLEAR_AUDIT_ACTION}, ${decision.id},
+             ${JSON.stringify({
+               runId,
+               harness: opts.harnessSlug,
+               reasonCode: decision.reasonCode,
+               evidence: decision.evidence,
+               expectedParkFingerprint: decision.expectedParkFingerprint,
+               observedParkFingerprint: plan.observedParkFingerprint,
+               preservedLease: plan.preservedLease,
+               priorPark: before.parked,
+             })}::text::jsonb,
+             ${opts.workspaceId})`;
+        return outcome;
+      });
+      rowResults.push(result);
+    }
+
+    const finishedAtMs = now();
+    const result: DurableParkReconcileResult = {
+      schemaVersion: 'durable-park-reconcile-v1',
+      runId,
+      inputSha256,
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      generatedAt: new Date(finishedAtMs).toISOString(),
+      actor: opts.actor,
+      requested: rowResults.length,
+      cleared: rowResults.filter((row) => row.outcome === 'cleared').length,
+      unchanged: rowResults.filter((row) => row.outcome !== 'cleared').length,
+      rows: rowResults,
+      artifactPath,
+    };
+    await (opts.saveArtifact ?? saveTextArtifact)(opts.harnessSlug, artifactPath, JSON.stringify(result, null, 2));
+    await sql`
+      UPDATE harness_shared.admission_runs
+         SET finished_at = ${new Date(finishedAtMs)},
+             batch_size = ${result.requested},
+             promoted = ${result.cleared},
+             held = ${result.unchanged},
+             model_id = NULL,
+             tokens_in = 0,
+             tokens_out = 0,
+             latency_ms = ${Math.max(0, finishedAtMs - startedAtMs)},
+             detail = ${JSON.stringify({
+               status: 'complete',
+               mode: 'durable-park-reconcile',
+               actor: opts.actor,
+               inputSha256,
+               artifactPath,
+               result,
+             })}::text::jsonb
+       WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}`;
+    return result;
+  } catch (error) {
+    await sql`
+      UPDATE harness_shared.admission_runs
+         SET finished_at = ${new Date(now())},
+             latency_ms = ${Math.max(0, now() - startedAtMs)},
+             detail = ${JSON.stringify({
+               status: 'failed',
+               mode: 'durable-park-reconcile',
+               actor: opts.actor,
                error: error instanceof Error ? error.message : String(error),
              })}::text::jsonb
        WHERE id = ${runId} AND workspace_id = ${opts.workspaceId}`;
