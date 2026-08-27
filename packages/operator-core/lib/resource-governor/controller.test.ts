@@ -153,18 +153,18 @@ describe('CaplessAdaptiveController', () => {
   });
 
   it('weights per-start resource demand by live in-flight occupancy', () => {
-    const controller = new CaplessAdaptiveController({ initialWindow: 100, contractionCooldownMs: 0 });
+    const controller = new CaplessAdaptiveController({ initialWindow: 110, contractionCooldownMs: 0 });
     const decision = controller.step({
-      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'provider' }),
+      verdict: verdict({ state: 'degraded', severity: 'critical', resource: 'cpu' }),
       classes: [
-        { admissionClass: 'inference', inFlight: 9, demand: { providerRequests: 1 } },
-        { admissionClass: 'embedding', inFlight: 1, demand: { providerRequests: 1 } },
-        { admissionClass: 'background', inFlight: 0, demand: { providerRequests: 1_000 } },
+        { admissionClass: 'agent', inFlight: 100, demand: { cpuWeight: 1 } },
+        { admissionClass: 'build', inFlight: 1, demand: { cpuWeight: 10 } },
+        { admissionClass: 'background', inFlight: 0, demand: { cpuWeight: 1_000 } },
       ],
     });
-    expect(lane(decision, 'inference').desiredWindow).toBe(55);
-    expect(lane(decision, 'embedding').desiredWindow).toBe(95);
-    expect(lane(decision, 'background').desiredWindow).toBe(100);
+    expect(lane(decision, 'agent').desiredWindow).toBe(60);
+    expect(lane(decision, 'build').desiredWindow).toBe(105);
+    expect(lane(decision, 'background').desiredWindow).toBe(110);
   });
 
   it('temporarily pauses the responsible class on severe progress loss while preserving control', () => {
