@@ -136,10 +136,10 @@ describe('AdvSessionsClient wiring guard', () => {
 
   it('keeps the Launch SU context-size picker URL-backed and threaded into the launch request', () => {
     expect(source).toContain("useQueryState(\n    'suContext'");
-    expect(source).toContain("parseAsStringEnum<'full' | 'trimmed'>(['full', 'trimmed'])");
-    expect(source).toContain("{ value: 'full', label: `Full · ${SU_CONTEXT_TOKEN_ESTIMATES.full}` }");
+    expect(source).toContain("parseAsStringEnum<'trimmed'>(['trimmed'])");
+    expect(source).not.toContain("{ value: 'full'");
     expect(source).toContain("{ value: 'trimmed', label: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}` }");
-    expect(source).toContain("full: '~180k'");
+    expect(source).not.toContain("full: '~180k'");
     expect(source).toContain("trimmed: '~70k'");
     expect(source).toContain('context_size: suContext ?? null');
     expect(source).toContain('ariaLabel="Context size for Launch SU"');

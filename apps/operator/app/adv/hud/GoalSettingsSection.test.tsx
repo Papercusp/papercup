@@ -93,7 +93,7 @@ import type { GoalDetailLaunchSettings } from './goal-detail-model';
 
 const fetchMock = vi.fn();
 
-const OPTIONS = { agent: ['claude', 'codex', 'omp'], carry: ['warm', 'cold'], contextSize: ['full', 'trimmed'] };
+const OPTIONS = { agent: ['claude', 'codex', 'omp'], carry: ['warm', 'cold'], contextSize: ['trimmed'] };
 
 function reply(body: Record<string, unknown>, init: { ok?: boolean; status?: number } = {}) {
   return { ok: init.ok ?? true, status: init.status ?? 200, json: async () => body };

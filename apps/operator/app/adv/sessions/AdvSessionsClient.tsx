@@ -250,14 +250,12 @@ const SU_AGENT_OPTIONS = [
   { value: 'codex', label: 'codex' },
 ];
 
-// su-context-size-variants: a context-size toggle ORTHOGONAL to the agent.
-// 'default' omits the flag so each client keeps its native default; 'full'
-// loads the whole superuser catalog up-front; 'trimmed' uses the client's
-// native soft-trim (small core up-front, the rest on demand).
+// Agent launch context is trimmed-only. 'default' omits the flag for backward
+// compatibility with existing links; an explicit choice selects the growable
+// trimmed seed (small core up front, the rest reached on demand).
 //
 // SU_CONTEXT_TOKEN_ESTIMATES — the per-variant ~Nk figures shown in the picker.
 // STATIC by deliberate choice (WI-1282): these are MEASURED estimates —
-//   full    ≈ ~141k MCP catalog + ~38k static prefix ≈ ~180k
 //   trimmed ≈ ~70k — re-measured 2026-07-02 after the Phase-3 cuts (fleet persona
 //   tier, P-020 plugin prune, P-015 zero-AGENTS.md): 60.1k sonnet fleet boot /
 //   ~66k fable fleet / ~76k full-persona power launch. The P-018 '~83k' was
@@ -268,13 +266,11 @@ const SU_AGENT_OPTIONS = [
 // derived). Wire these to a real /api token-count endpoint if/when that catalog
 // seam lands; until then this + psu-launcher.mjs's twin are the places to update.
 const SU_CONTEXT_TOKEN_ESTIMATES = {
-  full: '~180k',
   trimmed: '~70k',
 } as const;
 const CONTEXT_SELECT_DEFAULT = '__default_context__';
 const SU_CONTEXT_OPTIONS = [
   { value: CONTEXT_SELECT_DEFAULT, label: 'Context: default' },
-  { value: 'full', label: `Full · ${SU_CONTEXT_TOKEN_ESTIMATES.full}` },
   { value: 'trimmed', label: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}` },
 ];
 
@@ -303,10 +299,10 @@ export default function AdvSessionsClient() {
     'suAgent',
     parseAsStringEnum<'claude' | 'omp' | 'codex'>(['claude', 'omp', 'codex']).withDefault('claude'),
   );
-  // su-context-size-variants: null ⇒ each client's native default (no flag).
+  // null ⇒ legacy/native default (no flag); the only explicit public choice is trimmed.
   const [suContext, setSuContext] = useQueryState(
     'suContext',
-    parseAsStringEnum<'full' | 'trimmed'>(['full', 'trimmed']),
+    parseAsStringEnum<'trimmed'>(['trimmed']),
   );
   const [launchingSu, setLaunchingSu] = useState(false);
   const [stateData, setStateData] = useState<SessionStateResponse | null>(null);
