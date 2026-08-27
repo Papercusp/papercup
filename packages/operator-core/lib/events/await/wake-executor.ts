@@ -750,7 +750,8 @@ async function revalidateClaimableDelivery(
     };
   }
 
-  const remaining = coalescedPayload.events.filter(
+  const coalescedEvents = coalescedPayload.events as unknown[];
+  const remaining = coalescedEvents.filter(
     (_event: unknown, index: number) => !staleEventIndexes.has(index),
   ) as CoalescedDeliveryEvent[];
   if (remaining.length === 0) {
