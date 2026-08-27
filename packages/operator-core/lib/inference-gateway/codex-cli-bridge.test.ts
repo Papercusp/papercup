@@ -98,11 +98,11 @@ describe('parseCodexCliEvents (live-captured JSONL contract)', () => {
 
 describe('codexCliResponsesBody', () => {
   it('emits the /v1/responses shapes extractResponsesText walks', () => {
-    const b = codexCliResponsesBody({ model: 'gpt-5.4', text: 'hi', inputTokens: 3, outputTokens: 1 }) as {
+    const b = codexCliResponsesBody({ model: 'gpt-5.4', text: 'hi', inputTokens: 3, outputTokens: 1 }) as unknown as {
       object: string;
       status: string;
       output_text: string;
-      output: Array<{ id: string; type: string; status: string; content: Array<{ type: string; text: string; annotations: unknown[] }> }>;
+      output: Array<{ id: string; type: string; status: string; content: Array<{ type: string; text: string; annotations: unknown[]; logprobs: unknown[] }> }>;
       usage: { input_tokens: number; output_tokens: number; total_tokens: number };
       gateway_codex_cli: boolean;
     };
