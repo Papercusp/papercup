@@ -1075,6 +1075,10 @@ export const CHECKPOINT_PROCESS_AUTHORITY_READ_TIMEOUT_MS = 100;
 
 type ProbeAwaitable<T> = T | PromiseLike<T>;
 
+function isPromiseLike<T>(value: ProbeAwaitable<T>): value is PromiseLike<T> {
+  return typeof (value as PromiseLike<T>).then === 'function';
+}
+
 export interface CheckpointProcessAuthorityProbeDeps {
   listPids?: () => ProbeAwaitable<number[]>;
   readEnvironment?: (pid: number) => ProbeAwaitable<string | null>;
@@ -2456,7 +2460,13 @@ export async function launchDetachedCheckpoint(
     // enough to authorize a second launch. This census is intentionally awaited BEFORE the
     // child is spawned; once spawnFn returns, listeners below are attached synchronously in
     // the same turn so callers cannot race a fast systemd-run child.
-    const authority = await readProcessAuthority(root);
+    // Preserve the same-turn path for synchronous test seams while still awaiting the
+    // production reader (which is async). This matters because the child listeners below are
+    // intentionally attached synchronously after spawnFn returns; an unconditional await here
+    // would also insert a microtask before spawn for a synchronous reader and make callers that
+    // drive a fake child immediately after launch lose its close event.
+    const authorityRead = readProcessAuthority(root);
+    const authority = isPromiseLike(authorityRead) ? await authorityRead : authorityRead;
     if (authority.probeFailed) {
       const authorityProbe: ActiveCheckpointCheck = {
         active: true,
