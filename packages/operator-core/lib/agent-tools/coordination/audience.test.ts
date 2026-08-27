@@ -88,6 +88,52 @@ describe('expandAudience', () => {
     expect(out).toEqual(['issue-watcher']);
   });
 
+  it('@object work_item/work-item aliases resolve canonical issue subscriptions', async () => {
+    const r = makeResolvers({
+      subs: {
+        // Keep a legacy row in the fixture too: compatibility must not strand it
+        // while adding the canonical family-owned lookup.
+        'object:work_item:WI-1': ['legacy-underscore'],
+        'object:work-item:WI-1': ['legacy-hyphen'],
+        'object:issue:WI-1': ['canonical-issue'],
+      },
+    });
+
+    expect(await expandAudience(['@object:work_item:WI-1'], r)).toEqual([
+      'legacy-underscore',
+      'canonical-issue',
+    ]);
+    expect(await expandAudience(['@object:work-item:WI-1'], r)).toEqual([
+      'legacy-hyphen',
+      'canonical-issue',
+    ]);
+  });
+
+  it('@object work-item aliases use a harness-qualified feature ref without crossing into issue refs', async () => {
+    const r = makeResolvers({
+      subs: {
+        'object:feature:demo#WI-1': ['feature-watcher'],
+        // A same-text issue ref must not be reached by a feature-shaped alias.
+        'object:issue:demo#WI-1': ['wrong-family'],
+      },
+      tagged: { 'feature:demo#WI-1': ['feature-topic'] },
+    });
+
+    expect(await expandAudience(['@object:work_item:demo#WI-1'], r)).toEqual(['feature-watcher']);
+    expect(await expandAudience(['@object:work-item:demo#WI-1'], r)).toEqual(['feature-watcher']);
+  });
+
+  it('@object work-item aliases do not broaden a bare id to every feature harness', async () => {
+    const r = makeResolvers({
+      subs: {
+        'object:issue:WI-1': ['issue-watcher'],
+        'object:feature:demo#WI-1': ['feature-watcher'],
+      },
+    });
+
+    expect(await expandAudience(['@object:work_item:WI-1'], r)).toEqual(['issue-watcher']);
+  });
+
   it('@file = active presence editing that file', async () => {
     const r = makeResolvers({
       presence: [

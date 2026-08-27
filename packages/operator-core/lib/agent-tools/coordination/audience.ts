@@ -179,13 +179,19 @@ async function resolveSelector(
     // The remainder IS the stored subscription target_ref (`<kind>:<ref>`).
     const targetRef = selector.slice('@object:'.length).trim();
     if (!targetRef) return [];
+    const lookup = objectTargetLookup(targetRef);
     const ids = new Set<string>();
-    for (const id of await resolvers.listTargetSubscribers('object', targetRef)) ids.add(id);
-    const colon = targetRef.indexOf(':');
-    if (colon > 0) {
-      const kind = targetRef.slice(0, colon);
-      const ref = targetRef.slice(colon + 1);
-      for (const id of await taggedTopicSubscribers(kind, ref, resolvers)) ids.add(id);
+    // Keep the selector spelling as a first lookup for backwards compatibility,
+    // then try the canonical family-owned target. This is intentionally limited
+    // to the two historical work-item spellings; arbitrary object kinds must not
+    // acquire fuzzy aliases.
+    for (const candidate of lookup.targetRefs) {
+      for (const id of await resolvers.listTargetSubscribers('object', candidate)) ids.add(id);
+    }
+    if (lookup.taggedObject) {
+      for (const id of await taggedTopicSubscribers(lookup.taggedObject.kind, lookup.taggedObject.ref, resolvers)) {
+        ids.add(id);
+      }
     }
     return [...ids];
   }
@@ -226,6 +232,38 @@ async function resolveSelector(
 
   // Unknown selector — deliver to no one (never broadcast on a typo).
   return [];
+}
+
+/**
+ * Resolve the subscription target refs accepted by an @object selector.
+ *
+ * `work_items` historically exposed the generic `work_item`/`work-item` kind in
+ * selectors, while the capability stores have always keyed subscriptions by the
+ * family-specific ObjectRef: `issue:<id>` or `feature:<harness>#<id>`. A bare
+ * work-item ref is therefore unambiguously the issue-family shape; a feature ref
+ * carries its harness qualification (`<harness>#<id>`). Keep the old spelling in
+ * the candidate list so legacy rows remain reachable, but never scan all feature
+ * harnesses for a bare id.
+ */
+function objectTargetLookup(targetRef: string): {
+  targetRefs: string[];
+  taggedObject?: { kind: string; ref: string };
+} {
+  const colon = targetRef.indexOf(':');
+  if (colon <= 0) return { targetRefs: [targetRef] };
+
+  const kind = targetRef.slice(0, colon);
+  const ref = targetRef.slice(colon + 1);
+  if (kind !== 'work_item' && kind !== 'work-item') {
+    return { targetRefs: [targetRef], taggedObject: { kind, ref } };
+  }
+
+  const canonicalKind = ref.includes('#') ? 'feature' : 'issue';
+  const canonicalTargetRef = `${canonicalKind}:${ref}`;
+  return {
+    targetRefs: targetRef === canonicalTargetRef ? [targetRef] : [targetRef, canonicalTargetRef],
+    taggedObject: { kind: canonicalKind, ref },
+  };
 }
 
 async function taggedTopicSubscribers(
