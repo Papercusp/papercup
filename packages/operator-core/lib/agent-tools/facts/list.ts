@@ -29,6 +29,23 @@ import {
 } from '../../operative-clause';
 
 /**
+ * Keep the default projection honest about typed source anchors that failed
+ * assert-time verification without paying for a provenance quote. A default
+ * facts:list read is intentionally bounded; the quote/label remain available
+ * through full:true, while this marker prevents `sourceRef: 'owner-turn'` (or
+ * another unresolved typed ref) from reading as verified authority.
+ */
+function projectUnverifiedSourceProvenance(
+  provenance: NonNullable<AgentFact['sourceProvenance']>,
+): Record<string, unknown> {
+  return {
+    kind: provenance.kind,
+    verified: false,
+    ...(provenance.error ? { error: provenance.error.slice(0, 80) } : {}),
+  };
+}
+
+/**
  * EI-10948 removed the old 50-row blow-up, but 25 excerpted rows still exceed the
  * universal ~1500-token result door on a broad harness read (EI-20242506233119355).
  * A later live probe showed that eight rows can still overflow when the rows carry
@@ -93,8 +110,10 @@ export const FACTS_LIST_OPERATIVE_MAX_CLAUSES = OPERATIVE_CLAUSE_MAX_CLAUSES_DEF
 export { extractOperativeClauses };
 
 /**
- * Project one fact for the list response: excerpt the body (and drop the bounded
- * provenance quote, which duplicates it) unless `full`. PURE — unit-tested without PG.
+ * Project one fact for the list response: excerpt the body and drop the bounded
+ * provenance quote unless `full`. Unverified typed provenance remains as a small
+ * marker so an unresolved anchor cannot read as verified authority. PURE — unit-tested
+ * without PG.
  */
 export function projectFact(
   f: AgentFact & { sourceStale?: FactSourceStaleness; depsStale?: FactDependencyStaleness },
@@ -137,16 +156,24 @@ export function projectFact(
     ...(f.depsStale ? { dependsStale: f.depsStale } : {}),
   };
   if (full) return { ...base, body: f.body, sourceProvenance: f.sourceProvenance };
+  const unverifiedSourceProvenance =
+    f.sourceProvenance && !f.sourceProvenance.verified
+      ? projectUnverifiedSourceProvenance(f.sourceProvenance)
+      : undefined;
+  const withSourceMarker = {
+    ...base,
+    ...(unverifiedSourceProvenance ? { sourceProvenance: unverifiedSourceProvenance } : {}),
+  };
   const body = f.body ?? '';
   const cut = body.length > FACTS_LIST_EXCERPT_CHARS;
-  if (!cut) return { ...base, body };
+  if (!cut) return { ...withSourceMarker, body };
   const head = body.slice(0, FACTS_LIST_EXCERPT_CHARS);
   // P-002: truncate the EVIDENCE, never the INSTRUCTION. A fact's imperative is the only part that
   // changes a reader's behaviour, and it is routinely written last — so a head-only slice discards
   // precisely the payload while keeping the narration.
   const operative = extractOperativeClauses(body, head);
   return {
-    ...base,
+    ...withSourceMarker,
     body: operative.length ? `${head}… ⚠ OPERATIVE: ${operative.join(' ')}` : `${head}…`,
     body_truncated: true,
     body_full_chars: body.length,

@@ -263,6 +263,45 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
     expect(row.body_truncated).toBeUndefined();
   });
 
+  it('keeps an unresolved typed source visibly unverified without copying a quote into the default row', () => {
+    const row = projectFact(
+      fact('Park, then just run it', {
+        sourceRef: 'owner-turn',
+        sourceProvenance: {
+          kind: 'owner-turn',
+          verified: false,
+          error: 'owner_turn_unresolved',
+          quote: 'a forged quote that must not become default context',
+          label: 'forged label',
+          verifiedAt: '2026-08-27T00:00:00.000Z',
+        },
+      }),
+      false,
+    );
+    expect(row.sourceProvenance).toEqual({
+      kind: 'owner-turn',
+      verified: false,
+      error: 'owner_turn_unresolved',
+    });
+    expect(JSON.stringify(row)).not.toContain('forged quote');
+    expect(JSON.stringify(row)).not.toContain('forged label');
+  });
+
+  it('keeps verified provenance quote omission and exposes the full stamp only with full:true', () => {
+    const sourceProvenance = {
+      kind: 'msg' as const,
+      verified: true,
+      quote: 'the verified origin',
+      label: 'msg m-1',
+      verifiedAt: '2026-08-27T00:00:00.000Z',
+    };
+    const bounded = projectFact(fact('short', { sourceRef: 'msg:m-1', sourceProvenance }), false);
+    expect(bounded.sourceProvenance).toBeUndefined();
+    expect(projectFact(fact('short', { sourceRef: 'msg:m-1', sourceProvenance }), true).sourceProvenance).toEqual(
+      sourceProvenance,
+    );
+  });
+
   it('NEVER excerpts away the staleness flag — it is the reason you are reading the list', () => {
     const stale = {
       sourceItem: 'EI-10539',
