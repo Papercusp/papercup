@@ -1,7 +1,10 @@
 //! Rendering — a pure function of `&App`. No state mutation, so every view is
 //! snapshot-testable against a ratatui `TestBackend`.
 
-use crate::app::{App, HarnessFocus, PluginsFocus, Tab, TestingFocus};
+use crate::app::{
+    App, HarnessFocus, PluginsFocus, SessionBrowserFacet, Tab, TestingFocus,
+    SESSION_BROWSER_STATES, SESSION_BROWSER_WHEN,
+};
 use crate::models::{
     contribution_count, contribution_names, tier_glyph, tier_label, Notif, ToolOutcome, INBOX_TIERS,
 };
@@ -441,6 +444,7 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         Tab::Plans => draw_plans(f, app, body),
         // Fleet — the fleet view, which absorbed the old Sessions launcher (D-002b).
         Tab::Fleet => crate::fleet::draw_fleet(f, app, body),
+        Tab::Sessions => draw_session_browser(f, app, body),
         Tab::Harnesses => draw_harnesses(f, app, body),
         Tab::Docs => draw_docs(f, app, body),
         Tab::Testing => draw_testing(f, app, body),
@@ -463,6 +467,191 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         // cross-Hive board / `pui hive-pane <key>` dossier.
         Tab::Network => crate::network::draw_network(f, app, body),
     }
+}
+
+fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
+    let browser = &app.session_browser;
+    let rows = app.visible_session_browser();
+    let fleets = app.session_browser_fleets();
+    let agents = app.session_browser_agents();
+    let state = SESSION_BROWSER_STATES[browser.state_idx.min(SESSION_BROWSER_STATES.len() - 1)];
+    let fleet = fleets
+        .get(browser.fleet_idx.min(fleets.len().saturating_sub(1)))
+        .map(String::as_str)
+        .unwrap_or("any");
+    let agent = agents
+        .get(browser.agent_idx.min(agents.len().saturating_sub(1)))
+        .map(String::as_str)
+        .unwrap_or("any");
+    let when = SESSION_BROWSER_WHEN[browser.when_idx.min(SESSION_BROWSER_WHEN.len() - 1)];
+    let facet_style = |facet| {
+        if browser.facet == facet {
+            Theme::title_active()
+        } else {
+            Theme::dim()
+        }
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
+        .split(area);
+    let search = if browser.search_open {
+        format!("  /{}▏", browser.query)
+    } else if browser.query.is_empty() {
+        String::new()
+    } else {
+        format!("  /{}", browser.query)
+    };
+    let loading = if browser.loading {
+        "  searching…"
+    } else {
+        ""
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!("STATE {state}"),
+                facet_style(SessionBrowserFacet::State),
+            ),
+            Span::raw("   "),
+            Span::styled(
+                format!("FLEET {fleet}"),
+                facet_style(SessionBrowserFacet::Fleet),
+            ),
+            Span::raw("   "),
+            Span::styled(
+                format!("AGENT {agent}"),
+                facet_style(SessionBrowserFacet::Agent),
+            ),
+            Span::raw("   "),
+            Span::styled(
+                format!("WHEN {when}"),
+                facet_style(SessionBrowserFacet::When),
+            ),
+            Span::styled(search, Theme::title_active()),
+            Span::styled(loading, Theme::dim()),
+        ])),
+        chunks[0],
+    );
+
+    let columns = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(chunks[1]);
+    let items: Vec<ListItem> = rows
+        .iter()
+        .map(|row| {
+            let state = App::session_browser_state(row);
+            let marker = match state {
+                "live" => "●",
+                "parked" => "◑",
+                "ended" | "recorded" => "○",
+                _ => "·",
+            };
+            let agent = row.agent.as_deref().unwrap_or(&row.source);
+            let lane = row
+                .intent
+                .as_deref()
+                .or(row.current_plan_slug.as_deref())
+                .unwrap_or("no lane");
+            let when = row
+                .transcript_at
+                .as_deref()
+                .or(row.heartbeat_at.as_deref())
+                .and_then(|value| value.get(..10))
+                .unwrap_or("—");
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{marker} ")),
+                Span::styled(
+                    format!("{:<16}", trunc(&row.label, 16)),
+                    Theme::title_active(),
+                ),
+                Span::raw(format!(" {:<8} {:<8} ", state, trunc(agent, 8))),
+                Span::styled(format!("{:<24}", trunc(lane, 24)), Theme::dim()),
+                Span::styled(format!(" {when}"), Theme::dim()),
+            ]))
+        })
+        .collect();
+    let mut list_state = ListState::default();
+    if !rows.is_empty() {
+        list_state.select(Some(browser.sel.min(rows.len() - 1)));
+    }
+    f.render_stateful_widget(
+        List::new(items)
+            .block(Block::default().borders(Borders::ALL).title(" sessions "))
+            .highlight_style(Theme::selected())
+            .highlight_symbol("> "),
+        columns[0],
+        &mut list_state,
+    );
+
+    let mut preview: Vec<Line> = Vec::new();
+    if browser.transcript_loading {
+        preview.push(Line::from(Span::styled(
+            "loading transcript…",
+            Theme::dim(),
+        )));
+    } else if let Some(error) = &browser.transcript_error {
+        preview.push(Line::from(Span::styled(error.clone(), Theme::danger())));
+    } else if !browser.transcript.is_empty() {
+        let take = if browser.full_transcript {
+            browser.transcript.len()
+        } else {
+            5
+        };
+        for turn in browser
+            .transcript
+            .iter()
+            .skip(browser.transcript.len().saturating_sub(take))
+        {
+            preview.push(Line::from(vec![
+                Span::styled(format!("{}  ", turn.speaker), Theme::title_active()),
+                Span::raw(turn.text.clone()),
+            ]));
+        }
+    } else if let Some(excerpt) = app
+        .selected_browser_session()
+        .and_then(|row| row.transcript_excerpt.as_ref())
+    {
+        preview.push(Line::from(excerpt.clone()));
+    } else {
+        preview.push(Line::from(Span::styled(
+            "No indexed transcript preview.",
+            Theme::dim(),
+        )));
+    }
+    let preview_title = if browser.full_transcript {
+        " transcript tail · full "
+    } else {
+        " preview "
+    };
+    f.render_widget(
+        Paragraph::new(preview)
+            .wrap(Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(preview_title)),
+        columns[1],
+    );
+    f.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                format!(
+                    "{} sessions · {} shown · Tab facet · h/l value · j/k move",
+                    browser.rows.len(),
+                    rows.len()
+                ),
+                Theme::dim(),
+            )),
+            Line::from(Span::styled(
+                "Enter attach/resume · ^t transcript · ^k save crew · / search · r refresh",
+                Theme::dim(),
+            )),
+        ]),
+        chunks[2],
+    );
 }
 
 fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
@@ -517,18 +706,42 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
 fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
+        .constraints([
+            Constraint::Percentage(22),
+            Constraint::Percentage(26),
+            Constraint::Percentage(52),
+        ])
         .split(area);
 
-    // The pot-scope-filtered list (D-003) — `plan_sel` indexes THIS list.
+    // Left column: the GOALS spine (P-032/D-010) — row 0 is the "(all)"
+    // pseudo-row so unscoped browsing stays reachable.
+    draw_goals_column(f, app, cols[0]);
+
+    // The pot-scope-filtered list (D-003; goal-scoped per P-032) — `plan_sel`
+    // indexes THIS list.
     let plans = app.visible_plans();
     let items: Vec<ListItem> = plans
         .iter()
         .map(|p| {
-            ListItem::new(Line::from(vec![
+            // P-032: the plans column carries done/total item progress and the
+            // working-agent badge (online roster members declaring this plan).
+            let agents = app
+                .roster
+                .iter()
+                .filter(|r| {
+                    r.is_online() && r.current_plan_slug.as_deref() == Some(p.slug.as_str())
+                })
+                .count();
+            let c = &p.item_counts;
+            let mut spans = vec![
                 Span::raw(format!("{:<9}", trunc(&p.status, 9))),
-                Span::raw(p.slug.clone()),
-            ]))
+                Span::raw(trunc(&p.slug, 28)),
+                Span::styled(format!(" {}/{}", c.done, c.total()), Theme::dim()),
+            ];
+            if agents > 0 {
+                spans.push(Span::styled(format!(" ({agents})"), Theme::info()));
+            }
+            ListItem::new(Line::from(spans))
         })
         .collect();
     let mut state = ListState::default();
@@ -541,7 +754,7 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
     let items_focused = app.plans_focus == crate::app::PlansFocus::Items;
     let body_area = block_with_header(
         f,
-        cols[0],
+        cols[1],
         Theme::block(
             Line::from(format!(
                 " {}Plans ({}) ",
@@ -561,7 +774,7 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
     let right = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(8), Constraint::Min(0)])
-        .split(cols[1]);
+        .split(cols[2]);
 
     let detail = match app.selected_plan() {
         Some(p) => format!(
@@ -613,7 +826,7 @@ fn draw_plan_item_states(
             let rows = s
                 .items
                 .iter()
-                .map(|it| ListItem::new(Line::from(plan_item_line(it))))
+                .map(|it| ListItem::new(Line::from(plan_item_line(app, it))))
                 .collect();
             // `:pickup` = convert-at-pickup (D-015) and `:release` its inverse
             // (P-005b write surface) — advertised here so both claim actions
@@ -637,8 +850,8 @@ fn draw_plan_item_states(
         area,
         Theme::block(Line::from(title), focused),
         &format!(
-            "{:<2}{:<8}{:<10}{:<15}{:<7}{}",
-            "", "item", "state", "who", "live", "intent"
+            "{:<2}{:<8}{:<10}{:<15}{:<7}{:<6}{}",
+            "", "item", "state", "who", "live", "press", "intent"
         ),
     );
     // The items here have NO header row in the list body (the column header is a
@@ -653,6 +866,109 @@ fn draw_plan_item_states(
         .highlight_style(Theme::selected())
         .highlight_symbol("▸ ");
     f.render_stateful_widget(list, body_area, &mut state);
+}
+
+/// The GOALS column of the Plans-tab spine (P-032/D-010). Row 0 is the
+/// "(all)" pseudo-row so unscoped browsing stays reachable; each goal row
+/// carries its status, title, and the scoped plan count + rolled-up done/total
+/// across the plans of its pots — computed over the plans ALREADY loaded (the
+/// same pot-scoped list the plans column renders from), never re-fetched.
+fn draw_goals_column(f: &mut Frame, app: &App, area: Rect) {
+    let goals_focused = app.plans_focus == crate::app::PlansFocus::Goals;
+    let all_plans = app.scope_visible_plans();
+    let mut rows: Vec<ListItem> = Vec::with_capacity(app.goals.len() + 1);
+    rows.push(ListItem::new(Line::from(vec![
+        Span::raw(format!("{:<9}", "(all)")),
+        Span::styled(format!("{} plans", all_plans.len()), Theme::dim()),
+    ])));
+    for g in &app.goals {
+        let scoped: Vec<_> = all_plans
+            .iter()
+            .filter(|p| {
+                p.harness
+                    .as_deref()
+                    .is_some_and(|h| g.pots.iter().any(|c| c.harness_slug == h))
+            })
+            .collect();
+        let (done, total) = scoped.iter().fold((0u32, 0u32), |(d, t), p| {
+            (d + p.item_counts.done, t + p.item_counts.total())
+        });
+        let status = g.shown_status();
+        let status_style = match status {
+            "active" | "achieved" => Theme::success(),
+            "dormant" | "killed" | "paused" | "lost" => Theme::warn(),
+            _ => Theme::dim(),
+        };
+        rows.push(ListItem::new(Line::from(vec![
+            Span::styled(format!("{:<9}", trunc(status, 9)), status_style),
+            Span::raw(trunc(&g.title, 24)),
+            Span::styled(
+                format!(" {}p {}/{}", scoped.len(), done, total),
+                Theme::dim(),
+            ),
+        ])));
+    }
+    let body_area = block_with_header(
+        f,
+        area,
+        Theme::block(
+            Line::from(format!(
+                " {}Goals ({}) ",
+                focus_cursor(goals_focused, app.plans_entered),
+                app.goals.len()
+            )),
+            goals_focused,
+        ),
+        &format!("  {:<9}{}", "status", "goal"),
+    );
+    let mut state = ListState::default();
+    state.select(Some(app.goal_sel.min(app.goals.len())));
+    let list = List::new(rows)
+        .highlight_style(Theme::selected())
+        .highlight_symbol("> ");
+    f.render_stateful_widget(list, body_area, &mut state);
+}
+
+/// The Plans-tab goal-detail popup body (P-032): declared vs effective status,
+/// the holder verdict, pot chips, and the open/needs-you/spend counters. The
+/// pot list is a bounded sample — the overflow line keeps `potCount` honest
+/// (never render `pots.len()` as the pot total).
+fn goal_detail_lines(g: &crate::models::GoalSummary) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(Span::styled(g.title.clone(), Theme::title())),
+        Line::from(vec![
+            Span::styled("status:  ", Theme::dim()),
+            Span::raw(g.shown_status().to_string()),
+            Span::styled("   holder: ", Theme::dim()),
+            Span::raw(g.holder_liveness.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled(format!("pots ({}): ", g.pot_count), Theme::dim()),
+            Span::raw(
+                g.pots
+                    .iter()
+                    .map(|c| c.harness_slug.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("open items: ", Theme::dim()),
+            Span::raw(g.open_work_items.to_string()),
+            Span::styled("   needs you: ", Theme::dim()),
+            Span::raw(g.needs_human.to_string()),
+            Span::styled("   spend: ", Theme::dim()),
+            Span::raw(format!("${:.2}", g.spend_usd)),
+        ]),
+    ];
+    let sampled = g.pots.len();
+    if (g.pot_count as usize) > sampled {
+        lines.push(Line::from(Span::styled(
+            format!("(+{} more pots not sampled)", g.pot_count as usize - sampled),
+            Theme::dim(),
+        )));
+    }
+    lines
 }
 
 /// Focus-cursor prefix for pane titles (`▸ ` on the focused pane, empty
@@ -675,7 +991,7 @@ fn focus_cursor(focused: bool, entered: bool) -> String {
 /// `who` is the live-claim holder's agent-name, falling back to the durable assignee.
 /// Glyphs ride the shared vocabulary (cross-category reuse per its D-004:
 /// liveness fill = activity, `◆` = demands routing, `▲` = warn).
-fn plan_item_line(it: &crate::models::PlanItemState) -> String {
+fn plan_item_line(app: &App, it: &crate::models::PlanItemState) -> String {
     use crate::glyph::{liveness, severity, status};
     let (glyph, label) = match it.disposition.as_str() {
         "active" => (liveness::LIVE, "active"),
@@ -696,12 +1012,28 @@ fn plan_item_line(it: &crate::models::PlanItemState) -> String {
         _ => "",
     };
     let intent = it.claim_intent.as_deref().unwrap_or("");
+    // P-032: the holder's context-pressure bucket, joined from the fleet
+    // assignments surface via the stable claim-owner id. Absent (no live claim,
+    // or no assignment row) renders as "—" — never fabricated.
+    let pressure = it
+        .claim_owner_id
+        .as_deref()
+        .and_then(|owner| {
+            app.fleet
+                .all_assignments
+                .iter()
+                .find(|a| a.agent_id == owner)
+        })
+        .and_then(|a| a.context_pressure.as_deref())
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or("—");
     format!(
-        "{glyph} {:<7} {:<9} {:<14} {:<6} {}",
+        "{glyph} {:<7} {:<9} {:<14} {:<6} {:<5} {}",
         trunc(&it.item_id, 7),
         label,
         trunc(who, 14),
         live,
+        pressure,
         trunc(intent, 40),
     )
 }
@@ -3817,6 +4149,16 @@ fn fleet_detail_content(app: &App) -> (&'static str, Vec<Line<'static>>) {
     use crate::app::PlansFocus;
     use crate::fleet::FleetPanel;
     if app.tab == crate::app::Tab::Plans {
+        if app.plans_focus == PlansFocus::Goals {
+            let lines = match app.selected_goal() {
+                Some(g) => goal_detail_lines(g),
+                None => vec![Line::from(Span::styled(
+                    "(all goals — select a goal for detail)",
+                    Theme::dim(),
+                ))],
+            };
+            return (" goal · Esc close · j/k goal · PgUp/Dn scroll ", lines);
+        }
         if app.plans_focus == PlansFocus::Items {
             let lines = match app.selected_plan_item() {
                 Some(it) => plan_item_detail_lines(it),
@@ -4558,6 +4900,109 @@ mod tests {
         assert!(text.contains("papercup"));
     }
 
+    /// P-032: the Plans tab is a three-column GOALS → PLANS → ITEMS spine. The
+    /// goals column leads with the "(all)" pseudo-row and each goal row rolls
+    /// up its scoped plan count + done/total item progress.
+    #[test]
+    fn plans_spine_renders_goals_column_with_rollup_and_all_row() {
+        use crate::models::{GoalPotChip, GoalSummary};
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        let mut p1 = plan("alpha-2026", "wip");
+        p1.item_counts.done = 2;
+        p1.item_counts.todo = 1;
+        let p2 = plan("beta-2026", "todo");
+        app.set_plans(vec![p1, p2]);
+        app.goals = vec![GoalSummary {
+            id: "g1".into(),
+            title: "Ship".into(),
+            status: "active".into(),
+            pots: vec![GoalPotChip {
+                harness_slug: "papercup".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        let text = render(&app, 140, 20);
+        assert!(text.contains("Goals (1)"));
+        assert!(text.contains("(all)"));
+        assert!(text.contains("2 plans")); // the "(all)" row's scope count
+        // The goal's rollup: both fixture plans sit in its pot, 2 done of 3.
+        assert!(text.contains("Ship"));
+        assert!(text.contains("2p 2/3"));
+        assert!(text.contains("Plans (2)"));
+    }
+
+    /// P-032: selecting a goal scopes the plans column to the plans of its
+    /// pots (the GoalPotChip.harness_slug join); the "(all)" row un-scopes.
+    #[test]
+    fn plans_spine_goal_selection_scopes_the_plans_column() {
+        use crate::models::{GoalPotChip, GoalSummary};
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        let mut other = plan("other-plan", "todo");
+        other.harness = Some("elsewhere".into());
+        app.set_plans(vec![plan("alpha-2026", "wip"), other]);
+        app.goals = vec![GoalSummary {
+            id: "g1".into(),
+            title: "Ship".into(),
+            status: "active".into(),
+            pots: vec![GoalPotChip {
+                harness_slug: "papercup".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        assert_eq!(app.visible_plans().len(), 2); // "(all)" leaves both
+        app.goal_sel = 1; // select the goal
+        let scoped = app.visible_plans();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].slug, "alpha-2026");
+        let text = render(&app, 140, 20);
+        assert!(text.contains("Plans (1)"));
+        assert!(!text.contains("other-plan"));
+    }
+
+    /// P-032: the plans column carries the working-agent badge (online roster
+    /// members declaring the plan) and the items pane a context-pressure
+    /// column joined from the fleet assignments via the claim-owner id.
+    #[test]
+    fn plans_spine_agent_badge_and_item_pressure_render() {
+        use crate::models::{
+            BeeAssignment, PlanItemState, PlanItemStates, RosterEntry,
+        };
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        app.set_plans(vec![plan("my-plan", "wip")]);
+        app.roster = vec![RosterEntry {
+            owner_id: "su-worker".into(),
+            session_state: Some("live".into()),
+            current_plan_slug: Some("my-plan".into()),
+            ..Default::default()
+        }];
+        app.fleet.all_assignments = vec![BeeAssignment {
+            agent_id: "su-worker".into(),
+            context_pressure: Some("critical".into()),
+            ..Default::default()
+        }];
+        app.set_plan_item_states(PlanItemStates {
+            harness: "papercup".into(),
+            plan: "my-plan".into(),
+            harness_liveness_mode: "activity".into(),
+            items: vec![PlanItemState {
+                item_id: "P-001".into(),
+                disposition: "active".into(),
+                claim_owner_id: Some("su-worker".into()),
+                claim_owner_name: Some("worker".into()),
+                ..Default::default()
+            }],
+        });
+        let text = render(&app, 140, 24);
+        assert!(text.contains("my-plan 0/0 (1)")); // progress + agent badge
+        assert!(text.contains("press")); // the items header carries the column
+        assert!(text.contains("critical")); // the holder's pressure bucket
+    }
+
     #[test]
     fn workbench_indicator_shows_when_companion_linked() {
         use pui_companion_proto::{PaneNode, Topology};
@@ -4932,7 +5377,7 @@ mod tests {
                 },
             ],
         });
-        let text = render(&app, 110, 22);
+        let text = render(&app, 150, 22);
         assert!(text.contains("Items (2)"));
         assert!(text.contains("liveness: activity")); // the harness-level split
         assert!(text.contains("P-001"));
@@ -4951,7 +5396,7 @@ mod tests {
             }],
             ..Default::default()
         });
-        let text2 = render(&app, 110, 22);
+        let text2 = render(&app, 150, 22);
         assert!(!text2.contains("Z-9"));
     }
 
@@ -6524,5 +6969,38 @@ mod tests {
         assert!(pinned.contains("Sessions · Ctrl-S"));
         assert!(pinned.contains("LIVE"));
         assert!(pinned.contains("RECORDED"));
+    }
+
+    #[test]
+    fn session_browser_renders_facets_rows_preview_and_actions() {
+        let mut app = App::new();
+        app.tab = Tab::Sessions;
+        app.session_browser.when_idx = 2;
+        app.session_browser.rows = vec![crate::models::RosterEntry {
+            owner_id: "su-browser".into(),
+            label: "migration agent".into(),
+            source: "codex".into(),
+            agent: Some("codex".into()),
+            fleet_slug: Some("pui-cockpit".into()),
+            session_state: Some("recorded".into()),
+            transcript_at: Some("2026-08-26T23:00:00Z".into()),
+            ..Default::default()
+        }];
+        app.session_browser.transcript = vec![crate::models::SessionTranscriptTurn {
+            speaker: "agent".into(),
+            text: "Migration 981 is armed".into(),
+            ..Default::default()
+        }];
+        let text = render(&app, 140, 24);
+        for expected in [
+            "STATE all",
+            "FLEET any",
+            "migration agent",
+            "Migration 981 is armed",
+            "Enter attach/resume",
+            "save crew",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?}: {text:?}");
+        }
     }
 }

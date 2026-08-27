@@ -26,6 +26,7 @@ import { createHash } from 'node:crypto';
 import intentsStream from './intents-stream';
 import intentResult from './intent-result';
 import planItemStates from './plan-item-states';
+import goalsRoute from './goals';
 import planItemConvert from './plan-item-convert';
 import planItemRelease from './plan-item-release';
 import { getBuildInfo } from '../../../build-info';
@@ -253,4 +254,5 @@ export default [
   planItemStates,
   planItemConvert,
   planItemRelease,
+  goalsRoute,
 ];
