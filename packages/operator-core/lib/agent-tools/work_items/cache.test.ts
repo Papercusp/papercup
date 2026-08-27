@@ -81,16 +81,26 @@ import {
 import { _refreshCacheLayerForTests } from "../../cache/instance";
 
 const CACHE_LAYER = "papercusp-cache-layer";
-const ctx = (workspaceId: string): never =>
+const ctx = (
+  workspaceId: string,
+  contextTier?: "trimmed" | "standard" | "full",
+  payloadTierOverride?: "trimmed" | "standard" | "full",
+): never =>
   ({
     workspaceId,
     metadata: vi.fn(),
     log: vi.fn(),
     progress: vi.fn(),
+    ...(contextTier !== undefined ? { contextTier } : {}),
+    ...(payloadTierOverride !== undefined ? { payloadTierOverride } : {}),
   }) as never;
 
-const list = (args: Record<string, unknown>, ws = "ws-wi"): Promise<unknown> =>
-  listTool.handler(args as never, ctx(ws));
+const list = (
+  args: Record<string, unknown>,
+  ws = "ws-wi",
+  contextTier?: "trimmed" | "standard" | "full",
+  payloadTierOverride?: "trimmed" | "standard" | "full",
+): Promise<unknown> => listTool.handler(args as never, ctx(ws, contextTier, payloadTierOverride));
 const get = (args: Record<string, unknown>, ws = "ws-wi"): Promise<unknown> =>
   getTool.handler(args as never, ctx(ws));
 
@@ -120,6 +130,34 @@ describe("work_items:list — cache wiring", () => {
     await list({});
     await list({});
     expect(M.listWorkItems).toHaveBeenCalledTimes(1);
+  });
+
+  it("ambient trimmed/standard reads request the lean SQL projection", async () => {
+    await list({}, "ws-wi", "trimmed");
+    expect(M.listWorkItems).toHaveBeenCalledWith(
+      expect.objectContaining({ includeBody: false, includePayload: false }),
+    );
+
+    await list({}, "ws-wi", "standard");
+    expect(M.listWorkItems).toHaveBeenCalledWith(
+      expect.objectContaining({ includeBody: false, includePayload: false }),
+    );
+  });
+
+  it("keeps full and lean source reads in separate cache entries, with an explicit full escape", async () => {
+    await list({}, "ws-wi", "trimmed");
+    await list({}, "ws-wi");
+    await list({}, "ws-wi", "trimmed", "full");
+
+    // The explicit full escape reuses the already-populated full entry; it must
+    // not trigger a third database read, but it must never hit the lean entry.
+    expect(M.listWorkItems).toHaveBeenCalledTimes(2);
+    expect(M.listWorkItems.mock.calls[0]![0]).toEqual(
+      expect.objectContaining({ includeBody: false, includePayload: false }),
+    );
+    expect(M.listWorkItems.mock.calls[1]![0]).toEqual(
+      expect.objectContaining({ includeBody: true, includePayload: true }),
+    );
   });
 
   it("a REAL work-item write BUSTS it (bumps the work_items base-table tag the ECA emits)", async () => {

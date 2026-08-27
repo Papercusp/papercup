@@ -61,6 +61,17 @@ describe("shapeWorkItemsList", () => {
     expect((rows[0]!.summary as string).length).toBeLessThanOrEqual(140);
   });
 
+  it("keeps plan_ref from indexed source-plan columns when payload was projected away", () => {
+    const sourceOnly = {
+      ...row(7),
+      payload: null,
+      sourcePlanSlug: "indexed-plan",
+      sourcePlanItemIds: ["P-007"],
+    };
+    const rows = shapeWorkItemsList([sourceOnly], "trimmed") as Array<Record<string, unknown>>;
+    expect(rows[0]!.plan_ref).toBe("indexed-plan#P-007");
+  });
+
   it("caps rows loudly with a notice row, never silently", () => {
     const data = Array.from({ length: 60 }, (_, i) => row(i));
     const rows = shapeWorkItemsList(data, "trimmed") as Array<

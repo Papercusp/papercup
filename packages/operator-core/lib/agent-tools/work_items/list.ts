@@ -158,7 +158,13 @@ export function shapeWorkItemsList(
     const planRef =
       planItem && typeof planItem === "object"
         ? `${String(planItem.plan_slug ?? "?")}#${String(planItem.item_id ?? "?")}`
-        : null;
+        : typeof r.sourcePlanSlug === "string" &&
+            r.sourcePlanSlug.trim() &&
+            Array.isArray(r.sourcePlanItemIds) &&
+            typeof r.sourcePlanItemIds[0] === "string" &&
+            r.sourcePlanItemIds[0].trim()
+          ? `${r.sourcePlanSlug.trim()}#${r.sourcePlanItemIds[0].trim()}`
+          : null;
     // P-030 in the trimmed tiers: the holder's goal is TWO SHORT SCALARS, not the
     // whole projection. `goalRef` is a ref (~10 chars) and `stale` a boolean —
     // together they are exactly what D-060's acceptance asks a reader to see

@@ -719,6 +719,19 @@ export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary
   authority, closed_ts, goal_id,
   tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents`;
 
+/**
+ * FEATURE_COLS with the large JSONB payload projected away for list callers that
+ * only need identity/state.  Keep the same arity and aliases as FEATURE_COLS so
+ * featureRowToWorkItem can consume either shape without a second mapper.  SQL
+ * predicates in listWorkItemsWithLimit still read the real payload where a filter
+ * requires it; this only prevents postgres-js from parsing and retaining every
+ * checkpoint/completion envelope before the agent result shaper drops it (WI-42508).
+ */
+export const FEATURE_COLS_PAYLOADLESS = FEATURE_COLS.replace(
+  /(^|,\s*)payload(\s*,)/,
+  '$1NULL::jsonb AS payload$2',
+);
+
 interface PlanItemClaimIdentity {
   planSlug: string;
   itemId: string;
@@ -989,6 +1002,19 @@ export interface ListWorkItemsFilter {
    * ALSO forces exclusion regardless of this flag (an observation is never claimable).
    */
   includeObservations?: boolean;
+  /**
+   * Omit the JSONB payload from returned feature/issue rows when the caller only
+   * needs list identity/state.  Predicates continue to use the real payload where
+   * necessary; this flag controls the SELECT projection only.  Defaults to true
+   * for backwards-compatible internal/detail reads (WI-42508).
+   */
+  includePayload?: boolean;
+  /**
+   * Omit the issue-family body/summary from returned rows.  Feature summaries are
+   * unaffected by this flag.  The agent-facing list sets both body and payload
+   * false before the post-handler tier shaper runs (WI-42508).
+   */
+  includeBody?: boolean;
 }
 
 /**
@@ -1144,7 +1170,7 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
   if (wantFeature) {
     const ws = activeWorkspaceId();
     const rows = await sql<FeatureRowDb[]>`
-      SELECT ${sql.unsafe(FEATURE_COLS)}
+      SELECT ${sql.unsafe(filter.includePayload === false ? FEATURE_COLS_PAYLOADLESS : FEATURE_COLS)}
         FROM harness_shared.harness_features_consolidated
          WHERE ${featureFamilyKindClause(sql, ws)}
          AND workspace_id = ${ws}
@@ -1226,6 +1252,11 @@ async function listWorkItemsWithLimit(filter: ListWorkItemsFilter, rowLimit: num
       // WI-4405: admissibleOnly ALSO forces exclusion (an observation is never
       // claimable, regardless of includeObservations) — otherwise honor the flag.
       excludeObservationLane: filter.admissibleOnly ? true : !filter.includeObservations,
+      // WI-42508: the unified agent list never needs issue body/payload while
+      // shaping a placement row. Keep the flags explicit so direct/internal
+      // callers retain the full projection by default.
+      includeBody: filter.includeBody,
+      includePayload: filter.includePayload,
       audit: filter.audit,
       completionAuthority: filter.completionAuthority,
     };
@@ -4163,6 +4194,134 @@ export async function getCompletionIntegrityStats(harness: string): Promise<Comp
 // the core enum is deliberately untouched, D-013 sketch) recording that a human/agent confirmed the
 // change live: { at, by, testedSha?, deployedSha?, greenPinSha?, parity?, evidence? }. Feature-family only (the dispatched backlog the
 // plan targets); issue-family items report applicable:false without writing.
+
+/**
+ * The narrow refresh seam for plan-item text rewrites. General feature-family
+ * updates deliberately remain pipeline-owned; this writer is only for the
+ * post-commit plan-drift path, where the plan editor has already established
+ * the new semantic text.
+ *
+ * One UPDATE keeps title, summary, the plan-item fingerprint, and the compiled
+ * brief on the same row-version. The WHERE clause is intentionally redundant:
+ * the physical feature-family table is the family guard, while the exact
+ * payload/source predicates prevent a plan edit from retargeting an unrelated
+ * work-item with a reused id. A source-column-only row gets a complete payload
+ * stamp; an existing payload stamp is patched only at its hash leaf, so all
+ * other stamp fields and unrelated payload keys survive unchanged.
+ */
+export interface RefreshPlanLinkedFeatureWorkItemInput {
+  workItemId: string;
+  harnessSlug: string;
+  planSlug: string;
+  itemId: string;
+  itemText: string;
+  /**
+   * The freshly compiled plan-context brief. Omitted means preserve the
+   * existing brief; null/empty removes a previously compiled brief whose plan
+   * context no longer has enrichment.
+   */
+  compiledBrief?: string | null;
+}
+
+/** Return true when the guarded refresh matched and updated one feature row. */
+export async function refreshPlanLinkedFeatureWorkItem(
+  input: RefreshPlanLinkedFeatureWorkItemInput,
+): Promise<boolean> {
+  const workItemId = input.workItemId.trim();
+  const harnessSlug = input.harnessSlug.trim();
+  const planSlug = input.planSlug.trim();
+  const itemId = input.itemId.trim();
+  if (!workItemId || !harnessSlug || !planSlug || !itemId) return false;
+
+  // These helpers live in plan-items/convert, which imports this facade for
+  // the mint path. Keep the dependency lazy so loading the facade cannot form
+  // an initialization cycle; the module is cached after the first refresh.
+  const [{ planItemTitle }, { planItemTextHash }] = await Promise.all([
+    import('./plan-items/convert'),
+    import('./plan-items/text-drift'),
+  ]);
+  const title = planItemTitle(input.itemText);
+  const itemTextHash = planItemTextHash(input.itemText);
+  const { sql } = getOrgPg();
+
+  const existingStampPayload =
+    itemTextHash !== undefined
+      ? sql`
+          jsonb_set(
+            COALESCE(payload, '{}'::jsonb),
+            '{plan_item,item_text_hash}',
+            ${JSON.stringify(itemTextHash)}::text::jsonb,
+            true
+          )
+        `
+      : sql`
+          COALESCE(payload, '{}'::jsonb) #- '{plan_item,item_text_hash}'
+        `;
+  const sourceStamp =
+    itemTextHash !== undefined
+      ? sql`
+          jsonb_build_object(
+            'plan_slug', ${planSlug},
+            'item_id', ${itemId},
+            'harness_slug', ${harnessSlug},
+            'item_text_hash', ${JSON.stringify(itemTextHash)}::text::jsonb
+          )
+        `
+      : sql`
+          jsonb_build_object(
+            'plan_slug', ${planSlug},
+            'item_id', ${itemId},
+            'harness_slug', ${harnessSlug}
+          )
+        `;
+  const stampedPayload = sql`
+    CASE
+      WHEN COALESCE(payload, '{}'::jsonb) ? 'plan_item' THEN ${existingStampPayload}
+      ELSE COALESCE(payload, '{}'::jsonb) || jsonb_build_object('plan_item', ${sourceStamp})
+    END
+  `;
+  const nextPayload =
+    input.compiledBrief === undefined
+      ? stampedPayload
+      : input.compiledBrief
+        ? sql`
+            jsonb_set(
+              ${stampedPayload},
+              '{brief}',
+              ${JSON.stringify(input.compiledBrief)}::text::jsonb,
+              true
+            )
+          `
+        : sql`${stampedPayload} - 'brief'`;
+
+  const rows = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.harness_features_consolidated
+       SET title = ${title},
+           summary = ${input.itemText},
+           payload = ${nextPayload},
+           updated_ts = ${Date.now()}
+     WHERE workspace_id = ${activeWorkspaceId()}
+       AND harness_slug = ${harnessSlug}
+       -- This table is the feature-family relation. Keep the item-kind guard
+       -- explicit as defense in depth for compatibility-view regressions;
+       -- generic feature kinds and historical research-task rows remain valid.
+       AND (item_kind IS NULL OR item_kind <> ALL(${ISSUE_FAMILY_KINDS as string[]}::text[]))
+       AND feature_id = ${workItemId}
+       AND (
+         (
+           COALESCE(payload, '{}'::jsonb)->'plan_item'->>'plan_slug' = ${planSlug}
+           AND COALESCE(payload, '{}'::jsonb)->'plan_item'->>'item_id' = ${itemId}
+         )
+         OR (
+           NOT (COALESCE(payload, '{}'::jsonb) ? 'plan_item')
+           AND source_plan_slug = ${planSlug}
+           AND ${itemId} = ANY(COALESCE(source_plan_item_ids, ARRAY[]::text[]))
+         )
+       )
+     RETURNING feature_id
+  `;
+  return rows.length > 0;
+}
 
 export interface WorkItemLiveVerified {
   /** epoch ms the live-verification was recorded. */

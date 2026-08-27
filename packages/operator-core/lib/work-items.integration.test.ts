@@ -3039,3 +3039,45 @@ describe('WI-38339 work-item shape filters', () => {
     expect(Object.values(await wi.countWorkItemsByState({ harness: H, sourcePlanSlug: slug })).reduce((a, b) => a + b, 0)).toBe(2);
   });
 });
+
+describe('WI-42508 pre-serialization list projection', () => {
+  it('drops large checkpoint payloads before row mapping and stays responsive concurrently', async () => {
+    const H = 'wi-42508-lean-projection';
+    const feature = await wi.createWorkItem({ kind: 'feature', title: 'large feature', harness: H });
+    const issue = await wi.createWorkItem({ kind: 'bug', title: 'large issue', harness: H });
+    const checkpoint = 'checkpoint-'.repeat(20_000);
+
+    // Put the same oversized checkpoint on both physical families.  The full
+    // internal read must retain it; the agent/list projection must never carry
+    // it across the mapper boundary.
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) || ${db.sql.json({ checkpoint })}
+       WHERE feature_id = ANY(${[feature.id, issue.id]}::text[])
+         AND harness_slug = ${H}`;
+
+    const full = await wi.listWorkItems({ harness: H });
+    expect(full.find((row) => row.id === feature.id)?.payload).toMatchObject({ checkpoint });
+    expect(full.find((row) => row.id === issue.id)?.payload).toMatchObject({ checkpoint });
+
+    const reads = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        wi.listWorkItems({ harness: H, includeBody: false, includePayload: false }),
+      ),
+    );
+    for (const rows of reads) {
+      expect(rows.map((row) => row.id).sort()).toEqual([feature.id, issue.id].sort());
+      expect(rows.every((row) => row.payload === null)).toBe(true);
+    }
+
+    // A coordination-adjacent aggregate resolves alongside the concurrent list
+    // reads; this catches a regression that leaves the request plane serialized or
+    // blocked even though one isolated list call succeeds.
+    const [count, histogram] = await Promise.all([
+      wi.countWorkItems({ harness: H }),
+      wi.countWorkItemsByState({ harness: H }),
+    ]);
+    expect(count).toBe(2);
+    expect(Object.values(histogram).reduce((sum, n) => sum + n, 0)).toBe(count);
+  });
+});
