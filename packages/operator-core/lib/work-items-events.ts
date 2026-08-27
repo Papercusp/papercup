@@ -168,14 +168,41 @@ export function emitWorkItemClaimableEvent(
 ): void {
   if (wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return;
   const emit = deps.emit ?? emitAwaitedEvent;
-  const payload = {
+  const payload = workItemClaimableEventPayload(wi, reason);
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: 'work-item:claimable',
+        summary: `${wi.id} claimable (${reason}): ${wi.title}`,
+        payload,
+        source: 'work-items',
+      }),
+    )
+    .catch((e: unknown) => failSoft(`claimable-event for ${wi.id}`, e));
+}
+
+/**
+ * Build the canonical `work-item:claimable` payload from a live item. The emitter
+ * and the registration-time latch both use this helper so a payload filter is
+ * evaluated against the same field/value derivation on both sides of the race.
+ *
+ * `reason` is edge provenance, not current state. The live registration probe
+ * deliberately omits it because it cannot infer which historical edge made a row
+ * claimable; a caller filtering on `reason` therefore keeps ordinary edge-only
+ * semantics instead of receiving a fabricated match.
+ */
+export function workItemClaimableEventPayload(
+  wi: WorkItem,
+  reason?: 'created' | 'released' | 'unblocked' | 'requeued',
+): Record<string, unknown> {
+  return {
     id: wi.id,
     kind: wi.kind,
     severity: wi.severity,
     harness: wi.harness,
     title: wi.title,
     state: wi.state,
-    reason,
+    ...(reason ? { reason } : {}),
     // EI-15185: carry the item's plan slug so a fleet member's derived
     // `payload_filter` (scheduler:get_next windDown → claim-spec-payload-filter)
     // can narrow a plan-DRAIN spec at the event layer, not just kind/title.
@@ -192,16 +219,22 @@ export function emitWorkItemClaimableEvent(
     // (staticTagsOfWorkItem) so the two agree exactly.
     tags: staticTagsOfWorkItem(wi),
   };
-  void Promise.resolve()
-    .then(() =>
-      emit({
-        key: 'work-item:claimable',
-        summary: `${wi.id} claimable (${reason}): ${wi.title}`,
-        payload,
-        source: 'work-items',
-      }),
-    )
-    .catch((e: unknown) => failSoft(`claimable-event for ${wi.id}`, e));
+}
+
+/**
+ * Registration-time LATCH probe for one row surfaced by the authoritative
+ * claimability oracle. Re-read the item and re-apply the event producer's own
+ * shallow guard at the moment of the probe: a peer may have claimed/parked it
+ * after the oracle snapshot, and returning a stale payload would manufacture an
+ * `already_claimable` result after the work had left the pool.
+ */
+export async function liveWorkItemClaimableEventPayload(
+  id: string,
+  harness?: string,
+): Promise<Record<string, unknown> | null> {
+  const wi = await getWorkItem(id, harness);
+  if (!wi || wi.assignee || !CLAIMABLE_STATES.has(wi.state) || isClaimHoldParked(wi.payload)) return null;
+  return workItemClaimableEventPayload(wi);
 }
 
 /**

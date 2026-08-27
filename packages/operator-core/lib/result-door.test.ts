@@ -120,6 +120,68 @@ describe('applyResultDoor', () => {
     expect(spill.endsWith(original)).toBe(true);
   });
 
+  it('EI-21566007420787313: a bounded work_items:get batch never emits an unmarked partial row', () => {
+    const results = Array.from({ length: 3 }, (_, i) => {
+      const id = `WI-${42_200 + i}`;
+      return {
+        ok: true,
+        id,
+        workItem: {
+          id,
+          kind: 'bug',
+          family: 'issue',
+          state: 'open',
+          title: `work item ${i}`,
+          summary: 'S'.repeat(2_000),
+          assignee: `su-${i}`,
+          takenAt: '2026-08-27T00:53:51.717Z',
+          ...Object.fromEntries(Array.from({ length: 32 }, (_, j) => [`diagnostic${j}`, `D${j}`.repeat(40)])),
+        },
+        holder: { goalRef: id, agreement: 'sole', detail: 'H'.repeat(800) },
+        checkpoint: 'C'.repeat(1_500),
+        checkpointAgeMs: 100,
+        checkpointUpdatedAtMs: 200,
+      };
+    });
+    const source = { ok: true, results, counts: { ok: results.length, failed: 0 } };
+    const text = JSON.stringify(source);
+    expect(text.length).toBeGreaterThan(BUDGET_CHARS);
+
+    const doored = applyResultDoor(
+      { content: [{ type: 'text' as const, text }] },
+      { toolName: 'work_items:get', workspaceId: 'ws-1', runId: RUN_ID },
+    );
+    const projected = JSON.parse((doored.content[0] as { text: string }).text) as {
+      results: Array<Record<string, unknown>>;
+    };
+    expect(Array.isArray(projected.results)).toBe(true);
+
+    const realRows = projected.results.filter((row) => row._truncated !== true);
+    expect(realRows.length).toBeGreaterThan(0);
+    let sawPartial = false;
+    for (const row of realRows) {
+      // The live failure was a terminal `{ok:true}` husk. Correlation identity
+      // must win the final bytes of every real row.
+      expect(row.id).toEqual(expect.stringMatching(/^WI-/));
+      const original = results.find((candidate) => candidate.id === row.id)!;
+      const rootLostField = Object.keys(original).some((key) => !(key in row));
+      const workItem = row.workItem as Record<string, unknown> | undefined;
+      const workItemLostField =
+        workItem != null && Object.keys(original.workItem).some((key) => !(key in workItem));
+      if (rootLostField) {
+        sawPartial = true;
+        expect(row._partial).toBe(true);
+      }
+      if (workItemLostField) {
+        sawPartial = true;
+        expect(workItem?._partial).toBe(true);
+      }
+    }
+    // Calibration: if this turns false, the fixture no longer exercises the
+    // dangerous field-loss direction and the assertions above are vacuous.
+    expect(sawPartial).toBe(true);
+  });
+
   it('EI-20435986111760474: oversized code:tools TypeScript stays valid JSON for direct and nested calls', () => {
     const signatures = Array.from(
       { length: 80 },

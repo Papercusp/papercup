@@ -72,6 +72,19 @@ pub enum Action {
         harness: String,
         plan: String,
     },
+    /// Read-only preflight for P-034's fleet launcher. The proposed claim spec
+    /// is the exact plan filter `fleet:launch-on-plan` installs before opening
+    /// members; the result paints admits/excludes in the modal.
+    PreviewFleetLaunch {
+        fleet: String,
+        args: serde_json::Value,
+    },
+    /// The modal's explicit `y` confirmation. The payload is intentionally the
+    /// tool's own argument object so the UI cannot drift from the launch door.
+    LaunchFleetOnPlan {
+        fleet: String,
+        args: serde_json::Value,
+    },
     /// Refetch the cross-Hive network board now (the network-pane's manual `g`
     /// — the refetch loop covers the push-driven cadence, B-09).
     FetchNetworkBoard,
@@ -1204,6 +1217,67 @@ pub struct SessionBrowser {
     pub full_transcript: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FleetLauncherField {
+    Name,
+    Count,
+    Agent,
+    Model,
+    Account,
+    Carry,
+    Headless,
+}
+
+impl FleetLauncherField {
+    const ALL: [Self; 7] = [
+        Self::Name,
+        Self::Count,
+        Self::Agent,
+        Self::Model,
+        Self::Account,
+        Self::Carry,
+        Self::Headless,
+    ];
+
+    fn step(self, delta: isize) -> Self {
+        let at = Self::ALL
+            .iter()
+            .position(|field| *field == self)
+            .unwrap_or(0);
+        let len = Self::ALL.len() as isize;
+        Self::ALL[(at as isize + delta).rem_euclid(len) as usize]
+    }
+
+    fn is_text(self) -> bool {
+        matches!(self, Self::Name | Self::Model | Self::Account)
+    }
+}
+
+/// P-034's one-to-one projection of `fleet:launch-on-plan` arguments. `plan`
+/// is read-only because `L` scopes the modal from the focused Plans column;
+/// every other launch knob is visible and editable before confirmation.
+#[derive(Debug, Clone)]
+pub struct FleetLauncher {
+    pub scope_label: String,
+    pub harness: String,
+    pub plan: String,
+    pub brief: String,
+    pub name: String,
+    pub count: u32,
+    pub agent: String,
+    /// `default` means omit the optional model arg and let the role/tool choose.
+    pub model: String,
+    pub account: String,
+    pub carry: String,
+    pub headless: bool,
+    pub field: FleetLauncherField,
+    pub editing: bool,
+    pub preview_loading: bool,
+    pub launching: bool,
+    pub preview: Option<serde_json::Value>,
+    pub status: Option<String>,
+}
+
 impl PlansFocus {
     /// The next column rightward (Goals → List → Items → Goals) — the → /
     /// browse cycle of the three-column spine (P-032).
@@ -1336,6 +1410,9 @@ pub struct App {
     pub critical_path_open: bool,
     pub critical_path_target: Option<(String, String)>,
     pub critical_path_states: Option<PlanItemStates>,
+    /// P-034 fleet launcher modal, opened with `L` from a focused goal, plan,
+    /// or item. Transient and never persisted.
+    pub fleet_launcher: Option<FleetLauncher>,
     pub roster: Vec<RosterEntry>,
     /// adv_session ids the pui has already opened a reactive work-area pane for
     /// this run (pui-reactive-session-panes D-003/D-006). Dedups against the
@@ -1844,6 +1921,7 @@ impl App {
             critical_path_open: false,
             critical_path_target: None,
             critical_path_states: None,
+            fleet_launcher: None,
             roster: Vec::new(),
             tracked_panes: crate::session_panes::TrackedPanes::new(),
             reactive_launch_panes: false,
@@ -5002,6 +5080,325 @@ impl App {
         Action::FetchPlanItemStates { harness, plan }
     }
 
+    fn launcher_name(plan: &str) -> String {
+        let suffix = plan
+            .chars()
+            .map(|ch| {
+                if ch.is_ascii_alphanumeric() {
+                    ch.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .split('-')
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        format!("pui-{}", suffix.chars().take(42).collect::<String>())
+    }
+
+    /// Open P-034 from the currently focused Plans column. The server launch
+    /// door is deliberately singular-plan; goal/item focus is therefore carried
+    /// as explicit kickoff context while `plan` remains the selected plan shown
+    /// in the middle column (no parallel orchestration path is invented).
+    fn open_fleet_launcher(&mut self) -> Action {
+        let Some(plan) = self.selected_plan().cloned() else {
+            self.last_error = Some("fleet launcher: select a plan first".into());
+            return Action::Render;
+        };
+        let harness = plan
+            .harness
+            .clone()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| self.harness.clone());
+        let (scope_label, brief) = match self.plans_focus {
+            PlansFocus::Goals => match self.selected_goal() {
+                Some(goal) => (
+                    format!("goal {} · selected plan {}", goal.id, plan.slug),
+                    format!(
+                        "Launched from pui goal focus {} ({}). Work plan {} as this goal's selected executable plan.",
+                        goal.id, goal.title, plan.slug
+                    ),
+                ),
+                None => (
+                    format!("all goals · selected plan {}", plan.slug),
+                    format!("Launched from pui all-goals focus onto plan {}.", plan.slug),
+                ),
+            },
+            PlansFocus::List => (
+                format!("plan {}", plan.slug),
+                format!("Launched from pui plan focus for {}.", plan.slug),
+            ),
+            PlansFocus::Items => match self.selected_plan_item() {
+                Some(item) => (
+                    format!("item {} · plan {}", item.item_id, plan.slug),
+                    format!(
+                        "Launched from pui item focus. Prioritize plan item {} within plan {} before pulling the remaining plan lane.",
+                        item.item_id, plan.slug
+                    ),
+                ),
+                None => (
+                    format!("plan {}", plan.slug),
+                    format!("Launched from pui plan focus for {}.", plan.slug),
+                ),
+            },
+        };
+        let name = Self::launcher_name(&plan.slug);
+        self.fleet_launcher = Some(FleetLauncher {
+            scope_label,
+            harness,
+            plan: plan.slug,
+            brief,
+            name,
+            count: 1,
+            agent: "codex".into(),
+            model: "default".into(),
+            account: "default".into(),
+            carry: "warm".into(),
+            headless: false,
+            field: FleetLauncherField::Name,
+            editing: false,
+            preview_loading: false,
+            launching: false,
+            preview: None,
+            status: None,
+        });
+        self.preview_fleet_launcher()
+    }
+
+    fn preview_fleet_launcher(&mut self) -> Action {
+        let Some(launcher) = self.fleet_launcher.as_mut() else {
+            return Action::Render;
+        };
+        if launcher.name.trim().is_empty() {
+            launcher.preview_loading = false;
+            launcher.preview = None;
+            launcher.status = Some("fleet name is required".into());
+            return Action::Render;
+        }
+        launcher.preview_loading = true;
+        launcher.preview = None;
+        launcher.status = None;
+        let fleet = launcher.name.clone();
+        let args = json!({
+            "fleet": fleet,
+            "harness": launcher.harness,
+            "limit": 12,
+            "proposed": {
+                "specVersion": "1.0",
+                "specId": format!("fleet-launch-{}-plan", launcher.name),
+                "revision": 1,
+                "view": { "filter": { "field": "plan", "op": "=", "value": launcher.plan } },
+                "rank": {
+                    "mode": "lexicographic",
+                    "terms": [
+                        { "expr": "affinity(bee.held_paths,item.paths)", "dir": "desc" },
+                        { "expr": "severity_rank", "dir": "desc" },
+                        { "expr": "priority", "dir": "desc" },
+                        { "expr": "age", "dir": "asc" }
+                    ]
+                },
+                "limits": { "maxConcurrentClaims": 1 }
+            }
+        });
+        Action::PreviewFleetLaunch { fleet, args }
+    }
+
+    fn fleet_launcher_launch_action(&mut self) -> Action {
+        let Some(launcher) = self.fleet_launcher.as_mut() else {
+            return Action::Render;
+        };
+        if launcher.preview_loading || launcher.preview.is_none() || launcher.launching {
+            launcher.status = Some("preview must finish before launch".into());
+            return Action::Render;
+        }
+        launcher.launching = true;
+        launcher.status = Some("launching…".into());
+        let fleet = launcher.name.clone();
+        let mut args = json!({
+            "name": launcher.name,
+            "plan": launcher.plan,
+            "harness": launcher.harness,
+            "count": launcher.count,
+            "agent": launcher.agent,
+            "account": launcher.account,
+            "carry": launcher.carry,
+            "headless": launcher.headless,
+            "brief": launcher.brief
+        });
+        if launcher.model != "default" && !launcher.model.trim().is_empty() {
+            args["model"] = json!(launcher.model);
+        }
+        Action::LaunchFleetOnPlan { fleet, args }
+    }
+
+    fn fleet_launcher_ready_width(&self) -> usize {
+        let Some(launcher) = self.fleet_launcher.as_ref() else {
+            return 0;
+        };
+        let Some(states) = self
+            .plan_item_states
+            .as_ref()
+            .filter(|states| states.harness == launcher.harness && states.plan == launcher.plan)
+        else {
+            return 0;
+        };
+        let active: BTreeSet<String> = states
+            .items
+            .iter()
+            .filter(|item| {
+                item.in_plan
+                    && !matches!(
+                        item.item_status
+                            .as_deref()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase()
+                            .as_str(),
+                        "done" | "dropped" | "resolved" | "deprecated" | "cancelled" | "canceled"
+                    )
+            })
+            .map(|item| item.item_id.clone())
+            .collect();
+        states
+            .items
+            .iter()
+            .filter(|item| {
+                active.contains(&item.item_id)
+                    && item.claim_owner_id.is_none()
+                    && item
+                        .blocked_by
+                        .iter()
+                        .all(|blocker| !active.contains(blocker))
+            })
+            .count()
+    }
+
+    fn fleet_launcher_key(&mut self, code: KeyCode) -> Action {
+        let Some(launcher) = self.fleet_launcher.as_mut() else {
+            return Action::Render;
+        };
+        if launcher.editing {
+            return match code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    launcher.editing = false;
+                    Action::Render
+                }
+                KeyCode::Backspace => {
+                    match launcher.field {
+                        FleetLauncherField::Name => {
+                            launcher.name.pop();
+                            launcher.preview = None;
+                            launcher.preview_loading = false;
+                            launcher.status = Some("name changed · p refreshes preview".into());
+                        }
+                        FleetLauncherField::Model => {
+                            launcher.model.pop();
+                        }
+                        FleetLauncherField::Account => {
+                            launcher.account.pop();
+                        }
+                        _ => {}
+                    }
+                    Action::Render
+                }
+                KeyCode::Char(ch) => {
+                    match launcher.field {
+                        FleetLauncherField::Name => {
+                            launcher.name.push(ch);
+                            launcher.preview = None;
+                            launcher.preview_loading = false;
+                            launcher.status = Some("name changed · p refreshes preview".into());
+                        }
+                        FleetLauncherField::Model => launcher.model.push(ch),
+                        FleetLauncherField::Account => launcher.account.push(ch),
+                        _ => {}
+                    }
+                    Action::Render
+                }
+                _ => Action::Render,
+            };
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('L') => {
+                self.fleet_launcher = None;
+                Action::Render
+            }
+            KeyCode::Tab | KeyCode::Char('j') | KeyCode::Down => {
+                launcher.field = launcher.field.step(1);
+                Action::Render
+            }
+            KeyCode::BackTab | KeyCode::Char('k') | KeyCode::Up => {
+                launcher.field = launcher.field.step(-1);
+                Action::Render
+            }
+            KeyCode::Char('p') => self.preview_fleet_launcher(),
+            KeyCode::Char('s') => {
+                let suggested = self.fleet_launcher_ready_width().clamp(1, 12) as u32;
+                if let Some(launcher) = self.fleet_launcher.as_mut() {
+                    launcher.count = suggested;
+                }
+                Action::Render
+            }
+            KeyCode::Char('y') => self.fleet_launcher_launch_action(),
+            KeyCode::Enter if launcher.field.is_text() => {
+                launcher.editing = true;
+                Action::Render
+            }
+            KeyCode::Enter | KeyCode::Right => {
+                match launcher.field {
+                    FleetLauncherField::Count => launcher.count = (launcher.count + 1).min(12),
+                    FleetLauncherField::Agent => {
+                        launcher.agent = match launcher.agent.as_str() {
+                            "codex" => "claude",
+                            "claude" => "omp",
+                            _ => "codex",
+                        }
+                        .into();
+                    }
+                    FleetLauncherField::Carry => {
+                        launcher.carry = if launcher.carry == "warm" {
+                            "cold"
+                        } else {
+                            "warm"
+                        }
+                        .into();
+                    }
+                    FleetLauncherField::Headless => launcher.headless = !launcher.headless,
+                    _ => {}
+                }
+                Action::Render
+            }
+            KeyCode::Left => {
+                match launcher.field {
+                    FleetLauncherField::Count => {
+                        launcher.count = launcher.count.saturating_sub(1).max(1)
+                    }
+                    FleetLauncherField::Agent => {
+                        launcher.agent = match launcher.agent.as_str() {
+                            "codex" => "omp",
+                            "omp" => "claude",
+                            _ => "codex",
+                        }
+                        .into();
+                    }
+                    FleetLauncherField::Carry => {
+                        launcher.carry = if launcher.carry == "warm" {
+                            "cold"
+                        } else {
+                            "warm"
+                        }
+                        .into();
+                    }
+                    FleetLauncherField::Headless => launcher.headless = !launcher.headless,
+                    _ => {}
+                }
+                Action::Render
+            }
+            _ => Action::Render,
+        }
+    }
+
     /// ↑/↓ on the in-app Plans tab (two-level nav, owner ask 2026-06-16): BROWSE
     /// between the plans-list and work-items panes when not entered, else move
     /// WITHIN the focused pane — the plans LIST moves `plan_sel` and refetches the
@@ -5600,6 +5997,63 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::FleetLaunchPreview { fleet, result } => {
+                let Some(launcher) = self
+                    .fleet_launcher
+                    .as_mut()
+                    .filter(|launcher| launcher.name == fleet)
+                else {
+                    return Action::Render;
+                };
+                launcher.preview_loading = false;
+                match result {
+                    Ok(preview) => {
+                        launcher.preview = Some(preview);
+                        launcher.status = Some("preview ready · y confirms launch".into());
+                    }
+                    Err(error) => {
+                        launcher.preview = None;
+                        launcher.status = Some(format!("preview failed: {error}"));
+                    }
+                }
+                Action::Render
+            }
+            Event::FleetLaunchFinished { fleet, result } => {
+                let Some(launcher) = self
+                    .fleet_launcher
+                    .as_mut()
+                    .filter(|launcher| launcher.name == fleet)
+                else {
+                    return Action::Render;
+                };
+                launcher.launching = false;
+                let mut notify_harness = None;
+                match result {
+                    Ok(value) if value.get("ok").and_then(Value::as_bool) == Some(true) => {
+                        launcher.status = Some("launch accepted · audit recorded".into());
+                        notify_harness = Some(launcher.harness.clone());
+                    }
+                    Ok(value) => {
+                        let message = value
+                            .get("message")
+                            .or_else(|| value.get("error"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("launch refused")
+                            .to_string();
+                        launcher.status = Some(message);
+                    }
+                    Err(error) => launcher.status = Some(format!("launch failed: {error}")),
+                }
+                if let Some(harness) = notify_harness {
+                    self.push_notif(Notif {
+                        level: "info".into(),
+                        message: format!("fleet '{}' launch accepted", fleet),
+                        harness: Some(harness),
+                        ts: None,
+                    });
+                }
+                Action::Render
+            }
             Event::OperatorConfig(c) => {
                 self.set_operator_config(c);
                 self.last_error = None;
@@ -5650,6 +6104,25 @@ impl App {
             Event::FleetAssignments(agents) => {
                 // Whole-fleet task list landed (the default Swarm dossier, #2).
                 self.fleet.all_assignments = agents;
+                Action::Render
+            }
+            Event::WorkFrontier { harness, result } => {
+                let current = self
+                    .active_harness
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_default();
+                if current != harness {
+                    return Action::Render;
+                }
+                match result {
+                    Ok(frontier) => {
+                        self.fleet.frontier = Some(frontier);
+                        self.fleet.frontier_error = None;
+                        self.fleet.dossier_sel = 0;
+                    }
+                    Err(error) => self.fleet.frontier_error = Some(error),
+                }
                 Action::Render
             }
             Event::FleetLeaderBrief { fleet, result } => {
@@ -6303,6 +6776,11 @@ impl App {
         let ctrl_c_global = code == KeyCode::Char('c') && mods.contains(KeyModifiers::CONTROL);
         if self.operator_input_active() && self.card_state.has_card() && !ctrl_c_global {
             return self.card_key(code);
+        }
+        // P-034 fleet launcher is fully modal: its form owns editing,
+        // preflight, suggested-count, and explicit confirmation keys.
+        if self.fleet_launcher.is_some() {
+            return self.fleet_launcher_key(code);
         }
         // P-028 critical-path view: scheduling modal, not an always-on board.
         // It owns the keyboard while visible so a close key cannot mutate the
@@ -7239,6 +7717,19 @@ impl App {
                 self.memory_search_input.clear();
                 Action::Render
             }
+            // D-010: the whole-fleet dossier opens on the actionable frontier;
+            // `/` reveals/hides the bounded terminal archive sample while the
+            // exact archive total remains visible in the frontier header.
+            KeyCode::Char('/')
+                if self.tab == Tab::Fleet
+                    && self.fleet.mode == crate::fleet::FleetMode::Curated
+                    && self.fleet.fleet_focus == crate::fleet::FleetPanel::Dossier
+                    && self.bee.owner_id.is_none() =>
+            {
+                self.fleet.frontier_archive_open = !self.fleet.frontier_archive_open;
+                self.fleet.dossier_sel = 0;
+                Action::Render
+            }
             // ─── Cupboard tab (D-011) ───
             // `f` cycles the kind filter (all/harness/blueprint/snapshot/plugin)
             // and refetches; `/` opens the search composer (seeded with the
@@ -7321,6 +7812,9 @@ impl App {
             {
                 self.open_critical_path()
             }
+            // P-034: launch from the exact Plans column under focus. Uppercase
+            // keeps lowercase `l` available for pane navigation elsewhere.
+            KeyCode::Char('L') if self.tab == Tab::Plans => self.open_fleet_launcher(),
             KeyCode::Char('i') if self.tab == Tab::Conversations => self.conv_promote(),
             KeyCode::Char('f') if self.tab == Tab::Cupboard => {
                 self.cupboard_kind = (self.cupboard_kind + 1) % CUPBOARD_KINDS.len();
@@ -14003,20 +14497,18 @@ mod tests {
             ..Default::default()
         };
         a.set_plans(vec![p1, p2]);
-        // Whole-fleet dossier (no agent selected) with 3 tasks → a non-empty,
-        // selectable worklist (owner ask 2026-06-16: cursor, not bare scroll).
-        a.fleet.all_assignments = vec![crate::models::BeeAssignment {
-            agent_id: "su-a".into(),
-            load: 3,
-            queued: (0..3)
-                .map(|i| crate::models::BeeWorkItem {
+        // Whole-fleet frontier (no agent selected) with 3 ready rows → a
+        // non-empty selectable worklist (cursor, not bare scroll).
+        a.fleet.frontier = Some(crate::models::WorkFrontier {
+            unclaimed: (0..3)
+                .map(|i| crate::models::WorkFrontierRow {
                     id: format!("WI-{i}"),
                     title: format!("task {i}"),
                     ..Default::default()
                 })
                 .collect(),
             ..Default::default()
-        }];
+        });
         a.fleet.entered = true; // inside the panes → ↑/↓ move within (←/→ keep switching)
         assert!(!a.fleet.show_comms);
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Roster);
@@ -14052,24 +14544,22 @@ mod tests {
         use crate::fleet::FleetPanel;
         let mut a = App::new();
         a.tab = Tab::Fleet;
-        a.fleet.all_assignments = vec![crate::models::BeeAssignment {
-            agent_id: "su-a".into(),
-            load: 2,
-            queued: vec![
-                crate::models::BeeWorkItem {
+        a.fleet.frontier = Some(crate::models::WorkFrontier {
+            unclaimed: vec![
+                crate::models::WorkFrontierRow {
                     id: "WI-1".into(),
                     title: "first task".into(),
-                    status: Some("wip".into()),
+                    state: "open".into(),
                     ..Default::default()
                 },
-                crate::models::BeeWorkItem {
+                crate::models::WorkFrontierRow {
                     id: "WI-2".into(),
                     title: "second task".into(),
                     ..Default::default()
                 },
             ],
             ..Default::default()
-        }];
+        });
         a.fleet.entered = true;
         a.update(ev(KeyCode::Char('l'))); // → Dossier
         assert_eq!(a.fleet.fleet_focus, FleetPanel::Dossier);
@@ -14110,6 +14600,112 @@ mod tests {
                 })
                 .collect(),
         }
+    }
+
+    #[test]
+    fn fleet_launcher_opens_from_plan_with_visible_defaults_and_requires_preview() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.set_plans(vec![plan("launch-demo")]);
+        a.plan_item_states = Some(item_states("launch-demo", &["P-001", "P-002"]));
+
+        let action = a.update(ev(KeyCode::Char('L')));
+        let launcher = a.fleet_launcher.as_ref().expect("launcher open");
+        assert_eq!(launcher.plan, "launch-demo");
+        assert_eq!(launcher.count, 1);
+        assert_eq!(launcher.agent, "codex");
+        assert_eq!(launcher.model, "default");
+        assert_eq!(launcher.account, "default");
+        assert_eq!(launcher.carry, "warm");
+        assert!(!launcher.headless);
+        match action {
+            Action::PreviewFleetLaunch { fleet, args } => {
+                assert_eq!(fleet, "pui-launch-demo");
+                assert_eq!(args["harness"], "papercup");
+                assert_eq!(args["proposed"]["view"]["filter"]["field"], "plan");
+                assert_eq!(args["proposed"]["view"]["filter"]["value"], "launch-demo");
+            }
+            other => panic!("expected preview action, got {other:?}"),
+        }
+        // Confirmation cannot race the async preview.
+        assert_eq!(a.update(ev(KeyCode::Char('y'))), Action::Render);
+        assert!(a
+            .fleet_launcher
+            .as_ref()
+            .unwrap()
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("preview"));
+    }
+
+    #[test]
+    fn fleet_launcher_y_calls_exact_launch_door_after_preview() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.set_plans(vec![plan("launch-demo")]);
+        let _ = a.update(ev(KeyCode::Char('L')));
+        a.update(Event::FleetLaunchPreview {
+            fleet: "pui-launch-demo".into(),
+            result: Ok(json!({
+                "ok": true,
+                "counts": { "proposedClaimable": 2, "retained": 0, "newlyAdmitted": 2, "newlyExcluded": 0 },
+                "newlyAdmitted": [{ "id": "WI-1" }, { "id": "WI-2" }],
+                "newlyExcluded": []
+            })),
+        });
+        match a.update(ev(KeyCode::Char('y'))) {
+            Action::LaunchFleetOnPlan { fleet, args } => {
+                assert_eq!(fleet, "pui-launch-demo");
+                assert_eq!(args["name"], "pui-launch-demo");
+                assert_eq!(args["plan"], "launch-demo");
+                assert_eq!(args["count"], 1);
+                assert_eq!(args["agent"], "codex");
+                assert_eq!(args["account"], "default");
+                assert_eq!(args["carry"], "warm");
+                assert_eq!(args["headless"], false);
+                assert!(args.get("model").is_none(), "default model must be omitted");
+            }
+            other => panic!("expected launch action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fleet_launcher_item_focus_is_carried_in_scope_and_brief() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        a.set_plans(vec![plan("launch-demo")]);
+        a.plan_item_states = Some(item_states("launch-demo", &["P-034"]));
+        a.plans_focus = PlansFocus::Items;
+        let _ = a.update(ev(KeyCode::Char('L')));
+        let launcher = a.fleet_launcher.as_ref().unwrap();
+        assert!(launcher.scope_label.contains("item P-034"));
+        assert!(launcher.brief.contains("Prioritize plan item P-034"));
+    }
+
+    #[test]
+    fn fleet_launcher_goal_focus_opens_on_the_goals_selected_plan() {
+        let mut a = App::new();
+        a.tab = Tab::Plans;
+        let mut goal_plan = plan("goal-plan");
+        goal_plan.harness = Some("papercup".into());
+        a.set_plans(vec![goal_plan]);
+        a.goals = vec![crate::models::GoalSummary {
+            id: "goal-7".into(),
+            title: "Ship the cockpit".into(),
+            pots: vec![crate::models::GoalPotChip {
+                harness_slug: "papercup".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }];
+        a.goal_sel = 1;
+        a.plans_focus = PlansFocus::Goals;
+        let _ = a.update(ev(KeyCode::Char('L')));
+        let launcher = a.fleet_launcher.as_ref().unwrap();
+        assert!(launcher.scope_label.contains("goal goal-7"));
+        assert_eq!(launcher.plan, "goal-plan");
+        assert!(launcher.brief.contains("Ship the cockpit"));
     }
 
     #[test]

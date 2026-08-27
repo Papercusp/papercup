@@ -14,6 +14,7 @@ import {
   liveSettledProbe,
   reconcileCriticalWorkItemAlert,
   selectCriticalWorkItemAlerts,
+  workItemClaimableEventPayload,
   workItemIdFromRef,
 } from './work-items-events';
 import type { WorkItem } from './work-items';
@@ -83,6 +84,26 @@ describe('helpers', () => {
       harness: 'myharness',
     });
     expect(workItemIdFromRef({ kind: 'topic', ref: 'x' })).toBeNull();
+  });
+
+  it('builds one claimable payload shape for edge emits and live registration probes', () => {
+    const item = wi({
+      id: 'WI-30',
+      kind: 'task',
+      state: 'open',
+      assignee: null,
+      harness: 'papercusp',
+      payload: { tags: ['byoc'] },
+    });
+    expect(workItemClaimableEventPayload(item, 'released')).toMatchObject({
+      id: 'WI-30',
+      kind: 'task',
+      harness: 'papercusp',
+      state: 'open',
+      reason: 'released',
+      tags: ['byoc'],
+    });
+    expect(workItemClaimableEventPayload(item)).not.toHaveProperty('reason');
   });
 });
 

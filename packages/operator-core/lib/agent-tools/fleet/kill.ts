@@ -2,8 +2,10 @@
  * fleet:kill — the UNIFIED agent-termination endpoint (WI-3728, owner-directed
  * 2026-07-10): kill a DESKTOP agent (interactive psu session in a visible
  * terminal) or a HEADLESS agent (nursery cup/bee) through ONE verb, with
- * `close_terminal` controlling whether a desktop agent's terminal WINDOW is
- * also closed.
+ * `close_terminal` controlling whether an interactive agent's terminal WINDOW
+ * is also closed. A managed headless psu host shares the same termination
+ * substrate but reports `kind:'headless'` / `terminal:'none'` and never touches
+ * terminal ancestry.
  *
  * Why one endpoint (owner design call): "killing is similar to close" — the
  * split surfaces before this were fleet:cancel (headless nursery subtrees
@@ -45,7 +47,11 @@ import { readFileSync } from 'node:fs';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { findLiveHost, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
+import {
+  findLiveHost,
+  sessionClassForHost,
+  type PsuPtyHost,
+} from '../../events/await/psu-pty-discovery';
 import { clearPresence, getPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
@@ -132,7 +138,7 @@ export interface LiveUnmanagedSession {
 export interface KillOneResult {
   ok: boolean;
   target: string;
-  kind?: 'desktop' | 'nursery' | 'unmanaged';
+  kind?: 'desktop' | 'headless' | 'nursery' | 'unmanaged';
   killed?: boolean;
   signal?: 'SIGTERM' | 'SIGKILL';
   /** 'closed' | 'left-open' (close_terminal:false) | 'none' (headless) | 'not-found'. */
@@ -381,8 +387,17 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
     };
   }
 
-  // Resolve the window BEFORE killing (the ancestry link dies with the host).
-  const tabShellPid = input.closeTerminal ? findTabShellPid(host.pid, readProc) : null;
+  // bridgeTty:false is the canonical, host-authored proof that this managed psu
+  // session has no human terminal. Older hosts omit the field and therefore
+  // retain the safe interactive fallback supplied by sessionClassForHost.
+  const sessionClass = sessionClassForHost(host);
+  const headless = sessionClass === 'claude-headless';
+  const kind: NonNullable<KillOneResult['kind']> = headless ? 'headless' : 'desktop';
+
+  // Resolve a window BEFORE killing only when one can exist (the ancestry link
+  // dies with the host). A headless member must never inherit desktop residue
+  // semantics merely because it uses the same managed psu-pty host substrate.
+  const tabShellPid = !headless && input.closeTerminal ? findTabShellPid(host.pid, readProc) : null;
 
   const signal = (await stopPid(host.pid, prims)) ?? 'SIGTERM';
   if (host.ptyPid && host.ptyPid !== host.pid && prims.alive(host.ptyPid)) {
@@ -401,8 +416,8 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   // deleting presence so the compaction watchdog cannot heal the row back.
   const cleanupError = await reapDeadOwner(input, deps);
 
-  let terminal: KillOneResult['terminal'] = 'left-open';
-  if (input.closeTerminal) {
+  let terminal: KillOneResult['terminal'] = headless ? 'none' : 'left-open';
+  if (!headless && input.closeTerminal) {
     if (tabShellPid) {
       // SIGHUP first (the "window closed" signal a shell expects), then TERM.
       prims.kill(tabShellPid, 'SIGHUP');
@@ -414,10 +429,11 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
     }
   }
 
-  await audit('fleet.kill_desktop', input.target, {
+  await audit(headless ? 'fleet.kill_headless' : 'fleet.kill_desktop', input.target, {
     reason: input.reason,
     host_pid: host.pid,
     signal,
+    session_class: sessionClass,
     terminal,
     tab_shell_pid: tabShellPid ?? undefined,
     cleanup_error: cleanupError ?? undefined,
@@ -426,7 +442,7 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
     return {
       ok: false,
       target: input.target,
-      kind: 'desktop',
+      kind,
       killed: true,
       signal,
       terminal,
@@ -434,7 +450,7 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
       error: `session process was killed, but durable cleanup is incomplete: ${cleanupError}`,
     };
   }
-  return { ok: true, target: input.target, kind: 'desktop', killed: true, signal, terminal };
+  return { ok: true, target: input.target, kind, killed: true, signal, terminal };
 }
 
 /** Close a bare (agent-already-exited) fleet terminal window by tab-shell pid.
@@ -591,7 +607,7 @@ export default defineTool({
   name: 'fleet:kill',
   profile: 'engineer',
   description:
-    'KILL an agent — desktop OR headless — through one verb. Desktop psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Headless nursery cup/bee: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.',
+    'KILL an agent — desktop OR headless — through one verb. Interactive psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Managed headless psu member: the same session termination with kind:headless + terminal:none and no window ancestry. Headless nursery cup/bee: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.',
   guidance: {
     when: 'Winding down a fleet member for real (not just ending its turn — that is turn:interrupt), removing a dead member\'s stale window, or stopping a headless cup. "Close that agent\'s terminal" / "kill that bee" both land here.',
     notWhen:
@@ -607,9 +623,9 @@ export default defineTool({
       owner: z
         .string()
         .min(1)
-        .optional()
-        .describe(
-          'One agent to kill, by coord ownerId (n=1 shorthand for owners:[id]). Desktop psu member or headless nursery spawn — the tool resolves which.',
+      .optional()
+      .describe(
+          'One agent to kill, by coord ownerId (n=1 shorthand for owners:[id]). Interactive/headless psu member or headless nursery spawn — the tool resolves which.',
         ),
       owners: z.array(z.string().min(1)).min(1).max(20).optional().describe('Many agents to kill (1–20).'),
       terminal_pids: z

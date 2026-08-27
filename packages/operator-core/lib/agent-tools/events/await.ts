@@ -41,8 +41,13 @@ import { registerComposedAwait } from '../../events/await/compose';
 import { ComposedSpecError, type ComposedSpec } from '../../events/await/compose-spec';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { startAwaitSweeper } from '../../events/await/engine';
-import { isPattern, expandPatternMacro, assertUsablePattern } from '../../events/await/pattern';
-import { liveBlockedState, liveSettledProbe, liveAssigneeProbe } from '../../work-items-events';
+import { isPattern, expandPatternMacro, assertUsablePattern, payloadMatchesFilter } from '../../events/await/pattern';
+import {
+  liveBlockedState,
+  liveSettledProbe,
+  liveAssigneeProbe,
+  liveWorkItemClaimableEventPayload,
+} from '../../work-items-events';
 import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { hardText, softText, clampText, LIMITS } from '../limits';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
@@ -52,10 +57,11 @@ import {
   isMultiPipelineGateKey,
   isMultiPipelineGateKeyPattern,
 } from '../../release/pipeline-name';
-import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
-import { formatSpecRef } from '../../scheduler/claim-spec';
+import { getClaimSpecRecord, type ClaimSpecRecord } from '../../scheduler/claim-spec-store';
+import { claimSpecReferencesField, formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-workspace';
 import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
+import { readIssueClaimability } from '../../scheduler/get-next';
 import {
   producerHealthInputSchema,
   progressLeaseInputSchema,
@@ -867,7 +873,8 @@ export default defineTool({
     let effectivePayloadFilter = args.payload_filter ?? null;
     let autoScopedFrom: { source: 'cup' | 'fleet'; specId: string; revision: number | null } | null = null;
     let unscopedClaimableWarning = false;
-    if (!patternAwait && eventKey === 'work-item:claimable' && effectivePayloadFilter == null) {
+    let claimableSpecRecord: ClaimSpecRecord | null = null;
+    if (!patternAwait && eventKey === 'work-item:claimable') {
       const probe = await withBoundedTimeout(
         getClaimSpecRecord({
           cupId: identity.ownerId,
@@ -876,7 +883,8 @@ export default defineTool({
         { fallback: null, timeoutMs: 1_500, label: 'events-await:claimSpecDefault' },
       );
       const record = probe.value;
-      if (record && record.source !== 'default') {
+      claimableSpecRecord = record;
+      if (effectivePayloadFilter == null && record && record.source !== 'default') {
         // EI-18674502503888023 / EI-18674151670359202 / EI-18674160393981819: the spec's
         // `view.filter` tree can NEVER carry a `harness` leaf (D-002 — harness scoping is a
         // resolver-level floor, not spec vocabulary; see ITEM_FIELDS in claim-spec.ts), so
@@ -899,7 +907,7 @@ export default defineTool({
         } else {
           unscopedClaimableWarning = true;
         }
-      } else {
+      } else if (effectivePayloadFilter == null) {
         unscopedClaimableWarning = true;
       }
     }
@@ -1114,6 +1122,82 @@ export default defineTool({
                   event: eventKey,
                   fired_at: postRegisterProbe.value.lastFiredAt,
                   advice: `The git-sync egress key "${eventKey}" fired during registration at ${postRegisterProbe.value.lastFiredAt ?? 'an earlier time'} — the still-pending await was retired and the commit is already on origin/staging. Proceed with the work this egress unblocks now.`,
+                }),
+              },
+            ],
+          };
+        }
+      }
+    }
+
+    // ── EI-21565976517547834: close the recurring claimable-key registration
+    // race. `work-item:claimable` is an EDGE signal, but the condition it announces
+    // is level-triggered: a matching row may still be claimable after its release /
+    // requeue event has already fired. The live incident registered await 106008
+    // after WI-42252 returned to the pool; another member claimed the row during the
+    // await window, proving useful work existed, yet this waiter saw only its timeout.
+    //
+    // Reconcile AFTER the durable row is inserted. That single post-registration
+    // read covers both sides of the handoff: work already present before registration
+    // and work that becomes claimable during it. If an emitter concurrently claims
+    // the await, cancelAwait's pending-row guard loses and the durable wake delivery
+    // wins. If the await is still pending, retire it and return already_claimable so
+    // the caller immediately re-runs scheduler:get_next instead of sleeping through
+    // a level that is already true. Best-effort and issue-family scoped: an absent /
+    // default spec or a bounded oracle failure preserves the ordinary edge await.
+    if (
+      !patternAwait &&
+      eventKey === 'work-item:claimable' &&
+      claimableSpecRecord &&
+      claimableSpecRecord.source !== 'default' &&
+      claimableSpecRecord.harnessSlug
+    ) {
+      const record = claimableSpecRecord;
+      const live = await withBoundedTimeout(
+        (async () => {
+          const reading = await readIssueClaimability(
+            record.spec.view.filter,
+            {
+              harness: record.harnessSlug!,
+              workspaceId: resolveClaimSpecWorkspace(identity.workspaceId ?? undefined),
+              states: record.spec.states,
+              assignee: identity.ownerId,
+              claimantFleetSlug: record.fleetSlug,
+              claimSpecReferencesFleet: claimSpecReferencesField(record.spec, 'fleet'),
+              spec: record.spec,
+            },
+            { limit: 20, statementTimeoutMs: 1_500 },
+          );
+          for (const candidate of reading.rows) {
+            const payload = await liveWorkItemClaimableEventPayload(candidate.id, record.harnessSlug ?? undefined);
+            if (payload && payloadMatchesFilter(effectivePayloadFilter, payload)) return payload;
+          }
+          return null;
+        })(),
+        { fallback: null, timeoutMs: 2_000, label: 'events-await:claimableLevelAfterRegister' },
+      );
+      if (live.value) {
+        let retired = false;
+        try {
+          retired = await cancelAwait({ awaitId: row.id, subscriberId: identity.ownerId });
+        } catch {
+          // Fail-soft: if the pending-row reconciliation write is unavailable,
+          // keep the registration response honest and let the normal await path run.
+        }
+        if (retired) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  already_claimable: true,
+                  event: eventKey,
+                  item: live.value,
+                  ...(effectivePayloadFilter != null ? { payload_filter: effectivePayloadFilter } : {}),
+                  advice:
+                    `A work item matching this claimable await is ALREADY in the live pool (${String(live.value.id ?? 'id unknown')}). ` +
+                    'The still-pending await registered during the handoff was retired. Re-run scheduler:get_next now; do not end your turn or wait for another edge.',
                 }),
               },
             ],

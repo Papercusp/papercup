@@ -185,6 +185,12 @@ export default defineTool({
   // org-app workspace transaction while waiting for those operations, or a
   // saturated pool can reject the compaction request before it queues the cut.
   skipWorkspaceTx: true,
+  // EI-21568390978191082: carry assembly includes transcript ingestion plus
+  // host/socket I/O and can legitimately exceed the flat 55s MCP deadline
+  // under fleet pressure. Declare the real boundary budget so the transport's
+  // effective deadline becomes 125s (timeoutSec + its 5s buffer) instead of
+  // returning outcome=unknown while this mutation continues server-side.
+  timeoutSec: 120,
   agentRoles: [...AGENT_ROLES],
   rolesQuota: { operator: { perRun: 10 } },
   args: z.object({

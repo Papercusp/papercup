@@ -1367,6 +1367,7 @@ export async function diagnoseFleetScopeIssueFloorMiss(args: {
     const { aggregateIssueClaimExclusions } = await import('./get-next');
     const agg = await aggregateIssueClaimExclusions(spec.view.filter, {
       harness: args.harness,
+      workspaceId: ws,
       states: args.states ?? spec.states,
       assignee: args.scope.ownerId,
       rigAvailable: args.rigAvailable,

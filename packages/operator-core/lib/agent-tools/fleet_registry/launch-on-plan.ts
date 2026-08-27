@@ -3895,6 +3895,8 @@ export default defineTool({
             envelope: { ...base, greetingCmd: leaderCommand, cwd: base.cwd },
             label: leaderLabel,
             logDir: headlessLogDir,
+            launchedBy: ownerId,
+            fleetSlug,
             coordOwnerId: spawnedLeaderOwnerId,
           })
         : await spawnConsole({
@@ -3991,6 +3993,8 @@ export default defineTool({
                       envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
                       label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
                       logDir: headlessLogDir,
+                      launchedBy: ownerId,
+                      fleetSlug,
                       coordOwnerId: requestedMemberIds[i],
                     })
                   : spawnConsole({

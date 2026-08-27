@@ -11,7 +11,7 @@ use crate::models::{
     ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
     FleetLeaderBrief, FleetRateStatus, GoalSummary, HarnessFeature, HarnessIssue, HarnessRef,
     LexiconPackPayload, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
-    SessionTranscriptTurn, TestingDomain, TuiPaneContribution, ViewState, WorkItem,
+    SessionTranscriptTurn, TestingDomain, TuiPaneContribution, ViewState, WorkFrontier, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -129,6 +129,18 @@ pub enum Event {
     /// Merged plan-item assignment/claim/liveness for the SELECTED plan (P-005a) —
     /// rendered in the Plans detail pane.
     PlanItemStates(PlanItemStates),
+    /// P-034 read-only `scheduler:preview_spec_delta` result, guarded by the
+    /// fleet name currently shown in the launcher modal.
+    FleetLaunchPreview {
+        fleet: String,
+        result: Result<serde_json::Value, String>,
+    },
+    /// P-034's confirmed `fleet:launch-on-plan` result. The invocation itself
+    /// is the durable audit trail; this event only paints its terminal outcome.
+    FleetLaunchFinished {
+        fleet: String,
+        result: Result<serde_json::Value, String>,
+    },
     /// Read-only operator-config overview (P10b) for the Settings tab — AI backend
     /// + per-role models + connected speech providers.
     OperatorConfig(OperatorConfig),
@@ -162,6 +174,11 @@ pub enum Event {
     /// Swarm dossier (pui-dock-consolidation-2026-06-07 #2). The reducer stores
     /// them in `fleet.all_assignments`.
     FleetAssignments(Vec<BeeAssignment>),
+    /// Canonical whole-harness actionable frontier for the unfiltered dossier.
+    WorkFrontier {
+        harness: String,
+        result: Result<WorkFrontier, String>,
+    },
     /// Acting-leader cockpit snapshot. The fleet slug guards stale async reads.
     FleetLeaderBrief {
         fleet: String,

@@ -296,6 +296,10 @@ describe('session:request-compaction — reports what happened to the PREVIOUS r
 });
 
 describe('session:request-compaction — P-018/P-022 carry-respawn actuation', () => {
+  it('declares a transport budget above the flat MCP deadline for carry assembly and host I/O', () => {
+    expect(tool.timeoutSec).toBe(120);
+  });
+
   it('carry-respawn-capable host → mode:carry-respawn with the addendum + a NON-EMPTY continue note derived from focus', async () => {
     findLiveHost.mockReturnValue(carryHost);
     const b = body(await call({ focus: 'finish the ratchet fix' }));

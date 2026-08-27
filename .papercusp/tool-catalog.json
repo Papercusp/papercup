@@ -11228,7 +11228,7 @@
           "POST"
         ]
       },
-      "description": "KILL an agent — desktop OR headless — through one verb. Desktop psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Headless nursery cup/bee: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.",
+      "description": "KILL an agent — desktop OR headless — through one verb. Interactive psu member: graceful SIGTERM (→SIGKILL) to its session, and close_terminal (default true) ALSO closes its terminal window (windows never close on their own — the tab drops to a shell after the agent exits). Managed headless psu member: the same session termination with kind:headless + terminal:none and no window ancestry. Headless nursery cup/bee: delegates to the transitive cancel path (claims + locks released). `terminal_pids` closes ORPHANED windows whose agent already exited. Self-kill refused; reason required; every kill audited.",
       "capabilities": [
         "work_items:write"
       ],

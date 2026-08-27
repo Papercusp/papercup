@@ -66,6 +66,12 @@ const trackedHost = (pid: number, advSessionId: string): PsuPtyHost => ({
   advSessionId,
 });
 
+const headlessHost = (pid: number): PsuPtyHost => ({
+  ...host(pid),
+  bridgeTty: false,
+  launchedBy: 'su-launcher',
+});
+
 const noSleep = (_ms: number) => Promise.resolve();
 
 describe('findTabShellPid', () => {
@@ -159,6 +165,39 @@ describe('killOne', () => {
     expect(r.terminal).toBe('left-open');
     expect(t.kills.some((k) => k.pid === 200)).toBe(false); // shell untouched
     expect(t.aliveSet.has(200)).toBe(true);
+  });
+
+  it('headless managed psu host reports no terminal and never touches a tab shell', async () => {
+    const t = makeProcTree({
+      100: { ppid: 1, cmdline: 'gnome-terminal-server' },
+      200: { ppid: 100, cmdline: MARKER_CMD },
+      300: { ppid: 200, cmdline: 'node psu-launcher.mjs' },
+    });
+    const audits: string[] = [];
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => headlessHost(300),
+      readProc: t.readProc,
+      kill: t.kill,
+      alive: t.alive,
+      sleep: noSleep,
+      audit: async (action) => {
+        audits.push(action);
+      },
+    };
+
+    const r = await killOne(
+      { actor: 'su-me', target: 'su-target', closeTerminal: true, reason: 'headless wind-down' },
+      deps,
+    );
+
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('headless');
+    expect(r.signal).toBe('SIGTERM');
+    expect(r.terminal).toBe('none');
+    expect(t.kills.some((k) => k.pid === 200)).toBe(false);
+    expect(t.aliveSet.has(200)).toBe(true);
+    expect(audits).toEqual(['fleet.kill_headless']);
   });
 
   it('desktop: stamps the tracked adv_session after confirming the host died', async () => {

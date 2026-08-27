@@ -2,7 +2,7 @@
 //! snapshot-testable against a ratatui `TestBackend`.
 
 use crate::app::{
-    App, HarnessFocus, PluginsFocus, SessionBrowserFacet, Tab, TestingFocus,
+    App, FleetLauncherField, HarnessFocus, PluginsFocus, SessionBrowserFacet, Tab, TestingFocus,
     SESSION_BROWSER_STATES, SESSION_BROWSER_WHEN,
 };
 use crate::models::{
@@ -46,6 +46,9 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         if app.critical_path_open {
             draw_critical_path(f, app);
+        }
+        if app.fleet_launcher.is_some() {
+            draw_fleet_launcher(f, app);
         }
         if app.session_switcher.is_some() {
             draw_session_switcher(f, app);
@@ -140,6 +143,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             && !app.pot_picker_open
             && app.fleet_action_menu.is_none()
             && app.wake_review.is_none()
+            && app.fleet_launcher.is_none()
         {
             draw_toast(f, t);
         }
@@ -172,6 +176,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if app.critical_path_open {
         draw_critical_path(f, app);
+    }
+    if app.fleet_launcher.is_some() {
+        draw_fleet_launcher(f, app);
     }
     if app.session_switcher.is_some() {
         draw_session_switcher(f, app);
@@ -431,6 +438,206 @@ fn draw_critical_path(f: &mut Frame, app: &App) {
             *area,
         );
     }
+}
+
+fn preview_item_labels(value: &serde_json::Value, key: &str) -> String {
+    let Some(rows) = value.get(key).and_then(serde_json::Value::as_array) else {
+        return "—".into();
+    };
+    let labels: Vec<String> = rows
+        .iter()
+        .take(4)
+        .filter_map(|row| {
+            row.get("id")
+                .or_else(|| row.get("workItemId"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    if labels.is_empty() {
+        "—".into()
+    } else if rows.len() > labels.len() {
+        format!("{} +{}", labels.join(", "), rows.len() - labels.len())
+    } else {
+        labels.join(", ")
+    }
+}
+
+/// P-034: the form is a direct view of `fleet:launch-on-plan` args plus the
+/// read-only plan-scope preflight. Capacity uses the SAME remaining DAG columns
+/// as the critical-path overlay, so the two surfaces cannot disagree on roots.
+fn draw_fleet_launcher(f: &mut Frame, app: &App) {
+    let Some(launcher) = &app.fleet_launcher else {
+        return;
+    };
+    let area = centered_rect(82, 84, f.area());
+    f.render_widget(Clear, area);
+    let block = Theme::popup_block(Line::from(format!(
+        " Fleet launcher · {} · L/Esc close ",
+        trunc(&launcher.scope_label, 42)
+    )));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let columns = app
+        .plan_item_states
+        .as_ref()
+        .filter(|states| states.harness == launcher.harness && states.plan == launcher.plan)
+        .map(|states| critical_path_columns(states, &app.fleet.all_assignments))
+        .unwrap_or_default();
+    let ready_width = columns
+        .first()
+        .map(|column| column.iter().filter(|node| node.unclaimed).count())
+        .unwrap_or(0);
+    let dag_depth = columns.len();
+    let idle = launcher.count.saturating_sub(ready_width as u32);
+    let marker = |field| {
+        if launcher.field == field {
+            if launcher.editing {
+                "✎"
+            } else {
+                ">"
+            }
+        } else {
+            " "
+        }
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("scope     ", Theme::dim()),
+            Span::raw(launcher.scope_label.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("plan      ", Theme::dim()),
+            Span::raw(launcher.plan.clone()),
+        ]),
+        Line::from(format!(
+            "{} name      {}",
+            marker(FleetLauncherField::Name),
+            launcher.name
+        )),
+        Line::from(format!(
+            "{} count     {}",
+            marker(FleetLauncherField::Count),
+            launcher.count
+        )),
+        Line::from(format!(
+            "{} agent     {}",
+            marker(FleetLauncherField::Agent),
+            launcher.agent
+        )),
+        Line::from(format!(
+            "{} model     {}",
+            marker(FleetLauncherField::Model),
+            launcher.model
+        )),
+        Line::from(format!(
+            "{} account   {}",
+            marker(FleetLauncherField::Account),
+            launcher.account
+        )),
+        Line::from(format!(
+            "{} carry     {}",
+            marker(FleetLauncherField::Carry),
+            launcher.carry
+        )),
+        Line::from(format!(
+            "{} headless  {}",
+            marker(FleetLauncherField::Headless),
+            if launcher.headless { "true" } else { "false" }
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("capacity   ", Theme::dim()),
+            Span::raw(format!(
+                "{ready_width} ready/unclaimed · DAG depth {dag_depth} · requested {}",
+                launcher.count
+            )),
+        ]),
+    ];
+    if idle > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "⚠ {} agents against {} executable items, {} will idle · [s] use {}",
+                launcher.count,
+                ready_width,
+                idle,
+                ready_width.max(1)
+            ),
+            Theme::warn(),
+        )));
+    }
+    lines.push(Line::from(""));
+    if launcher.preview_loading {
+        lines.push(Line::from(Span::styled(
+            "preview     loading scheduler:preview_spec_delta…",
+            Theme::dim(),
+        )));
+    } else if let Some(preview) = &launcher.preview {
+        let counts = preview.get("counts").cloned().unwrap_or_default();
+        lines.push(Line::from(format!(
+            "preview     proposed {} · retained {} · +{} / -{}",
+            counts
+                .get("proposedClaimable")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            counts
+                .get("retained")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            counts
+                .get("newlyAdmitted")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            counts
+                .get("newlyExcluded")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+        )));
+        lines.push(Line::from(format!(
+            "admits      {}",
+            preview_item_labels(preview, "newlyAdmitted")
+        )));
+        lines.push(Line::from(format!(
+            "excludes    {}",
+            preview_item_labels(preview, "newlyExcluded")
+        )));
+        if preview
+            .get("familyScopeIncomplete")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            lines.push(Line::from(Span::styled(
+                "⚠ delta preview is issue-family-only; DAG capacity above covers every plan item",
+                Theme::warn(),
+            )));
+        }
+    } else {
+        lines.push(Line::from(Span::styled(
+            "preview     required before launch · [p] refresh",
+            Theme::warn(),
+        )));
+    }
+    if let Some(status) = &launcher.status {
+        lines.push(Line::from(Span::styled(status.clone(), Theme::dim())));
+    }
+    lines.extend([
+        Line::from(""),
+        Line::from(Span::styled(
+            "j/k field · Enter edit/cycle · ←/→ adjust · p preview · y CONFIRM LAUNCH",
+            Theme::title_active(),
+        )),
+        Line::from(Span::styled(
+            "Defaults are explicit: account=default · model=default · carry=warm · visible",
+            Theme::dim(),
+        )),
+    ]);
+    f.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .style(Theme::popup()),
+        inner,
+    );
 }
 
 /// One tab's body. The single dispatch shared by the full workbench layout and
@@ -788,9 +995,11 @@ fn draw_plans(f: &mut Frame, app: &App, area: Rect) {
         ),
         None => "No plans loaded.".to_string(),
     };
-    let para = Paragraph::new(detail)
-        .wrap(Wrap { trim: false })
-        .block(Block::default().borders(Borders::ALL).title(" Detail "));
+    let para = Paragraph::new(detail).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Detail · L launch · K critical path "),
+    );
     f.render_widget(para, right[0]);
 
     let item_cursor = items_focused.then_some(app.plan_items_sel);
@@ -964,7 +1173,10 @@ fn goal_detail_lines(g: &crate::models::GoalSummary) -> Vec<Line<'static>> {
     let sampled = g.pots.len();
     if (g.pot_count as usize) > sampled {
         lines.push(Line::from(Span::styled(
-            format!("(+{} more pots not sampled)", g.pot_count as usize - sampled),
+            format!(
+                "(+{} more pots not sampled)",
+                g.pot_count as usize - sampled
+            ),
             Theme::dim(),
         )));
     }
@@ -4610,6 +4822,58 @@ mod tests {
     }
 
     #[test]
+    fn fleet_launcher_renders_defaults_capacity_preview_and_confirmation() {
+        let mut app = App::new();
+        app.tab = Tab::Plans;
+        app.plan_item_states = Some(crate::models::PlanItemStates {
+            harness: "papercup".into(),
+            plan: "launch-demo".into(),
+            items: vec![
+                critical_item("P-001", "todo", &[], None),
+                critical_item("P-002", "todo", &["P-001"], None),
+            ],
+            ..Default::default()
+        });
+        app.fleet_launcher = Some(crate::app::FleetLauncher {
+            scope_label: "plan launch-demo".into(),
+            harness: "papercup".into(),
+            plan: "launch-demo".into(),
+            brief: "launch test".into(),
+            name: "pui-launch-demo".into(),
+            count: 3,
+            agent: "codex".into(),
+            model: "default".into(),
+            account: "default".into(),
+            carry: "warm".into(),
+            headless: false,
+            field: FleetLauncherField::Name,
+            editing: false,
+            preview_loading: false,
+            launching: false,
+            preview: Some(serde_json::json!({
+                "familyScopeIncomplete": true,
+                "counts": { "proposedClaimable": 2, "retained": 0, "newlyAdmitted": 2, "newlyExcluded": 1 },
+                "newlyAdmitted": [{ "id": "WI-1" }, { "id": "WI-2" }],
+                "newlyExcluded": [{ "id": "WI-9" }]
+            })),
+            status: Some("preview ready · y confirms launch".into()),
+        });
+
+        let text = render(&app, 160, 45);
+        assert!(text.contains("Fleet launcher"));
+        assert!(text.contains("account   default"));
+        assert!(text.contains("model     default"));
+        assert!(text.contains("carry     warm"));
+        assert!(text.contains("headless  false"));
+        assert!(text.contains("1 ready/unclaimed · DAG depth 2 · requested 3"));
+        assert!(text.contains("3 agents against 1 executable items, 2 will idle"));
+        assert!(text.contains("admits      WI-1, WI-2"));
+        assert!(text.contains("excludes    WI-9"));
+        assert!(text.contains("issue-family-only"));
+        assert!(text.contains("y CONFIRM LAUNCH"));
+    }
+
+    #[test]
     fn plans_tab_plan_detail_popup_renders() {
         // Owner ask 2026-06-15 #1: the Plans tab's Enter→popup renders the
         // selected plan's full detail via the shared `draw` path.
@@ -4927,7 +5191,7 @@ mod tests {
         assert!(text.contains("Goals (1)"));
         assert!(text.contains("(all)"));
         assert!(text.contains("2 plans")); // the "(all)" row's scope count
-        // The goal's rollup: both fixture plans sit in its pot, 2 done of 3.
+                                           // The goal's rollup: both fixture plans sit in its pot, 2 done of 3.
         assert!(text.contains("Ship"));
         assert!(text.contains("2p 2/3"));
         assert!(text.contains("Plans (2)"));
@@ -4968,9 +5232,7 @@ mod tests {
     /// column joined from the fleet assignments via the claim-owner id.
     #[test]
     fn plans_spine_agent_badge_and_item_pressure_render() {
-        use crate::models::{
-            BeeAssignment, PlanItemState, PlanItemStates, RosterEntry,
-        };
+        use crate::models::{BeeAssignment, PlanItemState, PlanItemStates, RosterEntry};
         let mut app = App::new();
         app.tab = Tab::Plans;
         app.set_plans(vec![plan("my-plan", "wip")]);

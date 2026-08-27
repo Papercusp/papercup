@@ -803,6 +803,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(filterArg).toEqual(issueScope.record.spec.view.filter);
       expect(optsArg).toMatchObject({
         harness: 'papercusp',
+        workspaceId: 'papercusp-workspace',
         assignee: 'su-member',
         rigAvailable: true,
         states: ['open'],

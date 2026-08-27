@@ -782,15 +782,17 @@ async fn run<B: Backend>(
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchFleetAssignments => {
-                // Whole-fleet task list for the default Swarm dossier (#2) —
-                // fetched off the UI thread → Event::FleetAssignments.
+                // Whole-fleet liveness + canonical work frontier are independent
+                // reads and land as separate events; either can still render if
+                // the other is temporarily unavailable.
                 tokio::spawn(fetch_fleet_assignments(tx.clone()));
+                let harness = app
+                    .active_harness
+                    .lock()
+                    .map(|value| value.clone())
+                    .unwrap_or_default();
+                tokio::spawn(fetch_work_frontier(harness.clone(), tx.clone()));
                 if let Some(fleet) = app.fleet.leader_fleet.clone() {
-                    let harness = app
-                        .active_harness
-                        .lock()
-                        .map(|value| value.clone())
-                        .unwrap_or_default();
                     tokio::spawn(fetch_fleet_leader_brief(fleet, harness, tx.clone()));
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
@@ -907,6 +909,14 @@ async fn run<B: Backend>(
                 // moved — fetch the selected plan's per-item states for the
                 // right-side work-items detail. → Event::PlanItemStates.
                 tokio::spawn(fetch_plan_item_states(harness, plan, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::PreviewFleetLaunch { fleet, args } => {
+                tokio::spawn(preview_fleet_launch(fleet, args, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::LaunchFleetOnPlan { fleet, args } => {
+                tokio::spawn(launch_fleet_on_plan(fleet, args, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::FetchNetworkBoard => {
@@ -3096,6 +3106,30 @@ async fn fetch_plan_item_states(harness: String, plan: String, tx: UnboundedSend
     }
 }
 
+async fn preview_fleet_launch(fleet: String, args: serde_json::Value, tx: UnboundedSender<Event>) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .run_tool("scheduler:preview_spec_delta", args)
+            .await
+            .and_then(|value| crate::client::run_tool_inner_json(&value))
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::FleetLaunchPreview { fleet, result });
+}
+
+async fn launch_fleet_on_plan(fleet: String, args: serde_json::Value, tx: UnboundedSender<Event>) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .run_tool("fleet:launch-on-plan", args)
+            .await
+            .and_then(|value| crate::client::run_tool_inner_json(&value))
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::FleetLaunchFinished { fleet, result });
+}
+
 /// Fetch the per-hive drill-in dossier data (hive-network-surface P-014
 /// item 2 / D-007 GAP 2) for the pinned `pui hive-pane <key>` instance: the
 /// captured beacon HISTORY + the full C-1 ask log, via the `network.hive.*`
@@ -3170,6 +3204,17 @@ async fn fetch_fleet_assignments(tx: UnboundedSender<Event>) {
             let _ = tx.send(Event::Error(format!("fleet assignments: {e}")));
         }
     }
+}
+
+async fn fetch_work_frontier(harness: String, tx: UnboundedSender<Event>) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .work_frontier(&harness)
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::WorkFrontier { harness, result });
 }
 
 async fn fetch_fleet_leader_brief(fleet: String, harness: String, tx: UnboundedSender<Event>) {

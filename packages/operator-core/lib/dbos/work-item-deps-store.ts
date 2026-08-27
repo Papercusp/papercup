@@ -8,11 +8,25 @@
  * single-purpose table. Acyclicity is enforced HERE on write (a CHECK can't see the transitive
  * graph), reusing `detectDependencyCycle`. FK to the unified work_items lands with P-009.
  */
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withSerializableRetry, type SerializableRetryOptions } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { LinkRow, ObjectRef } from '@papercusp/coordination/capabilities';
+import type { Sql } from 'postgres';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from '../issue-blocks-merge';
 import { detectDependencyCycle } from '../feature-deps';
+import {
+  analyzeDependencyGraph,
+  dependencyIdentityKey,
+  type DependencyEndpointDefect,
+  type DependencyGraphAnalysis,
+  type DependencyGraphEdgeInput,
+  type DependencyGraphNodeInput,
+  type DependencyIdentity,
+  type DependencyStrandedNode,
+  type DependencyStronglyConnectedComponent,
+} from '../scheduler/dependency-graph-analysis';
+import { getDependencyPolicy, type DependencyPolicyRule } from '../scheduler/dependency-invariants';
+import { TERMINAL_STATUSES } from './frontier-readiness';
 
 /** The polymorphic endpoints accepted by work_item_deps (issue/feature today). */
 export interface WorkItemDepEndpoint {
@@ -26,6 +40,320 @@ export interface WorkItemBlockingEdge {
   blocker_kind: string;
   blocker_ref: string;
   dep_type: 'blocks';
+}
+
+export type WorkItemDependencyMutation =
+  | {
+      readonly op: 'add' | 'remove';
+      readonly blocked: WorkItemDepEndpoint;
+      readonly blocker: WorkItemDepEndpoint;
+      readonly createdBy?: string;
+    }
+  | {
+      readonly op: 'replace';
+      readonly blocked: WorkItemDepEndpoint;
+      readonly blockers: readonly WorkItemDepEndpoint[];
+      readonly createdBy?: string;
+    };
+
+export interface WorkItemDependencyBatchInput {
+  /** Item + edge workspace. Existing work-item callers pass DEFAULT_COORD_WORKSPACE. */
+  readonly workspaceId: string;
+  /** Operations are applied in order to one candidate graph, then committed atomically. */
+  readonly mutations: readonly WorkItemDependencyMutation[];
+}
+
+export interface WorkItemDependencyAdmissionFinding {
+  readonly policy: DependencyPolicyRule;
+  readonly cycles: readonly DependencyStronglyConnectedComponent[];
+  readonly endpointDefects: readonly DependencyEndpointDefect[];
+  readonly stranded: readonly DependencyStrandedNode[];
+}
+
+export interface WorkItemDependencyBatchResult {
+  readonly inserted: number;
+  readonly removed: number;
+  readonly before: DependencyGraphAnalysis;
+  readonly after: DependencyGraphAnalysis;
+}
+
+/**
+ * Structured fail-closed result for a rejected candidate graph. Callers can
+ * render exact paths/edges without parsing the prose message.
+ */
+export class WorkItemDependencyAdmissionError extends Error {
+  readonly code = 'WORK_ITEM_DEPENDENCY_ADMISSION_REJECTED';
+  constructor(
+    readonly findings: readonly WorkItemDependencyAdmissionFinding[],
+    readonly before: DependencyGraphAnalysis,
+    readonly after: DependencyGraphAnalysis,
+  ) {
+    const details = findings.flatMap((finding) => [
+      ...finding.cycles.map((cycle) => cycle.cyclePath.map(identityLabel).join(' -> ')),
+      ...finding.endpointDefects.map((defect) => defect.message),
+      ...finding.stranded.flatMap((row) => row.paths.map((path) => path.path.map(identityLabel).join(' -> '))),
+    ]);
+    super(`work_item_deps candidate rejected: ${details.join('; ') || 'dependency policy violation'}`);
+    this.name = 'WorkItemDependencyAdmissionError';
+  }
+}
+
+interface StoredDependencyEdge extends DependencyGraphEdgeInput {
+  readonly createdBy: string | null;
+}
+
+interface WorkItemNodeRow {
+  readonly workspace_id: string;
+  readonly harness_slug: string;
+  readonly feature_id: string;
+  readonly item_kind: string;
+  readonly status: string;
+}
+
+const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
+const ISSUE_ONLY_TERMINAL_STATUSES = new Set(['resolved', 'closed']);
+
+function identityLabel(id: DependencyIdentity): string {
+  return `${id.kind}:${id.ref}`;
+}
+
+function storedEdgeKey(edge: DependencyGraphEdgeInput): string {
+  return JSON.stringify([edge.blocked.kind, edge.blocked.ref, edge.blocker.kind, edge.blocker.ref]);
+}
+
+function sortedStoredEdges(edges: Iterable<StoredDependencyEdge>): StoredDependencyEdge[] {
+  return [...edges].sort((a, b) => storedEdgeKey(a).localeCompare(storedEdgeKey(b)));
+}
+
+function applyDependencyMutations(
+  current: readonly StoredDependencyEdge[],
+  mutations: readonly WorkItemDependencyMutation[],
+): StoredDependencyEdge[] {
+  const candidate = new Map(current.map((edge) => [storedEdgeKey(edge), edge]));
+  for (const mutation of mutations) {
+    if (mutation.op === 'replace') {
+      const blockedKey = dependencyIdentityKey(mutation.blocked);
+      for (const [key, edge] of candidate) {
+        if (dependencyIdentityKey(edge.blocked) === blockedKey) candidate.delete(key);
+      }
+      for (const blocker of mutation.blockers) {
+        const edge: StoredDependencyEdge = {
+          blocked: mutation.blocked,
+          blocker,
+          createdBy: mutation.createdBy ?? null,
+        };
+        candidate.set(storedEdgeKey(edge), edge);
+      }
+      continue;
+    }
+    const edge: StoredDependencyEdge = {
+      blocked: mutation.blocked,
+      blocker: mutation.blocker,
+      createdBy: mutation.createdBy ?? null,
+    };
+    const key = storedEdgeKey(edge);
+    if (mutation.op === 'add') candidate.set(key, edge);
+    else candidate.delete(key);
+  }
+  return sortedStoredEdges(candidate.values());
+}
+
+function endpointBareId(endpoint: DependencyIdentity): string | null {
+  if (endpoint.kind === ISSUE_ENDPOINT_KIND) return endpoint.ref;
+  if (endpoint.kind !== FEATURE_KIND || !isQualifiedFeatureRef(endpoint.ref)) return null;
+  return endpoint.ref.slice(endpoint.ref.indexOf('#') + 1);
+}
+
+function rowNode(row: WorkItemNodeRow): DependencyGraphNodeInput {
+  const issueFamily = ISSUE_ITEM_KINDS.has(row.item_kind);
+  const id: DependencyIdentity = issueFamily
+    ? { kind: ISSUE_ENDPOINT_KIND, ref: row.feature_id }
+    : { kind: FEATURE_KIND, ref: featureRef(row.harness_slug, row.feature_id) };
+  const alias: DependencyIdentity = issueFamily
+    ? { kind: FEATURE_KIND, ref: featureRef(row.harness_slug, row.feature_id) }
+    : { kind: ISSUE_ENDPOINT_KIND, ref: row.feature_id };
+  return {
+    id,
+    aliases: [alias],
+    terminal: TERMINAL_STATUSES.has(row.status) || ISSUE_ONLY_TERMINAL_STATUSES.has(row.status),
+    scope: `${row.workspace_id}/${row.harness_slug}`,
+  };
+}
+
+async function loadDependencyNodes(
+  tx: Sql,
+  workspaceId: string,
+  edges: readonly StoredDependencyEdge[],
+): Promise<DependencyGraphNodeInput[]> {
+  const bareIds = new Set<string>();
+  for (const edge of edges) {
+    for (const endpoint of [edge.blocked, edge.blocker]) {
+      const id = endpointBareId(endpoint);
+      if (id) bareIds.add(id);
+    }
+  }
+  if (bareIds.size === 0) return [];
+  const ids = [...bareIds].sort();
+  const rows = await tx<WorkItemNodeRow[]>`
+    SELECT workspace_id, harness_slug, feature_id, item_kind, status
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND feature_id = ANY(${ids}::text[])
+     ORDER BY harness_slug, feature_id, item_kind`;
+  return rows.map(rowNode);
+}
+
+async function loadStoredDependencyEdges(tx: Sql, workspaceId: string): Promise<StoredDependencyEdge[]> {
+  const rows = await tx<
+    Array<{
+      blocked_kind: string;
+      blocked_ref: string;
+      blocker_kind: string;
+      blocker_ref: string;
+      created_by: string | null;
+    }>
+  >`
+    SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref, created_by
+      FROM harness_shared.work_item_deps
+     WHERE workspace_id = ${workspaceId} AND dep_type = 'blocks'
+     ORDER BY blocked_kind, blocked_ref, blocker_kind, blocker_ref`;
+  return rows.map((row) => ({
+    blocked: { kind: row.blocked_kind, ref: row.blocked_ref },
+    blocker: { kind: row.blocker_kind, ref: row.blocker_ref },
+    createdBy: row.created_by,
+  }));
+}
+
+function analyseStoredEdges(
+  nodes: readonly DependencyGraphNodeInput[],
+  edges: readonly StoredDependencyEdge[],
+): DependencyGraphAnalysis {
+  return analyzeDependencyGraph({ nodes, edges });
+}
+
+function cycleSignature(component: DependencyStronglyConnectedComponent): string {
+  return component.members.map(dependencyIdentityKey).sort().join('\u0001');
+}
+
+function endpointDefectSignature(defect: DependencyEndpointDefect, edges: readonly StoredDependencyEdge[]): string {
+  const edge = edges[defect.edgeIndex];
+  return JSON.stringify([
+    edge ? storedEdgeKey(edge) : null,
+    defect.role,
+    defect.code,
+    dependencyIdentityKey(defect.declared),
+    defect.resolvedAs ? dependencyIdentityKey(defect.resolvedAs) : null,
+    (defect.candidates ?? []).map(dependencyIdentityKey).sort(),
+  ]);
+}
+
+function newlyRejectedFindings(
+  before: DependencyGraphAnalysis,
+  after: DependencyGraphAnalysis,
+  beforeEdges: readonly StoredDependencyEdge[],
+  afterEdges: readonly StoredDependencyEdge[],
+): WorkItemDependencyAdmissionFinding[] {
+  const beforeCycles = new Set(before.stronglyConnectedComponents.map(cycleSignature));
+  const cycles = after.stronglyConnectedComponents.filter((component) => !beforeCycles.has(cycleSignature(component)));
+
+  const beforeDefects = new Set(before.endpointDefects.map((defect) => endpointDefectSignature(defect, beforeEdges)));
+  const endpointDefects = after.endpointDefects.filter(
+    (defect) => !beforeDefects.has(endpointDefectSignature(defect, afterEdges)),
+  );
+
+  const beforeStranded = new Set(before.stranded.map((row) => dependencyIdentityKey(row.node)));
+  const stranded = after.stranded.filter((row) => !beforeStranded.has(dependencyIdentityKey(row.node)));
+
+  const findings: WorkItemDependencyAdmissionFinding[] = [];
+  if (cycles.length > 0) {
+    findings.push({ policy: getDependencyPolicy('cycle')!, cycles, endpointDefects: [], stranded: [] });
+  }
+  const missing = endpointDefects.filter((defect) => defect.code === 'missing');
+  if (missing.length > 0) {
+    findings.push({
+      policy: getDependencyPolicy('executable-endpoint-missing')!,
+      cycles: [],
+      endpointDefects: missing,
+      stranded: [],
+    });
+  }
+  const identityDefects = endpointDefects.filter((defect) => defect.code !== 'missing');
+  if (identityDefects.length > 0) {
+    findings.push({
+      policy: getDependencyPolicy('endpoint-identity-mismatch')!,
+      cycles: [],
+      endpointDefects: identityDefects,
+      stranded: [],
+    });
+  }
+  if (stranded.length > 0) {
+    findings.push({
+      policy: getDependencyPolicy('stranded-set-increase')!,
+      cycles: [],
+      endpointDefects: [],
+      stranded,
+    });
+  }
+  return findings;
+}
+
+async function applyStoredEdgeDiff(
+  tx: Sql,
+  workspaceId: string,
+  before: readonly StoredDependencyEdge[],
+  after: readonly StoredDependencyEdge[],
+): Promise<{ inserted: number; removed: number }> {
+  const beforeByKey = new Map(before.map((edge) => [storedEdgeKey(edge), edge]));
+  const afterByKey = new Map(after.map((edge) => [storedEdgeKey(edge), edge]));
+  const removed = [...beforeByKey.entries()].filter(([key]) => !afterByKey.has(key)).map(([, edge]) => edge);
+  const inserted = [...afterByKey.entries()].filter(([key]) => !beforeByKey.has(key)).map(([, edge]) => edge);
+
+  for (const edge of removed) {
+    await tx`
+      DELETE FROM harness_shared.work_item_deps
+       WHERE workspace_id = ${workspaceId} AND dep_type = 'blocks'
+         AND blocked_kind = ${edge.blocked.kind} AND blocked_ref = ${edge.blocked.ref}
+         AND blocker_kind = ${edge.blocker.kind} AND blocker_ref = ${edge.blocker.ref}`;
+  }
+  for (const edge of inserted) {
+    await tx`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+      VALUES
+        (${workspaceId}, ${edge.blocked.kind}, ${edge.blocked.ref},
+         ${edge.blocker.kind}, ${edge.blocker.ref}, 'blocks', ${edge.createdBy})`;
+  }
+  return { inserted: inserted.length, removed: removed.length };
+}
+
+/**
+ * Canonical dependency mutation boundary (dependency-graph-admission P-005).
+ *
+ * The complete read → candidate → analyse → write sequence runs in one
+ * SERIALIZABLE transaction. Validation is delta-based: existing invalid data may
+ * be repaired or left unchanged, while a mutation that introduces a new SCC,
+ * endpoint defect, or stranded nonterminal node is rejected before any write.
+ */
+export async function mutateWorkItemDependencies(
+  input: WorkItemDependencyBatchInput,
+  opts: { sql?: Sql; retry?: SerializableRetryOptions } = {},
+): Promise<WorkItemDependencyBatchResult> {
+  const sql = opts.sql ?? (getOrgPg().sql as Sql);
+  return withSerializableRetry(
+    sql,
+    async (tx) => {
+      const current = await loadStoredDependencyEdges(tx, input.workspaceId);
+      const candidate = applyDependencyMutations(current, input.mutations);
+      const nodes = await loadDependencyNodes(tx, input.workspaceId, [...current, ...candidate]);
+      const before = analyseStoredEdges(nodes, current);
+      const after = analyseStoredEdges(nodes, candidate);
+      const findings = newlyRejectedFindings(before, after, current, candidate);
+      if (findings.length > 0) throw new WorkItemDependencyAdmissionError(findings, before, after);
+      const diff = await applyStoredEdgeDiff(tx, input.workspaceId, current, candidate);
+      return { ...diff, before, after };
+    },
+    opts.retry,
+  );
 }
 
 /** The issue-family endpoint kind, the counterpart of FEATURE_KIND for this table. */
@@ -258,7 +586,8 @@ function toLinkRow(row: WorkItemDepLinkRowDb): LinkRow {
     dst: { kind: row.blocked_kind, ref: row.blocked_ref },
     rel: row.dep_type,
     created_by: row.created_by,
-    created_ts: row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at as string).toISOString(),
+    created_ts:
+      row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at as string).toISOString(),
   };
 }
 

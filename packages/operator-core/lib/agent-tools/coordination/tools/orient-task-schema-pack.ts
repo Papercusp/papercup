@@ -89,7 +89,14 @@ function add(candidates: CandidateMap, names: readonly string[], priority: numbe
 
 const MODE_TOOLS: Record<string, readonly string[]> = {
   auto: ['loop:arm', 'loop:status', 'loop:checkpoint', 'loop:end'],
-  drain: ['scheduler:get_next', 'work_items:burn_down', 'fleet:assignments', 'fleet:leader-brief', 'fleet:bench'],
+  drain: [
+    'scheduler:get_next',
+    'work_items:claimable',
+    'work_items:burn_down',
+    'fleet:assignments',
+    'fleet:leader-brief',
+    'fleet:bench',
+  ],
   ideate: [
     'curation:state-of-pot',
     'rubrics:list',
@@ -116,7 +123,15 @@ const SIGNAL_GROUPS: Array<{ id: string; pattern: RegExp; tools: readonly string
   {
     id: 'fleet-drain',
     pattern: /\b(fleet|drain|backlog|scheduler|claim.?spec|burndown)\b/i,
-    tools: ['scheduler:get_next', 'scheduler:get_claim_spec', 'work_items:burn_down', 'fleet:assignments', 'fleet:leader-brief', 'fleet:bench'],
+    tools: [
+      'scheduler:get_next',
+      'scheduler:get_claim_spec',
+      'work_items:claimable',
+      'work_items:burn_down',
+      'fleet:assignments',
+      'fleet:leader-brief',
+      'fleet:bench',
+    ],
   },
   {
     id: 'release',
@@ -267,6 +282,10 @@ export function buildTaskToolSchemaPack(
     // tools:invoke fallback (EI-21312723403670925).
     'mode:set',
     'work_items:get',
+    // Claimability is the read-only floor oracle shared by scheduler:get_next and
+    // drain guidance. Keep it in the base recovery pack so a resumed client has a
+    // direct schema before intent/mode-specific candidates are considered.
+    'work_items:claimable',
     'work_items:checkpoint',
     'work_items:complete',
   ], 100);

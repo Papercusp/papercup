@@ -748,6 +748,39 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(payload.leaderControl).toMatchObject({ healthy: true, mode: { healthy: true } });
   });
 
+  it('stamps launcher and fleet provenance onto headless spawned leaders and members', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { leaderOwnerId: null, colorScheme: { name: 'Ocean' } },
+      created: true,
+    });
+
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Headless Spawn Led',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        leader: 'spawn',
+        headless: true,
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.ok).toBe(true);
+    expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
+    expect(spawnHeadlessMock.mock.calls[0][0]).toMatchObject({
+      launchedBy: 'owner-1',
+      fleetSlug: 'headless-spawn-led',
+      coordOwnerId: payload.spawnedLeader.ownerId,
+    });
+    expect(spawnHeadlessMock.mock.calls[1][0]).toMatchObject({
+      launchedBy: 'owner-1',
+      fleetSlug: 'headless-spawn-led',
+      coordOwnerId: payload.opened[0].ownerId,
+    });
+  });
+
   it('keeps the caller outside on a same-owner spawned-leader retry', async () => {
     setClaimSpecMock.mockReset();
     setClaimSpecMock.mockResolvedValue({ ok: true, revision: 2 });

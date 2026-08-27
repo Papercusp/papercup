@@ -96,7 +96,11 @@ const h = vi.hoisted(() => {
      * "no stored result" (the default — every other case in this file must keep
      * executing its tool normally).
      */
-    storedReplay: null as { content: Array<Record<string, unknown>>; _meta?: Record<string, unknown> } | null,
+    storedReplay: null as {
+      content: Array<Record<string, unknown>>;
+      _meta?: Record<string, unknown>;
+      structuredContent?: unknown;
+    } | null,
     /**
      * WI-6792: every telemetry row the handler/dispatcher recorded. A replayed
      * call returns before dispatch, so this is the ONLY place its row can come
@@ -1154,6 +1158,29 @@ describe('a replayed call records a tool_invocation row', () => {
     expect(row.args).toEqual({ probe: 'v' });
     // The retry key rides metadata so a storm is groupable by the key re-sent.
     expect(row.metadataJson).toMatchObject({ replayIdempotencyKey: 'idem-replay-1' });
+  });
+
+  it('preserves structuredContent through the real handler replay branch', async () => {
+    const structuredContent = {
+      ok: true,
+      item: null,
+      reason: 'no_match',
+    };
+    h.storedReplay = { ...REPLAYED, structuredContent };
+    const before = seen.length;
+
+    const res = await callTool('gatingtest:scoped', {}, scoped('ws-test'), {
+      idempotencyKey: 'idem-replay-structured-content',
+    });
+
+    // EI-21562975493479202: outputSchema clients validate this field on the
+    // replayed tools/call response. The serializer/store tests cover the DB
+    // receipt; this assertion covers the handler branch that returns it.
+    expect(res.structuredContent).toEqual(structuredContent);
+    expect(res._meta?.replayed).toBe(true);
+    expect(seen.length).toBe(before);
+    expect(h.withWorkspaceCalls).toEqual([]);
+    expect(h.replayStores).toEqual([]);
   });
 
   it('counts replayed output in the same explicit aggregate cohort', async () => {

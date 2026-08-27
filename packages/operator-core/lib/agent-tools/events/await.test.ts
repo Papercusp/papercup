@@ -99,6 +99,9 @@ vi.mock('../../work-items-events', () => ({
   // 'su-awaiter'), so every PRE-EXISTING test above still registers exactly
   // as before; overridden per-test below to exercise the refusal path.
   liveAssigneeProbe: vi.fn(async () => ({ verdict: 'live' as const, assignee: null as string | null })),
+  // EI-21565976517547834: registration-time claimable-level reconciliation.
+  // No live payload by default, so every pre-existing await still registers.
+  liveWorkItemClaimableEventPayload: vi.fn(async () => null as Record<string, unknown> | null),
 }));
 // EI-383: the claim-lease-extension side-call also pulls db-org (via claims.ts +
 // resolvePlanScope) — mocked so the rig stays hermetic, same reasoning as the
@@ -121,6 +124,9 @@ vi.mock('../../plan-items/assignments', () => ({
 vi.mock('../../scheduler/claim-spec-store', () => ({
   getClaimSpecRecord: vi.fn(async () => ({ source: 'default' as const, spec: null, revision: null, updatedBy: null, updatedAt: null })),
 }));
+vi.mock('../../scheduler/get-next', () => ({
+  readIssueClaimability: vi.fn(async () => ({ rows: [] })),
+}));
 
 import awaitTool from './await';
 import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
@@ -129,10 +135,11 @@ import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
-import { liveSettledProbe, liveAssigneeProbe } from '../../work-items-events';
+import { liveSettledProbe, liveAssigneeProbe, liveWorkItemClaimableEventPayload } from '../../work-items-events';
 import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
+import { readIssueClaimability } from '../../scheduler/get-next';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { resolveProducerHealthCertificate, resolveProgressLeaseCertificate } from './producer-health';
 import { resolveAnnouncementOwnership } from './status';
@@ -1128,10 +1135,10 @@ describe('EI-383 — extend the caller\'s plan-item claim leases to survive the 
 });
 
 describe('EI-13846 — default the `work-item:claimable` payload_filter to the caller\'s own claim spec', () => {
-  it('an explicit payload_filter always wins — no claim-spec lookup, no auto-scoping', async () => {
+  it('an explicit payload_filter always wins — the claim-spec lookup is reconciliation-only, never auto-scopes over it', async () => {
     const filter = { kind: { equals: 'feature' } };
     await call({ event: 'work-item:claimable', payload_filter: filter });
-    expect(getClaimSpecRecord).not.toHaveBeenCalled();
+    expect(getClaimSpecRecord).toHaveBeenCalledWith({ cupId: 'su-awaiter', workspaceId: 'ws-x' });
     expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ payloadFilter: filter });
   });
 
@@ -1217,6 +1224,92 @@ describe('EI-13846 — default the `work-item:claimable` payload_filter to the c
     expect(getClaimSpecRecord).not.toHaveBeenCalled();
     await call({ event: 'lock:grant:t1' });
     expect(getClaimSpecRecord).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-21565976517547834 — reconcile an already-claimable level after await registration', () => {
+  const fleetRecord = {
+    source: 'fleet' as const,
+    spec: {
+      specId: 'byoc-plan-drain',
+      revision: 36,
+      view: { filter: { field: 'plan', op: '=', value: 'byoc-plan' } },
+      rank: { mode: 'lexicographic', terms: [] },
+      states: ['open'],
+    },
+    revision: 36,
+    updatedBy: 'su-leader',
+    updatedAt: '2026-08-27T00:50:00Z',
+    harnessSlug: 'papercusp',
+    fleetSlug: 'nonp2p-bug-drain',
+  };
+
+  it('retires the pending await and returns already_claimable when a matching row is live after registration', async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as never);
+    vi.mocked(readIssueClaimability).mockResolvedValueOnce({ rows: [{ id: 'WI-42252' }] } as never);
+    vi.mocked(liveWorkItemClaimableEventPayload).mockResolvedValueOnce({
+      id: 'WI-42252',
+      kind: 'task',
+      harness: 'papercusp',
+      plan: 'byoc-plan',
+      state: 'open',
+    });
+    vi.mocked(cancelAwait).mockResolvedValueOnce(true);
+
+    const out = await call({
+      event: 'work-item:claimable',
+      payload_filter: { all: [{ harness: { equals: 'papercusp' } }, { plan: { equals: 'byoc-plan' } }] },
+    });
+
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+    expect(out).toMatchObject({
+      ok: true,
+      already_claimable: true,
+      event: 'work-item:claimable',
+      item: { id: 'WI-42252', state: 'open' },
+    });
+    expect(out.advice).toMatch(/Re-run scheduler:get_next now/);
+    expect(extendOwnerClaimsForAwait).not.toHaveBeenCalled();
+  });
+
+  it('lets a concurrently-fired durable delivery win when the pending-row cancellation loses', async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as never);
+    vi.mocked(readIssueClaimability).mockResolvedValueOnce({ rows: [{ id: 'WI-42252' }] } as never);
+    vi.mocked(liveWorkItemClaimableEventPayload).mockResolvedValueOnce({
+      id: 'WI-42252', kind: 'task', harness: 'papercusp', plan: 'byoc-plan', state: 'open',
+    });
+    vi.mocked(cancelAwait).mockResolvedValueOnce(false);
+
+    const out = await call({ event: 'work-item:claimable' });
+
+    expect(cancelAwait).toHaveBeenCalledWith({ awaitId: 99, subscriberId: 'su-awaiter' });
+    expect(out).toMatchObject({ ok: true, await_id: 99, event: 'work-item:claimable' });
+    expect(out.already_claimable).toBeUndefined();
+  });
+
+  it('keeps the ordinary edge await when the current oracle has no matching survivor', async () => {
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as never);
+    vi.mocked(readIssueClaimability).mockResolvedValueOnce({ rows: [] } as never);
+
+    const out = await call({ event: 'work-item:claimable' });
+
+    expect(out).toMatchObject({ ok: true, await_id: 99 });
+    expect(cancelAwait).not.toHaveBeenCalled();
+    expect(liveWorkItemClaimableEventPayload).not.toHaveBeenCalled();
+  });
+
+  it('fails soft when the bounded current-level oracle cannot answer', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(getClaimSpecRecord).mockResolvedValueOnce(fleetRecord as never);
+    vi.mocked(readIssueClaimability).mockRejectedValueOnce(new Error('claimability read timed out'));
+
+    const out = await call({ event: 'work-item:claimable' });
+
+    expect(out).toMatchObject({ ok: true, await_id: 99 });
+    expect(cancelAwait).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('events-await:claimableLevelAfterRegister'));
+    warn.mockRestore();
   });
 });
 

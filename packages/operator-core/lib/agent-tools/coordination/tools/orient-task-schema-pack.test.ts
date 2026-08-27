@@ -8,7 +8,7 @@ import {
 const ALL_NAMES = [
   'coord:orient', 'coord:declare-intent', 'coord:glance',
   'mode:set',
-  'work_items:get', 'work_items:checkpoint', 'work_items:complete', 'work_items:burn_down',
+  'work_items:get', 'work_items:claimable', 'work_items:checkpoint', 'work_items:complete', 'work_items:burn_down',
   'plans:get', 'plans:items', 'locks:acquire', 'locks:release',
   'loop:arm', 'loop:status', 'loop:checkpoint', 'loop:end',
   'watch:create', 'events:await', 'events:status',
@@ -31,6 +31,16 @@ const catalog = ALL_NAMES.map((name) => ({
 }));
 
 describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
+  it('hydrates the claimability oracle for explicit drain mode and fleet/drain intents', () => {
+    const byMode = buildTaskToolSchemaPack({ intent: 'resume the queue', modes: ['drain'] }, catalog);
+    const byIntent = buildTaskToolSchemaPack({ intent: 'pull the next fleet drain backlog item', modes: ['auto'] }, catalog);
+
+    expect(byMode.toolNames).toContain('work_items:claimable');
+    expect(byIntent.toolNames).toContain('work_items:claimable');
+    expect(byMode.tools.find((tool) => tool.name === 'work_items:claimable')?.args).toBeTruthy();
+    expect(byIntent.tools.find((tool) => tool.name === 'work_items:claimable')?.args).toBeTruthy();
+  });
+
   it('hydrates the complete GRADE-monitor resumption pack in one bounded orient result', () => {
     const pack = buildTaskToolSchemaPack({
       intent: 'Resume GRADE monitor after compaction; run the saved watch recipe and checkpoint the scorecard',
