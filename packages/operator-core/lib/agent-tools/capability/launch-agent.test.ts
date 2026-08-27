@@ -14,6 +14,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
 
+const assembleRolePromptMock = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/orchestrator/role-prompt', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
+}));
+
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   getOrgPg: () => ({ sql: {} }),
@@ -220,6 +226,7 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/repo' } });
   readPsuLaunchLogTailMock.mockReturnValue(null);
   codexPreflightHomeMock.mockResolvedValue(null);
   codexPreflightModelMock.mockReset();
@@ -329,6 +336,32 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
   it('launches N agents on one brief', async () => {
     await launchAgent.handler({ brief: 'triage the backlog', count: 3 }, ctx);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects an unknown per-member persona before claiming or opening any terminal', async () => {
+    assembleRolePromptMock.mockImplementationOnce(() => {
+      throw new Error(
+        'assembleRolePrompt: no prompt file found for role "closure-auditor" (phase=staging, dept=none, blueprintId=none)',
+      );
+    });
+
+    const res = await launchAgent.handler(
+      {
+        brief: 'finish the certification lane',
+        count: 2,
+        members: [{ role: 'closure-auditor' }, { role: 'su' }],
+        idempotencyKey: 'invalid-role-batch',
+      },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('Invalid persona role `closure-auditor`');
+    expect(textOf(res)).toContain('Put lane/job names in `brief` or `label`');
+    expect(textOf(res)).toContain('NO agents were spawned and NO terminals were opened');
+    expect(claimAgentLaunchMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('binds a plan (and its harness) when asked', async () => {

@@ -82,6 +82,36 @@ type SpillCursor = {
   bodyComplete?: boolean;
 };
 
+type BytePage = {
+  ok: boolean;
+  encoding: string;
+  byte_offset: number;
+  byte_length: number;
+  total_bytes: number;
+  data: string;
+  eof: boolean;
+  next_cursor: { tool: string; args: Record<string, unknown> } | null;
+};
+
+const CANONICAL_BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+
+/** The minimum checks the recovery guidance requires before accepting a page. */
+function decodeValidatedPage(page: BytePage): Buffer {
+  if (page.ok !== true) throw new Error('byte page did not succeed');
+  if (page.encoding !== 'base64') throw new Error('byte page encoding is not base64');
+  if (!CANONICAL_BASE64.test(page.data) || Buffer.from(page.data, 'base64').toString('base64') !== page.data) {
+    throw new Error('byte page data is not canonical base64');
+  }
+  const decoded = Buffer.from(page.data, 'base64');
+  if (decoded.length !== page.byte_length) {
+    throw new Error(`byte page length mismatch: decoded=${decoded.length}, declared=${page.byte_length}`);
+  }
+  if ((page.eof === true) !== (page.next_cursor === null)) {
+    throw new Error('byte page EOF and next_cursor disagree');
+  }
+  return decoded;
+}
+
 /** Drive a payload over the door and return its recovery cursor + prose. */
 function doorOversizedResult(): { cursor: SpillCursor; next: string } {
   const rows = Array.from({ length: 400 }, (_, i) => ({
@@ -211,19 +241,19 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(spill).not.toContain('D-012');
   });
 
-  it('keeps the JSON recovery pointer no longer than the ambiguous one it replaced', () => {
-    // WI-5656's canary sits AT the budget ceiling — a +49-char version of this
-    // pointer evicted coord:orient's recovery block from the retained preview.
-    // The disambiguation is only affordable because it is paid for elsewhere in
-    // the string, so pin that: this is a length CEILING, not a style check.
+  it('keeps the JSON recovery pointer bounded while carrying page integrity and EOF rules', () => {
+    // WI-5656's canary sat at the old ambiguity ceiling. The page validation and
+    // EOF gate are correctness requirements, so allow a small, explicit budget
+    // for them while still pinning this as a length CEILING, not a style check.
     const { cursor, next } = doorOversizedResult();
     const AMBIGUOUS_BASELINE =
       'Call capability:read with _projection.cursor.args, base64-decode data, then follow ' +
       'next_cursor until eof to recover the exact spill bytes. The spill begins with a text ' +
       'header and then contains the result as it reached this door.';
+    const PAGE_CONTRACT_HEADROOM = 128;
 
     const pointerChars = next.indexOf(' ⓘ') === -1 ? next.length : next.indexOf(' ⓘ');
-    expect(pointerChars).toBeLessThanOrEqual(AMBIGUOUS_BASELINE.length);
+    expect(pointerChars).toBeLessThanOrEqual(AMBIGUOUS_BASELINE.length + PAGE_CONTRACT_HEADROOM);
     expect(JSON.stringify(cursor).length).toBeLessThanOrEqual(
       JSON.stringify({ ...cursor, dataEncoding: undefined, encoding: 'base64' }).length + 8,
     );
@@ -238,6 +268,18 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // the retained preview — the fuller prose warning must NOT appear here. A
     // ~90-char addition measurably evicted coord:orient's recovery fields.
     expect(next).not.toContain('grep/tail it directly');
+  });
+
+  it('requires per-page validation and gates JSON parsing on terminal EOF', () => {
+    const { next } = doorOversizedResult();
+
+    // The recovery pointer is the only instruction available at the spill
+    // boundary. Keep the checks explicit so a future wording-only change cannot
+    // regress to accepting a decodable-but-incomplete page or parsing early.
+    expect(next).toContain('canonical');
+    expect(next).toContain('base64');
+    expect(next).toContain('decoded.length===byte_length');
+    expect(next).toContain('parse JSON only at eof:true + next_cursor:null');
   });
 
   it("surfaces capability:read's schema byte-page ceiling in the cursor", () => {
@@ -378,5 +420,74 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     const decoded = Buffer.from(page.data, 'base64');
     expect(decoded.equals(spillBytes().subarray(0, page.byte_length))).toBe(true);
     expect(decoded.toString('utf8').startsWith('# result-door spill')).toBe(true);
+  });
+
+  it('rejects incomplete pages and inconsistent EOF metadata before JSON.parse', () => {
+    const data = Buffer.from('page bytes', 'utf8').toString('base64');
+    const valid: BytePage = {
+      ok: true,
+      encoding: 'base64',
+      byte_offset: 0,
+      byte_length: Buffer.byteLength('page bytes'),
+      total_bytes: 100,
+      data,
+      eof: false,
+      next_cursor: { tool: 'capability:read', args: { byte_offset: 10 } },
+    };
+
+    // Removing a complete base64 quantum still leaves canonical base64. The
+    // declared byte_length is what makes this incomplete page detectable.
+    expect(() => decodeValidatedPage({ ...valid, data: data.slice(0, -4) })).toThrow(
+      'byte page length mismatch',
+    );
+    // Buffer.from tolerates whitespace/other malformed input; canonical
+    // round-tripping keeps that silent corruption from entering the accumulator.
+    expect(() => decodeValidatedPage({ ...valid, data: `${data} ` })).toThrow(
+      'canonical base64',
+    );
+    expect(() => decodeValidatedPage({ ...valid, eof: false, next_cursor: null })).toThrow(
+      'EOF and next_cursor disagree',
+    );
+    expect(() => decodeValidatedPage({ ...valid, eof: true })).toThrow(
+      'EOF and next_cursor disagree',
+    );
+  });
+
+  it('pages the complete JSON body and parses it only after eof', async () => {
+    const { cursor } = doorOversizedResult();
+    const chunks: Buffer[] = [];
+    let args: Record<string, unknown> = { ...cursor.args };
+    let terminal: BytePage | undefined;
+
+    for (let hop = 0; hop < 200; hop++) {
+      const res = (await readTool.handler(args as never, {
+        projectDir: sandbox,
+        workspaceId: WS,
+      } as never)) as { content: Array<{ text: string }> };
+      const page = JSON.parse(res.content[0].text) as BytePage;
+      const decoded = decodeValidatedPage(page);
+      chunks.push(decoded);
+
+      if (page.eof) {
+        terminal = page;
+        break;
+      }
+
+      // A non-terminal page must never be treated as a complete JSON document.
+      // This assertion is intentionally before following the cursor.
+      const received = Buffer.concat(chunks).subarray(cursor.bodyOffsetInPayload!);
+      expect(() => JSON.parse(received.toString('utf8'))).toThrow();
+      expect(page.next_cursor).not.toBeNull();
+      expect(page.next_cursor!.tool).toBe('capability:read');
+      args = page.next_cursor!.args;
+    }
+
+    expect(terminal).toBeDefined();
+    expect(terminal!.eof).toBe(true);
+    expect(terminal!.next_cursor).toBeNull();
+    const body = Buffer.concat(chunks).subarray(cursor.bodyOffsetInPayload!).toString('utf8');
+    const parsed = JSON.parse(body) as { ok: boolean; rows: unknown[] };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.rows).toHaveLength(400);
   });
 });

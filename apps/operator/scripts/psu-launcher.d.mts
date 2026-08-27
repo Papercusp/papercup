@@ -157,7 +157,6 @@ export function parseArgs(argv: any): {
     ownerId: null;
     profile: null;
     contextSize: null;
-    legacyFullContextSize: boolean;
     personaTier: null;
     compactionLimit: null;
     force: boolean;
@@ -2948,13 +2947,10 @@ export namespace SU_CONTEXT_TOKEN_ESTIMATES {
     let full: string;
     let trimmed: string;
 }
-export const SU_CONTEXT_CHOICES: ({
-    name: string;
-    value: null;
-} | {
+export const SU_CONTEXT_CHOICES: {
     name: string;
     value: string;
-})[];
+}[];
 export const SU_CONTEXT_DEFAULT: "trimmed";
 /** Numeric per-variant baseline estimates (tokens) for the NON-persona context
  *  (tool catalog + static prefix). The persona playbook is measured from the

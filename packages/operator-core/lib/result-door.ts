@@ -1025,7 +1025,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
               // — this pointer is NET SHORTER than the ambiguous version it
               // replaced, which is the only reason it clears WI-5656 below.
               `Use capability:read with _projection.cursor.args; file_path is an encoded ` +
-              `scratch-reference, not JSON. Decode response.data; follow next_cursor; ` +
+              `scratch-reference, not JSON. For each page, validate response.data as canonical ` +
+              `base64 and decoded.length===byte_length; follow next_cursor; parse JSON only at ` +
+              `eof:true + next_cursor:null. ` +
               (partialJsonBody
                 ? `inspect the emitted spill bytes at cursor.bodyOffsetInPayload. The tool marked ` +
                   `${innerTruncationMarkers.join(', ')}; this JSON is partial (bodyComplete:false) and ` +
@@ -1034,14 +1036,11 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
                   (parsedJsonBody
                     ? `JSON starts after cursor.bodyOffsetInPayload in response.data.`
                     : `the spill opens with a text header.`)) +
-              // Keep the established JSON recovery pointer deliberately terse. The
-              // payload projector budgets the pointer together with the retained
-              // JSON preview; expanding it here can evict coord:orient's recovery
-              // fields from that preview (WI-5656) — re-measured on
-              // EI-20685195115158619, where a ~90-char plaintext warning added here
-              // reded orient-recovery-door-priority. That canary sits AT the
-              // ceiling: assume zero headroom and pay for any addition. Raw text
-              // needs the fuller honesty wording because its new
+              // Keep the JSON recovery pointer compact. The payload projector budgets
+              // the pointer together with the retained JSON preview; page-integrity
+              // and EOF gating are load-bearing, so the contract above is deliberately
+              // terse and its bounded size is pinned by result-door-encoding-contract.test.ts.
+              // Raw text needs the fuller honesty wording because its new
               // `{ text, _projection }` envelope replaced the former prose footer
               // that carried those disclosures.
               (parsedJsonBody

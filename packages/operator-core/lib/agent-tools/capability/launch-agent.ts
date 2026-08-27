@@ -35,6 +35,7 @@ import { join } from 'node:path';
 import { statSync } from 'node:fs';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -79,6 +80,7 @@ import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discove
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { isPidInLiveWindowScope } from '../../task-manager/terminal-residue-census';
 import { PSU_LAUNCH_LOG_TAIL_CHARS, readPsuLaunchLogTail } from '../../psu-launch-log.mjs';
+import { isSuTierRole } from '../../su-role-addendum';
 import {
   resolveSavedFleetLaunchSpec,
   type SavedFleetLaunchConfig,
@@ -117,6 +119,53 @@ function resumeBootLogNote(tail: string | null): string {
 
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
+}
+
+/**
+ * Validate the FINAL folded psu persona before any launch is claimed or spawned.
+ * `role` is a prompt/persona selector, never a convenient lane label. Deferring
+ * this check to bootstrap-role opens a real terminal first, so an invalid batch
+ * leaves one failed window per member instead of one actionable tool refusal.
+ */
+function unresolvedAgentRole(opts: {
+  harness: string | null;
+  projectDir: string;
+  configs: readonly FleetMemberDefaults[];
+}): string | null {
+  const requested = Array.from(
+    new Map(
+      opts.configs.flatMap((config, index) => {
+        const role = config.role?.trim();
+        return role ? [[role, { role, source: `agent ${index + 1}` }] as const] : [];
+      }),
+    ).values(),
+  );
+
+  for (const entry of requested) {
+    if (entry.role === 'su' || isSuTierRole(entry.role)) continue;
+    if (!opts.harness) {
+      return (
+        `Cannot validate persona role \`${entry.role}\` for ${entry.source}: no harness resolved. ` +
+        'Pass `harness`, or omit `role` for the standard su collaborator. Put lane/job names in `brief` or `label`. ' +
+        'NO agents were spawned and NO terminals were opened.'
+      );
+    }
+    try {
+      assembleRolePrompt({
+        slug: opts.harness,
+        projectDir: opts.projectDir,
+        role: entry.role,
+        mode: 'chat',
+      });
+    } catch (e) {
+      return (
+        `Invalid persona role \`${entry.role}\` for ${entry.source}: ${(e as Error)?.message ?? e}. ` +
+        'Omit `role` for the standard su collaborator, pass `role:"su"`, or choose a registered persona. ' +
+        'Put lane/job names in `brief` or `label`. NO agents were spawned and NO terminals were opened.'
+      );
+    }
+  }
+  return null;
 }
 
 // WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
@@ -247,7 +296,7 @@ export default defineTool({
       .max(MAX_AGENTS)
       .optional()
       .describe(
-        'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
+        'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA selector, never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
       ),
     cwd: z.string().max(500).optional().describe('Working dir for a FRESH launch (absolute, or relative to the harness project dir). A resume always lands in the session\'s own recorded cwd.'),
     label: z.string().max(120).optional().describe('Display label (shown in /adv/sessions + the window title).'),
@@ -814,6 +863,14 @@ export default defineTool({
       // the `--role` lookup.
       return foldMemberSpec(flatBase, memberSpecs[i]);
     });
+    if (!isResume) {
+      const roleFailure = unresolvedAgentRole({
+        harness: slug,
+        projectDir: base.cwd,
+        configs: foldedConfigs,
+      });
+      if (roleFailure) return err(roleFailure);
+    }
     // ── P-002: preflight the backend in the env the WINDOW will receive ───────
     //
     // Not the operator's env — that is the whole trap. A probe run from here
