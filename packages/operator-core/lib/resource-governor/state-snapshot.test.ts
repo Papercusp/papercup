@@ -76,6 +76,7 @@ describe('governor state snapshot', () => {
       execFileSync(process.execPath, ['scripts/check-resource-governor-enforcement.mjs'], {
         cwd: root,
         encoding: 'utf8',
+        timeout: 120_000,
       }),
     ).toContain('[resource-governor-enforcement] OK');
   });
