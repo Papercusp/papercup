@@ -2088,15 +2088,15 @@ export const FLAGS = {
   // an attended :3170 verify, so leader/owner should give this one a further look). OFF ⇒ the
   // flat priority+aging queue (the reversible fallback).
   GATEWAY_PRIORITY_TIERS: "papercusp-gateway-priority-tiers",
-  // codex-gateway-oauth-proxy-2026-07-04 (WI-2198, owner-chosen Option B): gates the
-  // codex ChatGPT-subscription OAuth STREAMING reverse-proxy — the gateway forwards a
+  // codex-gateway-oauth-proxy-2026-07-04 (WI-2198): gates the codex
+  // ChatGPT-subscription OAuth STREAMING reverse-proxy — the gateway forwards a
   // codex-cli account's native Responses request to chatgpt.com/backend-api/codex with
-  // the OAuth bearer injected from ~/.codex/auth.json (vs the one-shot `codex exec`
-  // bridge that rejects stream:true). DEFAULT OFF — reversible CUTOVER kill-switch: it
-  // routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport that
-  // can only be verified by an owner-attended live canary against production ChatGPT;
-  // direct native auth (the current fleet path) is the fallback. KNOWN_DARK_FLAGS.
-  // OFF ⇒ codex-cli accounts keep the exec bridge (stream:false only).
+  // the OAuth bearer injected from ~/.codex/auth.json. DEFAULT ON after WI-272118's
+  // owner-directed 2026-08-27 live canary proved a gpt-5.6-luna:max agent could cross
+  // two native Responses turns, call gateway:status, send its fleet result, and finish
+  // with LUNA_AUTO_FLEET_OK through transport oauth-http. OFF remains the emergency
+  // kill-switch to the one-shot `codex exec` bridge; that fallback cannot preserve an
+  // outer tool-capable Responses turn and is suitable only for text-only compatibility.
   CODEX_GATEWAY_OAUTH_PROXY: "papercusp-codex-gateway-oauth-proxy",
   // deterministic-context-carry-2026-07-14 P-017 (WI-4845): gates the gateway's
   // DETERMINISTIC maintenance-carry branch — POST /maintenance/summarize?carryOwner=<id>
@@ -3030,14 +3030,14 @@ export const DARK_FLAGS: ReadonlyMap<
         'WI-5646 (owner decision 2026-07-26): the external-bench BLUEPRINT is now RETIRED — its design premise ("the treatment IS the shipped coding system, byte for byte") died when the per-feature coding spine was retired 2026-06-24 and `coding` was reassigned to the pot/Mug architecture, so it would benchmark a system that no longer exists. This flag stays dark PERMANENTLY and is NOT awaiting graduation — the prior "dark until the P-009 ~50-task pilot proves the end-to-end path" condition is void; that pilot will not run. (Also still true: the grader adapter is incomplete — M2 in-container modality unbuilt — and infra-heavy.) Do NOT flip ON. It gates the eval UI + run/reproducibility stores, which are kept only to read HISTORICAL run data. Benchmarking the pot/Mug architecture is a NEW blueprint + its own flag, not this one.',
     },
   ],
-  [
-    FLAGS.CODEX_GATEWAY_OAUTH_PROXY,
-    {
-      case: "incomplete",
-      reason:
-        "WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).",
-    },
-  ],
+  // CODEX_GATEWAY_OAUTH_PROXY graduated 2026-08-27 (WI-272118): after activating
+  // the existing cutover, the owner-directed gpt-5.6-luna:max headless canary made
+  // its gateway:status MCP call, delivered LUNA_AUTO_FLEET_OK to the fleet leader,
+  // emitted AgentMessage + task_complete, and recorded only oauth-http Codex spans
+  // with zero upstream errors/429s. The preceding cli-exec canary had instead
+  // flattened the tool-capable turn into a nested codex process and timed out after
+  // five minutes. The key stays as a reversible runtime kill-switch; it is no longer
+  // incomplete/default-OFF work.
   [
     FLAGS.ONBOARDING_PREVIEW_FEATURES,
     {
@@ -3624,9 +3624,13 @@ export const DARK_FLAGS_REVIEW_BY = "2026-09-03";
 //
 // Expected to graduate on the same sentence the task manager did ("remove that flag,
 // we'll make it part of our standard release"). If it is still here at the
-// DARK_FLAGS_REVIEW_BY date, that is the signal to chase — and the slot must then
-// ratchet 14→13 on the way out, not become headroom.
-export const DARK_FLAGS_HIGH_WATERMARK = 14;
+// DARK_FLAGS_REVIEW_BY date, that is the signal to chase.
+//
+// 2026-08-27 (WI-272118) — 14→13, CODEX_GATEWAY_OAUTH_PROXY GRADUATED after the
+// owner-directed production ChatGPT canary satisfied the dark entry's exact gate.
+// Ratchet the ceiling with the removal so this graduation does not become headroom
+// for another parked/incomplete flag.
+export const DARK_FLAGS_HIGH_WATERMARK = 13;
 
 // FLAG_DEFAULTS — DERIVED, not hand-written (P-011 inversion). Every registered flag
 // defaults ON unless it is in DARK_FLAGS. Resolvers (server.ts getFlag / client.ts /

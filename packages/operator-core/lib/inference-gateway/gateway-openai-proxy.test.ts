@@ -497,6 +497,67 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     },
   );
 
+  it('keeps a Luna tool-capable streaming turn on the transparent OAuth transport', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    const cliRun = vi.fn(async () => ({ text: 'must not flatten the tool turn', inputTokens: 1, outputTokens: 1 }));
+    const gatewayStatusTool = {
+      type: 'function',
+      name: 'gateway_status',
+      description: 'Read the live inference-gateway status.',
+      parameters: { type: 'object', properties: {}, additionalProperties: false },
+    };
+    const upstreamSse =
+      `data: ${JSON.stringify({ type: 'response.output_item.added', output_index: 0, item: { type: 'function_call', name: 'gateway_status', call_id: 'call_luna' } })}\n\n` +
+      `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_luna_tool', output: [] } })}\n\n` +
+      'data: [DONE]\n\n';
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const rawBody = init?.body instanceof Uint8Array ? Buffer.from(init.body).toString('utf8') : String(init?.body ?? '');
+      const forwarded = JSON.parse(rawBody) as Record<string, unknown>;
+      expect(forwarded).toMatchObject({
+        model: 'gpt-5.6-luna',
+        stream: true,
+        store: false,
+        tools: [gatewayStatusTool],
+        tool_choice: 'auto',
+      });
+      return new Response(upstreamSse, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }) as typeof fetch;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
+      codexCliRun: cliRun,
+      codexOAuthProxy: true,
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const res = await postResponses(
+      {
+        model: 'gpt-5.6-luna',
+        input: [{ role: 'user', content: [{ type: 'input_text', text: 'Call gateway status.' }] }],
+        stream: true,
+        store: false,
+        tools: [gatewayStatusTool],
+        tool_choice: 'auto',
+      },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(upstreamSse);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(cliRun).not.toHaveBeenCalled();
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-a');
+  });
+
   it('aggregates a successful non-stream OAuth response into JSON without invoking the CLI bridge', async () => {
     const home = await makeCodexHome('chatgpt-a');
     const cliAccounts = [{ accountId: 'chatgpt-a', home }];
