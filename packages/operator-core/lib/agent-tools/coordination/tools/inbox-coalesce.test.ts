@@ -45,7 +45,8 @@ vi.mock("../watermarks", () => ({
   readWatermark: vi.fn(async () => ({ messages_shown_ts: "" })),
   writeWatermark: vi.fn(async () => {}),
 }));
-vi.mock("@papercusp/coordination/core", () => ({
+vi.mock("@papercusp/coordination/core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@papercusp/coordination/core")>()),
   emptyWatermark: () => ({ messages_shown_ts: "" }),
   COORD_EXECUTABLE_KINDS: ["yield", "handoff", "ack"],
   COORD_CONVERSATIONAL_KINDS: ["message", "notify"],

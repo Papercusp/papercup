@@ -6,7 +6,20 @@ import { toast } from "sonner";
 import { Button } from "../../harness/Button";
 import { Checkbox } from "../../harness/Checkbox";
 import { Modal } from "../../harness/Modal";
+import { Select } from "../../harness/Select";
 import { Table, type TableColumn } from "../../harness/Table";
+
+/**
+ * Sentinel for the "no provider account" choice in the archive-account picker.
+ *
+ * Radix refuses an empty-string `Select.Item` value (it throws and takes the whole
+ * subtree down), so `harness/Select` filters `value === ''` entries out entirely.
+ * An empty-string option would therefore VANISH rather than render. The unattributed
+ * choice travels as this sentinel and is mapped back to `''` in onChange, which keeps
+ * the option selectable both ways — a `placeholder` alone could only display it, never
+ * let the user return to it after picking an account.
+ */
+const UNATTRIBUTED_ACCOUNT = "__unattributed__";
 
 interface SourceStats {
   source: string;
@@ -791,7 +804,7 @@ export default function PersonalVaultSettingsPage() {
               {job.documentsImported.toLocaleString()} imported
             </span>
             {job.lastError ? (
-              <span style={{ display: "block", color: "var(--danger)" }}>
+              <span style={{ display: "block", color: "var(--bad)" }}>
                 {job.lastError}
               </span>
             ) : job.warnings.length ? (
@@ -1427,22 +1440,26 @@ export default function PersonalVaultSettingsPage() {
           <span style={{ display: "block", marginBottom: 4 }}>
             Archive account
           </span>
-          <select
-            aria-label="Archive account"
-            value={importProviderAccountId}
-            onChange={(event) => setImportProviderAccountId(event.target.value)}
+          <Select
+            ariaLabel="Archive account"
+            value={importProviderAccountId || UNATTRIBUTED_ACCOUNT}
+            onChange={(value) =>
+              setImportProviderAccountId(
+                value === UNATTRIBUTED_ACCOUNT ? "" : value,
+              )
+            }
             disabled={busy === "import"}
-          >
-            <option value="">Offline archive · leave unattributed</option>
-            {archiveAccounts.map((account) => (
-              <option
-                key={account.providerAccountId}
-                value={account.providerAccountId}
-              >
-                {account.label}
-              </option>
-            ))}
-          </select>
+            options={[
+              {
+                value: UNATTRIBUTED_ACCOUNT,
+                label: "Offline archive · leave unattributed",
+              },
+              ...archiveAccounts.map((account) => ({
+                value: account.providerAccountId,
+                label: account.label,
+              })),
+            ]}
+          />
           <span className="pc-settings-note" style={{ display: "block" }}>
             Choose the provider account this export belongs to so imported
             records stay isolated in search, dedupe, status, and purge.
