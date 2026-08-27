@@ -34,6 +34,7 @@ import { setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
+import type { McpCallResult } from '../routes/transport/_mcp-handler';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -632,11 +633,20 @@ const POWER_CLAIMS = {
 interface ToolsListResult {
   tools: Array<{ name: string }>;
 }
-interface CallResult {
-  isError?: boolean;
+/**
+ * DERIVED from the transport's own `McpCallResult` so a field added there
+ * cannot silently strand these tests. The hand-mirrored copy this replaces
+ * drifted exactly that way: `structuredContent` was added to the handler and
+ * the replay path, the mirror kept typechecking, and the gap only surfaced
+ * when a test finally asserted the field (TS2339, EI-21573072389650825).
+ *
+ * `content` is deliberately re-narrowed to the text-bearing shape these tests
+ * assert on; the production union widens it to `Record<string, unknown>`,
+ * under which `.text` degrades to `unknown` and breaks `JSON.parse(...)` here.
+ */
+type CallResult = Omit<McpCallResult, 'content'> & {
   content: Array<{ type: string; text?: string }>;
-  _meta?: Record<string, unknown>;
-}
+};
 
 async function listTools(extra: unknown): Promise<ToolsListResult> {
   return (await h.handlers.get('tools/list')!({}, extra)) as ToolsListResult;

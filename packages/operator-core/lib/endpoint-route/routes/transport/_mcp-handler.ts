@@ -160,7 +160,13 @@ export const dynamic = 'force-dynamic';
 // `bearerFromExtra` / `urlFromExtra` / `headersFromExtra` are imported from
 // `@papercusp/tooldef-mcp` (P-031) — generic mcp-handler `extra` extractors.
 
-type McpCallResult = {
+/**
+ * The shape every `tools/call` handler returns. Exported as the single owner of
+ * this shape so handler-path tests can DERIVE their result type from it instead
+ * of hand-mirroring it — a mirrored copy drifted the moment `structuredContent`
+ * was added here (EI-21573072389650825).
+ */
+export type McpCallResult = {
   content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
   isError?: boolean;
   _meta?: Record<string, unknown>;

@@ -37,6 +37,7 @@
 import { createRequire } from 'node:module';
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
+import type { McpCallResult } from '../routes/transport/_mcp-handler';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -232,11 +233,19 @@ function superuserExtra(query = '', headers: Record<string, string> = {}): unkno
   return extraFor(`${MCP}?superuser=1${query}`, { authorization: 'Bearer test-su-bearer', ...headers });
 }
 
-interface CallResult {
-  isError?: boolean;
+/**
+ * DERIVED from the transport's own `McpCallResult` — see the same derivation in
+ * mcp-handler-gating-matrix.test.ts. This file carried a byte-identical
+ * hand-mirrored copy of that shape, so it was one asserted field away from the
+ * same TS2339 drift (EI-21573072389650825); deriving it closes that off here
+ * too rather than leaving the second copy armed.
+ *
+ * `content` is deliberately re-narrowed to the text-bearing shape these tests
+ * assert on; the production union widens it to `Record<string, unknown>`.
+ */
+type CallResult = Omit<McpCallResult, 'content'> & {
   content: Array<{ type: string; text?: string }>;
-  _meta?: Record<string, unknown>;
-}
+};
 async function callTool(
   name: string,
   args: Record<string, unknown>,
