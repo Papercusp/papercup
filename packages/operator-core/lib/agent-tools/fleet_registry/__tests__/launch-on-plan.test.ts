@@ -246,6 +246,7 @@ vi.mock('../../../plan-workitem-promotion-run', () => ({
 import tool, {
   memberLaunchCommand,
   defaultMemberAccountRouting,
+  gatewayCapacityProviderForFleetAgent,
   composeMemberLaunchContext,
   renderMemberBaseline,
   clampFleetTopUpToCapacity,
@@ -433,6 +434,20 @@ describe('launch-on-plan model argument validation', () => {
     });
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) expect(parsed.issues.some((issue) => issue.message.includes('ornith-valid'))).toBe(true);
+  });
+});
+
+describe('gatewayCapacityProviderForFleetAgent', () => {
+  it('uses the resolved native backend and maps OMP cloud models to their provider', () => {
+    expect(gatewayCapacityProviderForFleetAgent('codex', undefined)).toBe('codex');
+    expect(gatewayCapacityProviderForFleetAgent('claude', undefined)).toBe('claude');
+    expect(gatewayCapacityProviderForFleetAgent('omp', 'gpt-5.6-luna:high')).toBe('codex');
+    expect(gatewayCapacityProviderForFleetAgent('omp', 'opus:high')).toBe('claude');
+  });
+
+  it('falls back to the Claude projection for local or unknown OMP model ids', () => {
+    expect(gatewayCapacityProviderForFleetAgent('omp', 'ollama-cc/ornith-valid')).toBe('claude');
+    expect(gatewayCapacityProviderForFleetAgent('omp', 'future-provider/model-1')).toBe('claude');
   });
 });
 
@@ -2530,6 +2545,47 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     expect(payload.capacityClamp).toMatchObject({ requestedOpenCount: 3, openCount: 1, clamped: true });
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(payload.message).toContain('capacity-clamped top-up 3→1');
+  });
+
+  it('reads capacity for the resolved member provider, including OMP model-aware routing', async () => {
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
+
+    await invokeLaunchHandler(
+      { name: 'Codex Capacity Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, agent: 'codex' } as never,
+      {} as never,
+    );
+    expect(fetchGatewayHeadroomMock).toHaveBeenLastCalledWith({ timeoutMs: 1200, provider: 'codex' });
+
+    fetchGatewayHeadroomMock.mockClear();
+    await invokeLaunchHandler(
+      {
+        name: 'OMP Codex Capacity Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        agent: 'omp',
+        model: 'gpt-5.6-luna:high',
+      } as never,
+      {} as never,
+    );
+    expect(fetchGatewayHeadroomMock).toHaveBeenLastCalledWith({ timeoutMs: 1200, provider: 'codex' });
+
+    fetchGatewayHeadroomMock.mockClear();
+    await invokeLaunchHandler(
+      {
+        name: 'OMP Local Capacity Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        agent: 'omp',
+        model: 'ollama-cc/ornith-valid',
+      } as never,
+      {} as never,
+    );
+    expect(fetchGatewayHeadroomMock).toHaveBeenLastCalledWith({ timeoutMs: 1200, provider: 'claude' });
   });
 
   it('suppresses a top-up without burning a launch wave when reachable capacity is zero', async () => {

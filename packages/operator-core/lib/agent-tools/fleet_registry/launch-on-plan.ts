@@ -502,6 +502,21 @@ const FLEET_BACKENDS = new Set(['claude', 'omp', 'codex']);
 export type FleetAgentResolution = { agent: 'claude' | 'omp' | 'codex'; model: string | undefined } | { error: string };
 
 /**
+ * Select the gateway stats projection for the backend that the member launch will use.
+ * Native CLIs have one unambiguous provider; OMP can run either cloud family, so use its
+ * model hint when one is known and retain the observability module's Claude projection as
+ * the conservative fallback for local or still-unknown OMP model ids.
+ */
+export function gatewayCapacityProviderForFleetAgent(
+  agent: 'claude' | 'omp' | 'codex',
+  model: string | undefined,
+): 'claude' | 'codex' {
+  if (agent === 'codex') return 'codex';
+  if (agent === 'claude') return 'claude';
+  return cloudModelBackendHint(model) ?? 'claude';
+}
+
+/**
  * PURE (fleet-launch-agent-inheritance-2026-07-03): resolve a fleet member's backend + model from
  * the launch args and the CURRENT calling agent's stamped backend/model. Precedence:
  *   agent = explicit `args.agent` → backend inferred from a known model family → the CALLER's own
@@ -3091,10 +3106,14 @@ export default defineTool({
     let capacityClamp: FleetLaunchCapacityClamp | null = null;
     let sizingAdvisory: ReturnType<typeof buildFleetSizingAdvisory> = null;
     try {
-      const capacity = buildCapacityReport(await fetchGatewayHeadroom({ timeoutMs: 1200 }), {
-        clampArmed: true,
-        headroom: openCount,
-      });
+      const capacityProvider = gatewayCapacityProviderForFleetAgent(agent, memberModel);
+      const capacity = buildCapacityReport(
+        await fetchGatewayHeadroom({ timeoutMs: 1200, provider: capacityProvider }),
+        {
+          clampArmed: true,
+          headroom: openCount,
+        },
+      );
       // fleet-launch-zero-gate-routing-blind (2026-07-09): the healthyAccounts===0 zero-gate
       // applies only to GATEWAY-routed members. Resolve the members' planned routing the same
       // way the launch command will (a seat pins a pool account ⇒ gateway; otherwise
