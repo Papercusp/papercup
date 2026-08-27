@@ -216,6 +216,11 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
   'scorecards.list': null, // a specific rubricRef
   'scorecards.summary': null, // paired exact total for that same rubricRef
   'sidebar.cupMail': null, // a specific owner id
+  // A specific userId, exactly like the userMemory.* trio below — the resolver says so
+  // itself ("Like userMemory.list, the acting owner id is an explicit query argument").
+  // null (intentionally unmeasurable) rather than a fabricated owner, which would measure
+  // an empty-queue miss and report it as this read's real payload.
+  'personalVault.importJobs': null,
   'userMemory.feedbackStats': null, // a specific userId
   'userMemory.list': null, // a specific userId
   'userMemory.total': null, // a specific userId (the denominator beside userMemory.list)
