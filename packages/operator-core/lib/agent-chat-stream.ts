@@ -93,6 +93,8 @@ export { resolveBackend };
 export {
   resolveStatelessTransport,
   priorityTierHeaders,
+  headersToRecord,
+  ownerHeaders,
   routeAccountHeaders,
   buildSystemParam,
   type StatelessTransport,
