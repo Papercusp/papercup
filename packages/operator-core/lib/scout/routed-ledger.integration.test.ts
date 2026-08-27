@@ -29,6 +29,7 @@ const {
   gradeRoutedIdea,
   getScoutLensOutcomes,
   refreshScoutOutcomes,
+  readPendingOutcomeCandidates,
   getScoutLensWeights,
   buildScoutOutcomeReaders,
 } = await import('./routed-ledger');
@@ -200,6 +201,56 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
     expect(byId.get('i3')!.outcome).toBe('won');
     expect(byId.get('i4')!.outcome).toBe('pending');
     expect(byId.get('i1')!.outcome_checked_at).toBeTruthy();
+  });
+
+  it('bounded refresh updates only selected ids and returns typed authoritative/unknown evidence', async () => {
+    await db.adminSql`
+      UPDATE harness_shared.scout_routed_ideas
+         SET outcome = NULL, outcome_checked_at = NULL
+       WHERE workspace_id = ${WS} AND idea_id = ANY(${['i1', 'i2', 'i3', 'i4']}::text[])`;
+
+    const pending = await readPendingOutcomeCandidates({ workspaceId: WS, limit: 10 });
+    expect(pending.map((row) => row.ideaId)).toEqual(expect.arrayContaining(['i1', 'i2', 'i3', 'i4']));
+
+    const report = await refreshScoutOutcomes({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ideaIds: ['i1', 'i4'],
+    });
+    expect(report.refreshed).toEqual([
+      expect.objectContaining({
+        ideaId: 'i1',
+        routedRef: 'gym:sp-1',
+        status: 'won',
+        sourceKind: 'proposal',
+        sourceRef: 'gym:sp-1',
+      }),
+      expect.objectContaining({
+        ideaId: 'i4',
+        routedRef: 'wi:EI-NONE',
+        status: 'unknown',
+        sourceKind: 'none',
+        sourceRef: null,
+      }),
+    ]);
+
+    const rows = await db.adminSql<
+      { idea_id: string; outcome: string | null; outcome_checked_at: string | null }[]
+    >`
+      SELECT idea_id, outcome, outcome_checked_at
+        FROM harness_shared.scout_routed_ideas
+       WHERE workspace_id = ${WS} AND idea_id = ANY(${['i1', 'i2', 'i3', 'i4']}::text[])
+       ORDER BY idea_id`;
+    const byId = new Map(rows.map((row) => [row.idea_id, row]));
+    expect(byId.get('i1')).toMatchObject({ outcome: 'won' });
+    expect(byId.get('i1')?.outcome_checked_at).toBeTruthy();
+    expect(byId.get('i4')).toMatchObject({ outcome: 'pending' });
+    expect(byId.get('i4')?.outcome_checked_at).toBeTruthy();
+    expect(byId.get('i2')).toMatchObject({ outcome: null, outcome_checked_at: null });
+    expect(byId.get('i3')).toMatchObject({ outcome: null, outcome_checked_at: null });
+
+    // Leave the shared fixture in its normal fully-refreshed state for later tests.
+    await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS });
   });
 
   it('refreshScoutOutcomes ALSO lands the per-lens weight rows (the upsert is best-effort — a serialization throw is swallowed, so assert the rows, not just no-error)', async () => {
