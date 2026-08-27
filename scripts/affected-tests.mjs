@@ -55,6 +55,10 @@ import {
 } from "./lib/related-tests.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
+// EI-21082046676950143: the lint:declared-consumed guard entry below keys on this registry
+// rather than restating its paths. Import-safe — check-declared-consumed.mjs runs nothing at
+// module scope behind its `import.meta.url === process.argv[1]` main guard.
+import { DECLARED_FIELDS as DECLARED_CONSUMED_FIELDS } from "./check-declared-consumed.mjs";
 import {
   summarizeDerivation,
   formatDerivationMarker,
@@ -2007,6 +2011,25 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // No hostSuiteRatchet: no test file execs this detector, so it attaches unconditionally —
     // the fail-safe direction, and cheap because appliesTo is package.json-only.
     appliesTo: (f) => f === "package.json" || f.endsWith("/package.json"),
+  },
+  {
+    // EI-21082046676950143 — `lint:declared-consumed` is a fast, precise guard (~12s, prints
+    // "24 consumed · 0 UNCONSUMED"), but it was reachable only from a root npm script. Editing
+    // a policed interface therefore selected NOTHING, and adding e.g. an optional field to
+    // CellSpec surfaced only ~14 min later, inside test:lane-pure's declared-consumed-sweep.
+    // Same orphaned-guard shape lint:guard-reachability above exists to catch.
+    //
+    // The policed paths are DERIVED from the guard's own DECLARED_FIELDS registry, never
+    // restated here (CLAUDE.md, derived-truth ladder rung 1). A hardcoded copy would drift in
+    // the SILENT direction: the next field declared under a NEW `declaredIn` would quietly
+    // stop selecting this guard — which is precisely the failure this entry closes, so
+    // re-introducing it one layer up would be self-defeating.
+    workspace: "@papercusp/operator-core",
+    script: "lint:declared-consumed",
+    // No hostSuiteRatchet: declared-consumed-sweep.test.ts execs this detector only from a
+    // slow lane, so attaching unconditionally is the fail-safe direction — and it is cheap,
+    // being an exact-path membership test over a couple of dozen declaring files.
+    appliesTo: (f) => DECLARED_CONSUMED_FIELDS.some((d) => d.declaredIn === f),
   },
   {
     // EI-20098997113620795 — `attributeFailedTask` must be able to name a failing FILE for every

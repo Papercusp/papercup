@@ -48,11 +48,25 @@ export interface DueConsultRow {
   conversation_id: string;
   requester_id: string;
   responder_id: string | null;
+  state: string;
+  is_due: boolean;
+  /** PostgreSQL returns timestamptz as Date under the normal postgres-js client. */
+  updated_at: unknown;
   latency_contract: string;
   question: string;
   routing: unknown;
   cascade_cursor: number;
   cascade_digest: unknown;
+}
+
+/** Row-local evidence for a responder that woke after routing, re-parked, and
+ * left the consult thread empty. `routedAt` is the current selection timestamp
+ * (`updated_at`), not the whole-consult `created_at`. */
+export interface SilentResponderCandidate {
+  workspaceId: string;
+  conversationId: string;
+  responderId: string;
+  routedAt: string;
 }
 
 export interface ExpirySweepDeps {
@@ -91,6 +105,12 @@ export interface ExpirySweepDeps {
     brief: string;
     workspaceId: string;
   }) => Promise<{ spawned: boolean; verified: boolean | null; detail: string }>;
+  /** Optional bounded detector for a responder that became active after
+   * routing, re-parked, and left the row-workspace thread empty. Detector
+   * failures fail closed for this early leg; due rows retain normal expiry. */
+  findSilentResponders?: (
+    rows: readonly SilentResponderCandidate[],
+  ) => Promise<ReadonlySet<string>>;
   now?: () => Date;
   /** Override the per-tick bound (tests). */
   limit?: number;
@@ -120,17 +140,47 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
   // guards below stand in for row locks (see module doc).
   const due = (await sql`
     SELECT workspace_id, conversation_id, requester_id, responder_id,
-           latency_contract, question, routing, cascade_cursor, cascade_digest
+           state, COALESCE(expires_at < ${nowIso}::timestamptz, false) AS is_due,
+           updated_at, latency_contract, question, routing, cascade_cursor, cascade_digest
       FROM harness_shared.consult_state
-     WHERE expires_at < ${nowIso}::timestamptz AND closed_at IS NULL
+     WHERE closed_at IS NULL
+       AND (
+         expires_at < ${nowIso}::timestamptz
+         OR (state = 'awaiting_responder' AND responder_id IS NOT NULL)
+       )
      ORDER BY expires_at
      LIMIT ${limit}
   `) as unknown as DueConsultRow[];
+
+  // One bounded detector call covers every non-due awaiting row in this tick.
+  // The detector receives each row's workspace because this sweep is shared
+  // across workspaces; a failure fails closed for the early leg only.
+  let silentResponderIds = new Set<string>();
+  const earlyCandidates = due
+    .filter((row) => row.is_due !== true && row.state === 'awaiting_responder' && row.responder_id != null)
+    .map((row) => ({
+      workspaceId: row.workspace_id,
+      conversationId: row.conversation_id,
+      responderId: row.responder_id!,
+      routedAt: timestampToIso(row.updated_at),
+    }));
+  if (deps.findSilentResponders && earlyCandidates.length > 0) {
+    try {
+      silentResponderIds = new Set(await deps.findSilentResponders(earlyCandidates));
+    } catch {
+      silentResponderIds = new Set<string>();
+    }
+  }
 
   let advanced = 0;
   let expiredCount = 0;
   const woke: string[] = [];
   for (const row of due) {
+    const isDue = row.is_due === true;
+    const isSilentEarlyRow =
+      !isDue && row.state === 'awaiting_responder' && row.responder_id != null && silentResponderIds.has(row.conversation_id);
+    if (!isDue && !isSilentEarlyRow) continue;
+
     // Best-effort per row: one bad row (malformed routing jsonb, a wake seam
     // throwing) must not strand the rest of the batch.
     try {
@@ -146,9 +196,11 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
           digest: row.cascade_digest,
           event: makeDigestEntry(
             row.responder_id ?? '(unrouted)',
-            'expired',
+            isDue ? 'expired' : 'wake_failed',
             nowIso,
-            `expired unanswered (${row.latency_contract} window elapsed)`,
+            isDue
+              ? `expired unanswered (${row.latency_contract} window elapsed)`
+              : 'responder went active after routing, re-parked without posting (implicit decline)',
           ),
           stateOnAdvance: 'awaiting_responder',
           nowIso,
@@ -234,5 +286,21 @@ export async function sweepExpiredConsults(deps: ExpirySweepDeps): Promise<Expir
     }
   }
 
-  return { ok: true, expired: expiredCount, advanced, woke, saturated: due.length >= limit };
+  // Rows admitted solely for the early detector can fill the bound after all
+  // due rows have drained. Report saturation only when the last admitted row
+  // is itself due; otherwise the ordering guarantees no older due row was
+  // hidden behind a non-due row.
+  return {
+    ok: true,
+    expired: expiredCount,
+    advanced,
+    woke,
+    saturated: due.length >= limit && due[limit - 1]?.is_due === true,
+  };
+}
+
+function timestampToIso(value: unknown): string {
+  if (value == null) return '';
+  const parsed = value instanceof Date ? value : new Date(String(value));
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : '';
 }

@@ -51,6 +51,7 @@ import {
   claimFleetLaunchSlot,
   createFleetIfAbsent,
   fleetSlugFromName,
+  getFleet,
   getFleetScheme,
   releaseFleetLaunchSlot,
   setFleetLeader,
@@ -132,6 +133,7 @@ import {
   resolveLaunchMode,
   type FleetMemberDefaults,
   type FreshLaunchExpectedAttestation,
+  type FreshLaunchSessionProbe,
   type LaunchMode,
   type MemberSpec,
 } from '../../agent-launch-core';
@@ -1481,6 +1483,35 @@ function stampLaunchOutcome(
   });
 }
 
+/** Merge the latest per-session worker snapshot without losing prior waves. */
+export function mergeLaunchWorkerAttestations(
+  transaction: FleetLaunchTransaction,
+  sessions: readonly FreshLaunchSessionProbe[],
+): void {
+  const byOwner = new Map(
+    (transaction.workerAttestations ?? [])
+      .filter((attestation) => typeof attestation.ownerId === 'string' && attestation.ownerId.length > 0)
+      .map((attestation) => [attestation.ownerId as string, attestation]),
+  );
+  for (const session of sessions) {
+    if (!session.ownerId || !session.workerAttestation) continue;
+    byOwner.set(session.ownerId, {
+      ...session.workerAttestation,
+      ownerId: session.ownerId,
+    });
+  }
+  if (byOwner.size === 0) return;
+
+  const requestedOrder = new Map(transaction.requestedMemberIds.map((ownerId, index) => [ownerId, index]));
+  transaction.workerAttestations = [...byOwner.values()].sort((a, b) =>
+    (requestedOrder.get(a.ownerId ?? '') ?? Number.MAX_SAFE_INTEGER) -
+    (requestedOrder.get(b.ownerId ?? '') ?? Number.MAX_SAFE_INTEGER),
+  );
+  transaction.workerReadyMemberIds = transaction.requestedMemberIds.filter(
+    (ownerId) => byOwner.get(ownerId)?.ready === true,
+  );
+}
+
 /**
  * One role's slice of a PAIRED launch (D-009 / P-011). Deliberately the same
  * knobs as the flat single-fleet set, minus `count` — a paired fleet is 1:1, so
@@ -1770,6 +1801,37 @@ export default defineTool({
     // member; otherwise the launch session's workspace (never the '*' wildcard).
     const workspaceId = args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
     const fleetSlug = fleetSlugFromName(args.name);
+    const requestedPlan = args.plan?.trim() || null;
+    const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
+
+    // EI-21577352340987493: an existing fleet's live claim spec is the lane its
+    // members are actually draining. Read it before the saved headcount profile
+    // can inherit a stale plan, so an omitted top-up stays on the fleet's current
+    // lane instead of re-running admission against an unrelated plan (or failing
+    // the no-plan lane check before the fleet is even joined).
+    let existingFleet: Awaited<ReturnType<typeof getFleet>> = null;
+    let existingFleetClaimSpec: ClaimSpec | null = null;
+    try {
+      existingFleet = await getFleet(workspaceId, fleetSlug);
+    } catch {
+      existingFleet = null;
+    }
+    if (existingFleet && claimSpecWorkspaceId) {
+      try {
+        const liveSpec = await getClaimSpec({
+          cupId: fleetSpecBeeKey(fleetSlug),
+          workspaceId: claimSpecWorkspaceId,
+        });
+        if (liveSpec) existingFleetClaimSpec = liveSpec;
+      } catch {
+        existingFleetClaimSpec = null;
+      }
+    }
+    const existingFleetHasLiveClaimLane = Boolean(
+      existingFleet &&
+        existingFleetClaimSpec &&
+        existingFleetClaimSpec.specId !== DEFAULT_CLAIM_SPEC.specId,
+    );
 
     // P-006 / D-004: the goal's SETTINGS ONLY — no ceilings, no budget gate, no
     // side effects. The ceiling-bearing `resolveGoalLaunch` still runs exactly
@@ -1985,7 +2047,11 @@ export default defineTool({
       const profile = persistedHeadcountProfile.config;
       const profileModel = composeModelSpec(profile.model, profile.effort);
       args.count ??= persistedHeadcountProfile.target;
-      args.plan ??= profile.plan;
+      // An omitted plan on an existing fleet is intentional: its live claim spec
+      // is the authority. Inheriting the profile's plan here can resurrect a stale
+      // lane and make exact-plan admission reject a valid top-up. New fleets and
+      // explicit plan requests retain the established profile behavior.
+      if (!existingFleet || requestedPlan) args.plan ??= profile.plan;
       args.harness ??= profile.harness;
       args.agent ??= profile.agent;
       args.model ??= profileModel;
@@ -2045,7 +2111,7 @@ export default defineTool({
     // members self-pull by `claimKinds`, so require a lane when no plan is given (else
     // the fleet would drain the whole harness backlog under the empty DEFAULT_CLAIM_SPEC).
     const planSlug = args.plan?.trim() || null;
-    if (!planSlug && !args.claimKinds?.length) {
+    if (!planSlug && !args.claimKinds?.length && !existingFleetHasLiveClaimLane) {
       return err(
         'Give the fleet a lane: pass a `plan` (members self-pull that plan\'s items) OR `claimKinds` for a pure claim-spec fleet (e.g. claimKinds:["bug"]). Without either, members would drain the entire harness backlog under the default claim spec.',
       );
@@ -2516,18 +2582,39 @@ export default defineTool({
           const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
           const cupId = fleetSpecBeeKey(fleetSlug);
           let existingSpec: ClaimSpec = DEFAULT_CLAIM_SPEC;
+          let currentSpecRead = false;
           try {
-            existingSpec = await getClaimSpec({ cupId, workspaceId: claimSpecWorkspaceId });
+            const liveSpec = await getClaimSpec({ cupId, workspaceId: claimSpecWorkspaceId });
+            if (liveSpec) {
+              existingSpec = liveSpec;
+              currentSpecRead = true;
+            }
           } catch {
-            existingSpec = DEFAULT_CLAIM_SPEC; // never block the launch on a read failure
+            // Never block the launch on a read failure. For an existing fleet,
+            // retain the preflight snapshot rather than reconstructing a default
+            // lane after the launch slot has been won.
+            existingSpec = existingFleetClaimSpec ?? DEFAULT_CLAIM_SPEC;
           }
+          if (!currentSpecRead && existingFleetClaimSpec) existingSpec = existingFleetClaimSpec;
           const authored = isLeaderAuthoredClaimSpec(existingSpec.specId, fleetSlug);
 
           // The spec we WOULD apply (null = preserve the existing authored spec, no write), plus
           // the EI-10409 merge/preserve note carried onto the applied result.
           let specToApply: Record<string, unknown> | null = null;
           let applyWarning: string | null = null;
-          if (authored) {
+          // EI-21577352340987493: a top-up with no explicit plan/kinds must reuse
+          // any non-default live lane, including a tool-generated fleet spec. The
+          // old authored-only branch treated generated lanes as disposable and
+          // then tried to build a kind spec from undefined args.
+          if (existingFleet && !planSlug && !args.claimKinds?.length && existingSpec.specId !== DEFAULT_CLAIM_SPEC.specId) {
+            claimSpecApplied = {
+              ok: true,
+              revision: existingSpec.revision,
+              warning:
+                `EI-215773: preserved live claim spec ${formatSpecRef(existingSpec.specId, existingSpec.revision)} ` +
+                `for existing fleet \`${fleetSlug}\`${currentSpecRead ? '' : ' (using the preflight snapshot after a failed reread)'}`,
+            };
+          } else if (authored) {
             if (args.claimKinds?.length) {
               specToApply = mergeKindIntoClaimSpec(existingSpec, args.claimKinds);
               applyWarning =
@@ -4084,6 +4171,7 @@ export default defineTool({
                   expectedAttestations: expectedAttestations.filter((item) => openedThisWave.includes(item.ownerId)),
                 };
                 let verdict = await verifyFreshLaunchStarted(waveArgs);
+                mergeLaunchWorkerAttestations(launchTransaction, verdict.sessions);
                 if (verdict.agentStarted === null) {
                   // EI-20437060078324174: an expired window is the ABSENCE of an
                   // observation, not death — the measured false-negative registered
@@ -4093,6 +4181,7 @@ export default defineTool({
                   verdict = await verifyFreshLaunchStarted(waveArgs, {
                     timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS,
                   });
+                  mergeLaunchWorkerAttestations(launchTransaction, verdict.sessions);
                 }
                 waveVerified = verdict.agentStarted === true;
                 if (waveVerified) {

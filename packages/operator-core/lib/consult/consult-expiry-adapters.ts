@@ -37,8 +37,9 @@
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { NotifyAgentsOpts, NotifyAgentsResult } from '../agent-tools/coordination/notify-agents';
 import type { EmitAwaitedEventOpts, EmitResult } from '../events/await/engine';
-import type { ExpirySweepDeps } from './consult-expiry-core';
+import type { ExpirySweepDeps, SilentResponderCandidate } from './consult-expiry-core';
 import type { ConsultReviveContext, ConsultReviveResult } from './revive-responder';
+import type { ThreadableStore } from '@papercusp/coordination/capabilities';
 
 /** The ownerId this sweep acts under. Exported so a test asserts the real constant
  *  rather than re-typing the string it is checking against. */
@@ -63,6 +64,26 @@ export type ResponderReviver = (
   opts: { ownerId: string; conversationId: string; brief: string },
   ctx: ConsultReviveContext,
 ) => Promise<ConsultReviveResult>;
+
+/** Narrow seams for the post-routing silent-responder detector. Keeping these
+ * as injected functions makes the adapter executable in unit tests while the
+ * routine action can still lazy-load the operator services. */
+export interface SilentResponderDetectorDeps {
+  getPresence: (ownerId: string) => Promise<{ lastActiveAt: string | null } | null>;
+  resolveSessionStates: (
+    subjects: readonly { ownerId: string }[],
+    opts: { hydratePerId: true },
+  ) => Promise<ReadonlyMap<string, { sessionState?: string | null }>>;
+  getThreadStore: (workspaceId: string) => SilentResponderThreadStore;
+}
+
+/** `listRecentPosts` is a production-only bounded extension of the shared
+ * ThreadableStore contract, so keep the detector's minimal reader shape local
+ * instead of pretending it is part of that public interface. */
+export interface SilentResponderThreadStore {
+  getThreadByParent: ThreadableStore['getThreadByParent'];
+  listRecentPosts: (threadId: string, limit: number) => Promise<{ total: number }>;
+}
 
 /**
  * The per-row workspace SYSTEM identity the sweep acts under.
@@ -137,4 +158,55 @@ export function consultExpiryRevive(
         launchedBy: CONSULT_EXPIRY_SWEEP_OWNER_ID,
       },
     );
+}
+
+/** Detect the specific post-routing failure mode that otherwise waits for the
+ * full expiry window: the selected owner was active after this row's route,
+ * is now parked, and the consult's thread still has zero posts. Presence and
+ * liveness are batched by owner; thread reads are partitioned by row workspace.
+ */
+export function consultExpiryFindSilentResponders(
+  deps: SilentResponderDetectorDeps,
+): NonNullable<ExpirySweepDeps['findSilentResponders']> {
+  return async (rows: readonly SilentResponderCandidate[]) => {
+    if (rows.length === 0) return new Set<string>();
+
+    const responderIds = [...new Set(rows.map((row) => row.responderId))];
+    const [presenceEntries, verdicts] = await Promise.all([
+      Promise.all(
+        responderIds.map(async (ownerId) => [ownerId, await deps.getPresence(ownerId)] as const),
+      ),
+      deps.resolveSessionStates(
+        responderIds.map((ownerId) => ({ ownerId })),
+        { hydratePerId: true },
+      ),
+    ]);
+    const presenceByOwner = new Map(presenceEntries);
+    const stores = new Map<string, SilentResponderThreadStore>();
+    const getStore = (workspaceId: string) => {
+      let store = stores.get(workspaceId);
+      if (!store) {
+        store = deps.getThreadStore(workspaceId);
+        stores.set(workspaceId, store);
+      }
+      return store;
+    };
+
+    const silent = new Set<string>();
+    await Promise.all(
+      rows.map(async (row) => {
+        const lastActiveAt = presenceByOwner.get(row.responderId)?.lastActiveAt;
+        const activeMs = lastActiveAt == null ? Number.NaN : Date.parse(String(lastActiveAt));
+        const routedMs = Date.parse(row.routedAt);
+        if (!Number.isFinite(activeMs) || !Number.isFinite(routedMs) || activeMs <= routedMs) return;
+        if (verdicts.get(row.responderId)?.sessionState !== 'parked') return;
+
+        const store = getStore(row.workspaceId);
+        const thread = await store.getThreadByParent({ kind: 'conversation', ref: row.conversationId });
+        const total = thread == null ? 0 : (await store.listRecentPosts(thread.thread_id, 1)).total;
+        if (total === 0) silent.add(row.conversationId);
+      }),
+    );
+    return silent;
+  };
 }

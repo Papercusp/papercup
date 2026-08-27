@@ -88,7 +88,9 @@ export interface AdvanceResult {
 /**
  * Move `ready` to `candidate` — ONLY as a fast-forward (candidate must be a
  * descendant of current ready). Creates `ready` if it doesn't exist. Never
- * merges, never rewinds. This is the green-checkpoint's only write.
+ * merges, never rewinds. This is the green-checkpoint's only write to a BRANCH; `recordJudgedRed`
+ * below also writes, but to a refs/papercusp/ marker that is not a branch and carries no promotion
+ * meaning (WI-42350).
  */
 export async function advanceReady(
   repo: string,
@@ -107,6 +109,40 @@ export async function advanceReady(
   }
   await git(repo, ['branch', '-f', readyRef, to]);
   return { advanced: true, from, to, reason: 'fast-forwarded' };
+}
+
+/** The ref the gate stamps with the sha of the last candidate it actually reached a RED verdict
+ *  on. Namespaced under refs/papercusp/ so it is not a branch: it never appears in `git branch`,
+ *  is not pushed by default, and cannot be confused with the green pin. */
+export const JUDGED_RED_REF = 'refs/papercusp/judged-red';
+
+/**
+ * WI-42350 — read the sha this repo last reached a RED verdict on, or null.
+ *
+ * WHY A REF AND NOT THE DATABASE: the gate's candidate decision runs before any DB is consulted,
+ * and `gate_health` (which does hold the last verdict) is written by the ROUTINE, not read inside
+ * the run's decision path. Reaching for it there would put a new Postgres dependency into the one
+ * code path that must work on a filesystem alone — which is exactly why this item stalled. The
+ * green pin already proves the pattern: `lastReady` is a plain `revParse` of a ref.
+ */
+export async function lastJudgedRed(repo: string, ref = JUDGED_RED_REF): Promise<string | null> {
+  return (await refExists(repo, ref)) ? revParse(repo, ref) : null;
+}
+
+/**
+ * Stamp `sha` as the last RED-judged candidate.
+ *
+ * Deliberately NOT fast-forward-only, unlike `advanceReady`: reds are not monotonic. A later red
+ * can land on a commit that is not a descendant of the previous red (the tip moves, a repair
+ * queue rewinds, a quiet-cut judges an older commit), and refusing those would freeze the marker
+ * at a stale sha — which reads as "we already judged this" for a commit we never judged. That is
+ * the one failure mode that could make the caller SKIP real work, so this write always sets.
+ *
+ * Fail-open by contract: the caller treats a throw as "no marker", costing one redundant run.
+ * Never let a marker write turn into a gate verdict.
+ */
+export async function recordJudgedRed(repo: string, sha: string, ref = JUDGED_RED_REF): Promise<void> {
+  await git(repo, ['update-ref', ref, await revParse(repo, sha)]);
 }
 
 /** Files changed between two commits (name-only). `from` null → empty. */

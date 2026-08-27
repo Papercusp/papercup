@@ -203,6 +203,28 @@ describe('P-008 predicate watch routing', () => {
     expect(subscribeTopic).not.toHaveBeenCalled();
   });
 
+  it('schema rejects predicate with wake:false or the default before handler dispatch', () => {
+    for (const args of [
+      { pattern: 'backlog', wake: false, predicate },
+      { pattern: 'backlog', predicate },
+    ]) {
+      const parsed = watch.args.safeParse(args);
+      expect(parsed.success).toBe(false);
+      if (!parsed.success) {
+        expect(parsed.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: ['wake'],
+              message: 'predicate watches require wake:true (the predicate engine has no inject leg).',
+            }),
+          ]),
+        );
+      }
+    }
+
+    expect(watch.args.safeParse({ pattern: 'backlog', wake: true, predicate }).success).toBe(true);
+  });
+
   it('interval_sec without a predicate is rejected (min_sleep_sec confusion guard)', async () => {
     await expect(call({ pattern: 'k', wake: true, interval_sec: 30 })).rejects.toThrow(/interval_sec/);
   });

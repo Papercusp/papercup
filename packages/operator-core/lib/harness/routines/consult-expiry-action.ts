@@ -22,13 +22,19 @@
  * one; mirrors `supervision-reconcile-action.ts`'s documented deviation.
  */
 import { registerSystemAction } from './system-actions';
+import { PgThreadStore } from '@papercusp/coordination/capabilities';
 
 registerSystemAction('consult-expiry-sweep', async () => {
   const [
     { getOrgPg },
     { sweepExpiredConsults },
     { emitAwaitedEvent },
-    { consultExpiryEmitReplyEvent, consultExpiryReach, consultExpiryRevive },
+    {
+      consultExpiryEmitReplyEvent,
+      consultExpiryFindSilentResponders,
+      consultExpiryReach,
+      consultExpiryRevive,
+    },
   ] = await Promise.all([
     import('@papercusp/db-org'),
     import('../../consult/consult-expiry-core'),
@@ -46,6 +52,22 @@ registerSystemAction('consult-expiry-sweep', async () => {
     revive: consultExpiryRevive(async (opts, ctx) => {
       const { reviveConsultResponder } = await import('../../consult/revive-responder');
       return reviveConsultResponder(opts, ctx);
+    }),
+    findSilentResponders: consultExpiryFindSilentResponders({
+      getPresence: async (ownerId) => {
+        const { getPresence } = await import('../../agent-tools/coordination/presence');
+        return getPresence(ownerId);
+      },
+      resolveSessionStates: async (subjects, opts) => {
+        const { resolveSessionStates } = await import('../../agent-tools/coordination/liveness-oracle');
+        return resolveSessionStates(subjects, opts);
+      },
+      getThreadStore: (workspaceId) =>
+        new PgThreadStore({
+          getSql: () => getOrgPg().sql,
+          ensureSchema: async () => {},
+          workspaceId,
+        }),
     }),
   });
 });

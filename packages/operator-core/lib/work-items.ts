@@ -5424,18 +5424,18 @@ export function isClaimHoldParked(payload: unknown): boolean {
  * material AT ALL (D-005) — a queue of only scorecards must read `drained:true` so a drainer
  * idles, rather than the "pending-but-gated, don't idle" verdict a held-but-real item gets.
  */
-export function observationLaneExclusionSql(sql: OrgSql) {
-  // WI-6934: filters the STORED generated column, not the payload jsonb. Any `payload ->>`
-  // here forced the whole payload datum to be fetched and decompressed for every candidate
-  // row (payload/_search are large and out-of-line — TOAST is 131MB against a 56MB heap),
-  // to read one short string. `lane` is `payload ->> 'lane'` materialised by migration 721.
-  //
-  // NULL-safety is UNCHANGED and now structural: the column is NULL both when payload is
-  // NULL and when the key is absent, and `NULL IS DISTINCT FROM 'observation'` = TRUE ⇒ the
-  // row is INCLUDED (never excluded) — the same semantics the old COALESCE spelled out.
-  // Verified equivalent on live data before the switch: 0 disagreements, and the NULL-payload
-  // population matched exactly both ways (2,468 rows).
-  return sql`wi.lane IS DISTINCT FROM 'observation'`;
+export function observationLaneExclusionSql(
+  sql: OrgSql,
+  // Issue-family callers run in a `FROM … work_items wi` context by default. The
+  // other callers pass the alias whose payload they are evaluating. Keep this a
+  // closed literal union: the value is trusted SQL structure, never user input.
+  payloadCol: 'wi.payload' | 'payload' | 'ei.payload' = 'wi.payload',
+) {
+  // `lane` is stored in the work-item payload; the old generated-column reference
+  // (`wi.lane`) was removed from the base table and made work_items:claimable fail
+  // with `column wi.lane does not exist` (EI-21580597231511770). Keep the same
+  // NULL-safe semantics: absent/null payload or lane means the row is included.
+  return sql`COALESCE(${sql.unsafe(payloadCol)}, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'`;
 }
 
 /**

@@ -602,7 +602,7 @@ async function readPromoterPairs(
          WHERE wi.workspace_id = ${workspaceId}
            AND wi.harness_slug = ${harnessSlug}
            AND wi.feature_id <> p.feature_id
-           AND wi.lane IS DISTINCT FROM 'observation'
+           AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
            AND (wi.admission IS DISTINCT FROM 'pending' OR wi.feature_id = ANY(${ids}::text[]))
            AND (
              NOT harness_shared.work_item_status_is_terminal(wi.status)

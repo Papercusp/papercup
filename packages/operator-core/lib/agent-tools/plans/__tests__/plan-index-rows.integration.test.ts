@@ -33,7 +33,7 @@ function body(opts: { items: string[]; decisions?: string[] }): string {
   return `---
 title: plan index probe
 slug: ${SLUG}
-status: active
+status: draft
 created: 2026-07-26
 updated: 2026-07-26
 ---
@@ -56,12 +56,15 @@ ${(opts.decisions ?? []).join('\n\n')}
 }
 
 async function write(md: string): Promise<void> {
-  const res = await withPlanLock<{ ok: true }>(
+  const res = await withPlanLock<{ ok: boolean; code?: string }>(
     null,
     { slug: SLUG, intent: 'plan-index-rows test write', harnessSlug: HARNESS, workspaceId: wsId, ttlSec: 30 },
     async () => ({ newBody: md, value: { ok: true } }),
   );
-  expect(res.kind).toBe('applied');
+  if (res.kind !== 'applied') throw new Error(`plan write was busy: ${JSON.stringify(res.busy)}`);
+  // This helper exercises index synchronization, not activation. Keep the fixture
+  // draft so the central activation gate cannot turn a refusal into a false success.
+  expect(res.value.ok).toBe(true);
 }
 
 async function itemRows(): Promise<Array<{ item_id: string; seq: number; status: string; item_text: string; blocked_by: string[] }>> {

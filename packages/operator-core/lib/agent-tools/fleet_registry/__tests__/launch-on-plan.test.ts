@@ -15,6 +15,7 @@ const spawnConsoleMock = vi.fn();
 const spawnHeadlessMock = vi.fn();
 const fetchGatewayHeadroomMock = vi.fn();
 const createFleetIfAbsentMock = vi.fn();
+const getFleetMock = vi.fn();
 const getFleetHeadcountTargetMock = vi.fn();
 const setFleetLeaderMock = vi.fn();
 const heartbeatPresenceMock = vi.fn();
@@ -29,8 +30,9 @@ const listLiveTasksMock = vi.fn(
 const totalmemMock = vi.fn((..._args: unknown[]) => 256 * 1024 ** 3);
 const agentSpawnScopeMemoryMaxGMock = vi.fn((..._args: unknown[]) => 6);
 const launchTransaction = vi.hoisted(() => ({
-  verify: vi.fn(async (..._args: unknown[]) => ({
+  verify: vi.fn(async (..._args: unknown[]): Promise<any> => ({
     agentStarted: true as boolean | null,
+    workerReady: false,
     waitedMs: 1,
     sessions: [],
     note: 'verified',
@@ -100,6 +102,7 @@ vi.mock('../../../agent-fleets-store', () => ({
   FLEET_TYPES: ['single', 'paired'] as const,
   createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
+  getFleet: (...args: unknown[]) => getFleetMock(...args),
   getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
   getFleetScheme: vi.fn(async () => ({ name: 'Ocean' })),
   // The P-005 idempotency guard (PG-backed, migration 484): default every handler test
@@ -178,8 +181,10 @@ vi.mock('../../../inference-gateway/observability', () => ({
 }));
 
 const setClaimSpecMock = vi.fn();
+const getClaimSpecMock = vi.fn();
 vi.mock('../../../scheduler/claim-spec-store', () => ({
   setClaimSpec: (...args: unknown[]) => setClaimSpecMock(...args),
+  getClaimSpec: (...args: unknown[]) => getClaimSpecMock(...args),
   fleetSpecBeeKey: (slug: string) => `fleet:${slug}`,
   resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
 }));
@@ -259,7 +264,7 @@ import tool, {
   summarizeProtectedAgentMemory,
 } from '../launch-on-plan';
 // The REAL claim-spec validator (NOT the mocked claim-spec-STORE) — #4 specs must pass it.
-import { validateClaimSpec } from '../../../scheduler/claim-spec';
+import { DEFAULT_CLAIM_SPEC, validateClaimSpec } from '../../../scheduler/claim-spec';
 import { standardValidate } from '@papercusp/tooldef';
 
 // Unprofiled local launches must choose terminal visibility explicitly. Existing
@@ -383,6 +388,13 @@ beforeEach(() => {
   launchTransaction.persist.mockClear();
   getFleetHeadcountTargetMock.mockReset();
   getFleetHeadcountTargetMock.mockResolvedValue(null);
+  getFleetMock.mockReset();
+  getFleetMock.mockResolvedValue(null);
+  getClaimSpecMock.mockReset();
+  // Keep the handler's best-effort claim-spec reads on the pre-existing fail-open
+  // seam. A resolved default would let the final kickoff/spec reconciliation reach
+  // lookupWorkItem, which is intentionally not backed by Postgres in this unit file.
+  getClaimSpecMock.mockRejectedValue(new Error('claim spec test seam unavailable'));
   promotePlanItemsMock.mockClear();
   promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 3 });
   createFleetIfAbsentMock.mockReset();
@@ -506,6 +518,70 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       },
       reusePath: 'fleet:launch-on-plan -> agent-launch-core.memberLaunchCommand',
     });
+  });
+
+  it('uses the existing fleet live claim lane before stale saved-plan admission on an omitted top-up (EI-21577352340987493)', async () => {
+    const callOrder: string[] = [];
+    const liveSpec = {
+      ...DEFAULT_CLAIM_SPEC,
+      specId: 'fleet-launch-stale-profile-fleet-kinds',
+      revision: 38,
+      view: { filter: { field: 'kind', op: 'in', value: ['bug'] } },
+    };
+    getFleetMock.mockImplementation(async () => {
+      callOrder.push('getFleet');
+      return {
+        workspaceId: 'ws-1',
+        fleetSlug: 'stale-profile-fleet',
+        owner: 'owner-1',
+        leaderOwnerId: 'owner-1',
+        fleetType: 'single',
+      };
+    });
+    getClaimSpecMock.mockImplementation(async () => {
+      callOrder.push('getClaimSpec');
+      return liveSpec;
+    });
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'stale-profile-fleet',
+      target: 2,
+      config: {
+        plan: 'stale-plan',
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-luna',
+        effort: 'max',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    createFleetIfAbsentMock.mockImplementation(async () => {
+      callOrder.push('createFleet');
+      return {
+        record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' }, fleetType: 'single' },
+        created: false,
+      };
+    });
+    setClaimSpecMock.mockReset();
+    readPlanBySlugMock.mockClear();
+
+    const res = await invokeLaunchHandler({ name: 'Stale Profile Fleet' } as never, {} as never, null);
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.ok).toBe(true);
+    expect(payload.plan).toBeNull();
+    expect(payload.claimSpecApplied).toMatchObject({ ok: true, revision: 38 });
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+    expect(admissionMocks.preflight).not.toHaveBeenCalled();
+    expect(readPlanBySlugMock).not.toHaveBeenCalled();
+    expect(callOrder.slice(0, 3)).toEqual(['getFleet', 'getClaimSpec', 'createFleet']);
+    expect(callOrder.lastIndexOf('getClaimSpec')).toBeGreaterThan(callOrder.indexOf('createFleet'));
+    expect(spawnHeadlessMock).toHaveBeenCalled();
   });
 
   it('fails closed before an existing-fleet top-up when launch knobs conflict with the saved profile', async () => {
@@ -2074,6 +2150,67 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
         fleet: 'metadata-fleet',
         transactionId: payload.launchTransaction.transactionId,
       },
+    });
+  });
+
+  it('merges typed worker attestations across verifier waves into the durable transaction', async () => {
+    let verificationCall = 0;
+    launchTransaction.verify.mockImplementation(async (rawArgs: unknown) => {
+      const args = rawArgs as { expectedOwnerIds: string[] };
+      const ownerId = args.expectedOwnerIds[0];
+      const ready = verificationCall++ === 0;
+      return {
+        agentStarted: true,
+        workerReady: ready,
+        waitedMs: 1,
+        sessions: [{
+          advSessionId: verificationCall,
+          ownerId,
+          successfulCalls: 1,
+          msSinceLastSignal: 1,
+          hasPresence: true,
+          attestationDiffs: [],
+          workerAttestation: {
+            version: 1 as const,
+            ownerId,
+            ready,
+            stages: {
+              agentCall: { status: 'satisfied' as const, successfulCalls: 1 },
+              durableWake: ready
+                ? { status: 'satisfied' as const, wakeSource: 'loop' }
+                : { status: 'missing' as const, wakeSource: null },
+              schedulerPull: { status: 'satisfied' as const, calls: 1, successfulCalls: 1 },
+              disposition: { status: 'satisfied' as const, kind: 'no-claim' as const, reason: 'lane_drained' },
+            },
+            failures: ready
+              ? []
+              : [{
+                  stage: 'durableWake' as const,
+                  code: 'durable-wake-missing' as const,
+                  detail: 'No durable wake.',
+                }],
+          },
+        }],
+        note: 'verified',
+      };
+    });
+
+    const res = await invokeLaunchHandler(
+      { name: 'Worker Attestation Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    const tx = payload.launchTransaction;
+
+    expect(tx.workerAttestations).toHaveLength(2);
+    expect(tx.workerAttestations.map((attestation: { ownerId: string }) => attestation.ownerId)).toEqual(
+      tx.requestedMemberIds,
+    );
+    expect(tx.workerReadyMemberIds).toEqual([tx.requestedMemberIds[0]]);
+    expect(tx.workerAttestations[1]).toMatchObject({
+      ownerId: tx.requestedMemberIds[1],
+      ready: false,
+      failures: [{ code: 'durable-wake-missing' }],
     });
   });
 

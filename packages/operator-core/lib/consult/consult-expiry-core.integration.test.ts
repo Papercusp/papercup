@@ -85,6 +85,7 @@ async function seedConsult(opts: {
   requesterId?: string;
   routing?: unknown;
   cascadeCursor?: number;
+  updatedAt?: string;
 }): Promise<string> {
   seq += 1;
   const id = `conv-e-${seq}`;
@@ -97,6 +98,12 @@ async function seedConsult(opts: {
        ${opts.state ?? 'awaiting_responder'}, 'q', ${opts.latency ?? 'proceed'},
        ${opts.expiresAt === undefined ? PAST : opts.expiresAt}, ${opts.closedAt ?? null},
        ${rootSql.json((opts.routing ?? {}) as never)}, ${opts.cascadeCursor ?? 0})`;
+  if (opts.updatedAt !== undefined) {
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET updated_at = ${opts.updatedAt}::timestamptz
+       WHERE workspace_id = ${opts.workspaceId ?? WS} AND conversation_id = ${id}`;
+  }
   return id;
 }
 
@@ -368,6 +375,41 @@ async function cascadeRow(id: string, ws = WS) {
 }
 
 describe('sweepExpiredConsults — cascade advance (D-005/P-013)', () => {
+  it('advances a non-due silent responder as an implicit decline without terminal expiry', async () => {
+    const routedAt = new Date(NOW.getTime() - 60_000).toISOString();
+    const id = await seedConsult({
+      latency: 'hard-blocked',
+      expiresAt: FUTURE,
+      updatedAt: routedAt,
+      routing: menuSnapshot(['resp-1', 'resp-2']),
+    });
+    const { deps, reachCalls } = makeDeps({ withReach: true });
+    const detectorCalls: Array<ReadonlyArray<{ conversationId: string; responderId: string; routedAt: string }>> = [];
+    deps.findSilentResponders = async (rows) => {
+      detectorCalls.push(rows);
+      return new Set([id]);
+    };
+
+    const r = await sweepExpiredConsults(deps);
+
+    expect(r).toMatchObject({ advanced: 1, expired: 0, woke: [], saturated: false });
+    expect(detectorCalls).toHaveLength(1);
+    expect(detectorCalls[0]).toContainEqual({
+      workspaceId: WS,
+      conversationId: id,
+      responderId: 'resp-1',
+      routedAt,
+    });
+    const row = await cascadeRow(id);
+    expect(row.state).toBe('awaiting_responder');
+    expect(row.closed_at).toBeNull();
+    expect(row.responder_id).toBe('resp-2');
+    expect(row.cascade_cursor).toBe(1);
+    expect(row.cascade_digest).toMatchObject([{ ownerId: 'resp-1', kind: 'wake_failed' }]);
+    expect(new Date(row.expires_at as string).getTime()).toBeGreaterThan(NOW.getTime());
+    expect(reachCalls).toHaveLength(1);
+  });
+
   it('a due row with menu remaining ADVANCES instead of expiring: cursor+responder move under a fresh window, digest records the expiry, next selectee woken — NO park emit', async () => {
     const id = await seedConsult({
       latency: 'hard-blocked',

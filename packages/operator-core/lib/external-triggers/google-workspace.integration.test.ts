@@ -25,7 +25,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await org?.cleanup();
-});
+  // Strict shared-container DROP DATABASE cleanup is documented at 6s-267s;
+  // keep this real-PG suite on the canonical teardown budget instead of the
+  // integration layer's ordinary 90s hook deadline (EI-21580561576387499).
+}, 300_000);
 
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;

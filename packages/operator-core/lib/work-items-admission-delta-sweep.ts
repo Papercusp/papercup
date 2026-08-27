@@ -249,7 +249,7 @@ export async function readDeltaSweepContext(
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${input.workspaceId}
        AND wi.harness_slug = ${input.harnessSlug}
-       AND wi.lane IS DISTINCT FROM 'observation'
+       AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
        AND wi.admitted_at >= ${recentStart}::timestamptz
        AND wi.admitted_at < ${end}::timestamptz
      ORDER BY wi.admitted_at, wi.feature_id`;
@@ -258,7 +258,7 @@ export async function readDeltaSweepContext(
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${input.workspaceId}
        AND wi.harness_slug = ${input.harnessSlug}
-       AND wi.lane IS DISTINCT FROM 'observation'
+       AND COALESCE(wi.payload, '{}'::jsonb) ->> 'lane' IS DISTINCT FROM 'observation'
        AND wi.admitted_at >= ${titleStart}::timestamptz
        AND wi.admitted_at < ${end}::timestamptz
      ORDER BY wi.admitted_at, wi.feature_id`;

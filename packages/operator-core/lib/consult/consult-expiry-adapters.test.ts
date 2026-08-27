@@ -16,11 +16,12 @@
  * where the adapter sourced it. So the tests pass a row workspace that is deliberately
  * DIFFERENT from any plausible ambient default and assert it arrives intact.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   CONSULT_EXPIRY_SWEEP_OWNER_ID,
   consultExpiryEmitReplyEvent,
+  consultExpiryFindSilentResponders,
   consultExpiryReach,
   consultExpiryRevive,
   sweepIdentity,
@@ -170,5 +171,73 @@ describe('consultExpiryRevive', () => {
         workspaceId: ROW_WS,
       }),
     ).resolves.toEqual({ spawned: false, verified: false, detail: 'budget exhausted' });
+  });
+});
+
+describe('consultExpiryFindSilentResponders', () => {
+  it('requires active-after-route + parked + zero posts, and reads each thread in its row workspace', async () => {
+    const routedAt = '2026-08-27T05:00:00.000Z';
+    const rows = [
+      { workspaceId: ROW_WS, conversationId: 'conv-positive', responderId: 'su-parked', routedAt },
+      { workspaceId: 'ws-live', conversationId: 'conv-live', responderId: 'su-live', routedAt },
+      { workspaceId: 'ws-before', conversationId: 'conv-before', responderId: 'su-before', routedAt },
+      { workspaceId: 'ws-posted', conversationId: 'conv-posted', responderId: 'su-posted', routedAt },
+    ];
+    const presence = new Map([
+      ['su-parked', { lastActiveAt: '2026-08-27T05:01:00.000Z' }],
+      ['su-live', { lastActiveAt: '2026-08-27T05:01:00.000Z' }],
+      ['su-before', { lastActiveAt: '2026-08-27T04:59:00.000Z' }],
+      ['su-posted', { lastActiveAt: '2026-08-27T05:01:00.000Z' }],
+    ]);
+    const verdicts = new Map([
+      ['su-parked', { sessionState: 'parked' }],
+      ['su-live', { sessionState: 'live' }],
+      ['su-before', { sessionState: 'parked' }],
+      ['su-posted', { sessionState: 'parked' }],
+    ]);
+    const resolveSessionStates = vi.fn(
+      async (subjects: readonly { ownerId: string }[], opts: { hydratePerId: true }) => {
+        expect(subjects.map((subject) => subject.ownerId)).toEqual([
+          'su-parked',
+          'su-live',
+          'su-before',
+          'su-posted',
+        ]);
+        expect(opts).toEqual({ hydratePerId: true });
+        return verdicts;
+      },
+    );
+    const threadStoreCalls: string[] = [];
+    const parentCalls: Array<{ workspaceId: string; ref: string }> = [];
+    const getThreadStore = vi.fn((workspaceId: string) => {
+      threadStoreCalls.push(workspaceId);
+      return {
+        getThreadByParent: async (parent: { kind: string; ref: string }) => {
+          parentCalls.push({ workspaceId, ref: parent.ref });
+          return { thread_id: `thread-${parent.ref}` } as never;
+        },
+        listRecentPosts: async (threadId: string) => ({
+          posts: [],
+          total: threadId === 'thread-conv-posted' ? 1 : 0,
+        }),
+      };
+    });
+
+    const found = await consultExpiryFindSilentResponders({
+      getPresence: async (ownerId) => presence.get(ownerId) ?? null,
+      resolveSessionStates,
+      getThreadStore,
+    })(rows);
+
+    expect(found).toEqual(new Set(['conv-positive']));
+    expect(threadStoreCalls).toEqual(expect.arrayContaining([ROW_WS, 'ws-posted']));
+    expect(parentCalls).toEqual(
+      expect.arrayContaining([
+        { workspaceId: ROW_WS, ref: 'conv-positive' },
+        { workspaceId: 'ws-posted', ref: 'conv-posted' },
+      ]),
+    );
+    expect(parentCalls).not.toEqual(expect.arrayContaining([{ workspaceId: 'ws-live', ref: 'conv-live' }]));
+    expect(parentCalls).not.toEqual(expect.arrayContaining([{ workspaceId: 'ws-before', ref: 'conv-before' }]));
   });
 });

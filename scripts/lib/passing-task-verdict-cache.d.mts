@@ -1,6 +1,7 @@
 export const PASSING_TASK_VERDICT_CACHE_VERSION: number;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION: string;
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS: number;
+export const PASSING_TASK_VERDICT_CROSS_RUN_GROUP: string;
 
 export interface PassingTaskVerdictIdentity {
   taskKey: string;
@@ -33,6 +34,12 @@ export function passingTaskVerdictIdentityEnvironment(
   environment: Record<string, unknown>;
   proofGroupApplied: boolean;
   cacheGroup: string | null;
+};
+export function passingTaskVerdictCrossRunIdentityEnvironment(
+  environment: Record<string, unknown>,
+): {
+  environment: Record<string, unknown>;
+  cacheGroup: string;
 };
 export function formatPassingTaskVerdictSummary(
   decisions: Array<{ status?: string; reason?: string }>,

@@ -184,6 +184,13 @@ export default defineTool({
       .optional()
       .describe('Predicate poll cadence in seconds (predicate only; default 60).'),
   }).superRefine((args, refinementCtx) => {
+    if (args.predicate && args.wake !== true) {
+      refinementCtx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['wake'],
+        message: 'predicate watches require wake:true (the predicate engine has no inject leg).',
+      });
+    }
     if (args.targetKind === 'interest' && args.predicate) {
       refinementCtx.addIssue({
         code: z.ZodIssueCode.custom,

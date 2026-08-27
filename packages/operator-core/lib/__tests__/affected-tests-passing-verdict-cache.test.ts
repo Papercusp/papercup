@@ -12,7 +12,9 @@ import {
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
   PASSING_TASK_VERDICT_CACHE_MAX_GROUPS,
+  PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
   passingTaskVerdictCacheEntry,
+  passingTaskVerdictCrossRunIdentityEnvironment,
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
@@ -303,5 +305,132 @@ describe('gate wiring safety contract', () => {
     const postSuite = GREEN_CHECKPOINT_SRC.indexOf('runPostSuiteLegs(', suite);
     expect(suite).toBeGreaterThan(-1);
     expect(postSuite).toBeGreaterThan(suite);
+  });
+});
+
+// EI-21577710345620735 — cross-run reuse.
+//
+// The per-run group deliberately confines reuse to ONE gate run, which is why a red gate re-tests
+// the ~100 tasks that already passed: their proof exists but is filed under last run's group and
+// is unreachable. These tests pin BOTH halves of the fix, and the second half matters more than
+// the first: reuse that fires when it must not is a gate that certifies unverified code.
+describe('cross-run passing-task verdict reuse', () => {
+  const crossRunIdentity = (
+    environment: Record<string, unknown>,
+    overrides: Record<string, unknown> = {},
+  ) =>
+    buildPassingTaskVerdictIdentity({
+      taskKey: '@papercusp/web :: test',
+      command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/checkpoint' },
+      gateConfig: { retry: true, timeoutMs: 1000 },
+      dependencyHash: 'dep-a',
+      ...overrides,
+      environment: passingTaskVerdictCrossRunIdentityEnvironment(environment).environment,
+    });
+
+  const runA = {
+    CI: '1',
+    AFFECTED_BASE: 'a2d69cef',
+    PAPERCUSP_TEST_RUN_GROUP: 'run-A',
+    VITEST_MAX_FORKS: '8',
+    VITEST_MAX_WORKERS: '8',
+    VITEST_MAX_THREADS: '8',
+  };
+  // Same tree, next hourly fire: new run group, and a different fork allocation because the box
+  // was busier. Neither says anything about what the task exercised.
+  const runB = {
+    ...runA,
+    PAPERCUSP_TEST_RUN_GROUP: 'run-B',
+    VITEST_MAX_FORKS: '4',
+    VITEST_MAX_WORKERS: '4',
+    VITEST_MAX_THREADS: '4',
+  };
+
+  it('resolves to one stable group so run N+1 can reach run N proof', () => {
+    expect(passingTaskVerdictCrossRunIdentityEnvironment(runA).cacheGroup).toBe(
+      PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+    );
+    expect(passingTaskVerdictCrossRunIdentityEnvironment(runB).cacheGroup).toBe(
+      PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+    );
+  });
+
+  // Without this the feature is INERT, and inert is the failure mode that does not announce
+  // itself: every lookup simply misses and the gate looks exactly as deadlocked as before.
+  it('ignores run group and fork allocation, so an unchanged task hits in the next run', () => {
+    expect(crossRunIdentity(runB).fingerprint).toBe(crossRunIdentity(runA).fingerprint);
+    expect(
+      decidePassingTaskVerdict({
+        enabled: true,
+        cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictEntry(crossRunIdentity(runA)),
+        identity: crossRunIdentity(runB),
+      }),
+    ).toMatchObject({ hit: true });
+  });
+
+  // The falsifiability controls. Each asserts a MISS: if any of these ever hits, the gate is
+  // reusing a verdict that no longer describes the code under test.
+  it('MISSES when a dependency byte changed — the property the gate rests on', () => {
+    const proven = crossRunIdentity(runA, { dependencyHash: 'dep-a' });
+    const changed = crossRunIdentity(runB, { dependencyHash: 'dep-a-MUTATED' });
+    expect(changed.fingerprint).not.toBe(proven.fingerprint);
+    expect(
+      decidePassingTaskVerdict({
+        enabled: true,
+        cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictEntry(proven),
+        identity: changed,
+      }),
+    ).toMatchObject({ hit: false });
+  });
+
+  it('MISSES when the command, gate config, or AFFECTED_BASE changed', () => {
+    const proven = crossRunIdentity(runA);
+    expect(crossRunIdentity(runB, { command: { cmd: 'npm', argv: ['run', 'test:integration'] } }).fingerprint).not.toBe(
+      proven.fingerprint,
+    );
+    expect(crossRunIdentity(runB, { gateConfig: { retry: false, timeoutMs: 1000 } }).fingerprint).not.toBe(
+      proven.fingerprint,
+    );
+    // When the gate finally goes green the pin advances, so every task re-runs exactly once.
+    expect(crossRunIdentity({ ...runB, AFFECTED_BASE: 'newgreen' }).fingerprint).not.toBe(proven.fingerprint);
+  });
+
+  it('MISSES on an unfamiliar environment variable rather than assuming it is irrelevant', () => {
+    expect(crossRunIdentity({ ...runB, SOME_NEW_TOGGLE: '1' }).fingerprint).not.toBe(
+      crossRunIdentity(runA).fingerprint,
+    );
+  });
+
+  // The cap is an LRU written for disposable per-run groups. The cross-run group is the one whose
+  // entire value is surviving into later runs, and evicting it degrades silently to "no reuse".
+  it('never evicts the cross-run group under the MAX_GROUPS cap', () => {
+    let cache = emptyPassingTaskVerdictCache();
+    cache = mergePassingTaskVerdictUpdates(
+      cache,
+      PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+      { '@papercusp/web :: test': passingTaskVerdictEntry(crossRunIdentity(runA)) },
+      '2020-01-01T00:00:00.000Z', // deliberately the OLDEST entry in the cache
+    );
+    for (let i = 0; i < PASSING_TASK_VERDICT_CACHE_MAX_GROUPS + 5; i += 1) {
+      cache = mergePassingTaskVerdictUpdates(
+        cache,
+        `run-${i}`,
+        { '@papercusp/web :: test': passingTaskVerdictEntry(identity()) },
+        `2026-01-01T00:00:${String(i).padStart(2, '0')}.000Z`,
+      );
+    }
+    expect(Object.keys(cache.groups)).toContain(PASSING_TASK_VERDICT_CROSS_RUN_GROUP);
+    expect(
+      passingTaskVerdictCacheEntry(cache, PASSING_TASK_VERDICT_CROSS_RUN_GROUP, '@papercusp/web :: test'),
+    ).toBeDefined();
+  });
+
+  it('is wired into affected-tests.mjs on both the lookup and the store path', () => {
+    expect(AFFECTED_TESTS_SRC).toContain('passingTaskVerdictCrossRunIdentityEnvironment(childEnv)');
+    // The store must reach the cross-run group, or run N+1 has nothing to read.
+    expect(AFFECTED_TESTS_SRC).toContain('PASSING_TASK_VERDICT_CROSS_RUN_GROUP');
+    expect(AFFECTED_TESTS_SRC).toContain('__crossRunCacheIdentity');
   });
 });
