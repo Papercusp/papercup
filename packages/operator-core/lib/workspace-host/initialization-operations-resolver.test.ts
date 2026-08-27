@@ -8,9 +8,12 @@
  * would fail against real cloud, at runtime, as an SSH to a nonexistent instance.
  */
 import { generateKeyPairSync } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
@@ -30,10 +33,7 @@ import {
   resolveWorkspaceHostInitializationOperationsForHost,
   type WorkspaceHostInitializationControllerProfile,
 } from './initialization-operations-resolver';
-import {
-  resolveGcpWorkspaceHostInstanceIdentity,
-  type GcpInstanceGuestAttribute,
-} from './gcp-provider';
+import { resolveGcpWorkspaceHostInstanceIdentity, type GcpInstanceGuestAttribute } from './gcp-provider';
 import { buildGcpIapWorkspaceHostInitializationCommand } from './gcp-iap-initialization-operations';
 
 const controller: WorkspaceHostInitializationControllerProfile = {
@@ -41,6 +41,9 @@ const controller: WorkspaceHostInitializationControllerProfile = {
   knownHostsFile: '/etc/papercusp/known_hosts',
   remoteEntrypoint: '/opt/papercusp/bin/workspace-host-initializer',
 };
+
+const execFileAsync = promisify(execFile);
+const REPOSITORY_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 type TestHostKeyAlgorithm = 'ecdsa-sha2-nistp256' | 'ssh-ed25519' | 'ssh-rsa';
 
@@ -165,16 +168,14 @@ describe('resolveWorkspaceHostInitializationOperations', () => {
   });
 
   it('honours an explicit provider instanceName over the derived default', () => {
-    const identity = resolveGcpWorkspaceHostInstanceIdentity(
-      desired({ provider: { instanceName: 'explicit-vm' } }),
-    );
+    const identity = resolveGcpWorkspaceHostInstanceIdentity(desired({ provider: { instanceName: 'explicit-vm' } }));
     expect(identity.instanceName).toBe('explicit-vm');
   });
 
   it('refuses a target with no adapter instead of silently falling back', () => {
-    expect(() =>
-      resolveWorkspaceHostInitializationOperations(desired({ target: 'aws' } as never), controller),
-    ).toThrow(UnsupportedWorkspaceHostInitializationTargetError);
+    expect(() => resolveWorkspaceHostInitializationOperations(desired({ target: 'aws' } as never), controller)).toThrow(
+      UnsupportedWorkspaceHostInitializationTargetError,
+    );
 
     expect(() =>
       resolveWorkspaceHostInitializationOperations(desired({ target: 'azure' } as never), controller),
@@ -184,9 +185,9 @@ describe('resolveWorkspaceHostInitializationOperations', () => {
   it("propagates the provider's own validation rules rather than softening them", () => {
     // zone must belong to region — the provider enforces this when provisioning, so the
     // initializer must not accept a spec the provider would have rejected.
-    expect(() =>
-      resolveWorkspaceHostInitializationOperations(desired({ zone: 'europe-west1-b' }), controller),
-    ).toThrow(/zone must belong to/);
+    expect(() => resolveWorkspaceHostInitializationOperations(desired({ zone: 'europe-west1-b' }), controller)).toThrow(
+      /zone must belong to/,
+    );
 
     expect(() =>
       resolveWorkspaceHostInitializationOperations(
@@ -277,9 +278,9 @@ describe('resolveWorkspaceHostInitializationControllerProfile', () => {
     expect(() => resolveWorkspaceHostInitializationControllerProfile({ STATE_DIRECTORY: 'relative/state' })).toThrow(
       /STATE_DIRECTORY must name one absolute directory/,
     );
-    expect(() =>
-      resolveWorkspaceHostInitializationControllerProfile({ STATE_DIRECTORY: '/one:/two' }),
-    ).toThrow(/STATE_DIRECTORY must name one absolute directory/);
+    expect(() => resolveWorkspaceHostInitializationControllerProfile({ STATE_DIRECTORY: '/one:/two' })).toThrow(
+      /STATE_DIRECTORY must name one absolute directory/,
+    );
   });
 });
 
@@ -402,7 +403,9 @@ describe('GCP IAP controller known_hosts enrollment', () => {
           idempotencyKey: 'workspace-init:op-1:workspace',
           input: {},
         },
-      ).args.find((arg) => arg.startsWith('HostKeyAlias='))!.slice('HostKeyAlias='.length);
+      )
+        .args.find((arg) => arg.startsWith('HostKeyAlias='))!
+        .slice('HostKeyAlias='.length);
 
       expect(written).toContain(`${unrelated}\n`);
       expect(written.match(new RegExp(`^${alias} `, 'gm'))).toHaveLength(3);
@@ -419,9 +422,9 @@ describe('GCP IAP controller known_hosts enrollment', () => {
     const knownHostsFile = join(root, 'known_hosts');
     const identity = resolveGcpWorkspaceHostInstanceIdentity(desired());
     try {
-      await expect(
-        enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: [] }),
-      ).rejects.toBeInstanceOf(WorkspaceHostInitializationHostKeyError);
+      await expect(enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: [] })).rejects.toBeInstanceOf(
+        WorkspaceHostInitializationHostKeyError,
+      );
       await expect(
         enrollGcpIapHostKeys({
           identity,
@@ -436,9 +439,7 @@ describe('GCP IAP controller known_hosts enrollment', () => {
         enrollGcpIapHostKeys({
           identity,
           knownHostsFile,
-          attributes: [
-            { namespace: 'hostkeys', key: 'ssh-ed25519', value: truncatedEd25519 },
-          ],
+          attributes: [{ namespace: 'hostkeys', key: 'ssh-ed25519', value: truncatedEd25519 }],
         }),
       ).rejects.toThrow(/truncated/);
       await expect(
@@ -485,13 +486,98 @@ describe('GCP IAP controller known_hosts enrollment', () => {
             idempotencyKey: 'workspace-init:op-concurrent:workspace',
             input: {},
           },
-        ).args.find((arg) => arg.startsWith('HostKeyAlias='))!.slice('HostKeyAlias='.length),
+        )
+          .args.find((arg) => arg.startsWith('HostKeyAlias='))!
+          .slice('HostKeyAlias='.length),
       );
       for (const alias of aliases) expect(written.match(new RegExp(`^${alias} `, 'gm'))).toHaveLength(3);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
+
+  it('serializes independent clustered worker processes sharing one StateDirectory trust file', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'papercusp-known-hosts-processes-'));
+    const knownHostsFile = join(root, 'controller', 'known_hosts');
+    const lockRoot = join(root, 'mutexes');
+    const barrierRoot = join(root, 'barrier');
+    const first = resolveGcpWorkspaceHostInstanceIdentity(desired());
+    const second = resolveGcpWorkspaceHostInstanceIdentity(
+      desired({
+        hostId: 'host-beta',
+        provider: { instanceName: 'host-beta', projectId: 'active-alcove-504205-q3' },
+      }),
+    );
+    const inputPaths = [join(root, 'first.json'), join(root, 'second.json')];
+    await Promise.all([
+      writeFile(
+        inputPaths[0]!,
+        JSON.stringify({ identity: first, knownHostsFile, attributes: guestHostKeys('process-first') }),
+      ),
+      writeFile(
+        inputPaths[1]!,
+        JSON.stringify({ identity: second, knownHostsFile, attributes: guestHostKeys('process-second') }),
+      ),
+    ]);
+
+    const childSource = String.raw`
+      import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+      import { join } from 'node:path';
+      const payload = JSON.parse(await readFile(process.argv[1], 'utf8'));
+      const barrierRoot = process.env.PAPERCUSP_HOSTKEY_TEST_BARRIER;
+      const marker = join(barrierRoot, String(process.pid));
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      await mkdir(barrierRoot, { recursive: true });
+      const { enrollGcpIapHostKeys } = await import('./packages/operator-core/lib/workspace-host/initialization-operations-resolver.ts');
+      await enrollGcpIapHostKeys(payload, {
+        async beforeMutex() {
+          await writeFile(marker, 'ready');
+          for (let attempt = 0; attempt < 500; attempt += 1) {
+            if ((await readdir(barrierRoot)).length === 2) return;
+            await sleep(10);
+          }
+          throw new Error('cross-process enrollment barrier timed out');
+        },
+        afterRead: () => sleep(200),
+      });
+    `;
+    const env = {
+      ...process.env,
+      PAPERCUSP_DISABLE_FS_MUTEX: '',
+      PAPERCUSP_FS_MUTEX_LOCK_DIR: lockRoot,
+      PAPERCUSP_HOSTKEY_TEST_BARRIER: barrierRoot,
+    };
+
+    try {
+      await Promise.all(
+        inputPaths.map((inputPath) =>
+          execFileAsync(
+            process.execPath,
+            ['--import', 'tsx', '--input-type=module', '--eval', childSource, inputPath],
+            { cwd: REPOSITORY_ROOT, env, timeout: 30_000 },
+          ),
+        ),
+      );
+      const written = await readFile(knownHostsFile, 'utf8');
+      for (const identity of [first, second]) {
+        const alias = buildGcpIapWorkspaceHostInitializationCommand(
+          { ...identity, ...controller, knownHostsFile },
+          {
+            id: 'workspace',
+            kind: 'create-workspace',
+            dependsOn: [],
+            idempotencyKey: `workspace-init:${identity.instanceName}:workspace`,
+            input: {},
+          },
+        )
+          .args.find((arg) => arg.startsWith('HostKeyAlias='))!
+          .slice('HostKeyAlias='.length);
+        expect(written.match(new RegExp(`^${alias} `, 'gm'))).toHaveLength(3);
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 45_000);
 });
 
 describe('persisting a desired spec is secret-safe', () => {

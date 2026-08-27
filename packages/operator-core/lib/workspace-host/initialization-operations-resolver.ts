@@ -19,9 +19,11 @@
  *    transfer, pairing or credential-delivery parity — the contract says so explicitly — so
  *    falling back to "some other adapter" would be actively wrong. Refusing names the gap.
  */
-import { createPublicKey, randomUUID, type KeyObject } from 'node:crypto';
+import { createHash, createPublicKey, randomUUID, type KeyObject } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+// @ts-expect-error -- buildless plain-JS mutex module intentionally has no declaration file.
+import { withFsMutex } from '../../../../scripts/lib/fs-mutex.mjs';
 import {
   DEFAULT_WORKSPACE_HOST_BOOTSTRAP_ENTRYPOINTS,
   DEFAULT_WORKSPACE_HOST_WORKSPACE_USER,
@@ -83,16 +85,24 @@ const HOST_KEY_BY_ATTRIBUTE = new Map<string, (typeof HOST_KEY_ALGORITHMS)[numbe
 ]);
 
 const hostKeyEnrollmentQueues = new Map<string, Promise<void>>();
+const HOST_KEY_ENROLLMENT_MUTEX_PREFIX = 'workspace-host-known-hosts-';
+
+interface GcpIapHostKeyEnrollmentTestHooks {
+  /** Test seam: synchronize independent processes immediately before cross-process acquisition. */
+  beforeMutex?: () => Promise<void>;
+  /** Test seam: widen the stale-snapshot window after the trust file is read. */
+  afterRead?: () => Promise<void>;
+}
+
+function hostKeyEnrollmentMutexName(knownHostsFile: string): string {
+  return `${HOST_KEY_ENROLLMENT_MUTEX_PREFIX}${createHash('sha256').update(knownHostsFile).digest('hex')}`;
+}
 
 function hostKeyFailure(message: string): never {
   throw new WorkspaceHostInitializationHostKeyError(message);
 }
 
-function readSshString(
-  blob: Buffer,
-  offset: number,
-  label: string,
-): { value: Buffer; nextOffset: number } {
+function readSshString(blob: Buffer, offset: number, label: string): { value: Buffer; nextOffset: number } {
   if (offset + 4 > blob.length) hostKeyFailure(`${label} is truncated`);
   const length = blob.readUInt32BE(offset);
   const start = offset + 4;
@@ -203,10 +213,13 @@ function guestHostKeys(attributes: readonly GcpInstanceGuestAttribute[]): Map<st
   const keys = new Map<string, string>();
   for (const attribute of attributes) {
     if (attribute.namespace !== 'hostkeys') {
-      throw new WorkspaceHostInitializationHostKeyError(`unexpected guest-attribute namespace '${attribute.namespace}'`);
+      throw new WorkspaceHostInitializationHostKeyError(
+        `unexpected guest-attribute namespace '${attribute.namespace}'`,
+      );
     }
     const expected = HOST_KEY_BY_ATTRIBUTE.get(attribute.key);
-    if (!expected) throw new WorkspaceHostInitializationHostKeyError(`unsupported host-key attribute '${attribute.key}'`);
+    if (!expected)
+      throw new WorkspaceHostInitializationHostKeyError(`unsupported host-key attribute '${attribute.key}'`);
     // Compute's JSON contract keeps the algorithm in item.key and the SSH wire blob in
     // item.value. Keep this separate from the known_hosts full-line parser: accepting a guessed
     // prefix here would hide a response-shape mismatch.
@@ -224,7 +237,10 @@ function guestHostKeys(attributes: readonly GcpInstanceGuestAttribute[]): Map<st
   return keys;
 }
 
-async function enrollGcpIapHostKeysUnlocked(input: GcpIapHostKeyEnrollmentInput): Promise<void> {
+async function enrollGcpIapHostKeysUnlocked(
+  input: GcpIapHostKeyEnrollmentInput,
+  hooks: GcpIapHostKeyEnrollmentTestHooks,
+): Promise<void> {
   const alias = gcpIapHostKeyAlias(input.identity);
   const received = guestHostKeys(input.attributes);
   const directory = dirname(input.knownHostsFile);
@@ -240,6 +256,7 @@ async function enrollGcpIapHostKeysUnlocked(input: GcpIapHostKeyEnrollmentInput)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
+  await hooks.afterRead?.();
 
   const kept: string[] = [];
   const trusted = new Map<string, string>();
@@ -265,7 +282,9 @@ async function enrollGcpIapHostKeysUnlocked(input: GcpIapHostKeyEnrollmentInput)
       continue;
     }
     if (hostField.split(',').includes(alias)) {
-      throw new WorkspaceHostInitializationHostKeyError('known_hosts embeds the controller alias in a multi-host entry');
+      throw new WorkspaceHostInitializationHostKeyError(
+        'known_hosts embeds the controller alias in a multi-host entry',
+      );
     }
     kept.push(line);
   }
@@ -297,11 +316,15 @@ async function enrollGcpIapHostKeysUnlocked(input: GcpIapHostKeyEnrollmentInput)
 }
 
 /**
- * The packaged controller is one systemd service process, but routes within that process may
- * resolve different hosts concurrently. Serialize by normalized trust-file path so two atomic
- * renames cannot each preserve a stale snapshot and lose the other host's alias.
+ * Every clustered dev-api worker shares the same systemd StateDirectory. The in-process queue
+ * avoids redundant contention inside one worker; the filesystem mutex is the authoritative
+ * cross-process guard. Both key off the normalized trust-file path so two atomic renames cannot
+ * each preserve a stale snapshot and lose the other host's alias.
  */
-export function enrollGcpIapHostKeys(input: GcpIapHostKeyEnrollmentInput): Promise<void> {
+export function enrollGcpIapHostKeys(
+  input: GcpIapHostKeyEnrollmentInput,
+  hooks: GcpIapHostKeyEnrollmentTestHooks = {},
+): Promise<void> {
   if (!isAbsolute(input.knownHostsFile)) {
     return Promise.reject(new WorkspaceHostInitializationHostKeyError('known_hosts path must be absolute'));
   }
@@ -309,7 +332,14 @@ export function enrollGcpIapHostKeys(input: GcpIapHostKeyEnrollmentInput): Promi
   const prior = hostKeyEnrollmentQueues.get(knownHostsFile) ?? Promise.resolve();
   const run = prior
     .catch(() => undefined)
-    .then(() => enrollGcpIapHostKeysUnlocked({ ...input, knownHostsFile }));
+    .then(async () => {
+      await hooks.beforeMutex?.();
+      return withFsMutex(
+        hostKeyEnrollmentMutexName(knownHostsFile),
+        () => enrollGcpIapHostKeysUnlocked({ ...input, knownHostsFile }, hooks),
+        { timeoutMs: 30_000, staleMs: 60_000, retryMs: 20 },
+      );
+    });
   hostKeyEnrollmentQueues.set(knownHostsFile, run);
   return run.finally(() => {
     if (hostKeyEnrollmentQueues.get(knownHostsFile) === run) hostKeyEnrollmentQueues.delete(knownHostsFile);
@@ -433,9 +463,7 @@ export function resolveWorkspaceHostInitializationControllerProfile(
   if (!configuredKnownHostsFile && env[CONTROLLER_ENV.knownHostsFile] === undefined) {
     const stateDirectory = (env[SYSTEMD_STATE_DIRECTORY_ENV] ?? '').trim();
     if (!stateDirectory) {
-      problems.push(
-        `${CONTROLLER_ENV.knownHostsFile} is unset and ${SYSTEMD_STATE_DIRECTORY_ENV} is unavailable`,
-      );
+      problems.push(`${CONTROLLER_ENV.knownHostsFile} is unset and ${SYSTEMD_STATE_DIRECTORY_ENV} is unavailable`);
     } else if (!isAbsolute(stateDirectory) || stateDirectory.includes(':')) {
       problems.push(`${SYSTEMD_STATE_DIRECTORY_ENV} must name one absolute directory`);
     } else {
@@ -480,8 +508,8 @@ export class WorkspaceHostDesiredSpecUnavailableError extends Error {
       reason === 'host-not-found'
         ? `No workspace host '${hostId}' in this workspace`
         : `Workspace host '${hostId}' has no recorded provisioning intent, so the cloud instance ` +
-          `to initialize cannot be identified. It was provisioned before the intent was persisted ` +
-          `(migration 956), or by a provisioner that did not record it.`,
+            `to initialize cannot be identified. It was provisioned before the intent was persisted ` +
+            `(migration 956), or by a provisioner that did not record it.`,
     );
     this.name = 'WorkspaceHostDesiredSpecUnavailableError';
     this.hostId = hostId;
