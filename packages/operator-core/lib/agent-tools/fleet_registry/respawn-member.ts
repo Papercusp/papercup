@@ -410,6 +410,40 @@ export default defineTool({
       );
     }
 
+    // WI-39948/WI-42447 — PRE-MUTATION transport preflight. Codex's code-mode
+    // bridge cannot carry the full Papercusp catalog: the resulting ~128 MiB
+    // request exceeds its hard 64 MiB frame cap. The psu child retains its own
+    // guard, but reaching it here is already too late because respawn would have
+    // drained the healthy predecessor and opened a terminal for a CLI that can
+    // never complete its first tool call. Validate the fully folded saved spec,
+    // not only the explicit delta, so an inherited `full` profile is caught too.
+    if (
+      savedLaunchSpec.effective.member.agent === 'codex' &&
+      savedLaunchSpec.effective.member.contextSize === 'full'
+    ) {
+      return json(
+        {
+          ok: false,
+          error: 'codex_full_context_unlaunchable',
+          fleet: slug,
+          member: memberOwnerId,
+          killed: false,
+          message:
+            "The effective replacement resolves to agent='codex' with contextSize='full', which is not launchable: " +
+            'the full Papercusp tool catalog produces a ~128 MiB code-mode IPC frame above the bridge\'s hard 64 MiB limit. ' +
+            "Use contextSize='trimmed' (tools:find/tools:invoke retain full capability reachability). " +
+            'The old member was NOT drained, no replacement identity was reserved, and no terminal was opened (WI-39948).',
+          launchSpec: {
+            provenance: savedLaunchSpec.provenance,
+            reusePath: savedLaunchSpec.reusePath,
+            overrides: savedLaunchSpec.overrides,
+            preservedFields: savedLaunchSpec.preservedFields,
+          },
+        },
+        true,
+      );
+    }
+
     // 0. Snapshot the fleet's roster BEFORE the kill, so the replacement is identified by being
     //    an owner-id that was not there before — a respawn mints a NEW identity, so "some member
     //    is present" is not evidence; "a member nobody had seen is present" is.
