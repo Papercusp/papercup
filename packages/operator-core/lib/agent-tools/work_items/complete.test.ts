@@ -1845,6 +1845,25 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.typeEvidenceWarning).toContain('--files=packages/operator-core/lib/agent-tools/dev/cache_stats.ts');
     });
 
+    it('resolves a unique bare basename to the owning lint:tsc gate', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed cache statistics collection',
+          verifiedHow: 'unit',
+          testsRun: 'testing:run cache_stats.test.ts',
+          testResult: '8 passed / 0 failed',
+          filesChanged: ['cache_stats.ts'],
+        },
+      });
+      expect(r.typeEvidenceWarning).toContain(
+        'npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/dev/cache_stats.ts',
+      );
+      expect(r.typeEvidenceWarning).not.toContain('no repository lint:tsc gate was resolved');
+    });
+
     it('routes apps/operator files to the owning lint:tsc:operator gate', async () => {
       getWorkItem.mockResolvedValue(item);
       const r = await one({

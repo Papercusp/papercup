@@ -28,7 +28,7 @@
  */
 
 import { z } from 'zod';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, type Dirent } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import { HARVESTED_COORD_NOTES_RULE } from '../../harness/improvements/observation-title-guidance';
@@ -562,24 +562,126 @@ async function siblingTypecheckGates(root: string): Promise<TypecheckGate[]> {
 }
 
 /**
+ * A basename-only completion is an underspecified path until the repository proves otherwise.
+ * Keep the search bounded and fail closed: a unique match is useful evidence, while an
+ * ambiguous, unreadable, or truncated scan must remain uncovered so the warning cannot suggest
+ * a command for a file we did not actually identify.
+ */
+const MAX_TYPECHECK_BASENAME_SCAN_ENTRIES = 50_000;
+const MAX_TYPECHECK_BASENAME_SCAN_DEPTH = 32;
+const TYPECHECK_BASENAME_PRUNED_DIRS = new Set([
+  '.git',
+  '.next',
+  '.turbo',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+  'target',
+]);
+
+type TypecheckBasenameCache = Map<string, string[] | null>;
+
+function uniqueTypecheckBasenameMatches(
+  root: string,
+  basename: string,
+  gates: TypecheckGate[],
+  cache: TypecheckBasenameCache,
+): string[] | null {
+  if (cache.has(basename)) return cache.get(basename) ?? null;
+
+  const prefixes = [...new Set(gates.flatMap((gate) => gate.prefixes))].sort((a, b) => b.length - a.length);
+  const matches = new Set<string>();
+  const visitedDirectories = new Set<string>();
+  let scannedEntries = 0;
+  let complete = true;
+
+  const walk = (directory: string, depth: number): void => {
+    if (!complete || matches.size > 1) return;
+    const resolvedDirectory = nodePath.resolve(directory);
+    if (visitedDirectories.has(resolvedDirectory)) return;
+    visitedDirectories.add(resolvedDirectory);
+    if (depth > MAX_TYPECHECK_BASENAME_SCAN_DEPTH) {
+      complete = false;
+      return;
+    }
+
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(resolvedDirectory, { withFileTypes: true });
+    } catch {
+      complete = false;
+      return;
+    }
+
+    for (const entry of entries) {
+      scannedEntries += 1;
+      if (scannedEntries > MAX_TYPECHECK_BASENAME_SCAN_ENTRIES) {
+        complete = false;
+        return;
+      }
+
+      if (entry.isDirectory()) {
+        if (!TYPECHECK_BASENAME_PRUNED_DIRS.has(entry.name)) {
+          walk(nodePath.join(directory, entry.name), depth + 1);
+        }
+        continue;
+      }
+      if (!entry.isFile() || entry.name !== basename) continue;
+
+      const candidate = nodePath.relative(root, nodePath.join(directory, entry.name)).split(nodePath.sep).join('/');
+      if (gateCoveringFile(gates, candidate)) matches.add(candidate);
+      if (matches.size > 1) return;
+    }
+  };
+
+  for (const prefix of prefixes) {
+    const directory = nodePath.resolve(root, prefix);
+    const relativeDirectory = nodePath.relative(root, directory);
+    if (relativeDirectory.startsWith('..') || nodePath.isAbsolute(relativeDirectory)) {
+      complete = false;
+      break;
+    }
+    walk(directory, 0);
+    if (!complete || matches.size > 1) break;
+  }
+
+  const result = complete && matches.size === 1 ? [...matches] : matches.size > 1 ? [...matches] : null;
+  cache.set(basename, result);
+  return result;
+}
+
+/**
  * Completion evidence historically accepted both repo-relative paths and paths relative to the
  * operator-core package. Gate declarations are repo-relative, so resolve the latter against a
  * covered prefix when the caller did not include its package directory. Only use an existing
  * candidate: guessing a prefix for a fabricated path would make the warning look more certain
  * than the evidence allows.
  */
-function repoRelativeTypecheckFile(root: string, file: string, gates: TypecheckGate[]): string | null {
+function repoRelativeTypecheckFile(
+  root: string,
+  file: string,
+  gates: TypecheckGate[],
+  basenameCache: TypecheckBasenameCache,
+): string | null {
   const raw = String(file).replace(/^\.\//, '');
   const normalized = nodePath.isAbsolute(raw)
     ? nodePath.relative(root, raw).split(nodePath.sep).join('/')
     : raw.split(nodePath.sep).join('/');
-  if (gateCoveringFile(gates, normalized)) return normalized;
+  const basenameOnly = !normalized.includes('/');
+  if (!basenameOnly && gateCoveringFile(gates, normalized)) return normalized;
 
   const prefixes = [...new Set(gates.flatMap((gate) => gate.prefixes))].sort((a, b) => b.length - a.length);
   for (const prefix of prefixes) {
     if (!prefix || normalized.startsWith(prefix)) continue;
     const candidate = `${prefix}${normalized}`;
     if (existsSync(nodePath.resolve(root, candidate)) && gateCoveringFile(gates, candidate)) return candidate;
+  }
+
+  if (basenameOnly) {
+    const matches = uniqueTypecheckBasenameMatches(root, normalized, gates, basenameCache);
+    return matches?.length === 1 ? matches[0]! : null;
   }
   return null;
 }
@@ -601,8 +703,9 @@ async function typecheckCommandsForFiles(files: string[]): Promise<string> {
   const gates = await siblingTypecheckGates(root);
   const grouped = new Map<string, string[]>();
   const uncovered: string[] = [];
+  const basenameCache: TypecheckBasenameCache = new Map();
   for (const file of files) {
-    const repoFile = repoRelativeTypecheckFile(root, file, gates);
+    const repoFile = repoRelativeTypecheckFile(root, file, gates, basenameCache);
     const gate = repoFile ? gateCoveringFile(gates, repoFile) : null;
     if (!gate) {
       uncovered.push(file);
