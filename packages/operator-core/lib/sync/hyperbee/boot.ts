@@ -377,6 +377,13 @@ export interface BootHarnessOpts {
    */
   mergePollMs?: number;
   /**
+   * WI-6324 test seam: managed recurring timers are inert under Vitest by
+   * default. The zombie-socket integration repro opts in ONLY the independent
+   * replication-liveness timer so it can verify that detection continues while
+   * the serialized merge pass is blocked. Production callers leave undefined.
+   */
+  allowReplicationLivenessTimerInTest?: boolean;
+  /**
    * WI-183: how long (ms) an admitted remote log may show zero live
    * replicator peers, after having previously shown at least one, before
    * `checkReplicationStall` records a `replication_stalled` boot event.
@@ -1552,6 +1559,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     opts.connectedNeverReplicatedGraceMs ?? REPLICATION_STALL_GRACE_MS;
   // WI-38376: frozen axis likewise, defaulting to the general one.
   const FROZEN_GRACE_MS = opts.frozenGraceMs ?? REPLICATION_STALL_GRACE_MS;
+  // WI-6324: the independent dead-man sampler below continues only windows
+  // opened by mergeOnePass's canonical, post-update sample. Starting a window
+  // at raw admission time changes detector semantics (and can force-rejoin a
+  // healthy-but-not-yet-sampled boot before its first merge observation).
+  const canonicallySampledLivenessKeys = new Set<string>();
 
   // ── Revocation (D-004) ── the only blocklist. `revoked` holds device pubkeys
   // (base64) the read-admission decider refuses; `pubkeyToLogKeys` records every
@@ -3511,6 +3523,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
               frozenGraceMs: FROZEN_GRACE_MS,
             },
           );
+          canonicallySampledLivenessKeys.add(log.keyHex);
           checkRepairConfirmation(
             log.keyHex,
             livenessMergedPosition,
@@ -3927,6 +3940,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     if (stopped) return;
     for (const log of admitted.values()) {
       if (log.keyHex === ownLog.keyHex) continue;
+      if (!canonicallySampledLivenessKeys.has(log.keyHex)) continue;
       try {
         const maybePeers = log as Partial<{ peersCount(): number | undefined }>;
         const peersCount =
@@ -3968,7 +3982,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           'hyperbee-replication-liveness-poll',
           mergePollMs,
           sampleAdmittedLivenessOutsideMerge,
-          { category: 'lifecycle', instanced: true },
+          {
+            category: 'lifecycle',
+            instanced: true,
+            allowInTest: opts.allowReplicationLivenessTimerInTest,
+          },
         )
       : null;
 
