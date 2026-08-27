@@ -20,7 +20,7 @@
  * Pure + synchronous (a small Map + a cursor); the credential refresh + token getters live in the
  * resolvers the entries wrap (launch.ts). `now()` is injectable for tests.
  */
-import type { ActiveAccount, AccountPool } from './gateway';
+import type { ActiveAccount, AccountPool } from './provider-contracts';
 
 export interface FailoverPoolOptions {
   now?: () => number;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayPath, providerForGatewayRequest, type GatewayProviderId } from './provider-adapters';
-import type { AccountPool, ActiveAccount } from './gateway';
+import { gatewayProviderStatuses, makeGatewayLaneRegistry, makeGatewayProviderAdapters, providerForGatewayPath, providerForGatewayRequest, type GatewayProviderId } from './provider-adapters';
+import type { AccountPool, ActiveAccount } from './provider-contracts';
 
 const account = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-token` });
 const pool = (id: string): AccountPool => {
@@ -13,6 +13,44 @@ const pool = (id: string): AccountPool => {
 };
 
 describe('gateway provider adapters', () => {
+  it('declares a static lane registry across client, protocol, upstream, and transport axes', () => {
+    const lanes = makeGatewayLaneRegistry({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      codexCliAccountCount: () => 1,
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+
+    expect(Object.keys(lanes)).toEqual(['anthropicMessages', 'openaiResponses', 'localOpenAiChat']);
+    expect(lanes.anthropicMessages).toMatchObject({
+      protocol: 'anthropic-messages',
+      clients: ['claude', 'omp'],
+      upstreams: ['anthropic-api'],
+      admissionProfile: 'claude',
+      rateLimitDialect: 'anthropic-unified',
+    });
+    expect(lanes.openaiResponses).toMatchObject({
+      protocol: 'openai-responses',
+      clients: ['codex', 'omp'],
+      upstreams: ['openai-api', 'chatgpt-codex'],
+      admissionProfile: 'codex',
+      rateLimitDialect: 'codex-windows',
+    });
+    expect(lanes.openaiResponses.transports).toEqual([
+      expect.objectContaining({ id: 'bearer-http', streaming: true, nonStreaming: true }),
+      expect.objectContaining({ id: 'oauth-http', streaming: true, nonStreaming: true }),
+      expect.objectContaining({ id: 'cli-exec', streaming: false, nonStreaming: true, degraded: true }),
+    ]);
+    expect(lanes.localOpenAiChat).toMatchObject({
+      protocol: 'openai-chat',
+      upstreams: ['local-registry'],
+      admissionProfile: 'local',
+      retryPolicy: 'local-backend-failover',
+      accountPool: null,
+    });
+  });
+
   it('declares Claude, Codex, and OMP provider contracts explicitly', () => {
     const adapters = makeGatewayProviderAdapters({
       claudePool: pool('claude-a'),
@@ -26,6 +64,8 @@ describe('gateway provider adapters', () => {
     expect(adapters.codex).toMatchObject({ id: 'codex', protocol: 'openai-compatible', upstreamBase: 'https://openai.test' });
     // OMP reuses the Anthropic adapter (Claude-account pinning) — diagnostics row, not a routing target.
     expect(adapters.omp).toMatchObject({ id: 'omp', protocol: 'anthropic', upstreamBase: 'https://anthropic.test' });
+    expect(adapters.omp.lane).toBe(adapters.claude.lane);
+    expect(adapters.codex.lane.id).toBe('openai-responses');
     expect(adapters.omp.unavailableMessage).toBeNull();
   });
 
@@ -102,9 +142,9 @@ describe('gateway provider adapters', () => {
     });
 
     expect(gatewayProviderStatuses(adapters)).toEqual([
-      expect.objectContaining({ id: 'claude', configured: true, protocol: 'anthropic' }),
-      expect.objectContaining({ id: 'codex', configured: false, protocol: 'openai-compatible', unavailableMessage: expect.stringMatching(/no Codex account pool/i) }),
-      expect.objectContaining({ id: 'omp', configured: true, protocol: 'anthropic' }),
+      expect.objectContaining({ id: 'claude', configured: true, protocol: 'anthropic', laneId: 'anthropic-messages' }),
+      expect.objectContaining({ id: 'codex', configured: false, protocol: 'openai-compatible', laneId: 'openai-responses', unavailableMessage: expect.stringMatching(/no Codex account pool/i) }),
+      expect.objectContaining({ id: 'omp', configured: true, protocol: 'anthropic', laneId: 'anthropic-messages' }),
     ]);
   });
 

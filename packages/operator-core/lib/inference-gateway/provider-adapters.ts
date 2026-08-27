@@ -1,8 +1,70 @@
-import type { AccountPool } from './gateway';
+import type { AccountPool } from './provider-contracts';
 import { CODEX_ORIGINATOR, CODEX_OPENAI_BETA } from './codex-oauth-proxy';
 
 export type GatewayProviderId = 'claude' | 'codex' | 'omp';
 export type GatewayProviderProtocol = 'anthropic' | 'openai-compatible' | 'unsupported';
+
+/** The launcher/runtime making a request. This is NOT the wire protocol. */
+export type GatewayClientBackend = 'claude' | 'codex' | 'omp';
+/** Protocol spoken on the gateway boundary. */
+export type GatewayWireProtocol = 'anthropic-messages' | 'openai-responses' | 'openai-chat';
+/** Concrete upstream service selected after protocol classification. */
+export type GatewayUpstreamRoute = 'anthropic-api' | 'openai-api' | 'chatgpt-codex' | 'local-registry';
+/** Credential + I/O mechanism for one attempt. */
+export type GatewayTransportId = 'bearer-http' | 'oauth-http' | 'cli-exec' | 'local-http';
+export type GatewayRateLimitDialect = 'anthropic-unified' | 'codex-windows' | 'none';
+export type GatewayCachePolicyId = 'anthropic-cache-control' | 'openai-prompt-cache' | 'none';
+export type GatewayModelCatalogPolicy = 'upstream' | 'gateway-static' | 'local-registry';
+export type GatewayRetryPolicyId = 'account-failover' | 'local-backend-failover' | 'none';
+
+export interface GatewayTransportDescriptor {
+  id: GatewayTransportId;
+  auth: 'bearer' | 'oauth' | 'cli-home' | 'none';
+  streaming: boolean;
+  nonStreaming: boolean;
+  /** A degraded compatibility/rollback transport, never the preferred happy path. */
+  degraded?: boolean;
+}
+
+export interface GatewayLaneCapabilities {
+  streaming: boolean;
+  nonStreaming: boolean;
+  accountPinning: 'hard-soft' | 'none';
+  modelDiscovery: GatewayModelCatalogPolicy;
+}
+
+export interface GatewayLaneDescriptor {
+  id: 'anthropic-messages' | 'openai-responses' | 'local-openai-chat';
+  label: string;
+  clients: readonly GatewayClientBackend[];
+  protocol: GatewayWireProtocol;
+  upstreams: readonly GatewayUpstreamRoute[];
+  transports: readonly GatewayTransportDescriptor[];
+  capabilities: GatewayLaneCapabilities;
+  accountPool: AccountPool | null;
+  upstreamBase: string | null;
+  admissionProfile: 'claude' | 'codex' | 'local';
+  retryPolicy: GatewayRetryPolicyId;
+  rateLimitDialect: GatewayRateLimitDialect;
+  cachePolicy: GatewayCachePolicyId;
+  observability: {
+    lane: string;
+    provider: 'anthropic' | 'openai' | 'local';
+  };
+  match: {
+    pathPrefixes: readonly string[];
+    ambiguousPaths?: readonly string[];
+  };
+  /** Live out-of-pool transport count (currently ChatGPT subscription homes). */
+  extraAccountCount?: () => number;
+  unavailableMessage: string | null;
+}
+
+export interface GatewayLaneRegistry {
+  anthropicMessages: GatewayLaneDescriptor;
+  openaiResponses: GatewayLaneDescriptor;
+  localOpenAiChat: GatewayLaneDescriptor;
+}
 
 export interface GatewayProviderAdapter {
   id: GatewayProviderId;
@@ -17,6 +79,8 @@ export interface GatewayProviderAdapter {
    *  `pool: null` BY DESIGN and used to read as "not configured"). */
   cliAccountCount?: () => number;
   unavailableMessage: string | null;
+  /** Typed execution lane. OMP deliberately delegates to an existing protocol lane. */
+  lane: GatewayLaneDescriptor;
 }
 
 export interface GatewayProviderAdapters {
@@ -34,11 +98,97 @@ export interface GatewayProviderStatus {
   cliAccountCount: number;
   upstreamBase: string | null;
   unavailableMessage: string | null;
+  laneId: GatewayLaneDescriptor['id'];
 }
 
 type GatewayRequestHeaders = Record<string, string | string[] | undefined>;
 
 const ACCOUNT_HEADER = 'x-papercusp-account';
+
+export function makeGatewayLaneRegistry(opts: {
+  claudePool: AccountPool;
+  codexPool?: AccountPool | null;
+  codexCliAccountCount?: () => number;
+  anthropicUpstreamBase: string;
+  openaiUpstreamBase: string;
+}): GatewayLaneRegistry {
+  return {
+    anthropicMessages: {
+      id: 'anthropic-messages',
+      label: 'Anthropic Messages',
+      clients: ['claude', 'omp'],
+      protocol: 'anthropic-messages',
+      upstreams: ['anthropic-api'],
+      transports: [{ id: 'oauth-http', auth: 'oauth', streaming: true, nonStreaming: true }],
+      capabilities: {
+        streaming: true,
+        nonStreaming: true,
+        accountPinning: 'hard-soft',
+        modelDiscovery: 'upstream',
+      },
+      accountPool: opts.claudePool,
+      upstreamBase: opts.anthropicUpstreamBase,
+      admissionProfile: 'claude',
+      retryPolicy: 'account-failover',
+      rateLimitDialect: 'anthropic-unified',
+      cachePolicy: 'anthropic-cache-control',
+      observability: { lane: 'anthropic-messages', provider: 'anthropic' },
+      match: { pathPrefixes: ['/v1/messages', '/v1/count_tokens'], ambiguousPaths: ['/v1/models'] },
+      unavailableMessage: null,
+    },
+    openaiResponses: {
+      id: 'openai-responses',
+      label: 'OpenAI Responses',
+      clients: ['codex', 'omp'],
+      protocol: 'openai-responses',
+      upstreams: ['openai-api', 'chatgpt-codex'],
+      transports: [
+        { id: 'bearer-http', auth: 'bearer', streaming: true, nonStreaming: true },
+        { id: 'oauth-http', auth: 'oauth', streaming: true, nonStreaming: true },
+        { id: 'cli-exec', auth: 'cli-home', streaming: false, nonStreaming: true, degraded: true },
+      ],
+      capabilities: {
+        streaming: true,
+        nonStreaming: true,
+        accountPinning: 'hard-soft',
+        modelDiscovery: 'gateway-static',
+      },
+      accountPool: opts.codexPool ?? null,
+      upstreamBase: opts.openaiUpstreamBase,
+      admissionProfile: 'codex',
+      retryPolicy: 'account-failover',
+      rateLimitDialect: 'codex-windows',
+      cachePolicy: 'openai-prompt-cache',
+      observability: { lane: 'openai-responses', provider: 'openai' },
+      match: { pathPrefixes: ['/v1/responses'], ambiguousPaths: ['/v1/models'] },
+      extraAccountCount: opts.codexCliAccountCount,
+      unavailableMessage: 'inference-gateway: no Codex account pool configured',
+    },
+    localOpenAiChat: {
+      id: 'local-openai-chat',
+      label: 'Local OpenAI-compatible chat/completions',
+      clients: ['omp'],
+      protocol: 'openai-chat',
+      upstreams: ['local-registry'],
+      transports: [{ id: 'local-http', auth: 'none', streaming: true, nonStreaming: true }],
+      capabilities: {
+        streaming: true,
+        nonStreaming: true,
+        accountPinning: 'none',
+        modelDiscovery: 'local-registry',
+      },
+      accountPool: null,
+      upstreamBase: null,
+      admissionProfile: 'local',
+      retryPolicy: 'local-backend-failover',
+      rateLimitDialect: 'none',
+      cachePolicy: 'none',
+      observability: { lane: 'local-openai-chat', provider: 'local' },
+      match: { pathPrefixes: ['/v1/chat/completions', '/v1/completions'] },
+      unavailableMessage: 'inference-gateway: no reachable local backend',
+    },
+  };
+}
 
 export function makeGatewayProviderAdapters(opts: {
   claudePool: AccountPool;
@@ -48,6 +198,7 @@ export function makeGatewayProviderAdapters(opts: {
   anthropicUpstreamBase: string;
   openaiUpstreamBase: string;
 }): GatewayProviderAdapters {
+  const lanes = makeGatewayLaneRegistry(opts);
   return {
     claude: {
       id: 'claude',
@@ -56,6 +207,7 @@ export function makeGatewayProviderAdapters(opts: {
       upstreamBase: opts.anthropicUpstreamBase,
       pool: opts.claudePool,
       unavailableMessage: null,
+      lane: lanes.anthropicMessages,
     },
     codex: {
       id: 'codex',
@@ -69,6 +221,7 @@ export function makeGatewayProviderAdapters(opts: {
       // decided per-read in gatewayProviderStatuses — a bearer-pool-less gateway whose codex
       // accounts are all CLI-bridge is fully configured (WI-3068 false negative).
       unavailableMessage: 'inference-gateway: no Codex account pool configured',
+      lane: lanes.openaiResponses,
     },
     // OMP (pi) is multi-provider and routes by REUSING the existing adapters
     // rather than owning a bespoke protocol: a Tier-1 OMP session is pinned to a
@@ -85,6 +238,7 @@ export function makeGatewayProviderAdapters(opts: {
       upstreamBase: opts.anthropicUpstreamBase,
       pool: opts.claudePool,
       unavailableMessage: null,
+      lane: lanes.anthropicMessages,
     },
   };
 }
@@ -154,6 +308,7 @@ export function gatewayProviderStatuses(adapters: GatewayProviderAdapters): Gate
       cliAccountCount,
       upstreamBase: adapter.upstreamBase,
       unavailableMessage: configured ? null : adapter.unavailableMessage,
+      laneId: adapter.lane.id,
     };
   });
 }
