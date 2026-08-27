@@ -1718,6 +1718,10 @@ export const FLAGS = {
   // matters. REPORT-ONLY: never respawns (that would fire N relaunches back into
   // the wall that caused the wedge). DEFAULT ON. OFF = the kill-switch: the timer
   // still ticks but every sweep no-ops before reading coord_presence.
+  // WI-42445 widened the same sweep with a CADENCE leg over the same population:
+  // an agent carrying overlay:ideate past the grace that has never recorded a
+  // blender:ideate-pass-record tick. Measured 2026-08-27: 13 of 14 such sessions
+  // had never recorded one. Same flag on purpose — one sweep, one kill-switch.
   AGENT_PRODUCTIVITY_WATCHDOG: "papercusp-agent-productivity-watchdog",
   // goal-mode-design-intent-hardening-2026-08-16 P-001 (D-005): gates the drain-fleet
   // AUTO-MINT in goals:start — the PLATFORM, not the agent, stands up the standing
