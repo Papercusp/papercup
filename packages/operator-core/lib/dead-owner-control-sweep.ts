@@ -1,6 +1,10 @@
 /** Atomic dead-owner control cleanup (agent-operability P-003). */
 import type { Sql } from 'postgres';
-import { liveHolderFragment, parkedHolderFragment, STALE_CLAIM_GRACE_MS } from './work-items-stale-claims';
+import {
+  activeSessionHolderFragment,
+  parkedHolderFragment,
+  STALE_CLAIM_GRACE_MS,
+} from './work-items-stale-claims';
 import { HELD_AT_EXPR, HOLD_OPEN_GRACE_MS, HOLD_OPEN_PARKED_GRACE_MS } from './work-items-hold-open';
 import { POLICY_GATE_REASON_SQL_PATTERNS, recordBulkHoldClearAudit } from './work-items';
 
@@ -27,7 +31,10 @@ export async function sweepDeadOwnerControlState(
   const ownerGraceSec = Math.max(1, Math.round((opts.ownerGraceMs ?? DEAD_OWNER_CONTROL_GRACE_MS) / 1000));
   const holdGraceSec = Math.max(1, Math.round((opts.holdOpenGraceMs ?? HOLD_OPEN_GRACE_MS) / 1000));
   const rows = await sql<Array<{ owners: string[] | null; loops_terminated: string | number; holds_lifted: string | number }>>`
-    WITH live_holder AS (${liveHolderFragment(sql, graceSec)}),
+    -- WI-42279: use fresh SESSION evidence here, not the broader work-item
+    -- holder set that includes armed loops. This sweep owns retiring abandoned
+    -- loops; allowing the target loop to prove its own owner live is circular.
+    WITH live_holder AS (${activeSessionHolderFragment(sql, graceSec)}),
     parked_holder AS (${parkedHolderFragment(sql, parkedGraceSec)}),
     dead_owner AS (
       SELECT DISTINCT r.target_owner_id AS owner_id

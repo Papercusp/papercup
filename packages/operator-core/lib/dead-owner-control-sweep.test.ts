@@ -35,6 +35,25 @@ describe('sweepDeadOwnerControlState', () => {
     expect(fragments.join('')).toContain('lifted_hold AS');
   });
 
+  it('WI-42279: an armed loop cannot prove its own owner live to the loop reaper', async () => {
+    const sql = makeSql({ owners: [], loops_terminated: 0, holds_lifted: 0 });
+
+    await sweepDeadOwnerControlState(sql as never, { ownerGraceMs: 1, holdOpenGraceMs: 1 });
+
+    const renderedCalls = (sql as ReturnType<typeof vi.fn>).mock.calls.map((call) =>
+      (call[0] as TemplateStringsArray).join(''),
+    );
+    const sessionLiveness = renderedCalls.find(
+      (text) =>
+        text.includes('harness_shared.coord_presence') && text.includes('harness_shared.spawned_agents'),
+    );
+    expect(sessionLiveness).toBeDefined();
+    expect(sessionLiveness).not.toContain('FROM harness_shared.routines');
+
+    const sweepStatement = renderedCalls.at(-1)!;
+    expect(sweepStatement).toContain('FROM harness_shared.routines r');
+  });
+
   it('WI-6774: the lifted_hold clear excludes policy-tier holds (SQL predicate present)', async () => {
     const sql = makeSql({ owners: [], loops_terminated: 0, holds_lifted: 0 });
     await sweepDeadOwnerControlState(sql as never, { ownerGraceMs: 1, holdOpenGraceMs: 1 });

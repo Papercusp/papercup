@@ -280,16 +280,15 @@ export function activeTurnHolderFragment(sql: Db, graceSec: number) {
 }
 
 /**
- * The mig-225 alias-aware "live holder" set as an embeddable postgres fragment —
- * owners with a FRESH coord_presence heartbeat, UNION every alias (spawn_id /
- * session_owner / run_id) of a RUNNING/RESTARTING nursery row with a fresh
- * heartbeat, UNION every owner with a recent unified-oracle `liveTurn`, UNION
- * every owner with an armed engine loop
- * (EI-18674157526367861 — see {@link activeTurnHolderFragment}). Shared by BOTH
- * the feature reaper and the issue reaper (P-005) so their liveness rule can
- * NEVER diverge — embed it in a `WITH live_holder AS (…)`.
+ * Fresh SESSION-execution evidence for a holder: presence, nursery aliases, or
+ * a recent unified-oracle `liveTurn`. Deliberately excludes armed engine loops.
+ *
+ * An armed loop is continuation authority for a work-item claim, but it cannot
+ * prove its own owner alive to the dead-owner control sweep that is responsible
+ * for retiring abandoned loops. Including routines there makes every active
+ * loop self-protect forever (WI-42279).
  */
-export function liveHolderFragment(sql: Db, graceSec: number) {
+export function activeSessionHolderFragment(sql: Db, graceSec: number) {
   return sql`
       -- Mig-225 alias-aware liveness: presence rows…
       SELECT owner_id AS alias
@@ -309,7 +308,17 @@ export function liveHolderFragment(sql: Db, graceSec: number) {
       -- …plus every owner with a recent unified-oracle liveTurn (EI-18674157526367861):
       -- the SAME source leader-brief/fleet:assignments/coord:presence already trust,
       -- so a holder they call alive can never be reaped here as dead.
-      ${activeTurnHolderFragment(sql, graceSec)}
+      ${activeTurnHolderFragment(sql, graceSec)}`;
+}
+
+/**
+ * The work-item "live holder" set: fresh session evidence plus durable same-owner
+ * continuation authority from an armed engine loop. Shared by the feature and
+ * issue claim reapers so their protection rule cannot diverge.
+ */
+export function liveHolderFragment(sql: Db, graceSec: number) {
+  return sql`
+      ${activeSessionHolderFragment(sql, graceSec)}
       UNION
       -- EI-21431501901242395: an armed loop is durable continuation authority.
       -- Its owner is intentionally quiet between wakes (and can remain so past
