@@ -10,6 +10,7 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ owne
 vi.mock('../../work-items', () => ({ tagWorkItem: vi.fn(), untagWorkItem: vi.fn() }));
 
 import { tagWorkItem, untagWorkItem } from '../../work-items';
+import { dispatchProjectedTool, lookupByMcpName } from '@papercusp/agent-mcp';
 const tagM = vi.mocked(tagWorkItem);
 const untagM = vi.mocked(untagWorkItem);
 const tool = (await import('./tag')).default;
@@ -26,6 +27,52 @@ beforeEach(() => {
 });
 
 describe('work_items:tag handler (keyed-array)', () => {
+  it('rejecting the natural `tags` arg teaches `topic` and the mirror contract', async () => {
+    const projected = lookupByMcpName('work_items:tag');
+    expect(projected).toBeTruthy();
+
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'work_items:tag',
+      { id: 'WI-1', tags: ['infra'] },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'papercusp-workspace',
+        runId: 'work-items-tag-unknown-tags-test',
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+      },
+      {},
+    );
+
+    expect(dispatched.ok).toBe(false);
+    expect(dispatched.error?.message).toContain('Unrecognized key: "tags"');
+    expect(dispatched.error?.message).toContain('work_items:tag {"id":"<work-item-id>","topic":"<topic>"}');
+    expect(dispatched.error?.message).toContain('pass `topic`');
+    expect(dispatched.error?.message).toContain('Check `mirrored`');
+    expect(dispatched.error?.meta?.invalidInput).toEqual(
+      expect.objectContaining({
+        corrections: [
+          expect.objectContaining({
+            rejectedArg: 'tags',
+            kind: 'authored-redirect',
+            call: expect.objectContaining({
+              tool: 'work_items:tag',
+              args: { id: '<work-item-id>', topic: '<topic>' },
+            }),
+          }),
+        ],
+      }),
+    );
+    expect(tagM).not.toHaveBeenCalled();
+  });
+
   it('tags one inline and returns a single result', async () => {
     const b = await body({ id: 'WI-1', topic: 'infra' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
