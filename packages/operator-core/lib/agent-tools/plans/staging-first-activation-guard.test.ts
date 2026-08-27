@@ -68,6 +68,37 @@ describe('staging-first activation guard', () => {
     ]);
   });
 
+  it('does not attribute another item\'s Now gate to an incidentally mentioned item', () => {
+    const parsed = plan(
+      ['- **P-001** `todo` Implement the interactive client on staging.'],
+      '',
+      `## Now\n\n**State:** P-001 is ready; P-002 is blocked until green-checkpoint before continuing implementation.`,
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('does not attribute another item\'s decision clause through a textual reference', () => {
+    const parsed = plan(
+      ['- **P-001** `todo` Implement the interactive client on staging.'],
+      `### D-001 — Mixed status\nDate: 2026-08-27\nP-001 uses current-build acceptance; P-002 must wait for main before continuing implementation.`,
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
+  it('retains an anaphoric follow-up that clearly gates the referenced item', () => {
+    const parsed = plan(
+      ['- **P-001** `todo` Implement the interactive client on staging.'],
+      '',
+      `## Now\n\n**State:** P-001 is the active implementation item. It must wait for main before continuing implementation.`,
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([
+      expect.objectContaining({ itemId: 'P-001', code: 'non_final_deployed_main_wait' }),
+    ]);
+  });
+
   it.each([
     ['Now', `## Now\n\n**State:** P-001 is blocked until green-checkpoint.\n\n**Next:** Wait for main before continuing P-001 implementation.`],
     ['Validation', `## Validation\n\n- P-001 cannot close until :3070 serves the implementation.`],

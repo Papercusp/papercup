@@ -31,6 +31,41 @@ function applicableDecisions(item: PlanItem, decisions: PlanDecision[]): PlanDec
   return decisions.filter((decision) => decisionAppliesToItem(decision, item));
 }
 
+const ANY_ITEM_REF_RE = /\bP-\d{3,}\b/i;
+const ANAPHORIC_ITEM_RE = /\b(?:it|this item|that item|the item|this work|that work|the work|this lane|that lane|the lane)\b/i;
+
+/**
+ * Keep prose that actually speaks about this item instead of admitting an entire
+ * multi-item status/acceptance block after one incidental reference. The following
+ * anaphoric sentence is retained when it clearly continues the same item and does
+ * not introduce another P-NNN reference.
+ */
+function itemScopedText(text: string, itemId: string): string {
+  const ref = itemRefPattern(itemId);
+  const clauses = text
+    .split(/\n+|(?<=[.!?;])\s+/)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
+
+  return clauses
+    .filter((clause, index) => {
+      if (ref.test(clause)) return true;
+      if (index === 0 || ANY_ITEM_REF_RE.test(clause) || !ANAPHORIC_ITEM_RE.test(clause)) return false;
+      return ref.test(clauses[index - 1] ?? '');
+    })
+    .join('\n');
+}
+
+function decisionTextForItem(decision: PlanDecision, item: PlanItem): string {
+  const text = `${decision.title}\n${decision.body}`;
+  const relatedLine = decision.body
+    .split('\n')
+    .find((line) => /^\s*Related:/i.test(line));
+  const explicitlyLinked = item.decisionRefs.includes(decision.id)
+    || Boolean(relatedLine && itemRefPattern(item.id).test(relatedLine));
+  return explicitlyLinked ? text : itemScopedText(text, item.id);
+}
+
 function hasNarrowDeployedMainException(text: string): boolean {
   return EXPLICIT_DEPLOYED_ONLY_RE.test(text) && STAGING_LIMIT_RE.test(text) && CONCRETE_REASON_RE.test(text);
 }
@@ -39,7 +74,7 @@ function relatedExceptionText(item: PlanItem, decisions: PlanDecision[]): string
   return [
     item.text,
     ...applicableDecisions(item, decisions)
-      .map((decision) => `${decision.title}\n${decision.body}`),
+      .map((decision) => decisionTextForItem(decision, item)),
   ].join('\n');
 }
 
@@ -55,14 +90,14 @@ function hasStrongDeployedGate(text: string): boolean {
 
 function relatedGateText(plan: ParsedPlan, item: PlanItem): string {
   const ref = itemRefPattern(item.id);
-  const now = plan.now?.raw && ref.test(plan.now.raw) ? [plan.now.raw] : [];
+  const now = plan.now?.raw && ref.test(plan.now.raw) ? [itemScopedText(plan.now.raw, item.id)] : [];
   const acceptanceClauses = splitPlanSections(plan.raw)
     .filter((section) => ACCEPTANCE_SECTION_RE.test(section.heading) && ref.test(section.body))
-    .map((section) => `${section.heading}\n${section.body}`);
+    .map((section) => `${section.heading}\n${itemScopedText(section.body, item.id)}`);
   return [
     item.text,
     ...applicableDecisions(item, plan.decisions)
-      .map((decision) => `${decision.title}\n${decision.body}`),
+      .map((decision) => decisionTextForItem(decision, item)),
     ...now,
     ...acceptanceClauses,
   ].join('\n');
