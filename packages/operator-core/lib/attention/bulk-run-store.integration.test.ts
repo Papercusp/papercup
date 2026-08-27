@@ -41,10 +41,12 @@ const {
   reportOutcomes,
   getPendingReviewItems,
   markItemAccepted,
+  markItemDismissed,
   settleRunPhase,
   recordRunHeartbeat,
   classifyRunLiveness,
   restartRun,
+  resumeReviewRun,
   RUN_HEARTBEAT_STALE_MS,
 } = await import('./bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
@@ -298,12 +300,17 @@ describe('attention bulk-run store (real PG)', () => {
     expect(settled!.resolverOwner).toBe('su-resolver');
     expect(settled!.startedAt).toBeTruthy();
 
-    // Only the recommended item is the owner's to act on — a skipped one is a
-    // recorded non-outcome, not a decision waiting.
+    // Both rows still need the owner. A resolver skip is evidence that it could
+    // not act, not an implicit owner dismissal.
     const pending = await getPendingReviewItems(run.runId);
-    expect(pending.map((i) => i.itemId)).toEqual(['work-item-needs-human:e-2']);
+    expect(pending.map((i) => i.itemId)).toEqual([
+      'work-item-needs-human:e-2',
+      'smoke-fail:e-3',
+    ]);
+    expect(settled!.finishedAt).toBeTruthy();
 
-    // The owner accepts it; nothing is left, so the run completes.
+    // Accepting the recommendation is not enough while the skipped row remains
+    // unresolved.
     const accepted = await markItemAccepted({
       runId: run.runId,
       itemId: 'work-item-needs-human:e-2',
@@ -312,10 +319,20 @@ describe('attention bulk-run store (real PG)', () => {
     });
     expect(accepted!.outcome).toBe('auto_resolved');
 
+    expect((await settleRunPhase({ runId: run.runId }))!.phase).toBe('review');
+
+    const dismissed = await markItemDismissed({
+      runId: run.runId,
+      itemId: 'smoke-fail:e-3',
+      note: 'Owner reviewed and declined this row',
+    });
+    expect(dismissed!.outcome).toBe('dismissed');
+
     const done = await settleRunPhase({ runId: run.runId });
     expect(done!.phase).toBe('complete');
     expect(done!.finishedAt).toBeTruthy();
     expect((await getRun(run.runId))!.autoResolved).toBe(2);
+    expect((await getRun(run.runId))!.skipped).toBe(1);
   });
 
   it('never settles to complete while an item was never reached', async () => {
@@ -328,6 +345,42 @@ describe('attention bulk-run store (real PG)', () => {
     const settled = await settleRunPhase({ runId: run.runId });
     // Requirement 2: an unreached item is visible, never silently absent.
     expect(settled!.phase).toBe('review');
+  });
+
+  it('selectively resumes unresolved review rows without widening membership or resetting handled rows', async () => {
+    const run = await createRun({ items: seed('resume-review') });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-prior' });
+    await reportOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-prior',
+      outcomes: [
+        { itemId: 'coord-escalation:resume-review-1', outcome: 'auto_resolved', actionId: 'resolve', rationale: 'done' },
+        { itemId: 'work-item-needs-human:resume-review-2', outcome: 'recommended', actionId: 'answer', rationale: 'needs owner', draftAnswer: 'Use key A' },
+        { itemId: 'smoke-fail:resume-review-3', outcome: 'skipped', error: 'no current option' },
+      ],
+    });
+    await settleRunPhase({ runId: run.runId, resolverOwner: 'su-prior' });
+
+    const resumed = await resumeReviewRun({
+      runId: run.runId,
+      itemIds: ['smoke-fail:resume-review-3', 'not-in-snapshot'],
+      resolverOwner: 'su-next',
+    });
+    expect(resumed).toMatchObject({
+      ok: true,
+      requeuedIds: ['smoke-fail:resume-review-3'],
+      preservedOutcomes: 2,
+      run: { phase: 'pending', resolverOwner: 'su-next', finishedAt: null },
+    });
+    const items = await getRunItems(run.runId);
+    expect(items).toHaveLength(3);
+    expect(items.find((row) => row.itemId.endsWith('-1'))?.outcome).toBe('auto_resolved');
+    expect(items.find((row) => row.itemId.endsWith('-2'))?.outcome).toBe('recommended');
+    expect(items.find((row) => row.itemId.endsWith('-3'))).toMatchObject({
+      outcome: 'pending',
+      actionId: null,
+      error: null,
+    });
   });
 
   it('a failed run keeps its partial outcomes and carries the error', async () => {

@@ -17,6 +17,7 @@ import {
   createRun,
   failRunIfExecuting,
   restartRun,
+  resumeReviewRun,
   setRunPhase,
   settleRunPhase,
 } from '../../../attention/bulk-run-store';
@@ -207,6 +208,31 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
         ...(launched.ok ? {} : { launchError: launched.error }),
       });
     }
+    if (op === 'resume') {
+      const findingIds = Array.isArray(body.findingIds)
+        ? body.findingIds.filter((id): id is string => typeof id === 'string').slice(0, 500)
+        : [];
+      const resolverOwner = `su-${randomUUID()}`;
+      const resumed = await resumeReviewRun({ runId, itemIds: findingIds, resolverOwner });
+      if (!resumed.ok) {
+        return Response.json(
+          { error: { code: resumed.reason, message: `plan clean-up run ${runId} could not resume selected findings`, runId, phase: resumed.phase } },
+          { status: resumed.reason === 'run_not_found' ? 404 : 409 },
+        );
+      }
+      const launch = resolvePersistedResolverLaunch(resumed.run.launchSnapshot);
+      if (!launch.ok || !launch.effective) {
+        await setRunPhase({ runId, phase: 'failed', error: launch.message ?? 'persisted launch settings are no longer valid' });
+        await invalidateCleanupRun();
+        return Response.json({ error: { code: 'invalid_persisted_launch_settings', message: launch.message, runId } }, { status: 409 });
+      }
+      const harness = resumed.run.harnessSlug ?? operatorHomeHarnessSlug();
+      const launched = await launchCleanupResolver(runId, resumed.run.seedRefs, harness, launch.effective, resolverOwner);
+      const phase = launched.ok ? 'running' : 'failed';
+      await setRunPhase({ runId, phase, resolverOwner, ...(launched.ok ? {} : { error: launched.error ?? 'resume launch failed' }) });
+      await invalidateCleanupRun();
+      return Response.json({ ok: true, runId, phase, resumed: true, launched: launched.ok, requeuedIds: resumed.requeuedIds, preservedOutcomes: resumed.preservedOutcomes, ...(launched.ok ? {} : { launchError: launched.error }) });
+    }
     if (op === 'accept') {
       const findingId = typeof body.findingId === 'string' ? body.findingId.trim() : '';
       if (!findingId) {
@@ -233,7 +259,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       return Response.json({ ok: true, runId, findingId, phase: run?.phase ?? null, accepted: true });
     }
     return Response.json(
-      { error: { code: 'unknown_op', message: `op must be start | stop | restart | accept | dismiss (got "${op}")` } },
+      { error: { code: 'unknown_op', message: `op must be start | stop | restart | resume | accept | dismiss (got "${op}")` } },
       { status: 400 },
     );
   } catch (error) {

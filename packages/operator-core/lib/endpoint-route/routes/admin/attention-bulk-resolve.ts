@@ -54,6 +54,7 @@ import {
   createRun,
   failRunIfExecuting,
   restartRun,
+  resumeReviewRun,
   markItemAccepted,
   setRunPhase,
   settleRunPhase,
@@ -446,6 +447,31 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       });
     }
 
+    if (op === 'resume') {
+      const itemIds = Array.isArray(body.itemIds)
+        ? body.itemIds.filter((id): id is string => typeof id === 'string').slice(0, MAX_RUN_ITEMS)
+        : [];
+      const resolverOwner = `su-${randomUUID()}`;
+      const resumed = await resumeReviewRun({ runId, itemIds, resolverOwner });
+      if (!resumed.ok) {
+        return Response.json(
+          { error: { code: resumed.reason, message: `bulk-resolve run ${runId} could not resume selected review rows`, runId, phase: resumed.phase } },
+          { status: resumed.reason === 'run_not_found' ? 404 : 409 },
+        );
+      }
+      const launch = resolvePersistedResolverLaunch(resumed.run.launchSnapshot);
+      if (!launch.ok || !launch.effective) {
+        await setRunPhase({ runId, phase: 'failed', error: launch.message ?? 'persisted launch settings are no longer valid' });
+        await invalidateBulkRun();
+        return Response.json({ error: { code: 'invalid_persisted_launch_settings', message: launch.message, runId } }, { status: 409 });
+      }
+      const launched = await launchResolver(runId, resumed.run.totalItems, resumed.run.harnessSlug, launch.effective, resolverOwner);
+      const phase = launched.ok ? 'running' : 'failed';
+      await setRunPhase({ runId, phase, resolverOwner, ...(launched.ok ? {} : { error: launched.error ?? 'resume launch failed' }) });
+      await invalidateBulkRun();
+      return Response.json({ ok: true, runId, phase, resumed: true, launched: launched.ok, requeuedIds: resumed.requeuedIds, preservedOutcomes: resumed.preservedOutcomes, ...(launched.ok ? {} : { launchError: launched.error }) });
+    }
+
     if (op === 'accept') {
       const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
       const actionId = typeof body.actionId === 'string' ? body.actionId.trim() : '';
@@ -484,7 +510,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       {
         error: {
           code: 'unknown_op',
-          message: `op must be one of start | stop | restart | accept | dismiss (got "${op}")`,
+          message: `op must be one of start | stop | restart | resume | accept | dismiss (got "${op}")`,
         },
       },
       { status: 400 },

@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   createRun: vi.fn(),
   failRunIfExecuting: vi.fn(),
   restartRun: vi.fn(),
+  resumeReviewRun: vi.fn(),
   markItemAccepted: vi.fn(),
   setRunPhase: vi.fn(),
   settleRunPhase: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock('../../attention/bulk-run-store', () => {
     createRun: (...args: unknown[]) => h.createRun(...args),
     failRunIfExecuting: (...args: unknown[]) => h.failRunIfExecuting(...args),
     restartRun: (...args: unknown[]) => h.restartRun(...args),
+    resumeReviewRun: (...args: unknown[]) => h.resumeReviewRun(...args),
     markItemAccepted: (...args: unknown[]) => h.markItemAccepted(...args),
     setRunPhase: (...args: unknown[]) => h.setRunPhase(...args),
     settleRunPhase: (...args: unknown[]) => h.settleRunPhase(...args),
@@ -206,6 +208,23 @@ describe('Inbox bulk-resolver owner lifecycle', () => {
     expect(h.restartRun.mock.invocationCallOrder[0]).toBeLessThan(h.spawnHeadless.mock.invocationCallOrder[0]!);
     expect(h.setRunPhase).toHaveBeenCalledWith({ runId: 'run-1', phase: 'running', resolverOwner: owner });
   });
+
+  it('pins a fresh owner while selectively resuming review rows', async () => {
+    h.resumeReviewRun.mockResolvedValueOnce({
+      ok: true,
+      run: { ...baseRun, phase: 'pending' },
+      requeuedIds: ['item-1'],
+      preservedOutcomes: 2,
+    });
+    const response = await handler(
+      post('/api/admin/attention-bulk-resolve', { op: 'resume', runId: 'run-1', itemIds: ['item-1'] }),
+      ctx(),
+    );
+    expect(response.status).toBe(200);
+    const owner = spawnedOwner();
+    expect(h.resumeReviewRun).toHaveBeenCalledWith({ runId: 'run-1', itemIds: ['item-1'], resolverOwner: owner });
+    expect(h.resumeReviewRun.mock.invocationCallOrder[0]).toBeLessThan(h.spawnHeadless.mock.invocationCallOrder[0]!);
+  });
 });
 
 describe('plan-cleanup resolver owner lifecycle', () => {
@@ -248,5 +267,25 @@ describe('plan-cleanup resolver owner lifecycle', () => {
     expect(h.restartRun).toHaveBeenCalledWith({ runId: 'run-1', resolverOwner: owner });
     expect(h.restartRun.mock.invocationCallOrder[0]).toBeLessThan(h.spawnHeadless.mock.invocationCallOrder[0]!);
     expect(h.setRunPhase).toHaveBeenCalledWith({ runId: 'run-1', phase: 'running', resolverOwner: owner });
+  });
+
+  it('pins a fresh owner while selectively resuming cleanup findings', async () => {
+    h.resumeReviewRun.mockResolvedValueOnce({
+      ok: true,
+      run: { ...baseRun, phase: 'pending', runKind: 'plan-cleanup', seedRefs: ['plan-a'] },
+      requeuedIds: ['stale-now:papercusp/plan-a'],
+      preservedOutcomes: 3,
+    });
+    const response = await planCleanupHandler(
+      post('/api/admin/plan-cleanup', { op: 'resume', runId: 'run-1', findingIds: ['stale-now:papercusp/plan-a'] }),
+      ctx(),
+    );
+    expect(response.status).toBe(200);
+    const owner = spawnedOwner();
+    expect(h.resumeReviewRun).toHaveBeenCalledWith({
+      runId: 'run-1',
+      itemIds: ['stale-now:papercusp/plan-a'],
+      resolverOwner: owner,
+    });
   });
 });

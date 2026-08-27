@@ -61,7 +61,13 @@ export const DEFAULT_RUN_KIND: BulkRunKind = 'inbox-resolve';
 /** Per-item terminal disposition. `pending` is the pre-report state — an item
  *  still carrying it when a run ends was never reached (Requirement 2 makes
  *  that visible rather than silently absent). */
-export type BulkItemOutcome = 'pending' | 'auto_resolved' | 'recommended' | 'skipped' | 'failed';
+export type BulkItemOutcome =
+  | 'pending'
+  | 'auto_resolved'
+  | 'recommended'
+  | 'skipped'
+  | 'failed'
+  | 'dismissed';
 
 /** Non-terminal phases — a run in one of these is still the pane's current run. */
 export const ACTIVE_PHASES: readonly BulkRunPhase[] = ['pending', 'running', 'review'] as const;
@@ -392,9 +398,34 @@ async function recomputeCounters(sql: BulkSql, runId: string, workspaceId: strin
         SELECT
           COUNT(*) FILTER (WHERE outcome = 'auto_resolved')::int AS auto_resolved,
           COUNT(*) FILTER (WHERE outcome = 'recommended')::int  AS recommended,
-          COUNT(*) FILTER (WHERE outcome = 'skipped')::int      AS skipped,
+          COUNT(*) FILTER (WHERE outcome IN ('skipped', 'dismissed'))::int AS skipped,
           COUNT(*) FILTER (WHERE outcome = 'failed')::int       AS failed
           FROM harness_shared.attention_bulk_run_items
+         WHERE workspace_id = ${workspaceId} AND run_id = ${runId}
+      ) c
+     WHERE r.workspace_id = ${workspaceId} AND r.run_id = ${runId}
+  `;
+}
+
+async function recomputeCleanupCounters(
+  sql: BulkSql,
+  runId: string,
+  workspaceId: string,
+): Promise<void> {
+  await sql`
+    UPDATE harness_shared.attention_bulk_runs r
+       SET auto_resolved = c.auto_resolved,
+           recommended = c.recommended,
+           skipped = c.skipped,
+           failed = c.failed,
+           updated_at = now()
+      FROM (
+        SELECT
+          COUNT(*) FILTER (WHERE outcome IN ('auto_applied', 'accepted'))::int AS auto_resolved,
+          COUNT(*) FILTER (WHERE outcome = 'recommended')::int AS recommended,
+          COUNT(*) FILTER (WHERE outcome IN ('dismissed', 'skipped'))::int AS skipped,
+          COUNT(*) FILTER (WHERE outcome = 'failed')::int AS failed
+          FROM harness_shared.plan_cleanup_run_findings
          WHERE workspace_id = ${workspaceId} AND run_id = ${runId}
       ) c
      WHERE r.workspace_id = ${workspaceId} AND r.run_id = ${runId}
@@ -883,6 +914,107 @@ export type RestartRunResult =
   | { ok: true; run: BulkRunRow; preservedOutcomes: number }
   | { ok: false; reason: 'run_not_found' | 'not_restartable'; phase: BulkRunPhase | null };
 
+export type ResumeReviewRunResult =
+  | {
+      ok: true;
+      run: BulkRunRow;
+      requeuedIds: string[];
+      preservedOutcomes: number;
+    }
+  | {
+      ok: false;
+      reason: 'run_not_found' | 'not_in_review' | 'no_unresolved_items';
+      phase: BulkRunPhase | null;
+    };
+
+/**
+ * Selectively hand an OWNER-review run back to a fresh resolver generation.
+ * This is deliberately distinct from restartRun: restart repairs a dead
+ * executing process and never resets outcomes; resume is an explicit owner
+ * decision that resets only named unresolved rows from review.
+ */
+export async function resumeReviewRun(input: {
+  runId: string;
+  itemIds: readonly string[];
+  resolverOwner: string;
+  workspaceId?: string;
+}): Promise<ResumeReviewRunResult> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const ids = [...new Set(input.itemIds.map((id) => id.trim()).filter(Boolean))];
+  if (ids.length === 0) {
+    const current = await getRun(input.runId, ws);
+    return { ok: false, reason: 'no_unresolved_items', phase: current?.phase ?? null };
+  }
+
+  return await sql.begin(async (tx) => {
+    const rows = await tx<RawRunRow[]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    if (!rows[0]) return { ok: false as const, reason: 'run_not_found' as const, phase: null };
+    const current = mapRun(rows[0]);
+    if (current.phase !== 'review') {
+      return { ok: false as const, reason: 'not_in_review' as const, phase: current.phase };
+    }
+
+    let requeuedIds: string[] = [];
+    if (current.runKind === 'plan-cleanup') {
+      const updated = await tx<Array<{ finding_id: string }>>`
+        UPDATE harness_shared.plan_cleanup_run_findings
+           SET outcome = 'pending', error = NULL, decided_at = NULL, updated_at = now()
+         WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+           AND finding_id = ANY(${ids})
+           AND outcome NOT IN ('auto_applied', 'accepted', 'dismissed')
+        RETURNING finding_id
+      `;
+      requeuedIds = updated.map((row) => row.finding_id);
+      if (requeuedIds.length > 0) await recomputeCleanupCounters(tx, input.runId, ws);
+    } else {
+      const updated = await tx<Array<{ item_id: string }>>`
+        UPDATE harness_shared.attention_bulk_run_items
+           SET outcome = 'pending', action_id = NULL, rationale = NULL,
+               draft_answer = NULL, confidence = NULL, consulted = FALSE,
+               consult_reply = NULL, error = NULL, decided_at = NULL, updated_at = now()
+         WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+           AND item_id = ANY(${ids})
+           AND outcome NOT IN ('auto_resolved', 'dismissed')
+        RETURNING item_id
+      `;
+      requeuedIds = updated.map((row) => row.item_id);
+      if (requeuedIds.length > 0) await recomputeCounters(tx, input.runId, ws);
+    }
+    if (requeuedIds.length === 0) {
+      return { ok: false as const, reason: 'no_unresolved_items' as const, phase: current.phase };
+    }
+
+    const resumedRows = await tx<RawRunRow[]>`
+      UPDATE harness_shared.attention_bulk_runs
+         SET phase = 'pending', resolver_owner = ${input.resolverOwner}, error = NULL,
+             finished_at = NULL, heartbeat_at = NULL, updated_at = now()
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+      RETURNING ${tx.unsafe(RUN_COLUMNS)}
+    `;
+    const preservedOutcomes = current.runKind === 'plan-cleanup'
+      ? Number((await tx<Array<{ count: number | string }>>`
+          SELECT COUNT(*)::int AS count FROM harness_shared.plan_cleanup_run_findings
+           WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND outcome <> 'pending'
+        `)[0]?.count ?? 0)
+      : Number((await tx<Array<{ count: number | string }>>`
+          SELECT COUNT(*)::int AS count FROM harness_shared.attention_bulk_run_items
+           WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND outcome <> 'pending'
+        `)[0]?.count ?? 0);
+    return {
+      ok: true as const,
+      run: mapRun(resumedRows[0]!),
+      requeuedIds,
+      preservedOutcomes,
+    };
+  });
+}
+
 /**
  * Hand a stranded run to a fresh resolver WITHOUT losing what the previous one achieved.
  *
@@ -1058,15 +1190,16 @@ export async function reportOutcomes(input: {
 }
 
 /**
- * Items still awaiting the OWNER: everything the resolver recommended (and did
- * not resolve itself). This is exactly what the review list renders.
+ * Items still awaiting the OWNER. A resolver report is not an owner decision:
+ * recommended, skipped, failed and never-reached rows all remain review work
+ * until the owner resolves, retries, or explicitly dismisses them.
  */
 export async function getPendingReviewItems(
   runId: string,
   workspaceId?: string,
 ): Promise<BulkRunItemRow[]> {
   const items = await getRunItems(runId, workspaceId);
-  return items.filter((i) => i.outcome === 'recommended');
+  return items.filter((i) => i.outcome !== 'auto_resolved' && i.outcome !== 'dismissed');
 }
 
 /**
@@ -1098,6 +1231,47 @@ export async function markItemAccepted(input: {
   // Keep the run counters honest after an owner-side acceptance.
   await reportCountersOnly(input.runId, ws);
   return mapItem(rows[0]);
+}
+
+/**
+ * Record the OWNER deliberately declining one unresolved Inbox row. Resolver
+ * `skipped` is evidence that the resolver could not act; it is not permission
+ * to silently count the row as complete. This distinct outcome is what lets
+ * settlement tell those states apart without overloading the resolver verdict.
+ */
+export async function markItemDismissed(input: {
+  runId: string;
+  itemId: string;
+  note?: string | null;
+  workspaceId?: string;
+}): Promise<BulkRunItemRow | null> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  return await sql.begin(async (tx) => {
+    const runs = await tx<Array<{ phase: BulkRunPhase; run_kind: BulkRunKind | null }>>`
+      SELECT phase, run_kind
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    if (!runs[0] || runs[0].phase !== 'review' || (runs[0].run_kind ?? DEFAULT_RUN_KIND) !== 'inbox-resolve') {
+      return null;
+    }
+    const rows = await tx<RawItemRow[]>`
+      UPDATE harness_shared.attention_bulk_run_items
+         SET outcome = 'dismissed',
+             rationale = COALESCE(${input.note?.trim() || null}, rationale),
+             error = NULL,
+             decided_at = now(),
+             updated_at = now()
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${input.itemId}
+         AND outcome NOT IN ('auto_resolved', 'dismissed')
+      RETURNING ${tx.unsafe(ITEM_COLUMNS)}
+    `;
+    if (!rows[0]) return null;
+    await recomputeCounters(tx, input.runId, ws);
+    return mapItem(rows[0]);
+  });
 }
 
 /** Recompute a run's counters from its item rows without reporting an outcome. */
@@ -1149,14 +1323,20 @@ export async function settleRunPhase(input: {
               FROM harness_shared.attention_bulk_run_items
              WHERE workspace_id = ${ws} AND run_id = ${input.runId}
           `;
-    const awaitingOwner = states.some((i) => i.outcome === 'recommended' || i.outcome === 'pending');
+    const awaitingOwner = states.some((i) =>
+      runKind === 'plan-cleanup'
+        ? !['auto_applied', 'accepted', 'dismissed'].includes(i.outcome)
+        : !['auto_resolved', 'dismissed'].includes(i.outcome),
+    );
     const phase: BulkRunPhase = awaitingOwner ? 'review' : 'complete';
     const rows = await tx<RawRunRow[]>`
       UPDATE harness_shared.attention_bulk_runs
          SET phase = ${phase},
              resolver_owner = COALESCE(resolver_owner, ${input.resolverOwner ?? null}),
              error = NULL,
-             finished_at = CASE WHEN ${phase === 'complete'} THEN now() ELSE finished_at END,
+             -- Review ends the resolver pass even though the owner workflow
+             -- remains open. Stamp it so elapsed time stops growing forever.
+             finished_at = now(),
              updated_at = now()
        WHERE workspace_id = ${ws} AND run_id = ${input.runId}
       RETURNING ${tx.unsafe(RUN_COLUMNS)}
