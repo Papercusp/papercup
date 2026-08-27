@@ -5,6 +5,10 @@
  * `since_ts` remains a compatibility alias for existing callers and docs.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  COORD_CONVERSATIONAL_KINDS,
+  COORD_EXECUTABLE_KINDS,
+} from '@papercusp/coordination/core';
 
 const readCoordFeed = vi.hoisted(() =>
   vi.fn(async (): Promise<{
@@ -75,6 +79,19 @@ describe('coord:feed — fleet compatibility alias', () => {
       {} as never,
     );
     expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ audience: '@topic:coordination' }));
+  });
+});
+
+describe('coord:feed — canonical kind filter parity', () => {
+  it('accepts every canonical CoordKind, including executable yield', () => {
+    const canonicalKinds = [...COORD_EXECUTABLE_KINDS, ...COORD_CONVERSATIONAL_KINDS];
+
+    for (const kind of canonicalKinds) {
+      expect(
+        tool.args.safeParse({ kinds: [kind] }).success,
+        `coord:feed should accept canonical kind ${kind}`,
+      ).toBe(true);
+    }
   });
 });
 

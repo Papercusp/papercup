@@ -23,8 +23,13 @@
  * itself is unscoped on purpose; gating lives at the tool layer.
  */
 
-import type { CoordEnvelope, CoordKind } from '@papercusp/coordination/core';
-import { compareByTsThenId } from '@papercusp/coordination/core';
+import {
+  COORD_CONVERSATIONAL_KINDS,
+  COORD_EXECUTABLE_KINDS,
+  compareByTsThenId,
+  type CoordEnvelope,
+  type CoordKind,
+} from '@papercusp/coordination/core';
 import { coordLog } from './log';
 import { estimateTokens } from './presence-cost';
 import { collectRetractedIds, suppressRetracted } from './retraction';
@@ -35,23 +40,13 @@ type CursorSurfaceState = { cursor: number | undefined; exhausted: boolean };
 /** The four append-only channels that live in coord_event_log. */
 export type CoordSurface = 'messages' | 'escalations' | 'handoffs' | 'plan-events';
 
-/** Every kind that can appear in the feed, across all surfaces. The line
- *  surfaces carry message/ack/notify/subscribe/unsubscribe/contract/plan_event;
- *  the event surfaces carry handoff/handoff_accepted/escalation/
- *  escalation_resolved. (CoordKind is the canonical union — re-stated here as a
- *  literal tuple so the tool/UI can enumerate it for the kind filter chips.) */
+/** Every kind that can appear in the feed, across all surfaces. Keep this
+ * derived from the canonical executable/conversational vocabularies so the
+ * feed's filter cannot silently reject a newly-added wire kind (for example
+ * `yield`, `handoff_expired`, or `presence_alert`). */
 export const ALL_COORD_KINDS = [
-  'message',
-  'ack',
-  'subscribe',
-  'unsubscribe',
-  'notify',
-  'handoff',
-  'handoff_accepted',
-  'escalation',
-  'escalation_resolved',
-  'contract',
-  'plan_event',
+  ...COORD_EXECUTABLE_KINDS,
+  ...COORD_CONVERSATIONAL_KINDS,
 ] as const satisfies readonly CoordKind[];
 
 /** One feed row: the raw envelope + origin surface + derived broadcast flag. */
