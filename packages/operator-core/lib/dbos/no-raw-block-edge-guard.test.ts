@@ -18,13 +18,15 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import {
+import * as rawBlockEdgeGuard from '../../../../scripts/check-no-raw-block-edge.mjs';
+
+const {
   RAW_WORK_ITEM_DEPS_CAPABILITIES,
   canonicalFacadeRoutingOffenders,
   usesDependencyAdmissionBypass,
   writesRawBlocksEdge,
   writesRawWorkItemDependency,
-} from '../../../../scripts/check-no-raw-block-edge.mjs';
+} = rawBlockEdgeGuard;
 
 describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
   describe('FLAGS a bypassing write — the direction the guard exists for', () => {
@@ -42,9 +44,7 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
 
     it('flags a MULTI-LINE linkWorkItem call — a reformat must not defeat it', () => {
       expect(
-        writesRawBlocksEdge(
-          "await linkWorkItem(\n  item.id,\n  targetRef,\n  'blocks',\n  { harness, by },\n);",
-        ),
+        writesRawBlocksEdge("await linkWorkItem(\n  item.id,\n  targetRef,\n  'blocks',\n  { harness, by },\n);"),
       ).toBe(true);
     });
 
@@ -62,9 +62,7 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
      * so nobody "tightens" the predicate back into that blind spot.
      */
     it('flags the VARIABLE rel form — the shape the real caller uses', () => {
-      expect(
-        writesRawBlocksEdge("const rel = 'blocks';\nawait linkWorkItem(id, dst, rel, { harness });"),
-      ).toBe(true);
+      expect(writesRawBlocksEdge("const rel = 'blocks';\nawait linkWorkItem(id, dst, rel, { harness });")).toBe(true);
     });
 
     it('flags a rel reached via a branch, not a literal argument (the link.ts shape)', () => {
@@ -82,24 +80,20 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
     });
 
     it('ignores listInMany(dsts, { rel: blocks }) — the live work-items-events.ts shape', () => {
-      expect(writesRawBlocksEdge("const inEdges = await listInMany(dsts, { rel: 'blocks' });")).toBe(
-        false,
-      );
+      expect(writesRawBlocksEdge("const inEdges = await listInMany(dsts, { rel: 'blocks' });")).toBe(false);
     });
   });
 
   describe('does NOT flag a write that APPLIES the policy', () => {
     it('clears a file routing through the authoritative writer', () => {
-      expect(writesRawBlocksEdge('await syncFeatureBlockEdges(harness, featureId, blockedBy);')).toBe(
-        false,
-      );
+      expect(writesRawBlocksEdge('await syncFeatureBlockEdges(harness, featureId, blockedBy);')).toBe(false);
     });
 
     it('clears a raw single-edge write guarded by guardFeatureBlockEdgeAcyclic (the link.ts shape)', () => {
       expect(
         writesRawBlocksEdge(
-          "const err = await guardFeatureBlockEdgeAcyclic(srcRef.ref, dst.ref);\n" +
-            "if (err) return { ok: false, error: err };\n" +
+          'const err = await guardFeatureBlockEdgeAcyclic(srcRef.ref, dst.ref);\n' +
+            'if (err) return { ok: false, error: err };\n' +
             "await linkWorkItem(it.id, dst, 'blocks', { harness });",
         ),
       ).toBe(false);
@@ -109,9 +103,7 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
   describe('does NOT flag non-writes', () => {
     it('ignores prose in comments that mentions the edge', () => {
       expect(
-        writesRawBlocksEdge(
-          "// we INSERT INTO harness_shared.coord_links with rel='blocks' elsewhere\nconst x = 1;",
-        ),
+        writesRawBlocksEdge("// we INSERT INTO harness_shared.coord_links with rel='blocks' elsewhere\nconst x = 1;"),
       ).toBe(false);
       expect(
         writesRawBlocksEdge(
@@ -122,19 +114,14 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
 
     it('ignores a rel OTHER than blocks — only feature blocking deadlocks the frontier', () => {
       expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'relates', { harness });")).toBe(false);
-      expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'duplicates', { harness });")).toBe(
-        false,
-      );
+      expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'duplicates', { harness });")).toBe(false);
     });
 
     it('ignores a coord_links INSERT that carries no blocks rel at all', () => {
-      expect(
-        writesRawBlocksEdge(
-          "await sql`INSERT INTO harness_shared.coord_links (rel) VALUES ('relates')`;",
-        ),
-      ).toBe(false);
+      expect(writesRawBlocksEdge("await sql`INSERT INTO harness_shared.coord_links (rel) VALUES ('relates')`;")).toBe(
+        false,
+      );
     });
-
   });
 
   /**
@@ -151,9 +138,7 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
    * blind spot that the real caller already lives in.
    */
   it('KNOWN TRADE: flags a non-blocks write in a file that also mentions blocks', () => {
-    expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'relates');\nconst label = 'blocks';")).toBe(
-      true,
-    );
+    expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'relates');\nconst label = 'blocks';")).toBe(true);
   });
 });
 

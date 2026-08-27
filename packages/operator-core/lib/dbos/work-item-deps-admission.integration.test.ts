@@ -284,9 +284,9 @@ describe('canonical dependency batch admission', () => {
     await seedItem('EI-B');
 
     await mirrorWorkItemBlockingEdge(issue('EI-A'), issue('EI-B'), writerOpts());
-    await expect(
-      mirrorWorkItemBlockingEdge(issue('EI-B'), issue('EI-A'), writerOpts()),
-    ).rejects.toBeInstanceOf(WorkItemDependencyAdmissionError);
+    await expect(mirrorWorkItemBlockingEdge(issue('EI-B'), issue('EI-A'), writerOpts())).rejects.toBeInstanceOf(
+      WorkItemDependencyAdmissionError,
+    );
     expect(await storedEdges()).toEqual([
       {
         blocked_kind: 'issue',
@@ -306,9 +306,9 @@ describe('canonical dependency batch admission', () => {
     await seedItem('F-new', { kind: 'feature' });
 
     await syncWorkItemDepEdges(H, 'F-dependent', ['F-old'], writerOpts());
-    await expect(
-      syncWorkItemDepEdges(H, 'F-dependent', ['F-new', 'F-missing'], writerOpts()),
-    ).rejects.toBeInstanceOf(WorkItemDependencyAdmissionError);
+    await expect(syncWorkItemDepEdges(H, 'F-dependent', ['F-new', 'F-missing'], writerOpts())).rejects.toBeInstanceOf(
+      WorkItemDependencyAdmissionError,
+    );
     expect(await storedEdges()).toEqual([
       {
         blocked_kind: 'feature',

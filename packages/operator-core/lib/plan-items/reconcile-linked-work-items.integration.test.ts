@@ -60,11 +60,7 @@ const setWorkItemStateWithAliasInfo = h2.setWorkItemStateWithAliasInfo;
 // stub so a subsequent activeExternalBlockers/readWorkItemHeldOpenBy read (the
 // REAL pure functions, imported actual below) sees the mutation.
 const h4 = vi.hoisted(() => ({
-  mergeWorkItemPayload: vi.fn(async (
-    id: string,
-    patch: Record<string, unknown>,
-    opts?: { unset?: string[] },
-  ) => {
+  mergeWorkItemPayload: vi.fn(async (id: string, patch: Record<string, unknown>, opts?: { unset?: string[] }) => {
     const wi = h2.items.get(id);
     if (wi) {
       const payload = { ...(wi.payload ?? {}), ...patch };
@@ -133,9 +129,7 @@ const {
   PLAN_AUTHORED_BLOCKERS_KEY,
 } = await import('./reconcile-linked-work-items');
 const { getFeatureBlockers, syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
-const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import(
-  '../events/builtin-actions'
-);
+const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import('../events/builtin-actions');
 const { updateExternalBlockerHistory } = await import('../external-blockers');
 
 const WS = DEFAULT_COORD_WORKSPACE;
@@ -230,9 +224,11 @@ async function insertWorkItemRow(o: {
       (workspace_id, harness_slug, feature_id, item_kind, status, payload,
        source_plan_slug, source_plan_item_ids, created_ts, updated_ts)
     VALUES (${WS}, ${o.harness ?? 'sheets'}, ${o.id}, ${o.kind}, ${o.status},
-            ${o.linkage === 'columns'
-              ? rootSql.json({})
-              : rootSql`jsonb_build_object('plan_item', jsonb_build_object('plan_slug', ${o.planSlug}::text, 'item_id', ${o.itemId}::text))`},
+            ${
+              o.linkage === 'columns'
+                ? rootSql.json({})
+                : rootSql`jsonb_build_object('plan_item', jsonb_build_object('plan_slug', ${o.planSlug}::text, 'item_id', ${o.itemId}::text))`
+            },
             ${o.linkage === 'columns' ? o.planSlug : null},
             ${o.linkage === 'columns' ? [o.itemId] : []},
             0, 0)`;
@@ -622,7 +618,13 @@ describe('reconcileLinkedWorkItemsForPlanItem — plan decisions are not complet
   });
 
   it('periodic reconciliation also writes authority only, even when the row has decisions', async () => {
-    await insertWorkItemRow({ id: 'F-swevidence', kind: 'feature', status: 'todo', planSlug: 'psevidence', itemId: 'P-1' });
+    await insertWorkItemRow({
+      id: 'F-swevidence',
+      kind: 'feature',
+      status: 'todo',
+      planSlug: 'psevidence',
+      itemId: 'P-1',
+    });
     await edge({ plan: 'psevidence', item: 'P-1', srcRef: 'sheets#F-swevidence', srcKind: 'feature' });
     stub({ id: 'F-swevidence', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
     h3.getPlanRow.mockResolvedValue({
@@ -847,7 +849,11 @@ describe('reconcileLinkedWorkItemsForPlanItem — stale plan-lane hold cleared b
 describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)', () => {
   it('enumerates the live feature-column linkage even when payload.plan_item is absent', async () => {
     await insertWorkItemRow({
-      id: 'F-column-link', kind: 'feature', status: 'todo', planSlug: 'pcolumns', itemId: 'P-100',
+      id: 'F-column-link',
+      kind: 'feature',
+      status: 'todo',
+      planSlug: 'pcolumns',
+      itemId: 'P-100',
       linkage: 'columns',
     });
     stub({ id: 'F-column-link', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
@@ -920,7 +926,12 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
   it('does NOT enumerate an already-terminal work-item as a candidate (non-terminal predicate)', async () => {
     await insertWorkItemRow({ id: 'F-term', kind: 'feature', status: 'passed', planSlug: 'pterm', itemId: 'P-1' });
     await insertWorkItemRow({ id: 'WI-term', kind: 'bug', status: 'resolved', planSlug: 'pterm', itemId: 'P-2' });
-    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }, { id: 'P-2', status: 'done' }] });
+    h3.getPlanRow.mockResolvedValue({
+      items: [
+        { id: 'P-1', status: 'done' },
+        { id: 'P-2', status: 'done' },
+      ],
+    });
 
     const result = await reconcileOrphanedPlanItemWorkItems();
 
@@ -935,9 +946,26 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
     // The candidate query's exclusion list must cover BOTH or these rows leak back
     // in as "candidates" every sweep tick, wasting work and — at scale — crowding
     // out genuine orphans from the `LIMIT cap` window (WI-5279/EI-13337 class).
-    await insertWorkItemRow({ id: 'F-unified-term', kind: 'feature', status: 'done', planSlug: 'punified', itemId: 'P-1' });
-    await insertWorkItemRow({ id: 'WI-unified-term', kind: 'bug', status: 'dropped', planSlug: 'punified', itemId: 'P-2' });
-    h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-1', status: 'done' }, { id: 'P-2', status: 'dropped' }] });
+    await insertWorkItemRow({
+      id: 'F-unified-term',
+      kind: 'feature',
+      status: 'done',
+      planSlug: 'punified',
+      itemId: 'P-1',
+    });
+    await insertWorkItemRow({
+      id: 'WI-unified-term',
+      kind: 'bug',
+      status: 'dropped',
+      planSlug: 'punified',
+      itemId: 'P-2',
+    });
+    h3.getPlanRow.mockResolvedValue({
+      items: [
+        { id: 'P-1', status: 'done' },
+        { id: 'P-2', status: 'dropped' },
+      ],
+    });
 
     const result = await reconcileOrphanedPlanItemWorkItems();
 
@@ -952,9 +980,21 @@ describe('reconcileOrphanedPlanItemWorkItems — periodic data-heal (EI-14693)',
     // non-terminal orphan. With a tight cap and the STALE exclusion list, the noise
     // could fill the whole candidate window before the real orphan is ever read.
     for (let i = 0; i < 5; i++) {
-      await insertWorkItemRow({ id: `F-noise-${i}`, kind: 'feature', status: 'done', planSlug: 'pnoise', itemId: `P-noise-${i}` });
+      await insertWorkItemRow({
+        id: `F-noise-${i}`,
+        kind: 'feature',
+        status: 'done',
+        planSlug: 'pnoise',
+        itemId: `P-noise-${i}`,
+      });
     }
-    await insertWorkItemRow({ id: 'F-real-orphan', kind: 'feature', status: 'todo', planSlug: 'pnoise', itemId: 'P-real' });
+    await insertWorkItemRow({
+      id: 'F-real-orphan',
+      kind: 'feature',
+      status: 'todo',
+      planSlug: 'pnoise',
+      itemId: 'P-real',
+    });
     await edge({ plan: 'pnoise', item: 'P-real', srcRef: 'sheets#F-real-orphan', srcKind: 'feature' });
     stub({ id: 'F-real-orphan', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
     h3.getPlanRow.mockResolvedValue({
@@ -1060,7 +1100,9 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       'su-b',
     );
     const row = stub({
-      id: 'WI-false-human', state: 'needs-human', family: 'issue',
+      id: 'WI-false-human',
+      state: 'needs-human',
+      family: 'issue',
       payload: { externalBlockers: both.blockers, needsOwnerAction: true, needsHuman: true },
     });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-001', status: 'todo', blockedBy: [] }] });
@@ -1096,7 +1138,9 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       'su-a',
     );
     const row = stub({
-      id: 'WI-owner-mic', state: 'needs-human', family: 'issue',
+      id: 'WI-owner-mic',
+      state: 'needs-human',
+      family: 'issue',
       payload: { externalBlockers: blockers, needsOwnerAction: true, needsHuman: true },
     });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-001', status: 'todo', blockedBy: [] }] });
@@ -1161,11 +1205,7 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       false,
       expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
     );
-    expect(h4.setWorkItemClaimHold).not.toHaveBeenCalledWith(
-      'WI-still-blocked',
-      false,
-      expect.anything(),
-    );
+    expect(h4.setWorkItemClaimHold).not.toHaveBeenCalledWith('WI-still-blocked', false, expect.anything());
   });
 
   it('keeps the lane blocker active when lifecycle restore fails, so the next sweep can retry', async () => {

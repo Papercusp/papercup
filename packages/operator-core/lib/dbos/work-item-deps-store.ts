@@ -102,9 +102,7 @@ export class WorkItemDependencyAdmissionError extends Error {
     readonly after: DependencyGraphAnalysis,
   ) {
     const details = findings.flatMap((finding) => [
-      ...finding.cycles.map(
-        (cycle) => `dependency cycle: ${cycle.cyclePath.map(identityLabel).join(' -> ')}`,
-      ),
+      ...finding.cycles.map((cycle) => `dependency cycle: ${cycle.cyclePath.map(identityLabel).join(' -> ')}`),
       ...finding.endpointDefects.map((defect) => defect.message),
       ...finding.stranded.flatMap((row) => row.paths.map((path) => path.path.map(identityLabel).join(' -> '))),
     ]);
@@ -560,10 +558,7 @@ async function resolveActualDepEndpoint(sql: Sql, endpoint: WorkItemDepEndpoint)
   return { endpoint, workspaceId: null };
 }
 
-function mutationItemWorkspaceId(
-  resolutions: readonly ResolvedWorkItemDepEndpoint[],
-  explicit?: string,
-): string {
+function mutationItemWorkspaceId(resolutions: readonly ResolvedWorkItemDepEndpoint[], explicit?: string): string {
   if (explicit?.trim()) return explicit.trim();
   return resolutions.find((resolution) => resolution.workspaceId !== null)?.workspaceId ?? resolveConcreteWorkspaceId();
 }
@@ -816,10 +811,7 @@ export async function syncWorkItemDepEdges(
   await mutateWorkItemDependencies(
     {
       workspaceId: DEFAULT_COORD_WORKSPACE,
-      itemWorkspaceId: mutationItemWorkspaceId(
-        [blockedResolution, ...blockerResolutions],
-        opts.itemWorkspaceId,
-      ),
+      itemWorkspaceId: mutationItemWorkspaceId([blockedResolution, ...blockerResolutions], opts.itemWorkspaceId),
       mutations,
     },
     { sql, retry: opts.retry },

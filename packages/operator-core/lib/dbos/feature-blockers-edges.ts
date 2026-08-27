@@ -124,10 +124,7 @@ export async function wouldFeatureBlockEdgeCreateCycle(
  * deadlock, so they're out of scope here). Returns a ready-to-surface error string when the edge
  * would cycle, else null. The link tools call this before writing a raw coord_links 'blocks' edge.
  */
-export async function guardFeatureBlockEdgeAcyclic(
-  srcRef: string,
-  dstRef: string,
-): Promise<string | null> {
+export async function guardFeatureBlockEdgeAcyclic(srcRef: string, dstRef: string): Promise<string | null> {
   if (!isQualifiedFeatureRef(srcRef) || !isQualifiedFeatureRef(dstRef)) return null;
   const srcHash = srcRef.indexOf('#');
   const dstHash = dstRef.indexOf('#');

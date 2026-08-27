@@ -25,11 +25,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const {
-  getFeatureBlockers,
-  syncFeatureBlockEdges,
-  detectFeatureBlockGraphCycle,
-} = await import('./feature-blockers-edges');
+const { getFeatureBlockers, syncFeatureBlockEdges, detectFeatureBlockGraphCycle } =
+  await import('./feature-blockers-edges');
 
 let db: FreshPgDb;
 const H = 'demo';
@@ -68,8 +65,7 @@ beforeEach(async () => {
       ('default', ${H}, 'C', 'C', 'open', 'feature', 0, 0, '{}'::jsonb)`;
 });
 
-const sortMap = (m: Map<string, string[]>) =>
-  Object.fromEntries([...m].map(([k, v]) => [k, [...v].sort()]).sort());
+const sortMap = (m: Map<string, string[]>) => Object.fromEntries([...m].map(([k, v]) => [k, [...v].sort()]).sort());
 
 describe('syncFeatureBlockEdges enforces acyclicity (P-003 / F4) — real PG', () => {
   it('ACCEPTS a DAG (a chain) and round-trips it', async () => {
