@@ -55,7 +55,7 @@ const valueRead = (over: Record<string, unknown> = {}) => ({
   value: 0,
   headline: 'gate.consecutiveReds',
   resolver: 'gitPipelinePosition',
-  // P-005 / D-014 — the fold renders the ASSESSMENT, not the falsifier.
+  // P-005 / D-014 — the fold renders the declared ASSESSMENT.
   assessment: {
     status: 'resolved' as const,
     path: 'assessments.gateVerdict',
@@ -63,14 +63,6 @@ const valueRead = (over: Record<string, unknown> = {}) => ({
     meaning: 'the last checkpoint passed and main is fast-forwarding',
     safeAction: 'Proceed; no gate repair is needed.',
     evidence: [{ path: 'verdictProvenance.mainBehindStaging', value: false }],
-  },
-  // DELIBERATELY STILL HERE. `CellSpec.falsifier` survives until P-006 deletes the
-  // concept, so a read can still carry one — and the point of keeping it in the fixture
-  // is the guard below: the fold must no longer RENDER it. Remove this only with P-006.
-  falsifier: {
-    field: 'verdictProvenance.mainBehindStaging',
-    value: false,
-    kills: '"0 consecutive reds" read as "the pipeline is healthy"',
   },
   ...over,
 });
@@ -145,17 +137,6 @@ describe('the healthy fold', () => {
     expect(block!.indexOf('assessment · green')).toBeLessThan(block!.indexOf('measurement · gate.consecutiveReds'));
   });
 
-  it('does NOT render the falsifier, even when the read still carries one (D-014 §3)', async () => {
-    // The fixture deliberately still carries a falsifier — `CellSpec.falsifier` lives
-    // until P-006 — so this is a real guard against the consumer silently reverting,
-    // not a vacuous assertion about a field that is absent anyway.
-    const block = await prepareCellWakeFold(INPUT);
-
-    expect(block).not.toContain('falsifier');
-    expect(block).not.toContain('UNFALSIFIED');
-    expect(block).not.toContain('kills ·');
-  });
-
   it('reports DRIFTED evidence as missing, never as measured null agreement', async () => {
     readCellMock.mockResolvedValue(
       valueRead({
@@ -224,7 +205,7 @@ describe('the healthy fold', () => {
     expect(block).toContain('UNINTERPRETED');
     expect(block).toContain('unattributable');
     expect(block).toContain('Do not treat the value below as a verdict.');
-    // The door's escape hatch survived the migration off falsifiers: when the payload
+    // The door's escape hatch remains: when the payload
     // truncated ITSELF, the untruncated re-read is the one useful next move.
     expect(block).toContain('full read · {"tool":"dev:pipeline_position"');
   });

@@ -30,11 +30,6 @@ function spec(over: Partial<CellSpec> & Pick<CellSpec, 'cell'>): CellSpec {
       },
       evidence: ['probe.independent'],
     },
-    falsifier: {
-      field: 'probe.independent',
-      measurement: 'an independent probe against the live subject',
-      kills: 'reading the headline as authoritative when the probe disagrees',
-    },
     nullable: false,
     whyTotal: 'test fixture — the stub resolver returns a value or throws; no read can fail into a default.',
     callerRelativity: { kind: 'global' },
