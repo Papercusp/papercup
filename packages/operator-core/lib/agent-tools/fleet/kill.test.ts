@@ -229,6 +229,56 @@ describe('killOne', () => {
     expect(released).toEqual(['su-ghost']);
   });
 
+  it('deactivates the owner loop before deleting presence so the watchdog cannot heal the row back', async () => {
+    const events: string[] = [];
+    let loopActive = true;
+    let presenceExists = true;
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => null,
+      deactivateLoop: async () => {
+        events.push('deactivate-loop');
+        loopActive = false;
+        return true;
+      },
+      clearPresence: async () => {
+        events.push('clear-presence');
+        presenceExists = false;
+        // Model compaction-watchdog healPresenceGap: it recreates a missing
+        // row only while the loop routine still authoritatively reads active.
+        if (loopActive) presenceExists = true;
+      },
+      presenceExists: async () => {
+        events.push('verify-presence');
+        return presenceExists;
+      },
+    };
+
+    const r = await killOne({ actor: 'su-me', target: 'su-dead-loop', closeTerminal: true, reason: 'reap' }, deps);
+
+    expect(r.code).toBe('not_found');
+    expect(events).toEqual(['deactivate-loop', 'clear-presence', 'verify-presence']);
+  });
+
+  it('does not report already-dead success while the presence cleanup postcondition is false', async () => {
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => null,
+      deactivateLoop: async () => true,
+      clearPresence: async () => {},
+      presenceExists: async () => true,
+    };
+
+    const r = await killOne({ actor: 'su-me', target: 'su-still-present', closeTerminal: true, reason: 'reap' }, deps);
+
+    expect(r).toMatchObject({
+      ok: false,
+      target: 'su-still-present',
+      code: 'cleanup_failed',
+    });
+    expect(r.error).toContain('postcondition failed');
+  });
+
   it('repairs stale terminal evidence before consulting unmanaged presence', async () => {
     const events: string[] = [];
     const deps: KillDeps = {

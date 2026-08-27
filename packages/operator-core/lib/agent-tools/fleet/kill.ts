@@ -46,7 +46,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { findLiveHost, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
-import { clearPresence, PRESENCE_STALE_MS } from '../coordination/presence';
+import { clearPresence, getPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
 import { readProcessIdentity } from '../../process-identity';
@@ -56,6 +56,7 @@ import {
   markAdvSessionEnded,
   repairStaleAdvSessionTerminalMarkers,
 } from '../../adv-sessions';
+import { deactivateLoop } from '../../harness/routines/loop';
 
 /** Console-marker substring stamped into every fleet/desktop launch command
  *  (capability:terminal / fleet:launch-on-plan) — identifies a papercusp tab
@@ -99,6 +100,12 @@ export interface KillDeps {
   ) => Promise<{ spawn_id: string; cancelled: string[]; processes_aborted: number } | null>;
   /** Purge stale presence after the psu-host authority proves a target is gone. */
   clearPresence?: (ownerId: string) => Promise<void>;
+  /** Stop the owner's recurring wake before presence is removed. Without this,
+   *  the compaction watchdog treats the missing row as a dark-presence gap and
+   *  recreates it from the still-active loop routine. */
+  deactivateLoop?: (ownerId: string, reason: string) => Promise<boolean>;
+  /** Postcondition read for the dead-owner presence reap. */
+  presenceExists?: (ownerId: string) => Promise<boolean>;
   /** Free delegated-seat consumption after the same authoritative death proof. */
   releaseSeatConsumptions?: (ownerIds: string[]) => Promise<void>;
   /** Append an audit row. */
@@ -132,7 +139,7 @@ export interface KillOneResult {
   terminal?: 'closed' | 'left-open' | 'none' | 'not-found';
   cancelled?: string[];
   processes_aborted?: number;
-  code?: 'self_kill_refused' | 'not_found' | 'live_unmanaged';
+  code?: 'self_kill_refused' | 'not_found' | 'live_unmanaged' | 'cleanup_failed';
   error?: string;
 }
 
@@ -230,6 +237,46 @@ async function stopPid(
   return 'SIGKILL';
 }
 
+/**
+ * Reconcile the durable wake + ephemeral roster state for an owner whose
+ * process is proven dead. The order is load-bearing: an active loop routine is
+ * the compaction watchdog's authority to recreate a missing coord_presence row,
+ * so the loop must be deactivated before the row is deleted. The final read
+ * keeps fleet:kill from reporting `not_found`/success while the roster still
+ * contains the supposedly-dead owner.
+ */
+async function reapDeadOwner(input: KillOneInput, deps: KillDeps): Promise<string | null> {
+  try {
+    await deps.deactivateLoop?.(input.target, input.reason);
+  } catch (error) {
+    return `could not deactivate the owner's loop before presence cleanup: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+
+  try {
+    await deps.clearPresence?.(input.target);
+  } catch (error) {
+    return `could not delete the owner's presence row: ${error instanceof Error ? error.message : String(error)}`;
+  }
+
+  try {
+    if (await deps.presenceExists?.(input.target)) {
+      return 'presence cleanup postcondition failed: the owner still has a coord_presence row';
+    }
+  } catch (error) {
+    return `could not verify the presence cleanup postcondition: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+
+  // EI-20348469225868168: fleet:kill is an explicit reap for this dead
+  // owner. Mirror presence-reaper's delegated-seat cleanup after the
+  // load-bearing loop/presence reconciliation succeeds.
+  await deps.releaseSeatConsumptions?.([input.target]).catch(() => {});
+  return null;
+}
+
 /** The testable core — never throws; every failure is a structured result. */
 export async function killOne(input: KillOneInput, deps: KillDeps): Promise<KillOneResult> {
   const audit = deps.audit ?? (async () => {});
@@ -306,15 +353,24 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
       };
     }
 
-    // A dead host can leave a fresh heartbeat/inbox-wake row behind. Remove
-    // that stale roster entry once the authoritative host lookup says it is
-    // gone; the structured result remains not_found because it was already
-    // dead, not successfully killed.
-    await deps.clearPresence?.(input.target).catch(() => {});
-    // EI-20348469225868168: fleet:kill is an explicit reap for this already-dead
-    // owner. Mirror presence-reaper's existing delegated-seat cleanup instead
-    // of leaving a consumption row behind until a later lazy purge.
-    await deps.releaseSeatConsumptions?.([input.target]).catch(() => {});
+    // A dead host can leave both an active loop routine and a fresh roster row
+    // behind. Quiesce the durable wake source first, then remove and verify the
+    // ephemeral presence row. Reporting `not_found` while this cleanup failed
+    // would let fleet:respawn-member launch into a still-live roster identity.
+    const cleanupError = await reapDeadOwner(input, deps);
+    if (cleanupError) {
+      await audit('fleet.kill_cleanup_failed', input.target, {
+        reason: input.reason,
+        stage: 'already-dead-reap',
+        error: cleanupError,
+      });
+      return {
+        ok: false,
+        target: input.target,
+        code: 'cleanup_failed',
+        error: cleanupError,
+      };
+    }
     return {
       ok: false,
       target: input.target,
@@ -341,6 +397,10 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
     await deps.markSessionEnded?.(host.advSessionId, signal).catch(() => {});
   }
 
+  // The process is now authoritatively dead. Stop its recurring wake before
+  // deleting presence so the compaction watchdog cannot heal the row back.
+  const cleanupError = await reapDeadOwner(input, deps);
+
   let terminal: KillOneResult['terminal'] = 'left-open';
   if (input.closeTerminal) {
     if (tabShellPid) {
@@ -360,7 +420,20 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
     signal,
     terminal,
     tab_shell_pid: tabShellPid ?? undefined,
+    cleanup_error: cleanupError ?? undefined,
   });
+  if (cleanupError) {
+    return {
+      ok: false,
+      target: input.target,
+      kind: 'desktop',
+      killed: true,
+      signal,
+      terminal,
+      code: 'cleanup_failed',
+      error: `session process was killed, but durable cleanup is incomplete: ${cleanupError}`,
+    };
+  }
   return { ok: true, target: input.target, kind: 'desktop', killed: true, signal, terminal };
 }
 
@@ -568,7 +641,13 @@ export default defineTool({
       findHost: (ownerId) => findLiveHost(ownerId),
       findLiveUnmanaged: (ownerId) => findLiveUnmanagedSession(ownerId, workspaceId),
       cancelNursery: (target, why) => cancelNurseryTarget(target, why, workspaceId, actor),
+      deactivateLoop: (ownerId, why) =>
+        deactivateLoop(ownerId, {
+          reason: `fleet:kill — ${why}`,
+          actor: actor.ownerId,
+        }),
       clearPresence: (ownerId) => clearPresence(ownerId),
+      presenceExists: async (ownerId) => (await getPresence(ownerId)) != null,
       releaseSeatConsumptions: async (ownerIds) => {
         const { releaseSeatConsumptions } = await import('../../fleet/seat-accounting');
         await releaseSeatConsumptions(ownerIds);
