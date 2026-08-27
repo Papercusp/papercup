@@ -26,7 +26,7 @@ import {
 } from './import-jobs';
 
 const MIGRATION = fileURLToPath(new URL(
-  '../../../../libs/papercusp/libs/db/sql/983-personal-vault-import-jobs.sql.DRAFT',
+  '../../../../libs/papercusp/libs/db/sql/983-personal-vault-import-jobs.sql',
   import.meta.url,
 ));
 const WS = `personal-vault-import-jobs-${process.pid}`;
