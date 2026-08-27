@@ -12,7 +12,7 @@ const h = vi.hoisted(() => ({
   boundedPgReadTxn: vi.fn(),
   acquireWithContentionRetry: vi.fn(),
   issuesScopeWorkspace: vi.fn(() => 'default'),
-  issuesOutLinksMany: vi.fn(async () => new Map()),
+  issuesOutLinksMany: vi.fn(async (_ids: readonly string[]) => new Map()),
 }));
 
 vi.mock('./pg-read-query', async (importOriginal) => ({
@@ -27,8 +27,8 @@ vi.mock('./agent-tools/locks/contention-retry', async (importOriginal) => ({
 
 vi.mock('./issues-engineer', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./issues-engineer')>()),
-  issuesScopeWorkspace: (...args: unknown[]) => h.issuesScopeWorkspace(...args),
-  issuesOutLinksMany: (...args: unknown[]) => h.issuesOutLinksMany(...args),
+  issuesScopeWorkspace: () => h.issuesScopeWorkspace(),
+  issuesOutLinksMany: (ids: readonly string[]) => h.issuesOutLinksMany(ids),
 }));
 
 const { listScorecards } = await import('./scorecards');
