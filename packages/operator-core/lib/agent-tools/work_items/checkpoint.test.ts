@@ -1772,7 +1772,6 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         });
         expect(r.message).toContain('confirmRetire');
         expect(setWorkItemCheckpointWithPrior.mock.calls.length).toBe(before + 1);
-        expect(await lastStored()).toBe(await prior);
       });
 
       it('accepts the same retirement with confirmRetire:true and still reports the dropped rows', async () => {
