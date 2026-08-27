@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * Client-side plans:* API + read hooks.
@@ -12,16 +12,29 @@
  * change, plus an explicit `refresh()`. No SSE/live-sync in v1.
  */
 
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { useSyncQuery } from '@papercusp/sync';
-import type { ReportBlock } from '@papercusp/chat-protocol';
-import type { AuthorIdentity } from '../../_components/AuthorBadge';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
+import { useSyncQuery } from "@papercusp/sync";
+import type { ReportBlock } from "@papercusp/chat-protocol";
+import type { AuthorIdentity } from "../../_components/AuthorBadge";
 
 export type { AuthorIdentity };
 
 /* ── Wire types — mirror lib/agent-tools/plans/* return shapes ─────── */
 
-export type PlanStatus = 'draft' | 'ready' | 'active' | 'blocked' | 'shipped' | 'superseded';
+export type PlanStatus =
+  | "draft"
+  | "ready"
+  | "active"
+  | "blocked"
+  | "shipped"
+  | "superseded";
 
 /**
  * The five lifecycle buckets surfaced as filter tabs in the Plans tab.
@@ -31,16 +44,16 @@ export type PlanStatus = 'draft' | 'ready' | 'active' | 'blocked' | 'shipped' | 
  * the operational start-state, not a frontmatter status, and legacy
  * plans (no frontmatter status, defaulted to `draft`) fold into `draft`.
  */
-export type PlanBucket = 'draft' | 'ready' | 'running' | 'shipped' | 'rejected';
+export type PlanBucket = "draft" | "ready" | "running" | "shipped" | "rejected";
 
 export const PLAN_BUCKETS: ReadonlyArray<{ id: PlanBucket; label: string }> = [
-  { id: 'draft', label: 'Draft' },
-  { id: 'ready', label: 'Ready' },
-  { id: 'running', label: 'Running' },
-  { id: 'shipped', label: 'Shipped' },
+  { id: "draft", label: "Draft" },
+  { id: "ready", label: "Ready" },
+  { id: "running", label: "Running" },
+  { id: "shipped", label: "Shipped" },
   // The only way a plan lands in the 'rejected' bucket is status:superseded
   // (reject = supersede), so the chip reads "Superseded".
-  { id: 'rejected', label: 'Superseded' },
+  { id: "rejected", label: "Superseded" },
 ];
 
 const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
@@ -54,32 +67,47 @@ const PLAN_BUCKET_IDS: readonly PlanBucket[] = PLAN_BUCKETS.map((b) => b.id);
  *   4. ready | active        → ready      (approved, not started; `active` is legacy-approved)
  *   5. otherwise             → draft      (draft, blocked, anything else)
  */
-export function bucketOf(plan: Pick<PlanListRow, 'status' | 'startStatus'>): PlanBucket {
-  if (plan.status === 'superseded') return 'rejected';
-  if (plan.status === 'shipped') return 'shipped';
-  if (plan.startStatus === 'started') return 'running';
-  if (plan.status === 'ready' || plan.status === 'active') return 'ready';
-  return 'draft';
+export function bucketOf(
+  plan: Pick<PlanListRow, "status" | "startStatus">,
+): PlanBucket {
+  if (plan.status === "superseded") return "rejected";
+  if (plan.status === "shipped") return "shipped";
+  if (plan.startStatus === "started") return "running";
+  if (plan.status === "ready" || plan.status === "active") return "ready";
+  return "draft";
 }
-export type ItemStatus = 'todo' | 'wip' | 'blocked' | 'needs-human' | 'done' | 'dropped';
+export type ItemStatus =
+  | "todo"
+  | "wip"
+  | "blocked"
+  | "needs-human"
+  | "done"
+  | "dropped";
 
 /** Per-item importance — a 4th axis orthogonal to status. Mirrors
  *  @papercusp/plan-parser's IMPORTANCE_LEVELS; kept local here per this
  *  module's decoupled wire-type pattern. Ordered most → least. */
-export type Importance = 'urgent' | 'high' | 'normal' | 'low';
-export const IMPORTANCE_LEVELS: readonly Importance[] = ['urgent', 'high', 'normal', 'low'];
-export type PlanStartStatus = 'started' | 'paused' | 'done' | null;
-export type PlanTriggerSource = 'schedule' | 'external' | 'manual';
+export type Importance = "urgent" | "high" | "normal" | "low";
+export const IMPORTANCE_LEVELS: readonly Importance[] = [
+  "urgent",
+  "high",
+  "normal",
+  "low",
+];
+export type PlanStartStatus = "started" | "paused" | "done" | null;
+export type PlanTriggerSource = "schedule" | "external" | "manual";
 
 /** Compact, stable label shared by the sidebar and Create-dock plan rows. */
-export function planTriggerSourceLabel(sources: readonly PlanTriggerSource[] | undefined): string {
-  if (!sources?.length) return 'triggered';
+export function planTriggerSourceLabel(
+  sources: readonly PlanTriggerSource[] | undefined,
+): string {
+  if (!sources?.length) return "triggered";
   const labels: Record<PlanTriggerSource, string> = {
-    schedule: 'schedule',
-    external: 'event',
-    manual: 'manual',
+    schedule: "schedule",
+    external: "event",
+    manual: "manual",
   };
-  return sources.map((source) => labels[source]).join(' + ');
+  return sources.map((source) => labels[source]).join(" + ");
 }
 
 /**
@@ -117,7 +145,7 @@ export interface PlanListRow {
   lastEditor?: AuthorIdentity;
   archived: boolean;
   isLegacy: boolean;
-  itemCounts?: Partial<Record<ItemStatus | 'unknown', number>>;
+  itemCounts?: Partial<Record<ItemStatus | "unknown", number>>;
   nextAction?: string;
   /**
    * Resolved harness slug for the plan — per
@@ -135,19 +163,15 @@ export interface PlanListRow {
    *  absent when no items are open. Items without an `importance:` keyword
    *  count as 'normal'. */
   maxImportance?: Importance;
-  /** 'scout' when the Blender/Scout ideation loop routed this plan
-   *  (ledger-derived server-side). Absent otherwise, or from a server predating
-   *  the field.
+  /** 'scout' when canonical plan content declares `origin: scout`.
+   *  Derived server-side from the content marker while projecting the plan
+   *  index; absent otherwise, or from a server predating the field.
    *
    *  ⚠ ABSENT IS NOT "human-authored" — it is "not Blender". The ideation ledger
-   *  also carries `su-ideate` (an su agent's own IDEATE pass) and `drill`, and
-   *  neither stamps this field: the server derivation filters to origin='scout'
-   *  (scout/routed-ledger.ts). Before WI-39439 it did not, so this field meant
-   *  "routed by anything" and was wrong on 75% of the rows it set — if you are
-   *  reading a value from a server older than that fix, do not trust it as
-   *  Blender provenance. Consumers: the PlansPane provenance icon and the
-   *  Create tab's `scout` filter facet (plan-filtering.ts). */
-  origin?: 'scout';
+   *  routed-idea ledger is deliberately not consulted: routing evidence and
+   *  canonical plan provenance can drift. Consumers include PlansPane,
+   *  PlanPopupModal, and the Create tab's `scout` filter facet. */
+  origin?: "scout";
   /** P-021 schedule glance — true when the plan has a recurrence set OR a one-shot
    *  fire time (scheduled-recurring-plans-2026-06-16). Undefined from a server
    *  predating the field. */
@@ -155,7 +179,7 @@ export interface PlanListRow {
   /** Armed/firing (true) vs saved-but-paused/disarmed (false). */
   scheduleActive?: boolean;
   /** A recurrence set (`recurring`) vs a one-shot `scheduled_at` (`one-shot`); absent ⇒ unscheduled. */
-  scheduleKind?: 'recurring' | 'one-shot';
+  scheduleKind?: "recurring" | "one-shot";
   /** Derived on every plans:list read from schedule/binding/input presence;
    *  never persisted as a kind column. */
   triggered?: boolean;
@@ -221,59 +245,69 @@ export interface PlanItemRow {
    lib/attention/types.ts, kept local per this module's decoupling. ── */
 
 export type AttentionKind =
-  | 'plan-item'
-  | 'coord-escalation'
-  | 'coord-message'
-  | 'smoke-fail'
-  | 'operator-report'
+  | "plan-item"
+  | "coord-escalation"
+  | "coord-message"
+  | "smoke-fail"
+  | "operator-report"
   // B-14 / P-100 folded disposition channels (D-011):
-  | 'improvement'
-  | 'standing-approval'
-  | 'conversation'
-  | 'scout-grade'
+  | "improvement"
+  | "standing-approval"
+  | "conversation"
+  | "scout-grade"
   // owner-inbox-single-pane P-005 folded owner-gate channels. These have
   // shipped on the server wire since P-005; omitting them here made the
   // decoupled client mirror a type lie and forced consumers to cast around
   // rows the UI already receives in production.
-  | 'work-item-needs-human'
-  | 'owner-wall'
-  | 'dark-flag-ratification'
-  | 'blocked-session'
-  | 'work-item-blocked'
-  | 'decision-owed';
+  | "work-item-needs-human"
+  | "owner-wall"
+  | "dark-flag-ratification"
+  | "blocked-session"
+  | "work-item-blocked"
+  | "decision-owed";
 
 export type AttentionActionId =
-  | 'chat'
-  | 'message-owner'
-  | 'resolve'
-  | 'mark-done'
-  | 'answer'
-  | 'drop'
-  | 'view-log'
-  | 'open'
-  | 'ack'
-  | 'discuss'
+  | "chat"
+  | "message-owner"
+  | "resolve"
+  | "mark-done"
+  | "answer"
+  | "drop"
+  | "view-log"
+  | "open"
+  | "ack"
+  | "discuss"
   // B-14 / D-027 follow-on (1): inline disposition for the folded kinds
   // (standing-approval grant/dismiss). Mirrors AttentionActionId in
   // operator-core/lib/attention/types.ts — keep in sync.
-  | 'grant'
-  | 'dismiss';
+  | "grant"
+  | "dismiss";
 
 /** The four inbox tiers (inbox-tiering-and-message-agent D-002/D-006), ordered
  *  Decisions ▸ Handled-by-operator ▸ Alerts ▸ Activity. Mirrors the server
  *  `AttentionTier`; only `decision` demands the user. */
-export type AttentionTier = 'decision' | 'handled' | 'alert' | 'activity';
+export type AttentionTier = "decision" | "handled" | "alert" | "activity";
 
-export const ATTENTION_TIERS: readonly AttentionTier[] = ['decision', 'handled', 'alert', 'activity'];
+export const ATTENTION_TIERS: readonly AttentionTier[] = [
+  "decision",
+  "handled",
+  "alert",
+  "activity",
+];
 
 export const TIER_LABEL: Record<AttentionTier, string> = {
-  decision: 'Decisions',
-  handled: 'Handled by operator',
-  alert: 'Alerts',
-  activity: 'Activity',
+  decision: "Decisions",
+  handled: "Handled by operator",
+  alert: "Alerts",
+  activity: "Activity",
 };
 
-export type TriageState = 'untriaged' | 'confirmed' | 'escalated' | 'downgraded' | 'resolved';
+export type TriageState =
+  | "untriaged"
+  | "confirmed"
+  | "escalated"
+  | "downgraded"
+  | "resolved";
 
 export interface AttentionAction {
   id: AttentionActionId;
@@ -338,8 +372,8 @@ export interface AttentionItem {
   category?: string;
   /** A1 authorizer-split (queue-authorization-redesign P-002): WHO must sign off
    *  on this Decision + WHY it's gated. Set for `needsHuman` items only. */
-  authorizer?: 'you' | 'queen-eligible';
-  whyGated?: 'protected' | 'owner-only' | 'unarmed' | 'above-ceiling';
+  authorizer?: "you" | "queen-eligible";
+  whyGated?: "protected" | "owner-only" | "unarmed" | "above-ceiling";
   /** ISO timestamp of when the underlying event occurred (message/escalation
    *  sent, work-item updated, gate opened, report turn, …). Drives the Inbox
    *  card's date + recency ordering (inbox-pane-active-scope-dates-filters-2026-07-19).
@@ -349,7 +383,7 @@ export interface AttentionItem {
 
 export interface AttentionGroup {
   key: string;
-  kind: 'plan' | 'alerts';
+  kind: "plan" | "alerts";
   /** Optional, not nullable — the LIST feed omits null keys (see the
    *  {@link AttentionItem} header). Absent on the synthetic Alerts buckets. */
   planSlug?: string;
@@ -367,14 +401,19 @@ export interface AttentionGroup {
  * the shared sync hook — the same boundary every Create/Plans consumer uses —
  * instead of teaching each panel to survive malformed cache snapshots.
  */
-export function normalizeAttentionGroups(rows: readonly unknown[]): AttentionGroup[] {
+export function normalizeAttentionGroups(
+  rows: readonly unknown[],
+): AttentionGroup[] {
   const groups: AttentionGroup[] = [];
   for (const value of rows) {
-    if (!value || typeof value !== 'object') continue;
+    if (!value || typeof value !== "object") continue;
     const group = value as Partial<AttentionGroup> & { items?: unknown };
-    if (typeof group.key !== 'string' || !Array.isArray(group.items)) continue;
+    if (typeof group.key !== "string" || !Array.isArray(group.items)) continue;
     const items = group.items.filter(
-      (item): item is AttentionItem => !!item && typeof item === 'object' && typeof (item as { kind?: unknown }).kind === 'string',
+      (item): item is AttentionItem =>
+        !!item &&
+        typeof item === "object" &&
+        typeof (item as { kind?: unknown }).kind === "string",
     );
     groups.push({ ...group, items } as AttentionGroup);
   }
@@ -398,7 +437,9 @@ export function normalizeAttentionGroups(rows: readonly unknown[]): AttentionGro
  * the dedupe here means every current AND future consumer of `usePlanAttention`
  * gets it for free instead of re-deriving it (and re-forgetting it).
  */
-export function flattenAttentionItems(groups: readonly AttentionGroup[]): AttentionItem[] {
+export function flattenAttentionItems(
+  groups: readonly AttentionGroup[],
+): AttentionItem[] {
   const seen = new Set<string>();
   const out: AttentionItem[] = [];
   for (const g of groups) {
@@ -455,11 +496,16 @@ export interface PlanGetResult {
   /** P-083: per-plan-item test coverage (plan↔test rollup via the VAL). */
   planItemTests?: Record<
     string,
-    { valsTotal: number; valsRequiringTest: number; valsCovered: number; valsPassing: number }
+    {
+      valsTotal: number;
+      valsRequiringTest: number;
+      valsCovered: number;
+      valsPassing: number;
+    }
   >;
 }
 
-export type SearchScope = 'title' | 'now' | 'items' | 'decisions' | 'prose';
+export type SearchScope = "title" | "now" | "items" | "decisions" | "prose";
 
 export interface SearchMatch {
   scope: SearchScope;
@@ -478,7 +524,7 @@ export interface PlanSearchHit {
 
 /* ── Fetchers ──────────────────────────────────────────────────────── */
 
-const BASE = '/api/admin/plans';
+const BASE = "/api/admin/plans";
 
 async function getJson<T>(
   verb: string,
@@ -502,16 +548,19 @@ async function getJson<T>(
   }
   const r = await fetch(url.toString(), signal ? { signal } : undefined);
   if (!r.ok) {
-    const text = await r.text().catch(() => '');
+    const text = await r.text().catch(() => "");
     throw new Error(`plans:${verb} → ${r.status}: ${text.slice(0, 200)}`);
   }
   return (await r.json()) as T;
 }
 
-async function postJson<T>(verb: string, body: Record<string, unknown>): Promise<T> {
+async function postJson<T>(
+  verb: string,
+  body: Record<string, unknown>,
+): Promise<T> {
   const r = await fetch(`${BASE}/${verb}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const text = await r.text();
@@ -525,18 +574,21 @@ async function postJson<T>(verb: string, body: Record<string, unknown>): Promise
   }
 }
 
-export function fetchPlanList(params?: {
-  status?: PlanStatus;
-  includeArchived?: boolean;
-  includeLegacy?: boolean;
-  /** P-029: fan out across multiple harnesses. */
-  harness_slugs?: readonly string[];
-}, signal?: AbortSignal) {
-  return getJson<{ plans: PlanListRow[] }>('list', params, signal);
+export function fetchPlanList(
+  params?: {
+    status?: PlanStatus;
+    includeArchived?: boolean;
+    includeLegacy?: boolean;
+    /** P-029: fan out across multiple harnesses. */
+    harness_slugs?: readonly string[];
+  },
+  signal?: AbortSignal,
+) {
+  return getJson<{ plans: PlanListRow[] }>("list", params, signal);
 }
 
 function isAbortSignalLike(value: unknown): value is AbortSignal {
-  return !!value && typeof value === 'object' && 'aborted' in value;
+  return !!value && typeof value === "object" && "aborted" in value;
 }
 
 export function fetchPlan(
@@ -544,8 +596,11 @@ export function fetchPlan(
   harnessSlugOrSignal?: string | null | AbortSignal,
   signal?: AbortSignal,
 ) {
-  const harnessSlug = typeof harnessSlugOrSignal === 'string' ? harnessSlugOrSignal : null;
-  const actualSignal = isAbortSignalLike(harnessSlugOrSignal) ? harnessSlugOrSignal : signal;
+  const harnessSlug =
+    typeof harnessSlugOrSignal === "string" ? harnessSlugOrSignal : null;
+  const actualSignal = isAbortSignalLike(harnessSlugOrSignal)
+    ? harnessSlugOrSignal
+    : signal;
   // mode:'full' is REQUIRED here. `plans:get` defaults to mode:'sections',
   // which returns frontmatter + items + a section INDEX but NOT the prose/raw
   // markdown body (the default protects agent payloads from a 90KB blob —
@@ -555,8 +610,8 @@ export function fetchPlan(
   // mode:'full' the editor renders BLANK. These are user-driven, one-plan-at-
   // a-time fetches, so the full body is the right payload.
   return getJson<PlanGetResult>(
-    'get',
-    { slug, mode: 'full', ...(harnessSlug ? { harness: harnessSlug } : {}) },
+    "get",
+    { slug, mode: "full", ...(harnessSlug ? { harness: harnessSlug } : {}) },
     actualSignal,
   );
 }
@@ -567,27 +622,37 @@ export function fetchPlanItems(params?: {
   actionable?: boolean;
   needsHuman?: boolean;
 }) {
-  return getJson<{ items: PlanItemRow[] }>('items', params);
+  return getJson<{ items: PlanItemRow[] }>("items", params);
 }
 
 export function searchPlans(params: { query: string }) {
-  return getJson<{ hits: PlanSearchHit[] }>('search', params);
+  return getJson<{ hits: PlanSearchHit[] }>("search", params);
 }
 
-export function fetchPlanAttention(params?: { harnessSlug?: string; includeArchived?: boolean }) {
-  return getJson<{ groups: AttentionGroup[]; tierCounts?: TierCounts }>('attention', params);
+export function fetchPlanAttention(params?: {
+  harnessSlug?: string;
+  includeArchived?: boolean;
+}) {
+  return getJson<{ groups: AttentionGroup[]; tierCounts?: TierCounts }>(
+    "attention",
+    params,
+  );
 }
 
 /* ── Other-item actions (coord:* via the /api/admin/coord proxy) ─────── */
 
-async function postCoord<T>(verb: string, body: Record<string, unknown>): Promise<T> {
+async function postCoord<T>(
+  verb: string,
+  body: Record<string, unknown>,
+): Promise<T> {
   const r = await fetch(`/api/admin/coord/${verb}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const text = await r.text();
-  if (!r.ok) throw new Error(`coord:${verb} → ${r.status}: ${text.slice(0, 200)}`);
+  if (!r.ok)
+    throw new Error(`coord:${verb} → ${r.status}: ${text.slice(0, 200)}`);
   try {
     return JSON.parse(text) as T;
   } catch {
@@ -596,13 +661,17 @@ async function postCoord<T>(verb: string, body: Record<string, unknown>): Promis
 }
 
 /** Resolve a coord escalation by msg_id, recording the chosen option id. */
-export function resolveEscalation(args: { msg_id: string; choice: string; note?: string }) {
-  return postCoord<{ ok?: boolean; error?: string }>('resolve', args);
+export function resolveEscalation(args: {
+  msg_id: string;
+  choice: string;
+  note?: string;
+}) {
+  return postCoord<{ ok?: boolean; error?: string }>("resolve", args);
 }
 
 /** Acknowledge a coord message addressed to the human. */
 export function ackCoordMessage(args: { msg_id: string }) {
-  return postCoord<{ ok?: boolean; error?: string }>('ack', args);
+  return postCoord<{ ok?: boolean; error?: string }>("ack", args);
 }
 
 /** D-007 (owner-inbox-single-pane-2026-07-17 P-006): deliver + wake an inbox
@@ -612,24 +681,37 @@ export function ackCoordMessage(args: { msg_id: string }) {
  *  turn-provenance origin (D-006), which must never be reachable via the
  *  agent-callable coord:send tool. Returns `live:false` when the asker isn't
  *  live; the caller falls back to the Discuss (Papercup) path. */
-export function deliverInboxReply(args: { askerId: string; text: string; summary?: string; planSlug?: string }) {
-  return postFullUrl<{ ok: boolean; live: boolean; delivered: boolean; woken: number; msgId?: string; error?: string }>(
-    '/api/admin/coord-inbox-reply',
-    args,
-  );
+export function deliverInboxReply(args: {
+  askerId: string;
+  text: string;
+  summary?: string;
+  planSlug?: string;
+}) {
+  return postFullUrl<{
+    ok: boolean;
+    live: boolean;
+    delivered: boolean;
+    woken: number;
+    msgId?: string;
+    error?: string;
+  }>("/api/admin/coord-inbox-reply", args);
 }
 
 /** Like `postJson`/`postCoord` but against an absolute path (not the `/api/admin/plans`
  *  or `/api/admin/coord` base) — for the small set of admin write routes that
  *  deliberately live outside those two proxies (e.g. coord-inbox-reply, D-006). */
-async function postFullUrl<T>(url: string, body: Record<string, unknown>): Promise<T> {
+async function postFullUrl<T>(
+  url: string,
+  body: Record<string, unknown>,
+): Promise<T> {
   const r = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const text = await r.text();
-  if (!r.ok) throw new Error(`POST ${url} → ${r.status}: ${text.slice(0, 200)}`);
+  if (!r.ok)
+    throw new Error(`POST ${url} → ${r.status}: ${text.slice(0, 200)}`);
   try {
     return JSON.parse(text) as T;
   } catch {
@@ -642,16 +724,17 @@ async function postFullUrl<T>(url: string, body: Record<string, unknown>): Promi
  *  (resolve → handled tier, auditable). report-cards-inbox-reconciliation P-007. */
 export async function triageAttentionItem(args: {
   itemId: string;
-  action: 'confirm' | 'escalate' | 'downgrade' | 'resolve';
+  action: "confirm" | "escalate" | "downgrade" | "resolve";
   note?: string;
 }): Promise<{ ok?: boolean; error?: string }> {
-  const r = await fetch('/api/admin/inbox/triage', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+  const r = await fetch("/api/admin/inbox/triage", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(args),
   });
   const text = await r.text();
-  if (!r.ok) throw new Error(`inbox:triage → ${r.status}: ${text.slice(0, 200)}`);
+  if (!r.ok)
+    throw new Error(`inbox:triage → ${r.status}: ${text.slice(0, 200)}`);
   try {
     return JSON.parse(text) as { ok?: boolean; error?: string };
   } catch {
@@ -685,7 +768,7 @@ export interface MessageOwnerResult {
 
 /** Open a work-item-scoped conversation with the item's owning agent. */
 export function messageOwner(args: MessageOwnerArgs) {
-  return postCoord<MessageOwnerResult>('message-agent', {
+  return postCoord<MessageOwnerResult>("message-agent", {
     ...(args.to ? { to: args.to } : {}),
     body: args.body,
     ...(args.title ? { title: args.title } : {}),
@@ -728,7 +811,7 @@ export interface AssignableMember {
  *  (dev.assignableMembers). Reuses the sync layer (SSE-pushed; a presence flip
  *  or a new admission refreshes it via the table→query map). */
 export function useAssignableMembers(): AsyncResult<AssignableMember[]> {
-  return useSyncRows<AssignableMember>('dev.assignableMembers', EMPTY_ARGS);
+  return useSyncRows<AssignableMember>("dev.assignableMembers", EMPTY_ARGS);
 }
 
 export interface AssignArgs {
@@ -763,25 +846,32 @@ export function assignToUser(args: AssignArgs): Promise<AssignResult> {
   const summary = `📋 Assigned to you: ${target}`;
   const body =
     `You've been assigned ${target} via the plans UI.` +
-    (args.note ? `\n\nNote: ${args.note}` : '');
-  return postCoord<AssignResult>('send', {
+    (args.note ? `\n\nNote: ${args.note}` : "");
+  return postCoord<AssignResult>("send", {
     to: args.to,
     summary,
     body,
     // default 'optimistic' (durable backstop = the Queen survey); explicit wake:false ⇒ no wake.
-    wake: args.wake === false ? undefined : 'optimistic',
+    wake: args.wake === false ? undefined : "optimistic",
     plan_slug: args.planSlug,
   });
 }
 
-async function postCoordination<T>(group: string, verb: string, body: Record<string, unknown>): Promise<T> {
+async function postCoordination<T>(
+  group: string,
+  verb: string,
+  body: Record<string, unknown>,
+): Promise<T> {
   const r = await fetch(`/api/admin/coordination/${group}/${verb}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   const text = await r.text();
-  if (!r.ok) throw new Error(`coordination:${group}/${verb} → ${r.status}: ${text.slice(0, 200)}`);
+  if (!r.ok)
+    throw new Error(
+      `coordination:${group}/${verb} → ${r.status}: ${text.slice(0, 200)}`,
+    );
   try {
     return JSON.parse(text) as T;
   } catch {
@@ -814,17 +904,25 @@ export interface ConversationDetail {
 
 /** Read a conversation thread (the inline thread view). */
 export function getConversation(conversationId: string) {
-  return postCoordination<ConversationDetail | { error: string }>('conversations', 'get', {
-    conversation_id: conversationId,
-  });
+  return postCoordination<ConversationDetail | { error: string }>(
+    "conversations",
+    "get",
+    {
+      conversation_id: conversationId,
+    },
+  );
 }
 
 /** Post a reply into a conversation thread (as the human/admin identity). */
 export function postConversation(conversationId: string, body: string) {
-  return postCoordination<{ ok?: boolean; post_id?: number; error?: string }>('conversations', 'post', {
-    conversation_id: conversationId,
-    body,
-  });
+  return postCoordination<{ ok?: boolean; post_id?: number; error?: string }>(
+    "conversations",
+    "post",
+    {
+      conversation_id: conversationId,
+      body,
+    },
+  );
 }
 
 /** Answer + close an open question from the Queue (D-027 follow-on (1)): record
@@ -832,11 +930,18 @@ export function postConversation(conversationId: string, body: string) {
  *  captures it to the knowledge layer (for the next asker) and drops it from the
  *  Queue. The owner is the authority, so answering IS resolving — distinct from
  *  postConversation (a non-closing reply). */
-export function resolveConversationAnswer(args: { conversation_id: string; accepted_answer: string }) {
-  return postCoordination<{ ok?: boolean; state?: string; error?: string }>('conversations', 'resolve', {
-    conversation_id: args.conversation_id,
-    accepted_answer: args.accepted_answer,
-  });
+export function resolveConversationAnswer(args: {
+  conversation_id: string;
+  accepted_answer: string;
+}) {
+  return postCoordination<{ ok?: boolean; state?: string; error?: string }>(
+    "conversations",
+    "resolve",
+    {
+      conversation_id: args.conversation_id,
+      accepted_answer: args.accepted_answer,
+    },
+  );
 }
 
 /** Dismiss a routed improvement from the Queue (D-027 follow-on (1)): triage-one
@@ -844,12 +949,16 @@ export function resolveConversationAnswer(args: { conversation_id: string; accep
  *  "already decided" on the next same-signature capture. Accepting/routing
  *  (place/gate/gym) stays on the full Triage surface (the navigate `open`). */
 export function dismissImprovement(issueId: string) {
-  return postCoordination<{ ok?: boolean; closed?: boolean; error?: string }>('improvements', 'triage', {
-    mode: 'triage-one',
-    ideaId: issueId,
-    decision: 'reject',
-    reason: 'Dismissed from the Queue by the owner',
-  });
+  return postCoordination<{ ok?: boolean; closed?: boolean; error?: string }>(
+    "improvements",
+    "triage",
+    {
+      mode: "triage-one",
+      ideaId: issueId,
+      decision: "reject",
+      reason: "Dismissed from the Queue by the owner",
+    },
+  );
 }
 
 /** Grant or dismiss a standing-approval candidate from the Queue (D-027 follow-on
@@ -859,15 +968,18 @@ export function dismissImprovement(issueId: string) {
 export async function decideStandingApproval(args: {
   capability: string;
   targetHarness: string;
-  decision: 'approve' | 'dismiss';
+  decision: "approve" | "dismiss";
 }): Promise<{ ok?: boolean; error?: string }> {
-  const r = await fetch('/api/agent-mcp/operator-standing-approvals', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+  const r = await fetch("/api/agent-mcp/operator-standing-approvals", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(args),
   });
   const text = await r.text();
-  if (!r.ok) throw new Error(`standing-approvals:decide → ${r.status}: ${text.slice(0, 200)}`);
+  if (!r.ok)
+    throw new Error(
+      `standing-approvals:decide → ${r.status}: ${text.slice(0, 200)}`,
+    );
   try {
     return JSON.parse(text) as { ok?: boolean; error?: string };
   } catch {
@@ -886,7 +998,10 @@ export interface AsyncResult<T> {
   setData?: Dispatch<SetStateAction<T | null>>;
 }
 
-function useAsyncJson<T>(fetcher: (signal: AbortSignal) => Promise<T>, deps: unknown[]): AsyncResult<T> {
+function useAsyncJson<T>(
+  fetcher: (signal: AbortSignal) => Promise<T>,
+  deps: unknown[],
+): AsyncResult<T> {
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -908,7 +1023,7 @@ function useAsyncJson<T>(fetcher: (signal: AbortSignal) => Promise<T>, deps: unk
       })
       .catch((e: unknown) => {
         // An aborted fetch (superseded selection / unmount) is expected, not an error.
-        if (!cancelled && (e as { name?: string })?.name !== 'AbortError') {
+        if (!cancelled && (e as { name?: string })?.name !== "AbortError") {
           setError(e instanceof Error ? e.message : String(e));
         }
       })
@@ -922,7 +1037,13 @@ function useAsyncJson<T>(fetcher: (signal: AbortSignal) => Promise<T>, deps: unk
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [...deps, tick]);
 
-  return { data, loading, error, refresh: () => setTick((t) => t + 1), setData };
+  return {
+    data,
+    loading,
+    error,
+    refresh: () => setTick((t) => t + 1),
+    setData,
+  };
 }
 
 /**
@@ -995,7 +1116,9 @@ export function filterPlanListRows(
   if (!rows) return [];
   if (opts.includeArchived && opts.includeLegacy) return rows as PlanListRow[];
   return rows.filter(
-    (p) => (opts.includeArchived || !p.archived) && (opts.includeLegacy || !p.isLegacy),
+    (p) =>
+      (opts.includeArchived || !p.archived) &&
+      (opts.includeLegacy || !p.isLegacy),
   );
 }
 
@@ -1039,19 +1162,26 @@ export function usePlanList(params?: {
   enabled?: boolean;
 }): AsyncResult<{ plans: PlanListRow[] }> {
   // Stable join so a same-content array doesn't churn the query key.
-  const harnessSlugsKey = params?.harness_slugs?.slice().sort().join('|') ?? '';
+  const harnessSlugsKey = params?.harness_slugs?.slice().sort().join("|") ?? "";
   const args = useMemo<Record<string, unknown>>(
     () => ({
       ...(params?.status ? { status: params.status } : {}),
       // The superset on the archived/legacy axis — narrowed client-side below.
       includeArchived: true,
       includeLegacy: true,
-      ...(params?.harness_slugs ? { harness_slugs: [...params.harness_slugs] } : {}),
+      ...(params?.harness_slugs
+        ? { harness_slugs: [...params.harness_slugs] }
+        : {}),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [params?.status, harnessSlugsKey],
   );
-  const r = useSyncResource<PlanListRow, 'plans'>('plans.list', args, 'plans', params?.enabled ?? true);
+  const r = useSyncResource<PlanListRow, "plans">(
+    "plans.list",
+    args,
+    "plans",
+    params?.enabled ?? true,
+  );
   // Mirror the SERVER defaults exactly: archived off unless asked, legacy on
   // unless refused (see filterPlanListRows).
   const includeArchived = params?.includeArchived === true;
@@ -1073,7 +1203,7 @@ const EMPTY_ARGS: Record<string, unknown> = {};
  * components dedupes to one query.
  */
 export function usePlanViewerEmail(): string | null {
-  const r = useSyncRows<{ email: string | null }>('plans.viewer', EMPTY_ARGS);
+  const r = useSyncRows<{ email: string | null }>("plans.viewer", EMPTY_ARGS);
   return r.data?.[0]?.email ?? null;
 }
 
@@ -1113,11 +1243,18 @@ export function usePlan(
   // Live read-only path (PlanItemPreview). Hooks must run unconditionally, so
   // both hooks are always called; `enabled` gates which one actually fetches.
   const liveArgs = useMemo<Record<string, unknown>>(
-    () => (slug ? { slug, mode: 'full', ...(harnessSlug ? { harness: harnessSlug } : {}) } : {}),
+    () =>
+      slug
+        ? {
+            slug,
+            mode: "full",
+            ...(harnessSlug ? { harness: harnessSlug } : {}),
+          }
+        : {},
     [slug, harnessSlug],
   );
   const liveQuery = useSyncQuery<PlanGetResult>({
-    queryName: 'plans.get',
+    queryName: "plans.get",
     args: liveArgs,
     enabled: live && !!slug,
   });
@@ -1125,7 +1262,10 @@ export function usePlan(
   // Guarded one-shot path (PlanDetail editor). Skip the fetch entirely when
   // the live path is in force so we don't double-request the same plan.
   const oneShot = useAsyncJson<PlanGetResult | null>(
-    (signal) => (!live && slug ? fetchPlan(slug, harnessSlug, signal) : Promise.resolve(null)),
+    (signal) =>
+      !live && slug
+        ? fetchPlan(slug, harnessSlug, signal)
+        : Promise.resolve(null),
     [slug, live, harnessSlug],
   );
 
@@ -1154,12 +1294,21 @@ export function usePlanItems(params?: {
     () => ({
       ...(params?.slug ? { slug: params.slug } : {}),
       ...(params?.status ? { status: params.status } : {}),
-      ...(params?.actionable !== undefined ? { actionable: params.actionable } : {}),
-      ...(params?.needsHuman !== undefined ? { needsHuman: params.needsHuman } : {}),
+      ...(params?.actionable !== undefined
+        ? { actionable: params.actionable }
+        : {}),
+      ...(params?.needsHuman !== undefined
+        ? { needsHuman: params.needsHuman }
+        : {}),
     }),
     [params?.slug, params?.status, params?.actionable, params?.needsHuman],
   );
-  return useSyncResource<PlanItemRow, 'items'>('plans.items', args, 'items', enabled);
+  return useSyncResource<PlanItemRow, "items">(
+    "plans.items",
+    args,
+    "items",
+    enabled,
+  );
 }
 
 export function usePlanAttention(params?: {
@@ -1171,11 +1320,18 @@ export function usePlanAttention(params?: {
   const args = useMemo<Record<string, unknown>>(
     () => ({
       ...(params?.harnessSlug ? { harnessSlug: params.harnessSlug } : {}),
-      ...(params?.includeArchived !== undefined ? { includeArchived: params.includeArchived } : {}),
+      ...(params?.includeArchived !== undefined
+        ? { includeArchived: params.includeArchived }
+        : {}),
     }),
     [params?.harnessSlug, params?.includeArchived],
   );
-  const raw = useSyncResource<unknown, 'groups'>('plans.attention', args, 'groups', enabled);
+  const raw = useSyncResource<unknown, "groups">(
+    "plans.attention",
+    args,
+    "groups",
+    enabled,
+  );
   const groups = useMemo(
     () => normalizeAttentionGroups(raw.data?.groups ?? []),
     [raw.data?.groups],
@@ -1221,7 +1377,7 @@ export function useAttentionRefs(enabled = true): {
   loading: boolean;
 } {
   const q = useSyncQuery<AttentionRefRow>({
-    queryName: 'plans.attentionRefs',
+    queryName: "plans.attentionRefs",
     args: EMPTY_ARGS,
     enabled,
   });
@@ -1245,10 +1401,12 @@ export function useAttentionRefs(enabled = true): {
  * Consumers should not call this directly — {@link useHydratedAttentionItem}
  * merges the result over the list row, which is what `OtherDetail` uses.
  */
-export function usePlanAttentionItem(id: string | null): AsyncResult<AttentionItem | null> {
+export function usePlanAttentionItem(
+  id: string | null,
+): AsyncResult<AttentionItem | null> {
   const args = useMemo<Record<string, unknown>>(() => (id ? { id } : {}), [id]);
   const q = useSyncQuery<AttentionItem>({
-    queryName: 'plans.attentionItem',
+    queryName: "plans.attentionItem",
     args,
     enabled: !!id,
   });
@@ -1288,10 +1446,17 @@ export function useHydratedAttentionItem(item: AttentionItem | null): {
   }, [item, full]);
 }
 
-export function usePlanSearch(query: string): AsyncResult<{ hits: PlanSearchHit[] }> {
+export function usePlanSearch(
+  query: string,
+): AsyncResult<{ hits: PlanSearchHit[] }> {
   const q = query.trim();
   const args = useMemo<Record<string, unknown>>(() => ({ query: q }), [q]);
-  return useSyncResource<PlanSearchHit, 'hits'>('plans.search', args, 'hits', q.length > 0);
+  return useSyncResource<PlanSearchHit, "hits">(
+    "plans.search",
+    args,
+    "hits",
+    q.length > 0,
+  );
 }
 
 /* ── Write fetchers (P-201) ────────────────────────────────────────── */
@@ -1309,18 +1474,24 @@ export function usePlanSearch(query: string): AsyncResult<{ hits: PlanSearchHit[
  *  apps/operator/lib/agent-tools/plans/*.ts and corrected. */
 export type WriteResult<TPayload = unknown> =
   | ({ ok: true; filePath?: string } & TPayload)
-  | { error: string; busy?: Array<{ owner_label?: string; intent?: string }>; [k: string]: unknown };
+  | {
+      error: string;
+      busy?: Array<{ owner_label?: string; intent?: string }>;
+      [k: string]: unknown;
+    };
 
 /** Render one failure (flat result OR a bulk `results[i]`) as a human string. */
 function describeWriteFailure(o: Record<string, unknown>): string {
-  const error = typeof o.error === 'string' ? o.error : null;
-  if (!error) return 'unexpected response shape';
+  const error = typeof o.error === "string" ? o.error : null;
+  if (!error) return "unexpected response shape";
   // The lock-conflict path carries the holder's identity — surface it inline so
   // the user knows who/what to wait for.
-  if (error === 'busy' && Array.isArray(o.busy) && o.busy.length > 0) {
+  if (error === "busy" && Array.isArray(o.busy) && o.busy.length > 0) {
     const b = (o.busy[0] ?? {}) as { owner_label?: string; intent?: string };
-    const who = b.owner_label ?? 'another agent';
-    return b.intent ? `busy: held by ${who} (${b.intent})` : `busy: held by ${who}`;
+    const who = b.owner_label ?? "another agent";
+    return b.intent
+      ? `busy: held by ${who} (${b.intent})`
+      : `busy: held by ${who}`;
   }
   return error;
 }
@@ -1344,17 +1515,17 @@ function describeWriteFailure(o: Record<string, unknown>): string {
  * the bug.
  */
 export function writeError(r: WriteResult<unknown> | unknown): string | null {
-  if (!r || typeof r !== 'object') return 'unexpected response shape';
+  if (!r || typeof r !== "object") return "unexpected response shape";
   const o = r as Record<string, unknown>;
 
   if (Array.isArray(o.results)) {
     const failed = o.results.find(
-      (x) => x && typeof x === 'object' && (x as { ok?: unknown }).ok === false,
+      (x) => x && typeof x === "object" && (x as { ok?: unknown }).ok === false,
     );
     if (failed) return describeWriteFailure(failed as Record<string, unknown>);
     // An empty result set means nothing was written — reporting that as success is
     // the same silent-failure shape this function exists to catch.
-    if (o.results.length === 0) return 'write affected nothing';
+    if (o.results.length === 0) return "write affected nothing";
     return null;
   }
 
@@ -1406,7 +1577,7 @@ export interface LintArgs {
 }
 
 export interface LintFinding {
-  level: 'error' | 'warning';
+  level: "error" | "warning";
   code: string;
   message: string;
   itemId?: string;
@@ -1423,32 +1594,40 @@ export interface PlanLintReport {
 }
 
 export function setItemStatus(args: SetStatusArgs) {
-  return postJson<WriteResult<{ oldStatus: ItemStatus; newStatus: ItemStatus; itemId: string }>>(
-    'set-status',
+  return postJson<
+    WriteResult<{
+      oldStatus: ItemStatus;
+      newStatus: ItemStatus;
+      itemId: string;
+    }>
+  >("set-status", args as unknown as Record<string, unknown>);
+}
+
+export function setPlanNow(args: SetNowArgs) {
+  return postJson<WriteResult>(
+    "set-now",
     args as unknown as Record<string, unknown>,
   );
 }
 
-export function setPlanNow(args: SetNowArgs) {
-  return postJson<WriteResult>('set-now', args as unknown as Record<string, unknown>);
-}
-
 export function addPlanDecision(args: AddDecisionArgs) {
   return postJson<WriteResult<{ decisionId: string; slug: string }>>(
-    'add-decision',
+    "add-decision",
     args as unknown as Record<string, unknown>,
   );
 }
 
 export function addPlanItem(args: AddItemArgs) {
-  return postJson<WriteResult<{ itemId: string; createdPhase: boolean; slug: string }>>(
-    'add-item',
-    args as unknown as Record<string, unknown>,
-  );
+  return postJson<
+    WriteResult<{ itemId: string; createdPhase: boolean; slug: string }>
+  >("add-item", args as unknown as Record<string, unknown>);
 }
 
 export function createPlan(args: NewPlanArgs) {
-  return postJson<WriteResult<{ slug: string }>>('new', args as unknown as Record<string, unknown>);
+  return postJson<WriteResult<{ slug: string }>>(
+    "new",
+    args as unknown as Record<string, unknown>,
+  );
 }
 
 /**
@@ -1465,9 +1644,12 @@ export function createPlan(args: NewPlanArgs) {
  * subscription — the new draft card then appears in ProposalsPanel
  * without waiting for a manual refresh.
  */
-export function applyPlanBlock(args: { blockContent: string; harnessSlug?: string }) {
+export function applyPlanBlock(args: {
+  blockContent: string;
+  harnessSlug?: string;
+}) {
   return postJson<WriteResult<{ slug: string }>>(
-    'apply-plan-block',
+    "apply-plan-block",
     args as unknown as Record<string, unknown>,
   );
 }
@@ -1481,9 +1663,13 @@ export function applyPlanBlock(args: { blockContent: string; harnessSlug?: strin
  * pass `archived: false` to restore. The write invalidates `plans.list` through
  * the harness_plans trigger, so the Plans face refreshes on its own.
  */
-export function setPlanArchived(args: { slug: string; archived: boolean; harness?: string }) {
+export function setPlanArchived(args: {
+  slug: string;
+  archived: boolean;
+  harness?: string;
+}) {
   return postJson<WriteResult<{ slug: string; archived: boolean }>>(
-    'set-archived',
+    "set-archived",
     args as unknown as Record<string, unknown>,
   );
 }
@@ -1492,9 +1678,16 @@ export function setPlanArchived(args: { slug: string; archived: boolean; harness
 
 /** Plan-frontmatter statuses that can be *written* — the parser-
  *  synthesized `unknown` and the item-only `blocked` are excluded. */
-export type PromotablePlanStatus = 'draft' | 'active' | 'shipped' | 'superseded';
+export type PromotablePlanStatus =
+  | "draft"
+  | "active"
+  | "shipped"
+  | "superseded";
 export const PROMOTABLE_PLAN_STATUSES: PromotablePlanStatus[] = [
-  'draft', 'active', 'shipped', 'superseded',
+  "draft",
+  "active",
+  "shipped",
+  "superseded",
 ];
 
 export interface SetContentArgs {
@@ -1536,7 +1729,7 @@ export interface PromoteArgs {
  * user-facing word "promote" (a legacy plan is promoted to a real
  * one); only the tool verb differs.
  */
-const PROMOTE_VERB = 'set-frontmatter';
+const PROMOTE_VERB = "set-frontmatter";
 
 /**
  * `plans:set-content` result. Three shapes (D-011):
@@ -1548,7 +1741,13 @@ const PROMOTE_VERB = 'set-frontmatter';
  * Phase 5 ships, `staleConflictOf` / `writeErrorOf` handle it.
  */
 export type SetContentResult =
-  | { ok: true; slug?: string; filePath?: string; contentHash?: string; version?: number }
+  | {
+      ok: true;
+      slug?: string;
+      filePath?: string;
+      contentHash?: string;
+      version?: number;
+    }
   | {
       ok?: false;
       code?: string;
@@ -1567,13 +1766,14 @@ export interface StaleConflict {
 
 /** Extract a CAS-stale conflict from a set-content result, or null. */
 export function staleConflictOf(r: SetContentResult): StaleConflict | null {
-  if (r && typeof r === 'object' && !('ok' in r && r.ok)) {
+  if (r && typeof r === "object" && !("ok" in r && r.ok)) {
     const o = r as Record<string, unknown>;
     const code = o.code ?? o.error;
-    if (code === 'stale' && typeof o.currentContent === 'string') {
+    if (code === "stale" && typeof o.currentContent === "string") {
       return {
         currentContent: o.currentContent,
-        currentHash: typeof o.currentHash === 'string' ? o.currentHash : undefined,
+        currentHash:
+          typeof o.currentHash === "string" ? o.currentHash : undefined,
       };
     }
   }
@@ -1583,22 +1783,25 @@ export function staleConflictOf(r: SetContentResult): StaleConflict | null {
 /** Human-readable error from a set-content result, or null on success
  *  / on a stale conflict (callers handle stale separately). */
 export function writeErrorOf(r: SetContentResult): string | null {
-  if (r && typeof r === 'object') {
-    if ('ok' in r && r.ok) return null;
+  if (r && typeof r === "object") {
+    if ("ok" in r && r.ok) return null;
     const o = r as Record<string, unknown>;
     const code = (o.code ?? o.error) as string | undefined;
-    if (code === 'stale') return null;
+    if (code === "stale") return null;
     if (Array.isArray(o.errors) && o.errors.length) {
       const fs = o.errors as LintFinding[];
-      return `lint failed — ${fs.map((f) => f.code).join(', ')}`;
+      return `lint failed — ${fs.map((f) => f.code).join(", ")}`;
     }
-    if (typeof code === 'string') return code;
+    if (typeof code === "string") return code;
   }
-  return 'unexpected response shape';
+  return "unexpected response shape";
 }
 
 export function setPlanContent(args: SetContentArgs) {
-  return postJson<SetContentResult>('set-content', args as unknown as Record<string, unknown>);
+  return postJson<SetContentResult>(
+    "set-content",
+    args as unknown as Record<string, unknown>,
+  );
 }
 
 export function promotePlan(args: PromoteArgs) {
@@ -1628,7 +1831,10 @@ export interface PromoteToHarnessResult {
 }
 
 export function promoteToHarness(args: PromoteToHarnessArgs) {
-  return postJson<PromoteToHarnessResult>('promote', args as unknown as Record<string, unknown>);
+  return postJson<PromoteToHarnessResult>(
+    "promote",
+    args as unknown as Record<string, unknown>,
+  );
 }
 
 /**
@@ -1652,15 +1858,18 @@ export async function rejectDraftPlan(
   harnessSlug?: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const plan = await fetchPlan(slug, harnessSlug);
-  if ('error' in plan && plan.error) return { ok: false, error: plan.error };
+  if ("error" in plan && plan.error) return { ok: false, error: plan.error };
   const raw = plan.raw;
-  if (!raw) return { ok: false, error: 'no_content' };
+  if (!raw) return { ok: false, error: "no_content" };
   // Reject = supersede. Works on any non-terminal plan (draft / ready /
   // active / blocked), not just drafts — so the "Reject Plan" button can
   // sit next to Start for approved/running plans. shipped + superseded
   // are terminal and left untouched.
-  const updated = raw.replace(/^(status:\s*)(?:draft|ready|active|blocked)\b/m, '$1superseded');
-  if (updated === raw) return { ok: false, error: 'status_not_rejectable' };
+  const updated = raw.replace(
+    /^(status:\s*)(?:draft|ready|active|blocked)\b/m,
+    "$1superseded",
+  );
+  if (updated === raw) return { ok: false, error: "status_not_rejectable" };
   const res = await setPlanContent({
     slug,
     // version CAS (D-005); expectedHash kept as a fallback for an older server.
@@ -1669,8 +1878,8 @@ export async function rejectDraftPlan(
     content: updated,
     ...(harnessSlug && { harness: harnessSlug, harness_slug: harnessSlug }),
   } as SetContentArgs & { harness?: string; harness_slug?: string });
-  if ('ok' in res && res.ok) return { ok: true };
-  return { ok: false, error: writeErrorOf(res) ?? 'set_content_failed' };
+  if ("ok" in res && res.ok) return { ok: true };
+  return { ok: false, error: writeErrorOf(res) ?? "set_content_failed" };
 }
 
 /**
@@ -1683,17 +1892,24 @@ export async function rejectDraftPlan(
  */
 async function setPlanStatusVerb(
   slug: string,
-  status: 'draft' | 'ready' | 'shipped' | 'superseded',
+  status: "draft" | "ready" | "shipped" | "superseded",
   opts: { expectedCurrent?: PlanStatus; harnessSlug?: string } = {},
 ): Promise<{ ok: boolean; error?: string }> {
   try {
-    const r = await postJson<{ ok?: boolean; code?: string; error?: string }>('set-plan-status', {
-      slug,
-      status,
-      ...(opts.expectedCurrent ? { expectedCurrent: opts.expectedCurrent } : {}),
-      ...(opts.harnessSlug ? { harness_slug: opts.harnessSlug } : {}),
-    });
-    return r.ok ? { ok: true } : { ok: false, error: r.code ?? r.error ?? 'set_plan_status_failed' };
+    const r = await postJson<{ ok?: boolean; code?: string; error?: string }>(
+      "set-plan-status",
+      {
+        slug,
+        status,
+        ...(opts.expectedCurrent
+          ? { expectedCurrent: opts.expectedCurrent }
+          : {}),
+        ...(opts.harnessSlug ? { harness_slug: opts.harnessSlug } : {}),
+      },
+    );
+    return r.ok
+      ? { ok: true }
+      : { ok: false, error: r.code ?? r.error ?? "set_plan_status_failed" };
   } catch (e) {
     // busy (lock conflict) → non-2xx → postJson throws; surface it.
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
@@ -1705,7 +1921,7 @@ async function setPlanStatusVerb(
  * after the write succeeds. */
 export function setPlanLifecycleStatus(
   slug: string,
-  status: 'draft' | 'ready' | 'shipped' | 'superseded',
+  status: "draft" | "ready" | "shipped" | "superseded",
   harnessSlug?: string,
 ) {
   return setPlanStatusVerb(slug, status, { harnessSlug });
@@ -1717,7 +1933,10 @@ export function setPlanLifecycleStatus(
  * start the plan. Guarded on `draft` so it never overwrites a non-draft.
  */
 export function approvePlan(slug: string, harnessSlug?: string) {
-  return setPlanStatusVerb(slug, 'ready', { expectedCurrent: 'draft', harnessSlug });
+  return setPlanStatusVerb(slug, "ready", {
+    expectedCurrent: "draft",
+    harnessSlug,
+  });
 }
 
 /**
@@ -1727,7 +1946,7 @@ export function approvePlan(slug: string, harnessSlug?: string) {
  * is already ready/active.
  */
 export function demotePlanToDraft(slug: string, harnessSlug?: string) {
-  return setPlanStatusVerb(slug, 'draft', { harnessSlug });
+  return setPlanStatusVerb(slug, "draft", { harnessSlug });
 }
 
 /* ── Plan inputs (plan-structured-inputs-2026-08-01 P-013) ─────────── */
@@ -1743,8 +1962,13 @@ export function demotePlanToDraft(slug: string, harnessSlug?: string) {
  */
 export interface PlanStartRefusal {
   ok: false;
-  error: 'plan_inputs_not_ready';
-  code: 'missing_required' | 'invalid_data' | 'bad_schema' | 'unknown_template' | 'schema_conflict';
+  error: "plan_inputs_not_ready";
+  code:
+    | "missing_required"
+    | "invalid_data"
+    | "bad_schema"
+    | "unknown_template"
+    | "schema_conflict";
   slug: string;
   /** Declared-required fields that were not supplied. */
   missing: string[];
@@ -1772,7 +1996,9 @@ export interface PlanStartOk {
 
 export function isPlanStartRefusal(r: unknown): r is PlanStartRefusal {
   return (
-    !!r && typeof r === 'object' && (r as { error?: unknown }).error === 'plan_inputs_not_ready'
+    !!r &&
+    typeof r === "object" &&
+    (r as { error?: unknown }).error === "plan_inputs_not_ready"
   );
 }
 
@@ -1785,14 +2011,14 @@ export function isPlanStartRefusal(r: unknown): r is PlanStartRefusal {
 export interface PlanInputSchemaInfo {
   ok: true;
   slug: string;
-  source: 'input-schema' | 'template' | 'none';
+  source: "input-schema" | "template" | "none";
   inputSchema: JsonSchemaObject | null;
   template: string | null;
   required: string[];
   missing: string[];
   values: Record<string, unknown> | null;
   ready: boolean;
-  code?: PlanStartRefusal['code'];
+  code?: PlanStartRefusal["code"];
   issues?: string[];
   hint?: string;
   version?: number;
@@ -1818,13 +2044,13 @@ export interface JsonSchemaObject {
 }
 
 export interface PlanScheduleSpec {
-  kind: 'rrule' | 'cron';
+  kind: "rrule" | "cron";
   rrule?: string;
   cron?: string;
   dtstart?: string;
   tzid?: string;
-  concurrency?: 'queue' | 'skip' | 'cancel-prev';
-  catchup?: 'skip-old' | 'run-all-backlog';
+  concurrency?: "queue" | "skip" | "cancel-prev";
+  catchup?: "skip-old" | "run-all-backlog";
   costCapCents?: number;
 }
 
@@ -1832,11 +2058,18 @@ export type PlanTriggerMutationResult = {
   ok?: boolean;
   error?: string;
   detail?: string;
-  results?: Array<{ ok: boolean; error?: string; detail?: string; [key: string]: unknown }>;
+  results?: Array<{
+    ok: boolean;
+    error?: string;
+    detail?: string;
+    [key: string]: unknown;
+  }>;
   [key: string]: unknown;
 };
 
-export type PlanInputsResult = PlanInputSchemaInfo | { ok: false; slug?: string; error: string };
+export type PlanInputsResult =
+  | PlanInputSchemaInfo
+  | { ok: false; slug?: string; error: string };
 
 /**
  * `plans:get-input-schema` is a BULK tool at the agent layer, so even a single-slug
@@ -1847,13 +2080,14 @@ export type PlanInputsResult = PlanInputSchemaInfo | { ok: false; slug?: string;
  * live route, NOT by the component tests, which mock this function.
  */
 export function unwrapPlanInputs(body: unknown): PlanInputsResult {
-  if (!body || typeof body !== 'object') return { ok: false, error: 'malformed_response' };
+  if (!body || typeof body !== "object")
+    return { ok: false, error: "malformed_response" };
   const results = (body as { results?: unknown }).results;
   if (Array.isArray(results)) {
     const row = results[0];
-    return row && typeof row === 'object'
+    return row && typeof row === "object"
       ? (row as PlanInputsResult)
-      : { ok: false, error: 'not_found' };
+      : { ok: false, error: "not_found" };
   }
   // Not the bulk envelope — a bare { error } from a trust/validation failure.
   return body as PlanInputsResult;
@@ -1865,7 +2099,7 @@ export async function fetchPlanInputs(
   signal?: AbortSignal,
 ): Promise<PlanInputsResult> {
   const body = await getJson<unknown>(
-    'get-input-schema',
+    "get-input-schema",
     { slug, ...(harnessSlug ? { harness: harnessSlug } : {}) },
     signal,
   );
@@ -1879,11 +2113,16 @@ export function savePlanInputs(
   data: Record<string, unknown>,
   harnessSlug?: string | null,
 ) {
-  return postJson<WriteResult<{ slug: string; version?: number }>>('set-template-data', {
-    slug,
-    data,
-    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
-  });
+  return postJson<WriteResult<{ slug: string; version?: number }>>(
+    "set-template-data",
+    {
+      slug,
+      data,
+      ...(harnessSlug
+        ? { harness: harnessSlug, harness_slug: harnessSlug }
+        : {}),
+    },
+  );
 }
 
 /** Author or clear the schedule. Authoring never arms it. */
@@ -1897,7 +2136,7 @@ export function authorPlanSchedule(
   },
   harnessSlug?: string | null,
 ) {
-  return postJson<PlanTriggerMutationResult>('set-schedule', {
+  return postJson<PlanTriggerMutationResult>("set-schedule", {
     slug,
     ...args,
     ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
@@ -1905,14 +2144,14 @@ export function authorPlanSchedule(
 }
 
 export function armPlanSchedule(slug: string, harnessSlug?: string | null) {
-  return postJson<PlanTriggerMutationResult>('arm-schedule', {
+  return postJson<PlanTriggerMutationResult>("arm-schedule", {
     slug,
     ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
   });
 }
 
 export function disarmPlanSchedule(slug: string, harnessSlug?: string | null) {
-  return postJson<PlanTriggerMutationResult>('disarm-schedule', {
+  return postJson<PlanTriggerMutationResult>("disarm-schedule", {
     slug,
     ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
   });
@@ -1923,42 +2162,51 @@ export function setPlanInputSchema(
   schema: JsonSchemaObject | null,
   harnessSlug?: string | null,
 ) {
-  return postJson<PlanTriggerMutationResult>('set-input-schema', {
+  return postJson<PlanTriggerMutationResult>("set-input-schema", {
     slug,
     schema,
-    rationale: schema === null ? 'detach manual trigger' : 'attach manual trigger',
+    rationale:
+      schema === null ? "detach manual trigger" : "attach manual trigger",
     ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
   });
 }
 
-export function clearPlanTemplateTrigger(slug: string, harnessSlug?: string | null) {
-  return postJson<PlanTriggerMutationResult>('set-frontmatter-field', {
+export function clearPlanTemplateTrigger(
+  slug: string,
+  harnessSlug?: string | null,
+) {
+  return postJson<PlanTriggerMutationResult>("set-frontmatter-field", {
     slug,
-    key: 'template',
+    key: "template",
     value: null,
-    rationale: 'detach manual trigger',
+    rationale: "detach manual trigger",
     ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
   });
 }
 
 export function startPlan(slug: string, harnessSlug?: string | null) {
-  return postJson<PlanStartOk | PlanStartRefusal>('start', {
+  return postJson<PlanStartOk | PlanStartRefusal>("start", {
     slug,
     ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
   });
 }
 
 export function pausePlan(slug: string, harnessSlug?: string | null) {
-  return postJson<{ slug: string; harnessSlug: string; status?: string; notStarted?: boolean }>(
-    'pause',
-    { slug, ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}) },
-  );
+  return postJson<{
+    slug: string;
+    harnessSlug: string;
+    status?: string;
+    notStarted?: boolean;
+  }>("pause", {
+    slug,
+    ...(harnessSlug ? { harness: harnessSlug, harness_slug: harnessSlug } : {}),
+  });
 }
 
 /** Set cross-plan dispatch priority for a started plan (P-045/D-013). */
 export function setPlanPriority(slug: string, priority: number | null) {
   return postJson<{ ok: boolean; slug: string; priority: number | null }>(
-    'set-priority',
+    "set-priority",
     { slug, priority },
   );
 }
@@ -1968,7 +2216,9 @@ export function lintPlan(args: LintArgs = {}) {
   // after assisted writes); expose it next to the writers so call sites
   // import from one place. Returns `{ reports: [...] }` on success or
   // `{ error: '<code>', slug }` when the slug is unknown.
-  return getJson<{ reports: PlanLintReport[] } | { error: string; slug?: string }>('lint', {
+  return getJson<
+    { reports: PlanLintReport[] } | { error: string; slug?: string }
+  >("lint", {
     slug: args.slug,
     includeArchived: args.includeArchived,
   });
@@ -1982,10 +2232,10 @@ export interface ActiveLock {
   owner_label: string | null;
   intent: string;
   acquired_ts: string; // ISO
-  expires_ts: string;  // ISO
+  expires_ts: string; // ISO
 }
 
-const PLANS_DIR_REL = 'apps/operator/docs/plans';
+const PLANS_DIR_REL = "apps/operator/docs/plans";
 
 /** Workspace-relative lock key matching what with-plan-lock.ts uses
  *  (apps/operator/docs/plans/[archive/]<slug>.md, POSIX). */
@@ -2024,7 +2274,7 @@ export function usePlanLock(
     () => (lockPath ? { path: lockPath } : {}),
     [lockPath],
   );
-  const rows = useSyncRows<ActiveLock>('planLock.byPath', args, !!lockPath);
+  const rows = useSyncRows<ActiveLock>("planLock.byPath", args, !!lockPath);
 
   // `refresh` is a fresh closure every render, so it cannot go in the deps
   // below — that would tear down and re-register both listeners on every
@@ -2037,13 +2287,13 @@ export function usePlanLock(
     if (!lockPath) return;
     const onFocus = () => refreshRef.current();
     const onVisible = () => {
-      if (document.visibilityState === 'visible') refreshRef.current();
+      if (document.visibilityState === "visible") refreshRef.current();
     };
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [lockPath]);
 
@@ -2063,12 +2313,12 @@ export function usePlanLock(
  * (plans-pg-canonical-migration-2026-06-03 D-003); plan_revisions below is the
  * audit trail, surfaced by RevisionsPanel. */
 
-export type PlanRevisionAuthorKind = 'agent' | 'human';
+export type PlanRevisionAuthorKind = "agent" | "human";
 export type PlanRevisionSessionKind =
-  | 'plan_run'
-  | 'operator_chat'
-  | 'agent_chat'
-  | 'git_backfill';
+  | "plan_run"
+  | "operator_chat"
+  | "agent_chat"
+  | "git_backfill";
 
 export interface PlanRevision {
   /** Global plan_revisions id — the address the P-008 transcript verb
@@ -2087,14 +2337,19 @@ export interface PlanRevision {
 }
 
 export function fetchPlanRevisions(slug: string) {
-  return getJson<{ revisions: PlanRevision[] }>('revisions', { slug });
+  return getJson<{ revisions: PlanRevision[] }>("revisions", { slug });
 }
 
 /** The Revisions panel hook (P-017) — newest-first revision chain. An
  *  empty chain (no recorded revisions) is `data: []` not an error. */
-export function usePlanRevisions(slug: string | null): AsyncResult<PlanRevision[]> {
-  const args = useMemo<Record<string, unknown>>(() => (slug ? { slug } : {}), [slug]);
-  return useSyncRows<PlanRevision>('plans.revisions', args, !!slug);
+export function usePlanRevisions(
+  slug: string | null,
+): AsyncResult<PlanRevision[]> {
+  const args = useMemo<Record<string, unknown>>(
+    () => (slug ? { slug } : {}),
+    [slug],
+  );
+  return useSyncRows<PlanRevision>("plans.revisions", args, !!slug);
 }
 
 /** plans:revision-diff result envelope (P-018). `error: 'unknown_revision'`
@@ -2107,15 +2362,17 @@ export interface PlanRevisionDiffResult {
   priorSeq: number | null;
 }
 
-export async function fetchPlanRevisionDiff(revisionId: number): Promise<PlanRevisionDiffResult> {
-  return getJson<PlanRevisionDiffResult>('revision-diff', {
+export async function fetchPlanRevisionDiff(
+  revisionId: number,
+): Promise<PlanRevisionDiffResult> {
+  return getJson<PlanRevisionDiffResult>("revision-diff", {
     revisionId: String(revisionId),
   });
 }
 
 /* ── plan_run_turns (plan-agent-launch P-019) ──────────────────────── */
 
-export type PlanRevisionTranscriptTurnRole = 'user' | 'assistant';
+export type PlanRevisionTranscriptTurnRole = "user" | "assistant";
 
 export interface PlanRevisionTranscriptTurn {
   seq: number;
@@ -2142,7 +2399,7 @@ export type PlanRevisionTranscriptResult =
       revisionId: number;
       planSlug: string;
       seq: number;
-      reason: 'no_session' | 'git_backfill' | 'session_kind_unsupported';
+      reason: "no_session" | "git_backfill" | "session_kind_unsupported";
       turns: [];
     };
 
@@ -2156,7 +2413,7 @@ export interface FetchPlanRevisionTranscriptArgs {
 export function fetchPlanRevisionTranscript(
   args: FetchPlanRevisionTranscriptArgs,
 ): Promise<PlanRevisionTranscriptResult> {
-  return getJson<PlanRevisionTranscriptResult>('revision-transcript', {
+  return getJson<PlanRevisionTranscriptResult>("revision-transcript", {
     revisionId: String(args.revisionId),
     query: args.query,
     cursor: args.cursor !== undefined ? String(args.cursor) : undefined,
@@ -2166,21 +2423,16 @@ export function fetchPlanRevisionTranscript(
 
 /* ── plan_runs (plan-agent-launch P-015 / P-021) ───────────────────── */
 
-export type PlanRunStatus =
-  | 'running'
-  | 'idle'
-  | 'archived'
-  | 'done'
-  | 'failed';
+export type PlanRunStatus = "running" | "idle" | "archived" | "done" | "failed";
 
 export type TriggerRunDisposition =
-  | 'ran'
-  | 'running'
-  | 'queued'
-  | 'dropped'
-  | 'deduped'
-  | 'coalesced'
-  | 'failed';
+  | "ran"
+  | "running"
+  | "queued"
+  | "dropped"
+  | "deduped"
+  | "coalesced"
+  | "failed";
 
 export interface TriggerRunVisibility {
   id: string;
@@ -2204,14 +2456,14 @@ export interface TriggerRunVisibility {
   stormPolicy: Record<string, unknown>;
   redactedPayload: Record<string, unknown>;
   outcomeLinks: Array<{
-    kind: 'gmail-draft' | 'slack-thread';
+    kind: "gmail-draft" | "slack-thread";
     label: string;
     href: string | null;
   }>;
   timeline: Array<{
-    stage: 'received' | 'matched' | 'policy' | 'launched' | 'completed';
+    stage: "received" | "matched" | "policy" | "launched" | "completed";
     at: string | null;
-    status: 'done' | 'active' | 'pending' | 'failed' | 'dropped';
+    status: "done" | "active" | "pending" | "failed" | "dropped";
     detail: string;
   }>;
   planRun: {
@@ -2243,14 +2495,17 @@ export interface PlanRun {
 }
 
 export function fetchPlanRuns(slug: string) {
-  return getJson<{ runs: PlanRun[] }>('runs', { slug });
+  return getJson<{ runs: PlanRun[] }>("runs", { slug });
 }
 
 /** Agents-tab past-runs hook (P-021). Empty list when the plan has
  *  never been launched. */
 export function usePlanRuns(slug: string | null): AsyncResult<PlanRun[]> {
-  const args = useMemo<Record<string, unknown>>(() => (slug ? { slug } : {}), [slug]);
-  return useSyncRows<PlanRun>('plans.runs', args, !!slug);
+  const args = useMemo<Record<string, unknown>>(
+    () => (slug ? { slug } : {}),
+    [slug],
+  );
+  return useSyncRows<PlanRun>("plans.runs", args, !!slug);
 }
 
 /* ── plans:launch (P-022) ──────────────────────────────────────────── */
@@ -2268,13 +2523,13 @@ export interface LaunchPlanAgentArgs {
 export interface LaunchPlanAgentResult {
   runId: number;
   sessionId: string;
-  status: 'running';
+  status: "running";
   planSlug: string;
-  mode: 'background';
+  mode: "background";
 }
 
 export function launchPlanAgent(args: LaunchPlanAgentArgs) {
-  return postJson<WriteResult<LaunchPlanAgentResult>>('launch', {
+  return postJson<WriteResult<LaunchPlanAgentResult>>("launch", {
     slug: args.slug,
     note: args.note,
     // Admin route always runs the turn in background — the POST
@@ -2293,13 +2548,13 @@ export interface ResumePlanAgentArgs {
 export interface ResumePlanAgentResult {
   runId: number;
   sessionId: string;
-  status: 'running';
+  status: "running";
   planSlug: string;
-  mode: 'background';
+  mode: "background";
 }
 
 export function resumePlanAgent(args: ResumePlanAgentArgs) {
-  return postJson<WriteResult<ResumePlanAgentResult>>('resume', {
+  return postJson<WriteResult<ResumePlanAgentResult>>("resume", {
     runId: args.runId,
     message: args.message,
     await: false,
@@ -2308,7 +2563,7 @@ export function resumePlanAgent(args: ResumePlanAgentArgs) {
 
 /* ── plans:run-transcript (P-023) ──────────────────────────────────── */
 
-export type PlanRunTranscriptTurnRole = 'user' | 'assistant';
+export type PlanRunTranscriptTurnRole = "user" | "assistant";
 
 export interface PlanRunTranscriptTurn {
   seq: number;
@@ -2339,7 +2594,7 @@ export interface FetchPlanRunTranscriptArgs {
 export function fetchPlanRunTranscript(
   args: FetchPlanRunTranscriptArgs,
 ): Promise<PlanRunTranscriptResult> {
-  return getJson<PlanRunTranscriptResult>('run-transcript', {
+  return getJson<PlanRunTranscriptResult>("run-transcript", {
     runId: String(args.runId),
     query: args.query,
     cursor: args.cursor !== undefined ? String(args.cursor) : undefined,
@@ -2361,12 +2616,12 @@ export async function launchPlanRunConsole(args: {
   planSlug: string | null;
   label: string | null;
 }): Promise<unknown> {
-  const r = await fetch('/api/agent-mcp/console/launch', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+  const r = await fetch("/api/agent-mcp/console/launch", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
       slug: null,
-      mode: 'shell',
+      mode: "shell",
       resumeSessionId: args.sessionId,
       planSlug: args.planSlug,
       label: args.label,
@@ -2390,7 +2645,10 @@ export async function launchPlanRunConsole(args: {
  * + on window focus. Returns the parsed PlanLintReport — null while
  * loading or when the plan is exempt/missing.
  */
-export function usePlanLint(slug: string | null, tick: number): AsyncResult<PlanLintReport | null> {
+export function usePlanLint(
+  slug: string | null,
+  tick: number,
+): AsyncResult<PlanLintReport | null> {
   const [data, setData] = useState<PlanLintReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2421,7 +2679,7 @@ export function usePlanLint(slug: string | null, tick: number): AsyncResult<Plan
         } else {
           const err = (res as { error?: string }).error;
           setData(null);
-          setError(err ?? 'unexpected lint response');
+          setError(err ?? "unexpected lint response");
         }
       } catch (e) {
         if (cancelled) return;
@@ -2432,10 +2690,10 @@ export function usePlanLint(slug: string | null, tick: number): AsyncResult<Plan
     };
     run();
     const onFocus = () => run();
-    window.addEventListener('focus', onFocus);
+    window.addEventListener("focus", onFocus);
     return () => {
       cancelled = true;
-      window.removeEventListener('focus', onFocus);
+      window.removeEventListener("focus", onFocus);
     };
   }, [slug, tick, localTick]);
 

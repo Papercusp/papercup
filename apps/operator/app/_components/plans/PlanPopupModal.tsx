@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * PlanPopupModal (owner-plans-single-pane-2026-07-17 P-003) — the plan opened
@@ -20,19 +20,20 @@
  * with transcript search (PlanSessionsTab). Tab state is `?ppv` (nuqs, D-003)
  * so the popup is deep-linkable + agent-driveable.
  */
-import { useRef } from 'react';
-import { parseAsStringEnum, useQueryState } from 'nuqs';
-import { Modal } from '@/app/harness/Modal';
-import PlanDetail from '@/app/admin/plans/PlanDetail';
-import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import PlanSessionsTab from './PlanSessionsTab';
-import PlanProvenanceBadge from './PlanProvenanceBadge';
+import { useMemo, useRef } from "react";
+import { parseAsStringEnum, useQueryState } from "nuqs";
+import { Modal } from "@/app/harness/Modal";
+import PlanDetail from "@/app/admin/plans/PlanDetail";
+import { usePlanList } from "@/app/admin/plans/plans-api";
+import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
+import PlanSessionsTab from "./PlanSessionsTab";
+import PlanProvenanceBadge from "./PlanProvenanceBadge";
 // PlanDetail's chrome (pc-plans__*) is global CSS; importing it here makes the
 // popup self-sufficient wherever the sidebar mounts (InboxPane precedent).
-import '@/app/admin/plans/plans.css';
-import './plans-pane.css';
+import "@/app/admin/plans/plans.css";
+import "./plans-pane.css";
 
-const POPUP_VIEWS = ['plan', 'sessions'] as const;
+const POPUP_VIEWS = ["plan", "sessions"] as const;
 export type PlanPopupView = (typeof POPUP_VIEWS)[number];
 
 export default function PlanPopupModal({
@@ -48,16 +49,45 @@ export default function PlanPopupModal({
    *  the wrong harness is the Create tab's old "Server: not_found" trap. */
   harnessSlug: string | null;
   planTitle?: string | null;
-  /** Canonical plan-content provenance projected by plans:list. */
-  origin?: 'scout' | null;
+  /** Canonical plan-content provenance projected by plans:list. Callers that
+   *  already hold the row pass it; global URL-driven callers omit it and this
+   *  lazy boundary resolves the same canonical row itself. */
+  origin?: "scout" | null;
   onClose: () => void;
 }) {
   const [view, setView] = useQueryState(
-    'ppv',
-    parseAsStringEnum<PlanPopupView>([...POPUP_VIEWS]).withDefault('plan'),
+    "ppv",
+    parseAsStringEnum<PlanPopupView>([...POPUP_VIEWS]).withDefault("plan"),
   );
   const dirtyRef = useRef(false);
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
+
+  // `wppop` carries only the stable scoped identity (`harness::slug`). The
+  // router-root ChatRefPopupHost must stay tiny, so it cannot eagerly import
+  // plans.list just to decorate this lazy popup. Resolve the missing field
+  // here, inside the chunk that already owns the heavy plan data stack. An
+  // explicit null is authoritative Outside Blender; only undefined means the
+  // caller did not have a row and needs this lookup.
+  const needsOriginLookup = origin === undefined && planSlug !== null;
+  const planList = usePlanList({
+    includeArchived: true,
+    includeLegacy: true,
+    harness_slugs: harnessSlug ? [harnessSlug] : undefined,
+    enabled: needsOriginLookup,
+  });
+  const provenancePlan = useMemo(
+    () =>
+      needsOriginLookup
+        ? ((planList.data?.plans ?? []).find(
+            (plan) =>
+              plan.slug === planSlug &&
+              (!harnessSlug || plan.harness === harnessSlug),
+          ) ?? null)
+        : null,
+    [harnessSlug, needsOriginLookup, planList.data, planSlug],
+  );
+  const provenanceResolved = origin !== undefined || provenancePlan !== null;
+  const resolvedOrigin = origin !== undefined ? origin : provenancePlan?.origin;
 
   const open = planSlug !== null;
 
@@ -70,9 +100,9 @@ export default function PlanPopupModal({
   const guardedClose = () => {
     if (dirtyRef.current) {
       void askConfirm({
-        title: 'Discard unsaved edits?',
-        body: 'Your current plan edits will be discarded.',
-        confirmLabel: 'Discard',
+        title: "Discard unsaved edits?",
+        body: "Your current plan edits will be discarded.",
+        confirmLabel: "Discard",
         destructive: true,
       }).then((ok) => {
         if (ok) reallyClose();
@@ -90,15 +120,15 @@ export default function PlanPopupModal({
           onOpenChange={(o) => {
             if (!o) guardedClose();
           }}
-          title={planTitle ?? planSlug ?? 'Plan'}
+          title={planTitle ?? planSlug ?? "Plan"}
           srOnlyTitle
           contentClassName="plan-popup"
           contentStyle={{
-            width: 'min(1100px, 94vw)',
-            height: 'min(860px, calc(100vh - 4rem))',
-            display: 'flex',
-            flexDirection: 'column',
-            overflow: 'hidden',
+            width: "min(1100px, 94vw)",
+            height: "min(860px, calc(100vh - 4rem))",
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
             padding: 0,
           }}
         >
@@ -107,15 +137,24 @@ export default function PlanPopupModal({
               <div className="plan-popup__title" title={planSlug ?? undefined}>
                 {planTitle ?? planSlug}
               </div>
-              <PlanProvenanceBadge origin={origin} testId="plan-popup-provenance-badge" />
+              {provenanceResolved ? (
+                <PlanProvenanceBadge
+                  origin={resolvedOrigin ?? null}
+                  testId="plan-popup-provenance-badge"
+                />
+              ) : null}
             </div>
-            <div className="plan-popup__tabs" role="tablist" aria-label="Plan popup view">
+            <div
+              className="plan-popup__tabs"
+              role="tablist"
+              aria-label="Plan popup view"
+            >
               <button
                 type="button"
                 role="tab"
-                aria-selected={view === 'plan'}
-                className={`plan-popup__tab${view === 'plan' ? ' is-on' : ''}`}
-                onClick={() => void setView('plan')}
+                aria-selected={view === "plan"}
+                className={`plan-popup__tab${view === "plan" ? " is-on" : ""}`}
+                onClick={() => void setView("plan")}
                 data-testid="plan-popup-tab-plan"
               >
                 Plan
@@ -123,9 +162,9 @@ export default function PlanPopupModal({
               <button
                 type="button"
                 role="tab"
-                aria-selected={view === 'sessions'}
-                className={`plan-popup__tab${view === 'sessions' ? ' is-on' : ''}`}
-                onClick={() => void setView('sessions')}
+                aria-selected={view === "sessions"}
+                className={`plan-popup__tab${view === "sessions" ? " is-on" : ""}`}
+                onClick={() => void setView("sessions")}
                 data-testid="plan-popup-tab-sessions"
               >
                 Sessions
@@ -141,10 +180,13 @@ export default function PlanPopupModal({
               ✕
             </button>
           </div>
-          {view === 'sessions' ? (
+          {view === "sessions" ? (
             <PlanSessionsTab planSlug={planSlug!} harnessSlug={harnessSlug} />
           ) : (
-            <div className="pc-plans__main plan-popup__body" data-testid="plan-popup-body">
+            <div
+              className="pc-plans__main plan-popup__body"
+              data-testid="plan-popup-body"
+            >
               <PlanDetail
                 key={planSlug}
                 slug={planSlug!}
