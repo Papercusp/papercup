@@ -6,8 +6,8 @@
  *
  * These tests execute the maintained overlay against a scratch sidecar and
  * cover both its build integration and its fail-closed wrapper behavior. The
- * real Server is never started; in particular, serve.mjs --help is never used
- * as a probe because that entrypoint treats it as a normal boot.
+ * real Server is never started; the fixture models serve.mjs's side-effect-free
+ * help branch and records every non-help invocation.
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -73,7 +73,12 @@ function makeFixture(): string {
   writeFileSync(
     join(root, 'serve.mjs'),
     `import { writeFileSync } from 'node:fs';\n` +
-      `writeFileSync(process.env.PC_ENTRYPOINT_OUTPUT, JSON.stringify({ argv: process.argv.slice(2), env: process.env }));\n`,
+      `const argv = process.argv.slice(2);\n` +
+      `if (argv.some((arg) => arg === '--help' || arg === '-h')) {\n` +
+      `  process.stdout.write('Usage: papercusp serve [--ensure] [--ui]\\n');\n` +
+      `} else {\n` +
+      `  writeFileSync(process.env.PC_ENTRYPOINT_OUTPUT, JSON.stringify({ argv, env: process.env }));\n` +
+      `}\n`,
   );
   writeFileSync(
     join(root, 'scripts/psu.mjs'),
@@ -191,7 +196,7 @@ describe('workspace-host entrypoint behavior', () => {
     ).not.toBe(0);
   });
 
-  it('maps bootstrap env names, pins immutable runtime policy, and refuses the unsafe help probe', () => {
+  it('maps bootstrap env names, pins immutable runtime policy, and delegates side-effect-free help', () => {
     const root = makeFixture();
     install(root);
     const output = join(root, 'server-output.json');
@@ -221,8 +226,8 @@ describe('workspace-host entrypoint behavior', () => {
 
     rmSync(output);
     const help = run(join(root, 'bin/papercusp-server'), ['--help'], env);
-    expect(help.status).not.toBe(0);
-    expect(help.stderr).toContain('no side-effect-free help mode');
+    expect(help.status, help.stderr).toBe(0);
+    expect(help.stdout).toContain('Usage: papercusp serve [--ensure] [--ui]');
     expect(existsSync(output)).toBe(false);
   });
 
