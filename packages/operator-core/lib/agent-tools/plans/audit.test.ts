@@ -183,6 +183,30 @@ describe('plans:audit D-008 writer contract', () => {
       }),
     );
   });
+
+  it('reports an unresolvable citation separately from a harness-root failure', async () => {
+    mockContext.mockResolvedValue({
+      kind: 'citation_unresolvable',
+      citations: [{
+        path: 'src/gate.ts',
+        symbol: 'missingGateSymbol',
+        reason: 'symbol_not_found',
+        detail: 'missingGateSymbol not in src/gate.ts',
+      }],
+    });
+
+    const result = await body([
+      { itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'missingGateSymbol' }] },
+    ]);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'citation_unresolvable',
+      citations: [{ path: 'src/gate.ts', symbol: 'missingGateSymbol', reason: 'symbol_not_found' }],
+    });
+    expect(result.message).toContain('the harness source root is not the cause');
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
 });
 
 describe('plans:audit phase:activation', () => {

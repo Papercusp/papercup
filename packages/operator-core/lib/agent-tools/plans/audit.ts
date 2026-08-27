@@ -35,6 +35,7 @@ import {
   getEffectiveItemAudits,
   getPlanItemStatuses,
   isVerifyingCitation,
+  isCitationContextFailure,
   prepareAuditPassEntries,
   recordCurrentActivationAudit,
   recordPlanAudit,
@@ -352,6 +353,22 @@ export default defineTool({
       harnessSlug,
       (args.items ?? []).flatMap((item) => item.citations ?? []) as AuditCitation[],
     );
+    if (isCitationContextFailure(citationContext)) {
+      const rendered = citationContext.citations
+        .map((citation) =>
+          `${citation.path ?? '(missing path)'}${citation.symbol ? `#${citation.symbol}` : ''} (${citation.reason})`,
+        )
+        .join('; ');
+      return { data: {
+        ok: false as const,
+        slug: args.slug,
+        error: 'citation_unresolvable',
+        citations: citationContext.citations,
+        message:
+          `One or more code/test citations could not be resolved in any available checkout: ${rendered}. ` +
+          `Fix the cited path, line, or symbol; the harness source root is not the cause.`,
+      } };
+    }
     if (!citationContext) {
       return { data: {
         ok: false as const,

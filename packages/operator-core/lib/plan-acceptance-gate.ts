@@ -38,6 +38,7 @@ import {
   getEffectiveItemAudits,
   getLatestPlanAudit,
   getPlanItemStatuses,
+  isCitationContextFailure,
   planItemTextHash,
   repoCitationContextForHarness,
   resolveCitation,
@@ -314,15 +315,26 @@ export async function evaluatePlanAcceptanceGate(
       const hasVerifyingCitations = effectiveAudits.some(({ entry }) =>
         entry.citations.some((citation) => citation.kind === 'code' || citation.kind === 'test'),
       );
-      const citationContext = hasVerifyingCitations
+      const citationContextResult = hasVerifyingCitations
         ? await repoCitationContextForHarness(
             audit.harnessSlug,
             effectiveAudits.flatMap(({ entry }) => entry.citations),
           )
         : null;
+      const citationContext = citationContextResult && !isCitationContextFailure(citationContextResult)
+        ? citationContextResult
+        : null;
 
       if (hasVerifyingCitations && !citationContext) {
-        broken.push(`audit harness '${audit.harnessSlug}' has no registered canonical source root`);
+        if (isCitationContextFailure(citationContextResult)) {
+          broken.push(
+            ...citationContextResult.citations.map(
+              (citation) => `${citation.path ?? '(no path)'} (${citation.reason})`,
+            ),
+          );
+        } else {
+          broken.push(`audit harness '${audit.harnessSlug}' has no registered canonical source root`);
+        }
       }
 
       for (const item of items) {

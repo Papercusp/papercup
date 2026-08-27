@@ -510,6 +510,31 @@ export interface SelectedCitationRoot {
   source: CitationRootSource;
 }
 
+/** A verifying citation that could not resolve in any available citation root. */
+export interface CitationFailure {
+  path?: string;
+  line?: number;
+  symbol?: string;
+  reason: CitationFailureReason;
+  detail?: string;
+}
+
+/** A citation failure is distinct from an unavailable or ambiguous harness root. */
+export interface CitationContextFailure {
+  kind: 'citation_unresolvable';
+  citations: CitationFailure[];
+}
+
+export type RepoCitationContext =
+  | { repoRoot: string; deps: CitationDeps; rootSource: CitationRootSource }
+  | CitationContextFailure;
+
+export function isCitationContextFailure(
+  value: RepoCitationContext | null,
+): value is CitationContextFailure {
+  return value?.kind === 'citation_unresolvable';
+}
+
 /**
  * Select a citation root for a repo-less Hive when its registry-selected member path is stale.
  *
@@ -572,7 +597,7 @@ export function selectHarnessCitationRepoRoot(
 export async function repoCitationContextForHarness(
   harnessSlug: string | null | undefined,
   citations: readonly AuditCitation[] = [],
-): Promise<{ repoRoot: string; deps: CitationDeps; rootSource: CitationRootSource } | null> {
+): Promise<RepoCitationContext | null> {
   if (!harnessSlug || harnessSlug === '*') {
     return { repoRoot: REPO_ROOT, deps: repoCitationDeps(REPO_ROOT), rootSource: 'canonical-repo' };
   }
@@ -585,10 +610,58 @@ export async function repoCitationContextForHarness(
     const selected = selectHarnessCitationRepoRoot(reg, harnessSlug, citations, fallbackRoots);
     return selected
       ? { repoRoot: selected.root, deps: repoCitationDeps(selected.root), rootSource: selected.source }
-      : null;
+      : citationFailureForAvailableRoots(reg, harnessSlug, citations, fallbackRoots);
   } catch {
     return null;
   }
+}
+
+/**
+ * When no single root can satisfy the whole citation set, distinguish a citation that is
+ * absent everywhere from a root-selection refusal (ambiguous/stale harness roots). The latter
+ * remains `null`, because each citation may exist somewhere but no one checkout is authoritative.
+ */
+function citationFailureForAvailableRoots(
+  reg: Pick<HarnessRegistry, 'projects'>,
+  harnessSlug: string,
+  citations: readonly AuditCitation[],
+  discoveredRoots: readonly string[],
+): CitationContextFailure | null {
+  const canonical = harnessCitationRepoRoot(reg, harnessSlug);
+  if (!canonical) return null;
+
+  const project = reg.projects.find((entry) => entry.slug === harnessSlug);
+  const mayFallback = Boolean(project && project.harness_kind === 'hive' && !project.self_repo);
+  const discovered = mayFallback
+    ? [...new Set(discoveredRoots.map((root) => path.resolve(root)))].filter((root) => {
+        try {
+          return fs.statSync(path.join(root, '.git')).isDirectory();
+        } catch {
+          return false;
+        }
+      })
+    : [];
+  const roots = [...new Set([canonical, ...discovered, ...(mayFallback ? [REPO_ROOT] : [])])];
+  const verifying = citations.filter(isVerifyingCitation);
+  if (verifying.length === 0) return null;
+
+  const failures = verifying.flatMap((citation): CitationFailure[] => {
+    const results = roots.map((root) => resolveCitation(citation, repoCitationDeps(root)));
+    if (results.some((result) => result.ok)) return [];
+    const firstFailure = results.find(
+      (result): result is Extract<CitationResolution, { ok: false }> => !result.ok,
+    );
+    if (!firstFailure) return [];
+    return [{
+      ...(citation.path !== undefined ? { path: citation.path } : {}),
+      ...(citation.line !== undefined ? { line: citation.line } : {}),
+      ...(citation.symbol !== undefined ? { symbol: citation.symbol } : {}),
+      reason: firstFailure.reason,
+      ...(firstFailure.detail ? { detail: firstFailure.detail } : {}),
+    }];
+  });
+
+  return failures.length > 0 ? { kind: 'citation_unresolvable', citations: failures } : null;
 }
 
 // ── coverage ──────────────────────────────────────────────────────────────────
