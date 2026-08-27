@@ -722,22 +722,29 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(await depEdges()).toEqual([]);
   });
 
-  it('P-008: a DANGLING blockedBy ref (names no plan item) counts as dangling, NOT unresolved', async () => {
-    // The failure mode this plan exists to kill is an edge that quietly is not there, so the
-    // anomaly has to surface in the result, not just a log line. P-008 splits the counter: this
-    // is a plan-AUTHORING error (fix the text, and plans:lint already reports it), which demands
-    // a different response than a promotion that should have happened and didn't.
+  it('P-009: a dangling blockedBy ref refuses the executable candidate before minting', async () => {
     h.plans.set(PLAN, {
       items: [{ id: 'P-001', status: 'todo', text: 'Points at a ghost', blockedBy: ['P-404'] }],
     });
     const res = await run.promotePlanItems(base);
     expect(res).toMatchObject({
-      promoted: 1,
+      promoted: 0,
+      skipped: 1,
+      dependencyBlocked: true,
+      dependencyDiagnostics: [
+        {
+          code: 'dependency_endpoint_missing',
+          itemId: 'P-001',
+          ref: 'P-404',
+          path: ['P-001', 'P-404'],
+        },
+      ],
       edgesWritten: 0,
-      blockersDangling: 1,
+      blockersDangling: 0,
       blockersUnresolved: 0,
       edgeFailures: 0,
     });
+    expect(await features()).toEqual([]);
     expect(await depEdges()).toEqual([]);
   });
 
@@ -793,48 +800,29 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     return rows.map((r) => ({ blocked: r.dst_ref, blocker: r.src_ref }));
   };
 
-  /**
-   * P-008: the cycle warning is DELIBERATE and load-bearing — a cyclic plan needs a human to fix
-   * it, and the refusal is otherwise silent. So the suite's fail-on-console policy is satisfied by
-   * ASSERTING the warning, never by silencing it: the warning is part of the contract.
-   */
-  const captureCycleWarn = () => vi.spyOn(console, 'warn').mockImplementation(() => {});
-  const expectCycleWarned = (warn: ReturnType<typeof captureCycleWarn>, ...members: string[]) => {
-    const text = warn.mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(text).toContain('blocked-by CYCLE');
-    for (const m of members) expect(text).toContain(m);
-    warn.mockRestore();
-  };
-
-  it('P-008: a 2-cycle writes ZERO edges — not one arbitrary arrow of it', async () => {
-    // THE regression this pins. Under the P-006 interim (attempt each write, catch the throw) the
-    // FIRST write SUCCEEDED and only the second was refused, persisting one arrow of the cycle —
-    // and which arrow survived depended on mint order. The pre-flight sees the whole set at once.
+  it('P-009: a 2-cycle refuses the whole executable candidate before nodes or edges exist', async () => {
     h.plans.set(PLAN, {
       items: [
         { id: 'P-001', status: 'todo', text: 'A waits on B', blockedBy: ['P-002'] },
         { id: 'P-002', status: 'todo', text: 'B waits on A', blockedBy: ['P-001'] },
       ],
     });
-    const warn = captureCycleWarn();
     const res = await run.promotePlanItems(base);
-    // The refusal is LOUD and names the members — otherwise a cyclic plan silently loses its graph.
-    expectCycleWarned(warn, 'P-001', 'P-002');
-    // The NODES are still minted — P-008 refuses the edges, not the promotion.
-    expect(res).toMatchObject({ promoted: 2, edgesWritten: 0, edgesRejectedCyclic: 2, edgeFailures: 0 });
-    // Nothing in EITHER store — asserting coord_links too, since that is the authoritative one
-    // (D-010) and a mirror-only check would pass even if the authoritative write had landed.
-    // MUTATION-VERIFIED 2026-08-02: disabling the pre-flight makes this exact assertion fail with
-    // edgesWritten:1 / edgeFailures:1 and ONE persisted arrow in BOTH stores — i.e. the writer's
-    // own acyclicity guard does NOT produce this state, so a pass here proves the PRE-FLIGHT ran.
+    expect(res).toMatchObject({
+      promoted: 0,
+      skipped: 2,
+      dependencyBlocked: true,
+      dependencyDiagnostics: [{ code: 'dependency_cycle', members: ['P-001', 'P-002'] }],
+      edgesWritten: 0,
+      edgesRejectedCyclic: 0,
+      edgeFailures: 0,
+    });
+    expect(await features()).toEqual([]);
     expect(await depEdges()).toEqual([]);
     expect(await linkEdges()).toEqual([]);
-    // …and refusing the edges costs no safety: every cycle member resolves to effective `blocked`,
-    // so pass 1's lane gate already parked both. This is what licenses edge-granularity refusal.
-    expect((await features()).map((r) => r.status)).toEqual(['blocked', 'blocked']);
   });
 
-  it('P-008: a 3-cycle is refused whole (the rule is cycle membership, not pair detection)', async () => {
+  it('P-009: a 3-cycle is refused whole (the rule is SCC membership, not pair detection)', async () => {
     h.plans.set(PLAN, {
       items: [
         { id: 'P-001', status: 'todo', text: 'A', blockedBy: ['P-003'] },
@@ -842,18 +830,21 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
         { id: 'P-003', status: 'todo', text: 'C', blockedBy: ['P-002'] },
       ],
     });
-    const warn = captureCycleWarn();
     const res = await run.promotePlanItems(base);
-    expectCycleWarned(warn, 'P-001', 'P-002', 'P-003');
-    expect(res).toMatchObject({ promoted: 3, edgesWritten: 0, edgesRejectedCyclic: 3, edgeFailures: 0 });
+    expect(res).toMatchObject({
+      promoted: 0,
+      skipped: 3,
+      dependencyBlocked: true,
+      dependencyDiagnostics: [{ code: 'dependency_cycle', members: ['P-001', 'P-002', 'P-003'] }],
+      edgesWritten: 0,
+      edgesRejectedCyclic: 0,
+      edgeFailures: 0,
+    });
+    expect(await features()).toEqual([]);
     expect(await depEdges()).toEqual([]);
-    expect((await features()).map((r) => r.status)).toEqual(['blocked', 'blocked', 'blocked']);
   });
 
-  it('P-008: refuses the EDGES, not the PROMOTION — a healthy pair in the same plan keeps its edge', async () => {
-    // The deliberate departure from features.ts, which 400s the whole batch (D-011/D-012): one
-    // cyclic pair must not cost the plan its healthy dependency structure, because promotion's
-    // purpose is that a started plan never sits at zero placeable work.
+  it('P-009: one cyclic component blocks promotion of a healthy pair in the same invalid candidate', async () => {
     h.plans.set(PLAN, {
       items: [
         { id: 'P-001', status: 'todo', text: 'Cyclic A', blockedBy: ['P-002'] },
@@ -862,21 +853,18 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
         { id: 'P-004', status: 'todo', text: 'Healthy dependent', blockedBy: ['P-003'] },
       ],
     });
-    const warn = captureCycleWarn();
     const res = await run.promotePlanItems(base);
-    // Named members are the CYCLE only — the healthy pair must not be swept into the refusal.
-    expectCycleWarned(warn, 'P-001', 'P-002');
-    expect(res).toMatchObject({ promoted: 4, edgesWritten: 1, edgesRejectedCyclic: 2, edgeFailures: 0 });
-
-    const rows = await features();
-    const blocked = rows.find((r) => r.title === 'Healthy dependent')!.feature_id;
-    const blocker = rows.find((r) => r.title === 'Healthy prereq')!.feature_id;
-    expect(await depEdges()).toEqual([{ blocked, blocker }]);
+    expect(res).toMatchObject({
+      promoted: 0,
+      skipped: 4,
+      dependencyBlocked: true,
+      dependencyDiagnostics: [{ code: 'dependency_cycle', members: ['P-001', 'P-002'] }],
+    });
+    expect(await features()).toEqual([]);
+    expect(await depEdges()).toEqual([]);
   });
 
-  it('P-008: an edge from a HEALTHY item ONTO a cycle member is refused too (both sides count)', async () => {
-    // A cyclic blocker never terminates, so gating an otherwise-healthy item on it would
-    // propagate the deadlock outward from the cycle rather than contain it.
+  it('P-009: a dependent outside a cycle is also never minted from the invalid candidate', async () => {
     h.plans.set(PLAN, {
       items: [
         { id: 'P-001', status: 'todo', text: 'Cyclic A', blockedBy: ['P-002'] },
@@ -884,10 +872,16 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
         { id: 'P-003', status: 'todo', text: 'Healthy but depends on the cycle', blockedBy: ['P-001'] },
       ],
     });
-    const warn = captureCycleWarn();
     const res = await run.promotePlanItems(base);
-    expectCycleWarned(warn, 'P-001', 'P-002');
-    expect(res).toMatchObject({ promoted: 3, edgesWritten: 0, edgesRejectedCyclic: 3, edgeFailures: 0 });
+    expect(res).toMatchObject({
+      promoted: 0,
+      skipped: 3,
+      dependencyBlocked: true,
+      dependencyDiagnostics: [{ code: 'dependency_cycle', members: ['P-001', 'P-002'] }],
+      edgesWritten: 0,
+      edgesRejectedCyclic: 0,
+    });
+    expect(await features()).toEqual([]);
     expect(await depEdges()).toEqual([]);
     expect(await linkEdges()).toEqual([]);
   });

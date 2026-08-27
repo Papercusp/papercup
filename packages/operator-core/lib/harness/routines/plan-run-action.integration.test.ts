@@ -190,6 +190,35 @@ async function completeExecutionWorkItem(id: string, actor: string): Promise<Rec
 }
 
 describe('runScheduledPlanFire (system:plan-run)', () => {
+  it('rejects an invalid executable dependency candidate before the instance and ledger transaction lands', async () => {
+    const invalidContent = TEMPLATE_CONTENT.replace('blocked-by: P-001', 'blocked-by: P-404');
+    await sql`
+      UPDATE harness_shared.harness_plans
+         SET content = ${invalidContent},
+             content_hash = ${hashPlanContent(invalidContent)},
+             items = ${JSON.stringify([
+               ITEMS[0],
+               ITEMS[1],
+               { ...ITEMS[2], blockedBy: ['P-404'] },
+             ])}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}
+    `;
+    await stampClaim(new Date('2026-06-16T08:30:00.000Z'));
+
+    await expect(
+      runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE }),
+    ).rejects.toThrow(/invalid_plan_dependencies.*P-003 -> P-404/);
+
+    const [counts] = await sql<Array<{ instances: number; runs: number }>>`
+      SELECT
+        (SELECT count(*)::int FROM harness_shared.harness_plans
+          WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND template_slug = ${TEMPLATE}) AS instances,
+        (SELECT count(*)::int FROM harness_shared.plan_runs
+          WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}) AS runs
+    `;
+    expect(counts).toEqual({ instances: 0, runs: 0 });
+  });
+
   it('mints a run: instance plan + plan_runs row + run-scoped work_items', async () => {
     await stampClaim(new Date('2026-06-16T09:00:00.000Z'));
     const res = await runScheduledPlanFire(sql, { installSlug: HARNESS, workspaceId: WS, templateSlug: TEMPLATE });

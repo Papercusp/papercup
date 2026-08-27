@@ -22,10 +22,22 @@ const H = vi.hoisted(() => {
     /** WI-5825 regression override: force the next statement to match 0 rows. */
     forceNoMatch: boolean;
     specQuality: Record<string, unknown>;
+    parsedItems: Array<{
+      id: string;
+      storedStatus: string;
+      text: string;
+      blockedBy: string[];
+      importance: 'normal';
+      decisionRefs: string[];
+      phase: string | null;
+      lineNumber: number;
+      rawLine: string;
+    }>;
   } = {
     txCalls: [],
     frontmatterStatus: 'ready',
     forceNoMatch: false,
+    parsedItems: [],
     specQuality: {
       satisfied: true,
       applicable: false,
@@ -62,7 +74,7 @@ vi.mock('../source', async (orig) => {
       inputSchema: null,
     })),
     readPlanBySlug: vi.fn(async () => ({
-      parsed: { frontmatter: { status: H.state.frontmatterStatus }, items: [] },
+      parsed: { frontmatter: { status: H.state.frontmatterStatus }, items: H.state.parsedItems },
       archived: false,
       row: { planSlug: 'mock', version: 1, opStatus: null, items: [] },
     })),
@@ -197,6 +209,7 @@ beforeEach(() => {
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
   H.state.forceNoMatch = false;
+  H.state.parsedItems = [];
   H.state.specQuality = {
     satisfied: true,
     applicable: false,
@@ -241,6 +254,41 @@ const expectNoOpStatusWrite = (): void => {
 };
 
 describe('plans:start terminal guard', () => {
+  it('rejects an invalid executable dependency candidate before any gate, row write, or promotion', async () => {
+    H.state.parsedItems = [
+      {
+        id: 'P-001',
+        storedStatus: 'todo',
+        text: 'depends on a missing item',
+        blockedBy: ['P-099'],
+        importance: 'normal',
+        decisionRefs: [],
+        phase: 'Phase 1',
+        lineNumber: 1,
+        rawLine: '- **P-001** `todo` depends on a missing item blocked-by: P-099',
+      },
+    ];
+
+    const result = await run({ slug: 'invalid-dependency-plan' });
+
+    expect(result.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(result.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'invalid_plan_dependencies',
+      dependencyDiagnostics: [
+        {
+          code: 'dependency_endpoint_missing',
+          itemId: 'P-001',
+          ref: 'P-099',
+          path: ['P-001', 'P-099'],
+        },
+      ],
+    });
+    expect(activationMocks.gate).not.toHaveBeenCalled();
+    expect(H.state.txCalls).toEqual([]);
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+  });
+
   it('refuses before start gates/promotion when the conversation audit is missing', async () => {
     activationMocks.gate.mockResolvedValue({
       satisfied: false,
