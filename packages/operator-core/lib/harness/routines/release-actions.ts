@@ -1790,7 +1790,18 @@ export function classifyGateStallStatus(
     status === 'deadline-exceeded' ||
     status === 'cancelled' ||
     status === 'repair-in-progress' ||
-    status === 'repair-staging-mismatch'
+    status === 'repair-staging-mismatch' ||
+    // WI-42350: the run DECLINED to re-judge a sha that already reached a red
+    // verdict on a byte-identical tree. The producer says so in as many words
+    // ("This is NOT a new red: it is the same one") and returns `green: null`
+    // rather than `false` precisely so it cannot inflate consecutiveReds.
+    // 'noop', not 'no-verdict': the gate is not WEDGED — it judged this sha
+    // already, banked that red, and is correctly refusing redundant work. It
+    // self-clears the moment the tree moves. Without this line the reason falls
+    // through to the trailing `return 'red'` and fabricates a second red naming
+    // no failing test — the exact drift that froze main for 6 days as
+    // 'candidate-fossil', and twice before as 'error' / 'dependency-prewarm-missing'.
+    status === 'unchanged-since-verdict'
   )
     return 'noop';
   /**
