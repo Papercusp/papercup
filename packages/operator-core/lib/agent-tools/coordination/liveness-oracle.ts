@@ -336,9 +336,19 @@ export function deriveVerdict(
     ) {
       sessionState = 'ended';
     }
+    // EI-21572355077403526: the SAME disqualifier applies to the psu-host
+    // rescue. This leg exists to save a session whose heartbeat/wake look dead
+    // but whose host process is demonstrably live — a genuine ambiguity. An
+    // affirmative ESRCH is not that ambiguity: the process is GONE, and a live
+    // host registry entry for it is stale bookkeeping, not counter-evidence.
+    // Without this guard the fix above would be a half-fix — a confirmed-dead
+    // holder derives `ended` here and is then flipped straight back to
+    // `recorded`, re-arming the identical unrelaunchable-goal trap through a
+    // different leg.
     if (
       psuHostLive &&
       psuHost?.positive === true &&
+      !pidConfirmedDead &&
       (sessionState === 'ended' || sessionState === 'suspect')
     ) {
       sessionState = w.wakeable ? (stale ? 'draining' : 'parked') : 'recorded';

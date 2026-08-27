@@ -94,6 +94,49 @@ describe('EI-21572355077403526 — an affirmative ESRCH disqualifies the `record
   });
 });
 
+describe('EI-21572355077403526 — the SECOND resurrection path: the psu-host positive rescue', () => {
+  /**
+   * Guarding only `recordedLiveOnly` would have been a HALF-FIX. A
+   * confirmed-dead subject falls through to `deriveSessionState` (→ `ended`)
+   * and the psu-host "positive" leg then flips `ended` straight back to
+   * `recorded` for a non-wakeable owner — re-arming the identical
+   * unrelaunchable-goal trap through a different leg.
+   *
+   * This subject is deliberately NOT in the recorded-live set, so the ONLY
+   * thing that can produce `recorded` here is the psu-host leg.
+   */
+  const hostRescued: LivenessSubject = {
+    ...killedHolder,
+    ownerId: 'su-test-host-rescued',
+    agentRole: 'su', // must be a known non-cup role for psuHostKnownRole
+  };
+
+  const hostOpts = (pidProbe: () => boolean | null) => ({
+    nowMs: NOW,
+    fetchWakeabilityFn: async () => new Map([[hostRescued.ownerId, NOT_WAKEABLE]]),
+    fetchRecordedLiveFn: async () => new Set<string>(), // NOT recorded-live
+    fetchRecordedEndedFn: async () => new Set<string>(),
+    probePidFn: pidProbe,
+    psuHostPositiveAuthority: true,
+    findHostFn: () => ({ live: true }), // a live psu host witness
+  });
+
+  const stateFor = async (pidProbe: () => boolean | null) => {
+    const out = await resolveSessionStates([hostRescued], hostOpts(pidProbe));
+    return out.get(hostRescued.ownerId)?.sessionState;
+  };
+
+  it('POSITIVE CONTROL: an inconclusive probe still lets the host rescue produce `recorded`', async () => {
+    // Proves the rescue leg is genuinely reachable in this setup. Without this,
+    // the assertion below could pass simply because nothing ever rescued.
+    expect(await stateFor(() => null)).toBe('recorded');
+  });
+
+  it('a confirmed-dead pid is NOT rescued back to `recorded` by a live host witness', async () => {
+    expect(await stateFor(() => false)).not.toBe('recorded');
+  });
+});
+
 describe('EI-21572355077403526 — the goal-holder consequence that actually broke', () => {
   const holderRow = {
     goalId: 'the-papercusp-desktop-gui-is-verified-end-to-end-9425fe',
