@@ -151,6 +151,57 @@ export interface AgentWedgeWave {
   victims: AgentWedgeVictim[];
 }
 
+/**
+ * How long an `overlay:ideate` registration may stand before a session that has
+ * never recorded a pass is worth reporting.
+ *
+ * Deliberately generous, and much wider than the wedge grace: IDEATE obliges a
+ * pass at task boundaries and lulls, not on a clock, so a busy agent mid-unit is
+ * not yet delinquent. This bound is calibrated to catch NEVER, not LATE.
+ */
+export const IDEATE_PASS_GRACE_MS = 2 * 60 * 60_000;
+
+/** One `overlay:ideate` registration, reduced to what the cadence leg needs. */
+export interface AgentIdeateRegistration {
+  /** ms epoch the mode was registered. */
+  setAtMs: number;
+  /** WHO registered it — the correlation key: a launcher, or the agent itself. */
+  setBy: string;
+  ownerDirected: boolean;
+}
+
+/** An ideate-registered session that has recorded no pass since registration. */
+export interface AgentIdeateSilentVictim {
+  ownerId: string;
+  ownerLabel: string;
+  fleetSlug: string | null;
+  agentRole: string | null;
+  setBy: string;
+  ownerDirected: boolean;
+  registeredForMs: number;
+  /** Agent-origin calls since start — how BUSY this silent agent is. */
+  agentOriginCalls: number;
+  /** ms epoch of the last recorded pass, or null when there has never been one. */
+  lastPassAtMs: number | null;
+}
+
+/**
+ * Ideate silence in one workspace.
+ *
+ * `suppressedAsWedged` is load-bearing, not a statistic: a session with zero
+ * agent-origin calls is silent because it is WEDGED, and the wedge wave already
+ * reports it — escalating it twice is the noise one-correlated-wave exists to
+ * prevent. But a suppressed population must never read as a real zero, so the
+ * count travels with the wave (and is reported even when `victims` is empty).
+ * Measured 2026-08-27: 13 of 13 ideate-silent sessions were wedge-explained, so
+ * a leg that silently dropped them would have escalated nothing and looked healthy.
+ */
+export interface AgentIdeateSilenceWave {
+  workspaceId: string;
+  victims: AgentIdeateSilentVictim[];
+  suppressedAsWedged: number;
+}
+
 export interface AgentProductivitySweepDeps {
   /** Presence rows old enough to judge, with a heartbeat recent enough to bother. */
   readCandidates: (graceMs: number) => Promise<AgentPresenceCandidate[]>;
@@ -170,9 +221,27 @@ export interface AgentProductivitySweepDeps {
     candidates: readonly AgentPresenceCandidate[],
   ) => Promise<Map<string, AgentCallCensus>>;
   escalateWave: (wave: AgentWedgeWave) => Promise<void>;
+  /**
+   * `overlay:ideate` registrations for those candidates, keyed by ownerId. A
+   * candidate ABSENT from the map simply never had the mode — the overwhelming
+   * majority — and is not a subject of the cadence leg at all.
+   */
+  readIdeateRegistrations: (
+    candidates: readonly AgentPresenceCandidate[],
+  ) => Promise<Map<string, AgentIdeateRegistration>>;
+  /**
+   * Last recorded ideate pass per ownerId (ms epoch). A subject ABSENT from the
+   * map has never recorded one — which is the predicate, so absence here is
+   * MEANINGFUL rather than degraded, unlike the census map above.
+   */
+  readIdeatePasses: (
+    candidates: readonly AgentPresenceCandidate[],
+  ) => Promise<Map<string, number>>;
+  escalateIdeateWave: (wave: AgentIdeateSilenceWave) => Promise<void>;
   flagEnabled: () => Promise<boolean>;
   now: () => number;
   graceMs: number;
+  ideateGraceMs: number;
 }
 
 /**
@@ -382,6 +451,148 @@ async function defaultFlagEnabled(): Promise<boolean> {
   }
 }
 
+/**
+ * The `overlay:ideate` registrations among these candidates.
+ *
+ * axis_key/mode are the MEASURED encoding (`overlay:ideate` / `ideate`), not the
+ * prose spelling: the axis carries the `overlay:` prefix and the mode does not.
+ */
+export function makeReadIdeateRegistrations(
+  sql: Sql,
+): AgentProductivitySweepDeps['readIdeateRegistrations'] {
+  return async (candidates) => {
+    const out = new Map<string, AgentIdeateRegistration>();
+    if (candidates.length === 0) return out;
+    const owners = candidates.map((c) => c.ownerId);
+    const workspaces = [...new Set(candidates.map((c) => c.workspaceId))];
+    const rows = await sql<
+      { owner_id: string; set_at: Date; set_by: string; owner_directed: boolean }[]
+    >`
+      SELECT owner_id, set_at, set_by, owner_directed
+        FROM harness_shared.agent_modes
+       WHERE workspace_id = ANY(${workspaces})
+         AND owner_id = ANY(${owners})
+         AND axis_key = 'overlay:ideate'
+         AND mode = 'ideate'
+    `;
+    for (const r of rows) {
+      out.set(r.owner_id, {
+        setAtMs: r.set_at.getTime(),
+        setBy: r.set_by,
+        ownerDirected: r.owner_directed,
+      });
+    }
+    return out;
+  };
+}
+
+/**
+ * The last recorded ideate pass per candidate.
+ *
+ * Two things here are deliberate and easy to get wrong:
+ *
+ *  - `origin = 'su-ideate'` is REQUIRED, and it is not a mere filter. Migration
+ *    571 added that column precisely so su passes ride the Scout tick ledger
+ *    WITHOUT entering Scout's cadence and health reads (a foreign 'ran' tick
+ *    would gate the next Scout cycle as 'min-interval' and mask a dead Scout).
+ *    That exclusion is correct; this read is the su-ideate partition's OWN
+ *    reader, never a widening of Scout's.
+ *  - Attribution is `detail->>'owner'`, because scout_ticks has no owner column
+ *    at all — the writer (`blender:ideate-pass-record`) stamps the owner into
+ *    the detail jsonb. Filtering workspace + origin first keeps this on
+ *    `scout_ticks_ws_origin_idx` and confines the jsonb work to the small
+ *    su-ideate partition.
+ */
+export function makeReadIdeatePasses(sql: Sql): AgentProductivitySweepDeps['readIdeatePasses'] {
+  return async (candidates) => {
+    const out = new Map<string, number>();
+    if (candidates.length === 0) return out;
+    const owners = candidates.map((c) => c.ownerId);
+    const workspaces = [...new Set(candidates.map((c) => c.workspaceId))];
+    const rows = await sql<{ owner_id: string; last_pass: Date }[]>`
+      SELECT detail->>'owner' AS owner_id, max(tick_at) AS last_pass
+        FROM harness_shared.scout_ticks
+       WHERE workspace_id = ANY(${workspaces})
+         AND origin = 'su-ideate'
+         AND detail->>'owner' = ANY(${owners})
+       GROUP BY 1
+    `;
+    for (const r of rows) {
+      if (r.owner_id) out.set(r.owner_id, r.last_pass.getTime());
+    }
+    return out;
+  };
+}
+
+/**
+ * Report-only, and one wave per workspace — for the same reason as the wedge
+ * leg, with the cause already measured: the registrations come from LAUNCHERS
+ * (`pc-admin-coord-ui`, `goal-liveness-watchdog:auto-start`), so the agents did
+ * not choose the mode and N nags would be N copies of one launcher's decision.
+ */
+async function defaultEscalateIdeateWave(wave: AgentIdeateSilenceWave): Promise<void> {
+  const n = wave.victims.length;
+  const bySetter = new Map<string, AgentIdeateSilentVictim[]>();
+  for (const v of wave.victims) {
+    const list = bySetter.get(v.setBy);
+    if (list) list.push(v);
+    else bySetter.set(v.setBy, [v]);
+  }
+  const setterLines = [...bySetter.entries()]
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([setBy, vs]) => {
+      const oldest = Math.max(...vs.map((v) => v.registeredForMs));
+      const busiest = Math.max(...vs.map((v) => v.agentOriginCalls));
+      const selfSet = vs.every((v) => v.ownerDirected);
+      return (
+        `  • set by ${setBy}${selfSet ? '' : ' (not owner-directed)'} — ${vs.length} session(s), ` +
+        `oldest registered ${formatDuration(oldest)} ago, busiest has made ${busiest} ` +
+        `agent-origin call(s): ${vs
+          .slice(0, 6)
+          .map((v) => v.ownerLabel)
+          .join(', ')}${vs.length > 6 ? `, +${vs.length - 6} more` : ''}`
+      );
+    });
+
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `${n} agent session(s) carry IDEATE mode and have NEVER recorded a pass ` +
+      `in workspace ${wave.workspaceId}`,
+    body:
+      `${n} session(s) have had \`overlay:ideate\` registered past the grace and have ` +
+      `recorded no \`blender:ideate-pass-record\` tick since registration — while making ` +
+      `real agent-origin tool calls. They are working; they are just not doing the thing ` +
+      `the MODE obliges.\n\n` +
+      `This is the wedge question one level up. The wedge leg asks "is this agent ` +
+      `producing ANY work?"; this asks "is this agent producing the work its MODE ` +
+      `obliges?" — same instrument, same population, different predicate. Every ` +
+      `count-based surface reads healthy for these agents, because none of them asks ` +
+      `whether the mode's own obligation ever fired.\n\n` +
+      `Grouped by who registered the mode:\n${setterLines.join('\n')}\n\n` +
+      `Grouped that way on purpose: when a LAUNCHER registers the mode, the agent never ` +
+      `chose it, and the fix belongs to the launch path — one decision reproduced N times, ` +
+      `not N agents each forgetting.\n\n` +
+      (wave.suppressedAsWedged > 0
+        ? `Additionally ${wave.suppressedAsWedged} ideate-registered session(s) have recorded ` +
+          `no pass AND made zero agent-origin calls. They are NOT counted above: their ` +
+          `silence is explained by the wedge, and the wedge wave already reports them. ` +
+          `Reported here only so a suppressed population never reads as a clean zero.\n\n`
+        : '') +
+      `Reported, never enforced: an agent cannot be made to have an idea on a timer, and ` +
+      `the honest reading of a silent pass ledger is that the mode was registered where no ` +
+      `pass was ever going to happen.`,
+    meta: {
+      dedupKind: 'agent-productivity-ideate-silence',
+      subjectSignature: `${wave.workspaceId}:ideate-silence`,
+      workspaceId: wave.workspaceId,
+      victimCount: n,
+      suppressedAsWedged: wave.suppressedAsWedged,
+      victims: wave.victims.slice(0, 40),
+    },
+  });
+}
+
 export function agentProductivitySweepDeps(
   sql: Sql,
   overrides: Partial<AgentProductivitySweepDeps> = {},
@@ -391,9 +602,13 @@ export function agentProductivitySweepDeps(
     resolveLiveness: defaultResolveLiveness(),
     readProductivity: makeReadAgentProductivity(sql),
     escalateWave: defaultEscalateWave,
+    readIdeateRegistrations: makeReadIdeateRegistrations(sql),
+    readIdeatePasses: makeReadIdeatePasses(sql),
+    escalateIdeateWave: defaultEscalateIdeateWave,
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
     graceMs: AGENT_PRODUCTIVITY_GRACE_MS,
+    ideateGraceMs: IDEATE_PASS_GRACE_MS,
     ...overrides,
   };
 }
@@ -409,33 +624,32 @@ export function agentProductivitySweepDeps(
 export async function runAgentProductivitySweepOnce(
   sql: Sql,
   overrides: Partial<AgentProductivitySweepDeps> = {},
-): Promise<{
-  scanned: number;
-  present: number;
-  wedged: number;
-  unmeasured: number;
-  wavesEscalated: number;
-}> {
+): Promise<AgentProductivitySweepResult> {
   const deps = agentProductivitySweepDeps(sql, overrides);
   if (!(await deps.flagEnabled())) {
-    return { scanned: 0, present: 0, wedged: 0, unmeasured: 0, wavesEscalated: 0 };
+    return emptySweepResult();
   }
 
   const candidates = await deps.readCandidates(deps.graceMs);
   if (candidates.length === 0) {
-    return { scanned: 0, present: 0, wedged: 0, unmeasured: 0, wavesEscalated: 0 };
+    return emptySweepResult();
   }
 
-  const [verdicts, census] = await Promise.all([
+  const [verdicts, census, ideateRegs, ideatePasses] = await Promise.all([
     deps.resolveLiveness(candidates),
     deps.readProductivity(candidates),
+    deps.readIdeateRegistrations(candidates),
+    deps.readIdeatePasses(candidates),
   ]);
 
   const now = deps.now();
   const waves = new Map<string, AgentWedgeWave>();
+  const ideateWaves = new Map<string, AgentIdeateSilenceWave>();
   let present = 0;
   let wedged = 0;
   let unmeasured = 0;
+  let ideateSilent = 0;
+  let ideateSuppressedAsWedged = 0;
 
   for (const c of candidates) {
     const verdict = verdicts.get(c.ownerId);
@@ -458,6 +672,44 @@ export async function runAgentProductivitySweepOnce(
     });
 
     if (v.reason === 'not-measured') unmeasured += 1;
+
+    // ── The cadence leg ───────────────────────────────────────────────────
+    // Runs for every PRESENT candidate, wedged or not — which is why it sits
+    // ahead of the wedge `continue` below. Its subject is the agent that is
+    // working normally and simply never does what the mode obliges; skipping
+    // the non-wedged would remove exactly that population.
+    const reg = ideateRegs.get(c.ownerId);
+    if (reg && measured && now - reg.setAtMs >= deps.ideateGraceMs) {
+      const lastPassAtMs = ideatePasses.get(c.ownerId) ?? null;
+      // A pass recorded BEFORE the mode was registered does not discharge the
+      // current registration — the obligation starts when the mode is set.
+      if (lastPassAtMs === null || lastPassAtMs < reg.setAtMs) {
+        ideateSilent += 1;
+        const wave =
+          ideateWaves.get(c.workspaceId) ??
+          ({ workspaceId: c.workspaceId, victims: [], suppressedAsWedged: 0 } as AgentIdeateSilenceWave);
+        if (v.wedged) {
+          // Silence fully explained by the wedge — the wedge wave owns this
+          // session. Counted, never escalated twice.
+          ideateSuppressedAsWedged += 1;
+          wave.suppressedAsWedged += 1;
+        } else {
+          wave.victims.push({
+            ownerId: c.ownerId,
+            ownerLabel: c.ownerLabel,
+            fleetSlug: c.fleetSlug,
+            agentRole: c.agentRole,
+            setBy: reg.setBy,
+            ownerDirected: reg.ownerDirected,
+            registeredForMs: now - reg.setAtMs,
+            agentOriginCalls: measured.agentOriginCalls,
+            lastPassAtMs,
+          });
+        }
+        ideateWaves.set(c.workspaceId, wave);
+      }
+    }
+
     // `phase` is null only when the census did not supply anyOriginCalls, which
     // cannot happen on this path — but a wave keyed on a null phase would be a
     // group with no repair, so it is skipped rather than invented.
@@ -493,7 +745,34 @@ export async function runAgentProductivitySweepOnce(
     }
   }
 
-  return { scanned: candidates.length, present, wedged, unmeasured, wavesEscalated };
+  let ideateWavesEscalated = 0;
+  for (const wave of ideateWaves.values()) {
+    // A wave with nothing but suppressed victims raises no alarm: every one of
+    // them is already reported by the wedge wave. The population still travels
+    // out in the counts below, so "nothing escalated" is never mistaken for
+    // "nobody was silent".
+    if (wave.victims.length === 0) continue;
+    try {
+      await deps.escalateIdeateWave(wave);
+      ideateWavesEscalated += 1;
+    } catch (e) {
+      console.warn(
+        `[agent-productivity-watchdog] ideate escalate failed for ${wave.workspaceId} ` +
+          `(non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  return {
+    scanned: candidates.length,
+    present,
+    wedged,
+    unmeasured,
+    wavesEscalated,
+    ideateSilent,
+    ideateSuppressedAsWedged,
+    ideateWavesEscalated,
+  };
 }
 
 let watchdogTimer: ManagedHandle | null = null;
