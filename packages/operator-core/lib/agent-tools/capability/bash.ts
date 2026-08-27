@@ -240,13 +240,14 @@ export default defineTool({
       'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',
     chaining:
       'run_in_background:true returns bash_id + durable task_id → capability:bash_output { task_id }; stop with processes:kill { taskId }. Never push.',
+    // EI-21543657511391052: the stale 'capability:bash_kill' entry is DELETED, not
+    // replaced. It is absent from trimmed surfaces (su) and refuses some principals, so
+    // it routed callers to a verb they could not invoke. No substitute entry is added
+    // here because `chaining` above already names the working route (processes:kill
+    // { taskId }), and this tool sits at 1500/1500 of its prompt-weight budget — a
+    // replacement entry pushed it to 1505 and red-ed tool-guidance-budget.test.ts.
     seeAlso: [
       'capability:bash_output (read a backgrounded run)',
-      // EI-21543657511391052: NOT capability:bash_kill — it is absent from trimmed
-      // surfaces (su) and refuses some principals, so naming it here routed callers to a
-      // verb they cannot invoke. processes:kill works for every caller and matches the
-      // `chaining` line above and this tool's own runtime advice string.
-      'processes:kill { taskId } (stop a backgrounded run)',
       'capability:git (git actions, gated as git)',
     ],
   },
