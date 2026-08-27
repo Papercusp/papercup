@@ -976,6 +976,12 @@ export async function createOneWorkItem(
     //   * plan provenance — the item implements a plan item, so it passed plan review;
     //   * critical severity / a security topic — promote now, review post-hoc, because
     //     the cost of delaying a real one dominates the cost of a duplicate.
+    // An explicit assignment is a third, mechanical bypass: pending rows cannot carry
+    // an assignee (createWorkItem deliberately strips claims from pending rows), while
+    // B-LOOP-4 requires assign_to to claim atomically in the INSERT. Marking that
+    // deliberate owner handoff as an attributable auto admission keeps the no-race
+    // contract without a post-create claim window. Keep this after the existing
+    // bypasses so their admission reasons remain stable when a caller also assigns.
     //
     // `args.force` is DELIBERATELY NOT a bypass. force means "file despite the hard
     // dedup refusals", which is a claim about THIS filing's duplicates — exactly the
@@ -991,7 +997,9 @@ export async function createOneWorkItem(
           ? 'bypass:severity-critical'
           : args.topics?.some((t) => t.trim().toLowerCase() === 'security')
             ? 'bypass:topic-security'
-            : null;
+            : args.assign_to?.trim()
+              ? 'bypass:explicit-assignment'
+              : null;
     const bornAdmission: 'pending' | 'auto' = admissionBypass ? 'auto' : 'pending';
     let workItem = await createWorkItem({
       kind: args.kind as WorkItemKind,
