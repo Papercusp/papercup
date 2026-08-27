@@ -1783,19 +1783,32 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         waiter.tools.includes("session:request-compaction"),
     );
   // EI-21567991637671620 — a loop:checkpoint is itself the recovery record needed when the
-  // current turn is about to disappear. Keep one checkpoint waiter in a bounded priority slot
-  // independently of the compaction slot, so a full ordinary FIFO cannot make that record's
-  // mutation outcome unknown. `work_items:checkpoint` has the same successor-state guarantee.
-  const checkpointContinuationTools = new Set([
-    "loop:checkpoint",
+  // current turn is about to disappear. Keep one loop checkpoint waiter in a bounded priority
+  // slot independently of the compaction slot, so a full ordinary FIFO cannot make that record's
+  // mutation outcome unknown. `work_items:checkpoint` has the same successor-state guarantee,
+  // but needs its own slot: a fallback work-item checkpoint must still be admitted when a loop
+  // checkpoint already occupies the other recovery lane (EI-21598413057126541).
+  const loopCheckpointContinuationTools = new Set(["loop:checkpoint"]);
+  const workItemCheckpointContinuationTools = new Set([
     "work_items:checkpoint",
   ]);
-  const hasQueuedCheckpoint = (): boolean =>
+  const hasQueuedLoopCheckpoint = (): boolean =>
     criticalContinuationQueue.some(
       (waiter) =>
         !waiter.cancelled &&
         !waiter.granted &&
-        waiter.tools.some((tool) => checkpointContinuationTools.has(tool)),
+        waiter.tools.some((tool) =>
+          loopCheckpointContinuationTools.has(tool),
+        ),
+    );
+  const hasQueuedWorkItemCheckpoint = (): boolean =>
+    criticalContinuationQueue.some(
+      (waiter) =>
+        !waiter.cancelled &&
+        !waiter.granted &&
+        waiter.tools.some((tool) =>
+          workItemCheckpointContinuationTools.has(tool),
+        ),
     );
   // EI-21567905826837255 — a terminal work-item completion is itself the mutation result
   // that tells the fleet whether the item was drained. Keep one completion waiter in a bounded
@@ -1815,13 +1828,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // loop running while its caller has already lost the outcome. EI-21582773337412658 extends
   // the same rule to session:request-compaction: compaction is the recovery boundary for the
   // context that is about to disappear, so shedding it at a configured dwell cap strands the
-  // very session that needs the cut. The FIFO remains hard-bounded, and a client disconnect
-  // still cancels the waiter, so these terminal/recovery actions must wait for the single
-  // continuation slot rather than becoming an ambiguous 429. Other continuation writes retain
-  // the configured finite dwell when an operator explicitly enables it.
+  // very session that needs the cut. EI-21598376721192513 applies it to work_items:complete:
+  // terminal completion is the mutation outcome that tells the fleet whether the item drained,
+  // so shedding it at the dwell cap makes the close ambiguous. The FIFO remains hard-bounded,
+  // and a client disconnect still cancels the waiter, so these terminal/recovery actions must
+  // wait for the single continuation slot rather than becoming an ambiguous 429. Other
+  // continuation writes retain the configured finite dwell when an operator explicitly enables it.
   const nonExpiringCriticalContinuationTools = new Set([
     "loop:end",
     "session:request-compaction",
+    "work_items:complete",
   ]);
   const hasNonExpiringCriticalContinuation = (tools: string[]): boolean =>
     tools.some((tool) => nonExpiringCriticalContinuationTools.has(tool));
@@ -2297,13 +2313,20 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const compactionPriority =
             criticalContinuationTools.includes("session:request-compaction") &&
             !hasQueuedCompaction();
-          // EI-21567991637671620 — preserve one bounded priority slot for the checkpoint itself.
+          // EI-21567991637671620 — preserve one bounded priority slot for loop:checkpoint.
           // This is separate from compaction: a compaction request may already be queued when the
           // loop needs to persist its carry-note, and vice versa.
-          const checkpointPriority =
+          const loopCheckpointPriority =
             criticalContinuationTools.some((tool) =>
-              checkpointContinuationTools.has(tool),
-            ) && !hasQueuedCheckpoint();
+              loopCheckpointContinuationTools.has(tool),
+            ) && !hasQueuedLoopCheckpoint();
+          // EI-21598413057126541 — work_items:checkpoint is the fallback durability record. It
+          // must have an independent slot from loop:checkpoint, because the fallback can arrive
+          // while the loop checkpoint is already waiting in the same bounded FIFO.
+          const workItemCheckpointPriority =
+            criticalContinuationTools.some((tool) =>
+              workItemCheckpointContinuationTools.has(tool),
+            ) && !hasQueuedWorkItemCheckpoint();
           // EI-21567905826837255 — preserve one bounded priority slot for terminal completion.
           const completionPriority =
             criticalContinuationTools.some((tool) =>
@@ -2312,7 +2335,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           if (
             maxCriticalContinuationQueue <= criticalContinuationQueueLength() &&
             !compactionPriority &&
-            !checkpointPriority &&
+            !loopCheckpointPriority &&
+            !workItemCheckpointPriority &&
             !completionPriority
           ) {
             const retryAfterSec = retryAfterSecForDrainRate(
@@ -2370,7 +2394,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               traceId: requestTraceId,
               tools: criticalContinuationTools,
             };
-            if (compactionPriority || checkpointPriority || completionPriority) {
+            if (
+              compactionPriority ||
+              loopCheckpointPriority ||
+              workItemCheckpointPriority ||
+              completionPriority
+            ) {
               criticalContinuationQueue.unshift(queuedCriticalContinuation);
             } else {
               criticalContinuationQueue.push(queuedCriticalContinuation);

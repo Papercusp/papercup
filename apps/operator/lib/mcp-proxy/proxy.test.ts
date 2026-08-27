@@ -3927,6 +3927,251 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     ).toBe("original-checkpoint-key");
   });
 
+  it("EI-21598413057126541: reserves work_items:checkpoint separately from loop:checkpoint when the continuation FIFO is full", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-completion") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"queued":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 1_000,
+        criticalContinuationQueueWaitLogMs: 20,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=held-completion",
+    );
+    await firstStarted;
+
+    const loopCheckpoint = request(
+      port(proxy),
+      body(2, "loop:checkpoint"),
+      "/api/mcp?client=loop-checkpoint",
+    );
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued critical-continuation request")),
+    );
+
+    let fallbackSettled = false;
+    const fallbackCheckpoint = request(
+      port(proxy),
+      body(3, "work_items:checkpoint"),
+      "/api/mcp?client=work-item-checkpoint",
+    ).then((result) => {
+      fallbackSettled = true;
+      return result;
+    });
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 2,
+    );
+    expect(fallbackSettled).toBe(false);
+    expect(hits).toEqual(["held-completion"]);
+
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 2,
+      max: 1,
+      requests: expect.arrayContaining([
+        expect.objectContaining({ tools: ["loop:checkpoint"] }),
+        expect.objectContaining({ tools: ["work_items:checkpoint"] }),
+      ]),
+    });
+
+    const secondFallback = await request(
+      port(proxy),
+      body(4, "work_items:checkpoint"),
+      "/api/mcp?client=second-work-item-checkpoint",
+    );
+    expect(secondFallback.status).toBe(429);
+    expect(JSON.parse(secondFallback.body).error).toBe(
+      "mcp_proxy_critical_continuation_queue_full",
+    );
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await fallbackCheckpoint).status).toBe(200);
+    expect((await loopCheckpoint).status).toBe(200);
+    expect(hits).toEqual([
+      "held-completion",
+      "work-item-checkpoint",
+      "loop-checkpoint",
+    ]);
+  });
+
+  it("EI-21598494085262519: admits the fallback checkpoint when a full FIFO already contains loop:checkpoint", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-completion") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"queued":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 16,
+        maxCriticalContinuationQueueWaitMs: 5_000,
+        criticalContinuationQueueWaitLogMs: 20,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=held-completion",
+    );
+    await firstStarted;
+
+    const ordinary = Array.from({ length: 15 }, (_, index) =>
+      request(
+        port(proxy),
+        body(index + 2, "coord:send"),
+        `/api/mcp?client=ordinary-${index + 1}`,
+      ),
+    );
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 15,
+    );
+
+    const loopCheckpoint = request(
+      port(proxy),
+      body(17, "loop:checkpoint"),
+      "/api/mcp?client=loop-checkpoint",
+    );
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 16,
+    );
+
+    let fallbackSettled = false;
+    const fallbackCheckpoint = request(
+      port(proxy),
+      body(18, "work_items:checkpoint"),
+      "/api/mcp?client=work-item-checkpoint",
+    ).then((result) => {
+      fallbackSettled = true;
+      return result;
+    });
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 17,
+    );
+
+    expect(fallbackSettled).toBe(false);
+    expect(hits).toEqual(["held-completion"]);
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 17,
+      max: 16,
+      requests: expect.arrayContaining([
+        expect.objectContaining({ tools: ["loop:checkpoint"] }),
+        expect.objectContaining({ tools: ["work_items:checkpoint"] }),
+      ]),
+    });
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await fallbackCheckpoint).status).toBe(200);
+    expect((await loopCheckpoint).status).toBe(200);
+    expect((await Promise.all(ordinary)).every(({ status }) => status === 200)).toBe(
+      true,
+    );
+    expect(hits.slice(0, 3)).toEqual([
+      "held-completion",
+      "work-item-checkpoint",
+      "loop-checkpoint",
+    ]);
+    expect(hits).toHaveLength(18);
+  });
+
   it("EI-21567905826837255: reserves one priority waiter for work_items:complete when the continuation FIFO is full", async () => {
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
@@ -4028,6 +4273,208 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "priority-completion",
       "queued-ordinary",
     ]);
+  });
+
+  it("EI-21598483081476321: admits the first terminal completion beyond a full 16-waiter continuation FIFO", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-completion") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"queued":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 16,
+        maxCriticalContinuationQueueWaitMs: 5_000,
+        criticalContinuationQueueWaitLogMs: 20,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=held-completion",
+    );
+    await firstStarted;
+
+    const ordinary = Array.from({ length: 16 }, (_, index) =>
+      request(
+        port(proxy),
+        body(index + 2, "coord:send"),
+        `/api/mcp?client=ordinary-${index + 1}`,
+      ),
+    );
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 16,
+    );
+
+    let terminalSettled = false;
+    const terminal = request(
+      port(proxy),
+      body(18, "work_items:complete"),
+      "/api/mcp?client=terminal-completion",
+    ).then((result) => {
+      terminalSettled = true;
+      return result;
+    });
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 17,
+    );
+
+    expect(terminalSettled).toBe(false);
+    expect(hits).toEqual(["held-completion"]);
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 17,
+      max: 16,
+      requests: expect.arrayContaining([
+        expect.objectContaining({ tools: ["work_items:complete"] }),
+      ]),
+    });
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await terminal).status).toBe(200);
+    expect((await Promise.all(ordinary)).every(({ status }) => status === 200)).toBe(
+      true,
+    );
+    expect(hits.slice(0, 2)).toEqual([
+      "held-completion",
+      "terminal-completion",
+    ]);
+    expect(hits).toHaveLength(18);
+  });
+
+  it("EI-21598376721192513: does not expire queued work_items:complete at a finite continuation dwell boundary", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-completion") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"completed":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 25,
+        criticalContinuationQueueWaitLogMs: 10,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name: "work_items:complete", arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1),
+      "/api/mcp?client=held-completion",
+    );
+    await firstStarted;
+
+    let completionSettled = false;
+    const queuedCompletion = request(
+      port(proxy),
+      body(2),
+      "/api/mcp?client=queued-completion",
+    ).then((result) => {
+      completionSettled = true;
+      return result;
+    });
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued critical-continuation request")),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(completionSettled).toBe(false);
+    expect(hits).toEqual(["held-completion"]);
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 1,
+      max: 1,
+      maxWaitMs: 25,
+      requests: [expect.objectContaining({ tools: ["work_items:complete"] })],
+    });
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await queuedCompletion).status).toBe(200);
+    expect(hits).toEqual(["held-completion", "queued-completion"]);
   });
 
   it("EI-21567903270684307: does not expire queued loop:end at a finite continuation dwell boundary", async () => {
